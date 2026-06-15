@@ -1,7 +1,13 @@
 import pytest
 from textual.app import App, ComposeResult
+from textual.widgets import Collapsible, Markdown
 
-from marim_harness.tui.widgets import ToolCallWidget
+from marim_harness.tui.widgets import (
+    AssistantMessage,
+    ToolCallWidget,
+    UserMessage,
+    strip_line_numbers,
+)
 
 
 class _Harness(App):
@@ -28,3 +34,91 @@ async def test_tool_widget_finish_updates_status():
         await pilot.pause()
         assert w.status == "done"
         assert w.result_text == "edited a.txt"
+
+
+@pytest.mark.anyio
+async def test_tool_widget_is_collapsible_with_working_title():
+    """The widget must NOT override compose(); it must keep Collapsible's
+    title bar (the thing you click to expand) intact."""
+    app = _Harness()
+    async with app.run_test() as pilot:
+        w = app.query_one(ToolCallWidget)
+        await pilot.pause()
+        assert isinstance(w, Collapsible)
+        # Collapsible builds its own title bar; ours must still exist.
+        assert w.query_one(Collapsible.Contents) is not None
+        # The summary glyph shows the pending state in the title.
+        assert "edit_file" in str(w.title)
+        assert "?" in str(w.title)
+
+
+@pytest.mark.anyio
+async def test_tool_widget_body_shows_args_and_result():
+    app = _Harness()
+    async with app.run_test() as pilot:
+        w = app.query_one(ToolCallWidget)
+        w.finish("done editing")
+        await pilot.pause()
+        body = str(w.query_one("#tool-body").render())
+        assert "a.txt" in body
+        assert "done editing" in body
+        assert "+" in str(w.title)  # done glyph
+
+
+def test_strip_line_numbers():
+    raw = "1\tdef greet():\n2\t    return 1\n3\t"
+    assert strip_line_numbers(raw) == "def greet():\n    return 1\n"
+
+
+def test_strip_line_numbers_leaves_plain_text_alone():
+    raw = "just some text\nwith no prefixes"
+    assert strip_line_numbers(raw) == raw
+
+
+@pytest.mark.anyio
+async def test_read_file_result_is_syntax_highlighted():
+    """A read_file tool result should render through rich Syntax, not raw."""
+
+    class H(App):
+        def compose(self) -> ComposeResult:
+            yield ToolCallWidget("read_file", {"path": "app.py"})
+
+    app = H()
+    async with app.run_test() as pilot:
+        w = app.query_one(ToolCallWidget)
+        w.finish("1\tdef greet():\n2\t    return 1\n")
+        await pilot.pause()
+        from rich.syntax import Syntax
+
+        # The body should hold a Syntax renderable for source files.
+        assert isinstance(w._result_renderable(), Syntax)
+
+
+@pytest.mark.anyio
+async def test_user_message_has_user_class():
+    class H(App):
+        def compose(self) -> ComposeResult:
+            yield UserMessage("hi there")
+
+    app = H()
+    async with app.run_test() as pilot:
+        w = app.query_one(UserMessage)
+        await pilot.pause()
+        assert w.has_class("user-msg")
+        assert "hi there" in str(w.render())
+
+
+@pytest.mark.anyio
+async def test_assistant_message_is_markdown_and_accumulates():
+    class H(App):
+        def compose(self) -> ComposeResult:
+            yield AssistantMessage()
+
+    app = H()
+    async with app.run_test() as pilot:
+        w = app.query_one(AssistantMessage)
+        assert isinstance(w, Markdown)
+        w.append("# Title")
+        w.append(" more")
+        await pilot.pause()
+        assert w.text == "# Title more"

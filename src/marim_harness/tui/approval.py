@@ -1,11 +1,59 @@
 from textual.app import ComposeResult
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
 
+def format_detail(tool_name: str, args: dict) -> str:
+    """Render a human-readable preview of what a tool call will do, instead of
+    dumping the raw args dict."""
+    if tool_name == "edit_file" and "old_string" in args and "new_string" in args:
+        path = args.get("path", "?")
+        old = "\n".join(f"- {line}" for line in str(args["old_string"]).splitlines())
+        new = "\n".join(f"+ {line}" for line in str(args["new_string"]).splitlines())
+        return f"{path}\n\n{old}\n{new}"
+    if tool_name in ("run_command", "bash") and "command" in args:
+        return f"$ {args['command']}"
+    if tool_name == "write_file" and "content" in args:
+        path = args.get("path", "?")
+        return f"{path}\n\n{args['content']}"
+    return "\n".join(f"{k}: {v!r}" for k, v in args.items())
+
+
 class ApprovalModal(ModalScreen[bool]):
     """Asks the user to approve or deny a tool call. Dismisses with True/False."""
+
+    CSS = """
+    ApprovalModal {
+        align: center middle;
+    }
+    #approval-box {
+        width: 70%;
+        max-width: 100;
+        height: auto;
+        max-height: 80%;
+        padding: 1 2;
+        border: round $warning;
+        background: $surface;
+    }
+    #approval-title {
+        text-style: bold;
+        color: $warning;
+        margin-bottom: 1;
+    }
+    #approval-detail {
+        height: auto;
+        max-height: 20;
+        margin-bottom: 1;
+    }
+    #approval-buttons {
+        height: auto;
+        align-horizontal: right;
+    }
+    #approval-buttons Button {
+        margin-left: 2;
+    }
+    """
 
     BINDINGS = [("a", "approve", "Approve"), ("d", "deny", "Deny")]
 
@@ -16,10 +64,11 @@ class ApprovalModal(ModalScreen[bool]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="approval-box"):
-            yield Static(f"Approve {self.tool_name}?")
-            yield Static(str(self.args))
-            yield Button("Approve (a)", id="approve", variant="success")
-            yield Button("Deny (d)", id="deny", variant="error")
+            yield Static(f"Approve  {self.tool_name}?", id="approval-title")
+            yield Static(format_detail(self.tool_name, self.args), id="approval-detail")
+            with Horizontal(id="approval-buttons"):
+                yield Button("Deny (d)", id="deny", variant="error")
+                yield Button("Approve (a)", id="approve", variant="success")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "approve")

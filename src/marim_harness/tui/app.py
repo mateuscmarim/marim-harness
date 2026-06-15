@@ -9,17 +9,26 @@ from pydantic_ai.messages import (
 )
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
-from textual.widgets import Input, Static
+from textual.widgets import Footer, Header, Input, Static
 
 from ..agent import Harness
 from .approval import ApprovalModal
 from .widgets import AssistantMessage, ToolCallWidget, UserMessage
 
+_WELCOME = (
+    "Welcome to **marim-harness**. Type a message below to start.\n\n"
+    "- `ctrl+t` cycles the approval mode (ask → auto → plan)\n"
+    "- `ctrl+c` quits"
+)
+
 
 class HarnessApp(App):
     CSS = """
-    #log { height: 1fr; }
-    #status-bar { height: 1; dock: bottom; background: $panel; }
+    #log { height: 1fr; padding: 0 1; }
+    #status-bar { height: 1; background: $panel; color: $text-muted; padding: 0 1; }
+    .user-msg { color: $accent; text-style: bold; margin-top: 1; }
+    AssistantMessage { margin: 0 0 1 0; }
+    ToolCallWidget { margin: 0 0 1 0; }
     Input { dock: bottom; }
     """
     BINDINGS = [("ctrl+t", "cycle_mode", "Cycle mode")]
@@ -30,19 +39,33 @@ class HarnessApp(App):
         self.harness.deps.request_approval = self._request_approval
         self._current_assistant: AssistantMessage | None = None
         self._tool_widgets: dict[str, ToolCallWidget] = {}
+        self._busy = False
 
     def compose(self) -> ComposeResult:
+        yield Header(show_clock=False)
         yield VerticalScroll(id="log")
         yield Static(self._status_text(), id="status-bar")
         yield Input(placeholder="type a message…")
+        yield Footer()
+
+    async def on_mount(self) -> None:
+        self.title = "marim-harness"
+        welcome = AssistantMessage()
+        await self.query_one("#log", VerticalScroll).mount(welcome)
+        welcome.append(_WELCOME)
 
     def _status_text(self) -> str:
         cfg = getattr(self.harness, "model_label", "model")
         tokens = getattr(self.harness, "total_tokens", 0)
-        return f"{self.harness.deps.mode.value} · {cfg} · {tokens} tokens"
+        base = f"{self.harness.deps.mode.value} · {cfg} · {tokens} tokens"
+        return f"{base} · working…" if self._busy else base
 
     def _refresh_status(self) -> None:
         self.query_one("#status-bar", Static).update(self._status_text())
+
+    def _set_busy(self, busy: bool) -> None:
+        self._busy = busy
+        self._refresh_status()
 
     def action_cycle_mode(self) -> None:
         self.harness.deps.mode = self.harness.deps.mode.cycle()
@@ -65,8 +88,11 @@ class HarnessApp(App):
         self.run_worker(self._run_turn(text), exclusive=True)
 
     async def _run_turn(self, text: str) -> None:
-        await self.harness.run_turn(text, event_stream_handler=self._on_events)
-        self._refresh_status()
+        self._set_busy(True)
+        try:
+            await self.harness.run_turn(text, event_stream_handler=self._on_events)
+        finally:
+            self._set_busy(False)
 
     async def _on_events(self, ctx, events) -> None:
         log = self.query_one("#log", VerticalScroll)
