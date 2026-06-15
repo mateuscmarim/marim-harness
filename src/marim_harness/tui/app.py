@@ -14,6 +14,7 @@ from textual.containers import VerticalScroll
 from textual.widgets import Footer, Header, Input, Static
 
 from ..agent import Harness
+from ..compaction import estimate_tokens
 from .approval import ApprovalModal
 from .widgets import (
     AssistantMessage,
@@ -32,6 +33,13 @@ _BANNER = (
     " ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝╚═╝     ╚═╝\n"
     "   · · ·   a   t e r m i n a l   h a r n e s s"
 )
+
+def _human_tokens(n: int) -> str:
+    """Compact token count: 950 -> '950', 1500 -> '1.5k', 100000 -> '100k'."""
+    if n >= 1000:
+        return f"{n / 1000:.1f}k".replace(".0k", "k")
+    return str(n)
+
 
 _WELCOME = (
     "Type a message below to start.\n\n"
@@ -127,8 +135,19 @@ class HarnessApp(App):
 
     def _status_text(self) -> str:
         cfg = getattr(self.harness, "model_label", "model")
-        tokens = getattr(self.harness, "total_tokens", 0)
-        base = f"{self.harness.deps.mode.value} · {cfg} · {tokens} tokens"
+        spent = getattr(self.harness, "total_tokens", 0)
+        used = estimate_tokens(self.harness.history)
+        max_ctx = getattr(self.harness, "max_context_tokens", 0) or 0
+        pct = round(used / max_ctx * 100) if max_ctx else 0
+        ctx = f"ctx {_human_tokens(used)}/{_human_tokens(max_ctx)} ({pct}%)"
+        if pct >= 90:
+            ctx = f"[red]{ctx}[/]"
+        elif pct >= 75:
+            ctx = f"[yellow]{ctx}[/]"
+        base = (
+            f"{self.harness.deps.mode.value} · {cfg} · {ctx} · "
+            f"{_human_tokens(spent)} tokens"
+        )
         return f"{base} · working…" if self._busy else base
 
     def _refresh_status(self) -> None:
@@ -154,6 +173,7 @@ class HarnessApp(App):
             NoticeMessage(f"compacted history: {before} → {after} messages")
         )
         log.scroll_end(animate=False)
+        self._refresh_status()  # context gauge shrinks immediately
 
     async def _request_approval(self, call) -> object:
         approved = await self.push_screen_wait(

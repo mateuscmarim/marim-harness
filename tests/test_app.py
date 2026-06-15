@@ -44,6 +44,34 @@ async def test_status_bar_shows_token_count(tmp_path: Path):
         assert "20 tokens" in str(bar.render())
 
 
+def test_human_tokens_formatting():
+    from marim_harness.tui.app import _human_tokens
+
+    assert _human_tokens(0) == "0"
+    assert _human_tokens(950) == "950"
+    assert _human_tokens(1500) == "1.5k"
+    assert _human_tokens(100_000) == "100k"
+
+
+@pytest.mark.anyio
+async def test_status_bar_shows_context_usage(tmp_path: Path):
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bar = app.query_one("#status-bar")
+        assert "ctx" in str(bar.render()).lower()  # shown even when empty
+        # ~500 tokens of content against a 1000-token window -> 50%
+        app.harness.max_context_tokens = 1000
+        app.harness.history = [
+            ModelRequest(parts=[UserPromptPart(content="x" * 2000)])
+        ]
+        app._refresh_status()
+        await pilot.pause()
+        assert "50%" in str(bar.render())
+
+
 def _submit(app, text):
     from textual.widgets import Input
 
