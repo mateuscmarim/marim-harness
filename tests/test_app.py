@@ -73,11 +73,11 @@ async def test_status_bar_shows_context_usage(tmp_path: Path):
 
 
 def _submit(app, text):
-    from textual.widgets import Input
+    from marim_harness.tui.widgets import PromptInput
 
-    inp = app.query_one(Input)
-    inp.value = text
-    return app.on_input_submitted(Input.Submitted(inp, text))
+    pi = app.query_one(PromptInput)
+    pi.text = text
+    return app.on_prompt_input_submitted(PromptInput.Submitted(text))
 
 
 @pytest.mark.anyio
@@ -210,9 +210,7 @@ async def test_failed_turn_shows_error_and_keeps_running(tmp_path: Path):
 async def test_cancel_turn_aborts_and_shows_message(tmp_path: Path):
     import asyncio
 
-    from textual.widgets import Input
-
-    from marim_harness.tui.widgets import ErrorMessage
+    from marim_harness.tui.widgets import ErrorMessage, PromptInput
 
     app = _app(tmp_path)
     started = asyncio.Event()
@@ -224,8 +222,7 @@ async def test_cancel_turn_aborts_and_shows_message(tmp_path: Path):
     app.harness.run_turn = hang  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
-        inp = app.query_one(Input)
-        await app.on_input_submitted(Input.Submitted(inp, "do something slow"))
+        await app.on_prompt_input_submitted(PromptInput.Submitted("do something slow"))
         for _ in range(50):
             await pilot.pause()
             if started.is_set():
@@ -278,10 +275,12 @@ async def test_log_and_input_both_visible(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
-        from textual.widgets import Footer, Input
+        from textual.widgets import Footer
+
+        from marim_harness.tui.widgets import PromptInput
 
         status = app.query_one("#status-bar")
-        inp = app.query_one(Input)
+        inp = app.query_one(PromptInput)
         footer = app.query_one(Footer)
         assert status.size.height >= 1
         assert inp.size.height >= 1
@@ -697,3 +696,53 @@ async def test_model_picker_cancel_keeps_model(tmp_path: Path):
         await app.open_model_picker()
         await pilot.pause()
         assert app.harness.model_id == "startup"  # unchanged
+
+
+@pytest.mark.anyio
+async def test_enter_keypress_submits_and_clears(tmp_path: Path):
+    """Real key path: Enter routes through the prompt widget to the app, mounts
+    the user message, clears the box, and starts a turn."""
+    from marim_harness.tui.widgets import PromptInput, UserMessage
+
+    app = _app(tmp_path)
+    started: list = []
+
+    def fake_worker(coro, *a, **k):
+        started.append(coro)
+        coro.close()  # we never run it; close to avoid an un-awaited warning
+
+    app.run_worker = fake_worker  # type: ignore[method-assign]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        pi = app.query_one(PromptInput)
+        pi.focus()
+        await pilot.pause()
+        await pilot.press("h", "i")
+        await pilot.press("enter")
+        await pilot.pause()
+        users = [str(w.render()) for w in app.query(UserMessage)]
+        assert any("hi" in u for u in users)
+        assert pi.text == ""  # box cleared after submit
+        assert started  # a turn worker was started
+
+
+@pytest.mark.anyio
+async def test_shift_enter_keypress_does_not_submit(tmp_path: Path):
+    """Real key path: Shift+Enter inserts a newline; no turn, no user message."""
+    from marim_harness.tui.widgets import PromptInput, UserMessage
+
+    app = _app(tmp_path)
+    started: list = []
+    app.run_worker = lambda *a, **k: started.append(a)  # type: ignore[method-assign]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        pi = app.query_one(PromptInput)
+        pi.focus()
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.press("shift+enter")
+        await pilot.press("b")
+        await pilot.pause()
+        assert pi.text == "a\nb"
+        assert not started
+        assert not list(app.query(UserMessage))
