@@ -188,6 +188,24 @@ async def test_welcome_message_shown_on_start(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_resumed_session_shows_banner(tmp_path: Path):
+    from pydantic_ai import Agent
+    from pydantic_ai.models.test import TestModel
+
+    app = _app(tmp_path)
+    # Simulate a resumed conversation: history populated before mount.
+    result = await Agent(TestModel(), instructions="x").run("hi")
+    app.harness.history = result.all_messages()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        log = app.query_one("#log")
+        text = " ".join(
+            str(c.render()) for c in log.walk_children() if hasattr(c, "render")
+        )
+        assert "resumed" in text.lower()
+
+
+@pytest.mark.anyio
 async def test_mode_keybinding_cycles(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:

@@ -5,6 +5,7 @@ from pydantic_ai.usage import RunUsage
 
 from .deps import Deps
 from .permissions import resolve_approvals
+from .session import SessionStore
 from .tools.provider import ToolProvider
 
 
@@ -13,7 +14,7 @@ class Harness:
     resolving deferred tool approvals by the current mode."""
 
     def __init__(self, model, provider: ToolProvider, deps: Deps, instructions: str,
-                 model_label: str = "model"):
+                 model_label: str = "model", store: Optional[SessionStore] = None):
         self.agent = Agent(
             model,
             deps_type=Deps,
@@ -25,11 +26,24 @@ class Harness:
         self.history: list = []
         self.model_label = model_label
         self.usage = RunUsage()
+        self.store = store
 
     @property
     def total_tokens(self) -> int:
         """Cumulative input + output tokens across the whole session."""
         return self.usage.total_tokens
+
+    def resume(self) -> int:
+        """Load a previously saved conversation for this workspace into history.
+        Returns the number of messages restored (0 if none / no store)."""
+        if self.store is None:
+            return 0
+        self.history, self.usage = self.store.load()
+        return len(self.history)
+
+    def _persist(self) -> None:
+        if self.store is not None:
+            self.store.save(self.history, self.usage)
 
     async def run_turn(self, prompt: str, event_stream_handler=None) -> str:
         """Run the agent until it produces a final text answer, looping through
@@ -46,6 +60,7 @@ class Harness:
             )
             self.history = result.all_messages()
             self.usage += result.usage
+            self._persist()
             if isinstance(result.output, DeferredToolRequests):
                 deferred_results = await resolve_approvals(
                     result.output, self.deps.mode, self.deps.request_approval

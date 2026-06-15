@@ -69,6 +69,50 @@ async def test_run_turn_accumulates_token_usage(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_run_turn_persists_to_store(tmp_path: Path):
+    from marim_harness.session import SessionStore
+
+    (tmp_path / "a.txt").write_text("foo")
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    store = SessionStore(tmp_path / "ws", base_dir=tmp_path / "data")
+    harness = Harness(
+        model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
+        instructions="x", store=store,
+    )
+    await harness.run_turn("change foo to bar")
+    messages, usage = store.load()
+    assert len(messages) > 0
+    assert usage.total_tokens == harness.total_tokens
+
+
+@pytest.mark.anyio
+async def test_resume_restores_history_and_tokens(tmp_path: Path):
+    from marim_harness.session import SessionStore
+
+    (tmp_path / "a.txt").write_text("foo")
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    store = SessionStore(tmp_path / "ws", base_dir=tmp_path / "data")
+    first = Harness(
+        model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
+        instructions="x", store=store,
+    )
+    await first.run_turn("change foo to bar")
+    saved_count = len(first.history)
+    saved_tokens = first.total_tokens
+
+    # A brand-new harness on the same store resumes the prior conversation.
+    second = Harness(
+        model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
+        instructions="x", store=store,
+    )
+    assert second.history == []  # nothing until we resume
+    restored = second.resume()
+    assert restored == saved_count
+    assert len(second.history) == saved_count
+    assert second.total_tokens == saved_tokens
+
+
+@pytest.mark.anyio
 async def test_ask_mode_calls_back(tmp_path: Path):
     (tmp_path / "a.txt").write_text("foo")
     asked = []
