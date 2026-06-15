@@ -29,7 +29,6 @@ class HarnessApp(App):
     .user-msg { color: $accent; text-style: bold; margin-top: 1; }
     AssistantMessage { margin: 0 0 1 0; }
     ToolCallWidget { margin: 0 0 1 0; }
-    Input { dock: bottom; }
     """
     BINDINGS = [("ctrl+t", "cycle_mode", "Cycle mode")]
 

@@ -65,14 +65,17 @@ async def test_log_and_input_both_visible(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
-        from textual.widgets import Input
+        from textual.widgets import Footer, Input
 
         status = app.query_one("#status-bar")
         inp = app.query_one(Input)
+        footer = app.query_one(Footer)
         assert status.size.height >= 1
         assert inp.size.height >= 1
         # they occupy different rows
         assert status.region.y != inp.region.y
+        # the input must not overlap the footer (its last row stays above it)
+        assert inp.region.bottom <= footer.region.y
 
 
 @pytest.mark.anyio
