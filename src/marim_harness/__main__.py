@@ -1,10 +1,8 @@
 import argparse
 from pathlib import Path
 
-from dotenv import load_dotenv
-
 from .agent import Harness, make_summarizer, make_titler
-from .config import ModelSource, build_model, load_config
+from .config import ModelSource, build_model, load_config, load_environment
 from .deps import Deps
 from .permissions import Mode
 from .session import SessionManager
@@ -19,9 +17,10 @@ _INSTRUCTIONS = (
 
 
 def main() -> None:
-    # Load .env from the current directory (or a parent) so keys can live in a
-    # file instead of the shell. Real environment variables still take priority.
-    load_dotenv()
+    # Load the project-local .env (cwd/parents), falling back to the global
+    # config (~/.config/marim/.env) so `marim` works from any directory. Real
+    # environment variables still take priority.
+    load_environment()
     parser = argparse.ArgumentParser(prog="marim")
     parser.add_argument(
         "workspace", nargs="?", default=None,
