@@ -56,7 +56,7 @@ _WELCOME = (
 class HarnessApp(App):
     CSS = """
     #log { height: 1fr; padding: 0 1; }
-    PromptInput { height: 1; max-height: 10; border: none; padding: 0 1; }
+    PromptInput { height: 3; max-height: 10; border: none; padding: 0 1; }
     #status-bar { height: 1; background: $panel; color: $text-muted; padding: 0 1; }
     .user-msg { color: $accent; text-style: bold; margin-top: 1; }
     .error-msg { color: $error; text-style: bold; margin: 1 0; }
