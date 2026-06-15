@@ -56,9 +56,18 @@ class HarnessApp(App):
 
     async def on_mount(self) -> None:
         self.title = "marim-harness"
-        welcome = AssistantMessage()
-        await self.query_one("#log", VerticalScroll).mount(welcome)
-        welcome.append(_WELCOME)
+        banner = AssistantMessage()
+        await self.query_one("#log", VerticalScroll).mount(banner)
+        if self.harness.history:
+            n = len(self.harness.history)
+            tokens = self.harness.total_tokens
+            banner.append(
+                f"**Resumed session** — {n} messages, {tokens} tokens restored. "
+                "Past messages aren't re-rendered, but the agent remembers them.\n\n"
+                "Type a message to continue."
+            )
+        else:
+            banner.append(_WELCOME)
 
     def _status_text(self) -> str:
         cfg = getattr(self.harness, "model_label", "model")
