@@ -31,6 +31,12 @@ class BuiltinToolProvider:
             return fs.glob_files(ctx.deps.workspace_root, pattern)
 
         @agent.tool
+        def tree(ctx: RunContext[Deps], path: str = ".", depth: int = 2) -> str:
+            """Show a directory tree. `depth=1` lists one level (like ls); higher
+            descends further. Noise dirs (.git, node_modules, …) aren't expanded."""
+            return fs.tree(ctx.deps.workspace_root, path, depth)
+
+        @agent.tool
         def grep(ctx: RunContext[Deps], pattern: str, path: Optional[str] = None) -> str:
             """Search file contents for a regex. Optionally scope to `path`."""
             return fs.grep(ctx.deps.workspace_root, pattern, path)
@@ -42,10 +48,12 @@ class BuiltinToolProvider:
 
         @agent.tool(requires_approval=True)
         def edit_file(
-            ctx: RunContext[Deps], path: str, old_string: str, new_string: str
+            ctx: RunContext[Deps], path: str, edits: list[fs.Edit]
         ) -> str:
-            """Replace the unique occurrence of `old_string` with `new_string`."""
-            return fs.edit_file(ctx.deps.workspace_root, path, old_string, new_string)
+            """Apply one or more find/replace edits to a file, in order and
+            all-or-nothing. Each edit is {old_string, new_string, replace_all?};
+            old_string must match exactly once unless replace_all is set."""
+            return fs.edit_file(ctx.deps.workspace_root, path, edits)
 
         @agent.tool(requires_approval=True, timeout=_BASH_TIMEOUT)
         async def bash(ctx: RunContext[Deps], command: str) -> str:

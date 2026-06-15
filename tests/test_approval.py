@@ -41,11 +41,29 @@ async def test_deny_returns_false():
 def test_format_detail_edit_shows_diff():
     detail = format_detail(
         "edit_file",
-        {"path": "a.txt", "old_string": "foo", "new_string": "bar"},
+        {"path": "a.txt", "edits": [{"old_string": "foo", "new_string": "bar"}]},
     )
     assert "a.txt" in detail
     assert "- foo" in detail
     assert "+ bar" in detail
+    assert "edit 1" not in detail  # single edit isn't numbered
+
+
+def test_format_detail_edit_numbers_multiple_edits():
+    detail = format_detail(
+        "edit_file",
+        {
+            "path": "a.txt",
+            "edits": [
+                {"old_string": "foo", "new_string": "bar"},
+                {"old_string": "baz", "new_string": "qux"},
+            ],
+        },
+    )
+    assert "edit 1" in detail
+    assert "edit 2" in detail
+    assert "- foo" in detail
+    assert "+ qux" in detail
 
 
 def test_format_detail_bash_shows_command():

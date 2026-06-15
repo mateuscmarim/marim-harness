@@ -21,7 +21,10 @@ def _edit_then_done_model() -> FunctionModel:
                 parts=[
                     ToolCallPart(
                         tool_name="edit_file",
-                        args={"path": "a.txt", "old_string": "foo", "new_string": "bar"},
+                        args={
+                            "path": "a.txt",
+                            "edits": [{"old_string": "foo", "new_string": "bar"}],
+                        },
                     )
                 ]
             )
