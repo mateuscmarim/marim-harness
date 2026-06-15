@@ -93,6 +93,57 @@ async def test_failed_turn_shows_error_and_keeps_running(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_cancel_turn_aborts_and_shows_message(tmp_path: Path):
+    import asyncio
+
+    from textual.widgets import Input
+
+    from marim_harness.tui.widgets import ErrorMessage
+
+    app = _app(tmp_path)
+    started = asyncio.Event()
+
+    async def hang(*a, **k):
+        started.set()
+        await asyncio.sleep(3600)
+
+    app.harness.run_turn = hang  # type: ignore[method-assign]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        inp = app.query_one(Input)
+        await app.on_input_submitted(Input.Submitted(inp, "do something slow"))
+        for _ in range(50):
+            await pilot.pause()
+            if started.is_set():
+                break
+        assert app._busy is True
+
+        app.action_cancel_turn()
+        for _ in range(50):
+            await pilot.pause()
+            if not app._busy:
+                break
+
+        assert app._busy is False
+        assert app.is_running is True
+        errors = list(app.query(ErrorMessage))
+        assert any("cancel" in str(e.render()).lower() for e in errors)
+
+
+@pytest.mark.anyio
+async def test_cancel_when_idle_is_a_noop(tmp_path: Path):
+    from marim_harness.tui.widgets import ErrorMessage
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_cancel_turn()  # nothing running
+        await pilot.pause()
+        assert app.is_running is True
+        assert list(app.query(ErrorMessage)) == []
+
+
+@pytest.mark.anyio
 async def test_status_bar_shows_busy_indicator(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:

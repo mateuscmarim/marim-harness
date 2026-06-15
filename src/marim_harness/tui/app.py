@@ -1,3 +1,5 @@
+from asyncio import CancelledError
+
 from pydantic_ai import ToolDenied
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
@@ -31,7 +33,10 @@ class HarnessApp(App):
     AssistantMessage { margin: 0 0 1 0; }
     ToolCallWidget { margin: 0 0 1 0; }
     """
-    BINDINGS = [("ctrl+t", "cycle_mode", "Cycle mode")]
+    BINDINGS = [
+        ("ctrl+t", "cycle_mode", "Cycle mode"),
+        ("escape", "cancel_turn", "Cancel turn"),
+    ]
 
     def __init__(self, harness: Harness) -> None:
         super().__init__()
@@ -40,6 +45,7 @@ class HarnessApp(App):
         self._current_assistant: AssistantMessage | None = None
         self._tool_widgets: dict[str, ToolCallWidget] = {}
         self._busy = False
+        self._turn_worker = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -71,6 +77,10 @@ class HarnessApp(App):
         self.harness.deps.mode = self.harness.deps.mode.cycle()
         self._refresh_status()
 
+    def action_cancel_turn(self) -> None:
+        if self._busy and self._turn_worker is not None:
+            self._turn_worker.cancel()
+
     async def _request_approval(self, call) -> object:
         approved = await self.push_screen_wait(
             ApprovalModal(call.tool_name, call.args_as_dict())
@@ -88,17 +98,24 @@ class HarnessApp(App):
         log = self.query_one("#log", VerticalScroll)
         await log.mount(UserMessage(text))
         self._current_assistant = None
-        self.run_worker(self._run_turn(text), exclusive=True)
+        self._turn_worker = self.run_worker(self._run_turn(text), exclusive=True)
 
     async def _run_turn(self, text: str) -> None:
         self._set_busy(True)
+        log = self.query_one("#log", VerticalScroll)
         try:
             await self.harness.run_turn(text, event_stream_handler=self._on_events)
+        except CancelledError:
+            # User pressed escape; mount synchronously (we are unwinding) and
+            # let the worker finish as cancelled.
+            log.mount(ErrorMessage("turn cancelled"))
+            log.scroll_end(animate=False)
+            raise
         except Exception as exc:  # keep the session alive on any turn failure
-            log = self.query_one("#log", VerticalScroll)
             await log.mount(ErrorMessage(f"{type(exc).__name__}: {exc}"))
             log.scroll_end(animate=False)
         finally:
+            self._turn_worker = None
             self._set_busy(False)
 
     async def _on_events(self, ctx, events) -> None:
