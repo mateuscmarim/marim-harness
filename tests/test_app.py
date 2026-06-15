@@ -44,6 +44,30 @@ async def test_status_bar_shows_token_count(tmp_path: Path):
         assert "20 tokens" in str(bar.render())
 
 
+def _submit(app, text):
+    from textual.widgets import Input
+
+    inp = app.query_one(Input)
+    inp.value = text
+    return app.on_input_submitted(Input.Submitted(inp, text))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("cmd", ["/exit", "/quit", "  /exit  "])
+async def test_exit_command_quits_app(tmp_path: Path, cmd: str):
+    app = _app(tmp_path)
+    exited = []
+    app.exit = lambda *a, **k: exited.append(True)  # type: ignore[method-assign]
+    started = []
+    app.run_worker = lambda *a, **k: started.append(a)  # type: ignore[method-assign]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _submit(app, cmd)
+        await pilot.pause()
+    assert exited == [True]
+    assert started == []  # never sent to the model as a prompt
+
+
 @pytest.mark.anyio
 async def test_status_bar_shows_busy_indicator(tmp_path: Path):
     app = _app(tmp_path)
