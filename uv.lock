@@ -1624,6 +1624,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic-ai" },
+    { name = "python-dotenv" },
     { name = "textual" },
 ]
 
@@ -1637,6 +1638,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "pydantic-ai", specifier = ">=1.107,<2" },
+    { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "textual", specifier = ">=0.80" },
 ]
 

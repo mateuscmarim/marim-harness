@@ -5,6 +5,7 @@ description = "A terminal coding agent on Pydantic AI + Textual"
 requires-python = ">=3.10"
 dependencies = [
     "pydantic-ai>=1.107,<2",
+    "python-dotenv>=1.2.2",
     "textual>=0.80",
 ]
 
