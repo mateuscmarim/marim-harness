@@ -206,6 +206,60 @@ async def test_resumed_session_shows_banner(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_resume_replays_history_into_log(tmp_path: Path):
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ModelResponse,
+        TextPart,
+        ToolCallPart,
+        ToolReturnPart,
+        UserPromptPart,
+    )
+
+    from marim_harness.tui.widgets import (
+        AssistantMessage,
+        ToolCallWidget,
+        UserMessage,
+    )
+
+    app = _app(tmp_path)
+    app.harness.history = [
+        ModelRequest(parts=[UserPromptPart(content="read app.py")]),
+        ModelResponse(
+            parts=[
+                TextPart(content="Let me look."),
+                ToolCallPart(
+                    tool_name="read_file", args={"path": "app.py"}, tool_call_id="t1"
+                ),
+            ]
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="read_file", content="1\tprint(1)", tool_call_id="t1"
+                )
+            ]
+        ),
+        ModelResponse(parts=[TextPart(content="It prints 1.")]),
+    ]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        users = [str(w.render()) for w in app.query(UserMessage)]
+        assert any("read app.py" in u for u in users)
+
+        tools = list(app.query(ToolCallWidget))
+        assert len(tools) == 1
+        assert tools[0].status == "done"
+        assert "print(1)" in tools[0].result_text
+
+        assistant = " ".join(w.text for w in app.query(AssistantMessage))
+        assert "Let me look." in assistant
+        assert "It prints 1." in assistant
+        assert "resumed" in assistant.lower()  # banner still shown
+
+
+@pytest.mark.anyio
 async def test_mode_keybinding_cycles(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
