@@ -11,7 +11,8 @@ class Harness:
     """Owns the Pydantic AI agent and drives one user turn to completion,
     resolving deferred tool approvals by the current mode."""
 
-    def __init__(self, model, provider: ToolProvider, deps: Deps, instructions: str):
+    def __init__(self, model, provider: ToolProvider, deps: Deps, instructions: str,
+                 model_label: str = "model"):
         self.agent = Agent(
             model,
             deps_type=Deps,
@@ -21,6 +22,7 @@ class Harness:
         provider.register(self.agent)
         self.deps = deps
         self.history: list = []
+        self.model_label = model_label
 
     async def run_turn(self, prompt: str, event_stream_handler=None) -> str:
         """Run the agent until it produces a final text answer, looping through
