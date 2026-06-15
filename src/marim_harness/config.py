@@ -12,6 +12,7 @@ class ModelConfig:
     model: str
     base_url: Optional[str] = None
     api_key: Optional[str] = None
+    max_context_tokens: int = 100_000
 
 
 def load_config() -> ModelConfig:
@@ -21,19 +22,32 @@ def load_config() -> ModelConfig:
     OPENROUTER_API_KEY / MARIM_API_KEY.
     """
     provider = os.getenv("MARIM_PROVIDER", "openrouter").lower()
+    max_context_tokens = _int_env("MARIM_MAX_CONTEXT_TOKENS", 100_000)
     if provider == "local":
         return ModelConfig(
             provider="local",
             model=os.getenv("MARIM_MODEL", _DEFAULT_LOCAL_MODEL),
             base_url=os.getenv("MARIM_BASE_URL", "http://localhost:11434/v1"),
             api_key=os.getenv("MARIM_API_KEY", "local"),
+            max_context_tokens=max_context_tokens,
         )
     return ModelConfig(
         provider="openrouter",
         model=os.getenv("MARIM_MODEL", _DEFAULT_OPENROUTER_MODEL),
         base_url=None,
         api_key=os.getenv("OPENROUTER_API_KEY") or os.getenv("MARIM_API_KEY"),
+        max_context_tokens=max_context_tokens,
     )
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
 
 
 def build_model(cfg: ModelConfig):

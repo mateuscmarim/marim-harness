@@ -260,6 +260,23 @@ async def test_resume_replays_history_into_log(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_compaction_shows_notice_in_log(tmp_path: Path):
+    from marim_harness.tui.widgets import NoticeMessage
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Simulate the harness reporting a compaction mid-turn.
+        app.harness.on_compact(40, 10)
+        await pilot.pause()
+        notices = list(app.query(NoticeMessage))
+        assert len(notices) == 1
+        text = str(notices[0].render())
+        assert "40" in text and "10" in text
+        assert "compact" in text.lower()
+
+
+@pytest.mark.anyio
 async def test_mode_keybinding_cycles(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:

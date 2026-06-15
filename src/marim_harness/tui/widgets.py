@@ -94,6 +94,13 @@ class ErrorMessage(Static):
         super().__init__(f"⚠ {text}", classes="error-msg")
 
 
+class NoticeMessage(Static):
+    """A low-key system note in the log (e.g. history was compacted)."""
+
+    def __init__(self, text: str) -> None:
+        super().__init__(f"• {text}", classes="notice-msg")
+
+
 class AssistantMessage(Markdown):
     """Streaming assistant text rendered as Markdown; append deltas as they
     arrive and the view re-renders."""

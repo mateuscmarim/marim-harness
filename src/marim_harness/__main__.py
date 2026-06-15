@@ -44,6 +44,7 @@ def main() -> None:
         instructions=_INSTRUCTIONS,
         model_label=f"{cfg.provider}/{cfg.model}",
         store=SessionStore(workspace),
+        max_context_tokens=cfg.max_context_tokens,
     )
     if args.resume:
         harness.resume()

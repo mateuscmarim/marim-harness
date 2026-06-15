@@ -113,6 +113,55 @@ async def test_resume_restores_history_and_tokens(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_run_turn_compacts_when_over_budget(tmp_path: Path):
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ModelResponse,
+        TextPart,
+        UserPromptPart,
+    )
+
+    (tmp_path / "a.txt").write_text("foo")
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    # Tiny budget forces compaction; keep_last small so a tail survives.
+    harness = Harness(
+        model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
+        instructions="x", max_context_tokens=1, keep_last_messages=4,
+    )
+    notices = []
+    harness.on_compact = lambda before, after: notices.append((before, after))
+
+    # Seed a long prior history of clean user turns.
+    for i in range(30):
+        harness.history.append(
+            ModelRequest(parts=[UserPromptPart(content=f"old prompt {i}")])
+        )
+        harness.history.append(ModelResponse(parts=[TextPart(content=f"old answer {i}")]))
+    before = len(harness.history)
+
+    await harness.run_turn("change foo to bar")
+
+    assert notices, "on_compact should fire when history is over budget"
+    before_n, after_n = notices[0]
+    assert before_n == before
+    assert after_n < before_n
+
+
+@pytest.mark.anyio
+async def test_run_turn_does_not_compact_under_budget(tmp_path: Path):
+    (tmp_path / "a.txt").write_text("foo")
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    harness = Harness(
+        model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
+        instructions="x", max_context_tokens=1_000_000,
+    )
+    notices = []
+    harness.on_compact = lambda before, after: notices.append((before, after))
+    await harness.run_turn("change foo to bar")
+    assert notices == []
+
+
+@pytest.mark.anyio
 async def test_ask_mode_calls_back(tmp_path: Path):
     (tmp_path / "a.txt").write_text("foo")
     asked = []
