@@ -1,9 +1,9 @@
 from pathlib import Path
 
 import pytest
+from pydantic_ai import ModelRetry
 
 from marim_harness.tools import fs
-from pydantic_ai import ModelRetry
 
 
 def test_read_file_adds_line_numbers(tmp_path: Path):
