@@ -145,8 +145,10 @@ class HarnessApp(App):
             ctx = f"[red]{ctx}[/]"
         elif pct >= 75:
             ctx = f"[yellow]{ctx}[/]"
+        name = getattr(self.harness, "session_name", None)
+        prefix = f"{name} · " if name else ""
         base = (
-            f"{self.harness.deps.mode.value} · {cfg} · {ctx} · "
+            f"{prefix}{self.harness.deps.mode.value} · {cfg} · {ctx} · "
             f"{_human_tokens(spent)} tokens"
         )
         return f"{base} · working…" if self._busy else base
@@ -184,9 +186,9 @@ class HarnessApp(App):
         msg.append(markdown)
         log.scroll_end(animate=False)
 
-    async def reset_conversation(self) -> None:
-        """Wipe the conversation and re-show the welcome screen (the /clear cmd)."""
-        self.harness.reset()
+    async def _render_session(self, note: str) -> None:
+        """Rebuild the log for a fresh view of the active session: banner, an
+        intro note, then a replay of any restored history."""
         self._current_assistant = None
         self._tool_widgets.clear()
         log = self.query_one("#log", VerticalScroll)
@@ -194,9 +196,30 @@ class HarnessApp(App):
         await log.mount(Static(_BANNER, id="banner", markup=False))
         intro = AssistantMessage()
         await log.mount(intro)
-        intro.append(_WELCOME)
+        intro.append(note)
+        if self.harness.history:
+            await self._replay_history(log)
         self._refresh_status()
         log.scroll_end(animate=False)
+
+    async def reset_conversation(self) -> None:
+        """Wipe the conversation and re-show the welcome screen (the /clear cmd)."""
+        self.harness.reset()
+        await self._render_session(_WELCOME)
+
+    async def start_new_session(self, name: str | None = None) -> None:
+        """Begin a fresh named session, leaving existing ones on disk."""
+        self.harness.new_session(name)
+        label = self.harness.session_name or "new session"
+        await self._render_session(f"**New session** — `{label}`.")
+
+    async def switch_to_session_id(self, session_id: str) -> None:
+        """Load an existing session and show where it left off."""
+        n = self.harness.switch_session(session_id)
+        label = self.harness.session_name or session_id
+        await self._render_session(
+            f"**Switched to** `{label}` — {n} messages restored."
+        )
 
     async def _request_approval(self, call) -> object:
         approved = await self.push_screen_wait(

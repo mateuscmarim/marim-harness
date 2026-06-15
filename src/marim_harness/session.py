@@ -1,6 +1,9 @@
 import hashlib
 import json
 import os
+import re
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -13,20 +16,58 @@ def _default_base_dir() -> Path:
     return Path(base) / "marim-harness" / "sessions"
 
 
-class SessionStore:
-    """Persists one conversation per workspace to a JSON file in a central data
-    directory, so a session can be resumed across launches."""
+def _workspace_dir(base: Path, workspace_root: Path) -> Path:
+    """A per-workspace directory holding one JSON file per named session."""
+    digest = hashlib.sha256(str(workspace_root).encode()).hexdigest()[:12]
+    return Path(base) / f"{workspace_root.name}-{digest}"
 
-    def __init__(self, workspace_root, base_dir: Optional[Path] = None) -> None:
+
+def _slugify(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return slug or "session"
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _now_slug() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+
+
+def _total_tokens(tok: dict) -> int:
+    return tok.get("input", 0) + tok.get("output", 0)
+
+
+@dataclass
+class SessionInfo:
+    """Lightweight summary of a saved session, for listing and picking."""
+
+    id: str
+    name: str
+    updated: str
+    message_count: int
+    tokens: int
+
+
+class SessionStore:
+    """Persists one named conversation to a JSON file, so it can be resumed
+    across launches. Created by a :class:`SessionManager`, which decides the
+    path, id, and name."""
+
+    def __init__(self, path, workspace_root, session_id: str, name: str) -> None:
+        self.path = Path(path)
         self.workspace_root = Path(workspace_root).resolve()
-        self._base = Path(base_dir) if base_dir is not None else _default_base_dir()
-        digest = hashlib.sha256(str(self.workspace_root).encode()).hexdigest()[:12]
-        self.path = self._base / f"{self.workspace_root.name}-{digest}.json"
+        self.session_id = session_id
+        self.name = name
 
     def save(self, history: list, usage: RunUsage) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
+            "id": self.session_id,
+            "name": self.name,
             "workspace": str(self.workspace_root),
+            "updated": _now(),
             "tokens": {
                 "input": usage.input_tokens,
                 "output": usage.output_tokens,
@@ -51,3 +92,82 @@ class SessionStore:
 
     def clear(self) -> None:
         self.path.unlink(missing_ok=True)
+
+
+class SessionManager:
+    """Owns the named sessions for one workspace: lists them, opens an existing
+    one, and creates new ones with unique ids."""
+
+    def __init__(self, workspace_root, base_dir: Optional[Path] = None) -> None:
+        self.workspace_root = Path(workspace_root).resolve()
+        base = Path(base_dir) if base_dir is not None else _default_base_dir()
+        self.dir = _workspace_dir(base, self.workspace_root)
+        # Ids handed out this process but not yet written to disk, so two
+        # create() calls in a row can't collide before the first save.
+        self._reserved: set[str] = set()
+
+    def _path(self, session_id: str) -> Path:
+        return self.dir / f"{session_id}.json"
+
+    def list(self) -> list[SessionInfo]:
+        """All saved sessions for this workspace, newest first."""
+        infos: list[SessionInfo] = []
+        if not self.dir.exists():
+            return infos
+        for path in self.dir.glob("*.json"):
+            try:
+                data = json.loads(path.read_text())
+            except (json.JSONDecodeError, OSError):
+                continue  # skip a corrupt or half-written file
+            infos.append(
+                SessionInfo(
+                    id=data.get("id", path.stem),
+                    name=data.get("name", path.stem),
+                    updated=data.get("updated", ""),
+                    message_count=len(data.get("messages", [])),
+                    tokens=_total_tokens(data.get("tokens", {})),
+                )
+            )
+        infos.sort(key=lambda info: info.updated, reverse=True)
+        return infos
+
+    def store(self, session_id: str, name: Optional[str] = None) -> SessionStore:
+        """Open the store for an existing (or known) session id. Recovers the
+        display name from the saved file when not given one."""
+        if name is None:
+            path = self._path(session_id)
+            if path.exists():
+                try:
+                    name = json.loads(path.read_text()).get("name")
+                except (json.JSONDecodeError, OSError):
+                    name = None
+            if name is None:
+                name = session_id
+        self._reserved.add(session_id)
+        return SessionStore(self._path(session_id), self.workspace_root, session_id, name)
+
+    def create(self, name: Optional[str] = None) -> SessionStore:
+        """Start a new session. The id is a slug of ``name`` (or a timestamp);
+        the display name is ``name`` verbatim (or that timestamp slug)."""
+        if name:
+            base_slug = _slugify(name)
+            display = name
+        else:
+            base_slug = _now_slug()
+            display = base_slug
+        return self.store(self._unique_id(base_slug), display)
+
+    def _unique_id(self, base: str) -> str:
+        candidate = base
+        suffix = 2
+        while candidate in self._reserved or self._path(candidate).exists():
+            candidate = f"{base}-{suffix}"
+            suffix += 1
+        return candidate
+
+    def latest(self) -> Optional[SessionInfo]:
+        infos = self.list()
+        return infos[0] if infos else None
+
+    def delete(self, session_id: str) -> None:
+        self._path(session_id).unlink(missing_ok=True)

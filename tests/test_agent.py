@@ -70,11 +70,11 @@ async def test_run_turn_accumulates_token_usage(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_run_turn_persists_to_store(tmp_path: Path):
-    from marim_harness.session import SessionStore
+    from marim_harness.session import SessionManager
 
     (tmp_path / "a.txt").write_text("foo")
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
-    store = SessionStore(tmp_path / "ws", base_dir=tmp_path / "data")
+    store = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data").create()
     harness = Harness(
         model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
         instructions="x", store=store,
@@ -87,11 +87,11 @@ async def test_run_turn_persists_to_store(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_resume_restores_history_and_tokens(tmp_path: Path):
-    from marim_harness.session import SessionStore
+    from marim_harness.session import SessionManager
 
     (tmp_path / "a.txt").write_text("foo")
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
-    store = SessionStore(tmp_path / "ws", base_dir=tmp_path / "data")
+    store = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data").create()
     first = Harness(
         model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
         instructions="x", store=store,
@@ -110,6 +110,38 @@ async def test_resume_restores_history_and_tokens(tmp_path: Path):
     assert restored == saved_count
     assert len(second.history) == saved_count
     assert second.total_tokens == saved_tokens
+
+
+@pytest.mark.anyio
+async def test_session_switch_preserves_each_conversation(tmp_path: Path):
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    from marim_harness.session import SessionManager
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
+    harness = Harness(
+        model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
+        instructions="x", store=manager.create("alpha"), manager=manager,
+    )
+    harness.history = [ModelRequest(parts=[UserPromptPart(content="in alpha")])]
+    harness._persist()
+    alpha_id = harness.store.session_id
+
+    # A fresh session starts empty without disturbing alpha.
+    harness.new_session("beta")
+    assert harness.session_name == "beta"
+    assert harness.history == []
+    harness._persist()
+
+    names = {info.name for info in harness.sessions()}
+    assert {"alpha", "beta"} <= names
+
+    # Switching back restores alpha's conversation.
+    restored = harness.switch_session(alpha_id)
+    assert restored == 1
+    assert harness.session_name == "alpha"
+    assert harness.history[0].parts[0].content == "in alpha"
 
 
 @pytest.mark.anyio

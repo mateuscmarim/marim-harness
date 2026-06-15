@@ -7,7 +7,7 @@ from .agent import Harness, make_summarizer
 from .config import build_model, load_config
 from .deps import Deps
 from .permissions import Mode
-from .session import SessionStore
+from .session import SessionManager
 from .tools.provider import BuiltinToolProvider
 from .tui.app import HarnessApp
 
@@ -37,13 +37,19 @@ def main() -> None:
     cfg = load_config()
     model = build_model(cfg)
     deps = Deps(workspace_root=workspace, mode=Mode.ask)
+
+    manager = SessionManager(workspace)
+    latest = manager.latest() if args.resume else None
+    store = manager.store(latest.id) if latest is not None else manager.create()
+
     harness = Harness(
         model=model,
         provider=BuiltinToolProvider(),
         deps=deps,
         instructions=_INSTRUCTIONS,
         model_label=f"{cfg.provider}/{cfg.model}",
-        store=SessionStore(workspace),
+        store=store,
+        manager=manager,
         max_context_tokens=cfg.max_context_tokens,
         summarizer=make_summarizer(model),
     )

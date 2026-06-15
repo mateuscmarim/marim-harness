@@ -162,10 +162,10 @@ async def test_slash_mode_no_arg_cycles(tmp_path: Path):
 async def test_slash_clear_resets_conversation(tmp_path: Path):
     from pydantic_ai.messages import ModelRequest, UserPromptPart
 
-    from marim_harness.session import SessionStore
+    from marim_harness.session import SessionManager
 
     app = _app(tmp_path)
-    store = SessionStore(tmp_path / "ws", base_dir=tmp_path / "data")
+    store = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data").create()
     app.harness.store = store
     app.harness.history = [ModelRequest(parts=[UserPromptPart(content="old")])]
     app.harness._persist()
@@ -453,3 +453,78 @@ async def test_on_events_mounts_and_finishes_tool_widget(tmp_path: Path):
         assert widget in log.walk_children()
         assert widget.status == "done"
         assert "1\tfoo" in widget.result_text
+
+
+def _app_with_manager(tmp_path: Path) -> HarnessApp:
+    from pydantic_ai.models.test import TestModel
+
+    from marim_harness.agent import Harness
+    from marim_harness.session import SessionManager
+    from marim_harness.tools.provider import BuiltinToolProvider
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
+    store = manager.create("main")
+    harness = Harness(
+        TestModel(call_tools=[]), BuiltinToolProvider(), deps,
+        instructions="test", store=store, manager=manager,
+    )
+    return HarnessApp(harness)
+
+
+@pytest.mark.anyio
+async def test_new_command_starts_named_session(tmp_path: Path):
+    app = _app_with_manager(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _submit(app, "/new project-x")
+        await pilot.pause()
+        assert app.harness.session_name == "project-x"
+        assert "new session" in _log_text(app).lower()
+
+
+@pytest.mark.anyio
+async def test_sessions_command_lists_saved(tmp_path: Path):
+    app = _app_with_manager(tmp_path)
+    app.harness.new_session("first")
+    app.harness._persist()
+    app.harness.new_session("second")
+    app.harness._persist()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _submit(app, "/sessions")
+        await pilot.pause()
+        text = _log_text(app)
+        assert "first" in text
+        assert "second" in text
+
+
+@pytest.mark.anyio
+async def test_switch_command_loads_session(tmp_path: Path):
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    app = _app_with_manager(tmp_path)
+    app.harness.new_session("alpha")
+    app.harness.history = [ModelRequest(parts=[UserPromptPart(content="hello alpha")])]
+    app.harness._persist()
+    app.harness.new_session("beta")
+    app.harness._persist()
+    assert app.harness.history == []
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _submit(app, "/switch alpha")
+        await pilot.pause()
+        assert app.harness.session_name == "alpha"
+        assert len(app.harness.history) == 1
+        assert "switched to" in _log_text(app).lower()
+
+
+@pytest.mark.anyio
+async def test_switch_unknown_reports_error(tmp_path: Path):
+    app = _app_with_manager(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _submit(app, "/switch nope")
+        await pilot.pause()
+        assert "no session matches" in _log_text(app).lower()
