@@ -109,6 +109,22 @@ async def test_user_message_has_user_class():
 
 
 @pytest.mark.anyio
+async def test_error_message_has_error_class_and_text():
+    from marim_harness.tui.widgets import ErrorMessage
+
+    class H(App):
+        def compose(self) -> ComposeResult:
+            yield ErrorMessage("rate limited (429)")
+
+    app = H()
+    async with app.run_test() as pilot:
+        w = app.query_one(ErrorMessage)
+        await pilot.pause()
+        assert w.has_class("error-msg")
+        assert "rate limited (429)" in str(w.render())
+
+
+@pytest.mark.anyio
 async def test_assistant_message_is_markdown_and_accumulates():
     class H(App):
         def compose(self) -> ComposeResult:

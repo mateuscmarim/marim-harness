@@ -69,6 +69,30 @@ async def test_exit_command_quits_app(tmp_path: Path, cmd: str):
 
 
 @pytest.mark.anyio
+async def test_failed_turn_shows_error_and_keeps_running(tmp_path: Path):
+    from marim_harness.tui.widgets import ErrorMessage
+
+    app = _app(tmp_path)
+
+    async def boom(*a, **k):
+        raise RuntimeError("upstream exploded")
+
+    app.harness.run_turn = boom  # type: ignore[method-assign]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("hello")
+        await pilot.pause()
+        # the app survives the failure
+        assert app.is_running is True
+        # busy indicator is cleared
+        assert "working" not in str(app.query_one("#status-bar").render()).lower()
+        # an error is rendered in the log
+        errors = list(app.query(ErrorMessage))
+        assert len(errors) == 1
+        assert "upstream exploded" in str(errors[0].render())
+
+
+@pytest.mark.anyio
 async def test_status_bar_shows_busy_indicator(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
