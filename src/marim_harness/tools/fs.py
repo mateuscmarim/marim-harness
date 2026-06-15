@@ -2,11 +2,19 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from pydantic import BaseModel
 from pydantic_ai import ModelRetry
 
 from ..workspace import WorkspaceError, resolve_in_workspace
 
 _MAX_GREP_HITS = 200
+_MAX_TREE_ENTRIES = 500
+
+# Directories that are almost always noise in a tree view: listed, never expanded.
+_TREE_SKIP_DIRS = {
+    ".git", "node_modules", "__pycache__", ".venv", ".mypy_cache",
+    ".pytest_cache", ".ruff_cache", "dist", "build", ".egg-info",
+}
 
 
 def _safe(root: Path, path: str) -> Path:
@@ -33,23 +41,82 @@ def write_file(root: Path, path: str, content: str) -> str:
     return f"wrote {path} ({len(content)} bytes)"
 
 
-def edit_file(root: Path, path: str, old_string: str, new_string: str) -> str:
-    """Replace the unique occurrence of old_string with new_string."""
+class Edit(BaseModel):
+    """One find/replace within a file. ``replace_all`` swaps every occurrence;
+    otherwise ``old_string`` must match exactly once."""
+
+    old_string: str
+    new_string: str
+    replace_all: bool = False
+
+
+def _apply_edit(text: str, edit: Edit, path: str, index: int) -> str:
+    """Apply one edit to ``text``, raising ModelRetry (naming the edit) on a bad
+    match. ``index`` is 1-based for human-readable messages."""
+    count = text.count(edit.old_string)
+    if count == 0:
+        raise ModelRetry(
+            f"edit {index}: old_string not found in {path}. Read the file and copy "
+            f"an exact snippet (note earlier edits in this call may have changed it)."
+        )
+    if count > 1 and not edit.replace_all:
+        raise ModelRetry(
+            f"edit {index}: old_string found {count} times in {path}. Add surrounding "
+            f"context to make it unique, or set replace_all."
+        )
+    return text.replace(edit.old_string, edit.new_string)
+
+
+def edit_file(root: Path, path: str, edits: list[Edit]) -> str:
+    """Apply a list of edits to one file, in order and all-or-nothing. Each edit
+    sees the result of the previous one; the file is written only if all succeed."""
+    if not edits:
+        raise ModelRetry("no edits given: pass at least one {old_string, new_string}.")
     p = _safe(root, path)
     if not p.is_file():
         raise ModelRetry(f"not a file: {path}")
     text = p.read_text()
-    count = text.count(old_string)
-    if count == 0:
-        raise ModelRetry(
-            f"old_string not found in {path}. Read the file and copy an exact, unique snippet."
-        )
-    if count > 1:
-        raise ModelRetry(
-            f"old_string found {count} times in {path}. Add surrounding context to make it unique."
-        )
-    p.write_text(text.replace(old_string, new_string))
-    return f"edited {path}"
+    for i, edit in enumerate(edits, 1):
+        text = _apply_edit(text, edit, path, i)
+    p.write_text(text)
+    n = len(edits)
+    return f"edited {path} ({n} edit{'s' if n != 1 else ''})"
+
+
+def tree(root: Path, path: str = ".", depth: int = 2) -> str:
+    """Render an indented directory tree rooted at ``path``, descending up to
+    ``depth`` levels. Dirs sort first (with a trailing slash); known-noise dirs
+    are listed but not expanded."""
+    base = _safe(root, path)
+    if not base.is_dir():
+        raise ModelRetry(f"not a directory: {path}")
+    lines: list[str] = []
+    _walk_tree(base, depth, 0, lines)
+    if not lines:
+        return "(empty)"
+    if len(lines) > _MAX_TREE_ENTRIES:
+        lines = lines[:_MAX_TREE_ENTRIES] + ["(truncated)"]
+    return "\n".join(lines)
+
+
+def _walk_tree(directory: Path, depth: int, level: int, lines: list[str]) -> None:
+    """Append the entries of ``directory`` to ``lines``, recursing while depth
+    allows. Stops early once the entry cap is reached."""
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        return
+    entries.sort(key=lambda p: (p.is_file(), p.name.lower()))
+    indent = "  " * level
+    for entry in entries:
+        if len(lines) > _MAX_TREE_ENTRIES:
+            return
+        if entry.is_dir():
+            lines.append(f"{indent}{entry.name}/")
+            if entry.name not in _TREE_SKIP_DIRS and level + 1 < depth:
+                _walk_tree(entry, depth, level + 1, lines)
+        else:
+            lines.append(f"{indent}{entry.name}")
 
 
 def glob_files(root: Path, pattern: str) -> str:

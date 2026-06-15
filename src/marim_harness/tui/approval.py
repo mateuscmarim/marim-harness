@@ -7,11 +7,20 @@ from textual.widgets import Button, Static
 def format_detail(tool_name: str, args: dict) -> str:
     """Render a human-readable preview of what a tool call will do, instead of
     dumping the raw args dict."""
-    if tool_name == "edit_file" and "old_string" in args and "new_string" in args:
+    if tool_name == "edit_file" and isinstance(args.get("edits"), list):
         path = args.get("path", "?")
-        old = "\n".join(f"- {line}" for line in str(args["old_string"]).splitlines())
-        new = "\n".join(f"+ {line}" for line in str(args["new_string"]).splitlines())
-        return f"{path}\n\n{old}\n{new}"
+        edits = args["edits"]
+        blocks = []
+        for i, edit in enumerate(edits, 1):
+            old = "\n".join(
+                f"- {line}" for line in str(edit.get("old_string", "")).splitlines()
+            )
+            new = "\n".join(
+                f"+ {line}" for line in str(edit.get("new_string", "")).splitlines()
+            )
+            header = f"edit {i}:\n" if len(edits) > 1 else ""
+            blocks.append(f"{header}{old}\n{new}")
+        return f"{path}\n\n" + "\n\n".join(blocks)
     if tool_name in ("run_command", "bash") and "command" in args:
         return f"$ {args['command']}"
     if tool_name == "write_file" and "content" in args:
