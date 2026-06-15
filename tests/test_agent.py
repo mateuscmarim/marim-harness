@@ -112,6 +112,45 @@ async def test_resume_restores_history_and_tokens(tmp_path: Path):
     assert second.total_tokens == saved_tokens
 
 
+def _last_instructions(messages) -> str:
+    """The instructions attached to the current (most recent) request."""
+    result = ""
+    for message in messages:
+        instr = getattr(message, "instructions", None)
+        if instr:
+            result = instr
+    return result
+
+
+@pytest.mark.anyio
+async def test_project_instructions_injected_and_dynamic(tmp_path: Path):
+    captured: dict = {}
+
+    def fn(messages, info):
+        captured["instructions"] = _last_instructions(messages)
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    harness = Harness(
+        model=FunctionModel(fn), provider=BuiltinToolProvider(), deps=deps,
+        instructions="BASE PROMPT",
+    )
+
+    # No AGENTS.md yet -> only the base prompt reaches the model.
+    await harness.run_turn("hi")
+    assert "BASE PROMPT" in captured["instructions"]
+    assert "AGENTS.md" not in captured["instructions"]
+
+    # Adding the file changes what the very next turn sees (dynamic reload).
+    (tmp_path / "AGENTS.md").write_text("Always write docstrings.")
+    await harness.run_turn("hi again")
+    assert "Always write docstrings." in captured["instructions"]
+    # Base prompt still present and comes before the project instructions.
+    instr = captured["instructions"]
+    assert "BASE PROMPT" in instr
+    assert instr.index("BASE PROMPT") < instr.index("Always write docstrings.")
+
+
 @pytest.mark.anyio
 async def test_session_switch_preserves_each_conversation(tmp_path: Path):
     from pydantic_ai.messages import ModelRequest, UserPromptPart
