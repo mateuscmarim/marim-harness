@@ -11,7 +11,7 @@ from .compaction import (
 )
 from .deps import Deps
 from .permissions import resolve_approvals
-from .session import SessionStore
+from .session import SessionInfo, SessionManager, SessionStore
 from .tools.provider import ToolProvider
 
 _SUMMARY_INSTRUCTIONS = (
@@ -40,6 +40,7 @@ class Harness:
 
     def __init__(self, model, provider: ToolProvider, deps: Deps, instructions: str,
                  model_label: str = "model", store: Optional[SessionStore] = None,
+                 manager: Optional[SessionManager] = None,
                  max_context_tokens: int = 100_000, keep_last_messages: int = 20,
                  summarizer: Optional[Summarizer] = None):
         self.agent = Agent(
@@ -54,6 +55,7 @@ class Harness:
         self.model_label = model_label
         self.usage = RunUsage()
         self.store = store
+        self.manager = manager
         self.max_context_tokens = max_context_tokens
         self.keep_last_messages = keep_last_messages
         self.summarizer = summarizer
@@ -80,6 +82,35 @@ class Harness:
         self.usage = RunUsage()
         if self.store is not None:
             self.store.clear()
+
+    @property
+    def session_name(self) -> Optional[str]:
+        """Display name of the active session, if any."""
+        return self.store.name if self.store is not None else None
+
+    def sessions(self) -> list[SessionInfo]:
+        """All saved sessions for this workspace, newest first."""
+        if self.manager is None:
+            return []
+        return self.manager.list()
+
+    def new_session(self, name: Optional[str] = None) -> None:
+        """Start a fresh session (new store), leaving existing ones untouched."""
+        if self.manager is None:
+            self.reset()
+            return
+        self.store = self.manager.create(name)
+        self.history = []
+        self.usage = RunUsage()
+
+    def switch_session(self, session_id: str) -> int:
+        """Switch to an existing session, loading its history. Returns the number
+        of messages restored."""
+        if self.manager is None:
+            return 0
+        self.store = self.manager.store(session_id)
+        self.history, self.usage = self.store.load()
+        return len(self.history)
 
     def _persist(self) -> None:
         if self.store is not None:

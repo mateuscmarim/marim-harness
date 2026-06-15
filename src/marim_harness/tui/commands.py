@@ -41,6 +41,58 @@ async def _cmd_clear(app: HarnessApp, arg: str) -> None:
     await app.reset_conversation()
 
 
+def resolve_ref(infos: list, ref: str) -> object | None:
+    """Find a session by 1-based list position, exact id, or exact name
+    (case-insensitive). Returns the matching SessionInfo or None."""
+    ref = ref.strip()
+    if not ref:
+        return None
+    if ref.isdigit():
+        index = int(ref) - 1
+        return infos[index] if 0 <= index < len(infos) else None
+    for info in infos:
+        if info.id == ref:
+            return info
+    for info in infos:
+        if info.name.lower() == ref.lower():
+            return info
+    return None
+
+
+async def _cmd_sessions(app: HarnessApp, arg: str) -> None:
+    infos = app.harness.sessions()
+    if not infos:
+        await app.post_system("No saved sessions yet. Use `/new [name]` to start one.")
+        return
+    active = getattr(app.harness, "session_name", None)
+    lines = ["**Sessions**", ""]
+    for i, info in enumerate(infos, start=1):
+        marker = " ← active" if info.name == active else ""
+        when = info.updated[:16].replace("T", " ") if info.updated else "—"
+        lines.append(
+            f"{i}. `{info.name}` — {info.message_count} msgs, "
+            f"{info.tokens} tokens, {when}{marker}"
+        )
+    lines += ["", "Switch with `/switch <number|name>`."]
+    await app.post_system("\n".join(lines))
+
+
+async def _cmd_new(app: HarnessApp, arg: str) -> None:
+    await app.start_new_session(arg.strip() or None)
+
+
+async def _cmd_switch(app: HarnessApp, arg: str) -> None:
+    ref = arg.strip()
+    if not ref:
+        await app.post_system("Usage: `/switch <number|name>`. See `/sessions`.")
+        return
+    info = resolve_ref(app.harness.sessions(), ref)
+    if info is None:
+        await app.post_system(f"No session matches `{ref}`. Try `/sessions`.")
+        return
+    await app.switch_to_session_id(info.id)
+
+
 async def _cmd_mode(app: HarnessApp, arg: str) -> None:
     arg = arg.strip().lower()
     if not arg:
@@ -65,10 +117,10 @@ async def _cmd_exit(app: HarnessApp, arg: str) -> None:
 
 COMMANDS: list[Command] = [
     Command("help", "list available commands", _cmd_help, aliases=("?",)),
-    Command(
-        "clear", "start a new conversation (clears history)", _cmd_clear,
-        aliases=("new",),
-    ),
+    Command("clear", "clear this conversation's history", _cmd_clear),
+    Command("sessions", "list saved sessions", _cmd_sessions, aliases=("ls",)),
+    Command("new", "start a new session: /new [name]", _cmd_new),
+    Command("switch", "switch sessions: /switch <number|name>", _cmd_switch),
     Command("mode", "set approval mode: /mode [ask|auto|plan]", _cmd_mode),
     Command("model", "show the active model", _cmd_model),
     Command("exit", "quit the harness", _cmd_exit, aliases=("quit",)),
