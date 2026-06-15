@@ -45,6 +45,50 @@ async def test_status_bar_shows_token_count(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_status_bar_shows_busy_indicator(tmp_path: Path):
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bar = app.query_one("#status-bar")
+        assert "working" not in str(bar.render()).lower()
+        app._set_busy(True)
+        await pilot.pause()
+        assert "working" in str(bar.render()).lower()
+        app._set_busy(False)
+        await pilot.pause()
+        assert "working" not in str(bar.render()).lower()
+
+
+@pytest.mark.anyio
+async def test_log_and_input_both_visible(tmp_path: Path):
+    """Status bar and input must not collide; both render at non-zero size."""
+    app = _app(tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        from textual.widgets import Footer, Input
+
+        status = app.query_one("#status-bar")
+        inp = app.query_one(Input)
+        footer = app.query_one(Footer)
+        assert status.size.height >= 1
+        assert inp.size.height >= 1
+        # they occupy different rows
+        assert status.region.y != inp.region.y
+        # the input must not overlap the footer (its last row stays above it)
+        assert inp.region.bottom <= footer.region.y
+
+
+@pytest.mark.anyio
+async def test_welcome_message_shown_on_start(tmp_path: Path):
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        log = app.query_one("#log")
+        text = " ".join(str(c.render()) for c in log.walk_children() if hasattr(c, "render"))
+        assert "ctrl+t" in text.lower() or "welcome" in text.lower()
+
+
+@pytest.mark.anyio
 async def test_mode_keybinding_cycles(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
