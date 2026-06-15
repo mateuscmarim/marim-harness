@@ -87,6 +87,13 @@ class UserMessage(Static):
         super().__init__(f"› {text}", classes="user-msg")
 
 
+class ErrorMessage(Static):
+    """A turn that failed: shown in the log so the session survives the error."""
+
+    def __init__(self, text: str) -> None:
+        super().__init__(f"⚠ {text}", classes="error-msg")
+
+
 class AssistantMessage(Markdown):
     """Streaming assistant text rendered as Markdown; append deltas as they
     arrive and the view re-renders."""

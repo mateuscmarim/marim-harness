@@ -13,7 +13,7 @@ from textual.widgets import Footer, Header, Input, Static
 
 from ..agent import Harness
 from .approval import ApprovalModal
-from .widgets import AssistantMessage, ToolCallWidget, UserMessage
+from .widgets import AssistantMessage, ErrorMessage, ToolCallWidget, UserMessage
 
 _WELCOME = (
     "Welcome to **marim-harness**. Type a message below to start.\n\n"
@@ -27,6 +27,7 @@ class HarnessApp(App):
     #log { height: 1fr; padding: 0 1; }
     #status-bar { height: 1; background: $panel; color: $text-muted; padding: 0 1; }
     .user-msg { color: $accent; text-style: bold; margin-top: 1; }
+    .error-msg { color: $error; text-style: bold; margin: 1 0; }
     AssistantMessage { margin: 0 0 1 0; }
     ToolCallWidget { margin: 0 0 1 0; }
     """
@@ -93,6 +94,10 @@ class HarnessApp(App):
         self._set_busy(True)
         try:
             await self.harness.run_turn(text, event_stream_handler=self._on_events)
+        except Exception as exc:  # keep the session alive on any turn failure
+            log = self.query_one("#log", VerticalScroll)
+            await log.mount(ErrorMessage(f"{type(exc).__name__}: {exc}"))
+            log.scroll_end(animate=False)
         finally:
             self._set_busy(False)
 
