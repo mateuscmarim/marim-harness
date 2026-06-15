@@ -148,6 +148,56 @@ async def test_run_turn_compacts_when_over_budget(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_run_turn_summarizes_when_over_budget(tmp_path: Path):
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ModelResponse,
+        TextPart,
+        UserPromptPart,
+    )
+    from pydantic_ai.models.test import TestModel
+
+    (tmp_path / "a.txt").write_text("foo")
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+
+    async def summarizer(messages):
+        return "CONDENSED RECAP"
+
+    harness = Harness(
+        model=TestModel(call_tools=[]), provider=BuiltinToolProvider(), deps=deps,
+        instructions="x", max_context_tokens=1, keep_last_messages=4,
+        summarizer=summarizer,
+    )
+    for i in range(30):
+        harness.history.append(
+            ModelRequest(parts=[UserPromptPart(content=f"old prompt {i}")])
+        )
+        harness.history.append(ModelResponse(parts=[TextPart(content=f"old answer {i}")]))
+
+    await harness.run_turn("now do this")
+
+    texts = [
+        getattr(p, "content", "")
+        for m in harness.history
+        for p in m.parts
+        if isinstance(getattr(p, "content", ""), str)
+    ]
+    assert any("CONDENSED RECAP" in t for t in texts)
+
+
+@pytest.mark.anyio
+async def test_make_summarizer_produces_text():
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+    from pydantic_ai.models.test import TestModel
+
+    from marim_harness.agent import make_summarizer
+
+    summarize = make_summarizer(TestModel(custom_output_text="A SUMMARY"))
+    out = await summarize([ModelRequest(parts=[UserPromptPart(content="hello")])])
+    assert "A SUMMARY" in out
+
+
+@pytest.mark.anyio
 async def test_run_turn_does_not_compact_under_budget(tmp_path: Path):
     (tmp_path / "a.txt").write_text("foo")
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)

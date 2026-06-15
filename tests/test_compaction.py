@@ -1,3 +1,4 @@
+import pytest
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
@@ -7,7 +8,12 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from marim_harness.compaction import compact_history, estimate_tokens
+from marim_harness.compaction import (
+    compact_history,
+    compact_history_with_summary,
+    estimate_tokens,
+    render_transcript,
+)
 
 
 def _round(n: int, content_size: int = 40) -> list:
@@ -112,3 +118,96 @@ def test_keeps_roughly_the_last_messages():
     assert did is True
     # the final answer is still there
     assert result[-1] is history[-1]
+
+
+# --- Phase 2: summarization -------------------------------------------------
+
+
+def _summarizer(text: str = "SUMMARY", record: list | None = None):
+    async def summarize(messages: list) -> str:
+        if record is not None:
+            record.extend(messages)
+        return text
+
+    return summarize
+
+
+def test_render_transcript_includes_roles_and_tools():
+    text = render_transcript(_round(1))
+    assert "prompt 1" in text
+    assert "read_file" in text
+    assert "contents 1" in text
+    assert "answer 1" in text
+
+
+@pytest.mark.anyio
+async def test_summary_message_inserted_between_head_and_tail():
+    history = _history(20)
+    result, did = await compact_history_with_summary(
+        history, max_tokens=1, summarizer=_summarizer("RECAP"), keep_last_messages=8
+    )
+    assert did is True
+    assert result[0] is history[0]  # head preserved
+    note = result[1]
+    assert isinstance(note, ModelRequest)
+    prompts = [p for p in note.parts if isinstance(p, UserPromptPart)]
+    assert prompts and "RECAP" in prompts[0].content
+    assert result[-1] is history[-1]  # tail preserved
+    assert _tool_returns_are_paired(result)
+
+
+@pytest.mark.anyio
+async def test_summarizer_receives_the_dropped_middle():
+    history = _history(20)
+    got: list = []
+    result, did = await compact_history_with_summary(
+        history, max_tokens=1, summarizer=_summarizer("X", record=got),
+        keep_last_messages=8,
+    )
+    assert did is True
+    assert got  # the middle was handed to the summarizer
+    assert history[0] not in got  # head excluded
+    assert history[-1] not in got  # tail excluded
+
+
+@pytest.mark.anyio
+async def test_summary_failure_falls_back_to_truncation():
+    history = _history(20)
+
+    async def boom(messages: list) -> str:
+        raise RuntimeError("summary model down")
+
+    result, did = await compact_history_with_summary(
+        history, max_tokens=1, summarizer=boom, keep_last_messages=8
+    )
+    truncated, _ = compact_history(history, max_tokens=1, keep_last_messages=8)
+    assert did is True
+    assert result == truncated  # no synthetic note inserted
+
+
+@pytest.mark.anyio
+async def test_empty_summary_falls_back_to_truncation():
+    history = _history(20)
+    result, did = await compact_history_with_summary(
+        history, max_tokens=1, summarizer=_summarizer(""), keep_last_messages=8
+    )
+    truncated, _ = compact_history(history, max_tokens=1, keep_last_messages=8)
+    assert did is True
+    assert result == truncated
+
+
+@pytest.mark.anyio
+async def test_no_summary_under_threshold():
+    history = _history(3)
+    called: list = []
+
+    async def rec(messages: list) -> str:
+        called.append(messages)
+        return "x"
+
+    result, did = await compact_history_with_summary(
+        history, max_tokens=1_000_000, summarizer=rec
+    )
+    assert did is False
+    assert result is history
+    assert called == []  # never paid for a summary we didn't need
