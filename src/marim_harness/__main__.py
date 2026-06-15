@@ -4,7 +4,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from .agent import Harness, make_summarizer, make_titler
-from .config import build_model, load_config
+from .config import ModelSource, build_model, load_config
 from .deps import Deps
 from .permissions import Mode
 from .session import SessionManager
@@ -53,6 +53,8 @@ def main() -> None:
         max_context_tokens=cfg.max_context_tokens,
         summarizer=make_summarizer(model),
         titler=make_titler(model),
+        model_source=ModelSource(cfg),
+        model_id=cfg.model,
     )
     if args.resume:
         harness.resume()

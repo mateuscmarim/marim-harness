@@ -163,3 +163,12 @@ def test_auto_flag_persists_and_recovers(tmp_path: Path):
     store.save(_history(), RunUsage())
     assert mgr.store(store.session_id).auto_named is False
     assert mgr.store(store.session_id).name == "Picked a title"
+
+
+def test_model_persists_and_recovers(tmp_path: Path):
+    mgr = _manager(tmp_path)
+    store = mgr.create()
+    assert store.model is None  # defaults to the env model
+    store.model = "openai/gpt-5.2"
+    store.save(_history(), RunUsage())
+    assert mgr.store(store.session_id).model == "openai/gpt-5.2"

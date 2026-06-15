@@ -79,7 +79,8 @@ class Harness:
                  manager: Optional[SessionManager] = None,
                  max_context_tokens: int = 100_000, keep_last_messages: int = 20,
                  summarizer: Optional[Summarizer] = None,
-                 titler: Optional[Titler] = None):
+                 titler: Optional[Titler] = None, model_source=None,
+                 model_id: Optional[str] = None):
         self.agent = Agent(
             model,
             deps_type=Deps,
@@ -100,6 +101,11 @@ class Harness:
         self.deps = deps
         self.history: list = []
         self.model_label = model_label
+        # The model object used for each turn (swappable at runtime), the source
+        # that builds new ones, and the id of the active model.
+        self.current_model = model
+        self.model_source = model_source
+        self.model_id = model_id
         self.usage = RunUsage()
         self.store = store
         self.manager = manager
@@ -117,12 +123,44 @@ class Harness:
         """Cumulative input + output tokens across the whole session."""
         return self.usage.total_tokens
 
+    def set_model(self, model_id: str, *, persist: bool = True) -> None:
+        """Switch the active model at runtime. Rebuilds the per-turn model and
+        any configured aux agents (summarizer/titler) on the new model, updates
+        the label, and records the choice on the session. No-op without a source.
+        """
+        if self.model_source is None:
+            return
+        model = self.model_source.build(model_id)
+        self.current_model = model
+        self.model_id = model_id
+        self.model_label = self.model_source.label(model_id)
+        if self.summarizer is not None:
+            self.summarizer = make_summarizer(model)
+        if self.titler is not None:
+            self.titler = make_titler(model)
+        if self.store is not None:
+            self.store.model = model_id
+            if persist:
+                self._persist()
+
+    def _apply_saved_model(self) -> None:
+        """Re-point at a session's saved model after loading it, if one differs
+        from what's already active."""
+        if (
+            self.store is not None
+            and self.store.model
+            and self.model_source is not None
+            and self.store.model != self.model_id
+        ):
+            self.set_model(self.store.model, persist=False)
+
     def resume(self) -> int:
         """Load a previously saved conversation for this workspace into history.
         Returns the number of messages restored (0 if none / no store)."""
         if self.store is None:
             return 0
         self.history, self.usage = self.store.load()
+        self._apply_saved_model()
         return len(self.history)
 
     def reset(self) -> None:
@@ -150,6 +188,7 @@ class Harness:
             self.reset()
             return
         self.store = self.manager.create(name)
+        self.store.model = self.model_id  # keep the current model on the new session
         self.history = []
         self.usage = RunUsage()
 
@@ -160,6 +199,7 @@ class Harness:
             return 0
         self.store = self.manager.store(session_id)
         self.history, self.usage = self.store.load()
+        self._apply_saved_model()
         return len(self.history)
 
     def _persist(self) -> None:
@@ -241,6 +281,7 @@ class Harness:
         while True:
             result = await self.agent.run(
                 user_prompt,
+                model=self.current_model,
                 message_history=self.history,
                 deps=self.deps,
                 deferred_tool_results=deferred_results,

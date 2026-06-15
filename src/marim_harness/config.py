@@ -1,6 +1,8 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional
+
+from .catalog import ModelEntry, fetch_openrouter_models
 
 _DEFAULT_OPENROUTER_MODEL = "anthropic/claude-sonnet-4-6"
 _DEFAULT_LOCAL_MODEL = "qwen2.5-coder"
@@ -64,3 +66,30 @@ def build_model(cfg: ModelConfig):
 
     provider = OpenRouterProvider(api_key=cfg.api_key)
     return OpenAIChatModel(cfg.model, provider=provider)
+
+
+class ModelSource:
+    """Everything "where models come from" for one provider: build a model from
+    an id, format its label, list the catalog, and report whether it's local.
+    Bundling these lets the Harness and picker depend on one interface."""
+
+    def __init__(self, cfg: ModelConfig) -> None:
+        self.cfg = cfg
+
+    @property
+    def is_local(self) -> bool:
+        return self.cfg.provider == "local"
+
+    def label(self, model_id: str) -> str:
+        return f"{self.cfg.provider}/{model_id}"
+
+    def build(self, model_id: str):
+        """Construct a Pydantic AI model for ``model_id`` on this provider."""
+        return build_model(replace(self.cfg, model=model_id))
+
+    async def list_models(self) -> list[ModelEntry]:
+        """Available models for the picker. OpenRouter exposes a public catalog;
+        local providers can't be enumerated, so they return an empty list."""
+        if self.is_local:
+            return []
+        return await fetch_openrouter_models(self.cfg.api_key)

@@ -56,13 +56,15 @@ class SessionStore:
     path, id, and name."""
 
     def __init__(self, path, workspace_root, session_id: str, name: str,
-                 auto_named: bool = False) -> None:
+                 auto_named: bool = False, model: Optional[str] = None) -> None:
         self.path = Path(path)
         self.workspace_root = Path(workspace_root).resolve()
         self.session_id = session_id
         self.name = name
         # True while the name is a placeholder eligible for automatic titling.
         self.auto_named = auto_named
+        # The model id this session was last using (None -> the env default).
+        self.model = model
 
     def save(self, history: list, usage: RunUsage) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -70,6 +72,7 @@ class SessionStore:
             "id": self.session_id,
             "name": self.name,
             "auto": self.auto_named,
+            "model": self.model,
             "workspace": str(self.workspace_root),
             "updated": _now(),
             "tokens": {
@@ -148,9 +151,11 @@ class SessionManager:
         if name is None:
             name = (saved or {}).get("name") or session_id
         auto_named = bool((saved or {}).get("auto", False))
+        model = (saved or {}).get("model")
         self._reserved.add(session_id)
         return SessionStore(
-            path, self.workspace_root, session_id, name, auto_named=auto_named
+            path, self.workspace_root, session_id, name,
+            auto_named=auto_named, model=model,
         )
 
     def create(self, name: Optional[str] = None) -> SessionStore:
