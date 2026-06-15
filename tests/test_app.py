@@ -178,6 +178,17 @@ async def test_log_and_input_both_visible(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_ascii_banner_shown_on_start(tmp_path: Path):
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        banner = app.query_one("#banner")
+        text = str(banner.render())
+        assert "█" in text  # the ASCII art rendered
+        assert "h a r n e s s" in text  # letter-spaced subtitle
+
+
+@pytest.mark.anyio
 async def test_welcome_message_shown_on_start(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:

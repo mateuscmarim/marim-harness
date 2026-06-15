@@ -23,9 +23,20 @@ from .widgets import (
     UserMessage,
 )
 
+_BANNER = (
+    " ███╗   ███╗ █████╗ ██████╗ ██╗███╗   ███╗\n"
+    " ████╗ ████║██╔══██╗██╔══██╗██║████╗ ████║\n"
+    " ██╔████╔██║███████║██████╔╝██║██╔████╔██║\n"
+    " ██║╚██╔╝██║██╔══██║██╔══██╗██║██║╚██╔╝██║\n"
+    " ██║ ╚═╝ ██║██║  ██║██║  ██║██║██║ ╚═╝ ██║\n"
+    " ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝╚═╝     ╚═╝\n"
+    "   · · ·   a   t e r m i n a l   h a r n e s s"
+)
+
 _WELCOME = (
-    "Welcome to **marim-harness**. Type a message below to start.\n\n"
+    "Type a message below to start.\n\n"
     "- `ctrl+t` cycles the approval mode (ask → auto → plan)\n"
+    "- `esc` cancels the running turn\n"
     "- `/exit` (or `/quit`, `ctrl+c`) quits"
 )
 
@@ -37,6 +48,7 @@ class HarnessApp(App):
     .user-msg { color: $accent; text-style: bold; margin-top: 1; }
     .error-msg { color: $error; text-style: bold; margin: 1 0; }
     .notice-msg { color: $text-muted; text-style: italic; margin: 1 0; }
+    #banner { color: $accent; text-style: bold; height: auto; margin: 1 0 1 0; }
     AssistantMessage { margin: 0 0 1 0; }
     ToolCallWidget { margin: 0 0 1 0; }
     """
@@ -65,17 +77,18 @@ class HarnessApp(App):
     async def on_mount(self) -> None:
         self.title = "marim-harness"
         log = self.query_one("#log", VerticalScroll)
-        banner = AssistantMessage()
-        await log.mount(banner)
+        await log.mount(Static(_BANNER, id="banner", markup=False))
+        intro = AssistantMessage()
+        await log.mount(intro)
         if self.harness.history:
             n = len(self.harness.history)
             tokens = self.harness.total_tokens
-            banner.append(
+            intro.append(
                 f"**Resumed session** — {n} messages, {tokens} tokens restored."
             )
             await self._replay_history(log)
         else:
-            banner.append(_WELCOME)
+            intro.append(_WELCOME)
         log.scroll_end(animate=False)
 
     async def _replay_history(self, log: VerticalScroll) -> None:
