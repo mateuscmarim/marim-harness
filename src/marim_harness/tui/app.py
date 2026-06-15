@@ -56,18 +56,53 @@ class HarnessApp(App):
 
     async def on_mount(self) -> None:
         self.title = "marim-harness"
+        log = self.query_one("#log", VerticalScroll)
         banner = AssistantMessage()
-        await self.query_one("#log", VerticalScroll).mount(banner)
+        await log.mount(banner)
         if self.harness.history:
             n = len(self.harness.history)
             tokens = self.harness.total_tokens
             banner.append(
-                f"**Resumed session** — {n} messages, {tokens} tokens restored. "
-                "Past messages aren't re-rendered, but the agent remembers them.\n\n"
-                "Type a message to continue."
+                f"**Resumed session** — {n} messages, {tokens} tokens restored."
             )
+            await self._replay_history(log)
         else:
             banner.append(_WELCOME)
+        log.scroll_end(animate=False)
+
+    async def _replay_history(self, log: VerticalScroll) -> None:
+        """Re-render a restored conversation into the log so a resumed session
+        looks like where you left off."""
+        from pydantic_ai.messages import (
+            ModelRequest,
+            ModelResponse,
+            TextPart,
+            ToolCallPart,
+            ToolReturnPart,
+            UserPromptPart,
+        )
+
+        tool_widgets: dict[str, ToolCallWidget] = {}
+        for message in self.harness.history:
+            if isinstance(message, (ModelRequest, ModelResponse)):
+                for part in message.parts:
+                    if isinstance(part, UserPromptPart):
+                        content = part.content
+                        text = content if isinstance(content, str) else str(content)
+                        await log.mount(UserMessage(text))
+                    elif isinstance(part, TextPart):
+                        if part.content:
+                            msg = AssistantMessage()
+                            await log.mount(msg)
+                            msg.append(part.content)
+                    elif isinstance(part, ToolCallPart):
+                        widget = ToolCallWidget(part.tool_name, part.args_as_dict())
+                        tool_widgets[part.tool_call_id] = widget
+                        await log.mount(widget)
+                    elif isinstance(part, ToolReturnPart):
+                        widget = tool_widgets.get(part.tool_call_id)
+                        if widget is not None:
+                            widget.finish(str(part.content))
 
     def _status_text(self) -> str:
         cfg = getattr(self.harness, "model_label", "model")
