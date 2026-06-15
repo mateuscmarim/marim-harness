@@ -118,6 +118,7 @@ async def test_slash_help_lists_commands(tmp_path: Path):
         await pilot.pause()
         text = _log_text(app)
         assert "/mode" in text and "/clear" in text
+        assert "AGENTS.md" in text  # project-instructions discoverability
         assert started == []  # never sent to the model
 
 
