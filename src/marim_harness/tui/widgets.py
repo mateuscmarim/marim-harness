@@ -3,7 +3,9 @@ from pathlib import Path
 
 from rich.console import RenderableType
 from rich.syntax import Syntax
-from textual.widgets import Collapsible, Markdown, Static
+from textual import events
+from textual.message import Message
+from textual.widgets import Collapsible, Markdown, Static, TextArea
 
 _LINE_PREFIX = re.compile(r"^\s*\d+\t", re.MULTILINE)
 
@@ -99,6 +101,50 @@ class NoticeMessage(Static):
 
     def __init__(self, text: str) -> None:
         super().__init__(f"• {text}", classes="notice-msg")
+
+
+class PromptInput(TextArea):
+    """The multi-line message box. Enter submits; Shift+Enter and Ctrl+J insert a
+    newline. The box auto-grows with its content up to ``_MAX_LINES``, then
+    scrolls internally."""
+
+    _MIN_LINES = 1
+    _MAX_LINES = 10
+
+    class Submitted(Message):
+        """Posted when the user presses Enter; carries the box's full text."""
+
+        def __init__(self, value: str) -> None:
+            self.value = value
+            super().__init__()
+
+    def __init__(self) -> None:
+        super().__init__(soft_wrap=True, show_line_numbers=False)
+
+    async def _on_key(self, event: events.Key) -> None:
+        if event.key == "enter":
+            event.prevent_default()
+            event.stop()
+            self.post_message(self.Submitted(self.text))
+            return
+        if event.key in ("shift+enter", "ctrl+j"):
+            event.prevent_default()
+            event.stop()
+            self.insert("\n")
+            return
+        await super()._on_key(event)
+
+    def _target_height(self) -> int:
+        """Rows the box should occupy: one per logical line, clamped to the
+        [min, max] window."""
+        lines = self.document.line_count
+        return max(self._MIN_LINES, min(lines, self._MAX_LINES))
+
+    def _resize(self) -> None:
+        self.styles.height = self._target_height()
+
+    def on_text_area_changed(self, event: "TextArea.Changed") -> None:
+        self._resize()
 
 
 class AssistantMessage(Markdown):

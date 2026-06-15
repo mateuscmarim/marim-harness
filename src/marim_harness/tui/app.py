@@ -11,7 +11,7 @@ from pydantic_ai.messages import (
 )
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
-from textual.widgets import Footer, Header, Input, Static
+from textual.widgets import Footer, Header, Static
 
 from ..agent import Harness
 from ..compaction import estimate_tokens
@@ -22,6 +22,7 @@ from .widgets import (
     AssistantMessage,
     ErrorMessage,
     NoticeMessage,
+    PromptInput,
     ToolCallWidget,
     UserMessage,
 )
@@ -45,6 +46,7 @@ def _human_tokens(n: int) -> str:
 
 _WELCOME = (
     "Type a message below to start, or `/help` for commands.\n\n"
+    "- `enter` sends · `shift+enter` (or `ctrl+j`) inserts a newline\n"
     "- `ctrl+t` cycles the approval mode (ask → auto → plan)\n"
     "- `esc` cancels the running turn\n"
     "- `/exit` (or `/quit`, `ctrl+c`) quits"
@@ -54,6 +56,7 @@ _WELCOME = (
 class HarnessApp(App):
     CSS = """
     #log { height: 1fr; padding: 0 1; }
+    PromptInput { height: 1; max-height: 10; border: none; padding: 0 1; }
     #status-bar { height: 1; background: $panel; color: $text-muted; padding: 0 1; }
     .user-msg { color: $accent; text-style: bold; margin-top: 1; }
     .error-msg { color: $error; text-style: bold; margin: 1 0; }
@@ -82,7 +85,7 @@ class HarnessApp(App):
         yield Header(show_clock=False)
         yield VerticalScroll(id="log")
         yield Static(self._status_text(), id="status-bar")
-        yield Input(placeholder="type a message…")
+        yield PromptInput()
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -274,11 +277,11 @@ class HarnessApp(App):
         )
         return True if approved else ToolDenied("denied by user")
 
-    async def on_input_submitted(self, event: Input.Submitted) -> None:
+    async def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
         text = event.value.strip()
         if not text:
             return
-        event.input.value = ""
+        self.query_one(PromptInput).text = ""
         if text.startswith("/"):
             await dispatch(self, text)
             return

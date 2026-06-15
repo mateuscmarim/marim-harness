@@ -4,6 +4,7 @@ from textual.widgets import Collapsible, Markdown
 
 from marim_harness.tui.widgets import (
     AssistantMessage,
+    PromptInput,
     ToolCallWidget,
     UserMessage,
     strip_line_numbers,
@@ -122,6 +123,74 @@ async def test_error_message_has_error_class_and_text():
         await pilot.pause()
         assert w.has_class("error-msg")
         assert "rate limited (429)" in str(w.render())
+
+
+class _PromptHost(App):
+    def __init__(self) -> None:
+        super().__init__()
+        self.submitted: list[str] = []
+
+    def compose(self) -> ComposeResult:
+        yield PromptInput()
+
+    def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
+        self.submitted.append(event.value)
+
+
+@pytest.mark.anyio
+async def test_enter_submits_typed_text():
+    app = _PromptHost()
+    async with app.run_test() as pilot:
+        app.query_one(PromptInput).focus()
+        await pilot.pause()
+        await pilot.press("h", "i")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.submitted == ["hi"]
+
+
+@pytest.mark.anyio
+async def test_shift_enter_inserts_newline_without_submitting():
+    app = _PromptHost()
+    async with app.run_test() as pilot:
+        pi = app.query_one(PromptInput)
+        pi.focus()
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.press("shift+enter")
+        await pilot.press("b")
+        await pilot.pause()
+        assert pi.text == "a\nb"
+        assert app.submitted == []  # no submit fired
+
+
+@pytest.mark.anyio
+async def test_ctrl_j_inserts_newline_without_submitting():
+    app = _PromptHost()
+    async with app.run_test() as pilot:
+        pi = app.query_one(PromptInput)
+        pi.focus()
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.press("ctrl+j")
+        await pilot.press("b")
+        await pilot.pause()
+        assert pi.text == "a\nb"
+        assert app.submitted == []
+
+
+@pytest.mark.anyio
+async def test_target_height_grows_and_caps():
+    app = _PromptHost()
+    async with app.run_test() as pilot:
+        pi = app.query_one(PromptInput)
+        await pilot.pause()
+        pi.text = ""
+        assert pi._target_height() == 1  # empty starts at one line
+        pi.text = "a\nb\nc"
+        assert pi._target_height() == 3  # grows with logical lines
+        pi.text = "\n".join(str(i) for i in range(20))
+        assert pi._target_height() == PromptInput._MAX_LINES  # capped
 
 
 @pytest.mark.anyio
