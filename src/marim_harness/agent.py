@@ -1,4 +1,4 @@
-from typing import Callable, Optional
+from typing import Awaitable, Callable, Optional
 
 from pydantic_ai import Agent, DeferredToolRequests, RunContext
 from pydantic_ai.usage import RunUsage
@@ -35,6 +35,41 @@ def make_summarizer(model) -> Summarizer:
     return summarize
 
 
+Titler = Callable[[list], Awaitable[str]]
+
+_TITLE_INSTRUCTIONS = (
+    "You write a short, specific title for a coding session from its transcript. "
+    "Reply with the title only — no quotes, no trailing punctuation, at most six "
+    "words. Name the concrete task, e.g. 'Fix the parser off-by-one' or 'Add "
+    "session auto-naming'."
+)
+
+_MAX_TITLE_CHARS = 50
+
+
+def clean_title(raw: str) -> str:
+    """Reduce a model's reply to a single tidy title line, with a safe fallback."""
+    lines = [line.strip() for line in (raw or "").splitlines()]
+    text = next((line for line in lines if line), "")
+    if text.lower().startswith("title:"):
+        text = text[len("title:"):].strip()
+    text = text.strip("\"'`").strip().rstrip(".!?,;:").strip()
+    if len(text) > _MAX_TITLE_CHARS:
+        text = text[:_MAX_TITLE_CHARS].rstrip() + "…"
+    return text or "Untitled session"
+
+
+def make_titler(model) -> Titler:
+    """Build a titler backed by a dedicated, tool-free agent on ``model``."""
+    title_agent = Agent(model, instructions=_TITLE_INSTRUCTIONS)
+
+    async def title(messages: list) -> str:
+        result = await title_agent.run(render_transcript(messages))
+        return clean_title(result.output)
+
+    return title
+
+
 class Harness:
     """Owns the Pydantic AI agent and drives one user turn to completion,
     resolving deferred tool approvals by the current mode."""
@@ -43,7 +78,8 @@ class Harness:
                  model_label: str = "model", store: Optional[SessionStore] = None,
                  manager: Optional[SessionManager] = None,
                  max_context_tokens: int = 100_000, keep_last_messages: int = 20,
-                 summarizer: Optional[Summarizer] = None):
+                 summarizer: Optional[Summarizer] = None,
+                 titler: Optional[Titler] = None):
         self.agent = Agent(
             model,
             deps_type=Deps,
@@ -70,8 +106,11 @@ class Harness:
         self.max_context_tokens = max_context_tokens
         self.keep_last_messages = keep_last_messages
         self.summarizer = summarizer
+        self.titler = titler
         # Called with (messages_before, messages_after) when history is compacted.
         self.on_compact: Optional[Callable[[int, int], None]] = None
+        # Called with (old_name, new_name) when a session is auto-titled.
+        self.on_rename: Optional[Callable[[str, str], None]] = None
 
     @property
     def total_tokens(self) -> int:
@@ -127,6 +166,52 @@ class Harness:
         if self.store is not None:
             self.store.save(self.history, self.usage)
 
+    async def _maybe_autoname(self) -> None:
+        """After a turn, give an unnamed session an LLM-generated title (once).
+        Silent on failure — a titling hiccup must never break the turn."""
+        if (
+            self.titler is None
+            or self.store is None
+            or not self.store.auto_named
+            or not self.history
+        ):
+            return
+        old = self.store.name
+        try:
+            title = await self.titler(self.history)
+        except Exception:
+            return
+        if not title:
+            return
+        self.store.name = title
+        self.store.auto_named = False
+        self._persist()
+        if self.on_rename is not None:
+            self.on_rename(old, title)
+
+    async def rename_session(self, name: Optional[str] = None) -> Optional[str]:
+        """Rename the active session. With ``name``, set it verbatim; without,
+        generate one from the conversation via the titler. Returns the new name,
+        or None if it couldn't be done (no store, no titler, empty conversation).
+        """
+        if self.store is None:
+            return None
+        if name:
+            new = name.strip()
+        elif self.titler is not None and self.history:
+            try:
+                new = await self.titler(self.history)
+            except Exception:
+                return None
+        else:
+            return None
+        if not new:
+            return None
+        self.store.name = new
+        self.store.auto_named = False
+        self._persist()
+        return new
+
     async def _maybe_compact(self) -> None:
         """Compact history if it has grown past the token budget, keeping the task
         anchor and a recent tail. Summarizes the dropped middle when a summarizer
@@ -170,4 +255,6 @@ class Harness:
                 )
                 user_prompt = None  # continuation is driven by deferred_results
                 continue
-            return result.output
+            output = result.output
+            await self._maybe_autoname()
+            return output

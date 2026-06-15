@@ -47,5 +47,6 @@ def test_new_is_its_own_command_not_a_clear_alias():
 
 
 def test_core_commands_present():
-    for name in ("help", "clear", "sessions", "new", "switch", "mode", "model", "exit"):
+    names = ("help", "clear", "sessions", "new", "switch", "name", "mode", "model", "exit")
+    for name in names:
         assert name in COMMANDS_BY_NAME

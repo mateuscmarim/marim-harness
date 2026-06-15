@@ -112,6 +112,108 @@ async def test_resume_restores_history_and_tokens(tmp_path: Path):
     assert second.total_tokens == saved_tokens
 
 
+def test_clean_title_strips_noise():
+    from marim_harness.agent import clean_title
+
+    assert clean_title('"Fix the bug"') == "Fix the bug"
+    assert clean_title("Title: Add a feature") == "Add a feature"
+    assert clean_title("Refactor parser\n\nignored") == "Refactor parser"
+    assert clean_title("Do the thing.") == "Do the thing"
+    assert clean_title("   ") == "Untitled session"
+
+
+def test_clean_title_clamps_length():
+    from marim_harness.agent import clean_title
+
+    out = clean_title("word " * 30)
+    assert len(out) <= 51
+    assert out.endswith("…")
+
+
+@pytest.mark.anyio
+async def test_make_titler_returns_clean_title():
+    from pydantic_ai import Agent
+    from pydantic_ai.models.test import TestModel
+
+    from marim_harness.agent import make_titler
+
+    run = await Agent(TestModel(), instructions="x").run("do a thing")
+    history = run.all_messages()
+    titler = make_titler(TestModel(custom_output_text='"Generated Title"'))
+    assert await titler(history) == "Generated Title"
+
+
+async def _fake_titler(messages) -> str:
+    return "Generated Title"
+
+
+def _text_model() -> FunctionModel:
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    return FunctionModel(fn)
+
+
+def _autoname_harness(tmp_path, titler, *, name=None):
+    from marim_harness.session import SessionManager
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
+    store = manager.create(name)
+    return Harness(
+        model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
+        instructions="x", store=store, manager=manager, titler=titler,
+    )
+
+
+@pytest.mark.anyio
+async def test_autoname_after_first_turn(tmp_path: Path):
+    renames = []
+    h = _autoname_harness(tmp_path, _fake_titler)
+    h.on_rename = lambda old, new: renames.append((old, new))
+
+    await h.run_turn("hello there")
+    assert h.session_name == "Generated Title"
+    assert h.store.auto_named is False
+    assert renames and renames[-1][1] == "Generated Title"
+    # persisted
+    assert h.manager.store(h.store.session_id).name == "Generated Title"
+
+
+@pytest.mark.anyio
+async def test_explicitly_named_session_not_autorenamed(tmp_path: Path):
+    h = _autoname_harness(tmp_path, _fake_titler, name="my project")
+    await h.run_turn("hello")
+    assert h.session_name == "my project"
+
+
+@pytest.mark.anyio
+async def test_autoname_happens_only_once(tmp_path: Path):
+    calls = {"n": 0}
+
+    async def counting_titler(messages):
+        calls["n"] += 1
+        return f"Title {calls['n']}"
+
+    h = _autoname_harness(tmp_path, counting_titler)
+    await h.run_turn("first")
+    await h.run_turn("second")
+    assert calls["n"] == 1
+    assert h.session_name == "Title 1"
+
+
+@pytest.mark.anyio
+async def test_rename_session_explicit_and_generated(tmp_path: Path):
+    h = _autoname_harness(tmp_path, _fake_titler, name="start")
+    # Explicit rename sets the name verbatim.
+    assert await h.rename_session("Manual Name") == "Manual Name"
+    assert h.session_name == "Manual Name"
+    # Blank rename regenerates from the conversation via the titler.
+    await h.run_turn("do work")
+    assert await h.rename_session() == "Generated Title"
+    assert h.session_name == "Generated Title"
+
+
 def _last_instructions(messages) -> str:
     """The instructions attached to the current (most recent) request."""
     result = ""

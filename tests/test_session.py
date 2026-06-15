@@ -141,3 +141,25 @@ def test_clear_removes_file(tmp_path: Path):
 def test_store_is_a_session_store(tmp_path: Path):
     mgr = _manager(tmp_path)
     assert isinstance(mgr.create(), SessionStore)
+
+
+def test_unnamed_session_is_auto_named(tmp_path: Path):
+    assert _manager(tmp_path).create().auto_named is True
+
+
+def test_named_session_is_not_auto_named(tmp_path: Path):
+    assert _manager(tmp_path).create("My Work").auto_named is False
+
+
+def test_auto_flag_persists_and_recovers(tmp_path: Path):
+    mgr = _manager(tmp_path)
+    store = mgr.create()  # auto_named True
+    store.save(_history(), RunUsage())
+    assert mgr.store(store.session_id).auto_named is True
+
+    # Once titled, the flag is off and stays off across reopens.
+    store.name = "Picked a title"
+    store.auto_named = False
+    store.save(_history(), RunUsage())
+    assert mgr.store(store.session_id).auto_named is False
+    assert mgr.store(store.session_id).name == "Picked a title"

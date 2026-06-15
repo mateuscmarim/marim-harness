@@ -529,3 +529,59 @@ async def test_switch_unknown_reports_error(tmp_path: Path):
         await _submit(app, "/switch nope")
         await pilot.pause()
         assert "no session matches" in _log_text(app).lower()
+
+
+def _autoname_app(tmp_path: Path) -> HarnessApp:
+    from pydantic_ai.models.test import TestModel
+
+    from marim_harness.agent import Harness
+    from marim_harness.session import SessionManager
+    from marim_harness.tools.provider import BuiltinToolProvider
+
+    async def titler(messages):
+        return "Auto Title"
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
+    harness = Harness(
+        TestModel(call_tools=[]), BuiltinToolProvider(), deps,
+        instructions="test", store=manager.create(), manager=manager, titler=titler,
+    )
+    return HarnessApp(harness)
+
+
+@pytest.mark.anyio
+async def test_name_command_sets_title(tmp_path: Path):
+    app = _app_with_manager(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _submit(app, "/name My Project")
+        await pilot.pause()
+        assert app.harness.session_name == "My Project"
+        assert "My Project" in str(app.query_one("#status-bar").render())
+        assert "renamed" in _log_text(app).lower()
+
+
+@pytest.mark.anyio
+async def test_name_command_regenerates_with_titler(tmp_path: Path):
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    app = _autoname_app(tmp_path)
+    app.harness.history = [ModelRequest(parts=[UserPromptPart(content="do work")])]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _submit(app, "/name")  # blank -> regenerate from conversation
+        await pilot.pause()
+        assert app.harness.session_name == "Auto Title"
+
+
+@pytest.mark.anyio
+async def test_autoname_posts_notice_after_first_turn(tmp_path: Path):
+    app = _autoname_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.harness.run_turn("hello")
+        await pilot.pause()
+        assert app.harness.session_name == "Auto Title"
+        assert "Auto Title" in _log_text(app)
+        assert "Auto Title" in str(app.query_one("#status-bar").render())

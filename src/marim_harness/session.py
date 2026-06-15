@@ -55,17 +55,21 @@ class SessionStore:
     across launches. Created by a :class:`SessionManager`, which decides the
     path, id, and name."""
 
-    def __init__(self, path, workspace_root, session_id: str, name: str) -> None:
+    def __init__(self, path, workspace_root, session_id: str, name: str,
+                 auto_named: bool = False) -> None:
         self.path = Path(path)
         self.workspace_root = Path(workspace_root).resolve()
         self.session_id = session_id
         self.name = name
+        # True while the name is a placeholder eligible for automatic titling.
+        self.auto_named = auto_named
 
     def save(self, history: list, usage: RunUsage) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "id": self.session_id,
             "name": self.name,
+            "auto": self.auto_named,
             "workspace": str(self.workspace_root),
             "updated": _now(),
             "tokens": {
@@ -133,29 +137,37 @@ class SessionManager:
 
     def store(self, session_id: str, name: Optional[str] = None) -> SessionStore:
         """Open the store for an existing (or known) session id. Recovers the
-        display name from the saved file when not given one."""
+        display name and auto-named flag from the saved file when present."""
+        path = self._path(session_id)
+        saved = None
+        if path.exists():
+            try:
+                saved = json.loads(path.read_text())
+            except (json.JSONDecodeError, OSError):
+                saved = None
         if name is None:
-            path = self._path(session_id)
-            if path.exists():
-                try:
-                    name = json.loads(path.read_text()).get("name")
-                except (json.JSONDecodeError, OSError):
-                    name = None
-            if name is None:
-                name = session_id
+            name = (saved or {}).get("name") or session_id
+        auto_named = bool((saved or {}).get("auto", False))
         self._reserved.add(session_id)
-        return SessionStore(self._path(session_id), self.workspace_root, session_id, name)
+        return SessionStore(
+            path, self.workspace_root, session_id, name, auto_named=auto_named
+        )
 
     def create(self, name: Optional[str] = None) -> SessionStore:
         """Start a new session. The id is a slug of ``name`` (or a timestamp);
-        the display name is ``name`` verbatim (or that timestamp slug)."""
+        the display name is ``name`` verbatim (or that timestamp slug). An
+        unnamed session is flagged auto_named so it can be titled later."""
         if name:
             base_slug = _slugify(name)
             display = name
+            auto = False
         else:
             base_slug = _now_slug()
             display = base_slug
-        return self.store(self._unique_id(base_slug), display)
+            auto = True
+        store = self.store(self._unique_id(base_slug), display)
+        store.auto_named = auto
+        return store
 
     def _unique_id(self, base: str) -> str:
         candidate = base
