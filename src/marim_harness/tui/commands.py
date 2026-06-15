@@ -34,6 +34,11 @@ async def _cmd_help(app: HarnessApp, arg: str) -> None:
         if cmd.aliases:
             names += " " + ", ".join("/" + a for a in cmd.aliases)
         lines.append(f"- `{names}` — {cmd.summary}")
+    lines += [
+        "",
+        "Drop an `AGENTS.md` in the workspace root for project-specific "
+        "instructions; it's re-read every turn.",
+    ]
     await app.post_system("\n".join(lines))
 
 
