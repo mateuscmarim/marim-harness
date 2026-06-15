@@ -86,6 +86,18 @@ async def _cmd_new(app: HarnessApp, arg: str) -> None:
     await app.start_new_session(arg.strip() or None)
 
 
+async def _cmd_name(app: HarnessApp, arg: str) -> None:
+    new = await app.harness.rename_session(arg.strip() or None)
+    if new is None:
+        await app.post_system(
+            "Couldn't name the session — give a title (`/name <title>`) or have a "
+            "conversation first so it can be auto-titled."
+        )
+        return
+    app._refresh_status()
+    await app.post_system(f"Renamed session to `{new}`.")
+
+
 async def _cmd_switch(app: HarnessApp, arg: str) -> None:
     ref = arg.strip()
     if not ref:
@@ -126,6 +138,7 @@ COMMANDS: list[Command] = [
     Command("sessions", "list saved sessions", _cmd_sessions, aliases=("ls",)),
     Command("new", "start a new session: /new [name]", _cmd_new),
     Command("switch", "switch sessions: /switch <number|name>", _cmd_switch),
+    Command("name", "name this session: /name [title] (auto-titles if blank)", _cmd_name),
     Command("mode", "set approval mode: /mode [ask|auto|plan]", _cmd_mode),
     Command("model", "show the active model", _cmd_model),
     Command("exit", "quit the harness", _cmd_exit, aliases=("quit",)),

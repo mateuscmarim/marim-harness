@@ -71,6 +71,7 @@ class HarnessApp(App):
         self.harness = harness
         self.harness.deps.request_approval = self._request_approval
         self.harness.on_compact = self._on_compact
+        self.harness.on_rename = self._on_rename
         self._current_assistant: AssistantMessage | None = None
         self._tool_widgets: dict[str, ToolCallWidget] = {}
         self._busy = False
@@ -177,6 +178,14 @@ class HarnessApp(App):
         )
         log.scroll_end(animate=False)
         self._refresh_status()  # context gauge shrinks immediately
+
+    def _on_rename(self, old: str, new: str) -> None:
+        """Note an automatic session title in the log. Called synchronously from
+        run_turn; mount without awaiting."""
+        log = self.query_one("#log", VerticalScroll)
+        log.mount(NoticeMessage(f"session renamed: {new}"))
+        log.scroll_end(animate=False)
+        self._refresh_status()
 
     async def post_system(self, markdown: str) -> None:
         """Render a system/command message into the log (markdown)."""
