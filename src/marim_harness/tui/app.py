@@ -15,7 +15,13 @@ from textual.widgets import Footer, Header, Input, Static
 
 from ..agent import Harness
 from .approval import ApprovalModal
-from .widgets import AssistantMessage, ErrorMessage, ToolCallWidget, UserMessage
+from .widgets import (
+    AssistantMessage,
+    ErrorMessage,
+    NoticeMessage,
+    ToolCallWidget,
+    UserMessage,
+)
 
 _WELCOME = (
     "Welcome to **marim-harness**. Type a message below to start.\n\n"
@@ -30,6 +36,7 @@ class HarnessApp(App):
     #status-bar { height: 1; background: $panel; color: $text-muted; padding: 0 1; }
     .user-msg { color: $accent; text-style: bold; margin-top: 1; }
     .error-msg { color: $error; text-style: bold; margin: 1 0; }
+    .notice-msg { color: $text-muted; text-style: italic; margin: 1 0; }
     AssistantMessage { margin: 0 0 1 0; }
     ToolCallWidget { margin: 0 0 1 0; }
     """
@@ -42,6 +49,7 @@ class HarnessApp(App):
         super().__init__()
         self.harness = harness
         self.harness.deps.request_approval = self._request_approval
+        self.harness.on_compact = self._on_compact
         self._current_assistant: AssistantMessage | None = None
         self._tool_widgets: dict[str, ToolCallWidget] = {}
         self._busy = False
@@ -124,6 +132,15 @@ class HarnessApp(App):
     def action_cancel_turn(self) -> None:
         if self._busy and self._turn_worker is not None:
             self._turn_worker.cancel()
+
+    def _on_compact(self, before: int, after: int) -> None:
+        """Note in the log when history was trimmed to stay under the token budget.
+        Called synchronously from run_turn; mount without awaiting."""
+        log = self.query_one("#log", VerticalScroll)
+        log.mount(
+            NoticeMessage(f"compacted history: {before} → {after} messages")
+        )
+        log.scroll_end(animate=False)
 
     async def _request_approval(self, call) -> object:
         approved = await self.push_screen_wait(
