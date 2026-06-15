@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from .agent import Harness
 from .config import build_model, load_config
 from .deps import Deps
@@ -16,6 +18,9 @@ _INSTRUCTIONS = (
 
 
 def main() -> None:
+    # Load .env from the current directory (or a parent) so keys can live in a
+    # file instead of the shell. Real environment variables still take priority.
+    load_dotenv()
     workspace = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path.cwd()
     cfg = load_config()
     model = build_model(cfg)
