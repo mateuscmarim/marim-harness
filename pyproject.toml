@@ -10,6 +10,7 @@ dependencies = [
 ]
 
 [project.scripts]
+marim = "marim_harness.__main__:main"
 marim-harness = "marim_harness.__main__:main"
 
 [dependency-groups]

@@ -1,6 +1,26 @@
+import os
+from pathlib import Path
+
 import pytest
 
-from marim_harness.config import ModelConfig, ModelSource, load_config
+from marim_harness.config import (
+    ModelConfig,
+    ModelSource,
+    config_dir,
+    global_config_path,
+    load_config,
+    load_environment,
+)
+
+
+@pytest.fixture
+def isolated_env():
+    """Snapshot and restore os.environ so dotenv-set vars don't leak across
+    tests (load_environment mutates the real environment)."""
+    snapshot = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(snapshot)
 
 
 def test_load_config_defaults_to_openrouter(monkeypatch):
@@ -44,3 +64,55 @@ def test_model_source_build_swaps_in_the_model_id():
     model = src.build("some-other-model")
     # The constructed model reports the swapped id, not the config default.
     assert getattr(model, "model_name", "some-other-model") == "some-other-model"
+
+
+def test_config_dir_respects_xdg(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert config_dir() == tmp_path / "marim"
+
+
+def test_config_dir_defaults_to_dot_config(monkeypatch):
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: Path("/home/u")))
+    assert config_dir() == Path("/home/u/.config/marim")
+
+
+def test_global_config_path_is_env_under_config_dir(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert global_config_path() == tmp_path / "marim" / ".env"
+
+
+def test_load_environment_project_overrides_global(isolated_env, monkeypatch, tmp_path):
+    # Global config supplies the key; project .env overrides the model.
+    cfg_home = tmp_path / "xdg"
+    (cfg_home / "marim").mkdir(parents=True)
+    (cfg_home / "marim" / ".env").write_text(
+        "OPENROUTER_API_KEY=global-key\nMARIM_MODEL=global-model\n"
+    )
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".env").write_text("MARIM_MODEL=project-model\n")
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(cfg_home))
+    monkeypatch.chdir(proj)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("MARIM_MODEL", raising=False)
+
+    load_environment()
+
+    assert os.environ["OPENROUTER_API_KEY"] == "global-key"  # fallback from global
+    assert os.environ["MARIM_MODEL"] == "project-model"  # project wins over global
+
+
+def test_load_environment_real_env_wins(isolated_env, monkeypatch, tmp_path):
+    cfg_home = tmp_path / "xdg"
+    (cfg_home / "marim").mkdir(parents=True)
+    (cfg_home / "marim" / ".env").write_text("OPENROUTER_API_KEY=global-key\n")
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(cfg_home))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "real-key")
+
+    load_environment()
+
+    assert os.environ["OPENROUTER_API_KEY"] == "real-key"  # shell env beats files
