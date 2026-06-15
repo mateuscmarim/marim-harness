@@ -1,32 +1,49 @@
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
+# Diff highlighting styles for the approval preview.
+REMOVED_STYLE = "red"
+ADDED_STYLE = "green"
+HEADER_STYLE = "bold"
+LABEL_STYLE = "dim"
 
-def format_detail(tool_name: str, args: dict) -> str:
-    """Render a human-readable preview of what a tool call will do, instead of
-    dumping the raw args dict."""
+
+def _append_diff(detail: Text, old_string: str, new_string: str) -> None:
+    """Append an old/new block: removed lines in red, then added lines in green."""
+    for line in str(old_string).splitlines():
+        detail.append(f"- {line}\n", style=REMOVED_STYLE)
+    for line in str(new_string).splitlines():
+        detail.append(f"+ {line}\n", style=ADDED_STYLE)
+
+
+def format_detail(tool_name: str, args: dict) -> Text:
+    """Build a styled preview of what a tool call will do, instead of dumping the
+    raw args dict. Removed lines are red, added (or newly-written) lines green."""
+    detail = Text()
     if tool_name == "edit_file" and isinstance(args.get("edits"), list):
-        path = args.get("path", "?")
         edits = args["edits"]
-        blocks = []
+        detail.append(f"{args.get('path', '?')}\n\n", style=HEADER_STYLE)
         for i, edit in enumerate(edits, 1):
-            old = "\n".join(
-                f"- {line}" for line in str(edit.get("old_string", "")).splitlines()
-            )
-            new = "\n".join(
-                f"+ {line}" for line in str(edit.get("new_string", "")).splitlines()
-            )
-            header = f"edit {i}:\n" if len(edits) > 1 else ""
-            blocks.append(f"{header}{old}\n{new}")
-        return f"{path}\n\n" + "\n\n".join(blocks)
+            if len(edits) > 1:
+                detail.append(f"edit {i}:\n", style=LABEL_STYLE)
+            _append_diff(detail, edit.get("old_string", ""), edit.get("new_string", ""))
+            if i < len(edits):
+                detail.append("\n")
+        return detail
     if tool_name in ("run_command", "bash") and "command" in args:
-        return f"$ {args['command']}"
+        detail.append(f"$ {args['command']}", style=HEADER_STYLE)
+        return detail
     if tool_name == "write_file" and "content" in args:
-        path = args.get("path", "?")
-        return f"{path}\n\n{args['content']}"
-    return "\n".join(f"{k}: {v!r}" for k, v in args.items())
+        detail.append(f"{args.get('path', '?')}\n\n", style=HEADER_STYLE)
+        for line in str(args["content"]).splitlines():
+            detail.append(f"{line}\n", style=ADDED_STYLE)
+        return detail
+    for k, v in args.items():
+        detail.append(f"{k}: {v!r}\n")
+    return detail
 
 
 class ApprovalModal(ModalScreen[bool]):

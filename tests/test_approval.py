@@ -1,7 +1,24 @@
 import pytest
 from textual.app import App
 
-from marim_harness.tui.approval import ApprovalModal, format_detail
+from marim_harness.tui.approval import (
+    ADDED_STYLE,
+    REMOVED_STYLE,
+    ApprovalModal,
+    format_detail,
+)
+
+
+def _styled_text(detail, needle: str) -> set[str]:
+    """The set of span styles covering the first occurrence of ``needle``."""
+    plain = detail.plain
+    start = plain.index(needle)
+    end = start + len(needle)
+    return {
+        str(span.style)
+        for span in detail.spans
+        if span.start <= start and span.end >= end
+    }
 
 
 class _Harness(App):
@@ -43,10 +60,19 @@ def test_format_detail_edit_shows_diff():
         "edit_file",
         {"path": "a.txt", "edits": [{"old_string": "foo", "new_string": "bar"}]},
     )
-    assert "a.txt" in detail
-    assert "- foo" in detail
-    assert "+ bar" in detail
-    assert "edit 1" not in detail  # single edit isn't numbered
+    assert "a.txt" in detail.plain
+    assert "- foo" in detail.plain
+    assert "+ bar" in detail.plain
+    assert "edit 1" not in detail.plain  # single edit isn't numbered
+
+
+def test_format_detail_edit_highlights_removed_and_added():
+    detail = format_detail(
+        "edit_file",
+        {"path": "a.txt", "edits": [{"old_string": "foo", "new_string": "bar"}]},
+    )
+    assert REMOVED_STYLE in _styled_text(detail, "- foo")
+    assert ADDED_STYLE in _styled_text(detail, "+ bar")
 
 
 def test_format_detail_edit_numbers_multiple_edits():
@@ -60,20 +86,31 @@ def test_format_detail_edit_numbers_multiple_edits():
             ],
         },
     )
-    assert "edit 1" in detail
-    assert "edit 2" in detail
-    assert "- foo" in detail
-    assert "+ qux" in detail
+    assert "edit 1" in detail.plain
+    assert "edit 2" in detail.plain
+    assert "- foo" in detail.plain
+    assert "+ qux" in detail.plain
+    assert REMOVED_STYLE in _styled_text(detail, "- baz")
+    assert ADDED_STYLE in _styled_text(detail, "+ qux")
 
 
 def test_format_detail_bash_shows_command():
     detail = format_detail("run_command", {"command": "ls -la"})
-    assert "$ ls -la" in detail
+    assert "$ ls -la" in detail.plain
+
+
+def test_format_detail_write_file_highlights_content_as_added():
+    detail = format_detail(
+        "write_file", {"path": "new.py", "content": "print('hi')"}
+    )
+    assert "new.py" in detail.plain
+    assert "print('hi')" in detail.plain
+    assert ADDED_STYLE in _styled_text(detail, "print('hi')")
 
 
 def test_format_detail_fallback_formats_args():
     detail = format_detail("some_tool", {"a": 1, "b": "two"})
-    assert "a: 1" in detail
-    assert "b: 'two'" in detail
+    assert "a: 1" in detail.plain
+    assert "b: 'two'" in detail.plain
     # not a raw dict dump
-    assert "{'a'" not in detail
+    assert "{'a'" not in detail.plain
