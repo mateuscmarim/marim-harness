@@ -16,6 +16,7 @@ from textual.widgets import Footer, Header, Input, Static
 from ..agent import Harness
 from ..compaction import estimate_tokens
 from .approval import ApprovalModal
+from .commands import dispatch
 from .widgets import (
     AssistantMessage,
     ErrorMessage,
@@ -42,7 +43,7 @@ def _human_tokens(n: int) -> str:
 
 
 _WELCOME = (
-    "Type a message below to start.\n\n"
+    "Type a message below to start, or `/help` for commands.\n\n"
     "- `ctrl+t` cycles the approval mode (ask → auto → plan)\n"
     "- `esc` cancels the running turn\n"
     "- `/exit` (or `/quit`, `ctrl+c`) quits"
@@ -175,6 +176,28 @@ class HarnessApp(App):
         log.scroll_end(animate=False)
         self._refresh_status()  # context gauge shrinks immediately
 
+    async def post_system(self, markdown: str) -> None:
+        """Render a system/command message into the log (markdown)."""
+        log = self.query_one("#log", VerticalScroll)
+        msg = AssistantMessage()
+        await log.mount(msg)
+        msg.append(markdown)
+        log.scroll_end(animate=False)
+
+    async def reset_conversation(self) -> None:
+        """Wipe the conversation and re-show the welcome screen (the /clear cmd)."""
+        self.harness.reset()
+        self._current_assistant = None
+        self._tool_widgets.clear()
+        log = self.query_one("#log", VerticalScroll)
+        await log.remove_children()
+        await log.mount(Static(_BANNER, id="banner", markup=False))
+        intro = AssistantMessage()
+        await log.mount(intro)
+        intro.append(_WELCOME)
+        self._refresh_status()
+        log.scroll_end(animate=False)
+
     async def _request_approval(self, call) -> object:
         approved = await self.push_screen_wait(
             ApprovalModal(call.tool_name, call.args_as_dict())
@@ -186,8 +209,8 @@ class HarnessApp(App):
         if not text:
             return
         event.input.value = ""
-        if text in ("/exit", "/quit"):
-            self.exit()
+        if text.startswith("/"):
+            await dispatch(self, text)
             return
         log = self.query_one("#log", VerticalScroll)
         await log.mount(UserMessage(text))

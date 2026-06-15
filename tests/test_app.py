@@ -96,6 +96,91 @@ async def test_exit_command_quits_app(tmp_path: Path, cmd: str):
     assert started == []  # never sent to the model as a prompt
 
 
+def _log_text(app) -> str:
+    log = app.query_one("#log")
+    parts = []
+    for c in log.walk_children():
+        if hasattr(c, "text"):  # AssistantMessage accumulates into .text
+            parts.append(c.text)
+        elif hasattr(c, "render"):
+            parts.append(str(c.render()))
+    return " ".join(parts)
+
+
+@pytest.mark.anyio
+async def test_slash_help_lists_commands(tmp_path: Path):
+    app = _app(tmp_path)
+    started = []
+    app.run_worker = lambda *a, **k: started.append(a)  # type: ignore[method-assign]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _submit(app, "/help")
+        await pilot.pause()
+        text = _log_text(app)
+        assert "/mode" in text and "/clear" in text
+        assert started == []  # never sent to the model
+
+
+@pytest.mark.anyio
+async def test_slash_unknown_command_reports_error(tmp_path: Path):
+    app = _app(tmp_path)
+    started = []
+    app.run_worker = lambda *a, **k: started.append(a)  # type: ignore[method-assign]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _submit(app, "/wat")
+        await pilot.pause()
+        assert "unknown command" in _log_text(app).lower()
+        assert started == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("arg,expected", [("plan", "plan"), ("auto", "auto")])
+async def test_slash_mode_sets_mode(tmp_path: Path, arg: str, expected: str):
+    from marim_harness.permissions import Mode
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _submit(app, f"/mode {arg}")
+        await pilot.pause()
+        assert app.harness.deps.mode is Mode(expected)
+
+
+@pytest.mark.anyio
+async def test_slash_mode_no_arg_cycles(tmp_path: Path):
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        start = app.harness.deps.mode
+        await _submit(app, "/mode")
+        await pilot.pause()
+        assert app.harness.deps.mode is start.cycle()
+
+
+@pytest.mark.anyio
+async def test_slash_clear_resets_conversation(tmp_path: Path):
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    from marim_harness.session import SessionStore
+
+    app = _app(tmp_path)
+    store = SessionStore(tmp_path / "ws", base_dir=tmp_path / "data")
+    app.harness.store = store
+    app.harness.history = [ModelRequest(parts=[UserPromptPart(content="old")])]
+    app.harness._persist()
+    assert store.path.exists()
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _submit(app, "/clear")
+        await pilot.pause()
+        assert app.harness.history == []
+        assert not store.path.exists()  # saved session wiped
+        # the banner is back
+        assert app.query_one("#banner") is not None
+
+
 @pytest.mark.anyio
 async def test_failed_turn_shows_error_and_keeps_running(tmp_path: Path):
     from marim_harness.tui.widgets import ErrorMessage

@@ -73,6 +73,14 @@ class Harness:
         self.history, self.usage = self.store.load()
         return len(self.history)
 
+    def reset(self) -> None:
+        """Drop the conversation: clear history, token counters, and any saved
+        session for this workspace. Used by the /clear command."""
+        self.history = []
+        self.usage = RunUsage()
+        if self.store is not None:
+            self.store.clear()
+
     def _persist(self) -> None:
         if self.store is not None:
             self.store.save(self.history, self.usage)
