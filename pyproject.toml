@@ -1,0 +1,31 @@
+[project]
+name = "marim-harness"
+version = "0.1.0"
+description = "A terminal coding agent on Pydantic AI + Textual"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic-ai>=1.107,<2",
+    "textual>=0.80",
+]
+
+[project.scripts]
+marim-harness = "marim_harness.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "anyio>=4",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+src = ["src"]
