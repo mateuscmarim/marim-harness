@@ -38,7 +38,8 @@ class HarnessApp(App):
 
     def _status_text(self) -> str:
         cfg = getattr(self.harness, "model_label", "model")
-        return f"{self.harness.deps.mode.value} · {cfg}"
+        tokens = getattr(self.harness, "total_tokens", 0)
+        return f"{self.harness.deps.mode.value} · {cfg} · {tokens} tokens"
 
     def _refresh_status(self) -> None:
         self.query_one("#status-bar", Static).update(self._status_text())

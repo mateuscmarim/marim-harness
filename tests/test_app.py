@@ -31,6 +31,20 @@ async def test_status_bar_shows_mode(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_status_bar_shows_token_count(tmp_path: Path):
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bar = app.query_one("#status-bar")
+        assert "0 tokens" in str(bar.render())  # starts at zero
+        app.harness.usage.input_tokens = 12
+        app.harness.usage.output_tokens = 8
+        app._refresh_status()
+        await pilot.pause()
+        assert "20 tokens" in str(bar.render())
+
+
+@pytest.mark.anyio
 async def test_mode_keybinding_cycles(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
