@@ -56,6 +56,19 @@ async def test_plan_mode_denies_edit(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_run_turn_accumulates_token_usage(tmp_path: Path):
+    (tmp_path / "a.txt").write_text("foo")
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    harness = _make_harness(_edit_then_done_model(), deps)
+    assert harness.total_tokens == 0
+    await harness.run_turn("change foo to bar")
+    after_first = harness.total_tokens
+    assert after_first > 0
+    await harness.run_turn("anything else")
+    assert harness.total_tokens > after_first  # accumulates across turns
+
+
+@pytest.mark.anyio
 async def test_ask_mode_calls_back(tmp_path: Path):
     (tmp_path / "a.txt").write_text("foo")
     asked = []

@@ -1,6 +1,7 @@
 from typing import Optional
 
 from pydantic_ai import Agent, DeferredToolRequests
+from pydantic_ai.usage import RunUsage
 
 from .deps import Deps
 from .permissions import resolve_approvals
@@ -23,6 +24,12 @@ class Harness:
         self.deps = deps
         self.history: list = []
         self.model_label = model_label
+        self.usage = RunUsage()
+
+    @property
+    def total_tokens(self) -> int:
+        """Cumulative input + output tokens across the whole session."""
+        return self.usage.total_tokens
 
     async def run_turn(self, prompt: str, event_stream_handler=None) -> str:
         """Run the agent until it produces a final text answer, looping through
@@ -38,6 +45,7 @@ class Harness:
                 event_stream_handler=event_stream_handler,
             )
             self.history = result.all_messages()
+            self.usage += result.usage
             if isinstance(result.output, DeferredToolRequests):
                 deferred_results = await resolve_approvals(
                     result.output, self.deps.mode, self.deps.request_approval
