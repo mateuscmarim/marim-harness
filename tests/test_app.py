@@ -641,6 +641,27 @@ async def test_model_command_sets_model_directly(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_model_command_opens_picker_from_input(tmp_path: Path):
+    """Regression: `/model` (no arg) dispatches from the input handler, which is
+    not a worker. The picker must open there without raising NoActiveWorker."""
+    from marim_harness.catalog import ModelEntry
+    from marim_harness.tui.model_picker import ModelPickerModal
+
+    source = _FakeSource(entries=[ModelEntry(id="openai/gpt-5.2", name="GPT-5.2")])
+    app = _switch_app(tmp_path, source)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _submit(app, "/model")  # the exact path that crashed the TUI
+        await pilot.pause()
+        # the picker is on screen, the app is alive
+        assert isinstance(app.screen, ModelPickerModal)
+        assert app.is_running is True
+        await pilot.press("escape")  # dismiss; model unchanged
+        await pilot.pause()
+        assert app.harness.model_id == "startup"
+
+
+@pytest.mark.anyio
 async def test_model_picker_applies_choice(tmp_path: Path):
     from marim_harness.catalog import ModelEntry
     from marim_harness.tui.widgets import NoticeMessage
@@ -648,10 +669,11 @@ async def test_model_picker_applies_choice(tmp_path: Path):
     source = _FakeSource(entries=[ModelEntry(id="openai/gpt-5.2", name="GPT-5.2")])
     app = _switch_app(tmp_path, source)
 
-    async def fake_pick(screen):
-        return "openai/gpt-5.2"
+    def fake_push(screen, callback=None):
+        if callback is not None:
+            callback("openai/gpt-5.2")
 
-    app.push_screen_wait = fake_pick  # type: ignore[method-assign]
+    app.push_screen = fake_push  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
         await app.open_model_picker()
@@ -665,10 +687,11 @@ async def test_model_picker_applies_choice(tmp_path: Path):
 async def test_model_picker_cancel_keeps_model(tmp_path: Path):
     app = _switch_app(tmp_path, _FakeSource())
 
-    async def fake_pick(screen):
-        return None  # cancelled
+    def fake_push(screen, callback=None):
+        if callback is not None:
+            callback(None)  # cancelled
 
-    app.push_screen_wait = fake_pick  # type: ignore[method-assign]
+    app.push_screen = fake_push  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
         await app.open_model_picker()
