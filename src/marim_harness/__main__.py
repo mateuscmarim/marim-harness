@@ -3,7 +3,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from .agent import Harness
+from .agent import Harness, make_summarizer
 from .config import build_model, load_config
 from .deps import Deps
 from .permissions import Mode
@@ -45,6 +45,7 @@ def main() -> None:
         model_label=f"{cfg.provider}/{cfg.model}",
         store=SessionStore(workspace),
         max_context_tokens=cfg.max_context_tokens,
+        summarizer=make_summarizer(model),
     )
     if args.resume:
         harness.resume()
