@@ -18,7 +18,7 @@ from .widgets import AssistantMessage, ToolCallWidget, UserMessage
 _WELCOME = (
     "Welcome to **marim-harness**. Type a message below to start.\n\n"
     "- `ctrl+t` cycles the approval mode (ask → auto → plan)\n"
-    "- `ctrl+c` quits"
+    "- `/exit` (or `/quit`, `ctrl+c`) quits"
 )
 
 
@@ -81,6 +81,9 @@ class HarnessApp(App):
         if not text:
             return
         event.input.value = ""
+        if text in ("/exit", "/quit"):
+            self.exit()
+            return
         log = self.query_one("#log", VerticalScroll)
         await log.mount(UserMessage(text))
         self._current_assistant = None
