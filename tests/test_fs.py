@@ -57,3 +57,27 @@ def test_grep_returns_location_lines(tmp_path: Path):
 def test_path_escape_raises_model_retry(tmp_path: Path):
     with pytest.raises(ModelRetry):
         fs.read_file(tmp_path, "../escape.txt")
+
+
+def test_glob_escaping_pattern_excludes_outside_files(tmp_path: Path):
+    root = tmp_path / "ws"
+    root.mkdir()
+    secret = tmp_path / "secret"
+    secret.mkdir()
+    (secret / "key.txt").write_text("top secret")
+    out = fs.glob_files(root, "../secret/*")
+    assert "key.txt" not in out
+    assert out == "(no matches)"
+
+
+def test_glob_absolute_pattern_raises_model_retry(tmp_path: Path):
+    with pytest.raises(ModelRetry):
+        fs.glob_files(tmp_path, "/etc/hostname")
+
+
+def test_glob_valid_pattern_returns_relative_paths(tmp_path: Path):
+    (tmp_path / "a.py").write_text("")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "b.py").write_text("")
+    out = fs.glob_files(tmp_path, "**/*.py")
+    assert out == "a.py\nsub/b.py"

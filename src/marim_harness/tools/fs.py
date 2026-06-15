@@ -54,9 +54,24 @@ def edit_file(root: Path, path: str, old_string: str, new_string: str) -> str:
 
 def glob_files(root: Path, pattern: str) -> str:
     """List files under the workspace matching a glob pattern."""
-    matches = sorted(
-        str(p.relative_to(root)) for p in root.glob(pattern) if p.is_file()
-    )
+    try:
+        candidates = list(root.glob(pattern))
+    except (NotImplementedError, ValueError) as exc:
+        raise ModelRetry(
+            "invalid glob pattern: use a path relative to the workspace, "
+            "no leading '/' or '..'"
+        ) from exc
+    matches = []
+    for p in candidates:
+        if not p.is_file():
+            continue
+        rel = str(p.relative_to(root))
+        try:
+            resolve_in_workspace(root, rel)
+        except WorkspaceError:
+            continue  # skip matches that escape the workspace root
+        matches.append(rel)
+    matches.sort()
     return "\n".join(matches) if matches else "(no matches)"
 
 

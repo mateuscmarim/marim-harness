@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Awaitable, Callable, Protocol
+from typing import Awaitable, Callable
 
 from pydantic_ai import DeferredToolRequests, DeferredToolResults, ToolDenied
 
@@ -12,11 +12,6 @@ class Mode(str, Enum):
     def cycle(self) -> "Mode":
         order = [Mode.ask, Mode.auto, Mode.plan]
         return order[(order.index(self) + 1) % len(order)]
-
-
-class ApprovalCallback(Protocol):
-    def __call__(self, call: object) -> Awaitable[object]:
-        ...
 
 
 async def resolve_approvals(

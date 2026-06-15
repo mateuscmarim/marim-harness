@@ -39,3 +39,47 @@ async def test_mode_keybinding_cycles(tmp_path: Path):
         await pilot.press("ctrl+t")
         await pilot.pause()
         assert app.harness.deps.mode is not start
+
+
+@pytest.mark.anyio
+async def test_on_events_mounts_and_finishes_tool_widget(tmp_path: Path):
+    from pydantic_ai.messages import (
+        FunctionToolCallEvent,
+        FunctionToolResultEvent,
+        ToolCallPart,
+        ToolReturnPart,
+    )
+
+    from marim_harness.tui.widgets import ToolCallWidget
+
+    call = FunctionToolCallEvent(
+        part=ToolCallPart(
+            tool_name="read_file",
+            args={"path": "a.txt"},
+            tool_call_id="call-1",
+        )
+    )
+    result = FunctionToolResultEvent(
+        part=ToolReturnPart(
+            tool_name="read_file",
+            content="1\tfoo",
+            tool_call_id="call-1",
+        )
+    )
+
+    async def gen():
+        yield call
+        yield result
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._on_events(None, gen())
+        await pilot.pause()
+
+        widget = app._tool_widgets.get("call-1")
+        assert isinstance(widget, ToolCallWidget)
+        log = app.query_one("#log")
+        assert widget in log.walk_children()
+        assert widget.status == "done"
+        assert "1\tfoo" in widget.result_text
