@@ -108,7 +108,7 @@ class PromptInput(TextArea):
     newline. The box auto-grows with its content up to ``_MAX_LINES``, then
     scrolls internally."""
 
-    _MIN_LINES = 1
+    _MIN_LINES = 3
     _MAX_LINES = 10
 
     class Submitted(Message):

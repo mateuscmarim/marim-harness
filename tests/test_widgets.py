@@ -186,9 +186,11 @@ async def test_target_height_grows_and_caps():
         pi = app.query_one(PromptInput)
         await pilot.pause()
         pi.text = ""
-        assert pi._target_height() == 1  # empty starts at one line
+        assert pi._target_height() == PromptInput._MIN_LINES  # empty holds the floor
         pi.text = "a\nb\nc"
-        assert pi._target_height() == 3  # grows with logical lines
+        assert pi._target_height() == PromptInput._MIN_LINES  # within the floor
+        pi.text = "\n".join(str(i) for i in range(5))
+        assert pi._target_height() == 5  # grows with logical lines
         pi.text = "\n".join(str(i) for i in range(20))
         assert pi._target_height() == PromptInput._MAX_LINES  # capped
 
