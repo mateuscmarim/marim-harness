@@ -270,6 +270,24 @@ async def test_status_bar_shows_busy_indicator(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_set_busy_survives_missing_status_bar(tmp_path: Path):
+    """Regression: a turn finishing while the app tears down (e.g. /exit fired
+    mid-turn) runs `_run_turn`'s finally -> `_set_busy(False)` -> `_refresh_status`
+    after the status bar has already been removed. It must not raise NoMatches."""
+    from textual.widgets import Static
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one("#status-bar", Static).remove()
+        await pilot.pause()
+        # No status bar in the DOM; updating status must be a quiet no-op.
+        app._set_busy(False)
+        app._refresh_status()
+        assert app.is_running is True
+
+
+@pytest.mark.anyio
 async def test_log_and_input_both_visible(tmp_path: Path):
     """Status bar and input must not collide; both render at non-zero size."""
     app = _app(tmp_path)

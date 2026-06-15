@@ -11,6 +11,7 @@ from pydantic_ai.messages import (
 )
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
+from textual.css.query import NoMatches
 from textual.widgets import Footer, Header, Static
 
 from ..agent import Harness
@@ -159,7 +160,14 @@ class HarnessApp(App):
         return f"{base} · working…" if self._busy else base
 
     def _refresh_status(self) -> None:
-        self.query_one("#status-bar", Static).update(self._status_text())
+        try:
+            bar = self.query_one("#status-bar", Static)
+        except NoMatches:
+            # The status bar is gone — the app is tearing down (e.g. /exit fired
+            # mid-turn) and a worker's finally block is still firing. Nothing to
+            # update; quietly skip.
+            return
+        bar.update(self._status_text())
 
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
