@@ -1,6 +1,6 @@
 from typing import Callable, Optional
 
-from pydantic_ai import Agent, DeferredToolRequests
+from pydantic_ai import Agent, DeferredToolRequests, RunContext
 from pydantic_ai.usage import RunUsage
 
 from .compaction import (
@@ -10,6 +10,7 @@ from .compaction import (
     render_transcript,
 )
 from .deps import Deps
+from .instructions import load_project_instructions
 from .permissions import resolve_approvals
 from .session import SessionInfo, SessionManager, SessionStore
 from .tools.provider import ToolProvider
@@ -50,6 +51,16 @@ class Harness:
             output_type=[str, DeferredToolRequests],
         )
         provider.register(self.agent)
+
+        @self.agent.instructions
+        def _project_instructions(ctx: RunContext[Deps]) -> str:
+            """Layer the workspace's AGENTS.md on top of the base prompt, re-read
+            each turn so edits take effect without a restart."""
+            text = load_project_instructions(ctx.deps.workspace_root)
+            if not text:
+                return ""
+            return f"Project-specific instructions from AGENTS.md:\n\n{text}"
+
         self.deps = deps
         self.history: list = []
         self.model_label = model_label
