@@ -17,6 +17,7 @@ from ..agent import Harness
 from ..compaction import estimate_tokens
 from .approval import ApprovalModal
 from .commands import dispatch
+from .model_picker import ModelPickerModal
 from .widgets import (
     AssistantMessage,
     ErrorMessage,
@@ -229,6 +230,33 @@ class HarnessApp(App):
         await self._render_session(
             f"**Switched to** `{label}` — {n} messages restored."
         )
+
+    async def open_model_picker(self) -> None:
+        """Fetch the provider's catalog and let the user pick a model, applying
+        the choice to the harness. Degrades to free-text when no catalog loads."""
+        source = self.harness.model_source
+        if source is None:
+            await self.post_system("Model switching isn't available here.")
+            return
+        entries = await source.list_models()
+        if not entries and not source.is_local:
+            await self.post_system(
+                "Couldn't fetch the model catalog — type a model id to set it directly."
+            )
+        chosen = await self.push_screen_wait(
+            ModelPickerModal(
+                entries,
+                allow_free_text=source.is_local or not entries,
+                current=self.harness.model_id,
+            )
+        )
+        if not chosen:
+            return
+        self.harness.set_model(chosen)
+        self._refresh_status()
+        log = self.query_one("#log", VerticalScroll)
+        log.mount(NoticeMessage(f"model: {self.harness.model_label}"))
+        log.scroll_end(animate=False)
 
     async def _request_approval(self, call) -> object:
         approved = await self.push_screen_wait(

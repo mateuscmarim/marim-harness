@@ -125,7 +125,13 @@ async def _cmd_mode(app: HarnessApp, arg: str) -> None:
 
 
 async def _cmd_model(app: HarnessApp, arg: str) -> None:
-    await app.post_system(f"Model: `{app.harness.model_label}`")
+    arg = arg.strip()
+    if arg:
+        app.harness.set_model(arg)
+        app._refresh_status()
+        await app.post_system(f"Model: `{app.harness.model_label}`")
+        return
+    await app.open_model_picker()
 
 
 async def _cmd_exit(app: HarnessApp, arg: str) -> None:
@@ -140,7 +146,7 @@ COMMANDS: list[Command] = [
     Command("switch", "switch sessions: /switch <number|name>", _cmd_switch),
     Command("name", "name this session: /name [title] (auto-titles if blank)", _cmd_name),
     Command("mode", "set approval mode: /mode [ask|auto|plan]", _cmd_mode),
-    Command("model", "show the active model", _cmd_model),
+    Command("model", "switch model: /model [id] (opens a picker if blank)", _cmd_model),
     Command("exit", "quit the harness", _cmd_exit, aliases=("quit",)),
 ]
 

@@ -585,3 +585,92 @@ async def test_autoname_posts_notice_after_first_turn(tmp_path: Path):
         assert app.harness.session_name == "Auto Title"
         assert "Auto Title" in _log_text(app)
         assert "Auto Title" in str(app.query_one("#status-bar").render())
+
+
+class _FakeSource:
+    """Stand-in for ModelSource in app tests: builds TestModels, no network."""
+
+    def __init__(self, entries=None, is_local=False):
+        self._entries = entries or []
+        self._is_local = is_local
+        self.built = []
+
+    def build(self, model_id):
+        from pydantic_ai.models.test import TestModel
+
+        self.built.append(model_id)
+        return TestModel(call_tools=[])
+
+    def label(self, model_id):
+        return f"fake/{model_id}"
+
+    @property
+    def is_local(self):
+        return self._is_local
+
+    async def list_models(self):
+        return self._entries
+
+
+def _switch_app(tmp_path: Path, source) -> HarnessApp:
+    from pydantic_ai.models.test import TestModel
+
+    from marim_harness.agent import Harness
+    from marim_harness.session import SessionManager
+    from marim_harness.tools.provider import BuiltinToolProvider
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
+    harness = Harness(
+        TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test",
+        store=manager.create(), manager=manager, model_source=source,
+        model_id="startup",
+    )
+    return HarnessApp(harness)
+
+
+@pytest.mark.anyio
+async def test_model_command_sets_model_directly(tmp_path: Path):
+    app = _switch_app(tmp_path, _FakeSource())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _submit(app, "/model openai/gpt-5.2")
+        await pilot.pause()
+        assert app.harness.model_id == "openai/gpt-5.2"
+        assert "fake/openai/gpt-5.2" in str(app.query_one("#status-bar").render())
+
+
+@pytest.mark.anyio
+async def test_model_picker_applies_choice(tmp_path: Path):
+    from marim_harness.catalog import ModelEntry
+    from marim_harness.tui.widgets import NoticeMessage
+
+    source = _FakeSource(entries=[ModelEntry(id="openai/gpt-5.2", name="GPT-5.2")])
+    app = _switch_app(tmp_path, source)
+
+    async def fake_pick(screen):
+        return "openai/gpt-5.2"
+
+    app.push_screen_wait = fake_pick  # type: ignore[method-assign]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.open_model_picker()
+        await pilot.pause()
+        assert app.harness.model_id == "openai/gpt-5.2"
+        notices = [str(n.render()) for n in app.query(NoticeMessage)]
+        assert any("fake/openai/gpt-5.2" in n for n in notices)
+
+
+@pytest.mark.anyio
+async def test_model_picker_cancel_keeps_model(tmp_path: Path):
+    app = _switch_app(tmp_path, _FakeSource())
+
+    async def fake_pick(screen):
+        return None  # cancelled
+
+    app.push_screen_wait = fake_pick  # type: ignore[method-assign]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.open_model_picker()
+        await pilot.pause()
+        assert app.harness.model_id == "startup"  # unchanged

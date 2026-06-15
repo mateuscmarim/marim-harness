@@ -398,3 +398,128 @@ async def test_ask_mode_calls_back(tmp_path: Path):
     await harness.run_turn("change foo to bar")
     assert asked == ["edit_file"]
     assert (tmp_path / "a.txt").read_text() == "bar"
+
+
+def _named_model(model_id: str) -> FunctionModel:
+    """A model whose every reply names the id it was built for, so a test can
+    tell which model actually ran a turn."""
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content=f"from {model_id}")])
+
+    return FunctionModel(fn)
+
+
+class _FakeSource:
+    """Stand-in for config.ModelSource: builds id-tagged models, no network."""
+
+    def __init__(self) -> None:
+        self.built: list[str] = []
+
+    def build(self, model_id: str) -> FunctionModel:
+        self.built.append(model_id)
+        return _named_model(model_id)
+
+    def label(self, model_id: str) -> str:
+        return f"fake/{model_id}"
+
+    @property
+    def is_local(self) -> bool:
+        return False
+
+    async def list_models(self):
+        return []
+
+
+def _switch_harness(tmp_path, *, source=None, summarizer=None, titler=None):
+    from marim_harness.session import SessionManager
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
+    return Harness(
+        model=_named_model("startup"), provider=BuiltinToolProvider(), deps=deps,
+        instructions="x", store=manager.create(), manager=manager,
+        model_source=source, model_id="startup", summarizer=summarizer, titler=titler,
+    )
+
+
+@pytest.mark.anyio
+async def test_set_model_switches_model_and_label(tmp_path: Path):
+    src = _FakeSource()
+    h = _switch_harness(tmp_path, source=src)
+    h.set_model("openai/gpt-5.2")
+    assert h.model_id == "openai/gpt-5.2"
+    assert h.model_label == "fake/openai/gpt-5.2"
+    assert src.built == ["openai/gpt-5.2"]
+    out = await h.run_turn("hello")
+    assert out == "from openai/gpt-5.2"  # the new model actually ran the turn
+
+
+@pytest.mark.anyio
+async def test_set_model_rebuilds_configured_aux_agents(tmp_path: Path):
+    async def summarizer(messages):
+        return "s"
+
+    h = _switch_harness(tmp_path, source=_FakeSource(),
+                        summarizer=summarizer, titler=_fake_titler)
+    old_summarizer, old_titler = h.summarizer, h.titler
+    h.set_model("openai/gpt-5.2")
+    assert h.summarizer is not old_summarizer  # repointed at the new model
+    assert h.titler is not old_titler
+
+
+@pytest.mark.anyio
+async def test_set_model_leaves_unconfigured_aux_alone(tmp_path: Path):
+    h = _switch_harness(tmp_path, source=_FakeSource())  # no summarizer/titler
+    h.set_model("openai/gpt-5.2")
+    assert h.summarizer is None  # not fabricated
+    assert h.titler is None
+
+
+def test_set_model_without_source_is_noop(tmp_path: Path):
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = Harness(model=_named_model("startup"), provider=BuiltinToolProvider(),
+                deps=deps, instructions="x", model_id="startup")
+    h.set_model("openai/gpt-5.2")  # no source -> nothing changes
+    assert h.model_id == "startup"
+
+
+def test_set_model_persists_to_session(tmp_path: Path):
+    h = _switch_harness(tmp_path, source=_FakeSource())
+    h.set_model("openai/gpt-5.2")
+    assert h.store.model == "openai/gpt-5.2"
+    assert h.manager.store(h.store.session_id).model == "openai/gpt-5.2"
+
+
+@pytest.mark.anyio
+async def test_switch_session_restores_its_model(tmp_path: Path):
+    h = _switch_harness(tmp_path, source=_FakeSource())
+    h.set_model("openai/gpt-5.2")
+    alpha_id = h.store.session_id
+
+    # A fresh session reverts to the startup model...
+    h.new_session("beta")
+    h.set_model("anthropic/claude-sonnet-4-6")
+    assert h.model_id == "anthropic/claude-sonnet-4-6"
+
+    # ...and switching back restores alpha's saved model.
+    h.switch_session(alpha_id)
+    assert h.model_id == "openai/gpt-5.2"
+    assert h.model_label == "fake/openai/gpt-5.2"
+
+
+def test_resume_restores_saved_model(tmp_path: Path):
+    from marim_harness.session import SessionManager
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
+    store = manager.create()
+    first = Harness(model=_named_model("startup"), provider=BuiltinToolProvider(),
+                    deps=deps, instructions="x", store=store, manager=manager,
+                    model_source=_FakeSource(), model_id="startup")
+    first.set_model("openai/gpt-5.2")
+
+    second = Harness(model=_named_model("startup"), provider=BuiltinToolProvider(),
+                     deps=deps, instructions="x", store=manager.store(store.session_id),
+                     manager=manager, model_source=_FakeSource(), model_id="startup")
+    second.resume()
+    assert second.model_id == "openai/gpt-5.2"
