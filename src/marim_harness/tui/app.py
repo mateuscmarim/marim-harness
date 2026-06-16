@@ -248,6 +248,14 @@ class HarnessApp(App):
         self.harness.deps.mode = self.harness.deps.mode.cycle()
         self._refresh_status()
 
+    def watch_theme(self, theme: str) -> None:
+        """Persist the active theme so it's the startup theme next run. Only the
+        marim themes are saved; Textual may set built-in defaults during init,
+        which save_theme ignores."""
+        from ..prefs import save_theme
+
+        save_theme(theme)
+
     def action_cancel_turn(self) -> None:
         if self._busy and self._turn_worker is not None:
             self._turn_worker.cancel()

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Awaitable, Callable
 
 from ..permissions import Mode
 from ..skills import discover_skills
+from .themes import THEME_NAMES
 
 if TYPE_CHECKING:
     from .app import HarnessApp
@@ -133,6 +134,26 @@ async def _cmd_model(app: HarnessApp, arg: str) -> None:
         await app.post_system(f"Model: `{app.harness.model_label}`")
         return
     await app.open_model_picker()
+
+
+async def _cmd_theme(app: HarnessApp, arg: str) -> None:
+    """List the available themes, or switch to one: ``/theme [name]``."""
+    name = arg.strip()
+    if not name:
+        current = getattr(app, "theme", None)
+        lines = ["**Themes**", ""]
+        for t in THEME_NAMES:
+            marker = " ← active" if t == current else ""
+            lines.append(f"- `{t}`{marker}")
+        lines += ["", "Switch with `/theme <name>` (or `Ctrl+P` → Change theme)."]
+        await app.post_system("\n".join(lines))
+        return
+    if name not in THEME_NAMES:
+        await app.post_system(
+            f"Unknown theme: `{name}`. Available: {', '.join(THEME_NAMES)}."
+        )
+        return
+    app.theme = name  # the app's watch_theme persists the choice
 
 
 async def _cmd_remember(app: HarnessApp, arg: str) -> None:
@@ -268,6 +289,7 @@ COMMANDS: list[Command] = [
     Command("name", "name this session: /name [title] (auto-titles if blank)", _cmd_name),
     Command("mode", "set approval mode: /mode [ask|auto|plan]", _cmd_mode),
     Command("model", "switch model: /model [id] (opens a picker if blank)", _cmd_model),
+    Command("theme", "list or set the color theme: /theme [name]", _cmd_theme),
     Command("remember", "save a note to memory: /remember <fact>", _cmd_remember),
     Command("skill", "list or run skills: /skill [name [context]]", _cmd_skill),
     Command("mcp", "list MCP servers or toggle them: /mcp [enable|disable <name|all>]", _cmd_mcp),
