@@ -57,9 +57,9 @@ class ToolCallWidget(Collapsible):
         super().__init__(self._body, title=self._summary(), collapsed=True)
 
     def _summary(self) -> str:
-        glyph = {"pending": "?", "done": "+", "denied": "x"}.get(self.status, "?")
+        glyph = {"pending": "·", "done": "✓", "denied": "✕"}.get(self.status, "·")
         arg_preview = ", ".join(f"{k}={v!r}" for k, v in list(self.args.items())[:2])
-        return f"[{glyph}] {self.tool_name}({arg_preview})"
+        return f"{glyph} {self.tool_name}({arg_preview})"
 
     def _result_renderable(self) -> RenderableType:
         """The result body, syntax-highlighted when it is file source."""
@@ -101,14 +101,14 @@ class ErrorMessage(Static):
     """A turn that failed: shown in the log so the session survives the error."""
 
     def __init__(self, text: str) -> None:
-        super().__init__(f"⚠ {text}", classes="error-msg")
+        super().__init__(f"✕ {text}", classes="error-msg")
 
 
 class NoticeMessage(Static):
     """A low-key system note in the log (e.g. history was compacted)."""
 
     def __init__(self, text: str) -> None:
-        super().__init__(f"• {text}", classes="notice-msg")
+        super().__init__(f"· {text}", classes="notice-msg")
 
 
 class TaskPanel(Static):
@@ -174,9 +174,9 @@ class SubAgentWidget(Collapsible):
         super().__init__(self.body, title=self._summary(), collapsed=collapsed)
 
     def _summary(self) -> str:
-        glyph = {"pending": "▸", "done": "+", "denied": "x"}.get(self.status, "▸")
+        glyph = {"pending": "▸", "done": "✓", "denied": "✕"}.get(self.status, "▸")
         task = self.agent_task if len(self.agent_task) <= 40 else self.agent_task[:39] + "…"
-        parts = [f"[{glyph}] spawn_agent({self.agent_type}: {task!r})"]
+        parts = [f"{glyph} spawn_agent({self.agent_type}: {task!r})"]
         # Only a running agent carries an activity tail; a finished one is clean.
         if self.status == "pending" and self.activity:
             parts.append(self.activity)
