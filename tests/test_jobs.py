@@ -146,6 +146,45 @@ async def test_cancel_all_stops_every_running_job():
     assert all(j.status == "cancelled" for j in reg.list())
 
 
+@pytest.mark.anyio
+async def test_finished_digest_lists_completed_then_clears():
+    reg = JobRegistry()
+    a = reg.register("bash", "build", _sleep_then("ok", 0.01))
+    b = reg.register("agent", "explore: map", _sleep_then("r", 0.01))
+    await reg.wait(a)
+    await reg.wait(b)
+    digest = reg.take_finished_digest()
+    assert "job-1 (bash) done" in digest
+    assert "job-2 (agent) done" in digest
+    # Draining clears the buffer.
+    assert reg.take_finished_digest() == ""
+
+
+@pytest.mark.anyio
+async def test_finished_digest_empty_when_nothing_finished():
+    reg = JobRegistry()
+    assert reg.take_finished_digest() == ""
+    reg.register("agent", "slow", _sleep_then("x", 5))
+    assert reg.take_finished_digest() == ""  # still running
+    await reg.cancel_all()
+
+
+@pytest.mark.anyio
+async def test_finished_digest_includes_cancelled_and_failed():
+    reg = JobRegistry()
+    slow = reg.register("bash", "sleep", _sleep_then("x", 5))
+    await reg.cancel(slow)
+
+    async def boom():
+        raise ValueError("nope")
+
+    bad = reg.register("agent", "broken", boom())
+    await reg.wait(bad)
+    digest = reg.take_finished_digest()
+    assert "job-1 (bash) cancelled" in digest
+    assert "job-2 (agent) failed" in digest
+
+
 def test_render_jobs_formats_rows():
     # Build Jobs directly to avoid scheduling for this pure-render test.
     jobs = [

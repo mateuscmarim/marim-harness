@@ -49,10 +49,26 @@ class JobRegistry:
         self._jobs: dict[str, Job] = {}
         self._counter = 0
         self.on_change = on_change
+        # Ids of jobs that reached a terminal state since the digest was last
+        # drained — surfaced to the model at the start of its next turn so a
+        # fire-and-forget result is never silently forgotten.
+        self._finished_since_turn: list[str] = []
 
     def _notify(self) -> None:
         if self.on_change is not None:
             self.on_change()
+
+    def _settle(self, job: Job, status: Status, result: Optional[str] = None) -> None:
+        """Move a running job to its terminal ``status`` exactly once: record it
+        for the next-turn digest and repaint. A no-op if already terminal, so the
+        wrapper's cancel path and an explicit ``cancel()`` can't double-count."""
+        if job.status != "running":
+            return
+        job.status = status
+        if result is not None:
+            job.result = result
+        self._finished_since_turn.append(job.id)
+        self._notify()
 
     def _next_id(self) -> str:
         self._counter += 1
@@ -75,16 +91,13 @@ class JobRegistry:
 
         async def wrapper() -> None:
             try:
-                job.result = await coro
-                job.status = "done"
+                result = await coro
+                self._settle(job, "done", result)
             except asyncio.CancelledError:
-                job.status = "cancelled"
+                self._settle(job, "cancelled")
                 raise
             except Exception as exc:  # a job failure never escapes into the loop
-                job.result = f"{type(exc).__name__}: {exc}"
-                job.status = "failed"
-            finally:
-                self._notify()
+                self._settle(job, "failed", f"{type(exc).__name__}: {exc}")
 
         job.task = asyncio.create_task(wrapper())
         self._jobs[job.id] = job
@@ -142,10 +155,8 @@ class JobRegistry:
             except (asyncio.CancelledError, Exception):
                 pass
         # A task cancelled before it began running never hits the wrapper's
-        # except, so set the terminal status here authoritatively.
-        if job.status == "running":
-            job.status = "cancelled"
-            self._notify()
+        # except, so settle here; _settle is a no-op if it already landed.
+        self._settle(job, "cancelled")
         return f"cancelled {job_id}"
 
     async def cancel_all(self) -> None:
@@ -153,6 +164,25 @@ class JobRegistry:
         for job in list(self._jobs.values()):
             if job.status == "running":
                 await self.cancel(job.id)
+
+    def take_finished_digest(self) -> str:
+        """One-line summary of jobs that finished since this was last called, then
+        clear the buffer. Empty string when nothing finished. The Harness prepends
+        it to the next turn so the model notices completions it didn't wait on."""
+        ids = self._finished_since_turn
+        self._finished_since_turn = []
+        parts = []
+        for jid in ids:
+            job = self._jobs.get(jid)
+            if job is not None:
+                parts.append(f"{job.id} ({job.kind}) {job.status}")
+        if not parts:
+            return ""
+        return (
+            "[background jobs finished since your last turn: "
+            + "; ".join(parts)
+            + " — read results with job_output]"
+        )
 
 
 def render_jobs(jobs: list[Job]) -> str:
