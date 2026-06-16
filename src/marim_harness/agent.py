@@ -1,5 +1,5 @@
 from contextlib import AsyncExitStack
-from typing import Awaitable, Callable, Optional
+from typing import Callable, Optional
 
 from pydantic_ai import Agent, DeferredToolRequests, RunContext
 from pydantic_ai.usage import RunUsage
@@ -13,8 +13,12 @@ from .agents import (
 )
 from .compaction import (
     Summarizer,
+    Titler,
+    clean_title,
     compact_history,
     compact_history_with_summary,
+    make_summarizer,
+    make_titler,
     render_transcript,
 )
 from .deps import Deps
@@ -26,61 +30,6 @@ from .session import SessionInfo, SessionManager, SessionStore
 from .skills import discover_skills, skills_index_text
 from .tasks import render_tasks
 from .tools.provider import ToolProvider
-
-_SUMMARY_INSTRUCTIONS = (
-    "You compress a coding-session transcript into a dense summary so the agent "
-    "can keep working with less context. Preserve: the user's goals and "
-    "constraints, decisions made, files read or edited and what changed, command "
-    "results, and any unresolved problems or next steps. Drop pleasantries and "
-    "redundant detail. Write terse notes, not prose."
-)
-
-
-def make_summarizer(model) -> Summarizer:
-    """Build a summarizer backed by a dedicated, tool-free agent on ``model``."""
-    summary_agent = Agent(model, instructions=_SUMMARY_INSTRUCTIONS)
-
-    async def summarize(messages: list) -> str:
-        result = await summary_agent.run(render_transcript(messages))
-        return result.output
-
-    return summarize
-
-
-Titler = Callable[[list], Awaitable[str]]
-
-_TITLE_INSTRUCTIONS = (
-    "You write a short, specific title for a coding session from its transcript. "
-    "Reply with the title only — no quotes, no trailing punctuation, at most six "
-    "words. Name the concrete task, e.g. 'Fix the parser off-by-one' or 'Add "
-    "session auto-naming'."
-)
-
-_MAX_TITLE_CHARS = 50
-
-
-def clean_title(raw: str) -> str:
-    """Reduce a model's reply to a single tidy title line, with a safe fallback."""
-    lines = [line.strip() for line in (raw or "").splitlines()]
-    text = next((line for line in lines if line), "")
-    if text.lower().startswith("title:"):
-        text = text[len("title:"):].strip()
-    text = text.strip("\"'`").strip().rstrip(".!?,;:").strip()
-    if len(text) > _MAX_TITLE_CHARS:
-        text = text[:_MAX_TITLE_CHARS].rstrip() + "…"
-    return text or "Untitled session"
-
-
-def make_titler(model) -> Titler:
-    """Build a titler backed by a dedicated, tool-free agent on ``model``."""
-    title_agent = Agent(model, instructions=_TITLE_INSTRUCTIONS)
-
-    async def title(messages: list) -> str:
-        result = await title_agent.run(render_transcript(messages))
-        return clean_title(result.output)
-
-    return title
-
 
 _PROACTIVE_MEMORY_POLICY = (
     "Proactive memory is ON. Beyond explicit requests, save durable facts that "

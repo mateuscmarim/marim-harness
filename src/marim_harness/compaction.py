@@ -14,6 +14,7 @@ Two strategies share the same head/tail split:
 
 from typing import Awaitable, Callable, Optional
 
+from pydantic_ai import Agent
 from pydantic_ai.messages import (
     ModelRequest,
     TextPart,
@@ -164,3 +165,54 @@ async def compact_history_with_summary(
     if summary:
         return history[:1] + [_summary_message(summary)] + history[start:], True
     return history[:1] + history[start:], True
+
+
+Titler = Callable[[list], Awaitable[str]]
+
+_SUMMARY_INSTRUCTIONS = (
+    "You compress a coding-session transcript into a dense summary so the agent "
+    "can keep working with less context. Preserve: the user's goals and "
+    "constraints, decisions made, files read or edited and what changed, command "
+    "results, and any unresolved problems or next steps. Drop pleasantries and "
+    "redundant detail. Write terse notes, not prose."
+)
+
+_TITLE_INSTRUCTIONS = (
+    "You write a short, specific title for a coding session from its transcript. "
+    "Reply with the title only — no quotes, no trailing punctuation, at most six "
+    "words. Name the concrete task, e.g. 'Fix the parser off-by-one' or 'Add "
+    "session auto-naming'."
+)
+
+_MAX_TITLE_CHARS = 50
+
+
+def make_summarizer(model) -> Summarizer:
+    summary_agent = Agent(model, instructions=_SUMMARY_INSTRUCTIONS)
+
+    async def summarize(messages: list) -> str:
+        result = await summary_agent.run(render_transcript(messages))
+        return result.output
+
+    return summarize
+
+
+def clean_title(raw: str) -> str:
+    lines = [line.strip() for line in (raw or "").splitlines()]
+    text = next((line for line in lines if line), "")
+    if text.lower().startswith("title:"):
+        text = text[len("title:"):].strip()
+    text = text.strip("\"'`").strip().rstrip(".!?,;:").strip()
+    if len(text) > _MAX_TITLE_CHARS:
+        text = text[:_MAX_TITLE_CHARS].rstrip() + "…"
+    return text or "Untitled session"
+
+
+def make_titler(model) -> Titler:
+    title_agent = Agent(model, instructions=_TITLE_INSTRUCTIONS)
+
+    async def title(messages: list) -> str:
+        result = await title_agent.run(render_transcript(messages))
+        return clean_title(result.output)
+
+    return title
