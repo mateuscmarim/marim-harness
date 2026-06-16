@@ -274,3 +274,38 @@ async def test_subagent_finish_clears_activity_from_title():
         # Once finished, the title is the clean summary, no activity tail.
         assert "grep" not in str(w.title)
         assert "+" in str(w.title)
+
+
+@pytest.mark.anyio
+async def test_subagent_title_shows_token_usage():
+    from marim_harness.tui.widgets import SubAgentWidget
+
+    app = _SubHarness()
+    async with app.run_test() as pilot:
+        w = app.query_one(SubAgentWidget)
+        await pilot.pause()
+        # No tokens yet: no token tail in the title.
+        assert "tok" not in str(w.title)
+        # Once tokens are reported, the (collapsed-legible) title shows them.
+        w.set_tokens(1500)
+        assert "1.5k" in str(w.title)
+        assert "tok" in str(w.title)
+        # The count keeps the live activity alongside it.
+        w.note_tool("grep")
+        assert "grep" in str(w.title)
+        assert "1.5k" in str(w.title)
+
+
+@pytest.mark.anyio
+async def test_subagent_token_usage_survives_finish():
+    from marim_harness.tui.widgets import SubAgentWidget
+
+    app = _SubHarness()
+    async with app.run_test() as pilot:
+        w = app.query_one(SubAgentWidget)
+        await pilot.pause()
+        w.set_tokens(2400)
+        w.finish("all done", status="done")
+        # The final token count stays visible after the run finishes.
+        assert "2.4k" in str(w.title)
+        assert "tok" in str(w.title)

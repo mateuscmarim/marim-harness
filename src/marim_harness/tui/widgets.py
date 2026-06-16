@@ -37,6 +37,13 @@ def strip_line_numbers(text: str) -> str:
     return _LINE_PREFIX.sub("", text)
 
 
+def human_tokens(n: int) -> str:
+    """Compact token count: 950 -> '950', 1500 -> '1.5k', 100000 -> '100k'."""
+    if n >= 1000:
+        return f"{n / 1000:.1f}k".replace(".0k", "k")
+    return str(n)
+
+
 class ToolCallWidget(Collapsible):
     """A single tool call: the (clickable) title shows a summary line; expanding
     reveals the arguments and the result."""
@@ -160,17 +167,28 @@ class SubAgentWidget(Collapsible):
         # legible at a glance without expanding each stream.
         self.activity = ""
         self.tool_count = 0
+        # Live token usage, shown in the (collapsed) title so a fan-out of agents
+        # exposes each one's consumption at a glance.
+        self.tokens = 0
         self.body = Vertical(classes="subagent-body")
         super().__init__(self.body, title=self._summary(), collapsed=collapsed)
 
     def _summary(self) -> str:
         glyph = {"pending": "▸", "done": "+", "denied": "x"}.get(self.status, "▸")
         task = self.agent_task if len(self.agent_task) <= 40 else self.agent_task[:39] + "…"
-        base = f"[{glyph}] spawn_agent({self.agent_type}: {task!r})"
+        parts = [f"[{glyph}] spawn_agent({self.agent_type}: {task!r})"]
         # Only a running agent carries an activity tail; a finished one is clean.
         if self.status == "pending" and self.activity:
-            return f"{base} · {self.activity}"
-        return base
+            parts.append(self.activity)
+        # The token count persists across finish — the final cost stays visible.
+        if self.tokens:
+            parts.append(f"{human_tokens(self.tokens)} tok")
+        return " · ".join(parts)
+
+    def set_tokens(self, n: int) -> None:
+        """Update the sub-agent's running token total and refresh the title."""
+        self.tokens = n
+        self.title = self._summary()
 
     def note_tool(self, tool_name: str) -> None:
         """Record that the sub-agent just called ``tool_name`` and refresh the

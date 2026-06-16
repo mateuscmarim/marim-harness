@@ -700,6 +700,41 @@ async def test_run_subagent_restricts_tools_by_mode(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_subagent_handler_forwards_token_usage(tmp_path: Path):
+    """The sub-agent event handler tags each forwarded event with the run's live
+    total token count, so the UI can show it in the (collapsed) widget title."""
+    from types import SimpleNamespace
+
+    recorded: list = []
+
+    async def cb(stream_id, event, tokens):
+        recorded.append((stream_id, event, tokens))
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto, on_subagent_event=cb)
+    h = _make_harness(_text_model(), deps)
+    handler = h._subagent_handler("sid")
+
+    async def events():
+        yield "evt-a"
+        yield "evt-b"
+
+    ctx = SimpleNamespace(usage=SimpleNamespace(total_tokens=4096))
+    await handler(ctx, events())
+
+    assert recorded == [
+        ("sid", "evt-a", 4096),
+        ("sid", "evt-b", 4096),
+    ]
+
+
+@pytest.mark.anyio
+async def test_subagent_handler_none_without_listener(tmp_path: Path):
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)  # no on_subagent_event
+    h = _make_harness(_text_model(), deps)
+    assert h._subagent_handler("sid") is None
+
+
+@pytest.mark.anyio
 async def test_run_subagent_unknown_type(tmp_path: Path):
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(_text_model(), deps)
