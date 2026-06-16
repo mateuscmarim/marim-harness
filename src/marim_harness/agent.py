@@ -71,6 +71,24 @@ def make_titler(model) -> Titler:
     return title
 
 
+_PROACTIVE_MEMORY_POLICY = (
+    "Proactive memory is ON. Beyond explicit requests, save durable facts that "
+    "will help in future sessions with the remember tool: the user's stable "
+    "preferences and identity, feedback they give on how you should work, and "
+    "project conventions or decisions not derivable from the code or git "
+    "history. Convert relative dates to absolute. Do NOT save anything "
+    "recoverable from the code, files, or git; one-off conversational details; "
+    "or secrets. Prefer updating an existing memory over adding a duplicate."
+)
+
+_ON_REQUEST_MEMORY_POLICY = (
+    "Save to memory only when the user explicitly asks you to (for example, "
+    "\"remember that …\" or the /remember command). Do not save memories "
+    "proactively or on your own initiative, even if the user mentions a "
+    "preference or fact in passing."
+)
+
+
 class Harness:
     """Owns the Pydantic AI agent and drives one user turn to completion,
     resolving deferred tool approvals by the current mode."""
@@ -81,7 +99,8 @@ class Harness:
                  max_context_tokens: int = 100_000, keep_last_messages: int = 20,
                  summarizer: Optional[Summarizer] = None,
                  titler: Optional[Titler] = None, model_source=None,
-                 model_id: Optional[str] = None):
+                 model_id: Optional[str] = None, proactive_memory: bool = False):
+        self.proactive_memory = proactive_memory
         self.agent = Agent(
             model,
             deps_type=Deps,
@@ -119,6 +138,15 @@ class Harness:
                 "slug, with the matching scope). Save new durable facts with the "
                 "remember tool.\n\n" + "\n\n".join(parts)
             )
+
+        @self.agent.instructions
+        def _memory_policy(ctx: RunContext[Deps]) -> str:
+            """Standing memory policy. The remember tool is always available, so
+            the default must actively restrain proactive saves; the toggle flips
+            that restraint into encouragement."""
+            if self.proactive_memory:
+                return _PROACTIVE_MEMORY_POLICY
+            return _ON_REQUEST_MEMORY_POLICY
 
         self.deps = deps
         self.history: list = []

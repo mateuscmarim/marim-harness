@@ -15,6 +15,7 @@ _ALLOWED_KEYS = (
     "MARIM_API_KEY",
     "OPENROUTER_API_KEY",
     "MARIM_MAX_CONTEXT_TOKENS",
+    "MARIM_PROACTIVE_MEMORY",
 )
 
 
@@ -46,6 +47,7 @@ def _cmd_show(args, *, out, err) -> int:
             "model": cfg.model,
             "base_url": cfg.base_url,
             "max_context_tokens": cfg.max_context_tokens,
+            "proactive_memory": cfg.proactive_memory,
             "api_key_set": api_key_set,
             "global_config_path": str(path),
         }
@@ -56,6 +58,7 @@ def _cmd_show(args, *, out, err) -> int:
     print(f"model:               {cfg.model}", file=out)
     print(f"base_url:            {cfg.base_url}", file=out)
     print(f"max_context_tokens:  {cfg.max_context_tokens}", file=out)
+    print(f"proactive_memory:    {'on' if cfg.proactive_memory else 'off'}", file=out)
     print(f"api_key:             {'set' if api_key_set else 'not set'}", file=out)
     print(f"global_config_path:  {path}", file=out)
     print(f"  exists:            {'yes' if path.exists() else 'no'}", file=out)

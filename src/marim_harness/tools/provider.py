@@ -52,11 +52,16 @@ class BuiltinToolProvider:
             type: str = "project",
         ) -> str:
             """Save a durable fact to persistent memory so it survives across
-            turns and sessions. `scope` is "project" (this codebase, default) or
-            "global" (about the user, every workspace). `type` is one of user,
-            feedback, project, reference. `description` is a one-line hook shown
-            in the always-loaded index; `body` is the full fact. No approval is
-            needed — this only writes inside marim's own memory directory."""
+            turns and sessions. Make `description` self-contained: it's the only
+            line shown in the always-loaded index, so put the actual fact in it
+            ("User's name is Mateus Coutinho Marim"), not a label ("the user's
+            name"). `body` is the full detail. Use `scope="global"` for facts
+            about the user that hold in every workspace, `scope="project"`
+            (default) for facts about this codebase. `type` is one of user,
+            feedback, project, reference. Before saving, check the memory index
+            and reuse the same title to update an existing entry rather than
+            adding a duplicate. No approval is needed — this only writes inside
+            marim's own memory directory."""
             sc = (
                 global_scope()
                 if scope == "global"
@@ -75,8 +80,9 @@ class BuiltinToolProvider:
         ) -> str:
             """Read the full body of a saved memory by `name` (its title or slug,
             as shown in the memory index). `scope` is "project" (default) or
-            "global". Use this to expand an index entry — memory files are not
-            reachable through read_file."""
+            "global". When an index hook looks relevant to the task but lacks the
+            detail you need, recall it before answering. Memory files are not
+            reachable through read_file — always use this."""
             sc = (
                 global_scope()
                 if scope == "global"

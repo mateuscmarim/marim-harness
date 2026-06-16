@@ -43,6 +43,26 @@ def test_load_config_local_reads_base_url(monkeypatch):
     assert cfg.model == "qwen2.5-coder"
 
 
+@pytest.mark.parametrize("raw", ["1", "true", "TRUE", "on", "yes", "Yes"])
+def test_proactive_memory_truthy_values_enable(monkeypatch, raw):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setenv("MARIM_PROACTIVE_MEMORY", raw)
+    assert load_config().proactive_memory is True
+
+
+@pytest.mark.parametrize("raw", ["0", "false", "off", "no", "", "garbage"])
+def test_proactive_memory_non_truthy_values_disable(monkeypatch, raw):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setenv("MARIM_PROACTIVE_MEMORY", raw)
+    assert load_config().proactive_memory is False
+
+
+def test_proactive_memory_defaults_off(monkeypatch):
+    monkeypatch.delenv("MARIM_PROACTIVE_MEMORY", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    assert load_config().proactive_memory is False
+
+
 def test_model_source_label_prefixes_provider():
     src = ModelSource(ModelConfig(provider="openrouter", model="anthropic/claude-sonnet-4-6"))
     assert src.label("openai/gpt-5.2") == "openrouter/openai/gpt-5.2"

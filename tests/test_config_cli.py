@@ -12,6 +12,7 @@ def _clear_marim_env(monkeypatch):
         "MARIM_API_KEY",
         "OPENROUTER_API_KEY",
         "MARIM_MAX_CONTEXT_TOKENS",
+        "MARIM_PROACTIVE_MEMORY",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -91,6 +92,29 @@ def test_set_updates_existing_key_in_place(monkeypatch, tmp_path):
     assert "MARIM_PROVIDER=local" in content  # other lines preserved
     # key not duplicated
     assert content.count("MARIM_MODEL=") == 1
+
+
+def test_set_accepts_proactive_memory_key(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    _clear_marim_env(monkeypatch)
+    out = io.StringIO()
+    code = config_cmd.main(["set", "MARIM_PROACTIVE_MEMORY", "true"], out=out)
+    assert code == 0
+    env_file = tmp_path / "marim" / ".env"
+    assert "MARIM_PROACTIVE_MEMORY=true" in env_file.read_text()
+
+
+def test_show_surfaces_proactive_memory(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    _clear_marim_env(monkeypatch)
+    monkeypatch.setenv("MARIM_PROACTIVE_MEMORY", "true")
+    out = io.StringIO()
+    assert config_cmd.main(["show"], out=out) == 0
+    assert "proactive_memory" in out.getvalue()
+
+    out_json = io.StringIO()
+    assert config_cmd.main(["show", "--json"], out=out_json) == 0
+    assert json.loads(out_json.getvalue())["proactive_memory"] is True
 
 
 def test_set_rejects_unknown_key(monkeypatch, tmp_path):
