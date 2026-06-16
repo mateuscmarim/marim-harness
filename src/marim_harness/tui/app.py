@@ -193,7 +193,7 @@ class HarnessApp(App):
         elif pct >= 75:
             ctx = f"[yellow]{ctx}[/]"
         name = getattr(self.harness, "session_name", None)
-        prefix = f"[b]{name}[/] · " if name else ""
+        prefix = f"[b $accent]{name}[/] · " if name else ""
         sep = " [dim]·[/] "
         base = sep.join(
             [
