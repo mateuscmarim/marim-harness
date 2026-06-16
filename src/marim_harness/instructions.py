@@ -1,7 +1,12 @@
+from __future__ import annotations
+
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from pydantic_ai import Agent, RunContext
+
+if TYPE_CHECKING:
+    from .mcp_manager import McpManager
 
 from .agents import agents_index_text, discover_agents
 from .deps import Deps
@@ -43,7 +48,7 @@ def load_project_instructions(
     return text or None
 
 
-def register_instructions(agent: Agent, mcp_manager, proactive_memory: bool) -> None:
+def register_instructions(agent: Agent, mcp_manager: McpManager, proactive_memory: bool) -> None:
     """Register all dynamic instruction closures on ``agent``."""
 
     @agent.instructions
