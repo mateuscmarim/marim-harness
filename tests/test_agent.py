@@ -1133,6 +1133,7 @@ def test_resume_restores_saved_model(tmp_path: Path):
 
 def test_granted_servers_resolves_named(tmp_path: Path):
     from types import SimpleNamespace
+
     from pydantic_ai.models.test import TestModel
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
@@ -1148,6 +1149,7 @@ def test_granted_servers_resolves_named(tmp_path: Path):
 
 def test_granted_servers_none_grants_nothing(tmp_path: Path):
     from types import SimpleNamespace
+
     from pydantic_ai.models.test import TestModel
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
@@ -1160,6 +1162,7 @@ def test_granted_servers_none_grants_nothing(tmp_path: Path):
 
 def test_granted_servers_reports_unknown(tmp_path: Path):
     from types import SimpleNamespace
+
     from pydantic_ai.models.test import TestModel
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
@@ -1173,6 +1176,7 @@ def test_granted_servers_reports_unknown(tmp_path: Path):
 
 def test_granted_servers_excludes_disabled(tmp_path: Path):
     from types import SimpleNamespace
+
     from pydantic_ai.models.test import TestModel
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
@@ -1187,6 +1191,7 @@ def test_granted_servers_excludes_disabled(tmp_path: Path):
 
 def test_granted_servers_dedupes(tmp_path: Path):
     from types import SimpleNamespace
+
     from pydantic_ai.models.test import TestModel
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
@@ -1197,3 +1202,41 @@ def test_granted_servers_dedupes(tmp_path: Path):
     granted, unknown = h._granted_servers(["mddocs", "mddocs"])
     assert granted == [a]
     assert unknown == []
+
+
+def test_mcp_grant_note_lists_unknown_and_enabled(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    h._live_servers = [
+        SimpleNamespace(tool_prefix="mddocs"),
+        SimpleNamespace(tool_prefix="sentry"),
+    ]
+
+    note = h._mcp_grant_note(["nope"])
+    assert "nope" in note
+    assert "mddocs" in note and "sentry" in note
+    assert note.endswith("\n\n")
+
+
+def test_mcp_grant_note_empty_when_nothing_unknown(tmp_path: Path):
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    assert h._mcp_grant_note([]) == ""
+
+
+def test_mcp_grant_note_handles_no_enabled_servers(tmp_path: Path):
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    h._live_servers = []  # nothing enabled
+
+    note = h._mcp_grant_note(["nope"])
+    assert "nope" in note
+    assert "none" in note.lower()

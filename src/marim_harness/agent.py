@@ -493,6 +493,27 @@ class Harness:
                 granted.append(server)
         return granted, unknown
 
+    def _enabled_server_names(self) -> list[str]:
+        """Live MCP servers currently offered to the model — connected and not
+        runtime-disabled. The set a spawn may grant from."""
+        return [
+            self._server_name(s)
+            for s in self._live_servers
+            if self._server_name(s) not in self.disabled
+        ]
+
+    def _mcp_grant_note(self, unknown: list[str]) -> str:
+        """A one-line note for the model when a spawn requested MCP servers that
+        couldn't be granted, naming what *is* enabled so it can re-spawn. Empty
+        when nothing was unknown. Trailing blank line separates it from the
+        sub-agent's report, which it is prepended to."""
+        if not unknown:
+            return ""
+        bad = ", ".join(f"'{n}'" for n in unknown)
+        enabled = self._enabled_server_names()
+        avail = ", ".join(enabled) if enabled else "none"
+        return f"(note: ignored unknown MCP server(s) {bad}; enabled: {avail})\n\n"
+
     def configured_names(self) -> list[str]:
         """Every configured MCP server name, enabled or not — what /mcp lists and
         what enable/disable ``all`` iterates over."""
