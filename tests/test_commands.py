@@ -10,6 +10,7 @@ from marim_harness.tui.commands import (
     dispatch,
     resolve_ref,
 )
+from marim_harness.tui.themes import THEME_NAMES
 
 
 class _FakeApp:
@@ -264,6 +265,49 @@ async def test_mcp_unknown_subcommand_shows_usage():
     app.harness = _FakeMcpHarness(["files"])
     await dispatch(app, "/mcp frobnicate")
     assert "usage" in app.posted[0].lower()
+
+
+def _theme_app() -> "_FakeApp":
+    app = _FakeApp()
+    app.theme = "marim-teal"
+    return app
+
+
+@pytest.mark.anyio
+async def test_theme_no_arg_lists_themes_and_current():
+    app = _theme_app()
+    await dispatch(app, "/theme")
+    out = "\n".join(app.posted)
+    for name in THEME_NAMES:
+        assert name in out
+    assert "marim-teal" in out  # current is shown
+
+
+@pytest.mark.anyio
+async def test_theme_sets_a_valid_theme():
+    app = _theme_app()
+    await dispatch(app, "/theme marim-amber")
+    assert app.theme == "marim-amber"
+
+
+@pytest.mark.anyio
+async def test_theme_rejects_unknown_name():
+    app = _theme_app()
+    await dispatch(app, "/theme bogus")
+    assert app.theme == "marim-teal"  # unchanged
+    assert any("bogus" in m for m in app.posted)
+
+
+def test_theme_is_a_registered_command():
+    assert "theme" in COMMANDS_BY_NAME
+
+
+@pytest.mark.anyio
+async def test_theme_setting_already_active_is_silent_noop():
+    app = _theme_app()
+    await dispatch(app, "/theme marim-teal")
+    assert app.theme == "marim-teal"
+    assert not app.posted
 
 
 @pytest.mark.anyio

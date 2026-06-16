@@ -17,9 +17,11 @@ from textual.widgets import Footer, Header, Static
 from ..agent import Harness
 from ..compaction import estimate_tokens
 from ..history import PromptHistory
+from ..prefs import load_theme, save_theme
 from .approval import ApprovalModal
 from .commands import dispatch
 from .model_picker import ModelPickerModal
+from .themes import MARIM_THEMES
 from .widgets import (
     AssistantMessage,
     ErrorMessage,
@@ -57,23 +59,7 @@ _WELCOME = (
 
 
 class HarnessApp(App):
-    CSS = """
-    #log { height: 1fr; padding: 0 1; }
-    PromptInput { height: 3; max-height: 10; border: none; padding: 0 1; }
-    #status-bar { height: 1; background: $panel; color: $text-muted; padding: 0 1; }
-    #task-panel { height: auto; max-height: 8; background: $panel; color: $text;
-                  padding: 0 1; border-top: tall $background; }
-    #job-panel { height: auto; max-height: 8; background: $panel; color: $text;
-                 padding: 0 1; border-top: tall $background; }
-    .user-msg { color: $accent; text-style: bold; margin-top: 1; }
-    .error-msg { color: $error; text-style: bold; margin: 1 0; }
-    .notice-msg { color: $text-muted; text-style: italic; margin: 1 0; }
-    #banner { color: $accent; text-style: bold; height: auto; margin: 1 0 1 0; }
-    AssistantMessage { margin: 0 0 1 0; }
-    ToolCallWidget { margin: 0 0 1 0; }
-    SubAgentWidget { margin: 0 0 1 0; }
-    .subagent-body { height: auto; padding: 0 0 0 2; border-left: tall $panel; }
-    """
+    CSS_PATH = "styles.tcss"
     BINDINGS = [
         ("ctrl+t", "cycle_mode", "Cycle mode"),
         ("escape", "cancel_turn", "Cancel turn"),
@@ -109,6 +95,9 @@ class HarnessApp(App):
         yield Footer()
 
     async def on_mount(self) -> None:
+        for theme in MARIM_THEMES:
+            self.register_theme(theme)
+        self.theme = load_theme()
         self.title = "marim-harness"
         log = self.query_one("#log", VerticalScroll)
         await log.mount(Static(_BANNER, id="banner", markup=False))
@@ -204,12 +193,17 @@ class HarnessApp(App):
         elif pct >= 75:
             ctx = f"[yellow]{ctx}[/]"
         name = getattr(self.harness, "session_name", None)
-        prefix = f"{name} · " if name else ""
-        base = (
-            f"{prefix}{self.harness.deps.mode.value} · {cfg} · {ctx} · "
-            f"{_human_tokens(spent)} tokens"
+        prefix = f"[b $accent]{name}[/] · " if name else ""
+        sep = " [dim]·[/] "
+        base = sep.join(
+            [
+                f"{prefix}{self.harness.deps.mode.value}",
+                cfg,
+                ctx,
+                f"{_human_tokens(spent)} tokens",
+            ]
         )
-        return f"{base} · working…" if self._busy else base
+        return f"{base}{sep}working…" if self._busy else base
 
     def _refresh_status(self) -> None:
         try:
@@ -258,6 +252,12 @@ class HarnessApp(App):
     def action_cycle_mode(self) -> None:
         self.harness.deps.mode = self.harness.deps.mode.cycle()
         self._refresh_status()
+
+    def watch_theme(self, theme: str) -> None:
+        """Persist the active theme so it's the startup theme next run. Only the
+        marim themes are saved; Textual may set built-in defaults during init,
+        which save_theme ignores."""
+        save_theme(theme)
 
     def action_cancel_turn(self) -> None:
         if self._busy and self._turn_worker is not None:

@@ -50,7 +50,7 @@ async def test_tool_widget_is_collapsible_with_working_title():
         assert w.query_one(Collapsible.Contents) is not None
         # The summary glyph shows the pending state in the title.
         assert "edit_file" in str(w.title)
-        assert "?" in str(w.title)
+        assert "·" in str(w.title)
 
 
 @pytest.mark.anyio
@@ -63,7 +63,7 @@ async def test_tool_widget_body_shows_args_and_result():
         body = str(w.query_one("#tool-body").render())
         assert "a.txt" in body
         assert "done editing" in body
-        assert "+" in str(w.title)  # done glyph
+        assert "✓" in str(w.title)  # done glyph
 
 
 def test_strip_line_numbers():
@@ -398,7 +398,7 @@ async def test_subagent_finish_clears_activity_from_title():
         w.finish("all done", status="done")
         # Once finished, the title is the clean summary, no activity tail.
         assert "grep" not in str(w.title)
-        assert "+" in str(w.title)
+        assert "✓" in str(w.title)
 
 
 @pytest.mark.anyio
