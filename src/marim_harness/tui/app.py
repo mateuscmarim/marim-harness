@@ -42,6 +42,10 @@ _BANNER = (
     "   · · ·   a   t e r m i n a l   h a r n e s s"
 )
 
+# How often (seconds) buffered streaming text is rendered. ~12 flushes/sec reads
+# as smooth while collapsing many per-token markdown re-parses into one.
+_STREAM_FLUSH_INTERVAL = 0.08
+
 _WELCOME = (
     "Type a message below to start, or `/help` for commands.\n\n"
     "- `enter` sends · `shift+enter` (or `ctrl+j`) inserts a newline\n"
@@ -115,9 +119,13 @@ class HarnessApp(App):
             await self._replay_history(log)
         else:
             intro.append(_WELCOME)
+        self._flush_streams()  # render the static intro/replay before first paint
         log.scroll_end(animate=False)
         self._render_tasks()  # reflect any checklist restored with the session
         self._render_jobs()  # process-scoped jobs survive session switches
+        # Coalesce streaming text deltas: render buffered AssistantMessages on a
+        # shared interval instead of re-parsing the markdown on every token.
+        self.set_interval(_STREAM_FLUSH_INTERVAL, self._flush_streams)
         # Land focus on the prompt so the user can type immediately.
         self.query_one(PromptInput).focus()
 
@@ -270,6 +278,7 @@ class HarnessApp(App):
         intro.append(note)
         if self.harness.history:
             await self._replay_history(log)
+        self._flush_streams()  # render the rebuilt log before first paint
         self._refresh_status()
         self._render_tasks()
         self._render_jobs()  # jobs are process-scoped, not per-session
@@ -342,6 +351,20 @@ class HarnessApp(App):
         they've scrolled up to read one of several live streams, leave them be."""
         if pinned:
             log.scroll_end(animate=False)
+
+    def _flush_streams(self) -> None:
+        """Render every AssistantMessage that has buffered deltas since the last
+        tick — top-level and nested sub-agent streams alike. Coalescing the parses
+        here is the streaming debounce; we re-pin afterward so the freshly grown
+        content stays in view when the user is following along."""
+        dirty = [m for m in self.query(AssistantMessage) if m._pending]
+        if not dirty:
+            return
+        log = self.query_one("#log", VerticalScroll)
+        pinned = self._log_pinned(log)
+        for m in dirty:
+            m.flush()
+        self._follow_scroll(log, pinned)
 
     async def _request_approval(self, call) -> object:
         approved = await self.push_screen_wait(
