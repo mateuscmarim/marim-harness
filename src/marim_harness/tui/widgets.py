@@ -4,6 +4,7 @@ from pathlib import Path
 from rich.console import RenderableType
 from rich.syntax import Syntax
 from textual import events
+from textual.containers import Vertical
 from textual.message import Message
 from textual.widgets import Collapsible, Markdown, Static, TextArea
 
@@ -121,6 +122,35 @@ class TaskPanel(Static):
             return
         self.display = True
         self.update("Tasks\n" + render_tasks(items))
+
+
+class SubAgentWidget(Collapsible):
+    """A spawned sub-agent: the title summarizes the delegation; the (expanded)
+    body is a live stream of the sub-agent's own text and tool calls, mounted as
+    child widgets as its events arrive."""
+
+    def __init__(self, agent_type: str, agent_task: str) -> None:
+        self.agent_type = agent_type
+        self.agent_task = agent_task
+        self.status = "pending"
+        self.report = ""
+        self.body = Vertical(classes="subagent-body")
+        super().__init__(self.body, title=self._summary(), collapsed=False)
+
+    def _summary(self) -> str:
+        glyph = {"pending": "▸", "done": "+", "denied": "x"}.get(self.status, "▸")
+        task = self.agent_task if len(self.agent_task) <= 40 else self.agent_task[:39] + "…"
+        return f"[{glyph}] spawn_agent({self.agent_type}: {task!r})"
+
+    async def add(self, widget) -> None:
+        """Mount a child widget (the sub-agent's text or a nested tool call) into
+        the live body."""
+        await self.body.mount(widget)
+
+    def finish(self, report: str, status: str = "done") -> None:
+        self.status = status
+        self.report = report
+        self.title = self._summary()
 
 
 class PromptInput(TextArea):

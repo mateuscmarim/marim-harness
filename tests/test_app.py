@@ -526,6 +526,142 @@ async def test_on_events_mounts_and_finishes_tool_widget(tmp_path: Path):
         assert "1\tfoo" in widget.result_text
 
 
+@pytest.mark.anyio
+async def test_spawn_agent_mounts_subagent_widget(tmp_path: Path):
+    """A spawn_agent tool call gets a SubAgentWidget (not a generic ToolCallWidget),
+    keyed by its tool_call_id, and is finished by the result event."""
+    from pydantic_ai.messages import (
+        FunctionToolCallEvent,
+        FunctionToolResultEvent,
+        ToolCallPart,
+        ToolReturnPart,
+    )
+
+    from marim_harness.tui.widgets import SubAgentWidget
+
+    call = FunctionToolCallEvent(
+        part=ToolCallPart(
+            tool_name="spawn_agent",
+            args={"type": "explore", "task": "find the config loader"},
+            tool_call_id="spawn-1",
+        )
+    )
+    result = FunctionToolResultEvent(
+        part=ToolReturnPart(
+            tool_name="spawn_agent",
+            content="found it in config.py",
+            tool_call_id="spawn-1",
+        )
+    )
+
+    async def gen():
+        yield call
+        yield result
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._on_events(None, gen())
+        await pilot.pause()
+
+        widget = app._tool_widgets.get("spawn-1")
+        assert isinstance(widget, SubAgentWidget)
+        assert widget.agent_type == "explore"
+        assert "find the config loader" in widget.agent_task
+        log = app.query_one("#log")
+        assert widget in log.walk_children()
+        assert widget.status == "done"
+        assert widget.report == "found it in config.py"
+
+
+@pytest.mark.anyio
+async def test_subagent_event_routes_stream_into_widget(tmp_path: Path):
+    """The sub-agent's own text and nested tool calls land inside its
+    SubAgentWidget body, not the top-level log."""
+    from pydantic_ai.messages import (
+        FunctionToolCallEvent,
+        FunctionToolResultEvent,
+        PartStartEvent,
+        TextPart,
+        ToolCallPart,
+        ToolReturnPart,
+    )
+
+    from marim_harness.tui.widgets import (
+        AssistantMessage,
+        SubAgentWidget,
+        ToolCallWidget,
+    )
+
+    spawn = FunctionToolCallEvent(
+        part=ToolCallPart(
+            tool_name="spawn_agent",
+            args={"type": "explore", "task": "look around"},
+            tool_call_id="s1",
+        )
+    )
+
+    async def spawn_gen():
+        yield spawn
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._on_events(None, spawn_gen())
+        await pilot.pause()
+
+        parent = app._tool_widgets["s1"]
+        assert isinstance(parent, SubAgentWidget)
+
+        # The sub-agent emits text, then a nested read_file call + result.
+        await app._on_subagent_event(
+            "s1", PartStartEvent(index=0, part=TextPart(content="checking files"))
+        )
+        await app._on_subagent_event(
+            "s1",
+            FunctionToolCallEvent(
+                part=ToolCallPart(
+                    tool_name="read_file",
+                    args={"path": "x.py"},
+                    tool_call_id="nested-1",
+                )
+            ),
+        )
+        await app._on_subagent_event(
+            "s1",
+            FunctionToolResultEvent(
+                part=ToolReturnPart(
+                    tool_name="read_file", content="1\tcode", tool_call_id="nested-1"
+                )
+            ),
+        )
+        await pilot.pause()
+
+        # Both nested widgets live inside the SubAgentWidget body.
+        body_children = list(parent.body.walk_children())
+        sub_texts = [c for c in body_children if isinstance(c, AssistantMessage)]
+        sub_tools = [c for c in body_children if isinstance(c, ToolCallWidget)]
+        assert any("checking files" in m.text for m in sub_texts)
+        assert len(sub_tools) == 1
+        assert sub_tools[0].status == "done"
+        assert "code" in sub_tools[0].result_text
+
+
+@pytest.mark.anyio
+async def test_subagent_event_without_widget_is_noop(tmp_path: Path):
+    """A sub-agent event for an unknown stream id must not raise."""
+    from pydantic_ai.messages import PartStartEvent, TextPart
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._on_subagent_event(
+            "ghost", PartStartEvent(index=0, part=TextPart(content="orphan"))
+        )
+        await pilot.pause()
+        assert app.is_running is True
+
+
 def _app_with_manager(tmp_path: Path) -> HarnessApp:
     from pydantic_ai.models.test import TestModel
 

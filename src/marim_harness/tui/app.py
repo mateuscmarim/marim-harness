@@ -24,6 +24,7 @@ from .widgets import (
     ErrorMessage,
     NoticeMessage,
     PromptInput,
+    SubAgentWidget,
     TaskPanel,
     ToolCallWidget,
     UserMessage,
@@ -68,6 +69,8 @@ class HarnessApp(App):
     #banner { color: $accent; text-style: bold; height: auto; margin: 1 0 1 0; }
     AssistantMessage { margin: 0 0 1 0; }
     ToolCallWidget { margin: 0 0 1 0; }
+    SubAgentWidget { margin: 0 0 1 0; }
+    .subagent-body { height: auto; padding: 0 0 0 2; border-left: tall $panel; }
     """
     BINDINGS = [
         ("ctrl+t", "cycle_mode", "Cycle mode"),
@@ -79,10 +82,14 @@ class HarnessApp(App):
         self.harness = harness
         self.harness.deps.request_approval = self._request_approval
         self.harness.deps.tasks.on_change = self._on_tasks_changed
+        self.harness.deps.on_subagent_event = self._on_subagent_event
         self.harness.on_compact = self._on_compact
         self.harness.on_rename = self._on_rename
         self._current_assistant: AssistantMessage | None = None
         self._tool_widgets: dict[str, ToolCallWidget] = {}
+        # Per-stream live assistant text for spawned sub-agents, keyed by the
+        # spawn_agent tool_call_id that owns the nested stream.
+        self._sub_assistants: dict[str, AssistantMessage] = {}
         self._busy = False
         self._turn_worker = None
 
@@ -353,13 +360,49 @@ class HarnessApp(App):
                 if self._current_assistant is not None:
                     self._current_assistant.append(event.delta.content_delta or "")
             elif isinstance(event, FunctionToolCallEvent):
-                widget = ToolCallWidget(
-                    event.part.tool_name, event.part.args_as_dict()
-                )
+                args = event.part.args_as_dict()
+                if event.part.tool_name == "spawn_agent":
+                    widget = SubAgentWidget(
+                        str(args.get("type", "")), str(args.get("task", ""))
+                    )
+                else:
+                    widget = ToolCallWidget(event.part.tool_name, args)
                 self._tool_widgets[event.part.tool_call_id] = widget
                 await log.mount(widget)
             elif isinstance(event, FunctionToolResultEvent):
                 widget = self._tool_widgets.get(event.tool_call_id)
                 if widget is not None:
                     widget.finish(str(getattr(event.part, "content", "")))
+                self._sub_assistants.pop(event.tool_call_id, None)
             log.scroll_end(animate=False)
+
+    async def _on_subagent_event(self, stream_id: str, event) -> None:
+        """Route a spawned sub-agent's own stream into the SubAgentWidget that owns
+        it. Mirrors _on_events, but mounts the sub-agent's text and (nested) tool
+        calls inside the widget body instead of the top-level log. Fired on the
+        app's event loop, so direct widget mutation is safe and parallel streams
+        stay race-free by stream_id."""
+        parent = self._tool_widgets.get(stream_id)
+        if not isinstance(parent, SubAgentWidget):
+            return
+        if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
+            msg = AssistantMessage()
+            self._sub_assistants[stream_id] = msg
+            await parent.add(msg)
+            if event.part.content:
+                msg.append(event.part.content)
+        elif isinstance(event, PartDeltaEvent) and isinstance(
+            event.delta, TextPartDelta
+        ):
+            msg = self._sub_assistants.get(stream_id)
+            if msg is not None:
+                msg.append(event.delta.content_delta or "")
+        elif isinstance(event, FunctionToolCallEvent):
+            widget = ToolCallWidget(event.part.tool_name, event.part.args_as_dict())
+            self._tool_widgets[event.part.tool_call_id] = widget
+            await parent.add(widget)
+        elif isinstance(event, FunctionToolResultEvent):
+            widget = self._tool_widgets.get(event.tool_call_id)
+            if widget is not None:
+                widget.finish(str(getattr(event.part, "content", "")))
+        self.query_one("#log", VerticalScroll).scroll_end(animate=False)
