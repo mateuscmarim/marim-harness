@@ -728,6 +728,49 @@ async def test_agent_index_injected(tmp_path: Path, monkeypatch):
     assert "general" in instr
 
 
+@pytest.mark.anyio
+async def test_run_background_subagent_returns_output(tmp_path: Path):
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(call_tools=[], custom_output_text="BG REPORT"), deps)
+    out = await h._run_background_subagent("explore", "scan the repo")
+    assert out == "BG REPORT"
+
+
+@pytest.mark.anyio
+async def test_run_background_subagent_unknown_type(tmp_path: Path):
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(_text_model(), deps)
+    out = await h._run_background_subagent("ghost", "do it")
+    assert "No sub-agent type 'ghost'" in out
+
+
+@pytest.mark.anyio
+async def test_run_background_subagent_respects_mode(tmp_path: Path):
+    from marim_harness.tools.provider import READ_TOOLS, SUBAGENT_TOOLS
+
+    captured: dict = {}
+
+    def fn(messages, info):
+        captured["tools"] = {t.name for t in info.function_tools}
+        return ModelResponse(parts=[TextPart(content="r")])
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.ask)
+    h = _make_harness(FunctionModel(fn), deps)
+    await h._run_background_subagent("general", "x")
+    assert captured["tools"] == set(READ_TOOLS)
+    deps.mode = Mode.auto
+    await h._run_background_subagent("general", "x")
+    assert captured["tools"] == set(SUBAGENT_TOOLS)
+
+
+def test_background_agent_runner_wired(tmp_path: Path):
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(_text_model(), deps)
+    assert deps.run_background_agent == h._run_background_subagent
+
+
 def _spawn_then_done_model() -> FunctionModel:
     """Main agent: spawn an explore sub-agent, then echo its report. The same
     model backs the sub-agent, so it's told apart by its instructions."""

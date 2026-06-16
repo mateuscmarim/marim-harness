@@ -201,9 +201,10 @@ class Harness:
             return _ON_REQUEST_MEMORY_POLICY
 
         self.deps = deps
-        # The spawn_agent tool reaches the runner through Deps, the same way
-        # other tools reach shared state. Wired here so it tracks model switches.
+        # The spawn_agent tool reaches the runners through Deps, the same way
+        # other tools reach shared state. Wired here so they track model switches.
         self.deps.run_subagent = self._run_subagent
+        self.deps.run_background_agent = self._run_background_subagent
         self.history: list = []
         self.model_label = model_label
         # The model object used for each turn (swappable at runtime), the source
@@ -395,16 +396,15 @@ class Harness:
 
         return handler
 
-    async def _run_subagent(self, type: str, task: str, stream_id: str) -> str:
-        """Spawn one isolated sub-agent of ``type`` on the current model, run it to
-        completion on ``task``, and return its final report. Reach is decided up
-        front: gated tools only in auto mode, so the run never needs an approval
-        round. Shares the workspace Deps (read-only use) but starts a fresh
-        conversation — the sub-agent gets a clean context."""
+    def _build_subagent(self, type: str):
+        """Build an isolated sub-agent of ``type`` on the current model, with its
+        reach decided up front: gated tools only in auto mode, so a run never
+        needs an approval round. Returns ``(agent, None)`` or, for an unknown
+        type, ``(None, message)`` listing what's available."""
         defn = find_agent(self.deps.workspace_root, type)
         if defn is None:
             names = ", ".join(a.name for a in discover_agents(self.deps.workspace_root))
-            return f"No sub-agent type {type!r}. Available: {names}."
+            return None, f"No sub-agent type {type!r}. Available: {names}."
         allow_gated = self.deps.mode is Mode.auto
         sub = Agent(
             self.current_model,
@@ -412,10 +412,30 @@ class Harness:
             instructions=subagent_instructions(defn, self.deps.workspace_root),
         )
         self.provider.register_subagent(sub, effective_tools(defn, allow_gated=allow_gated))
+        return sub, None
+
+    async def _run_subagent(self, type: str, task: str, stream_id: str) -> str:
+        """Spawn one isolated sub-agent of ``type``, run it to completion on
+        ``task``, and return its final report — streaming its events to the UI
+        nested under the spawn. Shares the workspace Deps (read-only use) but
+        starts a fresh conversation, so the sub-agent gets a clean context."""
+        sub, err = self._build_subagent(type)
+        if err is not None:
+            return err
         result = await sub.run(
             task, deps=self.deps,
             event_stream_handler=self._subagent_handler(stream_id),
         )
+        return result.output
+
+    async def _run_background_subagent(self, type: str, task: str) -> str:
+        """Run a sub-agent as a detached background job: same isolation and
+        mode-based reach as a foreground spawn, but with no event streaming —
+        the job's result is its final report, surfaced when the agent pulls it."""
+        sub, err = self._build_subagent(type)
+        if err is not None:
+            return err
+        result = await sub.run(task, deps=self.deps)
         return result.output
 
     async def run_turn(self, prompt: str, event_stream_handler=None) -> str:

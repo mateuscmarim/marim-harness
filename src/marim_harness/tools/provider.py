@@ -3,6 +3,7 @@ from typing import Iterable, Literal, Optional, Protocol
 from pydantic_ai import Agent, RunContext
 
 from ..deps import Deps
+from ..jobs import render_jobs
 from ..memory import global_scope, project_scope, read_memory, save_memory
 from ..skills import find_skill, read_bundled_file, read_skill_body
 from ..tasks import Task, summarize
@@ -128,14 +129,29 @@ def update_tasks(ctx: RunContext[Deps], tasks: list[Task]) -> str:
     return summarize(ctx.deps.tasks.items)
 
 
-async def spawn_agent(ctx: RunContext[Deps], type: str, task: str) -> str:
+async def spawn_agent(
+    ctx: RunContext[Deps], type: str, task: str, background: bool = False
+) -> str:
     """Delegate a sub-task to an isolated sub-agent that runs on the same model
     and reports back. `type` is a built-in — `explore` (read-only investigation;
     reports findings, changes nothing) or `general` (full toolset; carries out a
     focused sub-task autonomously) — or a custom agent by name, as listed in the
     sub-agents index. The sub-agent starts with a clean context, does `task`, and
     its final message becomes this tool's result. Spawn several in one turn to
-    fan out independent work; sub-agents cannot spawn further sub-agents."""
+    fan out independent work; sub-agents cannot spawn further sub-agents.
+
+    Set `background=True` to launch it as a detached job and return immediately
+    with a job id instead of waiting — keep working, then read its report later
+    with job_output / wait_for_job. Background sub-agents don't stream their
+    steps; you only see the final report when you pull it."""
+    if background:
+        if ctx.deps.run_background_agent is None:
+            return "Background sub-agents are not available in this context."
+        label = f"{type}: {task}"
+        job_id = ctx.deps.jobs.register(
+            "agent", label, ctx.deps.run_background_agent(type, task)
+        )
+        return f"Started {job_id} (agent) — {label[:60]}"
     if ctx.deps.run_subagent is None:
         return "Sub-agents are not available in this context."
     return await ctx.deps.run_subagent(type, task, ctx.tool_call_id)
@@ -153,9 +169,52 @@ def edit_file(ctx: RunContext[Deps], path: str, edits: list[fs.Edit]) -> str:
     return fs.edit_file(ctx.deps.workspace_root, path, edits)
 
 
-async def bash(ctx: RunContext[Deps], command: str) -> str:
-    """Run a shell command in the workspace root."""
+async def bash(ctx: RunContext[Deps], command: str, background: bool = False) -> str:
+    """Run a shell command in the workspace root.
+
+    Set `background=True` for long-running commands (dev servers, builds, test
+    watchers): the command is launched detached and the tool returns immediately
+    with a job id instead of blocking. Check on it later with job_output /
+    wait_for_job, or stop it with cancel_job. A foreground run (the default) waits
+    for the command and is subject to a timeout, so use background for anything
+    that won't finish promptly."""
+    if background:
+        bp = await shell.start_bash(ctx.deps.workspace_root, command)
+        job_id = ctx.deps.jobs.register(
+            "bash", command, bp.wait(), kill=bp.kill, output_fn=bp.output
+        )
+        return f"Started {job_id} (bash) — {command[:60]}"
     return await shell.run_bash(ctx.deps.workspace_root, command)
+
+
+def jobs(ctx: RunContext[Deps]) -> str:
+    """List the background jobs you've launched this session, with their id, kind
+    (bash/agent), label, and status (running/done/failed/cancelled). Use this to
+    see what's still in flight before pulling results with job_output or
+    wait_for_job."""
+    rows = render_jobs(ctx.deps.jobs.list())
+    return rows or "No background jobs."
+
+
+def job_output(ctx: RunContext[Deps], id: str) -> str:
+    """Read a background job's output by id without blocking: the final result if
+    it's finished, the live output so far for a running bash job, or a running
+    marker otherwise. To block until a job finishes, use wait_for_job instead."""
+    return ctx.deps.jobs.output(id)
+
+
+async def wait_for_job(ctx: RunContext[Deps], id: str, timeout: float = 60) -> str:
+    """Block until a background job finishes (up to `timeout` seconds), then
+    return its result. If it's still running when the timeout elapses, the job
+    keeps going and you get a "still running" note — call again or check
+    job_output later. Use this when you need a job's result before continuing."""
+    return await ctx.deps.jobs.wait(id, timeout)
+
+
+async def cancel_job(ctx: RunContext[Deps], id: str) -> str:
+    """Stop a running background job by id: kills its process (bash) or cancels
+    its run (agent). Finished jobs are left as-is."""
+    return await ctx.deps.jobs.cancel(id)
 
 
 # Name -> implementation for the tools a sub-agent may receive. The Harness
@@ -193,6 +252,8 @@ class BuiltinToolProvider:
         for fn in (remember, recall, activate_skill, read_skill_file, update_tasks):
             agent.tool(fn)
         agent.tool(spawn_agent)
+        for fn in (jobs, job_output, wait_for_job, cancel_job):
+            agent.tool(fn)
         agent.tool(requires_approval=True)(write_file)
         agent.tool(requires_approval=True)(edit_file)
         agent.tool(requires_approval=True, timeout=_BASH_TIMEOUT)(bash)

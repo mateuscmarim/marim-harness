@@ -124,6 +124,26 @@ class TaskPanel(Static):
         self.update("Tasks\n" + render_tasks(items))
 
 
+class JobPanel(Static):
+    """The session's live background jobs, pinned above the status bar (a sibling
+    of the task panel). Hidden whenever there are no jobs."""
+
+    def __init__(self) -> None:
+        super().__init__(id="job-panel")
+        self.display = False
+
+    def show_jobs(self, jobs: list) -> None:
+        """Render the current jobs, or hide the panel when there are none."""
+        from ..jobs import render_jobs
+
+        if not jobs:
+            self.display = False
+            self.update("")
+            return
+        self.display = True
+        self.update("Jobs\n" + render_jobs(jobs))
+
+
 class SubAgentWidget(Collapsible):
     """A spawned sub-agent: the title summarizes the delegation; the (expanded)
     body is a live stream of the sub-agent's own text and tool calls, mounted as

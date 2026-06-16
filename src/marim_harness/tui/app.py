@@ -22,6 +22,7 @@ from .model_picker import ModelPickerModal
 from .widgets import (
     AssistantMessage,
     ErrorMessage,
+    JobPanel,
     NoticeMessage,
     PromptInput,
     SubAgentWidget,
@@ -63,6 +64,8 @@ class HarnessApp(App):
     #status-bar { height: 1; background: $panel; color: $text-muted; padding: 0 1; }
     #task-panel { height: auto; max-height: 8; background: $panel; color: $text;
                   padding: 0 1; border-top: tall $background; }
+    #job-panel { height: auto; max-height: 8; background: $panel; color: $text;
+                 padding: 0 1; border-top: tall $background; }
     .user-msg { color: $accent; text-style: bold; margin-top: 1; }
     .error-msg { color: $error; text-style: bold; margin: 1 0; }
     .notice-msg { color: $text-muted; text-style: italic; margin: 1 0; }
@@ -82,6 +85,7 @@ class HarnessApp(App):
         self.harness = harness
         self.harness.deps.request_approval = self._request_approval
         self.harness.deps.tasks.on_change = self._on_tasks_changed
+        self.harness.deps.jobs.on_change = self._on_jobs_changed
         self.harness.deps.on_subagent_event = self._on_subagent_event
         self.harness.on_compact = self._on_compact
         self.harness.on_rename = self._on_rename
@@ -96,6 +100,7 @@ class HarnessApp(App):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
         yield VerticalScroll(id="log")
+        yield JobPanel()
         yield TaskPanel()
         yield Static(self._status_text(), id="status-bar")
         yield PromptInput()
@@ -118,8 +123,14 @@ class HarnessApp(App):
             intro.append(_WELCOME)
         log.scroll_end(animate=False)
         self._render_tasks()  # reflect any checklist restored with the session
+        self._render_jobs()  # process-scoped jobs survive session switches
         # Land focus on the prompt so the user can type immediately.
         self.query_one(PromptInput).focus()
+
+    async def on_unmount(self) -> None:
+        """Jobs are process-scoped — kill any still running when the app exits so
+        no detached shell or agent run is left behind."""
+        await self.harness.deps.jobs.cancel_all()
 
     async def _replay_history(self, log: VerticalScroll) -> None:
         """Re-render a restored conversation into the log so a resumed session
@@ -202,6 +213,22 @@ class HarnessApp(App):
         widgets directly."""
         self._render_tasks()
 
+    def _render_jobs(self) -> None:
+        """Repaint the jobs panel from the registry's current jobs."""
+        if not self.is_running:
+            return  # a job changed before mount / after teardown — on_mount paints
+        try:
+            panel = self.query_one(JobPanel)
+        except NoMatches:
+            return  # tearing down; nothing to paint
+        panel.show_jobs(self.harness.deps.jobs.list())
+
+    def _on_jobs_changed(self) -> None:
+        """Live callback from the job registry — repaint as jobs launch and
+        finish. Each job runs as a task on the app's event loop, so the callback
+        fires there and direct widget mutation is safe."""
+        self._render_jobs()
+
     def action_cycle_mode(self) -> None:
         self.harness.deps.mode = self.harness.deps.mode.cycle()
         self._refresh_status()
@@ -251,6 +278,7 @@ class HarnessApp(App):
             await self._replay_history(log)
         self._refresh_status()
         self._render_tasks()
+        self._render_jobs()  # jobs are process-scoped, not per-session
         log.scroll_end(animate=False)
 
     async def reset_conversation(self) -> None:
@@ -361,7 +389,10 @@ class HarnessApp(App):
                     self._current_assistant.append(event.delta.content_delta or "")
             elif isinstance(event, FunctionToolCallEvent):
                 args = event.part.args_as_dict()
-                if event.part.tool_name == "spawn_agent":
+                # A background spawn returns a job id immediately and doesn't
+                # stream its steps, so render it as a plain tool call (the live
+                # SubAgentWidget body is only meaningful for a foreground spawn).
+                if event.part.tool_name == "spawn_agent" and not args.get("background"):
                     widget = SubAgentWidget(
                         str(args.get("type", "")), str(args.get("task", ""))
                     )
