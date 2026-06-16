@@ -1348,3 +1348,18 @@ async def test_run_background_subagent_prepends_unknown_note(tmp_path: Path):
     out = await h._run_background_subagent("general", "do it", ["nope"])
     assert "nope" in out
     assert out.rstrip().endswith("DONE")
+
+
+@pytest.mark.anyio
+async def test_run_background_subagent_default_grants_no_servers(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    h._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
+    cap = _capture_subagent(h)
+
+    await h._run_background_subagent("general", "do it")
+    assert cap["toolsets"] == []
