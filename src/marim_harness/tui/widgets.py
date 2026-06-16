@@ -217,7 +217,11 @@ class SubAgentWidget(Collapsible):
 class PromptInput(TextArea):
     """The multi-line message box. Enter submits; Shift+Enter and Ctrl+J insert a
     newline. The box auto-grows with its content up to ``_MAX_LINES``, then
-    scrolls internally."""
+    scrolls internally.
+
+    Up/Down recall previously submitted prompts shell-style — but only at the
+    text boundaries (Up on the first line, Down on the last), so inside a
+    multi-line draft the arrows still move the cursor normally."""
 
     _MIN_LINES = 3
     _MAX_LINES = 10
@@ -229,7 +233,15 @@ class PromptInput(TextArea):
             self.value = value
             super().__init__()
 
-    def __init__(self) -> None:
+    def __init__(self, history=None) -> None:
+        from ..history import PromptHistory
+
+        # NB: TextArea.history is its own undo stack — keep prompt history apart.
+        self.prompt_history = history if history is not None else PromptHistory()
+        # Navigation cursor into history.entries; None means "editing the live
+        # draft". ``_draft`` stashes that draft while scrolling back.
+        self._hist_idx: int | None = None
+        self._draft = ""
         super().__init__(soft_wrap=True, show_line_numbers=False)
 
     async def _on_key(self, event: events.Key) -> None:
@@ -237,13 +249,64 @@ class PromptInput(TextArea):
             event.prevent_default()
             event.stop()
             self.post_message(self.Submitted(self.text))
+            self._reset_nav()
             return
         if event.key in ("shift+enter", "ctrl+j"):
             event.prevent_default()
             event.stop()
             self.insert("\n")
             return
+        if event.key == "up" and self._at_first_line() and self._recall_prev():
+            event.prevent_default()
+            event.stop()
+            return
+        if event.key == "down" and self._at_last_line() and self._recall_next():
+            event.prevent_default()
+            event.stop()
+            return
         await super()._on_key(event)
+
+    def _at_first_line(self) -> bool:
+        return self.cursor_location[0] == 0
+
+    def _at_last_line(self) -> bool:
+        return self.cursor_location[0] == self.document.line_count - 1
+
+    def _reset_nav(self) -> None:
+        self._hist_idx = None
+        self._draft = ""
+
+    def _show(self, text: str) -> None:
+        """Replace the box with ``text`` and drop the cursor at the end."""
+        self.text = text
+        self.move_cursor(self.document.end)
+
+    def _recall_prev(self) -> bool:
+        """Move one step back into history. Returns whether it consumed the key."""
+        entries = self.prompt_history.entries
+        if not entries:
+            return False
+        if self._hist_idx is None:
+            self._draft = self.text  # remember what we were typing
+            self._hist_idx = len(entries) - 1
+        elif self._hist_idx > 0:
+            self._hist_idx -= 1
+        # else: already at the oldest — stay put, but still consume the key.
+        self._show(entries[self._hist_idx])
+        return True
+
+    def _recall_next(self) -> bool:
+        """Move one step forward; past the newest entry restores the draft."""
+        if self._hist_idx is None:
+            return False  # not navigating — let Down move the cursor
+        entries = self.prompt_history.entries
+        if self._hist_idx < len(entries) - 1:
+            self._hist_idx += 1
+            self._show(entries[self._hist_idx])
+        else:
+            self._hist_idx = None
+            self._show(self._draft)
+        return True
 
     def _target_height(self) -> int:
         """Rows the box should occupy: one per logical line, clamped to the

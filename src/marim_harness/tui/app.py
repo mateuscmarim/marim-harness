@@ -16,6 +16,7 @@ from textual.widgets import Footer, Header, Static
 
 from ..agent import Harness
 from ..compaction import estimate_tokens
+from ..history import PromptHistory
 from .approval import ApprovalModal
 from .commands import dispatch
 from .model_picker import ModelPickerModal
@@ -78,9 +79,12 @@ class HarnessApp(App):
         ("escape", "cancel_turn", "Cancel turn"),
     ]
 
-    def __init__(self, harness: Harness) -> None:
+    def __init__(self, harness: Harness, history: PromptHistory | None = None) -> None:
         super().__init__()
         self.harness = harness
+        # Recallable prompt history. Defaults to in-memory; the CLI passes a
+        # persistent one so Up/Down recall prompts across restarts.
+        self._history = history if history is not None else PromptHistory()
         self.harness.deps.request_approval = self._request_approval
         self.harness.deps.tasks.on_change = self._on_tasks_changed
         self.harness.deps.jobs.on_change = self._on_jobs_changed
@@ -101,7 +105,7 @@ class HarnessApp(App):
         yield JobPanel()
         yield TaskPanel()
         yield Static(self._status_text(), id="status-bar")
-        yield PromptInput()
+        yield PromptInput(history=self._history)
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -359,6 +363,7 @@ class HarnessApp(App):
         text = event.value.strip()
         if not text:
             return
+        self._history.add(text)  # capture every submission, commands included
         self.query_one(PromptInput).text = ""
         if text.startswith("/"):
             await dispatch(self, text)
