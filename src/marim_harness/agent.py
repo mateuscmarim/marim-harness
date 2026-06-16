@@ -457,20 +457,24 @@ class Harness:
         self.usage += result.usage
         return self._mcp_grant_note(unknown) + result.output
 
-    async def _run_background_subagent(self, type: str, task: str) -> str:
-        """Run a sub-agent as a detached background job: same isolation and
-        mode-based reach as a foreground spawn, but with no event streaming —
-        the job's result is its final report, surfaced when the agent pulls it."""
+    async def _run_background_subagent(
+        self, type: str, task: str, mcp_names: list[str] | None = None
+    ) -> str:
+        """Run a sub-agent as a detached background job: same isolation, mode-based
+        reach, and MCP grant as a foreground spawn, but with no event streaming —
+        the job's result is its final report, surfaced when the agent pulls it.
+        Any unknown-server note rides along on that report."""
         sub, err = self._build_subagent(type)
         if err is not None:
             return err
-        result = await sub.run(task, deps=self.deps)
+        granted, unknown = self._granted_servers(mcp_names)
+        result = await sub.run(task, deps=self.deps, toolsets=granted)
         # A background spawn finishes off-turn, so no run_turn will fold in its
         # spend — count it here and persist right away so the saved session
         # reflects it even if the process exits before the next turn.
         self.usage += result.usage
         self._persist()
-        return result.output
+        return self._mcp_grant_note(unknown) + result.output
 
     @staticmethod
     def _server_name(server) -> str:

@@ -1258,6 +1258,7 @@ def _capture_subagent(h, report="report"):
     """Replace _build_subagent so the spawned agent's run() records the toolsets
     it was given and returns a canned report. Returns the capture dict."""
     from types import SimpleNamespace
+
     from pydantic_ai.usage import RunUsage
 
     cap: dict = {}
@@ -1275,6 +1276,7 @@ def _capture_subagent(h, report="report"):
 @pytest.mark.anyio
 async def test_run_subagent_grants_named_server(tmp_path: Path):
     from types import SimpleNamespace
+
     from pydantic_ai.models.test import TestModel
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
@@ -1291,6 +1293,7 @@ async def test_run_subagent_grants_named_server(tmp_path: Path):
 @pytest.mark.anyio
 async def test_run_subagent_default_grants_no_servers(tmp_path: Path):
     from types import SimpleNamespace
+
     from pydantic_ai.models.test import TestModel
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
@@ -1314,3 +1317,34 @@ async def test_run_subagent_prepends_unknown_note(tmp_path: Path):
     out = await h._run_subagent("explore", "investigate", "sid", ["nope"])
     assert "nope" in out
     assert out.rstrip().endswith("FINDINGS")
+
+
+@pytest.mark.anyio
+async def test_run_background_subagent_grants_named_server(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    server = SimpleNamespace(tool_prefix="mddocs")
+    h._live_servers = [server]
+    cap = _capture_subagent(h)
+
+    out = await h._run_background_subagent("general", "do it", ["mddocs"])
+    assert out == "report"
+    assert cap["toolsets"] == [server]
+
+
+@pytest.mark.anyio
+async def test_run_background_subagent_prepends_unknown_note(tmp_path: Path):
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    h._live_servers = []
+    _capture_subagent(h, report="DONE")
+
+    out = await h._run_background_subagent("general", "do it", ["nope"])
+    assert "nope" in out
+    assert out.rstrip().endswith("DONE")

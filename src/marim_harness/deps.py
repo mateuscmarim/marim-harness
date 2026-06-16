@@ -15,7 +15,7 @@ SubAgentRunner = Callable[[str, str, str, Optional[list[str]]], Awaitable[str]]
 SubAgentEventCb = Callable[[str, object, int], Awaitable[None]]
 # (type, task) -> the sub-agent's final report. Like SubAgentRunner but with no
 # streaming — used to run a sub-agent as a detached background job.
-BackgroundAgentRunner = Callable[[str, str], Awaitable[str]]
+BackgroundAgentRunner = Callable[[str, str, Optional[list[str]]], Awaitable[str]]
 
 
 @dataclass
