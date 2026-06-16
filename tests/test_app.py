@@ -309,6 +309,18 @@ async def test_log_and_input_both_visible(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_input_is_focused_on_start(tmp_path: Path):
+    """The prompt box should hold focus the moment the app opens, so the user
+    can type without first clicking or tabbing into it."""
+    from marim_harness.tui.widgets import PromptInput
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.focused is app.query_one(PromptInput)
+
+
+@pytest.mark.anyio
 async def test_ascii_banner_shown_on_start(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:

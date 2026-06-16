@@ -105,6 +105,8 @@ class HarnessApp(App):
         else:
             intro.append(_WELCOME)
         log.scroll_end(animate=False)
+        # Land focus on the prompt so the user can type immediately.
+        self.query_one(PromptInput).focus()
 
     async def _replay_history(self, log: VerticalScroll) -> None:
         """Re-render a restored conversation into the log so a resumed session
