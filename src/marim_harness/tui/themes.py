@@ -16,6 +16,11 @@ _PANEL = "#232730"
 _FOREGROUND = "#d7dae0"
 _TEXT_MUTED = "#7c828d"
 
+# Semantic status colors — shared by all themes.
+_ERROR = "#d9544f"
+_WARNING = "#d9a14f"
+_SUCCESS = "#5fae7e"
+
 _BASE = {
     "background": _BACKGROUND,
     "surface": _SURFACE,
@@ -26,15 +31,15 @@ _BASE = {
 }
 
 
-def _theme(name: str, accent: str) -> Theme:
+def _theme(name: str, hue: str) -> Theme:
     """A marim theme: the shared neutral base plus one accent hue."""
     return Theme(
         name=name,
-        primary=accent,
-        accent=accent,
-        error="#d9544f",
-        warning="#d9a14f",
-        success="#5fae7e",
+        primary=hue,
+        accent=hue,
+        error=_ERROR,
+        warning=_WARNING,
+        success=_SUCCESS,
         **_BASE,
     )
 
@@ -47,4 +52,4 @@ MARIM_THEMES = (
 )
 
 THEME_NAMES = tuple(t.name for t in MARIM_THEMES)
-DEFAULT_THEME = "marim-teal"
+DEFAULT_THEME = MARIM_THEMES[0].name

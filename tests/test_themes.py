@@ -38,3 +38,8 @@ def test_all_themes_are_dark_and_share_base():
 def test_accents_are_distinct():
     primaries = {t.primary for t in MARIM_THEMES}
     assert len(primaries) == 4
+
+
+def test_text_muted_present_on_all_themes():
+    for t in MARIM_THEMES:
+        assert "text-muted" in (t.variables or {}), f"{t.name} missing text-muted"
