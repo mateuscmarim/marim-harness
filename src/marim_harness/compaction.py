@@ -188,6 +188,7 @@ _MAX_TITLE_CHARS = 50
 
 
 def make_summarizer(model) -> Summarizer:
+    """Build a summarizer backed by a dedicated, tool-free agent on ``model``."""
     summary_agent = Agent(model, instructions=_SUMMARY_INSTRUCTIONS)
 
     async def summarize(messages: list) -> str:
@@ -198,6 +199,7 @@ def make_summarizer(model) -> Summarizer:
 
 
 def clean_title(raw: str) -> str:
+    """Reduce a model's reply to a single tidy title line, with a safe fallback."""
     lines = [line.strip() for line in (raw or "").splitlines()]
     text = next((line for line in lines if line), "")
     if text.lower().startswith("title:"):
@@ -209,6 +211,7 @@ def clean_title(raw: str) -> str:
 
 
 def make_titler(model) -> Titler:
+    """Build a titler backed by a dedicated, tool-free agent on ``model``."""
     title_agent = Agent(model, instructions=_TITLE_INSTRUCTIONS)
 
     async def title(messages: list) -> str:
