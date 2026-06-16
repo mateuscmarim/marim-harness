@@ -133,3 +133,79 @@ async def test_spawn_agent_default_mcp_is_none(tmp_path):
 
     await spawn_agent(ctx, "explore", "investigate")
     assert calls["mcp_names"] is None
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        (None, None),
+        (["mddocs"], ["mddocs"]),
+        (["mddocs", "sentry"], ["mddocs", "sentry"]),
+        ('["mddocs"]', ["mddocs"]),  # model JSON-stringified the array
+        ('["mddocs", "sentry"]', ["mddocs", "sentry"]),
+        ("mddocs", ["mddocs"]),  # bare name, not valid JSON
+        ('"mddocs"', ["mddocs"]),  # JSON-quoted bare string
+        ("mddocs, sentry", ["mddocs", "sentry"]),  # comma-separated
+        ("", None),  # empty string grants nothing
+        ("  ", None),
+        ("[]", None),  # empty array
+        ([], None),
+    ],
+)
+def test_coerce_mcp(raw, expected):
+    from marim_harness.tools.provider import _coerce_mcp
+
+    assert _coerce_mcp(raw) == expected
+
+
+@pytest.mark.anyio
+async def test_spawn_agent_coerces_stringified_mcp(tmp_path):
+    """A model that serializes the array as a JSON string must still grant the
+    server, not fail the turn on schema validation."""
+    from types import SimpleNamespace
+
+    from marim_harness.deps import Deps
+    from marim_harness.permissions import Mode
+    from marim_harness.tools.provider import spawn_agent
+
+    calls = {}
+
+    async def fake_runner(type, task, tool_call_id, mcp_names):
+        calls["mcp_names"] = mcp_names
+        return "ok"
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps.run_subagent = fake_runner
+    ctx = SimpleNamespace(deps=deps, tool_call_id="tc4")
+
+    await spawn_agent(ctx, "general", "investigate", mcp='["mddocs"]')
+    assert calls["mcp_names"] == ["mddocs"]
+
+
+@pytest.mark.anyio
+async def test_spawn_agent_coerces_comma_separated_mcp_background(tmp_path):
+    from types import SimpleNamespace
+
+    from marim_harness.deps import Deps
+    from marim_harness.permissions import Mode
+    from marim_harness.tools.provider import spawn_agent
+
+    captured = {}
+
+    def fake_bg(type, task, mcp_names):
+        captured["mcp_names"] = mcp_names
+
+        async def _coro():
+            return "bg-report"
+
+        return _coro()
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps.run_background_agent = fake_bg
+    deps.jobs = SimpleNamespace(
+        register=lambda kind, label, coro: (coro.close(), "job-1")[1]
+    )
+    ctx = SimpleNamespace(deps=deps, tool_call_id="tc5")
+
+    await spawn_agent(ctx, "general", "do it", background=True, mcp="mddocs, sentry")
+    assert captured["mcp_names"] == ["mddocs", "sentry"]

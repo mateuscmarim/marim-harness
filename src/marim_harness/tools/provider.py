@@ -1,3 +1,4 @@
+import json
 from typing import Iterable, Literal, Optional, Protocol
 
 from pydantic_ai import Agent, RunContext
@@ -129,12 +130,43 @@ def update_tasks(ctx: RunContext[Deps], tasks: list[Task]) -> str:
     return summarize(ctx.deps.tasks.items)
 
 
+def _coerce_mcp(mcp: "list[str] | str | None") -> Optional[list[str]]:
+    """Normalize the `mcp` grant into a list of server names, or None.
+
+    Weaker models often serialize the array argument as a JSON string
+    (``'["mddocs"]'``) or a comma-separated string (``'mddocs, sentry'``)
+    rather than a real array. Accepting those forms keeps a mis-encoding from
+    failing the whole turn on schema validation. Returns None for an empty
+    grant so it flows through as "no MCP access"."""
+    if mcp is None:
+        return None
+    if isinstance(mcp, str):
+        text = mcp.strip()
+        if not text:
+            return None
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, list):
+            items: Iterable = parsed
+        elif isinstance(parsed, str):
+            items = [parsed]
+        else:  # not JSON (or a number/object) — treat as comma-separated
+            items = text.split(",")
+    else:
+        items = mcp
+    names = [str(item).strip() for item in items]
+    cleaned = [name for name in names if name]
+    return cleaned or None
+
+
 async def spawn_agent(
     ctx: RunContext[Deps],
     type: str,
     task: str,
     background: bool = False,
-    mcp: list[str] | None = None,
+    mcp: list[str] | str | None = None,
 ) -> str:
     """Delegate a sub-task to an isolated sub-agent that runs on the same model
     and reports back. `type` is a built-in — `explore` (read-only investigation;
@@ -154,17 +186,18 @@ async def spawn_agent(
     `mcp=["mddocs"]` lets the sub-agent use that server's tools, gated the same
     way your own MCP calls are. Unknown or disabled names are ignored and noted
     in the report."""
+    mcp_names = _coerce_mcp(mcp)
     if background:
         if ctx.deps.run_background_agent is None:
             return "Background sub-agents are not available in this context."
         label = f"{type}: {task}"
         job_id = ctx.deps.jobs.register(
-            "agent", label, ctx.deps.run_background_agent(type, task, mcp)
+            "agent", label, ctx.deps.run_background_agent(type, task, mcp_names)
         )
         return f"Started {job_id} (agent) — {label[:60]}"
     if ctx.deps.run_subagent is None:
         return "Sub-agents are not available in this context."
-    return await ctx.deps.run_subagent(type, task, ctx.tool_call_id, mcp)
+    return await ctx.deps.run_subagent(type, task, ctx.tool_call_id, mcp_names)
 
 
 def write_file(ctx: RunContext[Deps], path: str, content: str) -> str:

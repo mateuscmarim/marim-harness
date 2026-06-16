@@ -118,6 +118,10 @@ class Harness:
             deps_type=Deps,
             instructions=instructions,
             output_type=[str, DeferredToolRequests],
+            # One extra retry past pydantic-ai's default of 1: weaker models
+            # often need a second attempt to correct a malformed tool argument
+            # before the turn fails with UnexpectedModelBehavior.
+            retries=2,
         )
         self.provider = provider
         provider.register(self.agent)
