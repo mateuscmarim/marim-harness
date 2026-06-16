@@ -87,10 +87,13 @@ async def run_headless(
                 print(json.dumps(obj), file=out, flush=True)
 
     try:
+        await harness.connect()  # open any configured MCP servers for this run
         output = await harness.run_turn(prompt, event_stream_handler=handler)
     except Exception as exc:  # keep the failure surface small and scriptable
         print(f"{type(exc).__name__}: {exc}", file=err)
         return 1
+    finally:
+        await harness.aclose()
 
     if output_format == "json":
         obj = _result_obj(harness, output)

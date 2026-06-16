@@ -143,6 +143,34 @@ async def test_skill_no_arg_no_skills(tmp_path: Path, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_mcp_lists_server_status():
+    app = _FakeApp()
+    app.harness = SimpleNamespace(
+        mcp_servers=[
+            SimpleNamespace(id="files"),
+            SimpleNamespace(id="web"),
+            SimpleNamespace(id="idle"),
+        ],
+        mcp_status={"connected": ["files"], "failed": [("web", "boom")]},
+    )
+    await dispatch(app, "/mcp")
+    out = app.posted[0]
+    assert "files" in out and "connected" in out  # live
+    assert "web" in out and "boom" in out  # failed, with its error
+    assert "idle" in out and "not connected" in out  # configured but not up
+
+
+@pytest.mark.anyio
+async def test_mcp_none_configured():
+    app = _FakeApp()
+    app.harness = SimpleNamespace(
+        mcp_servers=[], mcp_status={"connected": [], "failed": []}
+    )
+    await dispatch(app, "/mcp")
+    assert "No MCP servers configured" in app.posted[0]
+
+
+@pytest.mark.anyio
 async def test_skill_with_name_spawns_activation_turn():
     app = _FakeApp()
     await dispatch(app, "/skill code-review only the parser")

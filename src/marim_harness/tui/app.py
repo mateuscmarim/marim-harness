@@ -136,11 +136,27 @@ class HarnessApp(App):
         self.set_interval(_STREAM_FLUSH_INTERVAL, self._flush_streams)
         # Land focus on the prompt so the user can type immediately.
         self.query_one(PromptInput).focus()
+        await self._connect_mcp(log)
+
+    async def _connect_mcp(self, log: VerticalScroll) -> None:
+        """Open the configured MCP servers and note the outcome. Connection
+        failures are surfaced as a notice, never fatal — the app runs fine with
+        the servers that did come up (or none at all)."""
+        if not self.harness.mcp_servers:
+            return
+        status = await self.harness.connect()
+        if status["connected"]:
+            await log.mount(
+                NoticeMessage(f"MCP connected: {', '.join(status['connected'])}")
+            )
+        for name, error in status["failed"]:
+            await log.mount(ErrorMessage(f"MCP {name} failed: {error}"))
 
     async def on_unmount(self) -> None:
         """Jobs are process-scoped — kill any still running when the app exits so
-        no detached shell or agent run is left behind."""
+        no detached shell or agent run is left behind, and close MCP connections."""
         await self.harness.deps.jobs.cancel_all()
+        await self.harness.aclose()
 
     async def _replay_history(self, log: VerticalScroll) -> None:
         """Re-render a restored conversation into the log so a resumed session

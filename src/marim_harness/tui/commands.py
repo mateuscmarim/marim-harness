@@ -181,6 +181,30 @@ async def _cmd_skill(app: HarnessApp, arg: str) -> None:
     app._turn_worker = app.run_worker(app._run_turn(prompt), exclusive=True)
 
 
+async def _cmd_mcp(app: HarnessApp, arg: str) -> None:
+    servers = getattr(app.harness, "mcp_servers", [])
+    if not servers:
+        await app.post_system(
+            "No MCP servers configured. Add them to `.marim/mcp.json` (project) "
+            "or `~/.config/marim/mcp.json` (global)."
+        )
+        return
+    status = getattr(app.harness, "mcp_status", {"connected": [], "failed": []})
+    connected = set(status.get("connected", []))
+    failed = dict(status.get("failed", []))
+    lines = ["**MCP servers**", ""]
+    for s in servers:
+        name = str(getattr(s, "id", None) or getattr(s, "tool_prefix", "?"))
+        if name in connected:
+            state = "connected ✓"
+        elif name in failed:
+            state = f"failed ✗ — {failed[name]}"
+        else:
+            state = "not connected"
+        lines.append(f"- `{name}` — {state}")
+    await app.post_system("\n".join(lines))
+
+
 async def _cmd_exit(app: HarnessApp, arg: str) -> None:
     app.exit()
 
@@ -196,6 +220,7 @@ COMMANDS: list[Command] = [
     Command("model", "switch model: /model [id] (opens a picker if blank)", _cmd_model),
     Command("remember", "save a note to memory: /remember <fact>", _cmd_remember),
     Command("skill", "list or run skills: /skill [name [context]]", _cmd_skill),
+    Command("mcp", "list configured MCP servers and their connection status", _cmd_mcp),
     Command("exit", "quit the harness", _cmd_exit, aliases=("quit",)),
 ]
 
