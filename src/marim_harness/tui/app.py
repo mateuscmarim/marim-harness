@@ -337,6 +337,18 @@ class HarnessApp(App):
         log.mount(NoticeMessage(f"model: {self.harness.model_label}"))
         log.scroll_end(animate=False)
 
+    def _log_pinned(self, log) -> bool:
+        """True when the log is at (or within a line of) the bottom — i.e. the
+        user is following the stream, not reading back. Used to decide whether a
+        new event should keep the viewport pinned to the end."""
+        return log.scroll_offset.y >= log.max_scroll_y - 2
+
+    def _follow_scroll(self, log, pinned: bool) -> None:
+        """Scroll to the end only when the user was already pinned there. When
+        they've scrolled up to read one of several live streams, leave them be."""
+        if pinned:
+            log.scroll_end(animate=False)
+
     async def _request_approval(self, call) -> object:
         approved = await self.push_screen_wait(
             ApprovalModal(call.tool_name, call.args_as_dict())
@@ -353,6 +365,7 @@ class HarnessApp(App):
             return
         log = self.query_one("#log", VerticalScroll)
         await log.mount(UserMessage(text))
+        log.scroll_end(animate=False)  # re-pin: sending re-engages follow mode
         self._current_assistant = None
         self._turn_worker = self.run_worker(self._run_turn(text), exclusive=True)
 
@@ -374,9 +387,28 @@ class HarnessApp(App):
             self._turn_worker = None
             self._set_busy(False)
 
+    def _mount_spawn_widget(self, args: dict):
+        """Build the widget for a foreground spawn_agent. When another sub-agent
+        is already running, this is a fan-out — collapse every sibling (and this
+        one) to a live one-line status so the log stays legible; a lone spawn is
+        left expanded."""
+        widget = SubAgentWidget(
+            str(args.get("type", "")), str(args.get("task", ""))
+        )
+        live = [
+            w for w in self._tool_widgets.values()
+            if isinstance(w, SubAgentWidget) and w.status == "pending"
+        ]
+        if live:
+            widget.collapsed = True
+            for sibling in live:
+                sibling.collapsed = True
+        return widget
+
     async def _on_events(self, ctx, events) -> None:
         log = self.query_one("#log", VerticalScroll)
         async for event in events:
+            pinned = self._log_pinned(log)
             if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
                 self._current_assistant = AssistantMessage()
                 await log.mount(self._current_assistant)
@@ -393,9 +425,7 @@ class HarnessApp(App):
                 # stream its steps, so render it as a plain tool call (the live
                 # SubAgentWidget body is only meaningful for a foreground spawn).
                 if event.part.tool_name == "spawn_agent" and not args.get("background"):
-                    widget = SubAgentWidget(
-                        str(args.get("type", "")), str(args.get("task", ""))
-                    )
+                    widget = self._mount_spawn_widget(args)
                 else:
                     widget = ToolCallWidget(event.part.tool_name, args)
                 self._tool_widgets[event.part.tool_call_id] = widget
@@ -405,7 +435,7 @@ class HarnessApp(App):
                 if widget is not None:
                     widget.finish(str(getattr(event.part, "content", "")))
                 self._sub_assistants.pop(event.tool_call_id, None)
-            log.scroll_end(animate=False)
+            self._follow_scroll(log, pinned)
 
     async def _on_subagent_event(self, stream_id: str, event) -> None:
         """Route a spawned sub-agent's own stream into the SubAgentWidget that owns
@@ -416,7 +446,10 @@ class HarnessApp(App):
         parent = self._tool_widgets.get(stream_id)
         if not isinstance(parent, SubAgentWidget):
             return
+        log = self.query_one("#log", VerticalScroll)
+        pinned = self._log_pinned(log)
         if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
+            parent.note_text()  # live title status, useful while collapsed
             msg = AssistantMessage()
             self._sub_assistants[stream_id] = msg
             await parent.add(msg)
@@ -429,6 +462,7 @@ class HarnessApp(App):
             if msg is not None:
                 msg.append(event.delta.content_delta or "")
         elif isinstance(event, FunctionToolCallEvent):
+            parent.note_tool(event.part.tool_name)  # live title status
             widget = ToolCallWidget(event.part.tool_name, event.part.args_as_dict())
             self._tool_widgets[event.part.tool_call_id] = widget
             await parent.add(widget)
@@ -436,4 +470,4 @@ class HarnessApp(App):
             widget = self._tool_widgets.get(event.tool_call_id)
             if widget is not None:
                 widget.finish(str(getattr(event.part, "content", "")))
-        self.query_one("#log", VerticalScroll).scroll_end(animate=False)
+        self._follow_scroll(log, pinned)

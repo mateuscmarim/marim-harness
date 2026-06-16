@@ -1065,3 +1065,135 @@ async def test_jobs_cancelled_on_app_exit(tmp_path: Path):
         assert app.harness.deps.jobs.get(job_id).status == "running"
     # Leaving the context unmounts the app, which cancels running jobs.
     assert app.harness.deps.jobs.get(job_id).status == "cancelled"
+
+
+def _spawn_call(tool_call_id: str, task: str):
+    from pydantic_ai.messages import FunctionToolCallEvent, ToolCallPart
+
+    return FunctionToolCallEvent(
+        part=ToolCallPart(
+            tool_name="spawn_agent",
+            args={"type": "explore", "task": task},
+            tool_call_id=tool_call_id,
+        )
+    )
+
+
+@pytest.mark.anyio
+async def test_single_subagent_stays_expanded(tmp_path: Path):
+    from marim_harness.tui.widgets import SubAgentWidget
+
+    async def gen():
+        yield _spawn_call("s1", "only one")
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._on_events(None, gen())
+        await pilot.pause()
+        w = app._tool_widgets["s1"]
+        assert isinstance(w, SubAgentWidget)
+        assert w.collapsed is False
+
+
+@pytest.mark.anyio
+async def test_parallel_subagents_collapse(tmp_path: Path):
+    """A fan-out (>1 sub-agent live at once) collapses every sibling so the log
+    stays legible; the user expands the one they want."""
+    from marim_harness.tui.widgets import SubAgentWidget
+
+    async def gen():
+        yield _spawn_call("s1", "first")
+        yield _spawn_call("s2", "second")
+        yield _spawn_call("s3", "third")
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._on_events(None, gen())
+        await pilot.pause()
+        for sid in ("s1", "s2", "s3"):
+            w = app._tool_widgets[sid]
+            assert isinstance(w, SubAgentWidget)
+            assert w.collapsed is True
+
+
+@pytest.mark.anyio
+async def test_subagent_event_updates_activity_title(tmp_path: Path):
+    from pydantic_ai.messages import (
+        FunctionToolCallEvent,
+        ToolCallPart,
+    )
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Mount a parent sub-agent widget via a spawn call.
+        async def spawn():
+            yield _spawn_call("s1", "look")
+
+        await app._on_events(None, spawn())
+        await pilot.pause()
+        # A nested tool call inside the sub-agent updates the parent's title.
+        tool_call = FunctionToolCallEvent(
+            part=ToolCallPart(
+                tool_name="grep", args={"pattern": "x"}, tool_call_id="t1"
+            )
+        )
+        await app._on_subagent_event("s1", tool_call)
+        await pilot.pause()
+        parent = app._tool_widgets["s1"]
+        assert "grep" in str(parent.title)
+
+
+def test_log_pinned_detects_bottom(tmp_path: Path):
+    from types import SimpleNamespace
+
+    app = _app(tmp_path)
+    at_bottom = SimpleNamespace(scroll_offset=SimpleNamespace(y=100), max_scroll_y=100)
+    scrolled_up = SimpleNamespace(scroll_offset=SimpleNamespace(y=10), max_scroll_y=100)
+    assert app._log_pinned(at_bottom) is True
+    assert app._log_pinned(scrolled_up) is False
+
+
+def test_follow_scroll_only_when_pinned(tmp_path: Path):
+    from types import SimpleNamespace
+
+    app = _app(tmp_path)
+    calls = []
+    log = SimpleNamespace(scroll_end=lambda **k: calls.append(k))
+    app._follow_scroll(log, pinned=False)
+    assert calls == []
+    app._follow_scroll(log, pinned=True)
+    assert calls == [{"animate": False}]
+
+
+@pytest.mark.anyio
+async def test_stream_does_not_yank_when_scrolled_up(tmp_path: Path):
+    """When the user has scrolled up to read, a streaming event must not snap the
+    viewport back to the bottom."""
+    from marim_harness.tui.widgets import AssistantMessage
+
+    app = _app(tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        log = app.query_one("#log")
+        # Overflow the viewport.
+        for _ in range(40):
+            m = AssistantMessage()
+            await log.mount(m)
+            m.append("line of text")
+        await pilot.pause()
+        log.scroll_to(y=0, animate=False)
+        await pilot.pause()
+        assert log.scroll_offset.y == 0
+
+        # A streaming text event arrives — we are scrolled up, so stay put.
+        from pydantic_ai.messages import PartStartEvent, TextPart
+
+        async def gen():
+            yield PartStartEvent(index=0, part=TextPart(content="new streamed text"))
+
+        await app._on_events(None, gen())
+        await pilot.pause()
+        assert log.scroll_offset.y == 0
