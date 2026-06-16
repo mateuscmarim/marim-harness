@@ -1,3 +1,6 @@
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
 
 from marim_harness.session import SessionInfo
@@ -12,11 +15,14 @@ from marim_harness.tui.commands import (
 class _FakeApp:
     """Minimal stand-in for HarnessApp: records posts and spawned turns."""
 
-    def __init__(self):
+    def __init__(self, workspace_root: Path | None = None):
         self.posted: list[str] = []
         self.turn_prompts: list[str] = []
         self._turn_worker = None
         self._current_assistant = "sentinel"
+        self.harness = SimpleNamespace(
+            deps=SimpleNamespace(workspace_root=workspace_root)
+        )
 
     async def post_system(self, msg: str) -> None:
         self.posted.append(msg)
@@ -75,7 +81,7 @@ def test_new_is_its_own_command_not_a_clear_alias():
 
 def test_core_commands_present():
     names = ("help", "clear", "sessions", "new", "switch", "name", "mode", "model",
-             "remember", "exit")
+             "remember", "skill", "exit")
     for name in names:
         assert name in COMMANDS_BY_NAME
 
@@ -96,4 +102,53 @@ async def test_remember_spawns_turn_with_fact_and_tool_instruction():
     prompt = app.turn_prompts[0]
     assert "the build uses uv" in prompt
     assert "remember tool" in prompt
+    assert app._turn_worker is not None
+
+
+def _make_skill(root: Path, name: str, *, description="A skill.", manual=False) -> None:
+    d = root / name
+    d.mkdir(parents=True, exist_ok=True)
+    extra = "disable-model-invocation: true\n" if manual else ""
+    (d / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {description}\n{extra}---\n\nDo it.\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.anyio
+async def test_skill_no_arg_lists_skills(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    ws = tmp_path / "ws"
+    _make_skill(ws / ".marim" / "skills", "code-review", description="Reviews diffs.")
+    _make_skill(ws / ".marim" / "skills", "deploy", description="Ships it.", manual=True)
+    app = _FakeApp(workspace_root=ws)
+    await dispatch(app, "/skill")
+    assert app.turn_prompts == []  # listing doesn't spawn a turn
+    out = app.posted[0]
+    assert "code-review" in out
+    assert "Reviews diffs." in out
+    assert "deploy" in out  # manual-only skills still listed...
+    assert "manual-only" in out  # ...but tagged
+
+
+@pytest.mark.anyio
+async def test_skill_no_arg_no_skills(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    app = _FakeApp(workspace_root=tmp_path / "ws")
+    await dispatch(app, "/skill")
+    assert app.turn_prompts == []
+    assert "No skills found" in app.posted[0]
+
+
+@pytest.mark.anyio
+async def test_skill_with_name_spawns_activation_turn():
+    app = _FakeApp()
+    await dispatch(app, "/skill code-review only the parser")
+    assert len(app.turn_prompts) == 1
+    prompt = app.turn_prompts[0]
+    assert "code-review" in prompt
+    assert "activate_skill" in prompt
+    assert "only the parser" in prompt  # extra context threaded through
     assert app._turn_worker is not None

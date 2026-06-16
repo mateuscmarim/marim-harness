@@ -14,6 +14,7 @@ from .instructions import load_project_instructions
 from .memory import global_scope, load_index, project_scope
 from .permissions import resolve_approvals
 from .session import SessionInfo, SessionManager, SessionStore
+from .skills import discover_skills, skills_index_text
 from .tools.provider import ToolProvider
 
 _SUMMARY_INSTRUCTIONS = (
@@ -137,6 +138,20 @@ class Harness:
                 "read the full fact with the recall tool (by the entry's title or "
                 "slug, with the matching scope). Save new durable facts with the "
                 "remember tool.\n\n" + "\n\n".join(parts)
+            )
+
+        @self.agent.instructions
+        def _skill_index(ctx: RunContext[Deps]) -> str:
+            """Inject the discovery index of available skills, re-read each turn.
+            Each line is a packaged workflow the model can pull in with the
+            activate_skill tool; manual-only skills are omitted by the formatter."""
+            text = skills_index_text(discover_skills(ctx.deps.workspace_root))
+            if not text:
+                return ""
+            return (
+                "Available skills below — each is a packaged workflow. When a "
+                "task matches one's description, load its full instructions with "
+                "the activate_skill tool (by name) and follow them.\n\n" + text
             )
 
         @self.agent.instructions

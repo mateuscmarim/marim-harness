@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 from ..permissions import Mode
+from ..skills import discover_skills
 
 if TYPE_CHECKING:
     from .app import HarnessApp
@@ -151,6 +152,35 @@ async def _cmd_remember(app: HarnessApp, arg: str) -> None:
     app._turn_worker = app.run_worker(app._run_turn(prompt), exclusive=True)
 
 
+async def _cmd_skill(app: HarnessApp, arg: str) -> None:
+    arg = arg.strip()
+    if not arg:
+        skills = discover_skills(app.harness.deps.workspace_root)
+        if not skills:
+            await app.post_system(
+                "No skills found. Drop a skill directory under `.marim/skills/` "
+                "(or `.claude/skills/`) with a `SKILL.md` inside."
+            )
+            return
+        lines = ["**Skills**", ""]
+        for s in skills:
+            tag = " _(manual-only)_" if s.disable_model_invocation else ""
+            lines.append(f"- `{s.name}` — {s.description}{tag}")
+        lines += ["", "Run one with `/skill <name> [extra context]`."]
+        await app.post_system("\n".join(lines))
+        return
+    name, _, extra = arg.partition(" ")
+    extra = extra.strip()
+    prompt = (
+        f"Activate the skill named '{name}' by calling the activate_skill tool, "
+        "then carry out its instructions."
+    )
+    if extra:
+        prompt += f"\n\nAdditional context for this run: {extra}"
+    app._current_assistant = None
+    app._turn_worker = app.run_worker(app._run_turn(prompt), exclusive=True)
+
+
 async def _cmd_exit(app: HarnessApp, arg: str) -> None:
     app.exit()
 
@@ -165,6 +195,7 @@ COMMANDS: list[Command] = [
     Command("mode", "set approval mode: /mode [ask|auto|plan]", _cmd_mode),
     Command("model", "switch model: /model [id] (opens a picker if blank)", _cmd_model),
     Command("remember", "save a note to memory: /remember <fact>", _cmd_remember),
+    Command("skill", "list or run skills: /skill [name [context]]", _cmd_skill),
     Command("exit", "quit the harness", _cmd_exit, aliases=("quit",)),
 ]
 

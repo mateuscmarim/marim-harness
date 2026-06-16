@@ -289,6 +289,43 @@ async def test_memory_indexes_injected_and_dynamic(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_skill_index_injected_and_dynamic(tmp_path: Path, monkeypatch):
+    # Isolate the global skill roots so the real user's skills don't leak in.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    captured: dict = {}
+
+    def fn(messages, info):
+        captured["instructions"] = _last_instructions(messages)
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    harness = Harness(
+        model=FunctionModel(fn), provider=BuiltinToolProvider(), deps=deps,
+        instructions="BASE PROMPT",
+    )
+
+    # No skills yet -> no skills section in the prompt.
+    await harness.run_turn("hi")
+    assert "Available skills" not in captured["instructions"]
+
+    # Dropping a skill in makes the very next turn see the index (dynamic reload).
+    skill_dir = tmp_path / ".marim" / "skills" / "code-review"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: code-review\ndescription: Reviews diffs for bugs.\n---\n\nDo it.\n",
+        encoding="utf-8",
+    )
+    await harness.run_turn("hi again")
+    instr = captured["instructions"]
+    assert "Available skills" in instr
+    assert "code-review" in instr
+    assert "Reviews diffs for bugs." in instr
+    assert "BASE PROMPT" in instr
+
+
+@pytest.mark.anyio
 async def test_memory_policy_flips_with_toggle(tmp_path: Path):
     captured: dict = {}
 
