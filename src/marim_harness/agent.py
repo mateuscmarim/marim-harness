@@ -26,6 +26,7 @@ from .mcp_manager import McpManager
 from .memory import global_scope, load_index, project_scope
 from .permissions import Mode, resolve_approvals
 from .session import SessionInfo, SessionManager, SessionStore
+from .session_ctrl import SessionController
 from .skills import discover_skills, skills_index_text
 from .tasks import render_tasks
 from .tools.provider import ToolProvider
@@ -167,30 +168,121 @@ class Harness:
         # other tools reach shared state. Wired here so they track model switches.
         self.deps.run_subagent = self._run_subagent
         self.deps.run_background_agent = self._run_background_subagent
-        self.history: list = []
         self.model_label = model_label
         # The model object used for each turn (swappable at runtime), the source
         # that builds new ones, and the id of the active model.
         self.current_model = model
         self.model_source = model_source
         self.model_id = model_id
-        self.usage = RunUsage()
-        self.store = store
-        self.manager = manager
-        self.max_context_tokens = max_context_tokens
-        self.keep_last_messages = keep_last_messages
-        self.summarizer = summarizer
-        self.titler = titler
-        # Called with (messages_before, messages_after) when history is compacted.
-        self.on_compact: Optional[Callable[[int, int], None]] = None
-        # Called with (old_name, new_name) when a session is auto-titled.
-        self.on_rename: Optional[Callable[[str, str], None]] = None
+        self.session = SessionController(
+            store, manager, deps,
+            max_context_tokens, keep_last_messages,
+            summarizer, titler,
+        )
         self.mcp = McpManager(mcp_servers or [], set(mcp_disabled or []))
+
+    # --- session delegation ---
+
+    @property
+    def history(self) -> list:
+        return self.session.history
+
+    @history.setter
+    def history(self, value: list) -> None:
+        self.session.history = value
+
+    @property
+    def usage(self) -> RunUsage:
+        return self.session.usage
+
+    @usage.setter
+    def usage(self, value: RunUsage) -> None:
+        self.session.usage = value
+
+    @property
+    def store(self):
+        return self.session.store
+
+    @store.setter
+    def store(self, value) -> None:
+        self.session.store = value
+
+    @property
+    def manager(self):
+        return self.session.manager
+
+    @property
+    def summarizer(self):
+        return self.session.summarizer
+
+    @summarizer.setter
+    def summarizer(self, value) -> None:
+        self.session.summarizer = value
+
+    @property
+    def titler(self):
+        return self.session.titler
+
+    @titler.setter
+    def titler(self, value) -> None:
+        self.session.titler = value
+
+    @property
+    def on_compact(self):
+        return self.session.on_compact
+
+    @on_compact.setter
+    def on_compact(self, value) -> None:
+        self.session.on_compact = value
+
+    @property
+    def on_rename(self):
+        return self.session.on_rename
+
+    @on_rename.setter
+    def on_rename(self, value) -> None:
+        self.session.on_rename = value
 
     @property
     def total_tokens(self) -> int:
-        """Cumulative input + output tokens across the whole session."""
-        return self.usage.total_tokens
+        return self.session.usage.total_tokens
+
+    @property
+    def session_name(self) -> Optional[str]:
+        return self.session.session_name
+
+    def sessions(self) -> list[SessionInfo]:
+        return self.session.sessions()
+
+    def _persist(self) -> None:
+        self.session.persist()
+
+    def resume(self) -> int:
+        count = self.session.resume()
+        self._apply_saved_model()
+        return count
+
+    def reset(self) -> None:
+        self.session.reset()
+
+    def new_session(self, name: Optional[str] = None) -> None:
+        self.session.new_session(name)
+        if self.session.store is not None:
+            self.session.store.model = self.model_id
+
+    def switch_session(self, session_id: str) -> int:
+        count = self.session.switch_session(session_id)
+        self._apply_saved_model()
+        return count
+
+    async def rename_session(self, name: Optional[str] = None) -> Optional[str]:
+        return await self.session.rename(name)
+
+    async def _maybe_compact(self) -> None:
+        await self.session.maybe_compact()
+
+    async def _maybe_autoname(self) -> None:
+        await self.session.maybe_autoname()
 
     def set_model(self, model_id: str, *, persist: bool = True) -> None:
         """Switch the active model at runtime. Rebuilds the per-turn model and
@@ -203,14 +295,12 @@ class Harness:
         self.current_model = model
         self.model_id = model_id
         self.model_label = self.model_source.label(model_id)
-        if self.summarizer is not None:
-            self.summarizer = make_summarizer(model)
-        if self.titler is not None:
-            self.titler = make_titler(model)
-        if self.store is not None:
-            self.store.model = model_id
-            if persist:
-                self._persist()
+        if self.session.summarizer is not None:
+            self.session.summarizer = make_summarizer(model)
+        if self.session.titler is not None:
+            self.session.titler = make_titler(model)
+        if persist:
+            self.session.set_model(model_id)
 
     def _apply_saved_model(self) -> None:
         """Re-point at a session's saved model after loading it, if one differs
@@ -222,128 +312,6 @@ class Harness:
             and self.store.model != self.model_id
         ):
             self.set_model(self.store.model, persist=False)
-
-    def resume(self) -> int:
-        """Load a previously saved conversation for this workspace into history.
-        Returns the number of messages restored (0 if none / no store)."""
-        if self.store is None:
-            return 0
-        self.history, self.usage, tasks = self.store.load()
-        self.deps.tasks.load(tasks)
-        self._apply_saved_model()
-        return len(self.history)
-
-    def reset(self) -> None:
-        """Drop the conversation: clear history, token counters, tasks, and any
-        saved session for this workspace. Used by the /clear command."""
-        self.history = []
-        self.usage = RunUsage()
-        self.deps.tasks.clear()
-        if self.store is not None:
-            self.store.clear()
-
-    @property
-    def session_name(self) -> Optional[str]:
-        """Display name of the active session, if any."""
-        return self.store.name if self.store is not None else None
-
-    def sessions(self) -> list[SessionInfo]:
-        """All saved sessions for this workspace, newest first."""
-        if self.manager is None:
-            return []
-        return self.manager.list()
-
-    def new_session(self, name: Optional[str] = None) -> None:
-        """Start a fresh session (new store), leaving existing ones untouched."""
-        if self.manager is None:
-            self.reset()
-            return
-        self.store = self.manager.create(name)
-        self.store.model = self.model_id  # keep the current model on the new session
-        self.history = []
-        self.usage = RunUsage()
-        self.deps.tasks.clear()
-
-    def switch_session(self, session_id: str) -> int:
-        """Switch to an existing session, loading its history. Returns the number
-        of messages restored."""
-        if self.manager is None:
-            return 0
-        self.store = self.manager.store(session_id)
-        self.history, self.usage, tasks = self.store.load()
-        self.deps.tasks.load(tasks)
-        self._apply_saved_model()
-        return len(self.history)
-
-    def _persist(self) -> None:
-        if self.store is not None:
-            self.store.save(self.history, self.usage, self.deps.tasks.to_payload())
-
-    async def _maybe_autoname(self) -> None:
-        """After a turn, give an unnamed session an LLM-generated title (once).
-        Silent on failure — a titling hiccup must never break the turn."""
-        if (
-            self.titler is None
-            or self.store is None
-            or not self.store.auto_named
-            or not self.history
-        ):
-            return
-        old = self.store.name
-        try:
-            title = await self.titler(self.history)
-        except Exception:
-            return
-        if not title:
-            return
-        self.store.name = title
-        self.store.auto_named = False
-        self._persist()
-        if self.on_rename is not None:
-            self.on_rename(old, title)
-
-    async def rename_session(self, name: Optional[str] = None) -> Optional[str]:
-        """Rename the active session. With ``name``, set it verbatim; without,
-        generate one from the conversation via the titler. Returns the new name,
-        or None if it couldn't be done (no store, no titler, empty conversation).
-        """
-        if self.store is None:
-            return None
-        if name:
-            new = name.strip()
-        elif self.titler is not None and self.history:
-            try:
-                new = await self.titler(self.history)
-            except Exception:
-                return None
-        else:
-            return None
-        if not new:
-            return None
-        self.store.name = new
-        self.store.auto_named = False
-        self._persist()
-        return new
-
-    async def _maybe_compact(self) -> None:
-        """Compact history if it has grown past the token budget, keeping the task
-        anchor and a recent tail. Summarizes the dropped middle when a summarizer
-        is configured (falling back to truncation); fires on_compact when it trims.
-        """
-        before = len(self.history)
-        if self.summarizer is not None:
-            new_history, did = await compact_history_with_summary(
-                self.history, self.max_context_tokens, self.summarizer,
-                self.keep_last_messages,
-            )
-        else:
-            new_history, did = compact_history(
-                self.history, self.max_context_tokens, self.keep_last_messages
-            )
-        if did:
-            self.history = new_history
-            if self.on_compact is not None:
-                self.on_compact(before, len(self.history))
 
     def _subagent_handler(self, stream_id: str):
         """An event_stream_handler for a sub-agent run that forwards each event to
@@ -398,7 +366,7 @@ class Harness:
         )
         # A foreground spawn runs inside the current turn, so its spend is folded
         # into the session total here and persisted by run_turn's _persist.
-        self.usage += result.usage
+        self.session.usage += result.usage
         return self._mcp_grant_note(unknown) + result.output
 
     async def _run_background_subagent(
@@ -416,8 +384,8 @@ class Harness:
         # A background spawn finishes off-turn, so no run_turn will fold in its
         # spend — count it here and persist right away so the saved session
         # reflects it even if the process exits before the next turn.
-        self.usage += result.usage
-        self._persist()
+        self.session.usage += result.usage
+        self.session.persist()
         return self._mcp_grant_note(unknown) + result.output
 
     # --- MCP delegation ---
@@ -498,9 +466,9 @@ class Harness:
                 event_stream_handler=event_stream_handler,
                 toolsets=toolsets,
             )
-            self.history = result.all_messages()
-            self.usage += result.usage
-            self._persist()
+            self.session.history = result.all_messages()
+            self.session.usage += result.usage
+            self.session.persist()
             if isinstance(result.output, DeferredToolRequests):
                 deferred_results = await resolve_approvals(
                     result.output, self.deps.mode, self.deps.request_approval
