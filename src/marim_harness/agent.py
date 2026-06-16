@@ -1,4 +1,3 @@
-from contextlib import AsyncExitStack
 from typing import Callable, Optional
 
 from pydantic_ai import Agent, DeferredToolRequests, RunContext
@@ -23,7 +22,7 @@ from .compaction import (
 )
 from .deps import Deps
 from .instructions import load_project_instructions
-from .mcp import persist_server_enabled
+from .mcp_manager import McpManager
 from .memory import global_scope, load_index, project_scope
 from .permissions import Mode, resolve_approvals
 from .session import SessionInfo, SessionManager, SessionStore
@@ -186,22 +185,7 @@ class Harness:
         self.on_compact: Optional[Callable[[int, int], None]] = None
         # Called with (old_name, new_name) when a session is auto-titled.
         self.on_rename: Optional[Callable[[str, str], None]] = None
-        # Configured MCP servers and the subset whose connections are live. Each
-        # run additively passes the live servers as toolsets; connections are
-        # refcounted, so entering once here keeps them up across runs.
-        self.mcp_servers: list = list(mcp_servers or [])
-        self._live_servers: list = []
-        self._mcp_stack: Optional[AsyncExitStack] = None
-        self._connected = False
-        # Names turned off — seeded from the config's ``enabled: false`` and then
-        # toggled at runtime by /mcp enable|disable. A disabled server is never
-        # launched by connect(); a server disabled while live stays connected but
-        # its tools stop being offered (see run_turn). Servers stay built either
-        # way, so a config-disabled one can still be enabled in-session.
-        self.disabled: set[str] = set(mcp_disabled or [])
-        # Outcome of the last connect(): {"connected": [names], "failed":
-        # [(name, error)]}. Read by the /mcp command to report status on demand.
-        self.mcp_status: dict = {"connected": [], "failed": []}
+        self.mcp = McpManager(mcp_servers or [], set(mcp_disabled or []))
 
     @property
     def total_tokens(self) -> int:
@@ -436,145 +420,61 @@ class Harness:
         self._persist()
         return self._mcp_grant_note(unknown) + result.output
 
-    @staticmethod
-    def _server_name(server) -> str:
-        """The display name of an MCP server — its tool prefix / config name."""
-        return str(getattr(server, "id", None) or getattr(server, "tool_prefix", "?"))
+    # --- MCP delegation ---
 
-    def _granted_servers(self, names: list[str] | None) -> tuple[list, list[str]]:
-        """Resolve requested MCP server names to live server objects for a spawn.
+    @property
+    def mcp_servers(self) -> list:
+        return self.mcp.mcp_servers
 
-        Returns ``(granted, unknown)``. ``granted`` is the live server objects
-        whose name matches a request and is not disabled — passed straight to a
-        sub-agent's run as toolsets, so their tools gate via the same approval
-        hook as the main agent's. ``unknown`` is requested names with no enabled
-        live server (missing or runtime-disabled). Order follows the request;
-        duplicate names are honored once."""
-        if not names:
-            return [], []
-        by_name = {self._server_name(s): s for s in self._live_servers}
-        granted: list = []
-        unknown: list[str] = []
-        for name in dict.fromkeys(names):  # de-dupe, preserve first-seen order
-            server = by_name.get(name)
-            if server is None or name in self.disabled:
-                unknown.append(name)
-            else:
-                granted.append(server)
-        return granted, unknown
+    @property
+    def _live_servers(self) -> list:
+        return self.mcp._live_servers
 
-    def _enabled_server_names(self) -> list[str]:
-        """Live MCP servers currently offered to the model — connected and not
-        runtime-disabled. The set a spawn may grant from."""
-        return [
-            n for s in self._live_servers
-            if (n := self._server_name(s)) not in self.disabled
-        ]
+    @_live_servers.setter
+    def _live_servers(self, value: list) -> None:
+        self.mcp._live_servers = value
 
-    def mcp_index_text(self) -> str:
-        """A spawn-time note listing the MCP servers a spawn may grant — the
-        enabled live servers. Empty when none are enabled, so the instruction
-        stays silent rather than mentioning a feature with nothing behind it."""
-        names = self._enabled_server_names()
-        if not names:
-            return ""
-        return (
-            "MCP servers you can grant to a sub-agent via spawn_agent's `mcp` "
-            "argument (e.g. mcp=[" + repr(names[0]) + "]): "
-            + ", ".join(names)
-        )
+    @property
+    def disabled(self) -> set:
+        return self.mcp.disabled
 
-    def _mcp_grant_note(self, unknown: list[str]) -> str:
-        """A short note for the model when a spawn requested MCP servers that
-        couldn't be granted, naming what *is* enabled so it can re-spawn. Empty
-        when nothing was unknown. Trailing blank line separates it from the
-        sub-agent's report, which it is prepended to."""
-        if not unknown:
-            return ""
-        bad = ", ".join(f"'{n}'" for n in unknown)
-        enabled = self._enabled_server_names()
-        avail = ", ".join(enabled) if enabled else "none"
-        return f"(note: ignored unknown MCP server(s) {bad}; enabled: {avail})\n\n"
+    @disabled.setter
+    def disabled(self, value: set) -> None:
+        self.mcp.disabled = value
+
+    @property
+    def mcp_status(self) -> dict:
+        return self.mcp.mcp_status
+
+    def _server_name(self, server) -> str:
+        return McpManager.server_name(server)
 
     def configured_names(self) -> list[str]:
-        """Every configured MCP server name, enabled or not — what /mcp lists and
-        what enable/disable ``all`` iterates over."""
-        return [self._server_name(s) for s in self.mcp_servers]
+        return self.mcp.configured_names()
 
-    async def _connect_one(self, server) -> Optional[str]:
-        """Open one server's connection into the shared stack, recording it live.
-        Returns an error string on failure (the caller decides what to do), else
-        None. Connections are refcounted, so a re-entered server is harmless."""
-        if self._mcp_stack is None:
-            self._mcp_stack = AsyncExitStack()
-        try:
-            await self._mcp_stack.enter_async_context(server)
-        except Exception as exc:  # surfaced to the caller, never fatal
-            return str(exc)
-        self._live_servers.append(server)
-        return None
+    def _enabled_server_names(self) -> list[str]:
+        return self.mcp.enabled_names()
+
+    def mcp_index_text(self) -> str:
+        return self.mcp.mcp_index_text()
+
+    def _granted_servers(self, names: list[str] | None) -> tuple[list, list[str]]:
+        return self.mcp.granted_servers(names)
+
+    def _mcp_grant_note(self, unknown: list[str]) -> str:
+        return self.mcp.grant_note(unknown)
 
     async def connect(self) -> dict:
-        """Open connections to the enabled MCP servers, one at a time so a single
-        failing server doesn't sink the rest. Servers in ``disabled`` are skipped
-        — not launched at all. Connected servers join ``_live_servers`` (passed as
-        per-run toolsets); failures are collected. Returns ``{"connected":
-        [names], "failed": [(name, error)]}``. A no-op once already connected."""
-        if self._connected or not self.mcp_servers:
-            return self.mcp_status
-        self._connected = True
-        connected: list[str] = []
-        failed: list[tuple[str, str]] = []
-        for server in self.mcp_servers:
-            name = self._server_name(server)
-            if name in self.disabled:
-                continue  # config-disabled: don't even launch it
-            err = await self._connect_one(server)
-            if err is None:
-                connected.append(name)
-            else:
-                failed.append((name, err))
-        self.mcp_status = {"connected": connected, "failed": failed}
-        return self.mcp_status
-
-    async def disable_server(self, name: str) -> None:
-        """Turn a server off: its tools stop being offered to the model, and the
-        choice is persisted to the config so it survives restarts. The live
-        connection is kept this session (re-enabling is instant) and torn down
-        with the rest at shutdown; once persisted, the next session won't even
-        launch it."""
-        self.disabled.add(name)
-        persist_server_enabled(self.deps.workspace_root, name, False)
-
-    async def enable_server(self, name: str) -> Optional[str]:
-        """Turn a server back on: drop it from ``disabled``, persist the choice,
-        and connect it if it isn't already live (the config-disabled case).
-        Returns a connection-error string on failure (server left off), an
-        explanatory string for an unknown name, or None on success."""
-        self.disabled.discard(name)
-        persist_server_enabled(self.deps.workspace_root, name, True)
-        if any(self._server_name(s) == name for s in self._live_servers):
-            return None
-        server = next(
-            (s for s in self.mcp_servers if self._server_name(s) == name), None
-        )
-        if server is None:
-            return f"no such server {name!r}"
-        err = await self._connect_one(server)
-        if err is None:
-            self.mcp_status["connected"].append(name)
-            self.mcp_status["failed"] = [
-                f for f in self.mcp_status["failed"] if f[0] != name
-            ]
-        return err
+        return await self.mcp.connect()
 
     async def aclose(self) -> None:
-        """Close all live MCP connections. Safe to call when none were opened."""
-        if self._mcp_stack is not None:
-            await self._mcp_stack.aclose()
-            self._mcp_stack = None
-        self._live_servers = []
-        self._connected = False
+        await self.mcp.aclose()
+
+    async def disable_server(self, name: str) -> None:
+        await self.mcp.disable_server(name, self.deps.workspace_root)
+
+    async def enable_server(self, name: str) -> Optional[str]:
+        return await self.mcp.enable_server(name, self.deps.workspace_root)
 
     async def run_turn(self, prompt: str, event_stream_handler=None) -> str:
         """Run the agent until it produces a final text answer, looping through
@@ -587,10 +487,7 @@ class Harness:
         deferred_results = None
         # Offer only the live servers that aren't disabled — a server muted at
         # runtime stays connected but its tools are withheld from the model.
-        toolsets = [
-            s for s in self._live_servers
-            if self._server_name(s) not in self.disabled
-        ]
+        toolsets = self.mcp.live_toolsets()
         while True:
             result = await self.agent.run(
                 user_prompt,
