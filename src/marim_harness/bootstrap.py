@@ -3,7 +3,7 @@ from pathlib import Path
 from .agent import Harness, make_summarizer, make_titler
 from .config import ModelSource, build_model, load_config
 from .deps import Deps
-from .mcp import build_mcp_servers, load_mcp_config
+from .mcp import build_mcp_servers, disabled_server_names, load_mcp_config
 from .permissions import Mode
 from .session import SessionManager
 from .tools.provider import BuiltinToolProvider
@@ -36,7 +36,9 @@ def build_harness(
     # MCP servers from the merged global + project config. Malformed specs are
     # dropped (build returns warnings); connections are opened later by the caller
     # (the TUI on mount, headless around its run).
-    mcp_servers, _ = build_mcp_servers(load_mcp_config(workspace))
+    mcp_specs = load_mcp_config(workspace)
+    mcp_servers, _ = build_mcp_servers(mcp_specs)
+    mcp_disabled = disabled_server_names(mcp_specs)
 
     harness = Harness(
         model=model,
@@ -53,6 +55,7 @@ def build_harness(
         model_id=cfg.model,
         proactive_memory=cfg.proactive_memory,
         mcp_servers=mcp_servers,
+        mcp_disabled=mcp_disabled,
     )
     if resume:
         harness.resume()
