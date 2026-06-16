@@ -7,8 +7,8 @@ from .permissions import Mode
 from .tasks import TaskList
 
 ApprovalFn = Callable[[object], Awaitable[object]]
-# (type, task, stream_id) -> the sub-agent's final report. Wired by the Harness.
-SubAgentRunner = Callable[[str, str, str], Awaitable[str]]
+# (type, task, tool_call_id, mcp_names) -> the sub-agent's final report. Wired by the Harness.
+SubAgentRunner = Callable[[str, str, str, Optional[list[str]]], Awaitable[str]]
 # (stream_id, event, tokens) -> None. Forwards a sub-agent's run events to the UI
 # so it can stream them nested under the spawn, tagged with the run's live total
 # token count. Wired by the TUI; None when headless.

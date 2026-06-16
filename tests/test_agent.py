@@ -1252,3 +1252,65 @@ def test_mcp_grant_note_handles_no_enabled_servers(tmp_path: Path):
     note = h._mcp_grant_note(["nope"])
     assert "nope" in note
     assert "none" in note.lower()
+
+
+def _capture_subagent(h, report="report"):
+    """Replace _build_subagent so the spawned agent's run() records the toolsets
+    it was given and returns a canned report. Returns the capture dict."""
+    from types import SimpleNamespace
+    from pydantic_ai.usage import RunUsage
+
+    cap: dict = {}
+
+    class _StubAgent:
+        async def run(self, task, **kwargs):
+            cap["task"] = task
+            cap["toolsets"] = kwargs.get("toolsets")
+            return SimpleNamespace(output=report, usage=RunUsage())
+
+    h._build_subagent = lambda type: (_StubAgent(), None)
+    return cap
+
+
+@pytest.mark.anyio
+async def test_run_subagent_grants_named_server(tmp_path: Path):
+    from types import SimpleNamespace
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    server = SimpleNamespace(tool_prefix="mddocs")
+    h._live_servers = [server]
+    cap = _capture_subagent(h)
+
+    out = await h._run_subagent("explore", "read docs", "sid", ["mddocs"])
+    assert out == "report"
+    assert cap["toolsets"] == [server]
+
+
+@pytest.mark.anyio
+async def test_run_subagent_default_grants_no_servers(tmp_path: Path):
+    from types import SimpleNamespace
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    h._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
+    cap = _capture_subagent(h)
+
+    await h._run_subagent("explore", "investigate", "sid")
+    assert cap["toolsets"] == []
+
+
+@pytest.mark.anyio
+async def test_run_subagent_prepends_unknown_note(tmp_path: Path):
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    h._live_servers = []
+    _capture_subagent(h, report="FINDINGS")
+
+    out = await h._run_subagent("explore", "investigate", "sid", ["nope"])
+    assert "nope" in out
+    assert out.rstrip().endswith("FINDINGS")

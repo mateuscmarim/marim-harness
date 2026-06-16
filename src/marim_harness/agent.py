@@ -434,22 +434,28 @@ class Harness:
         self.provider.register_subagent(sub, effective_tools(defn, allow_gated=allow_gated))
         return sub, None
 
-    async def _run_subagent(self, type: str, task: str, stream_id: str) -> str:
+    async def _run_subagent(
+        self, type: str, task: str, stream_id: str, mcp_names: list[str] | None = None
+    ) -> str:
         """Spawn one isolated sub-agent of ``type``, run it to completion on
         ``task``, and return its final report — streaming its events to the UI
         nested under the spawn. Shares the workspace Deps (read-only use) but
-        starts a fresh conversation, so the sub-agent gets a clean context."""
+        starts a fresh conversation, so the sub-agent gets a clean context.
+        ``mcp_names`` is the MCP servers the main agent granted this spawn (none
+        by default); granted servers gate via the same approval hook as the main
+        agent's."""
         sub, err = self._build_subagent(type)
         if err is not None:
             return err
+        granted, unknown = self._granted_servers(mcp_names)
         result = await sub.run(
-            task, deps=self.deps,
+            task, deps=self.deps, toolsets=granted,
             event_stream_handler=self._subagent_handler(stream_id),
         )
         # A foreground spawn runs inside the current turn, so its spend is folded
         # into the session total here and persisted by run_turn's _persist.
         self.usage += result.usage
-        return result.output
+        return self._mcp_grant_note(unknown) + result.output
 
     async def _run_background_subagent(self, type: str, task: str) -> str:
         """Run a sub-agent as a detached background job: same isolation and
