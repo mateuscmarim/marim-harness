@@ -130,7 +130,11 @@ def update_tasks(ctx: RunContext[Deps], tasks: list[Task]) -> str:
 
 
 async def spawn_agent(
-    ctx: RunContext[Deps], type: str, task: str, background: bool = False
+    ctx: RunContext[Deps],
+    type: str,
+    task: str,
+    background: bool = False,
+    mcp: list[str] | None = None,
 ) -> str:
     """Delegate a sub-task to an isolated sub-agent that runs on the same model
     and reports back. `type` is a built-in — `explore` (read-only investigation;
@@ -143,18 +147,24 @@ async def spawn_agent(
     Set `background=True` to launch it as a detached job and return immediately
     with a job id instead of waiting — keep working, then read its report later
     with job_output / wait_for_job. Background sub-agents don't stream their
-    steps; you only see the final report when you pull it."""
+    steps; you only see the final report when you pull it.
+
+    `mcp` grants the sub-agent specific MCP servers by name (none by default).
+    Pass the names listed as enabled in the sub-agents index — e.g.
+    `mcp=["mddocs"]` lets the sub-agent use that server's tools, gated the same
+    way your own MCP calls are. Unknown or disabled names are ignored and noted
+    in the report."""
     if background:
         if ctx.deps.run_background_agent is None:
             return "Background sub-agents are not available in this context."
         label = f"{type}: {task}"
         job_id = ctx.deps.jobs.register(
-            "agent", label, ctx.deps.run_background_agent(type, task)
+            "agent", label, ctx.deps.run_background_agent(type, task, mcp)
         )
         return f"Started {job_id} (agent) — {label[:60]}"
     if ctx.deps.run_subagent is None:
         return "Sub-agents are not available in this context."
-    return await ctx.deps.run_subagent(type, task, ctx.tool_call_id)
+    return await ctx.deps.run_subagent(type, task, ctx.tool_call_id, mcp)
 
 
 def write_file(ctx: RunContext[Deps], path: str, content: str) -> str:
