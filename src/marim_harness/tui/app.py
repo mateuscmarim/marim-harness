@@ -120,7 +120,11 @@ class HarnessApp(App):
         else:
             intro.append(_WELCOME)
         self._flush_streams()  # render the static intro/replay before first paint
-        log.scroll_end(animate=False)
+        # Keep the log pinned to the bottom as content streams in. Textual's anchor
+        # re-pins to the true bottom during layout (so it can't drift behind a
+        # burst of text), auto-releases when the user scrolls up to read, and
+        # auto-re-anchors when they scroll back down.
+        log.anchor()
         self._render_tasks()  # reflect any checklist restored with the session
         self._render_jobs()  # process-scoped jobs survive session switches
         # Coalesce streaming text deltas: render buffered AssistantMessages on a
@@ -246,7 +250,6 @@ class HarnessApp(App):
         log.mount(
             NoticeMessage(f"compacted history: {before} → {after} messages")
         )
-        log.scroll_end(animate=False)
         self._refresh_status()  # context gauge shrinks immediately
 
     def _on_rename(self, old: str, new: str) -> None:
@@ -254,7 +257,6 @@ class HarnessApp(App):
         run_turn; mount without awaiting."""
         log = self.query_one("#log", VerticalScroll)
         log.mount(NoticeMessage(f"session renamed: {new}"))
-        log.scroll_end(animate=False)
         self._refresh_status()
 
     async def post_system(self, markdown: str) -> None:
@@ -263,7 +265,6 @@ class HarnessApp(App):
         msg = AssistantMessage()
         await log.mount(msg)
         msg.append(markdown)
-        log.scroll_end(animate=False)
 
     async def _render_session(self, note: str) -> None:
         """Rebuild the log for a fresh view of the active session: banner, an
@@ -279,10 +280,10 @@ class HarnessApp(App):
         if self.harness.history:
             await self._replay_history(log)
         self._flush_streams()  # render the rebuilt log before first paint
+        log.anchor()  # re-pin to the bottom for the freshly loaded session
         self._refresh_status()
         self._render_tasks()
         self._render_jobs()  # jobs are process-scoped, not per-session
-        log.scroll_end(animate=False)
 
     async def reset_conversation(self) -> None:
         """Wipe the conversation and re-show the welcome screen (the /clear cmd)."""
@@ -340,31 +341,13 @@ class HarnessApp(App):
         log.mount(NoticeMessage(f"model: {self.harness.model_label}"))
         log.scroll_end(animate=False)
 
-    def _log_pinned(self, log) -> bool:
-        """True when the log is at (or within a line of) the bottom — i.e. the
-        user is following the stream, not reading back. Used to decide whether a
-        new event should keep the viewport pinned to the end."""
-        return log.scroll_offset.y >= log.max_scroll_y - 2
-
-    def _follow_scroll(self, log, pinned: bool) -> None:
-        """Scroll to the end only when the user was already pinned there. When
-        they've scrolled up to read one of several live streams, leave them be."""
-        if pinned:
-            log.scroll_end(animate=False)
-
     def _flush_streams(self) -> None:
-        """Render every AssistantMessage that has buffered deltas since the last
-        tick — top-level and nested sub-agent streams alike. Coalescing the parses
-        here is the streaming debounce; we re-pin afterward so the freshly grown
-        content stays in view when the user is following along."""
-        dirty = [m for m in self.query(AssistantMessage) if m._pending]
-        if not dirty:
-            return
-        log = self.query_one("#log", VerticalScroll)
-        pinned = self._log_pinned(log)
-        for m in dirty:
+        """Render every AssistantMessage that buffered deltas since the last tick —
+        top-level and nested sub-agent streams alike. Coalescing the markdown parses
+        here is the streaming debounce; the log's scroll anchor keeps the freshly
+        grown content pinned to the bottom (flush is a no-op when nothing buffered)."""
+        for m in self.query(AssistantMessage):
             m.flush()
-        self._follow_scroll(log, pinned)
 
     async def _request_approval(self, call) -> object:
         approved = await self.push_screen_wait(
@@ -382,7 +365,6 @@ class HarnessApp(App):
             return
         log = self.query_one("#log", VerticalScroll)
         await log.mount(UserMessage(text))
-        log.scroll_end(animate=False)  # re-pin: sending re-engages follow mode
         self._current_assistant = None
         self._turn_worker = self.run_worker(self._run_turn(text), exclusive=True)
 
@@ -395,11 +377,9 @@ class HarnessApp(App):
             # User pressed escape; mount synchronously (we are unwinding) and
             # let the worker finish as cancelled.
             log.mount(ErrorMessage("turn cancelled"))
-            log.scroll_end(animate=False)
             raise
         except Exception as exc:  # keep the session alive on any turn failure
             await log.mount(ErrorMessage(f"{type(exc).__name__}: {exc}"))
-            log.scroll_end(animate=False)
         finally:
             self._turn_worker = None
             self._set_busy(False)
@@ -425,7 +405,6 @@ class HarnessApp(App):
     async def _on_events(self, ctx, events) -> None:
         log = self.query_one("#log", VerticalScroll)
         async for event in events:
-            pinned = self._log_pinned(log)
             if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
                 self._current_assistant = AssistantMessage()
                 await log.mount(self._current_assistant)
@@ -452,7 +431,6 @@ class HarnessApp(App):
                 if widget is not None:
                     widget.finish(str(getattr(event.part, "content", "")))
                 self._sub_assistants.pop(event.tool_call_id, None)
-            self._follow_scroll(log, pinned)
 
     async def _on_subagent_event(
         self, stream_id: str, event, tokens: int = 0
@@ -468,8 +446,6 @@ class HarnessApp(App):
             return
         if tokens:
             parent.set_tokens(tokens)
-        log = self.query_one("#log", VerticalScroll)
-        pinned = self._log_pinned(log)
         if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
             parent.note_text()  # live title status, useful while collapsed
             msg = AssistantMessage()
@@ -492,4 +468,3 @@ class HarnessApp(App):
             widget = self._tool_widgets.get(event.tool_call_id)
             if widget is not None:
                 widget.finish(str(getattr(event.part, "content", "")))
-        self._follow_scroll(log, pinned)
