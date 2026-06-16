@@ -1231,32 +1231,21 @@ async def test_flush_streams_renders_nested_subagent_text(tmp_path: Path):
         assert msg._pending is False
 
 
-def test_log_pinned_detects_bottom(tmp_path: Path):
-    from types import SimpleNamespace
-
+@pytest.mark.anyio
+async def test_log_is_anchored_to_bottom(tmp_path: Path):
+    """The log uses Textual's scroll anchor so streaming content stays pinned to
+    the bottom (and re-pins to the true bottom during layout)."""
     app = _app(tmp_path)
-    at_bottom = SimpleNamespace(scroll_offset=SimpleNamespace(y=100), max_scroll_y=100)
-    scrolled_up = SimpleNamespace(scroll_offset=SimpleNamespace(y=10), max_scroll_y=100)
-    assert app._log_pinned(at_bottom) is True
-    assert app._log_pinned(scrolled_up) is False
-
-
-def test_follow_scroll_only_when_pinned(tmp_path: Path):
-    from types import SimpleNamespace
-
-    app = _app(tmp_path)
-    calls = []
-    log = SimpleNamespace(scroll_end=lambda **k: calls.append(k))
-    app._follow_scroll(log, pinned=False)
-    assert calls == []
-    app._follow_scroll(log, pinned=True)
-    assert calls == [{"animate": False}]
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        log = app.query_one("#log")
+        assert log.is_anchored is True
 
 
 @pytest.mark.anyio
 async def test_stream_does_not_yank_when_scrolled_up(tmp_path: Path):
     """When the user has scrolled up to read, a streaming event must not snap the
-    viewport back to the bottom."""
+    viewport back to the bottom — scrolling up releases the anchor."""
     from marim_harness.tui.widgets import AssistantMessage
 
     app = _app(tmp_path)
@@ -1269,7 +1258,7 @@ async def test_stream_does_not_yank_when_scrolled_up(tmp_path: Path):
             await log.mount(m)
             m.append("line of text")
         await pilot.pause()
-        log.scroll_to(y=0, animate=False)
+        log.scroll_to(y=0, animate=False)  # releases the anchor
         await pilot.pause()
         assert log.scroll_offset.y == 0
 
