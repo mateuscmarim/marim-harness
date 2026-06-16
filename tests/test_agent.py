@@ -1204,6 +1204,18 @@ def test_granted_servers_dedupes(tmp_path: Path):
     assert unknown == []
 
 
+def test_granted_servers_dedupes_unknown(tmp_path: Path):
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    h._live_servers = []
+
+    granted, unknown = h._granted_servers(["nope", "nope"])
+    assert granted == []
+    assert unknown == ["nope"]
+
+
 def test_mcp_grant_note_lists_unknown_and_enabled(tmp_path: Path):
     from types import SimpleNamespace
 
