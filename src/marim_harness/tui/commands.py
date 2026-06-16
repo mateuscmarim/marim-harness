@@ -134,6 +134,23 @@ async def _cmd_model(app: HarnessApp, arg: str) -> None:
     await app.open_model_picker()
 
 
+async def _cmd_remember(app: HarnessApp, arg: str) -> None:
+    arg = arg.strip()
+    if not arg:
+        await app.post_system(
+            "Usage: `/remember <fact>` — saves a durable note to memory. "
+            "The agent picks the scope (project vs global), type, and title."
+        )
+        return
+    prompt = (
+        "Save the following to persistent memory by calling the remember tool. "
+        "Pick an appropriate scope (project vs global), type, and a concise title "
+        f"and one-line description.\n\nFact: {arg}"
+    )
+    app._current_assistant = None
+    app._turn_worker = app.run_worker(app._run_turn(prompt), exclusive=True)
+
+
 async def _cmd_exit(app: HarnessApp, arg: str) -> None:
     app.exit()
 
@@ -147,6 +164,7 @@ COMMANDS: list[Command] = [
     Command("name", "name this session: /name [title] (auto-titles if blank)", _cmd_name),
     Command("mode", "set approval mode: /mode [ask|auto|plan]", _cmd_mode),
     Command("model", "switch model: /model [id] (opens a picker if blank)", _cmd_model),
+    Command("remember", "save a note to memory: /remember <fact>", _cmd_remember),
     Command("exit", "quit the harness", _cmd_exit, aliases=("quit",)),
 ]
 

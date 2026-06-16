@@ -11,6 +11,7 @@ from .compaction import (
 )
 from .deps import Deps
 from .instructions import load_project_instructions
+from .memory import global_scope, load_index, project_scope
 from .permissions import resolve_approvals
 from .session import SessionInfo, SessionManager, SessionStore
 from .tools.provider import ToolProvider
@@ -97,6 +98,26 @@ class Harness:
             if not text:
                 return ""
             return f"Project-specific instructions from AGENTS.md:\n\n{text}"
+
+        @self.agent.instructions
+        def _memory_indexes(ctx: RunContext[Deps]) -> str:
+            """Inject the global and project memory indexes, re-read each turn.
+            Each line points to a file the model can expand with read_file; new
+            facts are saved with the remember tool."""
+            parts = []
+            g = load_index(global_scope())
+            if g:
+                parts.append(f"# User memory (global)\n\n{g}")
+            p = load_index(project_scope(ctx.deps.workspace_root))
+            if p:
+                parts.append(f"# Project memory\n\n{p}")
+            if not parts:
+                return ""
+            return (
+                "Persistent memory indexes below. Each line points to a file you "
+                "can read with read_file for the full fact. Save new durable facts "
+                "with the remember tool.\n\n" + "\n\n".join(parts)
+            )
 
         self.deps = deps
         self.history: list = []

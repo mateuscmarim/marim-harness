@@ -3,6 +3,7 @@ from typing import Optional, Protocol
 from pydantic_ai import Agent, RunContext
 
 from ..deps import Deps
+from ..memory import global_scope, project_scope, save_memory
 from . import fs, shell
 
 _BASH_TIMEOUT = 60
@@ -40,6 +41,32 @@ class BuiltinToolProvider:
         def grep(ctx: RunContext[Deps], pattern: str, path: Optional[str] = None) -> str:
             """Search file contents for a regex. Optionally scope to `path`."""
             return fs.grep(ctx.deps.workspace_root, pattern, path)
+
+        @agent.tool
+        def remember(
+            ctx: RunContext[Deps],
+            title: str,
+            description: str,
+            body: str,
+            scope: str = "project",
+            type: str = "project",
+        ) -> str:
+            """Save a durable fact to persistent memory so it survives across
+            turns and sessions. `scope` is "project" (this codebase, default) or
+            "global" (about the user, every workspace). `type` is one of user,
+            feedback, project, reference. `description` is a one-line hook shown
+            in the always-loaded index; `body` is the full fact. No approval is
+            needed — this only writes inside marim's own memory directory."""
+            sc = (
+                global_scope()
+                if scope == "global"
+                else project_scope(ctx.deps.workspace_root)
+            )
+            path = save_memory(
+                sc, name=title, description=description,
+                mem_type=type, body=body, title=title,
+            )
+            return f"Saved {sc.name} memory to {path.name}"
 
         @agent.tool(requires_approval=True)
         def write_file(ctx: RunContext[Deps], path: str, content: str) -> str:
