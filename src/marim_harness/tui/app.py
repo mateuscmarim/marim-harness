@@ -30,6 +30,7 @@ from .widgets import (
     ToolCallWidget,
     UserMessage,
 )
+from .widgets import human_tokens as _human_tokens
 
 _BANNER = (
     " ███╗   ███╗ █████╗ ██████╗ ██╗███╗   ███╗\n"
@@ -40,13 +41,6 @@ _BANNER = (
     " ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝╚═╝     ╚═╝\n"
     "   · · ·   a   t e r m i n a l   h a r n e s s"
 )
-
-def _human_tokens(n: int) -> str:
-    """Compact token count: 950 -> '950', 1500 -> '1.5k', 100000 -> '100k'."""
-    if n >= 1000:
-        return f"{n / 1000:.1f}k".replace(".0k", "k")
-    return str(n)
-
 
 _WELCOME = (
     "Type a message below to start, or `/help` for commands.\n\n"
@@ -437,15 +431,20 @@ class HarnessApp(App):
                 self._sub_assistants.pop(event.tool_call_id, None)
             self._follow_scroll(log, pinned)
 
-    async def _on_subagent_event(self, stream_id: str, event) -> None:
+    async def _on_subagent_event(
+        self, stream_id: str, event, tokens: int = 0
+    ) -> None:
         """Route a spawned sub-agent's own stream into the SubAgentWidget that owns
         it. Mirrors _on_events, but mounts the sub-agent's text and (nested) tool
-        calls inside the widget body instead of the top-level log. Fired on the
-        app's event loop, so direct widget mutation is safe and parallel streams
+        calls inside the widget body instead of the top-level log. ``tokens`` is the
+        run's live total token count, surfaced in the (collapsed) title. Fired on
+        the app's event loop, so direct widget mutation is safe and parallel streams
         stay race-free by stream_id."""
         parent = self._tool_widgets.get(stream_id)
         if not isinstance(parent, SubAgentWidget):
             return
+        if tokens:
+            parent.set_tokens(tokens)
         log = self.query_one("#log", VerticalScroll)
         pinned = self._log_pinned(log)
         if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):

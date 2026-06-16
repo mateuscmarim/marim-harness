@@ -392,7 +392,8 @@ class Harness:
 
         async def handler(ctx, events) -> None:
             async for event in events:
-                await cb(stream_id, event)
+                tokens = getattr(getattr(ctx, "usage", None), "total_tokens", 0) or 0
+                await cb(stream_id, event, tokens)
 
         return handler
 

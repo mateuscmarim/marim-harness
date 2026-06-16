@@ -1146,6 +1146,35 @@ async def test_subagent_event_updates_activity_title(tmp_path: Path):
         assert "grep" in str(parent.title)
 
 
+@pytest.mark.anyio
+async def test_subagent_event_updates_token_usage_in_title(tmp_path: Path):
+    from pydantic_ai.messages import (
+        FunctionToolCallEvent,
+        ToolCallPart,
+    )
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        async def spawn():
+            yield _spawn_call("s1", "look")
+
+        await app._on_events(None, spawn())
+        await pilot.pause()
+        tool_call = FunctionToolCallEvent(
+            part=ToolCallPart(
+                tool_name="grep", args={"pattern": "x"}, tool_call_id="t1"
+            )
+        )
+        # The handler forwards the run's live token count into the widget title.
+        await app._on_subagent_event("s1", tool_call, tokens=2000)
+        await pilot.pause()
+        parent = app._tool_widgets["s1"]
+        assert "2k" in str(parent.title)
+        assert "tok" in str(parent.title)
+
+
 def test_log_pinned_detects_bottom(tmp_path: Path):
     from types import SimpleNamespace
 
