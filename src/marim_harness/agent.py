@@ -427,6 +427,9 @@ class Harness:
             task, deps=self.deps,
             event_stream_handler=self._subagent_handler(stream_id),
         )
+        # A foreground spawn runs inside the current turn, so its spend is folded
+        # into the session total here and persisted by run_turn's _persist.
+        self.usage += result.usage
         return result.output
 
     async def _run_background_subagent(self, type: str, task: str) -> str:
@@ -437,6 +440,11 @@ class Harness:
         if err is not None:
             return err
         result = await sub.run(task, deps=self.deps)
+        # A background spawn finishes off-turn, so no run_turn will fold in its
+        # spend — count it here and persist right away so the saved session
+        # reflects it even if the process exits before the next turn.
+        self.usage += result.usage
+        self._persist()
         return result.output
 
     async def run_turn(self, prompt: str, event_stream_handler=None) -> str:

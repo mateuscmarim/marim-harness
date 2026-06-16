@@ -676,6 +676,19 @@ async def test_run_subagent_returns_output(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_run_subagent_counts_usage_in_session_total(tmp_path: Path):
+    """A foreground spawn's own token spend lands in the session total, not just
+    its returned report — counted immediately as the run completes."""
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(call_tools=[], custom_output_text="FINDINGS"), deps)
+    assert h.total_tokens == 0
+    await h._run_subagent("explore", "find the parser", "sid")
+    assert h.total_tokens > 0
+
+
+@pytest.mark.anyio
 async def test_run_subagent_restricts_tools_by_mode(tmp_path: Path):
     from marim_harness.tools.provider import READ_TOOLS, SUBAGENT_TOOLS
 
@@ -771,6 +784,28 @@ async def test_run_background_subagent_returns_output(tmp_path: Path):
     h = _make_harness(TestModel(call_tools=[], custom_output_text="BG REPORT"), deps)
     out = await h._run_background_subagent("explore", "scan the repo")
     assert out == "BG REPORT"
+
+
+@pytest.mark.anyio
+async def test_run_background_subagent_counts_and_persists_usage(tmp_path: Path):
+    """A background spawn finishes off-turn, so its spend is folded into the
+    session total AND persisted right away — not left for the next turn."""
+    from pydantic_ai.models.test import TestModel
+
+    from marim_harness.session import SessionManager
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    store = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data").create()
+    h = Harness(
+        model=TestModel(call_tools=[], custom_output_text="BG"),
+        provider=BuiltinToolProvider(), deps=deps, instructions="x", store=store,
+    )
+    assert h.total_tokens == 0
+    await h._run_background_subagent("explore", "scan the repo")
+    assert h.total_tokens > 0
+    # The spend reached disk immediately, without waiting for a run_turn.
+    _, usage, _ = store.load()
+    assert usage.total_tokens == h.total_tokens
 
 
 @pytest.mark.anyio
