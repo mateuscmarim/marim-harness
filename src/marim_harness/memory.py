@@ -1,0 +1,110 @@
+"""Native markdown memory, mirroring Claude Code's design.
+
+Memory lives in two scopes — global (per-user, across every workspace) and
+project (committed alongside a repo) — both with the same shape: a small
+``MEMORY.md`` index (one line per fact) plus one ``<slug>.md`` file per fact
+carrying YAML frontmatter and a markdown body. The index is injected into the
+system prompt each turn (it's tiny); full bodies are pulled in on demand with
+the ordinary ``read_file`` tool. ``save_memory`` is the single writer, shared by
+the ``remember`` tool and the ``/remember`` command, so the file format lives in
+one place. Nothing here ever raises into a turn — dirs are created on demand.
+"""
+
+import re
+from dataclasses import dataclass
+from pathlib import Path
+
+from .config import config_dir
+
+_INDEX_FILE = "MEMORY.md"
+_VALID_TYPES = ("user", "feedback", "project", "reference")
+
+
+@dataclass(frozen=True)
+class MemoryScope:
+    """One memory store: a name and the directory holding its index and files."""
+
+    name: str
+    root: Path
+
+
+def global_scope() -> MemoryScope:
+    """Per-user memory, under the marim config dir (respects XDG_CONFIG_HOME)."""
+    return MemoryScope("global", config_dir() / "memory")
+
+
+def project_scope(workspace_root) -> MemoryScope:
+    """Repo-local memory, under ``<workspace>/.marim/memory``."""
+    return MemoryScope("project", Path(workspace_root) / ".marim" / "memory")
+
+
+def _slugify(name: str) -> str:
+    """Reduce a title to a filesystem-safe slug, falling back to ``memory``."""
+    slug = re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")
+    return slug or "memory"
+
+
+def load_index(scope: MemoryScope) -> str | None:
+    """Return the scope's ``MEMORY.md`` text (stripped), or ``None`` if absent,
+    empty, or unreadable — a broken index must never break a turn."""
+    path = scope.root / _INDEX_FILE
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return text or None
+
+
+def _render_frontmatter(*, slug: str, description: str, mem_type: str) -> str:
+    mem_type = mem_type if mem_type in _VALID_TYPES else "project"
+    return (
+        "---\n"
+        f"name: {slug}\n"
+        f"description: {description}\n"
+        "metadata:\n"
+        f"  type: {mem_type}\n"
+        "---\n"
+    )
+
+
+def _upsert_index_line(scope: MemoryScope, *, slug: str, title: str, hook: str) -> None:
+    """Add or refresh the one-line pointer for ``slug`` in ``MEMORY.md``,
+    preserving every other line and never duplicating an entry."""
+    path = scope.root / _INDEX_FILE
+    line = f"- [{title}]({slug}.md) — {hook}"
+    target = f"]({slug}.md)"
+
+    existing = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    new_lines, replaced = [], False
+    for raw in existing:
+        if target in raw:
+            new_lines.append(line)
+            replaced = True
+        else:
+            new_lines.append(raw)
+    if not replaced:
+        new_lines.append(line)
+
+    path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+
+def save_memory(
+    scope: MemoryScope,
+    *,
+    name: str,
+    description: str,
+    mem_type: str,
+    body: str,
+    title: str,
+) -> Path:
+    """Write ``<slug>.md`` (frontmatter + body) and upsert its index line.
+    Returns the path to the memory file. Creates the scope dir on demand."""
+    scope.root.mkdir(parents=True, exist_ok=True)
+    slug = _slugify(name)
+
+    frontmatter = _render_frontmatter(slug=slug, description=description, mem_type=mem_type)
+    path = scope.root / f"{slug}.md"
+    path.write_text(f"{frontmatter}\n{body.strip()}\n", encoding="utf-8")
+
+    _upsert_index_line(scope, slug=slug, title=title, hook=description)
+    return path

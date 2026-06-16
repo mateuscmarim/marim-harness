@@ -1,5 +1,32 @@
+import pytest
+
 from marim_harness.session import SessionInfo
-from marim_harness.tui.commands import COMMANDS, COMMANDS_BY_NAME, resolve_ref
+from marim_harness.tui.commands import (
+    COMMANDS,
+    COMMANDS_BY_NAME,
+    dispatch,
+    resolve_ref,
+)
+
+
+class _FakeApp:
+    """Minimal stand-in for HarnessApp: records posts and spawned turns."""
+
+    def __init__(self):
+        self.posted: list[str] = []
+        self.turn_prompts: list[str] = []
+        self._turn_worker = None
+        self._current_assistant = "sentinel"
+
+    async def post_system(self, msg: str) -> None:
+        self.posted.append(msg)
+
+    def _run_turn(self, text: str):
+        self.turn_prompts.append(text)
+        return ("coro", text)  # stand-in; not awaited by the fake
+
+    def run_worker(self, coro, exclusive=False):
+        return ("worker", coro)
 
 
 def _infos() -> list:
@@ -47,6 +74,26 @@ def test_new_is_its_own_command_not_a_clear_alias():
 
 
 def test_core_commands_present():
-    names = ("help", "clear", "sessions", "new", "switch", "name", "mode", "model", "exit")
+    names = ("help", "clear", "sessions", "new", "switch", "name", "mode", "model",
+             "remember", "exit")
     for name in names:
         assert name in COMMANDS_BY_NAME
+
+
+@pytest.mark.anyio
+async def test_remember_empty_arg_shows_usage():
+    app = _FakeApp()
+    await dispatch(app, "/remember")
+    assert app.turn_prompts == []  # no turn spawned
+    assert app.posted and "usage" in app.posted[0].lower()
+
+
+@pytest.mark.anyio
+async def test_remember_spawns_turn_with_fact_and_tool_instruction():
+    app = _FakeApp()
+    await dispatch(app, "/remember the build uses uv")
+    assert len(app.turn_prompts) == 1
+    prompt = app.turn_prompts[0]
+    assert "the build uses uv" in prompt
+    assert "remember tool" in prompt
+    assert app._turn_worker is not None

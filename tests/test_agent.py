@@ -257,6 +257,38 @@ async def test_project_instructions_injected_and_dynamic(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_memory_indexes_injected_and_dynamic(tmp_path: Path):
+    from marim_harness import memory
+
+    captured: dict = {}
+
+    def fn(messages, info):
+        captured["instructions"] = _last_instructions(messages)
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    harness = Harness(
+        model=FunctionModel(fn), provider=BuiltinToolProvider(), deps=deps,
+        instructions="BASE PROMPT",
+    )
+
+    # No memories yet -> no memory section in the prompt.
+    await harness.run_turn("hi")
+    assert "Project memory" not in captured["instructions"]
+
+    # Saving a project memory makes the very next turn see the index.
+    memory.save_memory(
+        memory.project_scope(tmp_path), name="Build tool",
+        description="uses uv", mem_type="project", body="b", title="Build tool",
+    )
+    await harness.run_turn("hi again")
+    instr = captured["instructions"]
+    assert "Project memory" in instr
+    assert "build-tool.md" in instr
+    assert "BASE PROMPT" in instr
+
+
+@pytest.mark.anyio
 async def test_session_switch_preserves_each_conversation(tmp_path: Path):
     from pydantic_ai.messages import ModelRequest, UserPromptPart
 
