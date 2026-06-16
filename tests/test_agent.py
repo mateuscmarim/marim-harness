@@ -1129,3 +1129,283 @@ def test_resume_restores_saved_model(tmp_path: Path):
                      manager=manager, model_source=_FakeSource(), model_id="startup")
     second.resume()
     assert second.model_id == "openai/gpt-5.2"
+
+
+def test_granted_servers_resolves_named(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    a = SimpleNamespace(tool_prefix="mddocs")
+    b = SimpleNamespace(tool_prefix="sentry")
+    h._live_servers = [a, b]
+
+    granted, unknown = h._granted_servers(["mddocs"])
+    assert granted == [a]
+    assert unknown == []
+
+
+def test_granted_servers_none_grants_nothing(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    h._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
+
+    assert h._granted_servers(None) == ([], [])
+    assert h._granted_servers([]) == ([], [])
+
+
+def test_granted_servers_reports_unknown(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    h._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
+
+    granted, unknown = h._granted_servers(["mddocs", "nope"])
+    assert granted == [h._live_servers[0]]
+    assert unknown == ["nope"]
+
+
+def test_granted_servers_excludes_disabled(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    h._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
+    h.disabled = {"mddocs"}
+
+    granted, unknown = h._granted_servers(["mddocs"])
+    assert granted == []
+    assert unknown == ["mddocs"]
+
+
+def test_granted_servers_dedupes(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    a = SimpleNamespace(tool_prefix="mddocs")
+    h._live_servers = [a]
+
+    granted, unknown = h._granted_servers(["mddocs", "mddocs"])
+    assert granted == [a]
+    assert unknown == []
+
+
+def test_granted_servers_dedupes_unknown(tmp_path: Path):
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    h._live_servers = []
+
+    granted, unknown = h._granted_servers(["nope", "nope"])
+    assert granted == []
+    assert unknown == ["nope"]
+
+
+def test_mcp_grant_note_lists_unknown_and_enabled(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    h._live_servers = [
+        SimpleNamespace(tool_prefix="mddocs"),
+        SimpleNamespace(tool_prefix="sentry"),
+    ]
+
+    note = h._mcp_grant_note(["nope"])
+    assert "nope" in note
+    assert "mddocs" in note and "sentry" in note
+    assert note.endswith("\n\n")
+
+
+def test_mcp_grant_note_empty_when_nothing_unknown(tmp_path: Path):
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    assert h._mcp_grant_note([]) == ""
+
+
+def test_mcp_grant_note_handles_no_enabled_servers(tmp_path: Path):
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    h._live_servers = []  # nothing enabled
+
+    note = h._mcp_grant_note(["nope"])
+    assert "nope" in note
+    assert "none" in note.lower()
+
+
+def _capture_subagent(h, report="report"):
+    """Replace _build_subagent so the spawned agent's run() records the toolsets
+    it was given and returns a canned report. Returns the capture dict."""
+    from types import SimpleNamespace
+
+    from pydantic_ai.usage import RunUsage
+
+    cap: dict = {}
+
+    class _StubAgent:
+        async def run(self, task, **kwargs):
+            cap["task"] = task
+            cap["toolsets"] = kwargs.get("toolsets")
+            return SimpleNamespace(output=report, usage=RunUsage())
+
+    h._build_subagent = lambda type: (_StubAgent(), None)
+    return cap
+
+
+@pytest.mark.anyio
+async def test_run_subagent_grants_named_server(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    server = SimpleNamespace(tool_prefix="mddocs")
+    h._live_servers = [server]
+    cap = _capture_subagent(h)
+
+    out = await h._run_subagent("explore", "read docs", "sid", ["mddocs"])
+    assert out == "report"
+    # Identity, not just equality: gating relies on the SAME hooked server
+    # object reaching run() — a copy would silently drop the approval hook.
+    assert cap["toolsets"][0] is server
+
+
+@pytest.mark.anyio
+async def test_run_subagent_default_grants_no_servers(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    h._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
+    cap = _capture_subagent(h)
+
+    await h._run_subagent("explore", "investigate", "sid")
+    assert cap["toolsets"] == []
+
+
+@pytest.mark.anyio
+async def test_run_subagent_prepends_unknown_note(tmp_path: Path):
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    h._live_servers = []
+    _capture_subagent(h, report="FINDINGS")
+
+    out = await h._run_subagent("explore", "investigate", "sid", ["nope"])
+    assert "nope" in out
+    assert out.rstrip().endswith("FINDINGS")
+
+
+@pytest.mark.anyio
+async def test_run_background_subagent_grants_named_server(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    server = SimpleNamespace(tool_prefix="mddocs")
+    h._live_servers = [server]
+    cap = _capture_subagent(h)
+
+    out = await h._run_background_subagent("general", "do it", ["mddocs"])
+    assert out == "report"
+    # Identity, not just equality: the background path must also forward the
+    # SAME hooked server object so its approval gating is preserved.
+    assert cap["toolsets"][0] is server
+
+
+@pytest.mark.anyio
+async def test_run_background_subagent_prepends_unknown_note(tmp_path: Path):
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    h._live_servers = []
+    _capture_subagent(h, report="DONE")
+
+    out = await h._run_background_subagent("general", "do it", ["nope"])
+    assert "nope" in out
+    assert out.rstrip().endswith("DONE")
+
+
+@pytest.mark.anyio
+async def test_run_background_subagent_default_grants_no_servers(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    h._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
+    cap = _capture_subagent(h)
+
+    await h._run_background_subagent("general", "do it")
+    assert cap["toolsets"] == []
+
+
+def test_mcp_index_text_lists_enabled(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    h._live_servers = [
+        SimpleNamespace(tool_prefix="mddocs"),
+        SimpleNamespace(tool_prefix="sentry"),
+    ]
+    text = h.mcp_index_text()
+    assert "mddocs" in text and "sentry" in text
+    assert "spawn_agent" in text  # tells the model how to use them
+
+
+def test_mcp_index_text_silent_when_none(tmp_path: Path):
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    h._live_servers = []
+    assert h.mcp_index_text() == ""
+
+
+def test_mcp_index_text_excludes_disabled(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    h._live_servers = [
+        SimpleNamespace(tool_prefix="mddocs"),
+        SimpleNamespace(tool_prefix="sentry"),
+    ]
+    h.disabled = {"sentry"}
+    text = h.mcp_index_text()
+    assert "mddocs" in text
+    assert "sentry" not in text

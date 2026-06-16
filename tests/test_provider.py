@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
 
@@ -60,3 +61,75 @@ def test_read_tool_executes_via_agent(tmp_path: Path):
     with agent.override(model=TestModel(call_tools=[])):
         result = agent.run_sync("read it", deps=Deps(workspace_root=tmp_path))
     assert result is not None
+
+
+@pytest.mark.anyio
+async def test_spawn_agent_forwards_mcp_foreground(tmp_path):
+    from types import SimpleNamespace
+
+    from marim_harness.deps import Deps
+    from marim_harness.permissions import Mode
+    from marim_harness.tools.provider import spawn_agent
+
+    calls = {}
+
+    async def fake_runner(type, task, tool_call_id, mcp_names):
+        calls["args"] = (type, task, tool_call_id, mcp_names)
+        return "ok"
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps.run_subagent = fake_runner
+    ctx = SimpleNamespace(deps=deps, tool_call_id="tc1")
+
+    out = await spawn_agent(ctx, "explore", "read docs", mcp=["mddocs"])
+    assert out == "ok"
+    assert calls["args"] == ("explore", "read docs", "tc1", ["mddocs"])
+
+
+@pytest.mark.anyio
+async def test_spawn_agent_forwards_mcp_background(tmp_path):
+    from types import SimpleNamespace
+
+    from marim_harness.deps import Deps
+    from marim_harness.permissions import Mode
+    from marim_harness.tools.provider import spawn_agent
+
+    captured = {}
+
+    def fake_bg(type, task, mcp_names):
+        captured["args"] = (type, task, mcp_names)
+        async def _coro():
+            return "bg-report"
+        return _coro()
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps.run_background_agent = fake_bg
+    # Close the coroutine in the stub to prevent "coroutine was never awaited" warning.
+    deps.jobs = SimpleNamespace(register=lambda kind, label, coro: (coro.close(), "job-1")[1])
+    ctx = SimpleNamespace(deps=deps, tool_call_id="tc2")
+
+    out = await spawn_agent(ctx, "general", "do it", background=True, mcp=["sentry"])
+    assert "Started" in out
+    assert captured["args"] == ("general", "do it", ["sentry"])
+
+
+@pytest.mark.anyio
+async def test_spawn_agent_default_mcp_is_none(tmp_path):
+    from types import SimpleNamespace
+
+    from marim_harness.deps import Deps
+    from marim_harness.permissions import Mode
+    from marim_harness.tools.provider import spawn_agent
+
+    calls = {}
+
+    async def fake_runner(type, task, tool_call_id, mcp_names):
+        calls["mcp_names"] = mcp_names
+        return "ok"
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps.run_subagent = fake_runner
+    ctx = SimpleNamespace(deps=deps, tool_call_id="tc3")
+
+    await spawn_agent(ctx, "explore", "investigate")
+    assert calls["mcp_names"] is None

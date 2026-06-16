@@ -179,6 +179,13 @@ class Harness:
             )
 
         @self.agent.instructions
+        def _mcp_index(ctx: RunContext[Deps]) -> str:
+            """Name the MCP servers a spawn may grant, re-read each turn so a
+            server toggled on/off mid-session is reflected. Silent when none are
+            enabled."""
+            return self.mcp_index_text()
+
+        @self.agent.instructions
         def _task_state(ctx: RunContext[Deps]) -> str:
             """Inject the current checklist each turn so the model continues from
             the live state, and remind it how to keep the list current. Silent
@@ -434,42 +441,107 @@ class Harness:
         self.provider.register_subagent(sub, effective_tools(defn, allow_gated=allow_gated))
         return sub, None
 
-    async def _run_subagent(self, type: str, task: str, stream_id: str) -> str:
+    async def _run_subagent(
+        self, type: str, task: str, stream_id: str, mcp_names: list[str] | None = None
+    ) -> str:
         """Spawn one isolated sub-agent of ``type``, run it to completion on
         ``task``, and return its final report — streaming its events to the UI
         nested under the spawn. Shares the workspace Deps (read-only use) but
-        starts a fresh conversation, so the sub-agent gets a clean context."""
+        starts a fresh conversation, so the sub-agent gets a clean context.
+        ``mcp_names`` is the MCP servers the main agent granted this spawn (none
+        by default); granted servers gate via the same approval hook as the main
+        agent's."""
         sub, err = self._build_subagent(type)
         if err is not None:
             return err
+        granted, unknown = self._granted_servers(mcp_names)
         result = await sub.run(
-            task, deps=self.deps,
+            task, deps=self.deps, toolsets=granted,
             event_stream_handler=self._subagent_handler(stream_id),
         )
         # A foreground spawn runs inside the current turn, so its spend is folded
         # into the session total here and persisted by run_turn's _persist.
         self.usage += result.usage
-        return result.output
+        return self._mcp_grant_note(unknown) + result.output
 
-    async def _run_background_subagent(self, type: str, task: str) -> str:
-        """Run a sub-agent as a detached background job: same isolation and
-        mode-based reach as a foreground spawn, but with no event streaming —
-        the job's result is its final report, surfaced when the agent pulls it."""
+    async def _run_background_subagent(
+        self, type: str, task: str, mcp_names: list[str] | None = None
+    ) -> str:
+        """Run a sub-agent as a detached background job: same isolation, mode-based
+        reach, and MCP grant as a foreground spawn, but with no event streaming —
+        the job's result is its final report, surfaced when the agent pulls it.
+        Any unknown-server note rides along on that report."""
         sub, err = self._build_subagent(type)
         if err is not None:
             return err
-        result = await sub.run(task, deps=self.deps)
+        granted, unknown = self._granted_servers(mcp_names)
+        result = await sub.run(task, deps=self.deps, toolsets=granted)
         # A background spawn finishes off-turn, so no run_turn will fold in its
         # spend — count it here and persist right away so the saved session
         # reflects it even if the process exits before the next turn.
         self.usage += result.usage
         self._persist()
-        return result.output
+        return self._mcp_grant_note(unknown) + result.output
 
     @staticmethod
     def _server_name(server) -> str:
         """The display name of an MCP server — its tool prefix / config name."""
         return str(getattr(server, "id", None) or getattr(server, "tool_prefix", "?"))
+
+    def _granted_servers(self, names: list[str] | None) -> tuple[list, list[str]]:
+        """Resolve requested MCP server names to live server objects for a spawn.
+
+        Returns ``(granted, unknown)``. ``granted`` is the live server objects
+        whose name matches a request and is not disabled — passed straight to a
+        sub-agent's run as toolsets, so their tools gate via the same approval
+        hook as the main agent's. ``unknown`` is requested names with no enabled
+        live server (missing or runtime-disabled). Order follows the request;
+        duplicate names are honored once."""
+        if not names:
+            return [], []
+        by_name = {self._server_name(s): s for s in self._live_servers}
+        granted: list = []
+        unknown: list[str] = []
+        for name in dict.fromkeys(names):  # de-dupe, preserve first-seen order
+            server = by_name.get(name)
+            if server is None or name in self.disabled:
+                unknown.append(name)
+            else:
+                granted.append(server)
+        return granted, unknown
+
+    def _enabled_server_names(self) -> list[str]:
+        """Live MCP servers currently offered to the model — connected and not
+        runtime-disabled. The set a spawn may grant from."""
+        return [
+            n for s in self._live_servers
+            if (n := self._server_name(s)) not in self.disabled
+        ]
+
+    def mcp_index_text(self) -> str:
+        """A spawn-time note listing the MCP servers a spawn may grant — the
+        enabled live servers. Empty when none are enabled, so the instruction
+        stays silent rather than mentioning a feature with nothing behind it."""
+        names = self._enabled_server_names()
+        if not names:
+            return ""
+        return (
+            "MCP servers you can grant to a sub-agent via spawn_agent's `mcp` "
+            "argument (e.g. mcp=[" + repr(names[0]) + "]): "
+            + ", ".join(names)
+        )
+
+    def _mcp_grant_note(self, unknown: list[str]) -> str:
+        """A short note for the model when a spawn requested MCP servers that
+        couldn't be granted, naming what *is* enabled so it can re-spawn. Empty
+        when nothing was unknown. Trailing blank line separates it from the
+        sub-agent's report, which it is prepended to."""
+        if not unknown:
+            return ""
+        bad = ", ".join(f"'{n}'" for n in unknown)
+        enabled = self._enabled_server_names()
+        avail = ", ".join(enabled) if enabled else "none"
+        return f"(note: ignored unknown MCP server(s) {bad}; enabled: {avail})\n\n"
 
     def configured_names(self) -> list[str]:
         """Every configured MCP server name, enabled or not — what /mcp lists and
