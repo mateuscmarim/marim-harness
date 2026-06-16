@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from marim_harness.skills import (
+from marim_harness.workspace import (
     discover_skills,
     find_skill,
     read_bundled_file,

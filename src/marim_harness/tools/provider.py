@@ -5,8 +5,8 @@ from pydantic_ai import Agent, RunContext
 
 from ..deps import Deps
 from ..jobs import render_jobs
-from ..memory import global_scope, project_scope, read_memory, save_memory
-from ..skills import find_skill, read_bundled_file, read_skill_body
+from ..workspace.memory import global_scope, project_scope, read_memory, save_memory
+from ..workspace.skills import find_skill, read_bundled_file, read_skill_body
 from ..tasks import Task, summarize
 from . import fs, shell
 

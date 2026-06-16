@@ -5,7 +5,7 @@ from typing import Optional
 from pydantic import BaseModel
 from pydantic_ai import ModelRetry
 
-from ..workspace import WorkspaceError, resolve_in_workspace
+from ..workspace.fs import WorkspaceError, resolve_in_workspace
 
 _MAX_GREP_HITS = 200
 _MAX_TREE_ENTRIES = 500

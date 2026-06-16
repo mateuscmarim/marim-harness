@@ -8,10 +8,16 @@ from pydantic_ai import Agent, RunContext
 if TYPE_CHECKING:
     from .mcp import McpManager
 
-from .agents import agents_index_text, discover_agents
+from .workspace import (
+    agents_index_text,
+    discover_agents,
+    discover_skills,
+    global_scope,
+    load_index,
+    project_scope,
+    skills_index_text,
+)
 from .deps import Deps
-from .memory import global_scope, load_index, project_scope
-from .skills import discover_skills, skills_index_text
 from .tasks import render_tasks
 
 _PROJECT_INSTRUCTIONS_FILE = "AGENTS.md"

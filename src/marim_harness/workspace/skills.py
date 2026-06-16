@@ -20,8 +20,8 @@ from pathlib import Path
 
 import yaml
 
-from .config import config_dir
-from .workspace import WorkspaceError, resolve_in_workspace
+from ..config import config_dir
+from .fs import WorkspaceError, resolve_in_workspace
 
 _SKILL_FILE = "SKILL.md"
 # Per the spec: 1-64 chars, lowercase alphanumerics and single hyphens, no

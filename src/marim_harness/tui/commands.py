@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 from ..permissions import Mode
-from ..skills import discover_skills
+from ..workspace import discover_skills
 from .themes import THEME_NAMES
 
 if TYPE_CHECKING:

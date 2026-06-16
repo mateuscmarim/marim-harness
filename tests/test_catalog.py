@@ -1,4 +1,4 @@
-from marim_harness.catalog import ModelEntry, filter_entries, parse_models
+from marim_harness.workspace import ModelEntry, filter_entries, parse_models
 
 _SAMPLE = {
     "data": [

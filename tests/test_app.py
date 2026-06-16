@@ -879,7 +879,7 @@ async def test_model_command_sets_model_directly(tmp_path: Path):
 async def test_model_command_opens_picker_from_input(tmp_path: Path):
     """Regression: `/model` (no arg) dispatches from the input handler, which is
     not a worker. The picker must open there without raising NoActiveWorker."""
-    from marim_harness.catalog import ModelEntry
+    from marim_harness.workspace import ModelEntry
     from marim_harness.tui.model_picker import ModelPickerModal
 
     source = _FakeSource(entries=[ModelEntry(id="openai/gpt-5.2", name="GPT-5.2")])
@@ -898,7 +898,7 @@ async def test_model_command_opens_picker_from_input(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_model_picker_applies_choice(tmp_path: Path):
-    from marim_harness.catalog import ModelEntry
+    from marim_harness.workspace import ModelEntry
     from marim_harness.tui.widgets import NoticeMessage
 
     source = _FakeSource(entries=[ModelEntry(id="openai/gpt-5.2", name="GPT-5.2")])

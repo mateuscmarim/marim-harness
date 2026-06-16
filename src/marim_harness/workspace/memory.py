@@ -15,7 +15,7 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import config_dir
+from ..config import config_dir
 
 _INDEX_FILE = "MEMORY.md"
 _VALID_TYPES = ("user", "feedback", "project", "reference")

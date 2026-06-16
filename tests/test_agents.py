@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from marim_harness.agents import (
+from marim_harness.workspace import (
     AgentDef,
     agent_roots,
     agents_index_text,

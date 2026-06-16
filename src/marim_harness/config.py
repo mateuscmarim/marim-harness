@@ -3,7 +3,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
 
-from .catalog import ModelEntry, fetch_openrouter_models
+from .workspace.catalog import ModelEntry, fetch_openrouter_models
 
 _DEFAULT_OPENROUTER_MODEL = "anthropic/claude-sonnet-4-6"
 _DEFAULT_LOCAL_MODEL = "qwen2.5-coder"

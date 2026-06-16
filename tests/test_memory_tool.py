@@ -104,7 +104,7 @@ def test_remember_scope_is_constrained_to_two_values():
 
 
 def test_recall_reads_project_memory_body(tmp_path: Path):
-    from marim_harness import memory
+    from marim_harness.workspace import memory
 
     memory.save_memory(
         memory.project_scope(tmp_path), name="My name", description="hook",
@@ -118,7 +118,7 @@ def test_recall_reads_project_memory_body(tmp_path: Path):
 
 
 def test_recall_reads_global_memory_outside_workspace(tmp_path: Path, monkeypatch):
-    from marim_harness import memory
+    from marim_harness.workspace import memory
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
     memory.save_memory(

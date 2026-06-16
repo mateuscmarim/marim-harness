@@ -1,7 +1,7 @@
 import pytest
 from textual.app import App
 
-from marim_harness.catalog import ModelEntry
+from marim_harness.workspace import ModelEntry
 from marim_harness.tui.model_picker import ModelPickerModal
 
 _ENTRIES = [

@@ -258,7 +258,7 @@ async def test_project_instructions_injected_and_dynamic(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_memory_indexes_injected_and_dynamic(tmp_path: Path):
-    from marim_harness import memory
+    from marim_harness.workspace import memory
 
     captured: dict = {}
 

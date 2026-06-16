@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from marim_harness import memory
+from marim_harness.workspace import memory
 
 
 def test_global_scope_respects_xdg(monkeypatch, tmp_path: Path):

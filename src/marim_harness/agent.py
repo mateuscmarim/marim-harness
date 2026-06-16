@@ -3,7 +3,7 @@ from typing import Optional
 from pydantic_ai import Agent, DeferredToolRequests
 from pydantic_ai.usage import RunUsage
 
-from .agents import (
+from .workspace import (
     discover_agents,
     effective_tools,
     find_agent,

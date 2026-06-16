@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from marim_harness.catalog import ModelEntry
+from marim_harness.workspace import ModelEntry
 from marim_harness.cli import models as models_cmd
 
 
