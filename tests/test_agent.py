@@ -1004,6 +1004,92 @@ async def test_run_turn_forwards_live_toolsets(tmp_path: Path):
     assert captured["toolsets"] == [sentinel]  # live servers reach agent.run
 
 
+@pytest.mark.anyio
+async def test_connect_skips_disabled_servers(tmp_path: Path):
+    off = _FakeServer("off")
+    on = _FakeServer("on")
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = Harness(model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
+                instructions="x", mcp_servers=[off, on], mcp_disabled=["off"])
+
+    status = await h.connect()
+    assert status["connected"] == ["on"]
+    assert off.entered is False  # config-disabled: never launched
+    assert on in h._live_servers
+    assert off not in h._live_servers
+    await h.aclose()
+
+
+@pytest.mark.anyio
+async def test_run_turn_omits_disabled_from_toolsets(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from pydantic_ai.usage import RunUsage
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(_text_model(), deps)
+    live_on, live_off = _FakeServer("on"), _FakeServer("off")
+    h._live_servers = [live_on, live_off]
+    h.disabled = {"off"}
+
+    captured: dict = {}
+
+    async def fake_run(user_prompt, **kwargs):
+        captured["toolsets"] = kwargs.get("toolsets")
+        return SimpleNamespace(all_messages=lambda: [], usage=RunUsage(), output="ok")
+
+    h.agent.run = fake_run
+    await h.run_turn("hi")
+    assert captured["toolsets"] == [live_on]  # the disabled one is muted
+
+
+@pytest.mark.anyio
+async def test_disable_server_keeps_connection_but_mutes(tmp_path: Path):
+    srv = _FakeServer("demo")
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = Harness(model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
+                instructions="x", mcp_servers=[srv])
+    await h.connect()
+    assert srv.entered is True
+
+    await h.disable_server("demo")
+    assert "demo" in h.disabled
+    assert srv.entered is True  # still connected, just not offered
+    await h.aclose()
+
+
+@pytest.mark.anyio
+async def test_enable_server_connects_on_demand(tmp_path: Path):
+    srv = _FakeServer("demo")
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = Harness(model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
+                instructions="x", mcp_servers=[srv], mcp_disabled=["demo"])
+    await h.connect()
+    assert srv.entered is False  # started disabled, so not launched
+
+    err = await h.enable_server("demo")
+    assert err is None
+    assert "demo" not in h.disabled
+    assert srv.entered is True  # connected on demand
+    assert srv in h._live_servers
+    assert "demo" in h.mcp_status["connected"]
+    await h.aclose()
+
+
+@pytest.mark.anyio
+async def test_enable_server_reports_connection_failure(tmp_path: Path):
+    srv = _FakeServer("demo", fail=True)
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = Harness(model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
+                instructions="x", mcp_servers=[srv], mcp_disabled=["demo"])
+    await h.connect()
+
+    err = await h.enable_server("demo")
+    assert err and "boom" in err  # surfaced, not fatal
+    assert srv not in h._live_servers
+    await h.aclose()
+
+
 def test_resume_restores_saved_model(tmp_path: Path):
     from marim_harness.session import SessionManager
 

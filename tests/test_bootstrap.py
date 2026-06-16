@@ -30,6 +30,32 @@ def test_build_harness_wires_mcp_servers(tmp_path: Path, monkeypatch):
     assert [s.tool_prefix for s in harness.mcp_servers] == ["files"]
 
 
+def test_build_harness_seeds_config_disabled_servers(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    _stub_model_plumbing(monkeypatch)
+
+    ws = tmp_path / "ws"
+    cfg = ws / ".marim" / "mcp.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "on": {"command": "npx", "args": ["a"]},
+                    "off": {"command": "npx", "args": ["b"], "enabled": False},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    harness = bootstrap.build_harness(ws, mode=Mode.ask)
+    # Both servers are built (so "off" can be enabled in-session)...
+    assert {s.tool_prefix for s in harness.mcp_servers} == {"on", "off"}
+    # ...but the config-disabled one is seeded as disabled.
+    assert harness.disabled == {"off"}
+
+
 def test_build_harness_no_mcp_config_is_empty(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     _stub_model_plumbing(monkeypatch)

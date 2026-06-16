@@ -62,6 +62,19 @@ def load_mcp_config(workspace_root: Path) -> dict:
     return merged
 
 
+def disabled_server_names(specs: dict) -> set[str]:
+    """Names of servers turned off in the config via ``"enabled": false``. Only an
+    explicit ``false`` disables — an absent or true flag (or a non-dict spec) keeps
+    the server on. These seed the Harness's runtime ``disabled`` set so a
+    file-disabled server is built but never launched, yet stays runtime-toggleable.
+    """
+    return {
+        name
+        for name, spec in specs.items()
+        if isinstance(spec, dict) and spec.get("enabled") is False
+    }
+
+
 class _McpApprovalCall:
     """Minimal stand-in for a tool call, shaped for marim's ``request_approval``
     callback, which reads ``.tool_name`` and ``.args_as_dict()``."""

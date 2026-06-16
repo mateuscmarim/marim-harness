@@ -170,6 +170,102 @@ async def test_mcp_none_configured():
     assert "No MCP servers configured" in app.posted[0]
 
 
+class _FakeMcpHarness:
+    """A harness stand-in that records enable/disable calls for command tests."""
+
+    def __init__(self, names, *, disabled=(), enable_error=None):
+        self._names = list(names)
+        self.disabled = set(disabled)
+        self.mcp_servers = [SimpleNamespace(id=n) for n in names]
+        self.mcp_status = {"connected": list(names), "failed": []}
+        self.enabled_calls: list[str] = []
+        self.disabled_calls: list[str] = []
+        self._enable_error = enable_error
+
+    def configured_names(self):
+        return list(self._names)
+
+    async def disable_server(self, name):
+        self.disabled_calls.append(name)
+        self.disabled.add(name)
+
+    async def enable_server(self, name):
+        self.enabled_calls.append(name)
+        if self._enable_error:
+            return self._enable_error
+        self.disabled.discard(name)
+        return None
+
+
+@pytest.mark.anyio
+async def test_mcp_lists_disabled_state():
+    app = _FakeApp()
+    app.harness = _FakeMcpHarness(["files", "web"], disabled={"web"})
+    await dispatch(app, "/mcp")
+    out = app.posted[0]
+    assert "files" in out and "connected" in out
+    assert "web" in out and "disabled" in out  # disabled shown distinctly
+
+
+@pytest.mark.anyio
+async def test_mcp_disable_one_server():
+    app = _FakeApp()
+    app.harness = _FakeMcpHarness(["files", "web"])
+    await dispatch(app, "/mcp disable files")
+    assert app.harness.disabled_calls == ["files"]
+    assert "files" in app.posted[0] and "disabled" in app.posted[0].lower()
+
+
+@pytest.mark.anyio
+async def test_mcp_enable_one_server():
+    app = _FakeApp()
+    app.harness = _FakeMcpHarness(["files", "web"], disabled={"files"})
+    await dispatch(app, "/mcp enable files")
+    assert app.harness.enabled_calls == ["files"]
+    assert "files" in app.posted[0] and "enabled" in app.posted[0].lower()
+
+
+@pytest.mark.anyio
+async def test_mcp_disable_all_servers():
+    app = _FakeApp()
+    app.harness = _FakeMcpHarness(["files", "web"])
+    await dispatch(app, "/mcp disable all")
+    assert app.harness.disabled_calls == ["files", "web"]  # every configured one
+
+
+@pytest.mark.anyio
+async def test_mcp_enable_all_servers():
+    app = _FakeApp()
+    app.harness = _FakeMcpHarness(["files", "web"], disabled={"files", "web"})
+    await dispatch(app, "/mcp enable all")
+    assert app.harness.enabled_calls == ["files", "web"]
+
+
+@pytest.mark.anyio
+async def test_mcp_enable_reports_connection_failure():
+    app = _FakeApp()
+    app.harness = _FakeMcpHarness(["web"], disabled={"web"}, enable_error="boom")
+    await dispatch(app, "/mcp enable web")
+    assert "boom" in app.posted[0]  # failure surfaced, not swallowed
+
+
+@pytest.mark.anyio
+async def test_mcp_unknown_server_name():
+    app = _FakeApp()
+    app.harness = _FakeMcpHarness(["files"])
+    await dispatch(app, "/mcp disable nope")
+    assert app.harness.disabled_calls == []  # nothing toggled
+    assert "nope" in app.posted[0]
+
+
+@pytest.mark.anyio
+async def test_mcp_unknown_subcommand_shows_usage():
+    app = _FakeApp()
+    app.harness = _FakeMcpHarness(["files"])
+    await dispatch(app, "/mcp frobnicate")
+    assert "usage" in app.posted[0].lower()
+
+
 @pytest.mark.anyio
 async def test_skill_with_name_spawns_activation_turn():
     app = _FakeApp()

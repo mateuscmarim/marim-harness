@@ -181,7 +181,22 @@ async def _cmd_skill(app: HarnessApp, arg: str) -> None:
     app._turn_worker = app.run_worker(app._run_turn(prompt), exclusive=True)
 
 
+_MCP_USAGE = "Usage: `/mcp`, `/mcp enable <name|all>`, `/mcp disable <name|all>`."
+
+
 async def _cmd_mcp(app: HarnessApp, arg: str) -> None:
+    action, _, rest = arg.strip().partition(" ")
+    action = action.lower()
+    if action in ("enable", "disable"):
+        await _mcp_toggle(app, action, rest.strip())
+        return
+    if action:
+        await app.post_system(_MCP_USAGE)
+        return
+    await _mcp_list(app)
+
+
+async def _mcp_list(app: HarnessApp) -> None:
     servers = getattr(app.harness, "mcp_servers", [])
     if not servers:
         await app.post_system(
@@ -192,17 +207,52 @@ async def _cmd_mcp(app: HarnessApp, arg: str) -> None:
     status = getattr(app.harness, "mcp_status", {"connected": [], "failed": []})
     connected = set(status.get("connected", []))
     failed = dict(status.get("failed", []))
+    disabled = set(getattr(app.harness, "disabled", set()) or set())
     lines = ["**MCP servers**", ""]
     for s in servers:
         name = str(getattr(s, "id", None) or getattr(s, "tool_prefix", "?"))
-        if name in connected:
+        if name in disabled:
+            state = "disabled ⏸"
+        elif name in connected:
             state = "connected ✓"
         elif name in failed:
             state = f"failed ✗ — {failed[name]}"
         else:
             state = "not connected"
         lines.append(f"- `{name}` — {state}")
+    lines += ["", "Toggle with `/mcp enable <name|all>` or `/mcp disable <name|all>`."]
     await app.post_system("\n".join(lines))
+
+
+async def _mcp_toggle(app: HarnessApp, action: str, target: str) -> None:
+    names = app.harness.configured_names()
+    if not names:
+        await app.post_system("No MCP servers configured.")
+        return
+    listing = ", ".join(f"`{n}`" for n in names)
+    if not target:
+        await app.post_system(f"Usage: `/mcp {action} <name|all>`. Configured: {listing}.")
+        return
+    if target == "all":
+        targets = names
+    elif target in names:
+        targets = [target]
+    else:
+        await app.post_system(f"No MCP server `{target}`. Configured: {listing}.")
+        return
+    results = []
+    for name in targets:
+        if action == "disable":
+            await app.harness.disable_server(name)
+            results.append(f"- `{name}` — disabled ⏸")
+        else:
+            err = await app.harness.enable_server(name)
+            if err:
+                results.append(f"- `{name}` — enable failed ✗ — {err}")
+            else:
+                results.append(f"- `{name}` — enabled ✓")
+    heading = "**MCP disabled**" if action == "disable" else "**MCP enabled**"
+    await app.post_system("\n".join([heading, "", *results]))
 
 
 async def _cmd_exit(app: HarnessApp, arg: str) -> None:
@@ -220,7 +270,7 @@ COMMANDS: list[Command] = [
     Command("model", "switch model: /model [id] (opens a picker if blank)", _cmd_model),
     Command("remember", "save a note to memory: /remember <fact>", _cmd_remember),
     Command("skill", "list or run skills: /skill [name [context]]", _cmd_skill),
-    Command("mcp", "list configured MCP servers and their connection status", _cmd_mcp),
+    Command("mcp", "list MCP servers or toggle them: /mcp [enable|disable <name|all>]", _cmd_mcp),
     Command("exit", "quit the harness", _cmd_exit, aliases=("quit",)),
 ]
 

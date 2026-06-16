@@ -6,6 +6,7 @@ import pytest
 
 from marim_harness.mcp import (
     build_mcp_servers,
+    disabled_server_names,
     load_mcp_config,
     make_approval_hook,
 )
@@ -57,6 +58,24 @@ def test_load_ignores_malformed_file(tmp_path: Path, monkeypatch):
     bad.write_text("{ not json", encoding="utf-8")
     # A broken file is skipped, never fatal.
     assert load_mcp_config(ws) == {}
+
+
+# --- config-disabled servers -----------------------------------------------
+
+
+def test_disabled_server_names_picks_enabled_false():
+    specs = {
+        "on": {"command": "a"},
+        "off": {"command": "b", "enabled": False},
+        "default-on": {"command": "c", "enabled": True},
+        "bad": "not-a-dict",
+    }
+    # Only an explicit ``enabled: false`` disables; absent/true/non-dict do not.
+    assert disabled_server_names(specs) == {"off"}
+
+
+def test_disabled_server_names_empty_when_none():
+    assert disabled_server_names({"on": {"command": "a"}}) == set()
 
 
 # --- server construction ---------------------------------------------------
