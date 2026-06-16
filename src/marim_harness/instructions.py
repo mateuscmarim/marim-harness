@@ -90,6 +90,8 @@ def register_instructions(agent: Agent, mcp_manager: McpManager, proactive_memor
     @agent.instructions
     def _agent_index(ctx: RunContext[Deps]) -> str:
         text = agents_index_text(discover_agents(ctx.deps.workspace_root))
+        if not text:
+            return ""
         return (
             "Sub-agents you can delegate to with the spawn_agent tool (each "
             "runs in isolation and reports back; spawn several in one turn to "
