@@ -1287,7 +1287,9 @@ async def test_run_subagent_grants_named_server(tmp_path: Path):
 
     out = await h._run_subagent("explore", "read docs", "sid", ["mddocs"])
     assert out == "report"
-    assert cap["toolsets"] == [server]
+    # Identity, not just equality: gating relies on the SAME hooked server
+    # object reaching run() — a copy would silently drop the approval hook.
+    assert cap["toolsets"][0] is server
 
 
 @pytest.mark.anyio
@@ -1333,7 +1335,9 @@ async def test_run_background_subagent_grants_named_server(tmp_path: Path):
 
     out = await h._run_background_subagent("general", "do it", ["mddocs"])
     assert out == "report"
-    assert cap["toolsets"] == [server]
+    # Identity, not just equality: the background path must also forward the
+    # SAME hooked server object so its approval gating is preserved.
+    assert cap["toolsets"][0] is server
 
 
 @pytest.mark.anyio
