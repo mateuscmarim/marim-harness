@@ -1363,3 +1363,45 @@ async def test_run_background_subagent_default_grants_no_servers(tmp_path: Path)
 
     await h._run_background_subagent("general", "do it")
     assert cap["toolsets"] == []
+
+
+def test_mcp_index_text_lists_enabled(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    h._live_servers = [
+        SimpleNamespace(tool_prefix="mddocs"),
+        SimpleNamespace(tool_prefix="sentry"),
+    ]
+    text = h.mcp_index_text()
+    assert "mddocs" in text and "sentry" in text
+    assert "spawn_agent" in text  # tells the model how to use them
+
+
+def test_mcp_index_text_silent_when_none(tmp_path: Path):
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    h._live_servers = []
+    assert h.mcp_index_text() == ""
+
+
+def test_mcp_index_text_excludes_disabled(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    h._live_servers = [
+        SimpleNamespace(tool_prefix="mddocs"),
+        SimpleNamespace(tool_prefix="sentry"),
+    ]
+    h.disabled = {"sentry"}
+    text = h.mcp_index_text()
+    assert "mddocs" in text
+    assert "sentry" not in text

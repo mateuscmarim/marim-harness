@@ -179,6 +179,13 @@ class Harness:
             )
 
         @self.agent.instructions
+        def _mcp_index(ctx: RunContext[Deps]) -> str:
+            """Name the MCP servers a spawn may grant, re-read each turn so a
+            server toggled on/off mid-session is reflected. Silent when none are
+            enabled."""
+            return self.mcp_index_text()
+
+        @self.agent.instructions
         def _task_state(ctx: RunContext[Deps]) -> str:
             """Inject the current checklist each turn so the model continues from
             the live state, and remind it how to keep the list current. Silent
@@ -510,6 +517,19 @@ class Harness:
             n for s in self._live_servers
             if (n := self._server_name(s)) not in self.disabled
         ]
+
+    def mcp_index_text(self) -> str:
+        """A spawn-time note listing the MCP servers a spawn may grant — the
+        enabled live servers. Empty when none are enabled, so the instruction
+        stays silent rather than mentioning a feature with nothing behind it."""
+        names = self._enabled_server_names()
+        if not names:
+            return ""
+        return (
+            "MCP servers you can grant to a sub-agent via spawn_agent's `mcp` "
+            "argument (e.g. mcp=[" + repr(names[0]) + "]): "
+            + ", ".join(names)
+        )
 
     def _mcp_grant_note(self, unknown: list[str]) -> str:
         """A short note for the model when a spawn requested MCP servers that
