@@ -471,7 +471,7 @@ class Harness:
         await self.mcp.aclose()
 
     async def disable_server(self, name: str) -> None:
-        await self.mcp.disable_server(name, self.deps.workspace_root)
+        self.mcp.disable_server(name, self.deps.workspace_root)
 
     async def enable_server(self, name: str) -> Optional[str]:
         return await self.mcp.enable_server(name, self.deps.workspace_root)

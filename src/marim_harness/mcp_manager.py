@@ -92,7 +92,8 @@ class McpManager:
                 connected.append(name)
             else:
                 failed.append((name, err))
-        self.mcp_status = {"connected": connected, "failed": failed}
+        self.mcp_status["connected"] = connected
+        self.mcp_status["failed"] = failed
         return self.mcp_status
 
     async def aclose(self) -> None:
@@ -102,7 +103,7 @@ class McpManager:
         self._live_servers = []
         self._connected = False
 
-    async def disable_server(self, name: str, workspace_root: Path) -> None:
+    def disable_server(self, name: str, workspace_root: Path) -> None:
         self.disabled.add(name)
         persist_server_enabled(workspace_root, name, False)
 
