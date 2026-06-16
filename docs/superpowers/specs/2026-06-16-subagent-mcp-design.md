@@ -123,8 +123,11 @@ self-correct:
 (note: ignored unknown MCP server 'postgres'; enabled: mddocs, sentry)
 ```
 
-The note is built only when `unknown` is non-empty. For background spawns the same
-note is folded into the job-start string.
+The note is built only when `unknown` is non-empty, and is prepended to the
+sub-agent's returned report. Name resolution happens inside `_run_subagent` /
+`_run_background_subagent` (where the live-server state lives), so both paths share
+one mechanism; for a background spawn the note is visible when the report is pulled
+(`job_output` / `wait_for_job`) rather than at job-start.
 
 ## Discoverability
 
