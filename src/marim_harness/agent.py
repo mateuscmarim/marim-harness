@@ -3,6 +3,13 @@ from typing import Awaitable, Callable, Optional
 from pydantic_ai import Agent, DeferredToolRequests, RunContext
 from pydantic_ai.usage import RunUsage
 
+from .agents import (
+    agents_index_text,
+    discover_agents,
+    effective_tools,
+    find_agent,
+    subagent_instructions,
+)
 from .compaction import (
     Summarizer,
     compact_history,
@@ -12,7 +19,7 @@ from .compaction import (
 from .deps import Deps
 from .instructions import load_project_instructions
 from .memory import global_scope, load_index, project_scope
-from .permissions import resolve_approvals
+from .permissions import Mode, resolve_approvals
 from .session import SessionInfo, SessionManager, SessionStore
 from .skills import discover_skills, skills_index_text
 from .tasks import render_tasks
@@ -109,6 +116,7 @@ class Harness:
             instructions=instructions,
             output_type=[str, DeferredToolRequests],
         )
+        self.provider = provider
         provider.register(self.agent)
 
         @self.agent.instructions
@@ -156,6 +164,18 @@ class Harness:
             )
 
         @self.agent.instructions
+        def _agent_index(ctx: RunContext[Deps]) -> str:
+            """List the sub-agents the model can delegate to with spawn_agent,
+            re-read each turn so a newly-added custom agent shows up immediately.
+            Always present — the built-in explore/general are always available."""
+            text = agents_index_text(discover_agents(ctx.deps.workspace_root))
+            return (
+                "Sub-agents you can delegate to with the spawn_agent tool (each "
+                "runs in isolation and reports back; spawn several in one turn to "
+                "fan out independent work):\n\n" + text
+            )
+
+        @self.agent.instructions
         def _task_state(ctx: RunContext[Deps]) -> str:
             """Inject the current checklist each turn so the model continues from
             the live state, and remind it how to keep the list current. Silent
@@ -181,6 +201,9 @@ class Harness:
             return _ON_REQUEST_MEMORY_POLICY
 
         self.deps = deps
+        # The spawn_agent tool reaches the runner through Deps, the same way
+        # other tools reach shared state. Wired here so it tracks model switches.
+        self.deps.run_subagent = self._run_subagent
         self.history: list = []
         self.model_label = model_label
         # The model object used for each turn (swappable at runtime), the source
@@ -357,6 +380,43 @@ class Harness:
             self.history = new_history
             if self.on_compact is not None:
                 self.on_compact(before, len(self.history))
+
+    def _subagent_handler(self, stream_id: str):
+        """An event_stream_handler for a sub-agent run that forwards each event to
+        the UI, tagged with ``stream_id`` so it can stream nested under the spawn.
+        None when no UI is listening (headless) — the run just doesn't stream."""
+        cb = self.deps.on_subagent_event
+        if cb is None:
+            return None
+
+        async def handler(ctx, events) -> None:
+            async for event in events:
+                await cb(stream_id, event)
+
+        return handler
+
+    async def _run_subagent(self, type: str, task: str, stream_id: str) -> str:
+        """Spawn one isolated sub-agent of ``type`` on the current model, run it to
+        completion on ``task``, and return its final report. Reach is decided up
+        front: gated tools only in auto mode, so the run never needs an approval
+        round. Shares the workspace Deps (read-only use) but starts a fresh
+        conversation — the sub-agent gets a clean context."""
+        defn = find_agent(self.deps.workspace_root, type)
+        if defn is None:
+            names = ", ".join(a.name for a in discover_agents(self.deps.workspace_root))
+            return f"No sub-agent type {type!r}. Available: {names}."
+        allow_gated = self.deps.mode is Mode.auto
+        sub = Agent(
+            self.current_model,
+            deps_type=Deps,
+            instructions=subagent_instructions(defn, self.deps.workspace_root),
+        )
+        self.provider.register_subagent(sub, effective_tools(defn, allow_gated=allow_gated))
+        result = await sub.run(
+            task, deps=self.deps,
+            event_stream_handler=self._subagent_handler(stream_id),
+        )
+        return result.output
 
     async def run_turn(self, prompt: str, event_stream_handler=None) -> str:
         """Run the agent until it produces a final text answer, looping through

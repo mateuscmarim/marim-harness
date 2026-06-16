@@ -665,6 +665,99 @@ async def test_switch_session_restores_its_model(tmp_path: Path):
     assert h.model_label == "fake/openai/gpt-5.2"
 
 
+@pytest.mark.anyio
+async def test_run_subagent_returns_output(tmp_path: Path):
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(call_tools=[], custom_output_text="FINDINGS"), deps)
+    out = await h._run_subagent("explore", "find the parser", "sid")
+    assert out == "FINDINGS"
+
+
+@pytest.mark.anyio
+async def test_run_subagent_restricts_tools_by_mode(tmp_path: Path):
+    from marim_harness.tools.provider import READ_TOOLS, SUBAGENT_TOOLS
+
+    captured: dict = {}
+
+    def fn(messages, info):
+        captured["tools"] = {t.name for t in info.function_tools}
+        return ModelResponse(parts=[TextPart(content="report")])
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.ask)
+    h = _make_harness(FunctionModel(fn), deps)
+
+    # ask mode: general drops its gated tools, leaving the read-only set.
+    out = await h._run_subagent("general", "do it", "sid")
+    assert out == "report"
+    assert captured["tools"] == set(READ_TOOLS)
+
+    # auto mode: the full set, including write/edit/bash.
+    deps.mode = Mode.auto
+    await h._run_subagent("general", "do it", "sid")
+    assert captured["tools"] == set(SUBAGENT_TOOLS)
+
+
+@pytest.mark.anyio
+async def test_run_subagent_unknown_type(tmp_path: Path):
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(_text_model(), deps)
+    out = await h._run_subagent("ghost", "do it", "sid")
+    assert "No sub-agent type 'ghost'" in out
+    assert "explore" in out and "general" in out  # lists what's available
+
+
+@pytest.mark.anyio
+async def test_agent_index_injected(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    captured: dict = {}
+
+    def fn(messages, info):
+        captured["instructions"] = _last_instructions(messages)
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = Harness(model=FunctionModel(fn), provider=BuiltinToolProvider(), deps=deps,
+                instructions="BASE PROMPT")
+    await h.run_turn("hi")
+    instr = captured["instructions"]
+    assert "spawn_agent" in instr
+    assert "explore" in instr
+    assert "general" in instr
+
+
+def _spawn_then_done_model() -> FunctionModel:
+    """Main agent: spawn an explore sub-agent, then echo its report. The same
+    model backs the sub-agent, so it's told apart by its instructions."""
+    def fn(messages, info):
+        instr = _last_instructions(messages)
+        if "sub-agent" in instr:
+            return ModelResponse(parts=[TextPart(content="SUBREPORT")])
+        ret = None
+        for m in messages:
+            for p in getattr(m, "parts", []):
+                if type(p).__name__ == "ToolReturnPart" and \
+                        getattr(p, "tool_name", "") == "spawn_agent":
+                    ret = str(p.content)
+        if ret is not None:
+            return ModelResponse(parts=[TextPart(content=f"done: {ret}")])
+        return ModelResponse(parts=[ToolCallPart(
+            tool_name="spawn_agent", args={"type": "explore", "task": "find X"}
+        )])
+
+    return FunctionModel(fn)
+
+
+@pytest.mark.anyio
+async def test_spawn_agent_tool_runs_subagent_end_to_end(tmp_path: Path):
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(_spawn_then_done_model(), deps)
+    out = await h.run_turn("investigate")
+    assert out == "done: SUBREPORT"
+
+
 def test_resume_restores_saved_model(tmp_path: Path):
     from marim_harness.session import SessionManager
 
