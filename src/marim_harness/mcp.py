@@ -1,0 +1,163 @@
+"""MCP (Model Context Protocol) support: load server specs from a merged
+config, build pydantic-ai MCP server toolsets, and gate their tool calls behind
+marim's approval flow.
+
+This module is TUI-free and testable on its own. The :class:`~marim_harness.agent.Harness`
+owns the live connections (open with ``connect``, close with ``aclose``) and the
+wiring lives in ``bootstrap`` (load + build) and the TUI app (connect on mount).
+
+Config format (Claude-style), merged from the global ``~/.config/marim/mcp.json``
+and the project's ``.marim/mcp.json`` (project wins by name)::
+
+    {
+      "mcpServers": {
+        "files": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-fs"]},
+        "web":   {"url": "https://example.com/mcp"},
+        "events":{"url": "https://example.com/sse", "type": "sse"},
+        "trusted-one": {"command": "...", "trust": true}
+      }
+    }
+
+Each server is tool-prefixed with its config name, so its tools surface as
+``<name>_<tool>`` and never collide with the builtins or each other.
+"""
+
+import json
+import warnings
+from pathlib import Path
+
+from .config import config_dir
+from .permissions import Mode
+
+
+def global_mcp_config_path() -> Path:
+    """The global MCP config, a sibling of the global ``.env`` under the config dir."""
+    return config_dir() / "mcp.json"
+
+
+def project_mcp_config_path(workspace_root: Path) -> Path:
+    """The project-local MCP config, under the workspace's ``.marim/`` directory."""
+    return Path(workspace_root) / ".marim" / "mcp.json"
+
+
+def _read_servers(path: Path) -> dict:
+    """Read the ``mcpServers`` mapping from a config file. A missing or malformed
+    file yields ``{}`` — a broken config is skipped, never fatal."""
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return {}
+    servers = data.get("mcpServers") if isinstance(data, dict) else None
+    return servers if isinstance(servers, dict) else {}
+
+
+def load_mcp_config(workspace_root: Path) -> dict:
+    """Merge the global and project MCP server specs into one name->spec mapping.
+    Project entries override global ones with the same name. Missing files yield
+    an empty mapping."""
+    merged = dict(_read_servers(global_mcp_config_path()))
+    merged.update(_read_servers(project_mcp_config_path(workspace_root)))
+    return merged
+
+
+class _McpApprovalCall:
+    """Minimal stand-in for a tool call, shaped for marim's ``request_approval``
+    callback, which reads ``.tool_name`` and ``.args_as_dict()``."""
+
+    def __init__(self, tool_name: str, args: dict) -> None:
+        self.tool_name = tool_name
+        self._args = args
+
+    def args_as_dict(self) -> dict:
+        return self._args
+
+
+def make_approval_hook(label: str, trusted: bool):
+    """Build a ``process_tool_call`` hook that gates an MCP server's tool calls by
+    the live session mode: ``auto`` runs them, ``plan`` denies them (read-only),
+    and ``ask`` runs a *trusted* server's calls but prompts for an *untrusted*
+    one's via ``deps.request_approval``. A denied call returns a denial string,
+    which the model receives as the tool result.
+
+    ``label`` is the server's config name; it prefixes the tool name shown to the
+    user so an approval prompt names which server is calling. The mode and the
+    approval callback are read from ``ctx.deps`` at call time, so runtime mode
+    switches take effect immediately."""
+
+    async def hook(ctx, call_tool, name, args):
+        deps = ctx.deps
+        display = f"{label}_{name}"
+        mode = getattr(deps, "mode", None)
+        if mode is Mode.plan:
+            return f"Denied: {display} is blocked in read-only plan mode."
+        if mode is Mode.auto or trusted:
+            return await call_tool(name, args)
+        # ask mode against an untrusted server: prompt the user.
+        approve = getattr(deps, "request_approval", None)
+        if approve is None:
+            return f"Denied: {display} needs approval but none is available here."
+        decision = await approve(_McpApprovalCall(display, args or {}))
+        if decision is True:
+            return await call_tool(name, args)
+        return f"Denied: the user rejected {display}."
+
+    return hook
+
+
+def build_mcp_servers(specs: dict) -> tuple[list, list[str]]:
+    """Turn a name->spec mapping into pydantic-ai MCP server toolsets, each gated
+    by an approval hook and tool-prefixed with its name.
+
+    Returns ``(servers, warnings)``. A spec that is neither stdio (has
+    ``command``) nor HTTP/SSE (has ``url``) is skipped with a warning instead of
+    crashing, so one bad entry can't take down the rest."""
+    # MCPServerStdio/StreamableHTTP/SSE are deprecated in favour of MCPToolset in
+    # pydantic-ai 2.x, but they remain the only variants with the simple
+    # command/url + tool_prefix kwargs this config maps onto. Silence the noisy
+    # construction-time DeprecationWarning; revisit when MCPToolset gains prefix
+    # support.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        from pydantic_ai.mcp import (
+            MCPServerSSE,
+            MCPServerStdio,
+            MCPServerStreamableHTTP,
+        )
+
+        servers: list = []
+        notes: list[str] = []
+        for name, spec in specs.items():
+            if not isinstance(spec, dict):
+                notes.append(f"MCP server {name!r}: spec must be an object; skipped.")
+                continue
+            hook = make_approval_hook(name, bool(spec.get("trust", False)))
+            if "command" in spec:
+                server = MCPServerStdio(
+                    command=spec["command"],
+                    args=list(spec.get("args", [])),
+                    env=spec.get("env"),
+                    cwd=spec.get("cwd"),
+                    tool_prefix=name,
+                    process_tool_call=hook,
+                )
+            elif "url" in spec:
+                kind = (
+                    MCPServerSSE
+                    if spec.get("type") == "sse"
+                    else MCPServerStreamableHTTP
+                )
+                server = kind(
+                    url=spec["url"],
+                    headers=spec.get("headers"),
+                    tool_prefix=name,
+                    process_tool_call=hook,
+                )
+            else:
+                notes.append(
+                    f"MCP server {name!r}: needs 'command' or 'url'; skipped."
+                )
+                continue
+            servers.append(server)
+    return servers, notes

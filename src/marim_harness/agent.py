@@ -1,3 +1,4 @@
+from contextlib import AsyncExitStack
 from typing import Awaitable, Callable, Optional
 
 from pydantic_ai import Agent, DeferredToolRequests, RunContext
@@ -108,7 +109,8 @@ class Harness:
                  max_context_tokens: int = 100_000, keep_last_messages: int = 20,
                  summarizer: Optional[Summarizer] = None,
                  titler: Optional[Titler] = None, model_source=None,
-                 model_id: Optional[str] = None, proactive_memory: bool = False):
+                 model_id: Optional[str] = None, proactive_memory: bool = False,
+                 mcp_servers=None):
         self.proactive_memory = proactive_memory
         self.agent = Agent(
             model,
@@ -223,6 +225,15 @@ class Harness:
         self.on_compact: Optional[Callable[[int, int], None]] = None
         # Called with (old_name, new_name) when a session is auto-titled.
         self.on_rename: Optional[Callable[[str, str], None]] = None
+        # Configured MCP servers and the subset whose connections are live. Each
+        # run additively passes the live servers as toolsets; connections are
+        # refcounted, so entering once here keeps them up across runs.
+        self.mcp_servers: list = list(mcp_servers or [])
+        self._live_servers: list = []
+        self._mcp_stack: Optional[AsyncExitStack] = None
+        # Outcome of the last connect(): {"connected": [names], "failed":
+        # [(name, error)]}. Read by the /mcp command to report status on demand.
+        self.mcp_status: dict = {"connected": [], "failed": []}
 
     @property
     def total_tokens(self) -> int:
@@ -447,6 +458,41 @@ class Harness:
         self._persist()
         return result.output
 
+    @staticmethod
+    def _server_name(server) -> str:
+        """The display name of an MCP server — its tool prefix / config name."""
+        return str(getattr(server, "id", None) or getattr(server, "tool_prefix", "?"))
+
+    async def connect(self) -> dict:
+        """Open connections to the configured MCP servers, one at a time so a
+        single failing server doesn't sink the rest. Connected servers join
+        ``_live_servers`` (passed as per-run toolsets); failures are collected.
+        Returns ``{"connected": [names], "failed": [(name, error)]}``. A no-op
+        once connections are already open."""
+        if self._mcp_stack is not None or not self.mcp_servers:
+            return self.mcp_status
+        stack = AsyncExitStack()
+        connected: list[str] = []
+        failed: list[tuple[str, str]] = []
+        for server in self.mcp_servers:
+            try:
+                await stack.enter_async_context(server)
+            except Exception as exc:  # one bad server must not block the others
+                failed.append((self._server_name(server), str(exc)))
+                continue
+            self._live_servers.append(server)
+            connected.append(self._server_name(server))
+        self._mcp_stack = stack
+        self.mcp_status = {"connected": connected, "failed": failed}
+        return self.mcp_status
+
+    async def aclose(self) -> None:
+        """Close all live MCP connections. Safe to call when none were opened."""
+        if self._mcp_stack is not None:
+            await self._mcp_stack.aclose()
+            self._mcp_stack = None
+        self._live_servers = []
+
     async def run_turn(self, prompt: str, event_stream_handler=None) -> str:
         """Run the agent until it produces a final text answer, looping through
         any approval rounds. Returns the final text output."""
@@ -464,6 +510,7 @@ class Harness:
                 deps=self.deps,
                 deferred_tool_results=deferred_results,
                 event_stream_handler=event_stream_handler,
+                toolsets=self._live_servers,
             )
             self.history = result.all_messages()
             self.usage += result.usage

@@ -929,6 +929,81 @@ async def test_finished_digest_consumed_once(tmp_path: Path):
     assert second["prompt"] == "two"  # digest already drained
 
 
+class _FakeServer:
+    """A stand-in MCP server: an async context manager that can be made to fail
+    on enter, so connect()'s per-server degradation can be exercised."""
+
+    def __init__(self, name: str, *, fail: bool = False) -> None:
+        self.id = name
+        self.fail = fail
+        self.entered = False
+
+    async def __aenter__(self):
+        if self.fail:
+            raise RuntimeError("boom")
+        self.entered = True
+        return self
+
+    async def __aexit__(self, *exc) -> bool:
+        self.entered = False
+        return False
+
+
+@pytest.mark.anyio
+async def test_connect_degrades_past_failing_server(tmp_path: Path):
+    bad = _FakeServer("bad", fail=True)
+    good = _FakeServer("good")
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = Harness(model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
+                instructions="x", mcp_servers=[bad, good])
+
+    status = await h.connect()
+    # The good server is live; the bad one is reported, not fatal.
+    assert good in h._live_servers
+    assert bad not in h._live_servers
+    assert good.entered is True
+    assert status["connected"] == ["good"]
+    assert status["failed"] and status["failed"][0][0] == "bad"
+
+    await h.aclose()
+    assert good.entered is False  # connection closed on shutdown
+    assert h._live_servers == []
+
+
+@pytest.mark.anyio
+async def test_connect_noop_without_servers(tmp_path: Path):
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(_text_model(), deps)  # no mcp_servers
+    status = await h.connect()
+    assert status == {"connected": [], "failed": []}
+    await h.aclose()  # safe with nothing open
+
+
+@pytest.mark.anyio
+async def test_run_turn_forwards_live_toolsets(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from pydantic_ai.usage import RunUsage
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(_text_model(), deps)
+    sentinel = object()
+    h._live_servers = [sentinel]
+
+    captured: dict = {}
+
+    async def fake_run(user_prompt, **kwargs):
+        captured["toolsets"] = kwargs.get("toolsets")
+        return SimpleNamespace(
+            all_messages=lambda: [], usage=RunUsage(), output="ok"
+        )
+
+    h.agent.run = fake_run
+    out = await h.run_turn("hi")
+    assert out == "ok"
+    assert captured["toolsets"] == [sentinel]  # live servers reach agent.run
+
+
 def test_resume_restores_saved_model(tmp_path: Path):
     from marim_harness.session import SessionManager
 
