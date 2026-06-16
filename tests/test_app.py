@@ -953,3 +953,115 @@ async def test_shift_enter_keypress_does_not_submit(tmp_path: Path):
         assert pi.text == "a\nb"
         assert not started
         assert not list(app.query(UserMessage))
+
+
+@pytest.mark.anyio
+async def test_job_panel_hidden_until_jobs_then_live_updates(tmp_path: Path):
+    import asyncio
+
+    from marim_harness.tui.widgets import JobPanel
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.query_one(JobPanel)
+        assert panel.display is False  # nothing running yet
+
+        # Registering a job fires on_change -> the panel appears live.
+        async def slow() -> str:
+            await asyncio.sleep(5)
+            return "done"
+
+        job_id = app.harness.deps.jobs.register("bash", "sleep 5", slow())
+        await pilot.pause()
+        assert panel.display is True
+        assert "sleep 5" in str(panel.render())
+
+        # Cancelling it repaints with the terminal status, panel stays visible.
+        await app.harness.deps.jobs.cancel(job_id)
+        await pilot.pause()
+        assert "(cancelled)" in str(panel.render())
+
+
+@pytest.mark.anyio
+async def test_job_panel_reflects_jobs_on_mount(tmp_path: Path):
+    import asyncio
+
+    from marim_harness.tui.widgets import JobPanel
+
+    app = _app(tmp_path)
+
+    async def slow() -> str:
+        await asyncio.sleep(5)
+        return "done"
+
+    # A job launched before the app mounts (jobs are process-scoped).
+    app.harness.deps.jobs.register("agent", "explore: look", slow())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.query_one(JobPanel)
+        assert panel.display is True
+        assert "explore: look" in str(panel.render())
+        await app.harness.deps.jobs.cancel_all()
+
+
+@pytest.mark.anyio
+async def test_background_spawn_renders_as_tool_widget(tmp_path: Path):
+    """A background spawn_agent doesn't stream, so it gets a plain ToolCallWidget
+    rather than a live SubAgentWidget."""
+    from pydantic_ai.messages import (
+        FunctionToolCallEvent,
+        FunctionToolResultEvent,
+        ToolCallPart,
+        ToolReturnPart,
+    )
+
+    from marim_harness.tui.widgets import SubAgentWidget, ToolCallWidget
+
+    call = FunctionToolCallEvent(
+        part=ToolCallPart(
+            tool_name="spawn_agent",
+            args={"type": "explore", "task": "look", "background": True},
+            tool_call_id="spawn-bg",
+        )
+    )
+    result = FunctionToolResultEvent(
+        part=ToolReturnPart(
+            tool_name="spawn_agent",
+            content="Started job-1 (agent) — explore: look",
+            tool_call_id="spawn-bg",
+        )
+    )
+
+    async def gen():
+        yield call
+        yield result
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._on_events(None, gen())
+        await pilot.pause()
+        widget = app._tool_widgets.get("spawn-bg")
+        assert isinstance(widget, ToolCallWidget)
+        assert not isinstance(widget, SubAgentWidget)
+        assert widget.status == "done"
+
+
+@pytest.mark.anyio
+async def test_jobs_cancelled_on_app_exit(tmp_path: Path):
+    import asyncio
+
+    app = _app(tmp_path)
+
+    async def slow() -> str:
+        await asyncio.sleep(30)
+        return "done"
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        job_id = app.harness.deps.jobs.register("bash", "sleep 30", slow())
+        await pilot.pause()
+        assert app.harness.deps.jobs.get(job_id).status == "running"
+    # Leaving the context unmounts the app, which cancels running jobs.
+    assert app.harness.deps.jobs.get(job_id).status == "cancelled"
