@@ -1,6 +1,6 @@
 /* The harness's layout + chrome styling. Colors come exclusively from theme
-   variables ($primary, $surface, $panel, $text-muted, $error) so switching the
-   theme recolors everything. Keep it free of hard-coded colors. */
+   variables so switching the theme recolors everything. Keep it free of
+   hard-coded colors. */
 
 #log { height: 1fr; padding: 0 1; }
 

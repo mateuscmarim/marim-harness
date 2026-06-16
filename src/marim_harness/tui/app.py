@@ -17,6 +17,7 @@ from textual.widgets import Footer, Header, Static
 from ..agent import Harness
 from ..compaction import estimate_tokens
 from ..history import PromptHistory
+from ..prefs import load_theme
 from .approval import ApprovalModal
 from .commands import dispatch
 from .model_picker import ModelPickerModal
@@ -94,8 +95,6 @@ class HarnessApp(App):
         yield Footer()
 
     async def on_mount(self) -> None:
-        from ..prefs import load_theme
-
         for theme in MARIM_THEMES:
             self.register_theme(theme)
         self.theme = load_theme()
