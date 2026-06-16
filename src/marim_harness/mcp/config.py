@@ -26,8 +26,8 @@ import json
 import warnings
 from pathlib import Path
 
-from .config import config_dir
-from .permissions import Mode
+from ..config import config_dir
+from ..permissions import Mode
 
 
 def global_mcp_config_path() -> Path:

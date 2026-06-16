@@ -2,7 +2,7 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Optional
 
-from .mcp import persist_server_enabled
+from .config import persist_server_enabled
 
 
 class McpManager:

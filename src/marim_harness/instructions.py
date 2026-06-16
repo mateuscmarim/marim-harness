@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Optional
 from pydantic_ai import Agent, RunContext
 
 if TYPE_CHECKING:
-    from .mcp_manager import McpManager
+    from .mcp import McpManager
 
 from .agents import agents_index_text, discover_agents
 from .deps import Deps

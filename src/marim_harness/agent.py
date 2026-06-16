@@ -17,7 +17,7 @@ from .compaction import (
 )
 from .deps import Deps
 from .instructions import register_instructions
-from .mcp_manager import McpManager
+from .mcp import McpManager
 from .permissions import Mode, resolve_approvals
 from .session import SessionInfo, SessionManager, SessionStore
 from .session_ctrl import SessionController
