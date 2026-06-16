@@ -40,6 +40,7 @@ class ModelConfig:
     base_url: Optional[str] = None
     api_key: Optional[str] = None
     max_context_tokens: int = 100_000
+    proactive_memory: bool = False
 
 
 def load_config() -> ModelConfig:
@@ -50,6 +51,7 @@ def load_config() -> ModelConfig:
     """
     provider = os.getenv("MARIM_PROVIDER", "openrouter").lower()
     max_context_tokens = _int_env("MARIM_MAX_CONTEXT_TOKENS", 100_000)
+    proactive_memory = _bool_env("MARIM_PROACTIVE_MEMORY", False)
     if provider == "local":
         return ModelConfig(
             provider="local",
@@ -57,6 +59,7 @@ def load_config() -> ModelConfig:
             base_url=os.getenv("MARIM_BASE_URL", "http://localhost:11434/v1"),
             api_key=os.getenv("MARIM_API_KEY", "local"),
             max_context_tokens=max_context_tokens,
+            proactive_memory=proactive_memory,
         )
     return ModelConfig(
         provider="openrouter",
@@ -64,6 +67,7 @@ def load_config() -> ModelConfig:
         base_url=None,
         api_key=os.getenv("OPENROUTER_API_KEY") or os.getenv("MARIM_API_KEY"),
         max_context_tokens=max_context_tokens,
+        proactive_memory=proactive_memory,
     )
 
 
@@ -75,6 +79,16 @@ def _int_env(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+_TRUTHY = {"1", "true", "on", "yes"}
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in _TRUTHY
 
 
 def build_model(cfg: ModelConfig):

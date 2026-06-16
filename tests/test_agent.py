@@ -289,6 +289,35 @@ async def test_memory_indexes_injected_and_dynamic(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_memory_policy_flips_with_toggle(tmp_path: Path):
+    captured: dict = {}
+
+    def fn(messages, info):
+        captured["instructions"] = _last_instructions(messages)
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+
+    # Off (default): a restraint block that forbids proactive saves.
+    off = Harness(model=FunctionModel(fn), provider=BuiltinToolProvider(),
+                  deps=deps, instructions="BASE")
+    await off.run_turn("hi")
+    off_instr = captured["instructions"].lower()
+    assert "proactive memory is on" not in off_instr
+    assert "only when the user explicitly asks" in off_instr
+    assert "BASE" in captured["instructions"]
+
+    # On: the encouragement block, present even with no memories saved yet.
+    on = Harness(model=FunctionModel(fn), provider=BuiltinToolProvider(),
+                 deps=deps, instructions="BASE", proactive_memory=True)
+    await on.run_turn("hi")
+    on_instr = captured["instructions"].lower()
+    assert "proactive memory is on" in on_instr
+    assert "secret" in on_instr  # mentions not saving secrets
+    assert "only when the user explicitly asks" not in on_instr
+
+
+@pytest.mark.anyio
 async def test_session_switch_preserves_each_conversation(tmp_path: Path):
     from pydantic_ai.messages import ModelRequest, UserPromptPart
 

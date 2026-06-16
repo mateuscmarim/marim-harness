@@ -45,6 +45,7 @@ def build_harness(
         titler=make_titler(model),
         model_source=ModelSource(cfg),
         model_id=cfg.model,
+        proactive_memory=cfg.proactive_memory,
     )
     if resume:
         harness.resume()
