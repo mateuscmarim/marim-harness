@@ -66,7 +66,8 @@ class SessionStore:
         # The model id this session was last using (None -> the env default).
         self.model = model
 
-    def save(self, history: list, usage: RunUsage) -> None:
+    def save(self, history: list, usage: RunUsage,
+             tasks: Optional[list] = None) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "id": self.session_id,
@@ -79,15 +80,18 @@ class SessionStore:
                 "input": usage.input_tokens,
                 "output": usage.output_tokens,
             },
+            "tasks": tasks or [],
             "messages": json.loads(ModelMessagesTypeAdapter.dump_json(history)),
         }
         tmp = self.path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload))
         tmp.replace(self.path)  # atomic swap so a crash mid-write can't corrupt
 
-    def load(self) -> tuple[list, RunUsage]:
+    def load(self) -> tuple[list, RunUsage, list]:
+        """Return ``(messages, usage, tasks)``. Files written before task
+        tracking simply have no ``tasks`` key and load as an empty list."""
         if not self.path.exists():
-            return [], RunUsage()
+            return [], RunUsage(), []
         data = json.loads(self.path.read_text())
         messages = ModelMessagesTypeAdapter.validate_python(data.get("messages", []))
         tok = data.get("tokens", {})
@@ -95,7 +99,7 @@ class SessionStore:
             input_tokens=tok.get("input", 0),
             output_tokens=tok.get("output", 0),
         )
-        return messages, usage
+        return messages, usage, data.get("tasks", [])
 
     def clear(self) -> None:
         self.path.unlink(missing_ok=True)

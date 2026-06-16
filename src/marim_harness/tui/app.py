@@ -24,6 +24,7 @@ from .widgets import (
     ErrorMessage,
     NoticeMessage,
     PromptInput,
+    TaskPanel,
     ToolCallWidget,
     UserMessage,
 )
@@ -59,6 +60,8 @@ class HarnessApp(App):
     #log { height: 1fr; padding: 0 1; }
     PromptInput { height: 3; max-height: 10; border: none; padding: 0 1; }
     #status-bar { height: 1; background: $panel; color: $text-muted; padding: 0 1; }
+    #task-panel { height: auto; max-height: 8; background: $panel; color: $text;
+                  padding: 0 1; border-top: tall $background; }
     .user-msg { color: $accent; text-style: bold; margin-top: 1; }
     .error-msg { color: $error; text-style: bold; margin: 1 0; }
     .notice-msg { color: $text-muted; text-style: italic; margin: 1 0; }
@@ -75,6 +78,7 @@ class HarnessApp(App):
         super().__init__()
         self.harness = harness
         self.harness.deps.request_approval = self._request_approval
+        self.harness.deps.tasks.on_change = self._on_tasks_changed
         self.harness.on_compact = self._on_compact
         self.harness.on_rename = self._on_rename
         self._current_assistant: AssistantMessage | None = None
@@ -85,6 +89,7 @@ class HarnessApp(App):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
         yield VerticalScroll(id="log")
+        yield TaskPanel()
         yield Static(self._status_text(), id="status-bar")
         yield PromptInput()
         yield Footer()
@@ -105,6 +110,7 @@ class HarnessApp(App):
         else:
             intro.append(_WELCOME)
         log.scroll_end(animate=False)
+        self._render_tasks()  # reflect any checklist restored with the session
         # Land focus on the prompt so the user can type immediately.
         self.query_one(PromptInput).focus()
 
@@ -175,6 +181,20 @@ class HarnessApp(App):
         self._busy = busy
         self._refresh_status()
 
+    def _render_tasks(self) -> None:
+        """Repaint the task panel from the harness's current checklist."""
+        try:
+            panel = self.query_one(TaskPanel)
+        except NoMatches:
+            return  # tearing down; nothing to paint
+        panel.show_tasks(self.harness.deps.tasks.items)
+
+    def _on_tasks_changed(self) -> None:
+        """Live callback from the update_tasks tool — repaint as the agent edits
+        the list mid-turn. Fired on the app's event loop, so it's safe to touch
+        widgets directly."""
+        self._render_tasks()
+
     def action_cycle_mode(self) -> None:
         self.harness.deps.mode = self.harness.deps.mode.cycle()
         self._refresh_status()
@@ -223,6 +243,7 @@ class HarnessApp(App):
         if self.harness.history:
             await self._replay_history(log)
         self._refresh_status()
+        self._render_tasks()
         log.scroll_end(animate=False)
 
     async def reset_conversation(self) -> None:

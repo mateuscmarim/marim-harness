@@ -5,6 +5,7 @@ from pydantic_ai import Agent, RunContext
 from ..deps import Deps
 from ..memory import global_scope, project_scope, read_memory, save_memory
 from ..skills import find_skill, read_bundled_file, read_skill_body
+from ..tasks import Task, summarize
 from . import fs, shell
 
 _BASH_TIMEOUT = 60
@@ -115,6 +116,17 @@ class BuiltinToolProvider:
             if skill is None:
                 return f"No skill named {name!r}. See the skills index."
             return read_bundled_file(skill, path)
+
+        @agent.tool
+        def update_tasks(ctx: RunContext[Deps], tasks: list[Task]) -> str:
+            """Maintain your checklist for the current multi-step task. Pass the
+            FULL list every time — it replaces the previous one. Each item is
+            {text, status} where status is pending, in_progress, or done. Keep
+            exactly one item in_progress, and mark items done as you finish them.
+            Use this for non-trivial work spanning several steps so progress is
+            visible; skip it for single-step requests. No approval is needed."""
+            ctx.deps.tasks.replace(tasks)
+            return summarize(ctx.deps.tasks.items)
 
         @agent.tool(requires_approval=True)
         def write_file(ctx: RunContext[Deps], path: str, content: str) -> str:

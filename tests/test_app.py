@@ -321,6 +321,47 @@ async def test_input_is_focused_on_start(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_task_panel_hidden_until_tasks_then_live_updates(tmp_path: Path):
+    from marim_harness.tui.widgets import TaskPanel
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.query_one(TaskPanel)
+        assert panel.display is False  # nothing to show yet
+
+        # The update_tasks tool path fires on_change -> the panel appears live.
+        app.harness.deps.tasks.replace([
+            {"text": "read the code", "status": "done"},
+            {"text": "write the test", "status": "in_progress"},
+        ])
+        await pilot.pause()
+        assert panel.display is True
+        text = str(panel.render())
+        assert "read the code" in text and "write the test" in text
+        assert "✔" in text and "▸" in text
+
+        # Clearing the list hides the panel again (e.g. agent emptied it).
+        app.harness.deps.tasks.replace([])
+        await pilot.pause()
+        assert panel.display is False
+
+
+@pytest.mark.anyio
+async def test_task_panel_reflects_restored_tasks_on_mount(tmp_path: Path):
+    from marim_harness.tui.widgets import TaskPanel
+
+    app = _app(tmp_path)
+    # Simulate a session whose checklist was restored before mount.
+    app.harness.deps.tasks.load([{"text": "resumed item", "status": "pending"}])
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.query_one(TaskPanel)
+        assert panel.display is True
+        assert "resumed item" in str(panel.render())
+
+
+@pytest.mark.anyio
 async def test_ascii_banner_shown_on_start(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
