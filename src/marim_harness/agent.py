@@ -1,4 +1,4 @@
-from typing import Callable, Optional
+from typing import Optional
 
 from pydantic_ai import Agent, DeferredToolRequests, RunContext
 from pydantic_ai.usage import RunUsage
@@ -14,11 +14,8 @@ from .compaction import (
     Summarizer,
     Titler,
     clean_title,
-    compact_history,
-    compact_history_with_summary,
     make_summarizer,
     make_titler,
-    render_transcript,
 )
 from .deps import Deps
 from .instructions import load_project_instructions
@@ -244,6 +241,22 @@ class Harness:
         self.session.on_rename = value
 
     @property
+    def max_context_tokens(self) -> int:
+        return self.session.max_context_tokens
+
+    @max_context_tokens.setter
+    def max_context_tokens(self, value: int) -> None:
+        self.session.max_context_tokens = value
+
+    @property
+    def keep_last_messages(self) -> int:
+        return self.session.keep_last_messages
+
+    @keep_last_messages.setter
+    def keep_last_messages(self, value: int) -> None:
+        self.session.keep_last_messages = value
+
+    @property
     def total_tokens(self) -> int:
         return self.session.usage.total_tokens
 
@@ -266,9 +279,7 @@ class Harness:
         self.session.reset()
 
     def new_session(self, name: Optional[str] = None) -> None:
-        self.session.new_session(name)
-        if self.session.store is not None:
-            self.session.store.model = self.model_id
+        self.session.new_session(name, model_id=self.model_id)
 
     def switch_session(self, session_id: str) -> int:
         count = self.session.switch_session(session_id)

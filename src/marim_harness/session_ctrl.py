@@ -69,11 +69,13 @@ class SessionController:
         if self.store is not None:
             self.store.clear()
 
-    def new_session(self, name: Optional[str] = None) -> None:
+    def new_session(self, name: Optional[str] = None, model_id: Optional[str] = None) -> None:
         if self.manager is None:
             self.reset()
             return
         self.store = self.manager.create(name)
+        if model_id is not None:
+            self.store.model = model_id
         self.history = []
         self.usage = RunUsage()
         self.deps.tasks.clear()
