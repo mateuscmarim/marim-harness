@@ -17,7 +17,7 @@ from textual.widgets import Footer, Header, Static
 from ..agent import Harness
 from ..compaction import estimate_tokens
 from ..history import PromptHistory
-from ..prefs import load_theme
+from ..prefs import load_theme, save_theme
 from .approval import ApprovalModal
 from .commands import dispatch
 from .model_picker import ModelPickerModal
@@ -252,8 +252,6 @@ class HarnessApp(App):
         """Persist the active theme so it's the startup theme next run. Only the
         marim themes are saved; Textual may set built-in defaults during init,
         which save_theme ignores."""
-        from ..prefs import save_theme
-
         save_theme(theme)
 
     def action_cancel_turn(self) -> None:

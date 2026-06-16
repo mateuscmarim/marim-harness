@@ -303,6 +303,14 @@ def test_theme_is_a_registered_command():
 
 
 @pytest.mark.anyio
+async def test_theme_setting_already_active_is_silent_noop():
+    app = _theme_app()
+    await dispatch(app, "/theme marim-teal")
+    assert app.theme == "marim-teal"
+    assert not app.posted
+
+
+@pytest.mark.anyio
 async def test_skill_with_name_spawns_activation_turn():
     app = _FakeApp()
     await dispatch(app, "/skill code-review only the parser")
