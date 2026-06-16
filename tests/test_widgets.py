@@ -211,6 +211,32 @@ async def test_assistant_message_is_markdown_and_accumulates():
         assert w.text == "# Title more"
 
 
+@pytest.mark.anyio
+async def test_assistant_message_defers_render_until_flush():
+    """append() buffers text without re-parsing the markdown; flush() does the one
+    (expensive) render. This is the per-delta debounce on the streaming hot path."""
+
+    class H(App):
+        def compose(self) -> ComposeResult:
+            yield AssistantMessage()
+
+    app = H()
+    async with app.run_test() as pilot:
+        w = app.query_one(AssistantMessage)
+        await pilot.pause()
+        w.flush()  # clear the initial mount state
+        w.append("# Title")
+        w.append(" more")
+        # Text accumulates immediately, but the render is deferred.
+        assert w.text == "# Title more"
+        assert w._pending is True
+        # Flushing performs the render and clears the pending flag.
+        assert w.flush() is True
+        assert w._pending is False
+        # A flush with nothing buffered is a no-op.
+        assert w.flush() is False
+
+
 class _SubHarness(App):
     def compose(self) -> ComposeResult:
         from marim_harness.tui.widgets import SubAgentWidget

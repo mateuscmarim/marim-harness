@@ -1175,6 +1175,62 @@ async def test_subagent_event_updates_token_usage_in_title(tmp_path: Path):
         assert "tok" in str(parent.title)
 
 
+@pytest.mark.anyio
+async def test_streaming_text_is_debounced_until_flush(tmp_path: Path):
+    from pydantic_ai.messages import (
+        PartDeltaEvent,
+        PartStartEvent,
+        TextPart,
+        TextPartDelta,
+    )
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        async def stream():
+            yield PartStartEvent(index=0, part=TextPart(content="# Hi"))
+            yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta=" there"))
+
+        await app._on_events(None, stream())
+        msg = app._current_assistant
+        # The full text is buffered into the widget...
+        assert msg.text == "# Hi there"
+        # ...and a delta marks it dirty without rendering (the per-delta debounce).
+        # Asserted synchronously so the shared interval timer can't interleave.
+        msg.append("!")
+        assert msg._pending is True
+        # The shared flush renders it and clears the pending flag.
+        app._flush_streams()
+        assert msg._pending is False
+
+
+@pytest.mark.anyio
+async def test_flush_streams_renders_nested_subagent_text(tmp_path: Path):
+    """One shared flush covers nested sub-agent streams too — they are the same
+    AssistantMessage class found by a single query."""
+    from pydantic_ai.messages import PartStartEvent, TextPart
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        async def spawn():
+            yield _spawn_call("s1", "look")
+
+        await app._on_events(None, spawn())
+        await pilot.pause()
+        await app._on_subagent_event(
+            "s1", PartStartEvent(index=0, part=TextPart(content="nested"))
+        )
+        msg = app._sub_assistants["s1"]
+        # Synchronous append → assert → flush so the interval timer can't interleave.
+        msg.append("!")
+        assert msg._pending is True
+        app._flush_streams()
+        assert msg._pending is False
+
+
 def test_log_pinned_detects_bottom(tmp_path: Path):
     from types import SimpleNamespace
 

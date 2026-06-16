@@ -259,13 +259,26 @@ class PromptInput(TextArea):
 
 
 class AssistantMessage(Markdown):
-    """Streaming assistant text rendered as Markdown; append deltas as they
-    arrive and the view re-renders."""
+    """Streaming assistant text rendered as Markdown. ``append`` only buffers the
+    delta — re-parsing the whole markdown document on every token is O(n²) and
+    makes streaming janky — so the (expensive) render is deferred to ``flush``,
+    which the app drives on a shared interval to coalesce many deltas into one
+    parse."""
 
     def __init__(self) -> None:
         self.text = ""
+        self._pending = False
         super().__init__("")
 
     def append(self, delta: str) -> None:  # type: ignore[override]
         self.text += delta
+        self._pending = True
+
+    def flush(self) -> bool:
+        """Render the buffered text if there is any. Returns whether it rendered,
+        so the caller can skip scroll/update work when nothing changed."""
+        if not self._pending:
+            return False
         self.update(self.text)
+        self._pending = False
+        return True
