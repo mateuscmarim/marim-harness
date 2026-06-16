@@ -1300,3 +1300,18 @@ async def test_stream_does_not_yank_when_scrolled_up(tmp_path: Path):
         await app._on_events(None, gen())
         await pilot.pause()
         assert log.scroll_offset.y == 0
+
+
+@pytest.mark.anyio
+async def test_app_starts_on_saved_marim_theme(tmp_path, monkeypatch):
+    """The app registers the marim themes and starts on the persisted one."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    from marim_harness import prefs
+
+    prefs.save_theme("marim-violet")
+
+    app = _app(tmp_path)
+    async with app.run_test():
+        assert app.theme == "marim-violet"
+        assert "marim-teal" in app.available_themes
+        assert "marim-green" in app.available_themes

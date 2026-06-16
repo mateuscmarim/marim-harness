@@ -1,0 +1,30 @@
+/* The harness's layout + chrome styling. Colors come exclusively from theme
+   variables ($primary, $surface, $panel, $text-muted, $error) so switching the
+   theme recolors everything. Keep it free of hard-coded colors. */
+
+#log { height: 1fr; padding: 0 1; }
+
+PromptInput { height: 3; max-height: 10; border: none; padding: 0 1; }
+
+#status-bar { height: 1; background: $panel; color: $text-muted; padding: 0 1; }
+
+#task-panel {
+    height: auto; max-height: 8; background: $panel; color: $text;
+    padding: 0 1; border-top: tall $background;
+}
+
+#job-panel {
+    height: auto; max-height: 8; background: $panel; color: $text;
+    padding: 0 1; border-top: tall $background;
+}
+
+.user-msg { color: $accent; text-style: bold; margin-top: 1; }
+.error-msg { color: $error; text-style: bold; margin: 1 0; }
+.notice-msg { color: $text-muted; text-style: italic; margin: 1 0; }
+
+#banner { color: $accent; text-style: bold; height: auto; margin: 1 0 1 0; }
+
+AssistantMessage { margin: 0 0 1 0; }
+ToolCallWidget { margin: 0 0 1 0; }
+SubAgentWidget { margin: 0 0 1 0; }
+.subagent-body { height: auto; padding: 0 0 0 2; border-left: tall $panel; }

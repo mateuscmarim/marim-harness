@@ -20,6 +20,7 @@ from ..history import PromptHistory
 from .approval import ApprovalModal
 from .commands import dispatch
 from .model_picker import ModelPickerModal
+from .themes import MARIM_THEMES
 from .widgets import (
     AssistantMessage,
     ErrorMessage,
@@ -57,23 +58,7 @@ _WELCOME = (
 
 
 class HarnessApp(App):
-    CSS = """
-    #log { height: 1fr; padding: 0 1; }
-    PromptInput { height: 3; max-height: 10; border: none; padding: 0 1; }
-    #status-bar { height: 1; background: $panel; color: $text-muted; padding: 0 1; }
-    #task-panel { height: auto; max-height: 8; background: $panel; color: $text;
-                  padding: 0 1; border-top: tall $background; }
-    #job-panel { height: auto; max-height: 8; background: $panel; color: $text;
-                 padding: 0 1; border-top: tall $background; }
-    .user-msg { color: $accent; text-style: bold; margin-top: 1; }
-    .error-msg { color: $error; text-style: bold; margin: 1 0; }
-    .notice-msg { color: $text-muted; text-style: italic; margin: 1 0; }
-    #banner { color: $accent; text-style: bold; height: auto; margin: 1 0 1 0; }
-    AssistantMessage { margin: 0 0 1 0; }
-    ToolCallWidget { margin: 0 0 1 0; }
-    SubAgentWidget { margin: 0 0 1 0; }
-    .subagent-body { height: auto; padding: 0 0 0 2; border-left: tall $panel; }
-    """
+    CSS_PATH = "styles.tcss"
     BINDINGS = [
         ("ctrl+t", "cycle_mode", "Cycle mode"),
         ("escape", "cancel_turn", "Cancel turn"),
@@ -109,6 +94,11 @@ class HarnessApp(App):
         yield Footer()
 
     async def on_mount(self) -> None:
+        from ..prefs import load_theme
+
+        for theme in MARIM_THEMES:
+            self.register_theme(theme)
+        self.theme = load_theme()
         self.title = "marim-harness"
         log = self.query_one("#log", VerticalScroll)
         await log.mount(Static(_BANNER, id="banner", markup=False))
