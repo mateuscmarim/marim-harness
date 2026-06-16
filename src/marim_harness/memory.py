@@ -55,6 +55,19 @@ def load_index(scope: MemoryScope) -> str | None:
     return text or None
 
 
+def read_memory(scope: MemoryScope, name: str) -> str:
+    """Return the full text of a memory file by name (its title or slug; both
+    slugify to the same file). Memory files live in marim's own dirs — global is
+    outside the workspace — so this reads them directly rather than through the
+    workspace-sandboxed read_file tool. Returns a notice if the file is missing."""
+    slug = _slugify(name)
+    path = scope.root / f"{slug}.md"
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return f"No {scope.name} memory named {slug!r}."
+
+
 def _render_frontmatter(*, slug: str, description: str, mem_type: str) -> str:
     mem_type = mem_type if mem_type in _VALID_TYPES else "project"
     return (

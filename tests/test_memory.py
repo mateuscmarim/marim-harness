@@ -104,6 +104,23 @@ def test_save_memory_index_line_carries_hook(tmp_path: Path):
     assert "— stored in .env" in index
 
 
+def test_read_memory_returns_body(tmp_path: Path):
+    sc = memory.project_scope(tmp_path)
+    memory.save_memory(
+        sc, name="My name", description="hook", mem_type="user",
+        body="The user is Mateus Coutinho Marim.", title="My name",
+    )
+    # by title (what the index shows) and by raw slug — both resolve.
+    assert "Mateus Coutinho Marim" in memory.read_memory(sc, "My name")
+    assert "Mateus Coutinho Marim" in memory.read_memory(sc, "my-name")
+
+
+def test_read_memory_missing_returns_notice(tmp_path: Path):
+    sc = memory.project_scope(tmp_path)
+    out = memory.read_memory(sc, "nope")
+    assert "no project memory" in out.lower()
+
+
 @pytest.mark.parametrize("scope_name", ["project", "global"])
 def test_round_trip_index_lists_saved_memory(tmp_path, monkeypatch, scope_name):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
