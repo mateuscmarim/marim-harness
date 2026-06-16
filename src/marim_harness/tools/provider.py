@@ -3,7 +3,7 @@ from typing import Optional, Protocol
 from pydantic_ai import Agent, RunContext
 
 from ..deps import Deps
-from ..memory import global_scope, project_scope, save_memory
+from ..memory import global_scope, project_scope, read_memory, save_memory
 from . import fs, shell
 
 _BASH_TIMEOUT = 60
@@ -67,6 +67,19 @@ class BuiltinToolProvider:
                 mem_type=type, body=body, title=title,
             )
             return f"Saved {sc.name} memory to {path.name}"
+
+        @agent.tool
+        def recall(ctx: RunContext[Deps], name: str, scope: str = "project") -> str:
+            """Read the full body of a saved memory by `name` (its title or slug,
+            as shown in the memory index). `scope` is "project" (default) or
+            "global". Use this to expand an index entry — memory files are not
+            reachable through read_file."""
+            sc = (
+                global_scope()
+                if scope == "global"
+                else project_scope(ctx.deps.workspace_root)
+            )
+            return read_memory(sc, name)
 
         @agent.tool(requires_approval=True)
         def write_file(ctx: RunContext[Deps], path: str, content: str) -> str:

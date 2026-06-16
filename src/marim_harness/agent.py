@@ -102,8 +102,8 @@ class Harness:
         @self.agent.instructions
         def _memory_indexes(ctx: RunContext[Deps]) -> str:
             """Inject the global and project memory indexes, re-read each turn.
-            Each line points to a file the model can expand with read_file; new
-            facts are saved with the remember tool."""
+            Each line names a memory the model can expand with the recall tool;
+            new facts are saved with the remember tool."""
             parts = []
             g = load_index(global_scope())
             if g:
@@ -114,9 +114,10 @@ class Harness:
             if not parts:
                 return ""
             return (
-                "Persistent memory indexes below. Each line points to a file you "
-                "can read with read_file for the full fact. Save new durable facts "
-                "with the remember tool.\n\n" + "\n\n".join(parts)
+                "Persistent memory indexes below. Each line is a one-line hook; "
+                "read the full fact with the recall tool (by the entry's title or "
+                "slug, with the matching scope). Save new durable facts with the "
+                "remember tool.\n\n" + "\n\n".join(parts)
             )
 
         self.deps = deps

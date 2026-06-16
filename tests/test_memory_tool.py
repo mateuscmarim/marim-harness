@@ -62,6 +62,54 @@ def test_remember_saves_to_global_scope(tmp_path: Path, monkeypatch):
     assert not (tmp_path / ".marim").exists()
 
 
+def _call_recall(args: dict):
+    state = {}
+    captured = {}
+
+    def model(messages, info):
+        if not state:
+            state["called"] = True
+            return ModelResponse(parts=[ToolCallPart(tool_name="recall", args=args)])
+        # Surface the tool return so the test can assert on it.
+        for m in messages:
+            for p in getattr(m, "parts", []):
+                if type(p).__name__ == "ToolReturnPart":
+                    captured["ret"] = str(p.content)
+        return ModelResponse(parts=[TextPart(content=captured.get("ret", ""))])
+
+    return FunctionModel(model), captured
+
+
+def test_recall_reads_project_memory_body(tmp_path: Path):
+    from marim_harness import memory
+
+    memory.save_memory(
+        memory.project_scope(tmp_path), name="My name", description="hook",
+        mem_type="user", body="The user is Mateus.", title="My name",
+    )
+    agent = _agent()
+    model, captured = _call_recall({"name": "My name", "scope": "project"})
+    with agent.override(model=model):
+        agent.run_sync("recall", deps=Deps(workspace_root=tmp_path))
+    assert "The user is Mateus." in captured["ret"]
+
+
+def test_recall_reads_global_memory_outside_workspace(tmp_path: Path, monkeypatch):
+    from marim_harness import memory
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    memory.save_memory(
+        memory.global_scope(), name="My name", description="hook",
+        mem_type="user", body="The user is Mateus.", title="My name",
+    )
+    agent = _agent()
+    model, captured = _call_recall({"name": "My name", "scope": "global"})
+    with agent.override(model=model):
+        agent.run_sync("recall", deps=Deps(workspace_root=tmp_path))
+    # Global memory lives outside the workspace; recall must still reach it.
+    assert "The user is Mateus." in captured["ret"]
+
+
 def test_remember_is_not_an_approval_gated_tool(tmp_path: Path):
     """The remember tool writes only inside marim's memory dirs, so it must run
     without an approval prompt (unlike write_file/edit_file/bash)."""
