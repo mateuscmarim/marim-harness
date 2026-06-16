@@ -801,6 +801,64 @@ async def test_spawn_agent_tool_runs_subagent_end_to_end(tmp_path: Path):
     assert out == "done: SUBREPORT"
 
 
+def _capture_prompt_model(captured: dict) -> FunctionModel:
+    """Records the first user-prompt text it sees, then answers 'ok'."""
+    def fn(messages, info):
+        for m in messages:
+            for p in getattr(m, "parts", []):
+                if type(p).__name__ == "UserPromptPart":
+                    captured.setdefault("prompt", str(p.content))
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    return FunctionModel(fn)
+
+
+@pytest.mark.anyio
+async def test_run_turn_prepends_finished_job_digest(tmp_path: Path):
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    captured: dict = {}
+    h = _make_harness(_capture_prompt_model(captured), deps)
+
+    async def quick() -> str:
+        return "r"
+
+    job_id = deps.jobs.register("agent", "explore: look", quick())
+    await deps.jobs.wait(job_id)
+
+    await h.run_turn("what next?")
+    assert "background jobs finished" in captured["prompt"]
+    assert "job-1 (agent) done" in captured["prompt"]
+    assert "what next?" in captured["prompt"]
+
+
+@pytest.mark.anyio
+async def test_run_turn_no_digest_when_nothing_finished(tmp_path: Path):
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    captured: dict = {}
+    h = _make_harness(_capture_prompt_model(captured), deps)
+    await h.run_turn("hello")
+    assert captured["prompt"] == "hello"
+
+
+@pytest.mark.anyio
+async def test_finished_digest_consumed_once(tmp_path: Path):
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+
+    async def quick() -> str:
+        return "r"
+
+    job_id = deps.jobs.register("agent", "a", quick())
+    await deps.jobs.wait(job_id)
+
+    first: dict = {}
+    await _make_harness(_capture_prompt_model(first), deps).run_turn("one")
+    assert "background jobs finished" in first["prompt"]
+
+    second: dict = {}
+    await _make_harness(_capture_prompt_model(second), deps).run_turn("two")
+    assert second["prompt"] == "two"  # digest already drained
+
+
 def test_resume_restores_saved_model(tmp_path: Path):
     from marim_harness.session import SessionManager
 

@@ -442,6 +442,9 @@ class Harness:
         """Run the agent until it produces a final text answer, looping through
         any approval rounds. Returns the final text output."""
         await self._maybe_compact()
+        digest = self.deps.jobs.take_finished_digest()
+        if digest:
+            prompt = f"{digest}\n\n{prompt}"
         user_prompt: Optional[str] = prompt
         deferred_results = None
         while True:
