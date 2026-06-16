@@ -1,4 +1,4 @@
-from typing import Optional, Protocol
+from typing import Literal, Optional, Protocol
 
 from pydantic_ai import Agent, RunContext
 
@@ -48,7 +48,7 @@ class BuiltinToolProvider:
             title: str,
             description: str,
             body: str,
-            scope: str = "project",
+            scope: Literal["project", "global"] = "project",
             type: str = "project",
         ) -> str:
             """Save a durable fact to persistent memory so it survives across
@@ -69,7 +69,10 @@ class BuiltinToolProvider:
             return f"Saved {sc.name} memory to {path.name}"
 
         @agent.tool
-        def recall(ctx: RunContext[Deps], name: str, scope: str = "project") -> str:
+        def recall(
+            ctx: RunContext[Deps], name: str,
+            scope: Literal["project", "global"] = "project",
+        ) -> str:
             """Read the full body of a saved memory by `name` (its title or slug,
             as shown in the memory index). `scope` is "project" (default) or
             "global". Use this to expand an index entry — memory files are not

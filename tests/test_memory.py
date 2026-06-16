@@ -26,6 +26,14 @@ def test_slugify_normalizes():
     assert memory._slugify("") == "memory"
 
 
+def test_slugify_transliterates_accents():
+    assert memory._slugify("Nome do usuário") == "nome-do-usuario"
+    assert memory._slugify("São Paulo") == "sao-paulo"
+    # accented and unaccented spellings now collapse to the same slug
+    assert memory._slugify("São Paulo") == memory._slugify("Sao Paulo")
+    assert memory._slugify("Mateus Coutinho Marim") == "mateus-coutinho-marim"
+
+
 def test_load_index_absent_returns_none(tmp_path: Path):
     sc = memory.project_scope(tmp_path)
     assert memory.load_index(sc) is None
@@ -119,6 +127,25 @@ def test_read_memory_missing_returns_notice(tmp_path: Path):
     sc = memory.project_scope(tmp_path)
     out = memory.read_memory(sc, "nope")
     assert "no project memory" in out.lower()
+
+
+def test_read_memory_resolves_pasted_slug(tmp_path: Path):
+    """If the model pastes the slug from the index link, it resolves (slugify is
+    idempotent on its own output)."""
+    sc = memory.project_scope(tmp_path)
+    sc.root.mkdir(parents=True)
+    (sc.root / "build-tool.md").write_text("body text")
+    assert "body text" in memory.read_memory(sc, "build-tool")
+
+
+def test_read_memory_resolves_title_via_slugify(tmp_path: Path):
+    sc = memory.project_scope(tmp_path)
+    memory.save_memory(
+        sc, name="Nome do usuário", description="hook", mem_type="user",
+        body="O nome é Mateus.", title="Nome do usuário",
+    )
+    # passing the human title (with accent) still finds the file
+    assert "O nome é Mateus." in memory.read_memory(sc, "Nome do usuário")
 
 
 @pytest.mark.parametrize("scope_name", ["project", "global"])
