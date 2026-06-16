@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from ..bootstrap import build_harness
+from ..history import PromptHistory, default_history_path
 from ..permissions import Mode
 from ..tui.app import HarnessApp
 from .headless import run_headless
@@ -65,5 +66,5 @@ def run_default(argv, *, stdin=None, out=None, err=None) -> int:
         )
 
     harness = build_harness(workspace, mode=Mode.ask, resume=args.resume)
-    HarnessApp(harness).run()
+    HarnessApp(harness, history=PromptHistory(default_history_path())).run()
     return 0

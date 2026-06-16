@@ -81,6 +81,35 @@ def _submit(app, text):
 
 
 @pytest.mark.anyio
+async def test_submitting_records_prompt_history(tmp_path: Path):
+    from pydantic_ai.models.test import TestModel
+
+    from marim_harness.agent import Harness
+    from marim_harness.history import PromptHistory
+    from marim_harness.tools.provider import BuiltinToolProvider
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    harness = Harness(
+        TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test"
+    )
+    hist = PromptHistory()
+    app = HarnessApp(harness, history=hist)
+
+    def _swallow(coro, *a, **k):  # don't actually run the turn worker
+        coro.close()
+
+    app.run_worker = _swallow  # type: ignore[method-assign]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _submit(app, "remember this")
+        assert hist.entries == ["remember this"]
+        # The PromptInput navigates over the very same history.
+        from marim_harness.tui.widgets import PromptInput
+
+        assert app.query_one(PromptInput).prompt_history is hist
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("cmd", ["/exit", "/quit", "  /exit  "])
 async def test_exit_command_quits_app(tmp_path: Path, cmd: str):
     app = _app(tmp_path)

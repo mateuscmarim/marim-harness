@@ -128,12 +128,14 @@ def test_run_default_tui_uses_ask_mode(monkeypatch, tmp_path: Path):
     captured = {}
 
     class FakeApp:
-        def __init__(self, harness):
+        def __init__(self, harness, history=None):
             captured["harness"] = harness
+            captured["history"] = history
 
         def run(self):
             captured["ran"] = True
 
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))  # keep off the real file
     monkeypatch.setattr(
         default_cmd, "build_harness",
         lambda workspace, *, mode, resume: captured.update(mode=mode) or object(),
@@ -145,6 +147,10 @@ def test_run_default_tui_uses_ask_mode(monkeypatch, tmp_path: Path):
     assert code == 0
     assert captured["mode"] is Mode.ask
     assert captured["ran"] is True
+    # The TUI is given a persistent prompt history.
+    from marim_harness.history import PromptHistory
+
+    assert isinstance(captured["history"], PromptHistory)
 
 
 def test_empty_prompt_returns_error():

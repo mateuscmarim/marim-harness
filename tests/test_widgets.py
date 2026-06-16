@@ -237,6 +237,105 @@ async def test_assistant_message_defers_render_until_flush():
         assert w.flush() is False
 
 
+def _history_host(hist):
+    class H(App):
+        def compose(self) -> ComposeResult:
+            yield PromptInput(history=hist)
+
+    return H()
+
+
+@pytest.mark.anyio
+async def test_prompt_input_up_recalls_previous_entries():
+    from marim_harness.history import PromptHistory
+
+    hist = PromptHistory()
+    for p in ("one", "two", "three"):
+        hist.add(p)
+
+    app = _history_host(hist)
+    async with app.run_test() as pilot:
+        pi = app.query_one(PromptInput)
+        pi.focus()
+        await pilot.pause()
+        await pilot.press("up")
+        assert pi.text == "three"  # newest first
+        await pilot.press("up")
+        assert pi.text == "two"
+        await pilot.press("up")
+        assert pi.text == "one"
+        await pilot.press("up")
+        assert pi.text == "one"  # stops at the oldest
+
+
+@pytest.mark.anyio
+async def test_prompt_input_down_restores_in_progress_draft():
+    from marim_harness.history import PromptHistory
+
+    hist = PromptHistory()
+    hist.add("one")
+    hist.add("two")
+
+    app = _history_host(hist)
+    async with app.run_test() as pilot:
+        pi = app.query_one(PromptInput)
+        pi.focus()
+        await pilot.pause()
+        pi.text = "draft"  # something in progress
+        await pilot.press("up")
+        assert pi.text == "two"
+        await pilot.press("up")
+        assert pi.text == "one"
+        await pilot.press("down")
+        assert pi.text == "two"
+        await pilot.press("down")
+        assert pi.text == "draft"  # past the newest -> the draft comes back
+
+
+@pytest.mark.anyio
+async def test_prompt_input_arrows_move_within_multiline_before_history():
+    """Up only recalls history at the first line; inside a multi-line draft the
+    arrows move the cursor normally and leave the text untouched."""
+    from marim_harness.history import PromptHistory
+
+    hist = PromptHistory()
+    hist.add("recalled")
+
+    app = _history_host(hist)
+    async with app.run_test() as pilot:
+        pi = app.query_one(PromptInput)
+        pi.focus()
+        await pilot.pause()
+        pi.text = "a\nb\nc"
+        pi.move_cursor(pi.document.end)  # cursor on the last line
+        await pilot.press("up")
+        assert pi.text == "a\nb\nc"  # moved cursor, did not recall
+        await pilot.press("up")
+        assert pi.text == "a\nb\nc"  # now on the first line, still the draft
+        await pilot.press("up")
+        assert pi.text == "recalled"  # at the boundary -> history kicks in
+
+
+@pytest.mark.anyio
+async def test_prompt_input_submit_resets_navigation():
+    from marim_harness.history import PromptHistory
+
+    hist = PromptHistory()
+    hist.add("one")
+    hist.add("two")
+
+    app = _history_host(hist)
+    async with app.run_test() as pilot:
+        pi = app.query_one(PromptInput)
+        pi.focus()
+        await pilot.pause()
+        await pilot.press("up")
+        assert pi.text == "two"
+        assert pi._hist_idx is not None  # navigating
+        await pilot.press("enter")  # submit
+        assert pi._hist_idx is None  # navigation reset for the next line
+
+
 class _SubHarness(App):
     def compose(self) -> ComposeResult:
         from marim_harness.tui.widgets import SubAgentWidget
