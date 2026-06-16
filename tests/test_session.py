@@ -37,18 +37,44 @@ def test_create_save_and_load_roundtrip(tmp_path: Path):
 
     # A fresh store for the same id loads the saved conversation.
     again = mgr.store(store.session_id)
-    messages, usage = again.load()
+    messages, usage, tasks = again.load()
     assert len(messages) == len(history)
     assert type(messages[0]).__name__ == type(history[0]).__name__
     assert usage.total_tokens == 20
+    assert tasks == []
 
 
 def test_load_missing_returns_empty(tmp_path: Path):
     mgr = _manager(tmp_path)
     store = mgr.create()
-    messages, usage = store.load()
+    messages, usage, tasks = store.load()
     assert messages == []
     assert usage.total_tokens == 0
+    assert tasks == []
+
+
+def test_tasks_round_trip(tmp_path: Path):
+    mgr = _manager(tmp_path)
+    store = mgr.create("With Tasks")
+    tasks = [
+        {"text": "first", "status": "done"},
+        {"text": "second", "status": "in_progress"},
+    ]
+    store.save(_history(), RunUsage(), tasks)
+    _, _, loaded = mgr.store(store.session_id).load()
+    assert loaded == tasks
+
+
+def test_legacy_file_without_tasks_loads_empty(tmp_path: Path):
+    mgr = _manager(tmp_path)
+    store = mgr.create("Legacy")
+    # Save then strip the tasks key to mimic a pre-task-tracking file.
+    store.save(_history(), RunUsage())
+    data = json.loads(store.path.read_text())
+    del data["tasks"]
+    store.path.write_text(json.dumps(data))
+    _, _, loaded = mgr.store(store.session_id).load()
+    assert loaded == []
 
 
 def test_dir_is_workspace_specific(tmp_path: Path):

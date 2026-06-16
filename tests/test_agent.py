@@ -83,7 +83,7 @@ async def test_run_turn_persists_to_store(tmp_path: Path):
         instructions="x", store=store,
     )
     await harness.run_turn("change foo to bar")
-    messages, usage = store.load()
+    messages, usage, _ = store.load()
     assert len(messages) > 0
     assert usage.total_tokens == harness.total_tokens
 
@@ -323,6 +323,63 @@ async def test_skill_index_injected_and_dynamic(tmp_path: Path, monkeypatch):
     assert "code-review" in instr
     assert "Reviews diffs for bugs." in instr
     assert "BASE PROMPT" in instr
+
+
+@pytest.mark.anyio
+async def test_task_state_injected_and_dynamic(tmp_path: Path):
+    captured: dict = {}
+
+    def fn(messages, info):
+        captured["instructions"] = _last_instructions(messages)
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    harness = Harness(
+        model=FunctionModel(fn), provider=BuiltinToolProvider(), deps=deps,
+        instructions="BASE PROMPT",
+    )
+
+    # No tasks yet -> no checklist section in the prompt.
+    await harness.run_turn("hi")
+    assert "checklist" not in captured["instructions"].lower()
+
+    # Setting tasks makes the very next turn see them (dynamic).
+    deps.tasks.replace([
+        {"text": "read the code", "status": "done"},
+        {"text": "write the test", "status": "in_progress"},
+    ])
+    await harness.run_turn("hi again")
+    instr = captured["instructions"]
+    assert "read the code" in instr
+    assert "write the test" in instr
+    assert "BASE PROMPT" in instr
+
+
+@pytest.mark.anyio
+async def test_tasks_persist_and_restore_across_sessions(tmp_path: Path):
+    from marim_harness.session import SessionManager
+
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
+    harness = Harness(
+        model=FunctionModel(fn), provider=BuiltinToolProvider(), deps=deps,
+        instructions="x", store=manager.create("alpha"), manager=manager,
+    )
+    deps.tasks.replace([{"text": "ship it", "status": "in_progress"}])
+    await harness.run_turn("go")  # persists tasks alongside history
+    alpha_id = harness.store.session_id
+
+    # A new session clears the checklist...
+    harness.new_session("beta")
+    assert harness.deps.tasks.items == []
+
+    # ...and switching back restores alpha's checklist.
+    harness.switch_session(alpha_id)
+    assert [t.text for t in harness.deps.tasks.items] == ["ship it"]
+    assert harness.deps.tasks.items[0].status == "in_progress"
 
 
 @pytest.mark.anyio

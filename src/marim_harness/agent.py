@@ -15,6 +15,7 @@ from .memory import global_scope, load_index, project_scope
 from .permissions import resolve_approvals
 from .session import SessionInfo, SessionManager, SessionStore
 from .skills import discover_skills, skills_index_text
+from .tasks import render_tasks
 from .tools.provider import ToolProvider
 
 _SUMMARY_INSTRUCTIONS = (
@@ -155,6 +156,22 @@ class Harness:
             )
 
         @self.agent.instructions
+        def _task_state(ctx: RunContext[Deps]) -> str:
+            """Inject the current checklist each turn so the model continues from
+            the live state, and remind it how to keep the list current. Silent
+            when there are no tasks — the update_tasks tool docstring covers when
+            to start one."""
+            items = ctx.deps.tasks.items
+            if not items:
+                return ""
+            return (
+                "Your current task checklist (✔ done · ▸ in progress · ○ "
+                "pending):\n\n" + render_tasks(items) + "\n\nKeep it current with "
+                "the update_tasks tool: pass the full list, keep one item in "
+                "progress, and mark items done as you complete them."
+            )
+
+        @self.agent.instructions
         def _memory_policy(ctx: RunContext[Deps]) -> str:
             """Standing memory policy. The remember tool is always available, so
             the default must actively restrain proactive saves; the toggle flips
@@ -224,15 +241,17 @@ class Harness:
         Returns the number of messages restored (0 if none / no store)."""
         if self.store is None:
             return 0
-        self.history, self.usage = self.store.load()
+        self.history, self.usage, tasks = self.store.load()
+        self.deps.tasks.load(tasks)
         self._apply_saved_model()
         return len(self.history)
 
     def reset(self) -> None:
-        """Drop the conversation: clear history, token counters, and any saved
-        session for this workspace. Used by the /clear command."""
+        """Drop the conversation: clear history, token counters, tasks, and any
+        saved session for this workspace. Used by the /clear command."""
         self.history = []
         self.usage = RunUsage()
+        self.deps.tasks.clear()
         if self.store is not None:
             self.store.clear()
 
@@ -256,6 +275,7 @@ class Harness:
         self.store.model = self.model_id  # keep the current model on the new session
         self.history = []
         self.usage = RunUsage()
+        self.deps.tasks.clear()
 
     def switch_session(self, session_id: str) -> int:
         """Switch to an existing session, loading its history. Returns the number
@@ -263,13 +283,14 @@ class Harness:
         if self.manager is None:
             return 0
         self.store = self.manager.store(session_id)
-        self.history, self.usage = self.store.load()
+        self.history, self.usage, tasks = self.store.load()
+        self.deps.tasks.load(tasks)
         self._apply_saved_model()
         return len(self.history)
 
     def _persist(self) -> None:
         if self.store is not None:
-            self.store.save(self.history, self.usage)
+            self.store.save(self.history, self.usage, self.deps.tasks.to_payload())
 
     async def _maybe_autoname(self) -> None:
         """After a turn, give an unnamed session an LLM-generated title (once).

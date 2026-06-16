@@ -103,6 +103,26 @@ class NoticeMessage(Static):
         super().__init__(f"• {text}", classes="notice-msg")
 
 
+class TaskPanel(Static):
+    """The agent's live checklist, pinned above the status bar. Hidden whenever
+    the list is empty so it takes no space when unused."""
+
+    def __init__(self) -> None:
+        super().__init__(id="task-panel")
+        self.display = False
+
+    def show_tasks(self, items: list) -> None:
+        """Render the current checklist, or hide the panel when there are none."""
+        from ..tasks import render_tasks
+
+        if not items:
+            self.display = False
+            self.update("")
+            return
+        self.display = True
+        self.update("Tasks\n" + render_tasks(items))
+
+
 class PromptInput(TextArea):
     """The multi-line message box. Enter submits; Shift+Enter and Ctrl+J insert a
     newline. The box auto-grows with its content up to ``_MAX_LINES``, then
