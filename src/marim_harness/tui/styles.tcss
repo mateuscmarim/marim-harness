@@ -22,9 +22,9 @@ PromptInput { height: 3; max-height: 10; border: none; padding: 0 1; }
 .error-msg { color: $error; text-style: bold; margin: 1 0; }
 .notice-msg { color: $text-muted; text-style: italic; margin: 1 0; }
 
-#banner { color: $accent; text-style: bold; height: auto; margin: 1 0 1 0; }
+#banner { color: $text-muted; height: auto; margin: 1 0 1 0; }
 
 AssistantMessage { margin: 0 0 1 0; }
-ToolCallWidget { margin: 0 0 1 0; }
+ToolCallWidget { margin: 0 0 1 0; border-left: tall $primary 40%; padding-left: 1; }
 SubAgentWidget { margin: 0 0 1 0; }
-.subagent-body { height: auto; padding: 0 0 0 2; border-left: tall $panel; }
+.subagent-body { height: auto; padding: 0 0 0 2; border-left: tall $primary 40%; }

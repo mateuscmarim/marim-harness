@@ -193,12 +193,17 @@ class HarnessApp(App):
         elif pct >= 75:
             ctx = f"[yellow]{ctx}[/]"
         name = getattr(self.harness, "session_name", None)
-        prefix = f"{name} · " if name else ""
-        base = (
-            f"{prefix}{self.harness.deps.mode.value} · {cfg} · {ctx} · "
-            f"{_human_tokens(spent)} tokens"
+        prefix = f"[b]{name}[/] · " if name else ""
+        sep = " [dim]·[/] "
+        base = sep.join(
+            [
+                f"{prefix}{self.harness.deps.mode.value}",
+                cfg,
+                ctx,
+                f"{_human_tokens(spent)} tokens",
+            ]
         )
-        return f"{base} · working…" if self._busy else base
+        return f"{base}{sep}working…" if self._busy else base
 
     def _refresh_status(self) -> None:
         try:
