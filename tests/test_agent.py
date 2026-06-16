@@ -1077,6 +1077,29 @@ async def test_enable_server_connects_on_demand(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_toggle_persists_to_config_across_the_session(tmp_path: Path):
+    import json
+
+    ppath = tmp_path / ".marim" / "mcp.json"
+    ppath.parent.mkdir(parents=True)
+    ppath.write_text(
+        json.dumps({"mcpServers": {"demo": {"command": "x"}}}), encoding="utf-8"
+    )
+    srv = _FakeServer("demo")
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = Harness(model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
+                instructions="x", mcp_servers=[srv])
+    await h.connect()
+
+    await h.disable_server("demo")
+    assert json.loads(ppath.read_text())["mcpServers"]["demo"]["enabled"] is False
+
+    await h.enable_server("demo")
+    assert json.loads(ppath.read_text())["mcpServers"]["demo"]["enabled"] is True
+    await h.aclose()
+
+
+@pytest.mark.anyio
 async def test_enable_server_reports_connection_failure(tmp_path: Path):
     srv = _FakeServer("demo", fail=True)
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)

@@ -19,6 +19,7 @@ from .compaction import (
 )
 from .deps import Deps
 from .instructions import load_project_instructions
+from .mcp import persist_server_enabled
 from .memory import global_scope, load_index, project_scope
 from .permissions import Mode, resolve_approvals
 from .session import SessionInfo, SessionManager, SessionStore
@@ -512,18 +513,21 @@ class Harness:
         return self.mcp_status
 
     async def disable_server(self, name: str) -> None:
-        """Turn a server off for this session: its tools stop being offered to the
-        model. Any live connection is kept (so re-enabling is instant) and torn
-        down with the rest at shutdown — to also stop the process, set
-        ``enabled: false`` in mcp.json and restart."""
+        """Turn a server off: its tools stop being offered to the model, and the
+        choice is persisted to the config so it survives restarts. The live
+        connection is kept this session (re-enabling is instant) and torn down
+        with the rest at shutdown; once persisted, the next session won't even
+        launch it."""
         self.disabled.add(name)
+        persist_server_enabled(self.deps.workspace_root, name, False)
 
     async def enable_server(self, name: str) -> Optional[str]:
-        """Turn a server back on: drop it from ``disabled`` and connect it if it
-        isn't already live (the config-disabled case). Returns a connection-error
-        string on failure (server left off), an explanatory string for an unknown
-        name, or None on success."""
+        """Turn a server back on: drop it from ``disabled``, persist the choice,
+        and connect it if it isn't already live (the config-disabled case).
+        Returns a connection-error string on failure (server left off), an
+        explanatory string for an unknown name, or None on success."""
         self.disabled.discard(name)
+        persist_server_enabled(self.deps.workspace_root, name, True)
         if any(self._server_name(s) == name for s in self._live_servers):
             return None
         server = next(
