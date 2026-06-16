@@ -1,7 +1,32 @@
 from pathlib import Path
 from typing import Optional
 
+from pydantic_ai import Agent, RunContext
+
+from .agents import agents_index_text, discover_agents
+from .deps import Deps
+from .memory import global_scope, load_index, project_scope
+from .skills import discover_skills, skills_index_text
+from .tasks import render_tasks
+
 _PROJECT_INSTRUCTIONS_FILE = "AGENTS.md"
+
+_PROACTIVE_MEMORY_POLICY = (
+    "Proactive memory is ON. Beyond explicit requests, save durable facts that "
+    "will help in future sessions with the remember tool: the user's stable "
+    "preferences and identity, feedback they give on how you should work, and "
+    "project conventions or decisions not derivable from the code or git "
+    "history. Convert relative dates to absolute. Do NOT save anything "
+    "recoverable from the code, files, or git; one-off conversational details; "
+    "or secrets. Prefer updating an existing memory over adding a duplicate."
+)
+
+_ON_REQUEST_MEMORY_POLICY = (
+    "Save to memory only when the user explicitly asks you to (for example, "
+    "\"remember that …\" or the /remember command). Do not save memories "
+    "proactively or on your own initiative, even if the user mentions a "
+    "preference or fact in passing."
+)
 
 
 def load_project_instructions(
@@ -16,3 +41,74 @@ def load_project_instructions(
     except (OSError, UnicodeDecodeError):
         return None
     return text or None
+
+
+def register_instructions(agent: Agent, mcp_manager, proactive_memory: bool) -> None:
+    """Register all dynamic instruction closures on ``agent``."""
+
+    @agent.instructions
+    def _project_instructions(ctx: RunContext[Deps]) -> str:
+        text = load_project_instructions(ctx.deps.workspace_root)
+        if not text:
+            return ""
+        return f"Project-specific instructions from AGENTS.md:\n\n{text}"
+
+    @agent.instructions
+    def _memory_indexes(ctx: RunContext[Deps]) -> str:
+        parts = []
+        g = load_index(global_scope())
+        if g:
+            parts.append(f"# User memory (global)\n\n{g}")
+        p = load_index(project_scope(ctx.deps.workspace_root))
+        if p:
+            parts.append(f"# Project memory\n\n{p}")
+        if not parts:
+            return ""
+        return (
+            "Persistent memory indexes below. Each line is a one-line hook; "
+            "read the full fact with the recall tool (by the entry's title or "
+            "slug, with the matching scope). Save new durable facts with the "
+            "remember tool.\n\n" + "\n\n".join(parts)
+        )
+
+    @agent.instructions
+    def _skill_index(ctx: RunContext[Deps]) -> str:
+        text = skills_index_text(discover_skills(ctx.deps.workspace_root))
+        if not text:
+            return ""
+        return (
+            "Available skills below — each is a packaged workflow. When a "
+            "task matches one's description, load its full instructions with "
+            "the activate_skill tool (by name) and follow them.\n\n" + text
+        )
+
+    @agent.instructions
+    def _agent_index(ctx: RunContext[Deps]) -> str:
+        text = agents_index_text(discover_agents(ctx.deps.workspace_root))
+        return (
+            "Sub-agents you can delegate to with the spawn_agent tool (each "
+            "runs in isolation and reports back; spawn several in one turn to "
+            "fan out independent work):\n\n" + text
+        )
+
+    @agent.instructions
+    def _mcp_index(ctx: RunContext[Deps]) -> str:
+        return mcp_manager.mcp_index_text()
+
+    @agent.instructions
+    def _task_state(ctx: RunContext[Deps]) -> str:
+        items = ctx.deps.tasks.items
+        if not items:
+            return ""
+        return (
+            "Your current task checklist (✔ done · ▸ in progress · ○ "
+            "pending):\n\n" + render_tasks(items) + "\n\nKeep it current with "
+            "the update_tasks tool: pass the full list, keep one item in "
+            "progress, and mark items done as you complete them."
+        )
+
+    @agent.instructions
+    def _memory_policy(ctx: RunContext[Deps]) -> str:
+        if proactive_memory:
+            return _PROACTIVE_MEMORY_POLICY
+        return _ON_REQUEST_MEMORY_POLICY

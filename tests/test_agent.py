@@ -116,7 +116,7 @@ async def test_resume_restores_history_and_tokens(tmp_path: Path):
 
 
 def test_clean_title_strips_noise():
-    from marim_harness.agent import clean_title
+    from marim_harness.compaction import clean_title
 
     assert clean_title('"Fix the bug"') == "Fix the bug"
     assert clean_title("Title: Add a feature") == "Add a feature"
@@ -126,7 +126,7 @@ def test_clean_title_strips_noise():
 
 
 def test_clean_title_clamps_length():
-    from marim_harness.agent import clean_title
+    from marim_harness.compaction import clean_title
 
     out = clean_title("word " * 30)
     assert len(out) <= 51

@@ -1,10 +1,9 @@
 from typing import Optional
 
-from pydantic_ai import Agent, DeferredToolRequests, RunContext
+from pydantic_ai import Agent, DeferredToolRequests
 from pydantic_ai.usage import RunUsage
 
 from .agents import (
-    agents_index_text,
     discover_agents,
     effective_tools,
     find_agent,
@@ -13,37 +12,16 @@ from .agents import (
 from .compaction import (
     Summarizer,
     Titler,
-    clean_title,
     make_summarizer,
     make_titler,
 )
 from .deps import Deps
-from .instructions import load_project_instructions
+from .instructions import register_instructions
 from .mcp_manager import McpManager
-from .memory import global_scope, load_index, project_scope
 from .permissions import Mode, resolve_approvals
 from .session import SessionInfo, SessionManager, SessionStore
 from .session_ctrl import SessionController
-from .skills import discover_skills, skills_index_text
-from .tasks import render_tasks
 from .tools.provider import ToolProvider
-
-_PROACTIVE_MEMORY_POLICY = (
-    "Proactive memory is ON. Beyond explicit requests, save durable facts that "
-    "will help in future sessions with the remember tool: the user's stable "
-    "preferences and identity, feedback they give on how you should work, and "
-    "project conventions or decisions not derivable from the code or git "
-    "history. Convert relative dates to absolute. Do NOT save anything "
-    "recoverable from the code, files, or git; one-off conversational details; "
-    "or secrets. Prefer updating an existing memory over adding a duplicate."
-)
-
-_ON_REQUEST_MEMORY_POLICY = (
-    "Save to memory only when the user explicitly asks you to (for example, "
-    "\"remember that …\" or the /remember command). Do not save memories "
-    "proactively or on your own initiative, even if the user mentions a "
-    "preference or fact in passing."
-)
 
 
 class Harness:
@@ -58,7 +36,6 @@ class Harness:
                  titler: Optional[Titler] = None, model_source=None,
                  model_id: Optional[str] = None, proactive_memory: bool = False,
                  mcp_servers=None, mcp_disabled=None):
-        self.proactive_memory = proactive_memory
         self.agent = Agent(
             model,
             deps_type=Deps,
@@ -71,95 +48,8 @@ class Harness:
         )
         self.provider = provider
         provider.register(self.agent)
-
-        @self.agent.instructions
-        def _project_instructions(ctx: RunContext[Deps]) -> str:
-            """Layer the workspace's AGENTS.md on top of the base prompt, re-read
-            each turn so edits take effect without a restart."""
-            text = load_project_instructions(ctx.deps.workspace_root)
-            if not text:
-                return ""
-            return f"Project-specific instructions from AGENTS.md:\n\n{text}"
-
-        @self.agent.instructions
-        def _memory_indexes(ctx: RunContext[Deps]) -> str:
-            """Inject the global and project memory indexes, re-read each turn.
-            Each line names a memory the model can expand with the recall tool;
-            new facts are saved with the remember tool."""
-            parts = []
-            g = load_index(global_scope())
-            if g:
-                parts.append(f"# User memory (global)\n\n{g}")
-            p = load_index(project_scope(ctx.deps.workspace_root))
-            if p:
-                parts.append(f"# Project memory\n\n{p}")
-            if not parts:
-                return ""
-            return (
-                "Persistent memory indexes below. Each line is a one-line hook; "
-                "read the full fact with the recall tool (by the entry's title or "
-                "slug, with the matching scope). Save new durable facts with the "
-                "remember tool.\n\n" + "\n\n".join(parts)
-            )
-
-        @self.agent.instructions
-        def _skill_index(ctx: RunContext[Deps]) -> str:
-            """Inject the discovery index of available skills, re-read each turn.
-            Each line is a packaged workflow the model can pull in with the
-            activate_skill tool; manual-only skills are omitted by the formatter."""
-            text = skills_index_text(discover_skills(ctx.deps.workspace_root))
-            if not text:
-                return ""
-            return (
-                "Available skills below — each is a packaged workflow. When a "
-                "task matches one's description, load its full instructions with "
-                "the activate_skill tool (by name) and follow them.\n\n" + text
-            )
-
-        @self.agent.instructions
-        def _agent_index(ctx: RunContext[Deps]) -> str:
-            """List the sub-agents the model can delegate to with spawn_agent,
-            re-read each turn so a newly-added custom agent shows up immediately.
-            Always present — the built-in explore/general are always available."""
-            text = agents_index_text(discover_agents(ctx.deps.workspace_root))
-            return (
-                "Sub-agents you can delegate to with the spawn_agent tool (each "
-                "runs in isolation and reports back; spawn several in one turn to "
-                "fan out independent work):\n\n" + text
-            )
-
-        @self.agent.instructions
-        def _mcp_index(ctx: RunContext[Deps]) -> str:
-            """Name the MCP servers a spawn may grant, re-read each turn so a
-            server toggled on/off mid-session is reflected. Silent when none are
-            enabled."""
-            return self.mcp_index_text()
-
-        @self.agent.instructions
-        def _task_state(ctx: RunContext[Deps]) -> str:
-            """Inject the current checklist each turn so the model continues from
-            the live state, and remind it how to keep the list current. Silent
-            when there are no tasks — the update_tasks tool docstring covers when
-            to start one."""
-            items = ctx.deps.tasks.items
-            if not items:
-                return ""
-            return (
-                "Your current task checklist (✔ done · ▸ in progress · ○ "
-                "pending):\n\n" + render_tasks(items) + "\n\nKeep it current with "
-                "the update_tasks tool: pass the full list, keep one item in "
-                "progress, and mark items done as you complete them."
-            )
-
-        @self.agent.instructions
-        def _memory_policy(ctx: RunContext[Deps]) -> str:
-            """Standing memory policy. The remember tool is always available, so
-            the default must actively restrain proactive saves; the toggle flips
-            that restraint into encouragement."""
-            if self.proactive_memory:
-                return _PROACTIVE_MEMORY_POLICY
-            return _ON_REQUEST_MEMORY_POLICY
-
+        self.mcp = McpManager(mcp_servers or [], set(mcp_disabled or []))
+        register_instructions(self.agent, self.mcp, proactive_memory)
         self.deps = deps
         # The spawn_agent tool reaches the runners through Deps, the same way
         # other tools reach shared state. Wired here so they track model switches.
@@ -176,7 +66,6 @@ class Harness:
             max_context_tokens, keep_last_messages,
             summarizer, titler,
         )
-        self.mcp = McpManager(mcp_servers or [], set(mcp_disabled or []))
 
     # --- session delegation ---
 
