@@ -209,3 +209,68 @@ async def test_assistant_message_is_markdown_and_accumulates():
         w.append(" more")
         await pilot.pause()
         assert w.text == "# Title more"
+
+
+class _SubHarness(App):
+    def compose(self) -> ComposeResult:
+        from marim_harness.tui.widgets import SubAgentWidget
+
+        yield SubAgentWidget("explore", "map the code")
+
+
+@pytest.mark.anyio
+async def test_subagent_widget_collapsed_param():
+    from marim_harness.tui.widgets import SubAgentWidget
+
+    class H(App):
+        def compose(self) -> ComposeResult:
+            yield SubAgentWidget("explore", "t", collapsed=True)
+
+    app = H()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.query_one(SubAgentWidget).collapsed is True
+
+
+@pytest.mark.anyio
+async def test_subagent_widget_default_expanded():
+    from marim_harness.tui.widgets import SubAgentWidget
+
+    app = _SubHarness()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.query_one(SubAgentWidget).collapsed is False
+
+
+@pytest.mark.anyio
+async def test_subagent_title_shows_live_activity():
+    from marim_harness.tui.widgets import SubAgentWidget
+
+    app = _SubHarness()
+    async with app.run_test() as pilot:
+        w = app.query_one(SubAgentWidget)
+        await pilot.pause()
+        # A tool call is reflected in the title with a running count.
+        w.note_tool("grep")
+        assert "grep" in str(w.title)
+        assert "(1)" in str(w.title)
+        w.note_tool("read_file")
+        assert "(2)" in str(w.title)
+        # Generating text shows a responding hint.
+        w.note_text()
+        assert "responding" in str(w.title)
+
+
+@pytest.mark.anyio
+async def test_subagent_finish_clears_activity_from_title():
+    from marim_harness.tui.widgets import SubAgentWidget
+
+    app = _SubHarness()
+    async with app.run_test() as pilot:
+        w = app.query_one(SubAgentWidget)
+        await pilot.pause()
+        w.note_tool("grep")
+        w.finish("all done", status="done")
+        # Once finished, the title is the clean summary, no activity tail.
+        assert "grep" not in str(w.title)
+        assert "+" in str(w.title)

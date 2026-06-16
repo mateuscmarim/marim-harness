@@ -149,18 +149,40 @@ class SubAgentWidget(Collapsible):
     body is a live stream of the sub-agent's own text and tool calls, mounted as
     child widgets as its events arrive."""
 
-    def __init__(self, agent_type: str, agent_task: str) -> None:
+    def __init__(
+        self, agent_type: str, agent_task: str, collapsed: bool = False
+    ) -> None:
         self.agent_type = agent_type
         self.agent_task = agent_task
         self.status = "pending"
         self.report = ""
+        # Live activity shown in the (collapsed) title so a fan-out of agents is
+        # legible at a glance without expanding each stream.
+        self.activity = ""
+        self.tool_count = 0
         self.body = Vertical(classes="subagent-body")
-        super().__init__(self.body, title=self._summary(), collapsed=False)
+        super().__init__(self.body, title=self._summary(), collapsed=collapsed)
 
     def _summary(self) -> str:
         glyph = {"pending": "▸", "done": "+", "denied": "x"}.get(self.status, "▸")
         task = self.agent_task if len(self.agent_task) <= 40 else self.agent_task[:39] + "…"
-        return f"[{glyph}] spawn_agent({self.agent_type}: {task!r})"
+        base = f"[{glyph}] spawn_agent({self.agent_type}: {task!r})"
+        # Only a running agent carries an activity tail; a finished one is clean.
+        if self.status == "pending" and self.activity:
+            return f"{base} · {self.activity}"
+        return base
+
+    def note_tool(self, tool_name: str) -> None:
+        """Record that the sub-agent just called ``tool_name`` and refresh the
+        title — a cheap status update that needs no body mount."""
+        self.tool_count += 1
+        self.activity = f"{tool_name} ({self.tool_count})"
+        self.title = self._summary()
+
+    def note_text(self) -> None:
+        """Record that the sub-agent is generating text and refresh the title."""
+        self.activity = "responding"
+        self.title = self._summary()
 
     async def add(self, widget) -> None:
         """Mount a child widget (the sub-agent's text or a nested tool call) into
@@ -170,6 +192,7 @@ class SubAgentWidget(Collapsible):
     def finish(self, report: str, status: str = "done") -> None:
         self.status = status
         self.report = report
+        self.activity = ""
         self.title = self._summary()
 
 
