@@ -19,8 +19,7 @@ from .deps import Deps
 from .instructions import register_instructions
 from .mcp import McpManager
 from .permissions import Mode, resolve_approvals
-from .session import SessionInfo, SessionManager, SessionStore
-from .session_ctrl import SessionController
+from .session import SessionController, SessionInfo, SessionManager, SessionStore
 from .tools.provider import ToolProvider
 
 

@@ -2,14 +2,14 @@ from typing import Callable, Optional
 
 from pydantic_ai.usage import RunUsage
 
-from .compaction import (
+from ..compaction import (
     Summarizer,
     Titler,
     compact_history,
     compact_history_with_summary,
 )
-from .deps import Deps
-from .session import SessionInfo, SessionManager, SessionStore
+from ..deps import Deps
+from .store import SessionInfo, SessionManager, SessionStore
 
 
 class SessionController:
