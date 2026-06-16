@@ -1129,3 +1129,71 @@ def test_resume_restores_saved_model(tmp_path: Path):
                      manager=manager, model_source=_FakeSource(), model_id="startup")
     second.resume()
     assert second.model_id == "openai/gpt-5.2"
+
+
+def test_granted_servers_resolves_named(tmp_path: Path):
+    from types import SimpleNamespace
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    a = SimpleNamespace(tool_prefix="mddocs")
+    b = SimpleNamespace(tool_prefix="sentry")
+    h._live_servers = [a, b]
+
+    granted, unknown = h._granted_servers(["mddocs"])
+    assert granted == [a]
+    assert unknown == []
+
+
+def test_granted_servers_none_grants_nothing(tmp_path: Path):
+    from types import SimpleNamespace
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    h._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
+
+    assert h._granted_servers(None) == ([], [])
+    assert h._granted_servers([]) == ([], [])
+
+
+def test_granted_servers_reports_unknown(tmp_path: Path):
+    from types import SimpleNamespace
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    h._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
+
+    granted, unknown = h._granted_servers(["mddocs", "nope"])
+    assert granted == [h._live_servers[0]]
+    assert unknown == ["nope"]
+
+
+def test_granted_servers_excludes_disabled(tmp_path: Path):
+    from types import SimpleNamespace
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    h._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
+    h.disabled = {"mddocs"}
+
+    granted, unknown = h._granted_servers(["mddocs"])
+    assert granted == []
+    assert unknown == ["mddocs"]
+
+
+def test_granted_servers_dedupes(tmp_path: Path):
+    from types import SimpleNamespace
+    from pydantic_ai.models.test import TestModel
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(TestModel(), deps)
+    a = SimpleNamespace(tool_prefix="mddocs")
+    h._live_servers = [a]
+
+    granted, unknown = h._granted_servers(["mddocs", "mddocs"])
+    assert granted == [a]
+    assert unknown == []

@@ -471,6 +471,28 @@ class Harness:
         """The display name of an MCP server — its tool prefix / config name."""
         return str(getattr(server, "id", None) or getattr(server, "tool_prefix", "?"))
 
+    def _granted_servers(self, names: list[str] | None) -> tuple[list, list[str]]:
+        """Resolve requested MCP server names to live server objects for a spawn.
+
+        Returns ``(granted, unknown)``. ``granted`` is the live server objects
+        whose name matches a request and is not disabled — passed straight to a
+        sub-agent's run as toolsets, so their tools gate via the same approval
+        hook as the main agent's. ``unknown`` is requested names with no enabled
+        live server (missing or runtime-disabled). Order follows the request;
+        duplicate names are honored once."""
+        if not names:
+            return [], []
+        by_name = {self._server_name(s): s for s in self._live_servers}
+        granted: list = []
+        unknown: list[str] = []
+        for name in dict.fromkeys(names):  # de-dupe, preserve first-seen order
+            server = by_name.get(name)
+            if server is None or name in self.disabled:
+                unknown.append(name)
+            else:
+                granted.append(server)
+        return granted, unknown
+
     def configured_names(self) -> list[str]:
         """Every configured MCP server name, enabled or not — what /mcp lists and
         what enable/disable ``all`` iterates over."""
