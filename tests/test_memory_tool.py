@@ -80,6 +80,29 @@ def _call_recall(args: dict):
     return FunctionModel(model), captured
 
 
+def _tool_schema(tool_name: str) -> dict:
+    """Build the agent, run one no-op turn, and return the JSON schema the model
+    sees for ``tool_name``'s parameters."""
+    agent = _agent()
+    m = TestModel(call_tools=[])
+    with agent.override(model=m):
+        agent.run_sync("hi", deps=Deps(workspace_root=Path(".")))
+    tools = {t.name: t for t in m.last_model_request_parameters.function_tools}
+    return tools[tool_name].parameters_json_schema
+
+
+def test_recall_scope_is_constrained_to_two_values():
+    schema = _tool_schema("recall")
+    scope = schema["properties"]["scope"]
+    assert scope.get("enum") == ["project", "global"]
+
+
+def test_remember_scope_is_constrained_to_two_values():
+    schema = _tool_schema("remember")
+    scope = schema["properties"]["scope"]
+    assert scope.get("enum") == ["project", "global"]
+
+
 def test_recall_reads_project_memory_body(tmp_path: Path):
     from marim_harness import memory
 

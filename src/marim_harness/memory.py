@@ -11,6 +11,7 @@ one place. Nothing here ever raises into a turn — dirs are created on demand.
 """
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,8 +40,12 @@ def project_scope(workspace_root) -> MemoryScope:
 
 
 def _slugify(name: str) -> str:
-    """Reduce a title to a filesystem-safe slug, falling back to ``memory``."""
-    slug = re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")
+    """Reduce a title to a filesystem-safe ASCII slug, falling back to ``memory``.
+    Accents are transliterated (``usuário`` -> ``usuario``) so accented and
+    unaccented spellings collapse to the same slug."""
+    decomposed = unicodedata.normalize("NFKD", name or "")
+    ascii_only = decomposed.encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^a-z0-9]+", "-", ascii_only.lower()).strip("-")
     return slug or "memory"
 
 
@@ -59,7 +64,9 @@ def read_memory(scope: MemoryScope, name: str) -> str:
     """Return the full text of a memory file by name (its title or slug; both
     slugify to the same file). Memory files live in marim's own dirs — global is
     outside the workspace — so this reads them directly rather than through the
-    workspace-sandboxed read_file tool. Returns a notice if the file is missing."""
+    workspace-sandboxed read_file tool. ``name`` may be the entry's title or its
+    slug — both slugify to the stored filename, which is always slug-named — so a
+    free-form name resolves either way. Returns a notice if no file matches."""
     slug = _slugify(name)
     path = scope.root / f"{slug}.md"
     try:
