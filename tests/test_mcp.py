@@ -9,6 +9,7 @@ from marim_harness.mcp import (
     disabled_server_names,
     load_mcp_config,
     make_approval_hook,
+    persist_server_enabled,
 )
 from marim_harness.permissions import Mode
 
@@ -76,6 +77,67 @@ def test_disabled_server_names_picks_enabled_false():
 
 def test_disabled_server_names_empty_when_none():
     assert disabled_server_names({"on": {"command": "a"}}) == set()
+
+
+# --- persisting toggles ----------------------------------------------------
+
+
+def _read_back(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
+
+
+def test_persist_writes_to_global_when_server_is_global(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    gpath = tmp_path / "xdg" / "marim" / "mcp.json"
+    _write(gpath, {"mddocs": {"url": "https://x/mcp"}})
+    ws = tmp_path / "ws"
+
+    assert persist_server_enabled(ws, "mddocs", False) is True
+    assert _read_back(gpath)["mddocs"]["enabled"] is False
+
+    assert persist_server_enabled(ws, "mddocs", True) is True
+    assert _read_back(gpath)["mddocs"]["enabled"] is True
+
+
+def test_persist_prefers_project_when_server_defined_there(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    gpath = tmp_path / "xdg" / "marim" / "mcp.json"
+    _write(gpath, {"shared": {"command": "from-global"}})
+    ws = tmp_path / "ws"
+    ppath = ws / ".marim" / "mcp.json"
+    _write(ppath, {"shared": {"command": "from-project"}})
+
+    assert persist_server_enabled(ws, "shared", False) is True
+    # The project file (the winning definition) is the one edited...
+    assert _read_back(ppath)["shared"]["enabled"] is False
+    # ...and the global one is left untouched.
+    assert "enabled" not in _read_back(gpath)["shared"]
+
+
+def test_persist_preserves_other_servers_and_fields(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    gpath = tmp_path / "xdg" / "marim" / "mcp.json"
+    _write(
+        gpath,
+        {
+            "a": {"command": "x", "args": ["keep"]},
+            "b": {"url": "https://y/mcp"},
+        },
+    )
+    ws = tmp_path / "ws"
+
+    persist_server_enabled(ws, "a", False)
+    servers = _read_back(gpath)
+    assert servers["a"] == {"command": "x", "args": ["keep"], "enabled": False}
+    assert servers["b"] == {"url": "https://y/mcp"}  # sibling untouched
+
+
+def test_persist_no_op_for_unknown_server(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    _write(tmp_path / "xdg" / "marim" / "mcp.json", {"a": {"command": "x"}})
+    ws = tmp_path / "ws"
+    # A name in no config file can't be persisted; report that, don't crash.
+    assert persist_server_enabled(ws, "ghost", False) is False
 
 
 # --- server construction ---------------------------------------------------

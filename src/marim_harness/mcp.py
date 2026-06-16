@@ -62,6 +62,25 @@ def load_mcp_config(workspace_root: Path) -> dict:
     return merged
 
 
+def persist_server_enabled(workspace_root: Path, name: str, enabled: bool) -> bool:
+    """Write ``enabled`` into the config file that defines ``name``, so a runtime
+    toggle survives restarts. Prefers the project file (the winning definition)
+    over the global one. Returns True if a file was updated, False if no config
+    defines the server (nothing to persist). Best-effort: a missing or malformed
+    file is treated as not defining the server."""
+    for path in (project_mcp_config_path(workspace_root), global_mcp_config_path()):
+        if name not in _read_servers(path):
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data["mcpServers"][name]["enabled"] = enabled
+            path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError, KeyError, TypeError):
+            return False
+        return True
+    return False
+
+
 def disabled_server_names(specs: dict) -> set[str]:
     """Names of servers turned off in the config via ``"enabled": false``. Only an
     explicit ``false`` disables — an absent or true flag (or a non-dict spec) keeps
