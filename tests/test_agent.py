@@ -15,7 +15,12 @@ from marim_harness.tools.provider import BuiltinToolProvider
 
 
 def _edit_then_done_model() -> FunctionModel:
-    """First model turn: call edit_file. After the tool result: reply 'done'."""
+    """First model turn: call edit_file. After the tool result: reply 'done'.
+    Supports both non-streamed and streamed requests so tests using
+    event_stream_handler (e.g. the Pre/PostToolUse hook test) work correctly."""
+    import json as _json
+    from pydantic_ai.models.function import DeltaToolCall
+
     state = {"n": 0}
 
     def fn(messages, info):
@@ -34,7 +39,25 @@ def _edit_then_done_model() -> FunctionModel:
             )
         return ModelResponse(parts=[TextPart(content="done")])
 
-    return FunctionModel(fn)
+    async def stream_fn(messages, info):
+        state["n"] += 1
+        if state["n"] == 1:
+            yield {
+                0: DeltaToolCall(
+                    name="edit_file",
+                    json_args=_json.dumps(
+                        {
+                            "path": "a.txt",
+                            "edits": [{"old_string": "foo", "new_string": "bar"}],
+                        }
+                    ),
+                    tool_call_id="tc-edit-1",
+                )
+            }
+        else:
+            yield "done"
+
+    return FunctionModel(fn, stream_function=stream_fn)
 
 
 def _make_harness(model, deps) -> Harness:
@@ -1478,7 +1501,9 @@ def _prompt_capturing_model(sink: list) -> FunctionModel:
     """Records the LAST user-prompt text it sees per call (the current turn's
     new prompt, not history), then replies 'ok'. pydantic-ai's FunctionModel
     receives the full conversation history each call, so we capture only the
-    latest UserPromptPart to isolate the current turn's new prompt."""
+    latest UserPromptPart to isolate the current turn's new prompt.
+    Supports both non-streamed and streamed requests (streaming is required when
+    an event_stream_handler is set, e.g. when hooks are configured)."""
     def fn(messages, info):
         latest = None
         for msg in messages:
@@ -1489,7 +1514,19 @@ def _prompt_capturing_model(sink: list) -> FunctionModel:
         if latest is not None:
             sink.append(latest)
         return ModelResponse(parts=[TextPart(content="ok")])
-    return FunctionModel(fn)
+
+    async def stream_fn(messages, info):
+        latest = None
+        for msg in messages:
+            for part in getattr(msg, "parts", []):
+                content = getattr(part, "content", None)
+                if isinstance(content, str) and part.__class__.__name__ == "UserPromptPart":
+                    latest = content
+        if latest is not None:
+            sink.append(latest)
+        yield "ok"
+
+    return FunctionModel(fn, stream_function=stream_fn)
 
 
 @pytest.mark.anyio
@@ -1698,3 +1735,36 @@ def test_mcp_index_text_excludes_disabled(tmp_path: Path):
     text = h.mcp.mcp_index_text()
     assert "mddocs" in text
     assert "sentry" not in text
+
+
+# ---------------------------------------------------------------------------
+# Task 6: PreToolUse / PostToolUse hooks via composed event handler
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_pre_and_post_tool_use_fire(tmp_path):
+    (tmp_path / "a.txt").write_text("foo")
+    log = tmp_path / "toolhooks.log"
+    # Write a Python helper script that the hook shell script will invoke; this
+    # avoids bash single-quote escaping issues when embedding the log path.
+    helper = tmp_path / "loghook.py"
+    helper.write_text(
+        f"import sys, json\n"
+        f"d = json.load(sys.stdin)\n"
+        f"open({str(log)!r}, 'a').write(d['hook_event_name'] + ' ' + d.get('tool_name', '') + '\\n')\n",
+        encoding="utf-8",
+    )
+    cmd = _hook_script(
+        tmp_path, "tool.sh",
+        f"python3 {str(helper)}\n",
+    )
+    runner = HookRunner({
+        hook_events.PRE_TOOL_USE: [{"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}],
+        hook_events.POST_TOOL_USE: [{"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}],
+    })
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto, hooks=runner)
+    harness = _make_harness(_edit_then_done_model(), deps)
+    await harness.run_turn("change foo to bar")
+    lines = log.read_text().splitlines()
+    assert "PreToolUse edit_file" in lines
+    assert any(line.startswith("PostToolUse edit_file") for line in lines)

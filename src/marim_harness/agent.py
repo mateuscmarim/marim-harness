@@ -322,6 +322,38 @@ class Harness:
             self._hook_payload(hook_events.SESSION_END, reason=reason),
         )
 
+    async def _fire_tool_event(self, event) -> None:
+        """Map a streamed tool event to a Pre/PostToolUse hook (observe-only)."""
+        from pydantic_ai.messages import (
+            FunctionToolCallEvent,
+            FunctionToolResultEvent,
+        )
+
+        if self.deps.hooks is None:
+            return
+        if isinstance(event, FunctionToolCallEvent):
+            try:
+                tool_input = event.part.args_as_dict()
+            except Exception:
+                tool_input = {}
+            await self.deps.hooks.dispatch(
+                hook_events.PRE_TOOL_USE,
+                self._hook_payload(
+                    hook_events.PRE_TOOL_USE,
+                    tool_name=event.part.tool_name,
+                    tool_input=tool_input,
+                ),
+            )
+        elif isinstance(event, FunctionToolResultEvent):
+            await self.deps.hooks.dispatch(
+                hook_events.POST_TOOL_USE,
+                self._hook_payload(
+                    hook_events.POST_TOOL_USE,
+                    tool_name=getattr(event.part, "tool_name", ""),
+                    tool_response=str(getattr(event.part, "content", "")),
+                ),
+            )
+
     async def run_turn(self, prompt: str, event_stream_handler=None) -> str:
         """Run the agent until it produces a final text answer, looping through
         any approval rounds. Returns the final text output."""
@@ -351,6 +383,24 @@ class Harness:
         # Offer only the live servers that aren't disabled — a server muted at
         # runtime stays connected but its tools are withheld from the model.
         toolsets = self.mcp.live_toolsets()
+        # When hooks are configured, intercept each streamed tool event to fire
+        # Pre/PostToolUse, then forward to the original handler (or drain if none).
+        if self.deps.hooks is not None:
+            _base_handler = event_stream_handler
+
+            async def _hooked_handler(ctx, events):
+                async def _relay():
+                    async for event in events:
+                        await self._fire_tool_event(event)
+                        yield event
+
+                if _base_handler is not None:
+                    await _base_handler(ctx, _relay())
+                else:
+                    async for _ in _relay():
+                        pass
+
+            event_stream_handler = _hooked_handler
         while True:
             # The last persisted, resumable history — what we fall back to if
             # this round is interrupted before it completes cleanly.
