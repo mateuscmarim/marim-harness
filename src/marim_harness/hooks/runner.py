@@ -31,14 +31,15 @@ def base_payload(
 
 def _matches(matcher, event: str, tool_name: str) -> bool:
     """``matcher`` (a regex on the tool name) gates only the tool events; for all
-    other events it is ignored. Absent/empty/``*`` matches everything."""
+    other events it is ignored. Absent/empty/``*`` matches everything. Non-string
+    matchers are treated as non-matching."""
     if event not in (PRE_TOOL_USE, POST_TOOL_USE):
         return True
     if not matcher or matcher == "*":
         return True
     try:
         return re.search(matcher, tool_name) is not None
-    except re.error:
+    except (re.error, TypeError):
         return False
 
 

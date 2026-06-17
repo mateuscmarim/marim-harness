@@ -132,3 +132,16 @@ async def test_unknown_hook_type_is_skipped(tmp_path):
     ctx = await runner.dispatch(events.SESSION_START, _payload(events.SESSION_START))
     assert ctx is None
     assert not out.exists()  # non-"command" type never executes
+
+
+@pytest.mark.anyio
+async def test_non_string_matcher_is_treated_as_no_match(tmp_path):
+    out = tmp_path / "ran.txt"
+    cmd = _script(tmp_path, "h.sh", f"echo ran >> {out}\n")
+    # Construct entry with a non-string matcher (object) directly
+    entry = {"matcher": {"bad": "object"}, "hooks": [{"type": "command", "command": cmd}]}
+    runner = HookRunner({events.PRE_TOOL_USE: [entry]})
+    # dispatch must not raise; non-string matcher treated as no-match
+    ctx = await runner.dispatch(events.PRE_TOOL_USE, _payload(events.PRE_TOOL_USE, tool_name="bash"))
+    assert ctx is None
+    assert not out.exists()  # non-string matcher must not crash; treated as no-match
