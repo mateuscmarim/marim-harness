@@ -10,7 +10,7 @@ from marim_harness.interfaces.tui.widgets import (
     ToolGroupWidget,
     UserMessage,
     format_cost,
-    format_usage,
+    format_token_split,
     strip_line_numbers,
 )
 
@@ -21,24 +21,19 @@ def test_format_cost_uses_more_precision_for_sub_cent_amounts():
     assert format_cost(1.5) == "$1.50"
 
 
-def test_format_usage_shows_in_cached_out_and_cost():
+def test_format_token_split_uses_compact_symbols():
+    # ↑ uncached input, ⚡ cached (read + write), ↓ output.
     u = RunUsage(
         input_tokens=56000, output_tokens=2000,
         cache_read_tokens=50000, cache_write_tokens=5000,
     )
-    line = format_usage(u, "claude-sonnet-4-6")
-    assert "1k in" in line       # uncached input: 56000 - 50000 - 5000
-    assert "55k cached" in line  # cache read + write
-    assert "2k out" in line
-    assert "$" in line
+    assert format_token_split(u) == "1k↑ 55k⚡ 2k↓"
 
 
-def test_format_usage_omits_cost_when_model_unpriced():
-    u = RunUsage(input_tokens=1000, output_tokens=200)
-    line = format_usage(u, "made-up-model-zzz")
-    assert "$" not in line
-    assert "1k in" in line
-    assert "200 out" in line
+def test_format_token_split_keeps_all_buckets_even_when_zero():
+    # Stable layout: zero cache/output still render so the bar doesn't reflow.
+    u = RunUsage(input_tokens=12, output_tokens=8)
+    assert format_token_split(u) == "12↑ 0⚡ 8↓"
 
 # An unclosed, expression-style bracket sequence. Unlike a balanced ``[/]``,
 # ``rich``/``textual`` ``escape()`` will NOT neutralise this — its regex only

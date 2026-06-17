@@ -31,17 +31,19 @@ async def test_status_bar_shows_mode(tmp_path: Path):
 
 
 @pytest.mark.anyio
-async def test_status_bar_shows_token_count(tmp_path: Path):
+async def test_status_bar_shows_token_split(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
         bar = app.query_one("#status-bar")
-        assert "0 tokens" in str(bar.render())  # starts at zero
+        assert "0↑" in str(bar.render())  # starts at zero
         app.harness.session.usage.input_tokens = 12
         app.harness.session.usage.output_tokens = 8
         app._refresh_status()
         await pilot.pause()
-        assert "20 tokens" in str(bar.render())
+        text = str(bar.render())
+        assert "12↑" in text  # uncached input
+        assert "8↓" in text   # output
 
 
 @pytest.mark.anyio
@@ -71,14 +73,14 @@ async def test_status_bar_omits_cost_for_unpriced_model(tmp_path: Path):
         await pilot.pause()
         text = str(app.query_one("#status-bar").render())
         assert "$" not in text
-        assert "tokens" in text
+        assert "5k↑" in text  # split still shown without a price
 
 
 @pytest.mark.anyio
 async def test_status_bar_includes_live_run_tokens_while_streaming(tmp_path: Path):
-    """While a turn streams, the counter must include the in-flight run's tokens
-    (not yet committed to session usage), so it climbs live instead of only
-    jumping when the turn ends."""
+    """While a turn streams, the bar shows the in-flight run's tokens (not yet
+    committed to session usage) as a live ``+N`` delta beside the committed
+    split, so spend climbs live instead of only jumping when the turn ends."""
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -87,7 +89,9 @@ async def test_status_bar_includes_live_run_tokens_while_streaming(tmp_path: Pat
         app._live_run_tokens = 50  # in-flight this turn
         app._refresh_status()
         await pilot.pause()
-        assert "150 tokens" in str(app.query_one("#status-bar").render())
+        text = str(app.query_one("#status-bar").render())
+        assert "100↑" in text  # committed split
+        assert "+50" in text   # live in-flight delta
 
 
 @pytest.mark.anyio
@@ -134,12 +138,14 @@ async def test_flush_refreshes_status_while_busy(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._set_busy(True)  # paints "0 tokens"
+        app._set_busy(True)  # paints the initial split
         app.harness.session.usage.input_tokens = 200
         app._live_run_tokens = 99
-        app._flush_streams()  # the per-frame tick picks up the live total
+        app._flush_streams()  # the per-frame tick picks up the live delta
         await pilot.pause()
-        assert "299 tokens" in str(app.query_one("#status-bar").render())
+        text = str(app.query_one("#status-bar").render())
+        assert "200↑" in text  # committed split
+        assert "+99" in text   # live in-flight delta picked up by the tick
 
 
 @pytest.mark.anyio
