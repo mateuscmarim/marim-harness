@@ -9,6 +9,8 @@ from ..compaction import (
     compact_history_with_summary,
 )
 from ..deps import Deps
+from ..hooks import events as hook_events
+from ..hooks.runner import base_payload
 from .store import SessionInfo, SessionManager, SessionStore
 
 
@@ -105,6 +107,18 @@ class SessionController:
             )
         if did:
             self.history = new_history
+            if self.deps.hooks is not None:
+                await self.deps.hooks.dispatch(
+                    hook_events.PRE_COMPACT,
+                    base_payload(
+                        hook_events.PRE_COMPACT,
+                        session_id=self.store.session_id if self.store is not None else "",
+                        cwd=str(self.deps.workspace_root),
+                        transcript_path=str(self.store.path) if self.store is not None else "",
+                        trigger="auto",
+                        custom_instructions="",
+                    ),
+                )
             if self.on_compact is not None:
                 self.on_compact(before, len(self.history))
 
