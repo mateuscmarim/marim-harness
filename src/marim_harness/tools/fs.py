@@ -9,6 +9,10 @@ from ..workspace.fs import WorkspaceError, resolve_in_workspace
 
 _MAX_GREP_HITS = 200
 _MAX_TREE_ENTRIES = 500
+# When no explicit ``limit`` is given, a read is capped at this many lines so a
+# blind read of a huge file can't flood the context. Pass ``offset``/``limit``
+# to page through the rest. An explicit ``limit`` overrides this cap.
+_DEFAULT_READ_LIMIT = 2000
 
 # Directories that are almost always noise in a tree view: listed, never expanded.
 _TREE_SKIP_DIRS = {
@@ -24,13 +28,38 @@ def _safe(root: Path, path: str) -> Path:
         raise ModelRetry(str(exc)) from exc
 
 
-def read_file(root: Path, path: str) -> str:
-    """Read a text file relative to the workspace root, returning numbered lines."""
+def read_file(
+    root: Path, path: str, offset: int = 1, limit: Optional[int] = None
+) -> str:
+    """Read a text file relative to the workspace root, returning numbered lines.
+
+    ``offset`` is the 1-based line to start at; ``limit`` caps how many lines are
+    returned. With no ``limit``, the read is capped at ``_DEFAULT_READ_LIMIT``
+    lines so a huge file can't flood the context. When the returned window isn't
+    the whole file, a ``[showing lines X-Y of N]`` footer is appended so the
+    reader knows to page on with ``offset``/``limit``."""
+    if offset < 1:
+        raise ModelRetry("offset must be >= 1 (1-based line number).")
+    if limit is not None and limit < 1:
+        raise ModelRetry("limit must be >= 1.")
     p = _safe(root, path)
     if not p.is_file():
         raise ModelRetry(f"not a file: {path}")
     lines = p.read_text(errors="replace").splitlines()
-    return "\n".join(f"{i}\t{line}" for i, line in enumerate(lines, 1))
+    total = len(lines)
+    if total == 0:
+        return ""
+    if offset > total:
+        raise ModelRetry(f"offset {offset} is past end of file ({total} lines).")
+    start = offset - 1
+    span = limit if limit is not None else _DEFAULT_READ_LIMIT
+    end = min(start + span, total)
+    body = "\n".join(
+        f"{i}\t{line}" for i, line in enumerate(lines[start:end], offset)
+    )
+    if start == 0 and end == total:
+        return body  # whole file — unchanged output
+    return f"{body}\n\n[showing lines {offset}-{end} of {total}]"
 
 
 def write_file(root: Path, path: str, content: str) -> str:

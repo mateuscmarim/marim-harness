@@ -399,13 +399,18 @@ def _last_instructions(messages) -> str:
 
 
 @pytest.mark.anyio
-async def test_project_instructions_injected_and_dynamic(tmp_path: Path):
+async def test_project_instructions_injected_and_dynamic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     captured: dict = {}
 
     def fn(messages, info):
         captured["instructions"] = _last_instructions(messages)
         return ModelResponse(parts=[TextPart(content="ok")])
 
+    # Isolate the global config dir so a real ~/.config/marim/AGENTS.md on the
+    # host can't leak its instructions into this project-scoped assertion.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     harness = Harness(
         model=FunctionModel(fn), provider=BuiltinToolProvider(), deps=deps,
