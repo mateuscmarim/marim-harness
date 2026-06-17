@@ -213,6 +213,35 @@ def _output_budget_instruction(max_output_chars: int) -> str:
     )
 
 
+def compose_subagent_task(
+    task: str,
+    *,
+    returns: str | None = None,
+    constraints: str | None = None,
+    context: str | None = None,
+) -> str:
+    """Assemble a spawn's freeform ``task`` with the optional structured fields
+    the spawner can attach, into one prompt for the sub-agent. The fields are a
+    checklist for the *delegator* — the things a clean-context sub-agent most
+    often isn't told: what to hand back (``returns``), what not to do
+    (``constraints``, soft — real reach is set by tool grants), and the
+    orchestrator-only background it can't see (``context``).
+
+    Additive and order-stable: with no fields set (or only blank ones), the task
+    is returned untouched, so the simple case stays one string. Sections appear
+    in a fixed order — task, then context, constraints, return — each only when
+    its field has content."""
+    sections = [task.rstrip()]
+    for label, value in (
+        ("Context", context),
+        ("Constraints", constraints),
+        ("Return", returns),
+    ):
+        if value is not None and value.strip():
+            sections.append(f"{label}:\n{value.strip()}")
+    return "\n\n".join(sections)
+
+
 def cap_subagent_output(
     output: str, max_output_chars: int | None, spill_path: str
 ) -> tuple[str, str | None]:

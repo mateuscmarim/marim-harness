@@ -88,6 +88,59 @@ async def test_spawn_agent_forwards_mcp_foreground(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_spawn_agent_composes_structured_task(tmp_path):
+    """returns/constraints/context are composed into the task the runner sees, so
+    the sub-agent gets the spawner's output contract, boundaries, and context."""
+    from types import SimpleNamespace
+
+    from marim_harness.deps import Deps
+    from marim_harness.permissions import Mode
+    from marim_harness.tools.provider import spawn_agent
+
+    calls = {}
+
+    async def fake_runner(type, task, tool_call_id, mcp_names, max_output_chars=None):
+        calls["task"] = task
+        return "ok"
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps.run_subagent = fake_runner
+    ctx = SimpleNamespace(deps=deps, tool_call_id="tc1")
+
+    await spawn_agent(
+        ctx, "explore", "map the auth flow",
+        constraints="read-only", context="refactored last week", returns="3 bullets",
+    )
+    t = calls["task"]
+    assert "map the auth flow" in t
+    assert "Constraints" in t and "read-only" in t
+    assert "Context" in t and "refactored last week" in t
+    assert "Return" in t and "3 bullets" in t
+
+
+@pytest.mark.anyio
+async def test_spawn_agent_without_structured_fields_passes_task_verbatim(tmp_path):
+    from types import SimpleNamespace
+
+    from marim_harness.deps import Deps
+    from marim_harness.permissions import Mode
+    from marim_harness.tools.provider import spawn_agent
+
+    calls = {}
+
+    async def fake_runner(type, task, tool_call_id, mcp_names, max_output_chars=None):
+        calls["task"] = task
+        return "ok"
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps.run_subagent = fake_runner
+    ctx = SimpleNamespace(deps=deps, tool_call_id="tc1")
+
+    await spawn_agent(ctx, "explore", "just do this")
+    assert calls["task"] == "just do this"
+
+
+@pytest.mark.anyio
 async def test_spawn_agent_forwards_mcp_background(tmp_path):
     from types import SimpleNamespace
 

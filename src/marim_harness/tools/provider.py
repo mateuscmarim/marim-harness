@@ -6,6 +6,7 @@ from pydantic_ai import Agent, RunContext
 from ..deps import Deps
 from ..jobs import render_jobs
 from ..tasks import Task, summarize
+from ..workspace.agents import compose_subagent_task
 from ..workspace.memory import global_scope, project_scope, read_memory, save_memory
 from ..workspace.skills import find_skill, read_bundled_file, read_skill_body
 from . import fetch, fs, shell, web
@@ -205,6 +206,9 @@ async def spawn_agent(
     background: bool = False,
     mcp: list[str] | str | None = None,
     max_output_chars: int | None = None,
+    returns: str | None = None,
+    constraints: str | None = None,
+    context: str | None = None,
 ) -> str:
     """Delegate a sub-task to an isolated sub-agent that runs on the same model
     and reports back. `type` is a built-in — `explore` (read-only investigation;
@@ -233,8 +237,21 @@ async def spawn_agent(
     replaced with a within-budget head + a pointer to that file, so nothing is
     lost — you can read the file if you need the detail. Leave it unset for an
     unbounded report. (For a background spawn it applies as a soft instruction
-    only.)"""
+    only.)
+
+    `returns`, `constraints`, and `context` are optional structured fields folded
+    into the sub-agent's prompt — all freeform text, all additive (omit any and
+    nothing changes). Use them to give a clean-context sub-agent what it can't
+    infer: `returns` is the output contract (what to hand back and in what shape —
+    the highest-leverage field, since otherwise you get a shape you have to re-ask
+    for); `constraints` are boundaries on how to work (a soft nudge — real tool
+    reach is still set by `type`/`mcp`, not prose); `context` is the orchestration-
+    level background it can't see (why this task, what's already known). The plain
+    `task` stays the one required ask."""
     mcp_names = _coerce_mcp(mcp)
+    task = compose_subagent_task(
+        task, returns=returns, constraints=constraints, context=context
+    )
     if background:
         if ctx.deps.run_background_agent is None:
             return "Background sub-agents are not available in this context."

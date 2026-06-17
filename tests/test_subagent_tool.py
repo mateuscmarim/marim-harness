@@ -13,8 +13,46 @@ from marim_harness.tools.provider import (
 from marim_harness.workspace.agents import (
     AgentDef,
     cap_subagent_output,
+    compose_subagent_task,
     subagent_instructions,
 )
+
+
+def test_compose_task_without_extras_is_unchanged():
+    assert compose_subagent_task("investigate the auth flow") == "investigate the auth flow"
+
+
+def test_compose_task_treats_blank_extras_as_absent():
+    # A model may pass empty strings for fields it has nothing to say about;
+    # those must not produce empty labelled sections.
+    out = compose_subagent_task("do it", returns="", constraints="   ", context="")
+    assert out == "do it"
+
+
+def test_compose_task_includes_only_the_sections_given():
+    out = compose_subagent_task("do it", constraints="read-only; stay in src/auth")
+    assert "do it" in out
+    assert "read-only; stay in src/auth" in out
+    assert "Constraints" in out
+    assert "Context" not in out
+    assert "Return" not in out
+
+
+def test_compose_task_orders_task_context_constraints_return():
+    out = compose_subagent_task(
+        "find the riskiest call sites",
+        returns="a ranked list of file:line with one-line reasons",
+        constraints="do not modify anything",
+        context="auth was refactored last week in src/auth/session.py",
+    )
+    # The task leads; the output contract, boundaries, and background each get a
+    # labelled section, in a stable order: task, context, constraints, return.
+    assert out.index("find the riskiest call sites") < out.index("Context")
+    assert out.index("Context") < out.index("Constraints")
+    assert out.index("Constraints") < out.index("Return")
+    assert "ranked list of file:line" in out
+    assert "do not modify anything" in out
+    assert "refactored last week" in out
 
 
 def _defn() -> AgentDef:
