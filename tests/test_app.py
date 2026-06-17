@@ -1389,6 +1389,72 @@ async def test_subagent_event_updates_token_usage_in_title(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_lone_nested_tool_call_is_not_wrapped_in_a_group(tmp_path: Path):
+    """A single nested tool call under a sub-agent mounts bare in the body — no
+    redundant group wrapper, which is what inflated the sub-agent's height."""
+    from pydantic_ai.messages import FunctionToolCallEvent, ToolCallPart
+
+    from marim_harness.interfaces.tui.widgets import (
+        SubAgentWidget,
+        ToolCallWidget,
+        ToolGroupWidget,
+    )
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        async def spawn():
+            yield _spawn_call("s1", "look")
+
+        await app._on_events(None, spawn())
+        await pilot.pause()
+        await app._on_subagent_event(
+            "s1",
+            FunctionToolCallEvent(
+                part=ToolCallPart(tool_name="grep", args={}, tool_call_id="t1")
+            ),
+        )
+        await pilot.pause()
+        parent = app._tool_widgets["s1"]
+        assert isinstance(parent, SubAgentWidget)
+        assert len(parent.query(ToolGroupWidget)) == 0
+        assert len(parent.query(ToolCallWidget)) == 1
+
+
+@pytest.mark.anyio
+async def test_nested_tool_burst_groups_under_a_subagent(tmp_path: Path):
+    """Two-or-more consecutive nested calls fold into one group, reparenting the
+    first (bare) call into it."""
+    from pydantic_ai.messages import FunctionToolCallEvent, ToolCallPart
+
+    from marim_harness.interfaces.tui.widgets import ToolCallWidget, ToolGroupWidget
+
+    def nested(call_id: str):
+        return FunctionToolCallEvent(
+            part=ToolCallPart(tool_name="read_file", args={}, tool_call_id=call_id)
+        )
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        async def spawn():
+            yield _spawn_call("s1", "look")
+
+        await app._on_events(None, spawn())
+        await pilot.pause()
+        await app._on_subagent_event("s1", nested("t1"))
+        await app._on_subagent_event("s1", nested("t2"))
+        await app._on_subagent_event("s1", nested("t3"))
+        await pilot.pause()
+        parent = app._tool_widgets["s1"]
+        groups = parent.query(ToolGroupWidget)
+        assert len(groups) == 1
+        assert len(groups.first().query(ToolCallWidget)) == 3
+
+
+@pytest.mark.anyio
 async def test_streaming_text_is_debounced_until_flush(tmp_path: Path):
     from pydantic_ai.messages import (
         PartDeltaEvent,
@@ -1541,10 +1607,28 @@ async def test_consecutive_tool_calls_group_into_one_widget(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_lone_tool_call_is_not_wrapped_in_a_group(tmp_path: Path):
+    """A single tool call in a run mounts as a bare ToolCallWidget — wrapping one
+    tool in a group is pure overhead (a redundant header and an extra click)."""
+    from marim_harness.interfaces.tui.widgets import ToolCallWidget, ToolGroupWidget
+
+    async def gen():
+        yield _call("read_file", "c1")
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._on_events(None, gen())
+        await pilot.pause()
+        assert len(app.query(ToolGroupWidget)) == 0
+        assert len(app.query(ToolCallWidget)) == 1
+
+
+@pytest.mark.anyio
 async def test_text_between_tool_calls_breaks_the_group(tmp_path: Path):
-    """Assistant text is a boundary: tool calls on either side of it land in
-    separate groups, so the log reflects the model's actual cadence."""
-    from marim_harness.interfaces.tui.widgets import ToolGroupWidget
+    """Assistant text is a boundary: single tool calls on either side of it stay
+    bare (no group), so the log reflects the model's actual cadence."""
+    from marim_harness.interfaces.tui.widgets import ToolCallWidget, ToolGroupWidget
 
     async def gen():
         yield _call("read_file", "c1")
@@ -1556,7 +1640,8 @@ async def test_text_between_tool_calls_breaks_the_group(tmp_path: Path):
         await pilot.pause()
         await app._on_events(None, gen())
         await pilot.pause()
-        assert len(app.query(ToolGroupWidget)) == 2
+        assert len(app.query(ToolGroupWidget)) == 0
+        assert len(app.query(ToolCallWidget)) == 2
 
 
 @pytest.mark.anyio
