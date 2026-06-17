@@ -23,11 +23,31 @@ Each server is tool-prefixed with its config name, so its tools surface as
 """
 
 import json
+import os
 import warnings
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from ..config import config_dir
 from ..permissions import Mode
+
+
+def mcp_stderr_log_path() -> Path:
+    """Where stdio MCP servers' stderr is captured, off the terminal."""
+    return config_dir() / "mcp-stderr.log"
+
+
+def _open_mcp_stderr_log():
+    """Open the capture file for an MCP server's stderr. A stdio server's stderr
+    is otherwise inherited from the parent process, so a startup banner (e.g.
+    ``[@agentmemory/mcp] proxying to ...``) prints straight onto the Textual TUI.
+    Falls back to the null device if the log file can't be created."""
+    try:
+        path = mcp_stderr_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return open(path, "a", encoding="utf-8")
+    except OSError:
+        return open(os.devnull, "w", encoding="utf-8")
 
 
 def global_mcp_config_path() -> Path:
@@ -158,6 +178,34 @@ def build_mcp_servers(specs: dict) -> tuple[list, list[str]]:
             MCPServerStreamableHTTP,
         )
 
+        class _QuietStdioServer(MCPServerStdio):
+            """``MCPServerStdio`` that routes the child's stderr to a log file
+            instead of inheriting the parent terminal. pydantic-ai builds
+            ``stdio_client`` with the default ``errlog=sys.stderr``; we override
+            ``client_streams`` to pass our own so server banners never paint the
+            TUI. Resolves ``stdio_client`` off its module at call time so the
+            errlog destination stays observable/patchable."""
+
+            @asynccontextmanager
+            async def client_streams(self):
+                import mcp.client.stdio as mcp_stdio
+                from mcp.client.stdio import StdioServerParameters
+
+                params = StdioServerParameters(
+                    command=self.command,
+                    args=list(self.args),
+                    env=self.env,
+                    cwd=self.cwd,
+                )
+                errlog = _open_mcp_stderr_log()
+                try:
+                    async with mcp_stdio.stdio_client(
+                        server=params, errlog=errlog
+                    ) as streams:
+                        yield streams
+                finally:
+                    errlog.close()
+
         servers: list = []
         notes: list[str] = []
         for name, spec in specs.items():
@@ -166,7 +214,7 @@ def build_mcp_servers(specs: dict) -> tuple[list, list[str]]:
                 continue
             hook = make_approval_hook(name, bool(spec.get("trust", False)))
             if "command" in spec:
-                server = MCPServerStdio(
+                server = _QuietStdioServer(
                     command=spec["command"],
                     args=list(spec.get("args", [])),
                     env=spec.get("env"),
