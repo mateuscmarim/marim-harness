@@ -484,6 +484,42 @@ async def test_resume_replays_history_into_log(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_gated_tool_renders_one_widget_not_two(tmp_path: Path):
+    """A gated tool (bash) goes through the deferred-approval flow, which makes
+    pydantic_ai emit the call event twice for one tool_call_id (approval pass +
+    execution pass). The log must still show a single finished ToolCallWidget,
+    not an orphaned 'pending' entry plus a finished one."""
+    from pydantic_ai.models.function import FunctionModel, DeltaToolCall
+
+    from marim_harness.agent import Harness
+    from marim_harness.tools.provider import BuiltinToolProvider
+    from marim_harness.interfaces.tui.widgets import ToolCallWidget
+
+    state = {"n": 0}
+
+    async def stream_fn(messages, info):
+        state["n"] += 1
+        if state["n"] == 1:
+            yield {0: DeltaToolCall(
+                name="bash", json_args='{"command": "echo hi"}', tool_call_id="b1")}
+        else:
+            yield "done"
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    harness = Harness(FunctionModel(stream_function=stream_fn),
+                      BuiltinToolProvider(), deps, instructions="test")
+    app = HarnessApp(harness)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("run echo")
+        await pilot.pause()
+        tools = list(app.query(ToolCallWidget))
+        assert len(tools) == 1
+        assert tools[0].status == "done"
+        assert "hi" in tools[0].result_text
+
+
+@pytest.mark.anyio
 async def test_compaction_shows_notice_in_log(tmp_path: Path):
     from marim_harness.interfaces.tui.widgets import NoticeMessage
 

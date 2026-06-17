@@ -438,6 +438,11 @@ class HarnessApp(App):
                 if self._current_assistant is not None:
                     self._current_assistant.append(event.delta.content_delta or "")
             elif isinstance(event, FunctionToolCallEvent):
+                # A gated tool re-emits its call event on the post-approval
+                # execution pass; reuse the widget already mounted for this id
+                # rather than mounting an orphaned duplicate.
+                if event.part.tool_call_id in self._tool_widgets:
+                    continue
                 args = event.part.args_as_dict()
                 # A background spawn returns a job id immediately and doesn't
                 # stream its steps, so render it as a plain tool call (the live
@@ -482,6 +487,10 @@ class HarnessApp(App):
             if msg is not None:
                 msg.append(event.delta.content_delta or "")
         elif isinstance(event, FunctionToolCallEvent):
+            # A gated tool re-emits its call event on the post-approval
+            # execution pass; reuse the already-mounted widget for this id.
+            if event.part.tool_call_id in self._tool_widgets:
+                return
             parent.note_tool(event.part.tool_name)  # live title status
             widget = ToolCallWidget(event.part.tool_name, event.part.args_as_dict())
             self._tool_widgets[event.part.tool_call_id] = widget
