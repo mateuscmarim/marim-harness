@@ -188,6 +188,36 @@ def test_build_skips_malformed_spec():
     assert any("bad" in w for w in warnings)  # the bad one is reported, not fatal
 
 
+@pytest.mark.anyio
+async def test_stdio_server_routes_stderr_off_terminal(monkeypatch):
+    """A stdio MCP server's stderr must not reach the parent terminal — otherwise
+    a server's startup banner (e.g. '[@agentmemory/mcp] proxying to ...') paints
+    over the TUI. The server must hand stdio_client a real, writable errlog that
+    is not ``sys.stderr``."""
+    import sys
+    from contextlib import asynccontextmanager
+
+    import mcp.client.stdio as mcp_stdio
+
+    captured: dict = {}
+
+    @asynccontextmanager
+    async def fake_stdio_client(server, errlog=sys.stderr):
+        captured["errlog"] = errlog
+        yield ("read", "write")
+
+    monkeypatch.setattr(mcp_stdio, "stdio_client", fake_stdio_client)
+
+    servers, _ = build_mcp_servers({"files": {"command": "echo", "args": ["hi"]}})
+    (server,) = servers
+    async with server.client_streams() as streams:
+        assert streams == ("read", "write")
+
+    errlog = captured["errlog"]
+    assert errlog is not sys.stderr  # not the terminal
+    assert hasattr(errlog, "write")  # a real writable stream
+
+
 # --- approval hook ---------------------------------------------------------
 
 
