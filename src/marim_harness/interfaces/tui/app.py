@@ -37,6 +37,7 @@ from .widgets import (
     UserMessage,
 )
 from .widgets import format_cost as _format_cost
+from .widgets import format_token_split as _format_token_split
 from .widgets import human_tokens as _human_tokens
 
 _BANNER = (
@@ -227,18 +228,18 @@ class HarnessApp(App):
 
     def _status_text(self) -> Content:
         cfg = getattr(self.harness, "model_label", "model")
-        # Committed session usage plus the current run's in-flight tokens, so the
-        # counter advances during a turn rather than only when it finishes.
-        spent = getattr(self.harness.session, "total_tokens", 0) + self._live_run_tokens
         used = estimate_tokens(self.harness.session.history)
         max_ctx = getattr(self.harness.session, "max_context_tokens", 0) or 0
         pct = round(used / max_ctx * 100) if max_ctx else 0
         ctx_text = f"ctx {_human_tokens(used)}/{_human_tokens(max_ctx)} ({pct}%)"
         ctx_style = "red" if pct >= 90 else "yellow" if pct >= 75 else ""
-        # Spend for the committed usage (billed when the provider reports it,
-        # else estimated); appended to the live counter when the model is priced.
+        # The committed in/cached/out split, then the current run's in-flight
+        # tokens as a live +N delta (they aren't split until the turn commits),
+        # then spend — billed when the provider reports it, else estimated.
+        tokens_text = _format_token_split(self.harness.session.usage)
+        if self._live_run_tokens:
+            tokens_text += f" +{_human_tokens(self._live_run_tokens)}"
         cost, _ = resolve_cost(self.harness.session.usage, self.harness.model_id)
-        tokens_text = f"{_human_tokens(spent)} tokens"
         if cost is not None:
             tokens_text += f" · {_format_cost(cost)}"
         mode = self.harness.deps.mode.value

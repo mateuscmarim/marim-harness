@@ -52,22 +52,18 @@ def format_cost(cost: float) -> str:
     return f"${cost:.4f}" if cost < 0.01 else f"${cost:.2f}"
 
 
-def format_usage(usage, model_ref) -> str:
-    """The status-bar usage line: the in / cached / out token split with an
-    estimated cost appended when the model is priced — e.g.
-    ``1k in · 55k cached · 2k out · $0.07``. Cost is dropped when unknown."""
-    from ...usage import estimate_cost, split_tokens
+def format_token_split(usage) -> str:
+    """The compact status-bar token split: ``1k↑ 55k⚡ 2k↓`` — ``↑`` uncached
+    input, ``⚡`` cached (read + write), ``↓`` output. All three buckets always
+    render (even at zero) so the bar keeps a stable width."""
+    from ...usage import split_tokens
 
     s = split_tokens(usage)
-    parts = [
-        f"{human_tokens(s.uncached_input)} in",
-        f"{human_tokens(s.cached_input)} cached",
-        f"{human_tokens(s.output)} out",
-    ]
-    cost = estimate_cost(usage, model_ref)
-    if cost is not None:
-        parts.append(format_cost(cost))
-    return " · ".join(parts)
+    return (
+        f"{human_tokens(s.uncached_input)}↑ "
+        f"{human_tokens(s.cached_input)}⚡ "
+        f"{human_tokens(s.output)}↓"
+    )
 
 
 class ToolCallWidget(Collapsible):
