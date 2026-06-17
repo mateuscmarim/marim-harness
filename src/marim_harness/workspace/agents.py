@@ -183,12 +183,53 @@ def effective_tools(defn: AgentDef, *, allow_gated: bool) -> frozenset[str]:
     return defn.tools - GATED_TOOLS
 
 
-def subagent_instructions(defn: AgentDef, workspace_root) -> str:
-    """The system prompt for a spawned sub-agent: its role plus where it works."""
-    return (
+def subagent_instructions(
+    defn: AgentDef, workspace_root, max_output_chars: int | None = None
+) -> str:
+    """The system prompt for a spawned sub-agent: its role plus where it works,
+    and — when the spawner set one — a soft output budget it should distill
+    toward. The budget is a target the model summarizes for, not a guillotine on
+    its return value; ``cap_subagent_output`` is the lossless backstop."""
+    base = (
         f"{defn.prompt}\n\nYou are operating inside the workspace at "
         f"{workspace_root}. All file paths are relative to it."
     )
+    if max_output_chars is not None:
+        base += _output_budget_instruction(max_output_chars)
+    return base
+
+
+def _output_budget_instruction(max_output_chars: int) -> str:
+    """The soft-target budget line appended to a sub-agent's instructions: name
+    the size, lead with the conclusion, summarize to fit rather than overrun."""
+    return (
+        f"\n\nOutput budget: keep your final report to about {max_output_chars} "
+        "characters. Lead with the conclusion, then supporting detail in "
+        "descending importance. Summarize to fit — do not pad, and do not get "
+        "cut off mid-thought; if there is more than fits, give the key findings "
+        "and note what you left out. A hard backstop applies: anything over "
+        "budget is moved to a file and replaced with a pointer, so put what "
+        "matters first."
+    )
+
+
+def cap_subagent_output(
+    output: str, max_output_chars: int | None, spill_path: str
+) -> tuple[str, str | None]:
+    """Enforce a spawner-set output cap losslessly. Returns ``(text, spill)``:
+    ``text`` is what the main agent receives, ``spill`` is the full output to
+    write to ``spill_path`` (``None`` when nothing needs spilling).
+
+    Under budget (or no cap) the output passes through untouched. Over budget,
+    the full output is returned as ``spill`` for the caller to persist, and
+    ``text`` is the head of the report — where the sub-agent was told to front-
+    load the conclusion — plus a pointer to the file, kept within the budget so
+    the cap the spawner asked for actually holds."""
+    if max_output_chars is None or len(output) <= max_output_chars:
+        return output, None
+    note = f"\n\n[output capped at {max_output_chars} chars — full report at {spill_path}]"
+    head = output[: max(0, max_output_chars - len(note))]
+    return head + note, output
 
 
 def agents_index_text(defs: list[AgentDef]) -> str:

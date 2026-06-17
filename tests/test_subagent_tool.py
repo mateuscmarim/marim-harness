@@ -10,6 +10,63 @@ from marim_harness.tools.provider import (
     SUBAGENT_TOOLS,
     BuiltinToolProvider,
 )
+from marim_harness.workspace.agents import (
+    AgentDef,
+    cap_subagent_output,
+    subagent_instructions,
+)
+
+
+def _defn() -> AgentDef:
+    return AgentDef(
+        name="explore",
+        description="read-only",
+        prompt="You are a sub-agent.",
+        tools=frozenset(),
+        source="built-in",
+    )
+
+
+def test_instructions_without_budget_have_no_budget_text(tmp_path):
+    text = subagent_instructions(_defn(), tmp_path)
+    assert "budget" not in text.lower()
+
+
+def test_instructions_with_budget_state_target_and_lead_with_conclusion(tmp_path):
+    text = subagent_instructions(_defn(), tmp_path, max_output_chars=500)
+    # The original role survives, and the budget is a SOFT target the sub-agent
+    # distills toward: it names the number, says lead-with-conclusion, and says
+    # summarize rather than get truncated.
+    assert "You are a sub-agent." in text
+    assert "500" in text
+    assert "conclusion" in text.lower()
+    assert "summar" in text.lower()
+
+
+def test_cap_under_budget_returns_output_unchanged():
+    out = "short report"
+    text, spill = cap_subagent_output(out, 500, "report.txt")
+    assert text == out
+    assert spill is None
+
+
+def test_cap_none_is_a_passthrough():
+    out = "x" * 10_000
+    text, spill = cap_subagent_output(out, None, "report.txt")
+    assert text == out
+    assert spill is None
+
+
+def test_cap_over_budget_spills_full_and_returns_pointer_within_budget():
+    out = "CONCLUSION first. " + "filler detail. " * 500
+    text, spill = cap_subagent_output(out, 200, ".marim/sub/abc.md")
+    # Full output is handed back for the caller to spill to the file.
+    assert spill == out
+    # What the main agent receives stays within its budget and points at the file.
+    assert len(text) <= 200
+    assert ".marim/sub/abc.md" in text
+    # The head — where the conclusion was front-loaded — is preserved.
+    assert text.startswith("CONCLUSION first.")
 
 
 def _tool_names(agent: Agent, deps: Deps) -> set[str]:

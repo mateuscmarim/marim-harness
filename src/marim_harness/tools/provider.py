@@ -204,6 +204,7 @@ async def spawn_agent(
     task: str,
     background: bool = False,
     mcp: list[str] | str | None = None,
+    max_output_chars: int | None = None,
 ) -> str:
     """Delegate a sub-task to an isolated sub-agent that runs on the same model
     and reports back. `type` is a built-in — `explore` (read-only investigation;
@@ -222,19 +223,32 @@ async def spawn_agent(
     Pass the names listed as enabled in the sub-agents index — e.g.
     `mcp=["mddocs"]` lets the sub-agent use that server's tools, gated the same
     way your own MCP calls are. Unknown or disabled names are ignored and noted
-    in the report."""
+    in the report.
+
+    `max_output_chars` caps the report this spawn returns into your context — set
+    it when you're fanning out and want bounded inflow. It's a budget the
+    sub-agent distills toward (it's told to lead with the conclusion and
+    summarize to fit), not a blind truncation. For a foreground spawn it's also
+    enforced losslessly: a report over budget is written to a workspace file and
+    replaced with a within-budget head + a pointer to that file, so nothing is
+    lost — you can read the file if you need the detail. Leave it unset for an
+    unbounded report. (For a background spawn it applies as a soft instruction
+    only.)"""
     mcp_names = _coerce_mcp(mcp)
     if background:
         if ctx.deps.run_background_agent is None:
             return "Background sub-agents are not available in this context."
         label = f"{type}: {task}"
         job_id = ctx.deps.jobs.register(
-            "agent", label, ctx.deps.run_background_agent(type, task, mcp_names)
+            "agent", label,
+            ctx.deps.run_background_agent(type, task, mcp_names, max_output_chars),
         )
         return f"Started {job_id} (agent) — {label[:60]}"
     if ctx.deps.run_subagent is None:
         return "Sub-agents are not available in this context."
-    return await ctx.deps.run_subagent(type, task, ctx.tool_call_id, mcp_names)
+    return await ctx.deps.run_subagent(
+        type, task, ctx.tool_call_id, mcp_names, max_output_chars
+    )
 
 
 def write_file(ctx: RunContext[Deps], path: str, content: str) -> str:

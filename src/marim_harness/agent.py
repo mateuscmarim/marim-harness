@@ -5,11 +5,13 @@ from pydantic_ai.messages import FunctionToolCallEvent, FunctionToolResultEvent
 from pydantic_ai.settings import ModelSettings
 
 from .workspace import (
+    cap_subagent_output,
     discover_agents,
     effective_tools,
     find_agent,
     subagent_instructions,
 )
+from .tools import fs
 from .compaction import (
     Summarizer,
     Titler,
@@ -252,11 +254,13 @@ class Harness:
 
         return handler
 
-    def _build_subagent(self, type: str):
+    def _build_subagent(self, type: str, max_output_chars: int | None = None):
         """Build an isolated sub-agent of ``type`` on the current model, with its
         reach decided up front: gated tools only in auto mode, so a run never
-        needs an approval round. Returns ``(agent, None)`` or, for an unknown
-        type, ``(None, message)`` listing what's available."""
+        needs an approval round. ``max_output_chars``, when the spawner set one,
+        is folded into the sub-agent's instructions as a soft output budget.
+        Returns ``(agent, None)`` or, for an unknown type, ``(None, message)``
+        listing what's available."""
         defn = find_agent(self.deps.workspace_root, type)
         if defn is None:
             names = ", ".join(a.name for a in discover_agents(self.deps.workspace_root))
@@ -265,14 +269,28 @@ class Harness:
         sub = Agent(
             self.current_model,
             deps_type=Deps,
-            instructions=subagent_instructions(defn, self.deps.workspace_root),
+            instructions=subagent_instructions(
+                defn, self.deps.workspace_root, max_output_chars
+            ),
             model_settings=_DEFAULT_MODEL_SETTINGS,
         )
         self.provider.register_subagent(sub, effective_tools(defn, allow_gated=allow_gated))
         return sub, None
 
+    def _cap_output(self, output: str, max_output_chars: int | None, ref: str) -> str:
+        """Apply a spawner-set output cap to a sub-agent's report. Over budget,
+        the full report is spilled to a workspace file and the main agent gets a
+        within-budget head + pointer; otherwise the report passes through. The
+        cap is lossless — nothing is discarded, only relocated."""
+        rel = f".marim/subagent-output/{ref}.md"
+        text, spill = cap_subagent_output(output, max_output_chars, rel)
+        if spill is not None:
+            fs.write_file(self.deps.workspace_root, rel, spill)
+        return text
+
     async def _run_subagent(
-        self, type: str, task: str, stream_id: str, mcp_names: list[str] | None = None
+        self, type: str, task: str, stream_id: str,
+        mcp_names: list[str] | None = None, max_output_chars: int | None = None,
     ) -> str:
         """Spawn one isolated sub-agent of ``type``, run it to completion on
         ``task``, and return its final report — streaming its events to the UI
@@ -280,8 +298,11 @@ class Harness:
         starts a fresh conversation, so the sub-agent gets a clean context.
         ``mcp_names`` is the MCP servers the main agent granted this spawn (none
         by default); granted servers gate via the same approval hook as the main
-        agent's."""
-        sub, err = self._build_subagent(type)
+        agent's. ``max_output_chars`` is an optional soft output budget the
+        spawner sets: the sub-agent is told to distill toward it, and any report
+        over budget is spilled to a file and replaced with a within-budget
+        pointer so the inflow stays bounded."""
+        sub, err = self._build_subagent(type, max_output_chars)
         if err is not None:
             return err
         granted, unknown = self.mcp.granted_servers(mcp_names)
@@ -305,16 +326,21 @@ class Harness:
         # A foreground spawn runs inside the current turn, so its spend is folded
         # into the session total here and persisted by run_turn's _persist.
         self.session.usage += result.usage
-        return self.mcp.grant_note(unknown) + result.output
+        capped = self._cap_output(result.output, max_output_chars, stream_id)
+        return self.mcp.grant_note(unknown) + capped
 
     async def _run_background_subagent(
-        self, type: str, task: str, mcp_names: list[str] | None = None
+        self, type: str, task: str, mcp_names: list[str] | None = None,
+        max_output_chars: int | None = None,
     ) -> str:
         """Run a sub-agent as a detached background job: same isolation, mode-based
         reach, and MCP grant as a foreground spawn, but with no event streaming —
         the job's result is its final report, surfaced when the agent pulls it.
-        Any unknown-server note rides along on that report."""
-        sub, err = self._build_subagent(type)
+        Any unknown-server note rides along on that report. ``max_output_chars``
+        applies only as a soft instruction here (the report is pulled later via
+        the jobs API, which has no spill hook), so a background report is not
+        hard-capped the way a foreground one is."""
+        sub, err = self._build_subagent(type, max_output_chars)
         if err is not None:
             return err
         granted, unknown = self.mcp.granted_servers(mcp_names)

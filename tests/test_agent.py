@@ -116,6 +116,44 @@ async def test_run_turn_persists_to_store(tmp_path: Path):
     assert usage.total_tokens == harness.session.total_tokens
 
 
+@pytest.mark.anyio
+async def test_subagent_output_cap_spills_full_and_returns_pointer(tmp_path: Path):
+    """When the spawner sets max_output_chars, an over-budget sub-agent report is
+    written to a file and the main agent receives a within-budget head + pointer,
+    not the raw dump — so a per-call cap actually bounds the inflow."""
+    long = "CONCLUSION first. " + "filler. " * 500
+
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content=long)])
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    harness = _make_harness(FunctionModel(fn), deps)
+    result = await harness._run_subagent("explore", "go", "tc-1", None, 200)
+
+    assert len(result) <= 200
+    assert result.startswith("CONCLUSION first.")
+    spill = tmp_path / ".marim" / "subagent-output" / "tc-1.md"
+    assert spill.read_text() == long
+    assert ".marim/subagent-output/tc-1.md" in result
+
+
+@pytest.mark.anyio
+async def test_subagent_no_cap_returns_full_output(tmp_path: Path):
+    """Without a cap, the sub-agent's full report passes through unchanged and no
+    spill file is created."""
+    long = "x" * 5000
+
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content=long)])
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    harness = _make_harness(FunctionModel(fn), deps)
+    result = await harness._run_subagent("explore", "go", "tc-2", None, None)
+
+    assert result == long
+    assert not (tmp_path / ".marim" / "subagent-output").exists()
+
+
 def _raising_model() -> FunctionModel:
     """A model that fails mid-turn (simulates an API outage, or — the reported
     case — a render error raised by the TUI's event_stream_handler)."""
@@ -1737,7 +1775,7 @@ def _capture_subagent(h, report="report"):
             cap["toolsets"] = kwargs.get("toolsets")
             return SimpleNamespace(output=report, usage=RunUsage())
 
-    h._build_subagent = lambda type: (_StubAgent(), None)
+    h._build_subagent = lambda type, max_output_chars=None: (_StubAgent(), None)
     return cap
 
 

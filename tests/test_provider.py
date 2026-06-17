@@ -73,17 +73,18 @@ async def test_spawn_agent_forwards_mcp_foreground(tmp_path):
 
     calls = {}
 
-    async def fake_runner(type, task, tool_call_id, mcp_names):
-        calls["args"] = (type, task, tool_call_id, mcp_names)
+    async def fake_runner(type, task, tool_call_id, mcp_names, max_output_chars=None):
+        calls["args"] = (type, task, tool_call_id, mcp_names, max_output_chars)
         return "ok"
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     deps.run_subagent = fake_runner
     ctx = SimpleNamespace(deps=deps, tool_call_id="tc1")
 
-    out = await spawn_agent(ctx, "explore", "read docs", mcp=["mddocs"])
+    out = await spawn_agent(ctx, "explore", "read docs", mcp=["mddocs"], max_output_chars=500)
     assert out == "ok"
-    assert calls["args"] == ("explore", "read docs", "tc1", ["mddocs"])
+    # mcp names and the spawner's output cap both forward to the runner.
+    assert calls["args"] == ("explore", "read docs", "tc1", ["mddocs"], 500)
 
 
 @pytest.mark.anyio
@@ -96,7 +97,7 @@ async def test_spawn_agent_forwards_mcp_background(tmp_path):
 
     captured = {}
 
-    def fake_bg(type, task, mcp_names):
+    def fake_bg(type, task, mcp_names, max_output_chars=None):
         captured["args"] = (type, task, mcp_names)
         async def _coro():
             return "bg-report"
@@ -123,7 +124,7 @@ async def test_spawn_agent_default_mcp_is_none(tmp_path):
 
     calls = {}
 
-    async def fake_runner(type, task, tool_call_id, mcp_names):
+    async def fake_runner(type, task, tool_call_id, mcp_names, max_output_chars=None):
         calls["mcp_names"] = mcp_names
         return "ok"
 
@@ -170,7 +171,7 @@ async def test_spawn_agent_coerces_stringified_mcp(tmp_path):
 
     calls = {}
 
-    async def fake_runner(type, task, tool_call_id, mcp_names):
+    async def fake_runner(type, task, tool_call_id, mcp_names, max_output_chars=None):
         calls["mcp_names"] = mcp_names
         return "ok"
 
@@ -192,7 +193,7 @@ async def test_spawn_agent_coerces_comma_separated_mcp_background(tmp_path):
 
     captured = {}
 
-    def fake_bg(type, task, mcp_names):
+    def fake_bg(type, task, mcp_names, max_output_chars=None):
         captured["mcp_names"] = mcp_names
 
         async def _coro():
