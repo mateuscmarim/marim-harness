@@ -18,6 +18,10 @@ hook scripts run unmodified. Two layers:
    ```bash
    export CLAUDE_PLUGIN_ROOT="$(npm root -g)/@agentmemory/agentmemory/plugin"
    ```
+   The hook commands resolve `${CLAUDE_PLUGIN_ROOT}` at fire time, so this must
+   be set in the environment that launches marim. Add the `export` to your shell
+   profile (`~/.zshrc`, `~/.bashrc`, …) so it persists across sessions — a value
+   set only in one terminal won't be seen by a marim started later or elsewhere.
 3. Copy `hooks.json` to `~/.config/marim/hooks.json` and merge `mcp.json`
    into `~/.config/marim/mcp.json`.
 4. Start marim. `/mcp` shows the `agentmemory` server; hooks fire automatically.
