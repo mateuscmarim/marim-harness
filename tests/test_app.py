@@ -44,6 +44,74 @@ async def test_status_bar_shows_token_count(tmp_path: Path):
         assert "20 tokens" in str(bar.render())
 
 
+@pytest.mark.anyio
+async def test_status_bar_includes_live_run_tokens_while_streaming(tmp_path: Path):
+    """While a turn streams, the counter must include the in-flight run's tokens
+    (not yet committed to session usage), so it climbs live instead of only
+    jumping when the turn ends."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.harness.usage.input_tokens = 100  # committed from prior turns
+        app._set_busy(True)
+        app._live_run_tokens = 50  # in-flight this turn
+        app._refresh_status()
+        await pilot.pause()
+        assert "150 tokens" in str(app.query_one("#status-bar").render())
+
+
+@pytest.mark.anyio
+async def test_on_events_tracks_live_run_tokens_from_ctx_usage(tmp_path: Path):
+    """The main event handler reads the run's live token total off ctx.usage —
+    the same source the sub-agent handler already uses."""
+    import types
+
+    from pydantic_ai.messages import (
+        FunctionToolCallEvent,
+        ToolCallPart,
+    )
+
+    ctx = types.SimpleNamespace(usage=types.SimpleNamespace(total_tokens=1234))
+
+    async def gen():
+        yield FunctionToolCallEvent(
+            part=ToolCallPart(tool_name="read_file", args={}, tool_call_id="c1")
+        )
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._on_events(ctx, gen())
+        assert app._live_run_tokens == 1234
+
+
+@pytest.mark.anyio
+async def test_live_run_tokens_reset_when_turn_ends(tmp_path: Path):
+    """At turn end the harness commits the run into session usage; the in-flight
+    counter must reset so the committed tokens aren't shown twice."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._live_run_tokens = 500
+        app._set_busy(False)
+        assert app._live_run_tokens == 0
+
+
+@pytest.mark.anyio
+async def test_flush_refreshes_status_while_busy(tmp_path: Path):
+    """The shared streaming flush tick repaints the status bar while busy, so the
+    live token counter advances without waiting for the turn to finish."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._set_busy(True)  # paints "0 tokens"
+        app.harness.usage.input_tokens = 200
+        app._live_run_tokens = 99
+        app._flush_streams()  # the per-frame tick picks up the live total
+        await pilot.pause()
+        assert "299 tokens" in str(app.query_one("#status-bar").render())
+
+
 def test_human_tokens_formatting():
     from marim_harness.interfaces.tui.app import _human_tokens
 

@@ -85,6 +85,11 @@ class HarnessApp(App):
         self._sub_assistants: dict[str, AssistantMessage] = {}
         self._busy = False
         self._turn_worker = None
+        # The current turn's in-flight token total, read off ctx.usage as events
+        # stream. Session usage only commits when a run finishes, so this is added
+        # on top to make the counter climb live; reset to 0 once the turn ends
+        # (and the run is folded into session usage) so it's never counted twice.
+        self._live_run_tokens = 0
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -185,7 +190,9 @@ class HarnessApp(App):
 
     def _status_text(self) -> Content:
         cfg = getattr(self.harness, "model_label", "model")
-        spent = getattr(self.harness, "total_tokens", 0)
+        # Committed session usage plus the current run's in-flight tokens, so the
+        # counter advances during a turn rather than only when it finishes.
+        spent = getattr(self.harness, "total_tokens", 0) + self._live_run_tokens
         used = estimate_tokens(self.harness.history)
         max_ctx = getattr(self.harness, "max_context_tokens", 0) or 0
         pct = round(used / max_ctx * 100) if max_ctx else 0
@@ -221,6 +228,10 @@ class HarnessApp(App):
 
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
+        if not busy:
+            # The finished run is now folded into session usage by run_turn; drop
+            # the in-flight tally so it isn't added on top a second time.
+            self._live_run_tokens = 0
         self._refresh_status()
 
     def _render_tasks(self) -> None:
@@ -372,6 +383,10 @@ class HarnessApp(App):
         grown content pinned to the bottom (flush is a no-op when nothing buffered)."""
         for m in self.query(AssistantMessage):
             m.flush()
+        # Piggyback on the same per-frame tick to repaint the status bar while a
+        # turn is running, so the live token counter advances as the run streams.
+        if self._busy:
+            self._refresh_status()
 
     async def _request_approval(self, call) -> object:
         approved = await self.push_screen_wait(
@@ -429,7 +444,16 @@ class HarnessApp(App):
 
     async def _on_events(self, ctx, events) -> None:
         log = self.query_one("#log", VerticalScroll)
+        # Fresh run: clear any in-flight tally from a prior approval round so the
+        # next round's usage replaces it rather than stacking (each agent.run gets
+        # its own ctx.usage, cumulative for that run).
+        self._live_run_tokens = 0
         async for event in events:
+            # ctx.usage carries the run's live running total (ctx is None in some
+            # unit tests); fold it into the status counter via the flush tick.
+            self._live_run_tokens = (
+                getattr(getattr(ctx, "usage", None), "total_tokens", 0) or 0
+            )
             if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
                 self._current_assistant = AssistantMessage()
                 await log.mount(self._current_assistant)
