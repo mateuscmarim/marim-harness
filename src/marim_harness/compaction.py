@@ -1,3 +1,7 @@
+import logging
+
+logger = logging.getLogger(__name__)
+
 """Context compaction: keep a conversation under a token budget.
 
 When a history grows past the budget we keep the head (the original task anchor)
@@ -159,7 +163,8 @@ async def compact_history_with_summary(
     summary: Optional[str]
     try:
         summary = await summarizer(middle)
-    except Exception:
+    except Exception as exc:
+        logger.warning("compaction summarizer failed, falling back to truncation: %s", exc)
         summary = None
 
     if summary:

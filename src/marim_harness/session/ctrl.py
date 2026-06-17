@@ -1,6 +1,9 @@
+import logging
 from typing import Callable, Optional
 
 from pydantic_ai.usage import RunUsage
+
+logger = logging.getLogger(__name__)
 
 from ..compaction import (
     Summarizer,
@@ -133,7 +136,8 @@ class SessionController:
         old = self.store.name
         try:
             title = await self.titler(self.history)
-        except Exception:
+        except Exception as exc:
+            logger.warning("autoname titler failed: %s", exc)
             return
         if not title:
             return
@@ -151,7 +155,8 @@ class SessionController:
         elif self.titler is not None and self.history:
             try:
                 new = await self.titler(self.history)
-            except Exception:
+            except Exception as exc:
+                logger.warning("session rename titler failed: %s", exc)
                 return None
         else:
             return None

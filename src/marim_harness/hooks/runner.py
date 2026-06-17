@@ -4,10 +4,13 @@ timeout discipline from ``tools/shell.py``. Never raises."""
 
 import asyncio
 import json
+import logging
 import os
 import re
 import signal
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from .events import INJECTING_EVENTS, POST_TOOL_USE, PRE_TOOL_USE
 
@@ -121,7 +124,8 @@ class HookRunner:
                 timeout = spec.get("timeout", _DEFAULT_TIMEOUT)
                 try:
                     out = await _run_one(str(command), payload, timeout)
-                except Exception:
+                except Exception as exc:
+                    logger.warning("hook %r failed: %s", command, exc)
                     out = None  # belt-and-suspenders: a hook never breaks a turn
                 if out and event in INJECTING_EVENTS:
                     ctx = _extract_context(out)

@@ -14,11 +14,14 @@ capped at ``_MAX_BYTES``; a response that *declares* a size over
 from __future__ import annotations
 
 import hashlib
+import logging
 from pathlib import Path
 from typing import Optional
 
 import httpx
 from markdownify import markdownify as md  # type: ignore[import-untyped]
+
+logger = logging.getLogger(__name__)
 
 _TIMEOUT = 30  # seconds
 # Read cap: the body is streamed and reading stops here, so we never buffer more
@@ -183,7 +186,8 @@ async def fetch_url(
         try:
             import json
             body = json.dumps(json.loads(text), indent=2, ensure_ascii=False)
-        except Exception:
+        except Exception as exc:
+            logger.debug("JSON pretty-print failed, returning raw text: %s", exc)
             body = text
     else:
         # Plain text, markdown, SVG, etc.

@@ -1,8 +1,11 @@
 import hashlib
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -145,8 +148,9 @@ class SessionManager:
         for path in self.dir.glob("*.json"):
             try:
                 data = json.loads(path.read_text())
-            except (json.JSONDecodeError, OSError):
-                continue  # skip a corrupt or half-written file
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.debug("skipping corrupt session file %s: %s", path, exc)
+                continue
             infos.append(
                 SessionInfo(
                     id=data.get("id", path.stem),
@@ -221,7 +225,8 @@ class SessionManager:
         path = self._path(latest.id)
         try:
             data = json.loads(path.read_text())
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.debug("failed to read latest session for model: %s", exc)
             return None
         return data.get("model")
 

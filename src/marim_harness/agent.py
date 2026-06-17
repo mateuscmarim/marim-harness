@@ -1,6 +1,9 @@
+import logging
 from typing import Optional
 
 from pydantic_ai import Agent, DeferredToolRequests, capture_run_messages
+
+logger = logging.getLogger(__name__)
 from pydantic_ai.messages import FunctionToolCallEvent, FunctionToolResultEvent
 from pydantic_ai.settings import ModelSettings
 
@@ -425,7 +428,8 @@ class Harness:
         if isinstance(event, FunctionToolCallEvent):
             try:
                 tool_input = event.part.args_as_dict()
-            except Exception:
+            except Exception as exc:
+                logger.debug("failed to parse tool args: %s", exc)
                 tool_input = {}
             # Stash input so the paired PostToolUse event can include it.
             if _call_inputs is not None:

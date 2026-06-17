@@ -2,8 +2,11 @@
 available models so the picker can offer them, plus pure helpers to parse
 and filter that list."""
 
+import logging
 from dataclasses import dataclass
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 _OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 _GOOGLE_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
@@ -81,7 +84,8 @@ async def fetch_google_models(
             response = await client.get(_GOOGLE_MODELS_URL, params=params)
             response.raise_for_status()
             return parse_google_models(response.json())
-    except Exception:
+    except Exception as exc:
+        logger.warning("failed to fetch Google model catalog: %s", exc)
         return []
 
 
@@ -98,5 +102,6 @@ async def fetch_openrouter_models(
             response = await client.get(_OPENROUTER_MODELS_URL, headers=headers)
             response.raise_for_status()
             return parse_models(response.json())
-    except Exception:
+    except Exception as exc:
+        logger.warning("failed to fetch OpenRouter model catalog: %s", exc)
         return []

@@ -1,3 +1,7 @@
+import logging
+
+logger = logging.getLogger(__name__)
+
 """Background jobs: a per-session, in-memory registry of detached work the agent
 launches and later inspects.
 
@@ -145,9 +149,8 @@ class JobRegistry:
             return f"job {job_id} still running after {timeout:g}s"
         except asyncio.CancelledError:
             pass  # the job itself was cancelled while we waited
-        except Exception:
-            pass  # the task is now the job's own coroutine; its failure is
-            # already settled into job.result by the done-callback
+        except Exception as exc:
+            logger.debug("wait for job %s: %s (already settled)", job_id, exc)
         return job.result if job.result is not None else f"({job.status})"
 
     async def cancel(self, job_id: str) -> str:

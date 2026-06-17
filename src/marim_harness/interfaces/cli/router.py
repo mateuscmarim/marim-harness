@@ -2,6 +2,8 @@
 ``models``) to their command groups; everything else falls through to the
 default command (TUI or headless prompt)."""
 
+import logging
+import os
 import sys
 
 from ...config import load_environment
@@ -19,8 +21,19 @@ _MANAGEMENT = {
 }
 
 
+def _setup_logging() -> None:
+    """Configure root logging. DEBUG when MARIM_DEBUG=1, else WARNING."""
+    level = logging.DEBUG if os.environ.get("MARIM_DEBUG") == "1" else logging.WARNING
+    logging.basicConfig(
+        level=level,
+        format="%(name)s %(levelname)s: %(message)s",
+        force=True,
+    )
+
+
 def main() -> None:
     load_environment()
+    _setup_logging()
     argv = sys.argv[1:]
     if argv and argv[0] in _MANAGEMENT:
         raise SystemExit(_MANAGEMENT[argv[0]](argv[1:]))
