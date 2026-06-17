@@ -149,6 +149,13 @@ def grep(root: Path, pattern: str, path: Optional[str] = None) -> str:
     files = [base] if base.is_file() else [p for p in base.rglob("*") if p.is_file()]
     out: list[str] = []
     for f in files:
+        # Skip files that resolve outside the workspace — e.g. an in-tree symlink
+        # pointing at /etc/passwd. rglob yields the link; reading it would follow
+        # it out of the sandbox, so gate each match the same way read_file does.
+        try:
+            resolve_in_workspace(root, str(f.relative_to(root)))
+        except (WorkspaceError, ValueError):
+            continue
         try:
             for i, line in enumerate(f.read_text().splitlines(), 1):
                 if rx.search(line):

@@ -71,7 +71,7 @@ async def _cmd_sessions(app: HarnessApp, arg: str) -> None:
     if not infos:
         await app.post_system("No saved sessions yet. Use `/new [name]` to start one.")
         return
-    active = getattr(app.harness, "session_name", None)
+    active = app.harness.session.session_name
     lines = ["**Sessions**", ""]
     for i, info in enumerate(infos, start=1):
         marker = " ← active" if info.name == active else ""

@@ -144,6 +144,21 @@ async def test_skill_no_arg_no_skills(tmp_path: Path, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_sessions_marks_the_active_session():
+    app = _FakeApp()
+    infos = _infos()
+    app.harness = SimpleNamespace(
+        session=SimpleNamespace(sessions=lambda: infos, session_name="Beta Work")
+    )
+    await dispatch(app, "/sessions")
+    lines = app.posted[-1].splitlines()
+    beta_line = next(line for line in lines if "Beta Work" in line)
+    alpha_line = next(line for line in lines if "Alpha" in line)
+    assert "← active" in beta_line
+    assert "← active" not in alpha_line
+
+
+@pytest.mark.anyio
 async def test_mcp_lists_server_status():
     app = _FakeApp()
     app.harness = SimpleNamespace(

@@ -88,6 +88,17 @@ def test_grep_returns_location_lines(tmp_path: Path):
     assert "beta" not in out
 
 
+def test_grep_does_not_follow_symlink_out_of_workspace(tmp_path: Path):
+    root = tmp_path / "ws"
+    root.mkdir()
+    secret = tmp_path / "secret.txt"
+    secret.write_text("top secret token")
+    (root / "leak.txt").symlink_to(secret)
+    out = fs.grep(root, "secret")
+    assert "top secret token" not in out
+    assert out == "(no matches)"
+
+
 def test_path_escape_raises_model_retry(tmp_path: Path):
     with pytest.raises(ModelRetry):
         fs.read_file(tmp_path, "../escape.txt")
