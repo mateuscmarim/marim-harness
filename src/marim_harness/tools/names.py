@@ -9,6 +9,6 @@ first."""
 # handed to a sub-agent in auto mode (where they run un-prompted). Memory, skill,
 # task, and spawn tools are main-agent only — a sub-agent's job is its task, not
 # the session's bookkeeping.
-READ_TOOLS = frozenset({"read_file", "glob", "tree", "grep"})
+READ_TOOLS = frozenset({"read_file", "glob", "tree", "grep", "web_search", "fetch_url"})
 GATED_TOOLS = frozenset({"write_file", "edit_file", "bash"})
 SUBAGENT_TOOLS = READ_TOOLS | GATED_TOOLS
