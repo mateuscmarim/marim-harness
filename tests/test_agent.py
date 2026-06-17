@@ -1769,3 +1769,47 @@ async def test_pre_and_post_tool_use_fire(tmp_path):
     lines = log.read_text().splitlines()
     assert "PreToolUse edit_file" in lines
     assert any(line.startswith("PostToolUse edit_file") for line in lines)
+
+
+# ---------------------------------------------------------------------------
+# Task 8: SubagentStart / SubagentStop hooks
+# ---------------------------------------------------------------------------
+
+def _make_subagent_def(ws: Path, name: str = "helper") -> None:
+    d = ws / ".marim" / "agents"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{name}.md").write_text(
+        f"---\nname: {name}\ndescription: A helper.\ntools: [read_file]\n---\n\nHelp out.\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.anyio
+async def test_subagent_start_and_stop_fire(tmp_path):
+    _make_subagent_def(tmp_path)
+    log = tmp_path / "sub.log"
+    # Use a Python helper file to avoid bash single-quote escaping issues when
+    # embedding the log path (same pattern as test_pre_and_post_tool_use_fire).
+    helper = tmp_path / "subhook.py"
+    helper.write_text(
+        f"import sys, json\n"
+        f"d = json.load(sys.stdin)\n"
+        f"open({str(log)!r}, 'a').write(d['hook_event_name'] + '\\n')\n",
+        encoding="utf-8",
+    )
+    cmd = _hook_script(
+        tmp_path, "sub.sh",
+        f"python3 {str(helper)}\n",
+    )
+    runner = HookRunner({
+        hook_events.SUBAGENT_START: [{"hooks": [{"type": "command", "command": cmd}]}],
+        hook_events.SUBAGENT_STOP: [{"hooks": [{"type": "command", "command": cmd}]}],
+    })
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto, hooks=runner)
+    # A model the sub-agent will run: just reply 'sub-done'.
+    harness = _make_harness(FunctionModel(lambda m, i: ModelResponse(parts=[TextPart(content="sub-done")])), deps)
+    out = await harness._run_subagent("helper", "do a thing", "stream-1")
+    assert "sub-done" in out
+    lines = log.read_text().splitlines()
+    assert "SubagentStart" in lines
+    assert "SubagentStop" in lines

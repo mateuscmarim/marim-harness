@@ -247,10 +247,23 @@ class Harness:
         if err is not None:
             return err
         granted, unknown = self.mcp.granted_servers(mcp_names)
+        if self.deps.hooks is not None:
+            await self.deps.hooks.dispatch(
+                hook_events.SUBAGENT_START,
+                self._hook_payload(hook_events.SUBAGENT_START, subagent_type=type, task=task),
+            )
         result = await sub.run(
             task, deps=self.deps, toolsets=granted,
             event_stream_handler=self._subagent_handler(stream_id),
         )
+        if self.deps.hooks is not None:
+            await self.deps.hooks.dispatch(
+                hook_events.SUBAGENT_STOP,
+                self._hook_payload(
+                    hook_events.SUBAGENT_STOP, subagent_type=type, task=task,
+                    result=result.output,
+                ),
+            )
         # A foreground spawn runs inside the current turn, so its spend is folded
         # into the session total here and persisted by run_turn's _persist.
         self.session.usage += result.usage
@@ -267,7 +280,20 @@ class Harness:
         if err is not None:
             return err
         granted, unknown = self.mcp.granted_servers(mcp_names)
+        if self.deps.hooks is not None:
+            await self.deps.hooks.dispatch(
+                hook_events.SUBAGENT_START,
+                self._hook_payload(hook_events.SUBAGENT_START, subagent_type=type, task=task),
+            )
         result = await sub.run(task, deps=self.deps, toolsets=granted)
+        if self.deps.hooks is not None:
+            await self.deps.hooks.dispatch(
+                hook_events.SUBAGENT_STOP,
+                self._hook_payload(
+                    hook_events.SUBAGENT_STOP, subagent_type=type, task=task,
+                    result=result.output,
+                ),
+            )
         # A background spawn finishes off-turn, so no run_turn will fold in its
         # spend — count it here and persist right away so the saved session
         # reflects it even if the process exits before the next turn.
