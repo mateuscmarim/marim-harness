@@ -1628,6 +1628,79 @@ async def test_no_hooks_runs_turn_normally(tmp_path):
     assert sink[0] == "hello"  # untouched
 
 
+def test_strip_turn_context_recovers_typed_text():
+    from marim_harness.agent import strip_turn_context, wrap_turn_context
+
+    wrapped = wrap_turn_context("<agentmemory-context>stuff</agentmemory-context>",
+                                "implement a fetch tool")
+    assert strip_turn_context(wrapped) == "implement a fetch tool"
+    # Multi-line typed text survives intact.
+    wrapped2 = wrap_turn_context("ctx", "line one\n\nline two")
+    assert strip_turn_context(wrapped2) == "line one\n\nline two"
+
+
+def test_strip_turn_context_passes_through_plain_prompt():
+    from marim_harness.agent import strip_turn_context
+
+    # No envelope -> returned unchanged, even if it mentions the tag in prose.
+    assert strip_turn_context("just a normal prompt") == "just a normal prompt"
+    assert strip_turn_context("talk about <turn-context> as a topic") == (
+        "talk about <turn-context> as a topic"
+    )
+
+
+@pytest.mark.anyio
+async def test_injected_context_is_wrapped_so_replay_can_recover_typed_text(tmp_path):
+    """A SessionStart hook injects context that gets prepended to the prompt.
+    The persisted UserPromptPart must wrap it in a turn-context envelope so a
+    resumed session can recover just what the user typed, while the model still
+    sees the injected context."""
+    from marim_harness.agent import strip_turn_context
+
+    cmd = _hook_script(tmp_path, "ss.sh", "echo SESSION_CTX\n")
+    hooks = HookRunner(
+        {hook_events.SESSION_START: [{"hooks": [{"type": "command", "command": cmd}]}]}
+    )
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto, hooks=hooks)
+    sink: list = []
+    harness = _make_harness(_prompt_capturing_model(sink), deps)
+    await harness.session_start("startup")
+    await harness.run_turn("implement a fetch tool")
+
+    # The model still sees the injected context this turn.
+    assert "SESSION_CTX" in sink[0]
+    # The persisted prompt wraps it so replay can strip back to the typed text.
+    persisted = [
+        p.content
+        for m in harness.session.history
+        for p in getattr(m, "parts", [])
+        if type(p).__name__ == "UserPromptPart"
+    ]
+    assert persisted, "expected a persisted user prompt"
+    assert "SESSION_CTX" in persisted[0]  # context is in the stored prompt
+    assert strip_turn_context(persisted[0]) == "implement a fetch tool"
+
+
+@pytest.mark.anyio
+async def test_plain_turn_is_not_wrapped(tmp_path):
+    """With nothing injected, the persisted prompt is the typed text verbatim —
+    no envelope — so existing sessions and output are unaffected."""
+    from marim_harness.agent import strip_turn_context
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)  # no hooks
+    sink: list = []
+    harness = _make_harness(_prompt_capturing_model(sink), deps)
+    await harness.run_turn("hello")
+    persisted = [
+        p.content
+        for m in harness.session.history
+        for p in getattr(m, "parts", [])
+        if type(p).__name__ == "UserPromptPart"
+    ]
+    assert persisted[0] == "hello"
+    assert strip_turn_context(persisted[0]) == "hello"
+
+
 def _capture_subagent(h, report="report"):
     """Replace _build_subagent so the spawned agent's run() records the toolsets
     it was given and returns a canned report. Returns the capture dict."""

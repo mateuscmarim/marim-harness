@@ -24,6 +24,34 @@ from .permissions import Mode, resolve_approvals
 from .session import SessionController, SessionManager, SessionStore
 from .tools.provider import ToolProvider
 
+# Envelope wrapped around any context injected into a turn's prompt — job
+# digests, error notes, and SessionStart/UserPromptSubmit hook output. It is
+# prepended to what the user typed, so the typed text stays the suffix. The
+# envelope gives that boundary a stable marker so a resumed session can show
+# only what the user typed (matching the live TUI, which mounts the typed text
+# before injection happens). Plain turns carry no envelope and are unchanged.
+_TURN_CONTEXT_OPEN = "<turn-context>"
+_TURN_CONTEXT_CLOSE = "</turn-context>"
+_TURN_CONTEXT_SEP = f"{_TURN_CONTEXT_CLOSE}\n\n"
+
+
+def wrap_turn_context(injected: str, typed: str) -> str:
+    """Wrap ``injected`` context in the turn-context envelope and append the
+    user's ``typed`` prompt after it. Inverse of :func:`strip_turn_context`."""
+    return f"{_TURN_CONTEXT_OPEN}\n{injected}\n{_TURN_CONTEXT_SEP}{typed}"
+
+
+def strip_turn_context(content: str) -> str:
+    """Return only the user-typed portion of a persisted prompt, dropping any
+    leading turn-context envelope that :meth:`Harness.run_turn` prepended. A
+    prompt with no envelope is returned unchanged."""
+    if not content.startswith(_TURN_CONTEXT_OPEN):
+        return content
+    idx = content.find(_TURN_CONTEXT_SEP)
+    if idx == -1:
+        return content
+    return content[idx + len(_TURN_CONTEXT_SEP):]
+
 
 def _has_unanswered_tool_calls(history: list) -> bool:
     """True when some ToolCallPart in ``history`` has no matching ToolReturnPart.
@@ -392,6 +420,7 @@ class Harness:
         """Run the agent until it produces a final text answer, looping through
         any approval rounds. Returns the final text output."""
         await self._maybe_compact()
+        typed = prompt  # what the user actually typed; stays the prompt's suffix
         digest = self.deps.jobs.take_finished_digest()
         if digest:
             prompt = f"{digest}\n\n{prompt}"
@@ -412,6 +441,12 @@ class Harness:
             )
             if ctx:
                 prompt = f"{ctx}\n\n{prompt}"
+        # If anything was injected above, wrap it in the turn-context envelope so
+        # a resumed session can recover just the typed text. The injected blocks
+        # are the prefix; `typed` is the unchanged suffix, sliced back out here.
+        if prompt != typed:
+            injected = prompt[: len(prompt) - len(typed)].rstrip("\n")
+            prompt = wrap_turn_context(injected, typed)
         user_prompt: Optional[str] = prompt
         deferred_results = None
         # Offer only the live servers that aren't disabled — a server muted at
