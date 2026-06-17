@@ -1,7 +1,3 @@
-import logging
-
-logger = logging.getLogger(__name__)
-
 """Background jobs: a per-session, in-memory registry of detached work the agent
 launches and later inspects.
 
@@ -21,8 +17,11 @@ and are cancelled on exit. The agent reaches results by *pulling*
 """
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
+
+logger = logging.getLogger(__name__)
 
 Status = str  # "running" | "done" | "failed" | "cancelled"
 

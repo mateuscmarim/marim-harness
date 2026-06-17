@@ -1,7 +1,3 @@
-import logging
-
-logger = logging.getLogger(__name__)
-
 """Context compaction: keep a conversation under a token budget.
 
 When a history grows past the budget we keep the head (the original task anchor)
@@ -16,6 +12,7 @@ Two strategies share the same head/tail split:
   synthetic message, falling back to truncation if the summary call fails.
 """
 
+import logging
 from typing import Awaitable, Callable, Optional
 
 from pydantic_ai import Agent
@@ -27,6 +24,8 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
 )
+
+logger = logging.getLogger(__name__)
 
 _CHARS_PER_TOKEN = 4
 

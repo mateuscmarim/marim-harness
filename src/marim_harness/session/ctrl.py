@@ -3,8 +3,6 @@ from typing import Callable, Optional
 
 from pydantic_ai.usage import RunUsage
 
-logger = logging.getLogger(__name__)
-
 from ..compaction import (
     Summarizer,
     Titler,
@@ -15,6 +13,8 @@ from ..deps import Deps
 from ..hooks import events as hook_events
 from ..hooks.runner import base_payload
 from .store import SessionInfo, SessionManager, SessionStore
+
+logger = logging.getLogger(__name__)
 
 
 class SessionController:

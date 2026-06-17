@@ -10,9 +10,9 @@ import re
 import signal
 from typing import Optional
 
-logger = logging.getLogger(__name__)
-
 from .events import INJECTING_EVENTS, POST_TOOL_USE, PRE_TOOL_USE
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 30
 

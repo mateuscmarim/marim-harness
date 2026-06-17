@@ -4,14 +4,14 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-
-logger = logging.getLogger(__name__)
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from pydantic_ai.messages import ModelMessagesTypeAdapter
 from pydantic_ai.usage import RunUsage
+
+logger = logging.getLogger(__name__)
 
 
 def _default_base_dir() -> Path:

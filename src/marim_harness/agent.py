@@ -2,19 +2,9 @@ import logging
 from typing import Optional
 
 from pydantic_ai import Agent, DeferredToolRequests, capture_run_messages
-
-logger = logging.getLogger(__name__)
 from pydantic_ai.messages import FunctionToolCallEvent, FunctionToolResultEvent
 from pydantic_ai.settings import ModelSettings
 
-from .workspace import (
-    cap_subagent_output,
-    discover_agents,
-    effective_tools,
-    find_agent,
-    subagent_instructions,
-)
-from .tools import fs
 from .compaction import (
     Summarizer,
     Titler,
@@ -28,7 +18,17 @@ from .instructions import register_instructions
 from .mcp import McpManager
 from .permissions import Mode, resolve_approvals
 from .session import SessionController, SessionManager, SessionStore
+from .tools import fs
 from .tools.provider import ToolProvider
+from .workspace import (
+    cap_subagent_output,
+    discover_agents,
+    effective_tools,
+    find_agent,
+    subagent_instructions,
+)
+
+logger = logging.getLogger(__name__)
 
 # Force parallel tool calling on for both the main agent and spawned sub-agents.
 # It's a base ModelSettings key that each model reads with .get(): providers that
