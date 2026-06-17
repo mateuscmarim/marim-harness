@@ -1,6 +1,5 @@
 import asyncio
 import stat
-import json as _json
 from pathlib import Path
 
 import pytest
@@ -1477,7 +1476,9 @@ def _hook_script(tmp_path: Path, name: str, body: str) -> str:
 
 def _prompt_capturing_model(sink: list) -> FunctionModel:
     """Records the LAST user-prompt text it sees per call (the current turn's
-    new prompt, not history), then replies 'ok'."""
+    new prompt, not history), then replies 'ok'. pydantic-ai's FunctionModel
+    receives the full conversation history each call, so we capture only the
+    latest UserPromptPart to isolate the current turn's new prompt."""
     def fn(messages, info):
         latest = None
         for msg in messages:
@@ -1515,6 +1516,21 @@ async def test_user_prompt_submit_context_is_prepended(tmp_path):
     await harness.run_turn("do the thing")
     assert "PROMPT_CTX" in sink[0]
     assert "do the thing" in sink[0]
+
+
+@pytest.mark.anyio
+async def test_user_prompt_submit_fires_on_every_turn(tmp_path):
+    """UserPromptSubmit hook fires on every turn, not just the first. The hook
+    context is prepended to each turn's prompt, proving repeated activation."""
+    cmd = _hook_script(tmp_path, "ups_every.sh", "echo PROMPT_CTX\n")
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto,
+                hooks=HookRunner({hook_events.USER_PROMPT_SUBMIT: [{"hooks": [{"type": "command", "command": cmd}]}]}))
+    sink: list = []
+    harness = _make_harness(_prompt_capturing_model(sink), deps)
+    await harness.run_turn("first")
+    await harness.run_turn("second")
+    assert "PROMPT_CTX" in sink[0]
+    assert "PROMPT_CTX" in sink[1]  # fires again on the second turn, not one-shot
 
 
 @pytest.mark.anyio
