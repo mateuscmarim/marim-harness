@@ -1,8 +1,20 @@
+import asyncio
+import os
 from pathlib import Path
 
 import pytest
 
 from marim_harness.tools import shell
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 @pytest.mark.anyio
@@ -23,6 +35,31 @@ async def test_bash_runs_in_workspace_cwd(tmp_path: Path):
 async def test_bash_times_out(tmp_path: Path):
     out = await shell.run_bash(tmp_path, "sleep 5", timeout=1)
     assert "timed out" in out
+
+
+@pytest.mark.anyio
+async def test_bash_timeout_reaps_child_processes(tmp_path: Path):
+    # The command spawns a long-lived child and records its PID, then hangs so
+    # run_bash times out. A timeout must tear down the whole process group, not
+    # just the shell, otherwise the backgrounded child is orphaned and survives.
+    pid_file = tmp_path / "child.pid"
+    # Detach the child's stdio from the captured pipe so run_bash returns as
+    # soon as the shell is killed (an inherited pipe would otherwise keep the
+    # parent blocked until the child exits, hiding the orphan).
+    out = await shell.run_bash(
+        tmp_path,
+        f"sleep 30 >/dev/null 2>&1 & echo $! > {pid_file}; echo started; wait",
+        timeout=1,
+    )
+    assert "timed out" in out
+
+    child_pid = int(pid_file.read_text().strip())
+    # Give the kill a moment to propagate to the child.
+    for _ in range(20):
+        if not _pid_alive(child_pid):
+            break
+        await asyncio.sleep(0.1)
+    assert not _pid_alive(child_pid), f"child {child_pid} was orphaned, not reaped"
 
 
 @pytest.mark.anyio

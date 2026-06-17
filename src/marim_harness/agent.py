@@ -1,7 +1,6 @@
 from typing import Optional
 
 from pydantic_ai import Agent, DeferredToolRequests, capture_run_messages
-from pydantic_ai.usage import RunUsage
 
 from .workspace import (
     discover_agents,
@@ -19,8 +18,26 @@ from .deps import Deps
 from .instructions import register_instructions
 from .mcp import McpManager
 from .permissions import Mode, resolve_approvals
-from .session import SessionController, SessionInfo, SessionManager, SessionStore
+from .session import SessionController, SessionManager, SessionStore
 from .tools.provider import ToolProvider
+
+
+def _has_unanswered_tool_calls(history: list) -> bool:
+    """True when some ToolCallPart in ``history`` has no matching ToolReturnPart.
+    Such a history ends an exchange mid-flight, and every provider rejects an
+    unanswered tool_use on the next request — so persisting one makes the
+    session unresumable until it's manually cleared."""
+    from pydantic_ai.messages import ToolCallPart, ToolReturnPart
+
+    calls: set = set()
+    returns: set = set()
+    for message in history:
+        for part in getattr(message, "parts", []):
+            if isinstance(part, ToolCallPart):
+                calls.add(part.tool_call_id)
+            elif isinstance(part, ToolReturnPart):
+                returns.add(part.tool_call_id)
+    return bool(calls - returns)
 
 
 def _short(exc: BaseException, limit: int = 200) -> str:
@@ -112,97 +129,8 @@ class Harness:
             summarizer, titler,
         )
 
-    # --- session delegation ---
-
-    @property
-    def history(self) -> list:
-        return self.session.history
-
-    @history.setter
-    def history(self, value: list) -> None:
-        self.session.history = value
-
-    @property
-    def usage(self) -> RunUsage:
-        return self.session.usage
-
-    @usage.setter
-    def usage(self, value: RunUsage) -> None:
-        self.session.usage = value
-
-    @property
-    def store(self):
-        return self.session.store
-
-    @store.setter
-    def store(self, value) -> None:
-        self.session.store = value
-
-    @property
-    def manager(self):
-        return self.session.manager
-
-    @property
-    def summarizer(self):
-        return self.session.summarizer
-
-    @summarizer.setter
-    def summarizer(self, value) -> None:
-        self.session.summarizer = value
-
-    @property
-    def titler(self):
-        return self.session.titler
-
-    @titler.setter
-    def titler(self, value) -> None:
-        self.session.titler = value
-
-    @property
-    def on_compact(self):
-        return self.session.on_compact
-
-    @on_compact.setter
-    def on_compact(self, value) -> None:
-        self.session.on_compact = value
-
-    @property
-    def on_rename(self):
-        return self.session.on_rename
-
-    @on_rename.setter
-    def on_rename(self, value) -> None:
-        self.session.on_rename = value
-
-    @property
-    def max_context_tokens(self) -> int:
-        return self.session.max_context_tokens
-
-    @max_context_tokens.setter
-    def max_context_tokens(self, value: int) -> None:
-        self.session.max_context_tokens = value
-
-    @property
-    def keep_last_messages(self) -> int:
-        return self.session.keep_last_messages
-
-    @keep_last_messages.setter
-    def keep_last_messages(self, value: int) -> None:
-        self.session.keep_last_messages = value
-
-    @property
-    def total_tokens(self) -> int:
-        return self.session.usage.total_tokens
-
-    @property
-    def session_name(self) -> Optional[str]:
-        return self.session.session_name
-
-    def sessions(self) -> list[SessionInfo]:
-        return self.session.sessions()
-
-    def _persist(self) -> None:
-        self.session.persist()
+    # --- session lifecycle (operations carrying harness-level logic; plain
+    # state and persistence live on ``self.session`` and are reached directly) ---
 
     def resume(self) -> int:
         count = self.session.resume()
@@ -217,11 +145,11 @@ class Harness:
         # Apply the model inherited by SessionManager.create() when it
         # differs from the harness's current model.
         if (
-            self.store is not None
-            and self.store.model
-            and self.store.model != self.model_id
+            self.session.store is not None
+            and self.session.store.model
+            and self.session.store.model != self.model_id
         ):
-            self.set_model(self.store.model, persist=False)
+            self.set_model(self.session.store.model, persist=False)
 
     def switch_session(self, session_id: str) -> int:
         count = self.session.switch_session(session_id)
@@ -259,12 +187,12 @@ class Harness:
         """Re-point at a session's saved model after loading it, if one differs
         from what's already active."""
         if (
-            self.store is not None
-            and self.store.model
+            self.session.store is not None
+            and self.session.store.model
             and self.model_source is not None
-            and self.store.model != self.model_id
+            and self.session.store.model != self.model_id
         ):
-            self.set_model(self.store.model, persist=False)
+            self.set_model(self.session.store.model, persist=False)
 
     def _subagent_handler(self, stream_id: str):
         """An event_stream_handler for a sub-agent run that forwards each event to
@@ -312,7 +240,7 @@ class Harness:
         sub, err = self._build_subagent(type)
         if err is not None:
             return err
-        granted, unknown = self._granted_servers(mcp_names)
+        granted, unknown = self.mcp.granted_servers(mcp_names)
         result = await sub.run(
             task, deps=self.deps, toolsets=granted,
             event_stream_handler=self._subagent_handler(stream_id),
@@ -320,7 +248,7 @@ class Harness:
         # A foreground spawn runs inside the current turn, so its spend is folded
         # into the session total here and persisted by run_turn's _persist.
         self.session.usage += result.usage
-        return self._mcp_grant_note(unknown) + result.output
+        return self.mcp.grant_note(unknown) + result.output
 
     async def _run_background_subagent(
         self, type: str, task: str, mcp_names: list[str] | None = None
@@ -332,58 +260,17 @@ class Harness:
         sub, err = self._build_subagent(type)
         if err is not None:
             return err
-        granted, unknown = self._granted_servers(mcp_names)
+        granted, unknown = self.mcp.granted_servers(mcp_names)
         result = await sub.run(task, deps=self.deps, toolsets=granted)
         # A background spawn finishes off-turn, so no run_turn will fold in its
         # spend — count it here and persist right away so the saved session
         # reflects it even if the process exits before the next turn.
         self.session.usage += result.usage
         self.session.persist()
-        return self._mcp_grant_note(unknown) + result.output
+        return self.mcp.grant_note(unknown) + result.output
 
-    # --- MCP delegation ---
-
-    @property
-    def mcp_servers(self) -> list:
-        return self.mcp.mcp_servers
-
-    @property
-    def _live_servers(self) -> list:
-        return self.mcp._live_servers
-
-    @_live_servers.setter
-    def _live_servers(self, value: list) -> None:
-        self.mcp._live_servers = value
-
-    @property
-    def disabled(self) -> set:
-        return self.mcp.disabled
-
-    @disabled.setter
-    def disabled(self, value: set) -> None:
-        self.mcp.disabled = value
-
-    @property
-    def mcp_status(self) -> dict:
-        return self.mcp.mcp_status
-
-    def _server_name(self, server) -> str:
-        return McpManager.server_name(server)
-
-    def configured_names(self) -> list[str]:
-        return self.mcp.configured_names()
-
-    def _enabled_server_names(self) -> list[str]:
-        return self.mcp.enabled_names()
-
-    def mcp_index_text(self) -> str:
-        return self.mcp.mcp_index_text()
-
-    def _granted_servers(self, names: list[str] | None) -> tuple[list, list[str]]:
-        return self.mcp.granted_servers(names)
-
-    def _mcp_grant_note(self, unknown: list[str]) -> str:
-        return self.mcp.grant_note(unknown)
+    # --- MCP lifecycle (connection control; server state and grant resolution
+    # live on ``self.mcp`` and are reached directly) ---
 
     async def connect(self) -> dict:
         return await self.mcp.connect()
@@ -415,6 +302,9 @@ class Harness:
         # runtime stays connected but its tools are withheld from the model.
         toolsets = self.mcp.live_toolsets()
         while True:
+            # The last persisted, resumable history — what we fall back to if
+            # this round is interrupted before it completes cleanly.
+            clean_history = list(self.session.history)
             # capture_run_messages exposes the messages exchanged even when the
             # run aborts (a render error in the event handler, an API failure,
             # the user cancelling). Each agent.run gets its own context — the
@@ -427,29 +317,45 @@ class Harness:
                     result = await self.agent.run(
                         user_prompt,
                         model=self.current_model,
-                        message_history=self.history,
+                        message_history=self.session.history,
                         deps=self.deps,
                         deferred_tool_results=deferred_results,
                         event_stream_handler=event_stream_handler,
                         toolsets=toolsets,
                     )
                 except BaseException as exc:
-                    if captured:
-                        self.session.history = list(captured)
-                        self.session.persist()
+                    # Persist what survives the failure — but never a history
+                    # ending in an unanswered tool call (the captured messages
+                    # may stop right after one). That would corrupt the session,
+                    # so fall back to the last clean state in that case.
+                    recovered = list(captured) if captured else clean_history
+                    if _has_unanswered_tool_calls(recovered):
+                        recovered = clean_history
+                    self.session.history = recovered
+                    self.session.persist()
                     # Stash an actionable note (None for infra/render/cancel) to
                     # prepend to the next turn's prompt.
                     self._pending_error_note = _actionable_error_note(exc)
                     raise
             self.session.history = result.all_messages()
             self.session.usage += result.usage
-            self.session.persist()
             if isinstance(result.output, DeferredToolRequests):
-                deferred_results = await resolve_approvals(
-                    result.output, self.deps.mode, self.deps.request_approval
-                )
+                # This history ends with unanswered tool calls; keep it in memory
+                # for the continuation run but do NOT persist it. A cancel or
+                # failure during approval would otherwise leave the session
+                # ending in a dangling tool_use — unresumable. Roll back to the
+                # last clean state if the approval round is interrupted.
+                try:
+                    deferred_results = await resolve_approvals(
+                        result.output, self.deps.mode, self.deps.request_approval
+                    )
+                except BaseException:
+                    self.session.history = clean_history
+                    self.session.persist()
+                    raise
                 user_prompt = None  # continuation is driven by deferred_results
                 continue
+            self.session.persist()
             output = result.output
             await self._maybe_autoname()
             return output

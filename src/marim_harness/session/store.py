@@ -79,6 +79,14 @@ class SessionStore:
             "tokens": {
                 "input": usage.input_tokens,
                 "output": usage.output_tokens,
+                "requests": usage.requests,
+                "cache_read": usage.cache_read_tokens,
+                "cache_write": usage.cache_write_tokens,
+                "cache_audio_read": usage.cache_audio_read_tokens,
+                "input_audio": usage.input_audio_tokens,
+                "output_audio": usage.output_audio_tokens,
+                "tool_calls": usage.tool_calls,
+                "details": usage.details,
             },
             "tasks": tasks or [],
             "messages": json.loads(ModelMessagesTypeAdapter.dump_json(history)),
@@ -95,9 +103,18 @@ class SessionStore:
         data = json.loads(self.path.read_text())
         messages = ModelMessagesTypeAdapter.validate_python(data.get("messages", []))
         tok = data.get("tokens", {})
+        # Old files predate the extra fields, so each defaults to 0 / {}.
         usage = RunUsage(
             input_tokens=tok.get("input", 0),
             output_tokens=tok.get("output", 0),
+            requests=tok.get("requests", 0),
+            cache_read_tokens=tok.get("cache_read", 0),
+            cache_write_tokens=tok.get("cache_write", 0),
+            cache_audio_read_tokens=tok.get("cache_audio_read", 0),
+            input_audio_tokens=tok.get("input_audio", 0),
+            output_audio_tokens=tok.get("output_audio", 0),
+            tool_calls=tok.get("tool_calls", 0),
+            details=tok.get("details") or {},
         )
         return messages, usage, data.get("tasks", [])
 

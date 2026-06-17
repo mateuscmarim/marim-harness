@@ -33,12 +33,23 @@ async def test_auto_mode_approves(requests):
 
 @pytest.mark.anyio
 async def test_plan_mode_denies(requests):
+    from pydantic_ai import ToolDenied
+
     async def never(_call):  # pragma: no cover
         raise AssertionError("request_approval must not be called in plan mode")
 
     results = await resolve_approvals(requests, Mode.plan, never)
-    denied = results.approvals["c1"]
-    assert denied is not True  # a ToolDenied instance
+    assert isinstance(results.approvals["c1"], ToolDenied)
+
+
+@pytest.mark.anyio
+async def test_ask_mode_without_approver_denies(requests):
+    """No approver wired (e.g. a non-interactive run reaching ask mode): deny
+    rather than crash with a TypeError from calling ``None``."""
+    from pydantic_ai import ToolDenied
+
+    results = await resolve_approvals(requests, Mode.ask, None)
+    assert isinstance(results.approvals["c1"], ToolDenied)
 
 
 @pytest.mark.anyio

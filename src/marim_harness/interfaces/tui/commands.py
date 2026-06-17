@@ -67,7 +67,7 @@ def resolve_ref(infos: list, ref: str) -> object | None:
 
 
 async def _cmd_sessions(app: HarnessApp, arg: str) -> None:
-    infos = app.harness.sessions()
+    infos = app.harness.session.sessions()
     if not infos:
         await app.post_system("No saved sessions yet. Use `/new [name]` to start one.")
         return
@@ -105,7 +105,7 @@ async def _cmd_switch(app: HarnessApp, arg: str) -> None:
     if not ref:
         await app.post_system("Usage: `/switch <number|name>`. See `/sessions`.")
         return
-    info = resolve_ref(app.harness.sessions(), ref)
+    info = resolve_ref(app.harness.session.sessions(), ref)
     if info is None:
         await app.post_system(f"No session matches `{ref}`. Try `/sessions`.")
         return
@@ -218,17 +218,17 @@ async def _cmd_mcp(app: HarnessApp, arg: str) -> None:
 
 
 async def _mcp_list(app: HarnessApp) -> None:
-    servers = getattr(app.harness, "mcp_servers", [])
+    servers = getattr(app.harness.mcp, "mcp_servers", [])
     if not servers:
         await app.post_system(
             "No MCP servers configured. Add them to `.marim/mcp.json` (project) "
             "or `~/.config/marim/mcp.json` (global)."
         )
         return
-    status = getattr(app.harness, "mcp_status", {"connected": [], "failed": []})
+    status = getattr(app.harness.mcp, "mcp_status", {"connected": [], "failed": []})
     connected = set(status.get("connected", []))
     failed = dict(status.get("failed", []))
-    disabled = set(getattr(app.harness, "disabled", set()) or set())
+    disabled = set(getattr(app.harness.mcp, "disabled", set()) or set())
     lines = ["**MCP servers**", ""]
     for s in servers:
         name = str(getattr(s, "id", None) or getattr(s, "tool_prefix", "?"))
@@ -246,7 +246,7 @@ async def _mcp_list(app: HarnessApp) -> None:
 
 
 async def _mcp_toggle(app: HarnessApp, action: str, target: str) -> None:
-    names = app.harness.configured_names()
+    names = app.harness.mcp.configured_names()
     if not names:
         await app.post_system("No MCP servers configured.")
         return

@@ -23,6 +23,25 @@ def isolated_env():
     os.environ.update(snapshot)
 
 
+def test_load_config_reads_command_lists(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setenv("MARIM_COMMAND_DENYLIST", "rm -rf, sudo")
+    monkeypatch.setenv("MARIM_COMMAND_ALLOWLIST", "^git , ^ls")
+    cfg = load_config()
+    assert cfg.command_denylist == ["rm -rf", "sudo"]
+    # patterns are whitespace-stripped, like every other comma-separated list
+    assert cfg.command_allowlist == ["^git", "^ls"]
+
+
+def test_load_config_command_lists_default_empty(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.delenv("MARIM_COMMAND_DENYLIST", raising=False)
+    monkeypatch.delenv("MARIM_COMMAND_ALLOWLIST", raising=False)
+    cfg = load_config()
+    assert cfg.command_denylist == []
+    assert cfg.command_allowlist == []
+
+
 def test_load_config_defaults_to_openrouter(monkeypatch):
     monkeypatch.delenv("MARIM_PROVIDER", raising=False)
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
@@ -117,8 +136,10 @@ async def test_model_source_list_models_empty_for_google():
 def test_model_source_build_swaps_in_the_model_id():
     src = ModelSource(ModelConfig(provider="local", model="x", base_url="http://h/v1"))
     model = src.build("some-other-model")
-    # The constructed model reports the swapped id, not the config default.
-    assert getattr(model, "model_name", "some-other-model") == "some-other-model"
+    # The constructed model reports the swapped id, not the config default ("x").
+    # The default here is a sentinel that can never equal the expected value, so
+    # a missing/renamed attribute fails the test instead of silently passing.
+    assert getattr(model, "model_name", None) == "some-other-model"
 
 
 def test_config_dir_respects_xdg(monkeypatch, tmp_path):

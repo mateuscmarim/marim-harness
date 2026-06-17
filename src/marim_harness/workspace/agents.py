@@ -22,7 +22,7 @@ from pathlib import Path
 import yaml
 
 from ..config import config_dir
-from ..tools.provider import READ_TOOLS, SUBAGENT_TOOLS
+from ..tools.names import READ_TOOLS, SUBAGENT_TOOLS
 
 # Same identifier rules as skills: 1-64 chars, lowercase alphanumerics, single
 # hyphens, no leading/trailing/consecutive hyphens.

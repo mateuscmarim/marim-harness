@@ -76,13 +76,17 @@ class HarnessApp(App):
         self.harness.deps.tasks.on_change = self._on_tasks_changed
         self.harness.deps.jobs.on_change = self._on_jobs_changed
         self.harness.deps.on_subagent_event = self._on_subagent_event
-        self.harness.on_compact = self._on_compact
-        self.harness.on_rename = self._on_rename
+        self.harness.session.on_compact = self._on_compact
+        self.harness.session.on_rename = self._on_rename
         self._current_assistant: AssistantMessage | None = None
         self._tool_widgets: dict[str, ToolCallWidget] = {}
         # Per-stream live assistant text for spawned sub-agents, keyed by the
         # spawn_agent tool_call_id that owns the nested stream.
         self._sub_assistants: dict[str, AssistantMessage] = {}
+        # Streams that buffered deltas since the last flush tick. Draining only
+        # these (instead of walking the whole message tree every frame) keeps the
+        # tick O(active streams), not O(every message ever shown).
+        self._dirty_streams: set[AssistantMessage] = set()
         self._busy = False
         self._turn_worker = None
         # The current turn's in-flight token total, read off ctx.usage as events
@@ -110,15 +114,16 @@ class HarnessApp(App):
         await log.mount(Static(_BANNER, id="banner", markup=False))
         intro = AssistantMessage()
         await log.mount(intro)
-        if self.harness.history:
-            n = len(self.harness.history)
-            tokens = self.harness.total_tokens
-            intro.append(
-                f"**Resumed session** — {n} messages, {tokens} tokens restored."
+        if self.harness.session.history:
+            n = len(self.harness.session.history)
+            tokens = self.harness.session.total_tokens
+            self._append_stream(
+                intro,
+                f"**Resumed session** — {n} messages, {tokens} tokens restored.",
             )
             await self._replay_history(log)
         else:
-            intro.append(_WELCOME)
+            self._append_stream(intro, _WELCOME)
         self._flush_streams()  # render the static intro/replay before first paint
         # Keep the log pinned to the bottom as content streams in. Textual's anchor
         # re-pins to the true bottom during layout (so it can't drift behind a
@@ -138,7 +143,7 @@ class HarnessApp(App):
         """Open the configured MCP servers and note the outcome. Connection
         failures are surfaced as a notice, never fatal — the app runs fine with
         the servers that did come up (or none at all)."""
-        if not self.harness.mcp_servers:
+        if not self.harness.mcp.mcp_servers:
             return
         status = await self.harness.connect()
         if status["connected"]:
@@ -167,7 +172,7 @@ class HarnessApp(App):
         )
 
         tool_widgets: dict[str, ToolCallWidget] = {}
-        for message in self.harness.history:
+        for message in self.harness.session.history:
             if isinstance(message, (ModelRequest, ModelResponse)):
                 for part in message.parts:
                     if isinstance(part, UserPromptPart):
@@ -178,7 +183,7 @@ class HarnessApp(App):
                         if part.content:
                             msg = AssistantMessage()
                             await log.mount(msg)
-                            msg.append(part.content)
+                            self._append_stream(msg, part.content)
                     elif isinstance(part, ToolCallPart):
                         widget = ToolCallWidget(part.tool_name, part.args_as_dict())
                         tool_widgets[part.tool_call_id] = widget
@@ -192,14 +197,14 @@ class HarnessApp(App):
         cfg = getattr(self.harness, "model_label", "model")
         # Committed session usage plus the current run's in-flight tokens, so the
         # counter advances during a turn rather than only when it finishes.
-        spent = getattr(self.harness, "total_tokens", 0) + self._live_run_tokens
-        used = estimate_tokens(self.harness.history)
-        max_ctx = getattr(self.harness, "max_context_tokens", 0) or 0
+        spent = getattr(self.harness.session, "total_tokens", 0) + self._live_run_tokens
+        used = estimate_tokens(self.harness.session.history)
+        max_ctx = getattr(self.harness.session, "max_context_tokens", 0) or 0
         pct = round(used / max_ctx * 100) if max_ctx else 0
         ctx_text = f"ctx {_human_tokens(used)}/{_human_tokens(max_ctx)} ({pct}%)"
         ctx_style = "red" if pct >= 90 else "yellow" if pct >= 75 else ""
         mode = self.harness.deps.mode.value
-        name = getattr(self.harness, "session_name", None)
+        name = getattr(self.harness.session, "session_name", None)
         # session_name is model-generated and untrusted; render it as a literal
         # styled segment via assemble so a stray bracket sequence (e.g. `[edit(`)
         # is never parsed as Textual markup — which would crash the status bar.
@@ -299,7 +304,8 @@ class HarnessApp(App):
         log = self.query_one("#log", VerticalScroll)
         msg = AssistantMessage()
         await log.mount(msg)
-        msg.append(markdown)
+        self._append_stream(msg, markdown)
+        self._flush_streams()  # one-shot system text: render it now, no tick wait
 
     async def _render_session(self, note: str) -> None:
         """Rebuild the log for a fresh view of the active session: banner, an
@@ -311,8 +317,8 @@ class HarnessApp(App):
         await log.mount(Static(_BANNER, id="banner", markup=False))
         intro = AssistantMessage()
         await log.mount(intro)
-        intro.append(note)
-        if self.harness.history:
+        self._append_stream(intro, note)
+        if self.harness.session.history:
             await self._replay_history(log)
         self._flush_streams()  # render the rebuilt log before first paint
         log.anchor()  # re-pin to the bottom for the freshly loaded session
@@ -328,13 +334,13 @@ class HarnessApp(App):
     async def start_new_session(self, name: str | None = None) -> None:
         """Begin a fresh named session, leaving existing ones on disk."""
         self.harness.new_session(name)
-        label = self.harness.session_name or "new session"
+        label = self.harness.session.session_name or "new session"
         await self._render_session(f"**New session** — `{label}`.")
 
     async def switch_to_session_id(self, session_id: str) -> None:
         """Load an existing session and show where it left off."""
         n = self.harness.switch_session(session_id)
-        label = self.harness.session_name or session_id
+        label = self.harness.session.session_name or session_id
         await self._render_session(
             f"**Switched to** `{label}` — {n} messages restored."
         )
@@ -376,12 +382,22 @@ class HarnessApp(App):
         log.mount(NoticeMessage(f"model: {self.harness.model_label}"))
         log.scroll_end(animate=False)
 
+    def _append_stream(self, widget: AssistantMessage, delta: str) -> None:
+        """Buffer a streamed delta into ``widget`` and mark it for the next flush
+        tick. Funnelling every append through here is what lets the tick render
+        only the streams that actually changed."""
+        widget.append(delta)
+        self._dirty_streams.add(widget)
+
     def _flush_streams(self) -> None:
         """Render every AssistantMessage that buffered deltas since the last tick —
         top-level and nested sub-agent streams alike. Coalescing the markdown parses
         here is the streaming debounce; the log's scroll anchor keeps the freshly
-        grown content pinned to the bottom (flush is a no-op when nothing buffered)."""
-        for m in self.query(AssistantMessage):
+        grown content pinned to the bottom. Draining the dirty set (rather than
+        walking the whole message tree) keeps the tick proportional to the number
+        of live streams."""
+        dirty, self._dirty_streams = self._dirty_streams, set()
+        for m in dirty:
             m.flush()
         # Piggyback on the same per-frame tick to repaint the status bar while a
         # turn is running, so the live token counter advances as the run streams.
@@ -458,12 +474,14 @@ class HarnessApp(App):
                 self._current_assistant = AssistantMessage()
                 await log.mount(self._current_assistant)
                 if event.part.content:
-                    self._current_assistant.append(event.part.content)
+                    self._append_stream(self._current_assistant, event.part.content)
             elif isinstance(event, PartDeltaEvent) and isinstance(
                 event.delta, TextPartDelta
             ):
                 if self._current_assistant is not None:
-                    self._current_assistant.append(event.delta.content_delta or "")
+                    self._append_stream(
+                        self._current_assistant, event.delta.content_delta or ""
+                    )
             elif isinstance(event, FunctionToolCallEvent):
                 # A gated tool re-emits its call event on the post-approval
                 # execution pass; reuse the widget already mounted for this id
@@ -506,13 +524,13 @@ class HarnessApp(App):
             self._sub_assistants[stream_id] = msg
             await parent.add(msg)
             if event.part.content:
-                msg.append(event.part.content)
+                self._append_stream(msg, event.part.content)
         elif isinstance(event, PartDeltaEvent) and isinstance(
             event.delta, TextPartDelta
         ):
             msg = self._sub_assistants.get(stream_id)
             if msg is not None:
-                msg.append(event.delta.content_delta or "")
+                self._append_stream(msg, event.delta.content_delta or "")
         elif isinstance(event, FunctionToolCallEvent):
             # A gated tool re-emits its call event on the post-approval
             # execution pass; reuse the already-mounted widget for this id.

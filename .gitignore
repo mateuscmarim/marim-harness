@@ -2,3 +2,9 @@ __pycache__/
 *.pyc
 .venv/
 .env
+
+# Tool caches / generated reports
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.VSCodeCounter/

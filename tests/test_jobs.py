@@ -198,6 +198,21 @@ def test_render_jobs_formats_rows():
     assert render_jobs([]) == ""
 
 
+@pytest.mark.anyio
+async def test_cancel_before_start_closes_coroutine():
+    """A job cancelled before its task ever runs must still consume the caller's
+    coroutine (drive it to a closed state), not drop it un-started — otherwise
+    Python emits a 'coroutine was never awaited' RuntimeWarning at GC."""
+    from inspect import CORO_CLOSED, getcoroutinestate
+
+    reg = JobRegistry()
+    coro = _sleep_then("x", 5)
+    reg.register("agent", "a", coro)  # no await before cancel -> task never starts
+    await reg.cancel_all()
+
+    assert getcoroutinestate(coro) == CORO_CLOSED
+
+
 def _sleep_then(value, seconds):
     async def coro():
         await asyncio.sleep(seconds)

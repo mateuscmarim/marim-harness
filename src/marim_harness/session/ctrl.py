@@ -41,6 +41,10 @@ class SessionController:
     def session_name(self) -> Optional[str]:
         return self.store.name if self.store is not None else None
 
+    @property
+    def total_tokens(self) -> int:
+        return self.usage.total_tokens
+
     def sessions(self) -> list[SessionInfo]:
         if self.manager is None:
             return []
