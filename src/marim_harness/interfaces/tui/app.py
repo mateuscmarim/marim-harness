@@ -346,6 +346,7 @@ class HarnessApp(App):
     async def switch_to_session_id(self, session_id: str) -> None:
         """Load an existing session and show where it left off."""
         n = self.harness.switch_session(session_id)
+        await self.harness.session_start("resume")
         label = self.harness.session.session_name or session_id
         await self._render_session(
             f"**Switched to** `{label}` — {n} messages restored."
