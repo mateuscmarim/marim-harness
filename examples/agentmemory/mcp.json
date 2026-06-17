@@ -1,0 +1,14 @@
+{
+  "_comment": "Merge this block into ~/.config/marim/mcp.json (global config — never ship as .marim/mcp.json).",
+  "_note": "Never commit AGENTMEMORY_SECRET. Export it in your shell environment before starting marim.",
+  "mcpServers": {
+    "agentmemory": {
+      "command": "npx",
+      "args": ["-y", "@agentmemory/mcp"],
+      "env": {
+        "AGENTMEMORY_URL": "http://localhost:3111",
+        "AGENTMEMORY_SECRET": "${AGENTMEMORY_SECRET}"
+      }
+    }
+  }
+}

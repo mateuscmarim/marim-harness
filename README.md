@@ -20,6 +20,8 @@ headless mode for one-shot prompts and scripting.
   outright).
 - **MCP** — connect Model Context Protocol servers and grant them selectively
   to spawned sub-agents.
+- **Hooks** — lifecycle hooks fire on session, prompt, tool, and compaction
+  events; external commands observe or inject context without blocking the agent.
 - **Background jobs & sub-agents** — fire-and-forget shell/agent work whose
   results are pulled back into the conversation.
 
@@ -76,6 +78,33 @@ from the environment — they are never written to session files or logs.**
 expressions (a literal substring also works); deny takes precedence over allow.
 The policy gates the shell tool in `auto` and `ask` modes; `plan` mode is
 read-only and denies the shell tool outright.
+
+### MCP
+
+Connect MCP servers by adding entries to `~/.config/marim/mcp.json` (global, always
+loaded) or `.marim/mcp.json` in your workspace (project-local, overrides global
+entries by name). The config shape follows Claude Code's format:
+
+```json
+{
+  "mcpServers": {
+    "files": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-fs"] },
+    "web":   { "url": "https://example.com/mcp" }
+  }
+}
+```
+
+### Hooks
+
+marim runs Claude-Code-compatible lifecycle hooks. Define them in
+`~/.config/marim/hooks.json` (global, always honored) or `.marim/hooks.json`
+(project — honored only when `MARIM_TRUST_PROJECT_HOOKS=1`, since project hooks
+execute shell commands from the repo and are a supply-chain risk). Events:
+`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PreCompact`,
+`SubagentStart`, `SubagentStop`, `Stop`, `SessionEnd`. The payload is JSON on
+stdin; `SessionStart` and `UserPromptSubmit` may inject context via
+`additionalContext` on stdout. Hooks never block a tool or a turn. See
+`examples/agentmemory/` for a worked setup with agentmemory.
 
 ## Development
 
