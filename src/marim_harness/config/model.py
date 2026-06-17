@@ -2,7 +2,7 @@ import os
 from dataclasses import dataclass, replace
 from typing import Optional
 
-from ..workspace.catalog import ModelEntry, fetch_openrouter_models
+from ..workspace.catalog import ModelEntry, fetch_google_models, fetch_openrouter_models
 
 _DEFAULT_OPENROUTER_MODEL = "anthropic/claude-sonnet-4-6"
 _DEFAULT_LOCAL_MODEL = "qwen2.5-coder"
@@ -122,8 +122,9 @@ class ModelSource:
         return build_model(replace(self.cfg, model=model_id))
 
     async def list_models(self) -> list[ModelEntry]:
-        """Available models for the picker. Only OpenRouter exposes a public
-        catalog; all other providers return an empty list."""
-        if self.cfg.provider != "openrouter":
-            return []
-        return await fetch_openrouter_models(self.cfg.api_key)
+        """Available models for the picker. Returns [] on unsupported providers."""
+        if self.cfg.provider == "openrouter":
+            return await fetch_openrouter_models(self.cfg.api_key)
+        if self.cfg.provider == "google":
+            return await fetch_google_models(self.cfg.api_key)
+        return []

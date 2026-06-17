@@ -1,10 +1,12 @@
-"""The OpenRouter model catalog: fetch the list of available models so the
-picker can offer them, plus pure helpers to parse and filter that list."""
+"""Model catalogs for OpenRouter and Google/Gemini: fetch the list of
+available models so the picker can offer them, plus pure helpers to parse
+and filter that list."""
 
 from dataclasses import dataclass
 from typing import Optional
 
 _OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+_GOOGLE_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,45 @@ def filter_entries(entries: list[ModelEntry], query: str) -> list[ModelEntry]:
     if not q:
         return entries
     return [e for e in entries if q in e.id.lower() or q in e.name.lower()]
+
+
+def parse_google_models(payload: dict) -> list[ModelEntry]:
+    """Turn a Gemini ``/v1beta/models`` response into sorted entries, keeping
+    only models that support generateContent (i.e. chat-capable models)."""
+    rows = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return []
+    entries: list[ModelEntry] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        raw_name = row.get("name", "")
+        if not isinstance(raw_name, str) or not raw_name:
+            continue
+        methods = row.get("supportedGenerationMethods", [])
+        if "generateContent" not in methods:
+            continue
+        model_id = raw_name.removeprefix("models/")
+        display = row.get("displayName") or model_id
+        entries.append(ModelEntry(id=model_id, name=display))
+    entries.sort(key=lambda e: e.id)
+    return entries
+
+
+async def fetch_google_models(
+    api_key: Optional[str] = None, timeout: float = 10.0
+) -> list[ModelEntry]:
+    """Fetch the Gemini model catalog. Returns ``[]`` on any failure."""
+    import httpx
+
+    params = {"key": api_key} if api_key else {}
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(_GOOGLE_MODELS_URL, params=params)
+            response.raise_for_status()
+            return parse_google_models(response.json())
+    except Exception:
+        return []
 
 
 async def fetch_openrouter_models(

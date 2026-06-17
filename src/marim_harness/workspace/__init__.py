@@ -9,8 +9,10 @@ from .agents import (
 )
 from .catalog import (
     ModelEntry,
+    fetch_google_models,
     fetch_openrouter_models,
     filter_entries,
+    parse_google_models,
     parse_models,
 )
 from .fs import WorkspaceError, resolve_in_workspace
@@ -43,8 +45,10 @@ __all__ = [
     "subagent_instructions",
     # catalog
     "ModelEntry",
+    "fetch_google_models",
     "fetch_openrouter_models",
     "filter_entries",
+    "parse_google_models",
     "parse_models",
     # fs
     "WorkspaceError",
