@@ -103,19 +103,19 @@ class ToolCallWidget(Collapsible):
 
 
 class ToolGroupWidget(Collapsible):
-    """A run of consecutive tool calls collapsed into one row. Its children are
-    the individual ToolCallWidgets; the title summarizes the batch (total count
-    plus a per-tool breakdown) so a frequent burst of reads is one line, not N.
+    """A run of consecutive tool calls folded into one collapsed row. Its children
+    are the individual ToolCallWidgets; the title summarizes the batch (total count
+    plus a per-tool breakdown), so a burst of reads is one line, not N.
 
-    A lone call leaves the group expanded — it then reads like a single tool row
-    with a thin header. The second call of a run collapses the group, so a burst
-    (e.g. parallel reads) folds away to its summary line."""
+    A group is only created once a run has two-or-more calls — a lone call stays a
+    bare ToolCallWidget, since wrapping one tool adds a redundant header and an
+    extra click for no grouping benefit. Starts collapsed for that reason."""
 
     def __init__(self) -> None:
         # Insertion-ordered count per tool name, for the title breakdown.
         self._counts: dict[str, int] = {}
         self.body = Vertical(classes="tool-group-body")
-        super().__init__(self.body, title=self._summary(), collapsed=False)
+        super().__init__(self.body, title=self._summary(), collapsed=True)
 
     def _summary(self) -> Content:
         total = sum(self._counts.values())
@@ -129,12 +129,11 @@ class ToolGroupWidget(Collapsible):
         return Content(text)
 
     async def add_tool(self, widget: ToolCallWidget) -> None:
-        """Mount a tool call into the group and refresh the summary. Collapses the
-        group as soon as it holds more than one call (a burst)."""
+        """Mount a tool call into the group and refresh the summary line. The
+        widget may already be mounted elsewhere (a lone call promoted into a new
+        group); the caller detaches it first."""
         self._counts[widget.tool_name] = self._counts.get(widget.tool_name, 0) + 1
         self.title = self._summary()
-        if sum(self._counts.values()) == 2:
-            self.collapsed = True
         await self.body.mount(widget)
 
 

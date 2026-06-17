@@ -68,23 +68,20 @@ class _GroupHarness(App):
 
 
 @pytest.mark.anyio
-async def test_tool_group_single_tool_stays_expanded():
-    """A lone tool call should read like a single row — its group stays expanded
-    so it isn't hidden behind an extra click."""
+async def test_tool_group_starts_collapsed():
+    """A group only ever holds a burst (2+ calls), so it's born collapsed — a lone
+    call is left bare by the caller and never reaches a group."""
     app = _GroupHarness()
     async with app.run_test() as pilot:
         g = app.query_one(ToolGroupWidget)
-        await g.add_tool(ToolCallWidget("read_file", {"path": "a.py"}))
         await pilot.pause()
-        assert g.collapsed is False
-        assert len(g.query(ToolCallWidget)) == 1
-        assert "read_file" in str(g.title)
+        assert g.collapsed is True
 
 
 @pytest.mark.anyio
-async def test_tool_group_collapses_and_summarizes_a_burst():
-    """Two-or-more consecutive calls collapse to one line; the title summarizes
-    the batch (total + per-tool breakdown)."""
+async def test_tool_group_summarizes_a_burst():
+    """Two-or-more consecutive calls fold to one line; the title summarizes the
+    batch (total + per-tool breakdown) and stays collapsed."""
     app = _GroupHarness()
     async with app.run_test() as pilot:
         g = app.query_one(ToolGroupWidget)
