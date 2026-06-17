@@ -1,11 +1,62 @@
 from pydantic_ai.usage import RunUsage
 
 from marim_harness.usage import (
+    COST_DETAIL_KEY,
     TokenSplit,
     estimate_cost,
+    exact_cost,
+    resolve_cost,
     split_tokens,
     usage_summary,
 )
+
+
+def test_exact_cost_reads_billed_micro_usd_detail():
+    # OpenRouter's billed cost is captured into details as integer micro-USD.
+    u = RunUsage(input_tokens=13, output_tokens=5, details={COST_DETAIL_KEY: 114})
+    assert exact_cost(u) == 0.000114
+
+
+def test_exact_cost_absent_is_none():
+    assert exact_cost(RunUsage(input_tokens=10, output_tokens=2)) is None
+
+
+def test_resolve_cost_prefers_billed_over_estimate():
+    # A billed detail must win over the genai-prices estimate, and be flagged
+    # exact. Use an implausible billed value so it can't coincide with the model.
+    u = RunUsage(
+        input_tokens=56000, output_tokens=2000,
+        cache_read_tokens=50000, cache_write_tokens=5000,
+        details={COST_DETAIL_KEY: 999_999},
+    )
+    value, is_exact = resolve_cost(u, "claude-sonnet-4-6")
+    assert value == 0.999999
+    assert is_exact is True
+
+
+def test_resolve_cost_falls_back_to_estimate():
+    u = RunUsage(input_tokens=56000, output_tokens=2000)
+    value, is_exact = resolve_cost(u, "claude-sonnet-4-6")
+    assert value is not None and value > 0
+    assert is_exact is False
+
+
+def test_resolve_cost_none_when_unpriced_and_no_billed():
+    value, is_exact = resolve_cost(RunUsage(input_tokens=10), "made-up-zzz")
+    assert value is None
+    assert is_exact is False
+
+
+def test_usage_summary_marks_estimate_vs_billed():
+    estimated = usage_summary(RunUsage(input_tokens=5000, output_tokens=500),
+                              "claude-sonnet-4-6")
+    assert estimated["cost_is_exact"] is False
+    billed = usage_summary(
+        RunUsage(input_tokens=5000, output_tokens=500, details={COST_DETAIL_KEY: 200}),
+        "claude-sonnet-4-6",
+    )
+    assert billed["cost_usd"] == 0.0002
+    assert billed["cost_is_exact"] is True
 
 
 def test_usage_summary_carries_split_totals_and_cost():

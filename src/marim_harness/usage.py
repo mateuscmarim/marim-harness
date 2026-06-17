@@ -13,6 +13,11 @@ from typing import Optional
 
 from pydantic_ai.usage import RunUsage
 
+# Where the OpenRouter-billed cost is stashed (integer micro-USD) by the
+# cost-capturing model, since RunUsage.details holds ints. See
+# config/openrouter_cost.py.
+COST_DETAIL_KEY = "cost_micro_usd"
+
 
 @dataclass(frozen=True)
 class TokenSplit:
@@ -52,12 +57,31 @@ def split_tokens(usage: RunUsage) -> TokenSplit:
     return TokenSplit(uncached, cache_read, cache_write, usage.output_tokens)
 
 
+def exact_cost(usage: RunUsage) -> Optional[float]:
+    """The billed cost in USD if the provider reported one (captured into
+    ``details[COST_DETAIL_KEY]`` as integer micro-USD), else ``None``."""
+    micro = usage.details.get(COST_DETAIL_KEY)
+    return micro / 1_000_000 if micro is not None else None
+
+
+def resolve_cost(usage: RunUsage, model_ref: Optional[str]) -> tuple[Optional[float], bool]:
+    """The best available cost as ``(usd, is_exact)``. Prefers the provider's
+    billed amount (``is_exact=True``) and falls back to the genai-prices estimate
+    (``is_exact=False``); ``(None, False)`` when neither is available."""
+    billed = exact_cost(usage)
+    if billed is not None:
+        return billed, True
+    return estimate_cost(usage, model_ref), False
+
+
 def usage_summary(usage: RunUsage, model_ref: Optional[str]) -> dict:
     """A JSON-friendly usage breakdown: the raw input/output/total counts, the
-    uncached-in / cache-read / cache-write split, and an estimated ``cost_usd``
-    (``None`` when the model isn't priced). The canonical shape surfaced by the
+    uncached-in / cache-read / cache-write split, and the best ``cost_usd``
+    (billed when available, else estimated; ``None`` when the model isn't
+    priced). ``cost_is_exact`` flags which. The canonical shape surfaced by the
     headless output and the status bar."""
     s = split_tokens(usage)
+    cost, is_exact = resolve_cost(usage, model_ref)
     return {
         "input_tokens": usage.input_tokens,
         "output_tokens": usage.output_tokens,
@@ -65,7 +89,8 @@ def usage_summary(usage: RunUsage, model_ref: Optional[str]) -> dict:
         "uncached_input_tokens": s.uncached_input,
         "cache_read_tokens": s.cache_read,
         "cache_write_tokens": s.cache_write,
-        "cost_usd": estimate_cost(usage, model_ref),
+        "cost_usd": cost,
+        "cost_is_exact": is_exact,
     }
 
 

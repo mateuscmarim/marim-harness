@@ -117,10 +117,9 @@ def build_model(cfg: ModelConfig):
 
         return GoogleModel(cfg.model, provider=GoogleProvider(api_key=cfg.api_key))
 
-    from pydantic_ai.providers.openrouter import OpenRouterProvider
+    from .openrouter_cost import build_openrouter_model
 
-    provider = OpenRouterProvider(api_key=cfg.api_key)
-    return OpenAIChatModel(cfg.model, provider=provider)
+    return build_openrouter_model(cfg.model, cfg.api_key)
 
 
 class ModelSource:

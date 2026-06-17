@@ -277,7 +277,7 @@ async def _mcp_toggle(app: HarnessApp, action: str, target: str) -> None:
 
 
 async def _cmd_usage(app: HarnessApp, arg: str) -> None:
-    from ...usage import estimate_cost, split_tokens
+    from ...usage import resolve_cost, split_tokens
     from .widgets import format_cost, human_tokens
 
     usage = app.harness.session.usage
@@ -291,9 +291,10 @@ async def _cmd_usage(app: HarnessApp, arg: str) -> None:
         f"- Output: {human_tokens(s.output)}",
         f"- Total: {human_tokens(s.total)}",
     ]
-    cost = estimate_cost(usage, app.harness.model_id)
+    cost, is_exact = resolve_cost(usage, app.harness.model_id)
     if cost is not None:
-        lines.append(f"- Estimated cost: {format_cost(cost)}")
+        label = "Cost (billed)" if is_exact else "Estimated cost"
+        lines.append(f"- {label}: {format_cost(cost)}")
     else:
         lines += ["", "_No price data for the active model — cost unavailable._"]
     await app.post_system("\n".join(lines))

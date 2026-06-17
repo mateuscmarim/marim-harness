@@ -19,7 +19,7 @@ from ...agent import Harness, strip_turn_context
 from ...compaction import estimate_tokens
 from ...history import PromptHistory
 from ...prefs import load_theme, save_theme
-from ...usage import estimate_cost
+from ...usage import resolve_cost
 from .approval import ApprovalModal
 from .commands import dispatch
 from .model_picker import ModelPickerModal
@@ -235,9 +235,9 @@ class HarnessApp(App):
         pct = round(used / max_ctx * 100) if max_ctx else 0
         ctx_text = f"ctx {_human_tokens(used)}/{_human_tokens(max_ctx)} ({pct}%)"
         ctx_style = "red" if pct >= 90 else "yellow" if pct >= 75 else ""
-        # Estimated spend for the committed usage; appended to the live counter
-        # when the active model is priced (local/unknown models show none).
-        cost = estimate_cost(self.harness.session.usage, self.harness.model_id)
+        # Spend for the committed usage (billed when the provider reports it,
+        # else estimated); appended to the live counter when the model is priced.
+        cost, _ = resolve_cost(self.harness.session.usage, self.harness.model_id)
         tokens_text = f"{_human_tokens(spent)} tokens"
         if cost is not None:
             tokens_text += f" · {_format_cost(cost)}"
