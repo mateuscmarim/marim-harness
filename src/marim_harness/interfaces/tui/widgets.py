@@ -92,23 +92,28 @@ class ToolCallWidget(Collapsible):
         self._body.update(self._render_body())
 
 
+# These three log widgets carry arbitrary text — user input, exception strings,
+# MCP errors — that may contain Rich markup syntax (e.g. a stray ``[/]``). Their
+# glyph and colour come from CSS classes, not inline markup, so render with
+# ``markup=False`` to show the text literally; otherwise a MarkupError raised
+# during layout crashes the whole app.
 class UserMessage(Static):
     def __init__(self, text: str) -> None:
-        super().__init__(f"› {text}", classes="user-msg")
+        super().__init__(f"› {text}", classes="user-msg", markup=False)
 
 
 class ErrorMessage(Static):
     """A turn that failed: shown in the log so the session survives the error."""
 
     def __init__(self, text: str) -> None:
-        super().__init__(f"✕ {text}", classes="error-msg")
+        super().__init__(f"✕ {text}", classes="error-msg", markup=False)
 
 
 class NoticeMessage(Static):
     """A low-key system note in the log (e.g. history was compacted)."""
 
     def __init__(self, text: str) -> None:
-        super().__init__(f"· {text}", classes="notice-msg")
+        super().__init__(f"· {text}", classes="notice-msg", markup=False)
 
 
 class TaskPanel(Static):

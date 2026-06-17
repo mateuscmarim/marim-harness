@@ -125,6 +125,30 @@ async def test_error_message_has_error_class_and_text():
         assert "rate limited (429)" in str(w.render())
 
 
+@pytest.mark.anyio
+async def test_log_messages_survive_markup_like_text():
+    """Error/user/notice text is arbitrary (exceptions, user input, MCP errors)
+    and may contain Rich markup syntax like ``[/]``. It must be shown literally,
+    never parsed as markup — otherwise a MarkupError crashes the whole app."""
+    from marim_harness.interfaces.tui.widgets import ErrorMessage, NoticeMessage
+
+    payload = "MarkupError: auto closing tag ('[/]') has nothing to close"
+
+    class H(App):
+        def compose(self) -> ComposeResult:
+            yield ErrorMessage(payload)
+            yield UserMessage(payload)
+            yield NoticeMessage(payload)
+
+    app = H()
+    async with app.run_test() as pilot:
+        # Force a real layout/render pass — this is where markup is parsed.
+        await pilot.pause()
+        for cls in (ErrorMessage, UserMessage, NoticeMessage):
+            w = app.query_one(cls)
+            assert "[/]" in str(w.render())
+
+
 class _PromptHost(App):
     def __init__(self) -> None:
         super().__init__()
