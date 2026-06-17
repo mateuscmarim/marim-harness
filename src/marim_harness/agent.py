@@ -214,6 +214,14 @@ class Harness:
 
     def new_session(self, name: Optional[str] = None) -> None:
         self.session.new_session(name)
+        # Apply the model inherited by SessionManager.create() when it
+        # differs from the harness's current model.
+        if (
+            self.store is not None
+            and self.store.model
+            and self.store.model != self.model_id
+        ):
+            self.set_model(self.store.model, persist=False)
 
     def switch_session(self, session_id: str) -> int:
         count = self.session.switch_session(session_id)

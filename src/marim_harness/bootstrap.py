@@ -26,12 +26,20 @@ def build_harness(
     identically. When ``resume`` is set, reattaches to the latest saved session
     and replays its history."""
     cfg = load_config()
+    model_source = ModelSource(cfg)
     model = build_model(cfg)
+    model_id = cfg.model
     deps = Deps(workspace_root=workspace, mode=mode)
 
     manager = SessionManager(workspace)
     latest = manager.latest() if resume else None
     store = manager.store(latest.id) if latest is not None else manager.create()
+
+    # When not resuming, pick up the model from the most recent session so the
+    # user doesn't have to re-select it after every restart.
+    if not resume and store.model and store.model != model_id:
+        model_id = store.model
+        model = model_source.build(model_id)
 
     # MCP servers from the merged global + project config. Malformed specs are
     # dropped (build returns warnings); connections are opened later by the caller
@@ -45,14 +53,14 @@ def build_harness(
         provider=BuiltinToolProvider(),
         deps=deps,
         instructions=INSTRUCTIONS,
-        model_label=f"{cfg.provider}/{cfg.model}",
+        model_label=model_source.label(model_id),
         store=store,
         manager=manager,
         max_context_tokens=cfg.max_context_tokens,
         summarizer=make_summarizer(model),
         titler=make_titler(model),
-        model_source=ModelSource(cfg),
-        model_id=cfg.model,
+        model_source=model_source,
+        model_id=model_id,
         proactive_memory=cfg.proactive_memory,
         mcp_servers=mcp_servers,
         mcp_disabled=mcp_disabled,
