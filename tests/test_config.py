@@ -192,3 +192,15 @@ def test_load_environment_real_env_wins(isolated_env, monkeypatch, tmp_path):
     load_environment()
 
     assert os.environ["OPENROUTER_API_KEY"] == "real-key"  # shell env beats files
+
+
+def test_trust_project_hooks_defaults_false(monkeypatch):
+    from marim_harness.config.model import load_config
+    monkeypatch.delenv("MARIM_TRUST_PROJECT_HOOKS", raising=False)
+    assert load_config().trust_project_hooks is False
+
+
+def test_trust_project_hooks_env_truthy(monkeypatch):
+    from marim_harness.config.model import load_config
+    monkeypatch.setenv("MARIM_TRUST_PROJECT_HOOKS", "1")
+    assert load_config().trust_project_hooks is True
