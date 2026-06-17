@@ -88,6 +88,62 @@ async def test_run_turn_persists_to_store(tmp_path: Path):
     assert usage.total_tokens == harness.total_tokens
 
 
+def _raising_model() -> FunctionModel:
+    """A model that fails mid-turn (simulates an API outage, or — the reported
+    case — a render error raised by the TUI's event_stream_handler)."""
+
+    def fn(messages, info):
+        raise RuntimeError("turn boom")
+
+    return FunctionModel(fn)
+
+
+@pytest.mark.anyio
+async def test_failed_turn_preserves_user_prompt_in_history(tmp_path: Path):
+    """When a turn raises, the user's prompt must survive in history so the
+    session can continue instead of forgetting the request entirely."""
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    harness = _make_harness(_raising_model(), deps)
+    with pytest.raises(RuntimeError):
+        await harness.run_turn("please remember this request")
+    user_texts = [
+        p.content
+        for m in harness.history
+        for p in getattr(m, "parts", [])
+        if type(p).__name__ == "UserPromptPart"
+    ]
+    assert any("please remember this request" in str(t) for t in user_texts)
+
+
+@pytest.mark.anyio
+async def test_failed_turn_persists_so_a_new_harness_can_resume(tmp_path: Path):
+    """A turn that fails must still be persisted to the store, so a resumed
+    session sees the lost prompt rather than starting blank."""
+    from marim_harness.session import SessionManager
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    store = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data").create()
+    harness = Harness(
+        model=_raising_model(), provider=BuiltinToolProvider(), deps=deps,
+        instructions="x", store=store,
+    )
+    with pytest.raises(RuntimeError):
+        await harness.run_turn("a request that crashed the turn")
+
+    resumed = Harness(
+        model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
+        instructions="x", store=store,
+    )
+    resumed.resume()
+    user_texts = [
+        p.content
+        for m in resumed.history
+        for p in getattr(m, "parts", [])
+        if type(p).__name__ == "UserPromptPart"
+    ]
+    assert any("a request that crashed the turn" in str(t) for t in user_texts)
+
+
 @pytest.mark.anyio
 async def test_resume_restores_history_and_tokens(tmp_path: Path):
     from marim_harness.session import SessionManager

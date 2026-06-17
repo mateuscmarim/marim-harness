@@ -1,6 +1,6 @@
 from typing import Optional
 
-from pydantic_ai import Agent, DeferredToolRequests
+from pydantic_ai import Agent, DeferredToolRequests, capture_run_messages
 from pydantic_ai.usage import RunUsage
 
 from .workspace import (
@@ -356,15 +356,29 @@ class Harness:
         # runtime stays connected but its tools are withheld from the model.
         toolsets = self.mcp.live_toolsets()
         while True:
-            result = await self.agent.run(
-                user_prompt,
-                model=self.current_model,
-                message_history=self.history,
-                deps=self.deps,
-                deferred_tool_results=deferred_results,
-                event_stream_handler=event_stream_handler,
-                toolsets=toolsets,
-            )
+            # capture_run_messages exposes the messages exchanged even when the
+            # run aborts (a render error in the event handler, an API failure,
+            # the user cancelling). Each agent.run gets its own context — the
+            # capture only tracks the first run within a context, and this loop
+            # may run several rounds. On failure we persist what was captured so
+            # the user's prompt survives and the session can continue, rather
+            # than discarding the turn entirely.
+            with capture_run_messages() as captured:
+                try:
+                    result = await self.agent.run(
+                        user_prompt,
+                        model=self.current_model,
+                        message_history=self.history,
+                        deps=self.deps,
+                        deferred_tool_results=deferred_results,
+                        event_stream_handler=event_stream_handler,
+                        toolsets=toolsets,
+                    )
+                except BaseException:
+                    if captured:
+                        self.session.history = list(captured)
+                        self.session.persist()
+                    raise
             self.session.history = result.all_messages()
             self.session.usage += result.usage
             self.session.persist()
