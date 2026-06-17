@@ -80,6 +80,16 @@ expressions (a literal substring also works); deny takes precedence over allow.
 The policy gates the shell tool in `auto` and `ask` modes; `plan` mode is
 read-only and denies the shell tool outright.
 
+### Instructions
+
+Give the agent standing instructions with an `AGENTS.md` file. marim reads two,
+in order: `~/.config/marim/AGENTS.md` (global — applies to every project) first,
+then `<workspace>/AGENTS.md` (project-local) so a repo can extend or override the
+global guidance. Both are re-read each turn, so edits take effect on the next
+message. A missing or unreadable file is simply skipped — it never breaks a turn.
+Keep the global file to stable, universal directives; project conventions belong
+in the per-project file.
+
 ### MCP
 
 Connect MCP servers by adding entries to `~/.config/marim/mcp.json` (global, always
