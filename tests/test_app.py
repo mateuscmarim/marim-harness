@@ -1498,4 +1498,91 @@ async def test_app_starts_on_saved_marim_theme(tmp_path, monkeypatch):
     async with app.run_test():
         assert app.theme == "marim-violet"
         assert "marim-teal" in app.available_themes
+
+
+# ---------------------------------------------------------------------------
+# Grouping consecutive tool calls (strategy A: a batch-container widget)
+# ---------------------------------------------------------------------------
+
+
+def _call(tool_name: str, call_id: str):
+    from pydantic_ai.messages import FunctionToolCallEvent, ToolCallPart
+
+    return FunctionToolCallEvent(
+        part=ToolCallPart(tool_name=tool_name, args={}, tool_call_id=call_id)
+    )
+
+
+def _text(content: str):
+    from pydantic_ai.messages import PartStartEvent, TextPart
+
+    return PartStartEvent(index=0, part=TextPart(content=content))
+
+
+@pytest.mark.anyio
+async def test_consecutive_tool_calls_group_into_one_widget(tmp_path: Path):
+    """A run of back-to-back tool calls collapses into a single ToolGroupWidget
+    holding the individual ToolCallWidgets — not N siblings in the log."""
+    from marim_harness.interfaces.tui.widgets import ToolCallWidget, ToolGroupWidget
+
+    async def gen():
+        yield _call("read_file", "c1")
+        yield _call("read_file", "c2")
+        yield _call("grep", "c3")
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._on_events(None, gen())
+        await pilot.pause()
+        groups = app.query(ToolGroupWidget)
+        assert len(groups) == 1
+        assert len(groups.first().query(ToolCallWidget)) == 3
+
+
+@pytest.mark.anyio
+async def test_text_between_tool_calls_breaks_the_group(tmp_path: Path):
+    """Assistant text is a boundary: tool calls on either side of it land in
+    separate groups, so the log reflects the model's actual cadence."""
+    from marim_harness.interfaces.tui.widgets import ToolGroupWidget
+
+    async def gen():
+        yield _call("read_file", "c1")
+        yield _text("now let me search")
+        yield _call("grep", "c2")
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._on_events(None, gen())
+        await pilot.pause()
+        assert len(app.query(ToolGroupWidget)) == 2
+
+
+@pytest.mark.anyio
+async def test_tool_result_still_resolves_widget_inside_a_group(tmp_path: Path):
+    """Grouping only changes the mount target; results must still finish the
+    individual tool widget looked up by call id."""
+    from pydantic_ai.messages import FunctionToolResultEvent, ToolReturnPart
+
+    from marim_harness.interfaces.tui.widgets import ToolCallWidget
+
+    async def gen():
+        yield _call("read_file", "c1")
+        yield _call("read_file", "c2")
+        yield FunctionToolResultEvent(
+            part=ToolReturnPart(
+                tool_name="read_file", content="file body", tool_call_id="c1"
+            )
+        )
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._on_events(None, gen())
+        await pilot.pause()
+        w = app._tool_widgets["c1"]
+        assert isinstance(w, ToolCallWidget)
+        assert w.status == "done"
+        assert w.result_text == "file body"
         assert "marim-green" in app.available_themes

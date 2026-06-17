@@ -34,3 +34,5 @@ AssistantMessage { margin: 0 0 1 0; }
 ToolCallWidget { margin: 0 0 1 0; border-left: tall $primary; padding-left: 1; }
 SubAgentWidget { margin: 0 0 1 0; }
 .subagent-body { height: auto; padding: 0 0 0 2; border-left: tall $primary; }
+ToolGroupWidget { margin: 0 0 1 0; }
+.tool-group-body { height: auto; padding: 0 0 0 1; }
