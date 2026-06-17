@@ -1815,6 +1815,37 @@ async def test_subagent_start_and_stop_fire(tmp_path):
     assert "SubagentStop" in lines
 
 
+# ---------------------------------------------------------------------------
+# Task 9: Stop hook at turn end; SessionStart/SessionEnd wired into entry points
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_stop_fires_at_turn_end(tmp_path):
+    log = tmp_path / "stop.log"
+    cmd = _hook_script(tmp_path, "stop.sh", f"cat >> {log}\n")
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto,
+                hooks=HookRunner({hook_events.STOP: [{"hooks": [{"type": "command", "command": cmd}]}]}))
+    # Use a streaming-capable model: hooks configure a hooked_handler that forces
+    # streaming mode (same discipline as test_pre_and_post_tool_use_fire).
+    sink: list = []
+    harness = _make_harness(_prompt_capturing_model(sink), deps)
+    out = await harness.run_turn("anything")
+    assert out == "ok"
+    assert '"hook_event_name": "Stop"' in log.read_text()
+
+
+@pytest.mark.anyio
+async def test_session_end_fires(tmp_path):
+    log = tmp_path / "end.log"
+    cmd = _hook_script(tmp_path, "end.sh", f"cat >> {log}\n")
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto,
+                hooks=HookRunner({hook_events.SESSION_END: [{"hooks": [{"type": "command", "command": cmd}]}]}))
+    harness = _make_harness(FunctionModel(lambda m, i: ModelResponse(parts=[TextPart(content="x")])), deps)
+    await harness.session_end("exit")
+    assert '"hook_event_name": "SessionEnd"' in log.read_text()
+    assert '"reason": "exit"' in log.read_text()
+
+
 @pytest.mark.anyio
 async def test_background_subagent_start_and_stop_fire(tmp_path):
     _make_subagent_def(tmp_path)

@@ -89,11 +89,13 @@ async def run_headless(
 
     try:
         await harness.connect()  # open any configured MCP servers for this run
+        await harness.session_start("resume" if harness.session.history else "startup")
         output = await harness.run_turn(prompt, event_stream_handler=handler)
     except Exception as exc:  # keep the failure surface small and scriptable
         print(f"{type(exc).__name__}: {exc}", file=err)
         return 1
     finally:
+        await harness.session_end("exit")
         await harness.aclose()
 
     if output_format == "json":

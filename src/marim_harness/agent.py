@@ -479,5 +479,9 @@ class Harness:
                 continue
             self.session.persist()
             output = result.output
+            if self.deps.hooks is not None:
+                await self.deps.hooks.dispatch(
+                    hook_events.STOP, self._hook_payload(hook_events.STOP)
+                )
             await self._maybe_autoname()
             return output
