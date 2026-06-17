@@ -1,7 +1,7 @@
 import io
 import json
 
-from marim_harness.cli import config as config_cmd
+from marim_harness.interfaces.cli import config as config_cmd
 
 
 def _clear_marim_env(monkeypatch):

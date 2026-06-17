@@ -15,7 +15,7 @@ from pydantic_ai.messages import (
     TextPartDelta,
 )
 
-from ..agent import Harness
+from ...agent import Harness
 
 
 def _usage_dict(harness: Harness) -> dict:

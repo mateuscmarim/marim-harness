@@ -2,7 +2,7 @@ import pytest
 from textual.app import App
 
 from marim_harness.workspace import ModelEntry
-from marim_harness.tui.model_picker import ModelPickerModal
+from marim_harness.interfaces.tui.model_picker import ModelPickerModal
 
 _ENTRIES = [
     ModelEntry(id="anthropic/claude-sonnet-4-6", name="Claude Sonnet 4.6"),

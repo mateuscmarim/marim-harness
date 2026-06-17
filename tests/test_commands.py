@@ -4,13 +4,13 @@ from types import SimpleNamespace
 import pytest
 
 from marim_harness.session import SessionInfo
-from marim_harness.tui.commands import (
+from marim_harness.interfaces.tui.commands import (
     COMMANDS,
     COMMANDS_BY_NAME,
     dispatch,
     resolve_ref,
 )
-from marim_harness.tui.themes import THEME_NAMES
+from marim_harness.interfaces.tui.themes import THEME_NAMES
 
 
 class _FakeApp:

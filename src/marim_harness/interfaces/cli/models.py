@@ -5,7 +5,7 @@ import asyncio
 import json
 import sys
 
-from ..config import ModelSource, load_config
+from ...config import ModelSource, load_config
 
 
 def _build_parser() -> argparse.ArgumentParser:

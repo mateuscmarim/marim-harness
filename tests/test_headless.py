@@ -27,7 +27,7 @@ def _harness(tmp_path: Path, output_text: str = "hello from the model"):
 
 @pytest.mark.anyio
 async def test_text_format_prints_final_output(tmp_path: Path):
-    from marim_harness.cli.headless import run_headless
+    from marim_harness.interfaces.cli.headless import run_headless
 
     out = io.StringIO()
     harness = _harness(tmp_path, "the answer is 42")
@@ -38,7 +38,7 @@ async def test_text_format_prints_final_output(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_json_format_emits_structured_object(tmp_path: Path):
-    from marim_harness.cli.headless import run_headless
+    from marim_harness.interfaces.cli.headless import run_headless
 
     out = io.StringIO()
     harness = _harness(tmp_path, "structured reply")
@@ -53,7 +53,7 @@ async def test_json_format_emits_structured_object(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_stream_json_emits_ndjson_then_result(tmp_path: Path):
-    from marim_harness.cli.headless import run_headless
+    from marim_harness.interfaces.cli.headless import run_headless
 
     out = io.StringIO()
     harness = _harness(tmp_path, "streamed answer")
@@ -74,7 +74,7 @@ async def test_stream_json_emits_ndjson_then_result(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_failed_turn_returns_nonzero_and_writes_stderr(tmp_path: Path):
-    from marim_harness.cli.headless import run_headless
+    from marim_harness.interfaces.cli.headless import run_headless
 
     out = io.StringIO()
     err = io.StringIO()

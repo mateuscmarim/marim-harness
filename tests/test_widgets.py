@@ -2,7 +2,7 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Collapsible, Markdown
 
-from marim_harness.tui.widgets import (
+from marim_harness.interfaces.tui.widgets import (
     AssistantMessage,
     PromptInput,
     ToolCallWidget,
@@ -111,7 +111,7 @@ async def test_user_message_has_user_class():
 
 @pytest.mark.anyio
 async def test_error_message_has_error_class_and_text():
-    from marim_harness.tui.widgets import ErrorMessage
+    from marim_harness.interfaces.tui.widgets import ErrorMessage
 
     class H(App):
         def compose(self) -> ComposeResult:
@@ -338,14 +338,14 @@ async def test_prompt_input_submit_resets_navigation():
 
 class _SubHarness(App):
     def compose(self) -> ComposeResult:
-        from marim_harness.tui.widgets import SubAgentWidget
+        from marim_harness.interfaces.tui.widgets import SubAgentWidget
 
         yield SubAgentWidget("explore", "map the code")
 
 
 @pytest.mark.anyio
 async def test_subagent_widget_collapsed_param():
-    from marim_harness.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget
 
     class H(App):
         def compose(self) -> ComposeResult:
@@ -359,7 +359,7 @@ async def test_subagent_widget_collapsed_param():
 
 @pytest.mark.anyio
 async def test_subagent_widget_default_expanded():
-    from marim_harness.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget
 
     app = _SubHarness()
     async with app.run_test() as pilot:
@@ -369,7 +369,7 @@ async def test_subagent_widget_default_expanded():
 
 @pytest.mark.anyio
 async def test_subagent_title_shows_live_activity():
-    from marim_harness.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget
 
     app = _SubHarness()
     async with app.run_test() as pilot:
@@ -388,7 +388,7 @@ async def test_subagent_title_shows_live_activity():
 
 @pytest.mark.anyio
 async def test_subagent_finish_clears_activity_from_title():
-    from marim_harness.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget
 
     app = _SubHarness()
     async with app.run_test() as pilot:
@@ -403,7 +403,7 @@ async def test_subagent_finish_clears_activity_from_title():
 
 @pytest.mark.anyio
 async def test_subagent_title_shows_token_usage():
-    from marim_harness.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget
 
     app = _SubHarness()
     async with app.run_test() as pilot:
@@ -423,7 +423,7 @@ async def test_subagent_title_shows_token_usage():
 
 @pytest.mark.anyio
 async def test_subagent_token_usage_survives_finish():
-    from marim_harness.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget
 
     app = _SubHarness()
     async with app.run_test() as pilot:

@@ -121,7 +121,7 @@ class TaskPanel(Static):
 
     def show_tasks(self, items: list) -> None:
         """Render the current checklist, or hide the panel when there are none."""
-        from ..tasks import render_tasks
+        from ...tasks import render_tasks
 
         if not items:
             self.display = False
@@ -141,7 +141,7 @@ class JobPanel(Static):
 
     def show_jobs(self, jobs: list) -> None:
         """Render the current jobs, or hide the panel when there are none."""
-        from ..jobs import render_jobs
+        from ...jobs import render_jobs
 
         if not jobs:
             self.display = False
@@ -234,7 +234,7 @@ class PromptInput(TextArea):
             super().__init__()
 
     def __init__(self, history=None) -> None:
-        from ..history import PromptHistory
+        from ...history import PromptHistory
 
         # NB: TextArea.history is its own undo stack — keep prompt history apart.
         self.prompt_history = history if history is not None else PromptHistory()

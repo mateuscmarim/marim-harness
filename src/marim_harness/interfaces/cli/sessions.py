@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-from ..session import SessionManager
+from ...session import SessionManager
 
 _COLUMNS = ("ID", "NAME", "UPDATED", "MESSAGES", "TOKENS")
 

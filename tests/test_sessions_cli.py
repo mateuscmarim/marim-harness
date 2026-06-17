@@ -4,7 +4,7 @@ import json
 import pytest
 from pydantic_ai.usage import RunUsage
 
-from marim_harness.cli import sessions
+from marim_harness.interfaces.cli import sessions
 from marim_harness.session import SessionManager
 
 

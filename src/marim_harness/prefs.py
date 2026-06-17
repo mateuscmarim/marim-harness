@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 from .config import config_dir
-from .tui.themes import DEFAULT_THEME, THEME_NAMES
+from .interfaces.tui.themes import DEFAULT_THEME, THEME_NAMES
 
 
 def prefs_path() -> Path:

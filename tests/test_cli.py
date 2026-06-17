@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from marim_harness.cli import default_cmd, router
+from marim_harness.interfaces.cli import default_cmd, router
 from marim_harness.permissions import Mode
 
 
@@ -26,7 +26,7 @@ def _cli_harness(tmp_path: Path, output_text: str = "ok"):
 
 
 def test_is_headless_logic():
-    from marim_harness.cli.default_cmd import _is_headless
+    from marim_harness.interfaces.cli.default_cmd import _is_headless
 
     assert _is_headless("hi", stdin_isatty=True) is True   # -p with text
     assert _is_headless(True, stdin_isatty=True) is True    # -p flag alone
@@ -163,7 +163,7 @@ def test_empty_prompt_returns_error():
 
 
 def test_management_stubs_return_nonzero():
-    from marim_harness.cli import config, models, sessions
+    from marim_harness.interfaces.cli import config, models, sessions
 
     for mod in (sessions, config, models):
         assert mod.main([]) == 2

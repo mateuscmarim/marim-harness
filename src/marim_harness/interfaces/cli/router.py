@@ -4,7 +4,7 @@ default command (TUI or headless prompt)."""
 
 import sys
 
-from ..config import load_environment
+from ...config import load_environment
 from . import config as config_cmd
 from . import models as models_cmd
 from . import sessions as sessions_cmd

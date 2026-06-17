@@ -4,7 +4,7 @@ import argparse
 import json
 import sys
 
-from ..config import global_config_path, load_config
+from ...config import global_config_path, load_config
 
 # Keys that may be persisted to the global config file. Anything else is
 # rejected so a typo can't silently write an ignored line.

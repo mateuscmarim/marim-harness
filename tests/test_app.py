@@ -4,7 +4,7 @@ import pytest
 
 from marim_harness.deps import Deps
 from marim_harness.permissions import Mode
-from marim_harness.tui.app import HarnessApp
+from marim_harness.interfaces.tui.app import HarnessApp
 
 
 def _app(tmp_path: Path) -> HarnessApp:
@@ -45,7 +45,7 @@ async def test_status_bar_shows_token_count(tmp_path: Path):
 
 
 def test_human_tokens_formatting():
-    from marim_harness.tui.app import _human_tokens
+    from marim_harness.interfaces.tui.app import _human_tokens
 
     assert _human_tokens(0) == "0"
     assert _human_tokens(950) == "950"
@@ -73,7 +73,7 @@ async def test_status_bar_shows_context_usage(tmp_path: Path):
 
 
 def _submit(app, text):
-    from marim_harness.tui.widgets import PromptInput
+    from marim_harness.interfaces.tui.widgets import PromptInput
 
     pi = app.query_one(PromptInput)
     pi.text = text
@@ -104,7 +104,7 @@ async def test_submitting_records_prompt_history(tmp_path: Path):
         await _submit(app, "remember this")
         assert hist.entries == ["remember this"]
         # The PromptInput navigates over the very same history.
-        from marim_harness.tui.widgets import PromptInput
+        from marim_harness.interfaces.tui.widgets import PromptInput
 
         assert app.query_one(PromptInput).prompt_history is hist
 
@@ -213,7 +213,7 @@ async def test_slash_clear_resets_conversation(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_failed_turn_shows_error_and_keeps_running(tmp_path: Path):
-    from marim_harness.tui.widgets import ErrorMessage
+    from marim_harness.interfaces.tui.widgets import ErrorMessage
 
     app = _app(tmp_path)
 
@@ -239,7 +239,7 @@ async def test_failed_turn_shows_error_and_keeps_running(tmp_path: Path):
 async def test_cancel_turn_aborts_and_shows_message(tmp_path: Path):
     import asyncio
 
-    from marim_harness.tui.widgets import ErrorMessage, PromptInput
+    from marim_harness.interfaces.tui.widgets import ErrorMessage, PromptInput
 
     app = _app(tmp_path)
     started = asyncio.Event()
@@ -272,7 +272,7 @@ async def test_cancel_turn_aborts_and_shows_message(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_cancel_when_idle_is_a_noop(tmp_path: Path):
-    from marim_harness.tui.widgets import ErrorMessage
+    from marim_harness.interfaces.tui.widgets import ErrorMessage
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:
@@ -324,7 +324,7 @@ async def test_log_and_input_both_visible(tmp_path: Path):
         await pilot.pause()
         from textual.widgets import Footer
 
-        from marim_harness.tui.widgets import PromptInput
+        from marim_harness.interfaces.tui.widgets import PromptInput
 
         status = app.query_one("#status-bar")
         inp = app.query_one(PromptInput)
@@ -341,7 +341,7 @@ async def test_log_and_input_both_visible(tmp_path: Path):
 async def test_input_is_focused_on_start(tmp_path: Path):
     """The prompt box should hold focus the moment the app opens, so the user
     can type without first clicking or tabbing into it."""
-    from marim_harness.tui.widgets import PromptInput
+    from marim_harness.interfaces.tui.widgets import PromptInput
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:
@@ -351,7 +351,7 @@ async def test_input_is_focused_on_start(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_task_panel_hidden_until_tasks_then_live_updates(tmp_path: Path):
-    from marim_harness.tui.widgets import TaskPanel
+    from marim_harness.interfaces.tui.widgets import TaskPanel
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:
@@ -378,7 +378,7 @@ async def test_task_panel_hidden_until_tasks_then_live_updates(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_task_panel_reflects_restored_tasks_on_mount(tmp_path: Path):
-    from marim_harness.tui.widgets import TaskPanel
+    from marim_harness.interfaces.tui.widgets import TaskPanel
 
     app = _app(tmp_path)
     # Simulate a session whose checklist was restored before mount.
@@ -440,7 +440,7 @@ async def test_resume_replays_history_into_log(tmp_path: Path):
         UserPromptPart,
     )
 
-    from marim_harness.tui.widgets import (
+    from marim_harness.interfaces.tui.widgets import (
         AssistantMessage,
         ToolCallWidget,
         UserMessage,
@@ -485,7 +485,7 @@ async def test_resume_replays_history_into_log(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_compaction_shows_notice_in_log(tmp_path: Path):
-    from marim_harness.tui.widgets import NoticeMessage
+    from marim_harness.interfaces.tui.widgets import NoticeMessage
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:
@@ -520,7 +520,7 @@ async def test_on_events_mounts_and_finishes_tool_widget(tmp_path: Path):
         ToolReturnPart,
     )
 
-    from marim_harness.tui.widgets import ToolCallWidget
+    from marim_harness.interfaces.tui.widgets import ToolCallWidget
 
     call = FunctionToolCallEvent(
         part=ToolCallPart(
@@ -566,7 +566,7 @@ async def test_spawn_agent_mounts_subagent_widget(tmp_path: Path):
         ToolReturnPart,
     )
 
-    from marim_harness.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget
 
     call = FunctionToolCallEvent(
         part=ToolCallPart(
@@ -616,7 +616,7 @@ async def test_subagent_event_routes_stream_into_widget(tmp_path: Path):
         ToolReturnPart,
     )
 
-    from marim_harness.tui.widgets import (
+    from marim_harness.interfaces.tui.widgets import (
         AssistantMessage,
         SubAgentWidget,
         ToolCallWidget,
@@ -880,7 +880,7 @@ async def test_model_command_opens_picker_from_input(tmp_path: Path):
     """Regression: `/model` (no arg) dispatches from the input handler, which is
     not a worker. The picker must open there without raising NoActiveWorker."""
     from marim_harness.workspace import ModelEntry
-    from marim_harness.tui.model_picker import ModelPickerModal
+    from marim_harness.interfaces.tui.model_picker import ModelPickerModal
 
     source = _FakeSource(entries=[ModelEntry(id="openai/gpt-5.2", name="GPT-5.2")])
     app = _switch_app(tmp_path, source)
@@ -899,7 +899,7 @@ async def test_model_command_opens_picker_from_input(tmp_path: Path):
 @pytest.mark.anyio
 async def test_model_picker_applies_choice(tmp_path: Path):
     from marim_harness.workspace import ModelEntry
-    from marim_harness.tui.widgets import NoticeMessage
+    from marim_harness.interfaces.tui.widgets import NoticeMessage
 
     source = _FakeSource(entries=[ModelEntry(id="openai/gpt-5.2", name="GPT-5.2")])
     app = _switch_app(tmp_path, source)
@@ -938,7 +938,7 @@ async def test_model_picker_cancel_keeps_model(tmp_path: Path):
 async def test_enter_keypress_submits_and_clears(tmp_path: Path):
     """Real key path: Enter routes through the prompt widget to the app, mounts
     the user message, clears the box, and starts a turn."""
-    from marim_harness.tui.widgets import PromptInput, UserMessage
+    from marim_harness.interfaces.tui.widgets import PromptInput, UserMessage
 
     app = _app(tmp_path)
     started: list = []
@@ -965,7 +965,7 @@ async def test_enter_keypress_submits_and_clears(tmp_path: Path):
 @pytest.mark.anyio
 async def test_shift_enter_keypress_does_not_submit(tmp_path: Path):
     """Real key path: Shift+Enter inserts a newline; no turn, no user message."""
-    from marim_harness.tui.widgets import PromptInput, UserMessage
+    from marim_harness.interfaces.tui.widgets import PromptInput, UserMessage
 
     app = _app(tmp_path)
     started: list = []
@@ -988,7 +988,7 @@ async def test_shift_enter_keypress_does_not_submit(tmp_path: Path):
 async def test_job_panel_hidden_until_jobs_then_live_updates(tmp_path: Path):
     import asyncio
 
-    from marim_harness.tui.widgets import JobPanel
+    from marim_harness.interfaces.tui.widgets import JobPanel
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:
@@ -1016,7 +1016,7 @@ async def test_job_panel_hidden_until_jobs_then_live_updates(tmp_path: Path):
 async def test_job_panel_reflects_jobs_on_mount(tmp_path: Path):
     import asyncio
 
-    from marim_harness.tui.widgets import JobPanel
+    from marim_harness.interfaces.tui.widgets import JobPanel
 
     app = _app(tmp_path)
 
@@ -1045,7 +1045,7 @@ async def test_background_spawn_renders_as_tool_widget(tmp_path: Path):
         ToolReturnPart,
     )
 
-    from marim_harness.tui.widgets import SubAgentWidget, ToolCallWidget
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget, ToolCallWidget
 
     call = FunctionToolCallEvent(
         part=ToolCallPart(
@@ -1110,7 +1110,7 @@ def _spawn_call(tool_call_id: str, task: str):
 
 @pytest.mark.anyio
 async def test_single_subagent_stays_expanded(tmp_path: Path):
-    from marim_harness.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget
 
     async def gen():
         yield _spawn_call("s1", "only one")
@@ -1129,7 +1129,7 @@ async def test_single_subagent_stays_expanded(tmp_path: Path):
 async def test_parallel_subagents_collapse(tmp_path: Path):
     """A fan-out (>1 sub-agent live at once) collapses every sibling so the log
     stays legible; the user expands the one they want."""
-    from marim_harness.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget
 
     async def gen():
         yield _spawn_call("s1", "first")
@@ -1275,7 +1275,7 @@ async def test_log_is_anchored_to_bottom(tmp_path: Path):
 async def test_stream_does_not_yank_when_scrolled_up(tmp_path: Path):
     """When the user has scrolled up to read, a streaming event must not snap the
     viewport back to the bottom — scrolling up releases the anchor."""
-    from marim_harness.tui.widgets import AssistantMessage
+    from marim_harness.interfaces.tui.widgets import AssistantMessage
 
     app = _app(tmp_path)
     async with app.run_test(size=(80, 24)) as pilot:

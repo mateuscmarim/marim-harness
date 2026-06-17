@@ -1,7 +1,7 @@
 import pytest
 from textual.app import App
 
-from marim_harness.tui.approval import (
+from marim_harness.interfaces.tui.approval import (
     ADDED_STYLE,
     REMOVED_STYLE,
     ApprovalModal,

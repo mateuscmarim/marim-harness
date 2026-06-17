@@ -1,6 +1,6 @@
 from textual.theme import Theme
 
-from marim_harness.tui.themes import (
+from marim_harness.interfaces.tui.themes import (
     DEFAULT_THEME,
     MARIM_THEMES,
     THEME_NAMES,

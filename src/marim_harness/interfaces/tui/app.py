@@ -14,10 +14,10 @@ from textual.containers import VerticalScroll
 from textual.css.query import NoMatches
 from textual.widgets import Footer, Header, Static
 
-from ..agent import Harness
-from ..compaction import estimate_tokens
-from ..history import PromptHistory
-from ..prefs import load_theme, save_theme
+from ...agent import Harness
+from ...compaction import estimate_tokens
+from ...history import PromptHistory
+from ...prefs import load_theme, save_theme
 from .approval import ApprovalModal
 from .commands import dispatch
 from .model_picker import ModelPickerModal

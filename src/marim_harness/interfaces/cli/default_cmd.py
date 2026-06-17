@@ -7,9 +7,9 @@ import asyncio
 import sys
 from pathlib import Path
 
-from ..bootstrap import build_harness
-from ..history import PromptHistory, default_history_path
-from ..permissions import Mode
+from ...bootstrap import build_harness
+from ...history import PromptHistory, default_history_path
+from ...permissions import Mode
 from ..tui.app import HarnessApp
 from .headless import run_headless
 
