@@ -6,8 +6,9 @@ agent can process it.  Supports HTML pages, plain-text responses, and
 redirects (same-host by default).
 
 Safety: only ``http`` / ``https`` URLs are accepted; ``file://``,
-``ftp://``, etc. are rejected.  Responses over ``_MAX_BYTES`` are
-truncated with a note.
+``ftp://``, etc. are rejected.  The body is streamed and the read is
+capped at ``_MAX_BYTES``; a response that *declares* a size over
+``_MAX_DOWNLOAD`` is refused before its body is read.
 """
 
 from __future__ import annotations
@@ -20,7 +21,15 @@ import httpx
 from markdownify import markdownify as md  # type: ignore[import-untyped]
 
 _TIMEOUT = 30  # seconds
-_MAX_BYTES = 1_000_000  # 1 MB — hard ceiling on what we download/write to disk
+# Read cap: the body is streamed and reading stops here, so we never buffer more
+# than this regardless of what the server sends. Since large bodies are offloaded
+# to a file (not held in context), this is a processing/disk ceiling, not a
+# context one — hence comfortably above the inline limit below.
+_MAX_BYTES = 5_000_000  # 5 MB
+# Refuse before reading: if the response *declares* (Content-Length) a size over
+# this, bail with a clear error rather than streaming a fragment of something
+# absurd. Servers that omit Content-Length still get capped by _MAX_BYTES.
+_MAX_DOWNLOAD = 25_000_000  # 25 MB
 # When a workspace is available, a result larger than this is written to a file
 # and the agent gets a handle + preview instead of the whole body inline — so a
 # big page can't flood the turn's context. (read_file/grep can then page the
@@ -129,6 +138,7 @@ async def fetch_url(
     except ValueError as exc:
         return str(exc)
 
+    truncated = False
     try:
         async with httpx.AsyncClient(
             timeout=timeout,
@@ -136,43 +146,53 @@ async def fetch_url(
             max_redirects=5,
             headers={"User-Agent": _UA},
         ) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
+            async with client.stream("GET", url) as resp:
+                resp.raise_for_status()
+                # --- size guard: refuse declared-huge bodies before reading ---
+                declared = resp.headers.get("content-length")
+                if declared and declared.isdigit() and int(declared) > _MAX_DOWNLOAD:
+                    return (
+                        f"Fetch aborted: server reports {int(declared):,} bytes, "
+                        f"over the {_MAX_DOWNLOAD:,}-byte limit. Try a more specific "
+                        f"URL or endpoint."
+                    )
+                content_type = resp.headers.get("content-type", "")
+                encoding = resp.encoding
+                # --- stream the body, stopping at the read cap ---
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in resp.aiter_bytes():
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    if total > _MAX_BYTES:
+                        truncated = True
+                        break
+                raw = b"".join(chunks)[:_MAX_BYTES]
     except httpx.HTTPStatusError as exc:
         return f"Fetch failed: HTTP {exc.response.status_code} — {exc.response.reason_phrase}"
     except httpx.RequestError as exc:
         return f"Fetch failed: {exc}"
 
-    content_type = resp.headers.get("content-type", "")
-    raw = resp.content
-
-    # --- truncation guard ---
-    truncated = False
-    if len(raw) > _MAX_BYTES:
-        raw = raw[:_MAX_BYTES]
-        truncated = True
-
     # --- decode ---
+    text = raw.decode(encoding or "utf-8", errors="replace")
     body: str
     if b"html" in content_type.encode() or b"xhtml" in content_type.encode():
-        html = raw.decode(resp.encoding or "utf-8", errors="replace")
-        body = _html_to_markdown(html)
+        body = _html_to_markdown(text)
     elif b"json" in content_type.encode():
         # Return pretty-printed JSON — the agent can parse it.
         try:
             import json
-            data = resp.json()
-            body = json.dumps(data, indent=2, ensure_ascii=False)
+            body = json.dumps(json.loads(text), indent=2, ensure_ascii=False)
         except Exception:
-            body = raw.decode(resp.encoding or "utf-8", errors="replace")
+            body = text
     else:
         # Plain text, markdown, SVG, etc.
-        body = raw.decode(resp.encoding or "utf-8", errors="replace")
+        body = text
 
     if truncated:
         body += (
-            f"\n\n---\n⚠️ Page truncated — original was "
-            f"{len(resp.content):,} bytes; showing first {_MAX_BYTES:,}."
+            f"\n\n---\n⚠️ Content capped at {_MAX_BYTES:,} bytes — the page was "
+            f"larger and the rest was not read."
         )
 
     # --- optional prompt header ---

@@ -1,18 +1,15 @@
 """Tests for the fetch_url tool (URL → Markdown)."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
 from marim_harness.tools.fetch import fetch_url
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-import json as _json
 
 
 def _mock_response(
@@ -21,13 +18,25 @@ def _mock_response(
     content_type: str = "text/html; charset=utf-8",
     status_code: int = 200,
     raise_for_status_error: bool = False,
+    content_length: "int | None" = None,
 ) -> AsyncMock:
-    """Build a fake httpx.Response."""
+    """Build a fake streamed httpx.Response. ``fetch_url`` reads the body via
+    ``aiter_bytes()`` under ``client.stream(...)``, so the body is yielded in
+    chunks. ``content_length`` sets the declared header used by the size guard."""
     resp = AsyncMock()
     resp.status_code = status_code
-    resp.headers = {"content-type": content_type}
-    resp.content = text.encode("utf-8")
+    headers = {"content-type": content_type}
+    if content_length is not None:
+        headers["content-length"] = str(content_length)
+    resp.headers = headers
     resp.encoding = "utf-8"
+    data = text.encode("utf-8")
+
+    async def _aiter_bytes(chunk_size: int = 65536):
+        for i in range(0, len(data), chunk_size):
+            yield data[i : i + chunk_size]
+
+    resp.aiter_bytes = _aiter_bytes
 
     # raise_for_status must be a *regular* callable — httpx calls it
     # synchronously, not as a coroutine.
@@ -47,9 +56,14 @@ def _mock_response(
 
 
 def _patch_client(mock_resp: AsyncMock) -> "patch":
-    """Context-manager patch for ``httpx.AsyncClient`` returning *mock_resp*."""
+    """Patch ``httpx.AsyncClient`` so ``client.stream("GET", url)`` yields
+    *mock_resp* as an async context manager (matching how ``fetch_url`` reads)."""
+    stream_cm = AsyncMock()
+    stream_cm.__aenter__ = AsyncMock(return_value=mock_resp)
+    stream_cm.__aexit__ = AsyncMock(return_value=False)
+
     client = AsyncMock()
-    client.get = AsyncMock(return_value=mock_resp)
+    client.stream = MagicMock(return_value=stream_cm)  # stream() is a sync call
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=False)
     return patch("marim_harness.tools.fetch.httpx.AsyncClient", return_value=client)
@@ -65,7 +79,7 @@ async def test_fetch_html_converts_to_markdown():
     html = "<html><body><h1>Hello</h1><p>This is <b>bold</b> content.</p></body></html>"
     resp = _mock_response(text=html, content_type="text/html")
 
-    with _patch_client(resp) as mock_cls:
+    with _patch_client(resp):
         result = await fetch_url("https://example.com")
 
     assert "# Hello" in result
@@ -188,13 +202,13 @@ async def test_fetch_server_error():
 
 @pytest.mark.anyio
 async def test_fetch_connection_error():
-    async with AsyncMock() as client:
-        client.get.side_effect = httpx.ConnectError("Connection refused")
-        client.__aenter__ = AsyncMock(return_value=client)
-        client.__aexit__ = AsyncMock(return_value=False)
+    client = AsyncMock()
+    client.stream = MagicMock(side_effect=httpx.ConnectError("Connection refused"))
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("marim_harness.tools.fetch.httpx.AsyncClient", return_value=client):
-            result = await fetch_url("https://unreachable.example.com")
+    with patch("marim_harness.tools.fetch.httpx.AsyncClient", return_value=client):
+        result = await fetch_url("https://unreachable.example.com")
 
     assert "Fetch failed:" in result
     assert "Connection refused" in result
@@ -213,23 +227,58 @@ async def test_fetch_rejects_ftp_scheme():
 
 
 # ---------------------------------------------------------------------------
-# Tests — truncation
+# Tests — read cap (_MAX_BYTES) and the download size guard (_MAX_DOWNLOAD)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.anyio
-async def test_fetch_truncates_large_page():
-    """Pages over _MAX_BYTES should be truncated with a note."""
-    import marim_harness.tools.fetch as mod
+async def test_fetch_caps_read_at_max_bytes():
+    """A response larger than _MAX_BYTES is read up to the cap and flagged — the
+    stream is stopped, not the whole body buffered."""
+    from marim_harness.tools.fetch import _MAX_BYTES
 
-    big_html = "<html><body>" + "x" * 1_100_000 + "</body></html>"
-    resp = _mock_response(text=big_html, content_type="text/html")
+    big = "x" * (_MAX_BYTES + 500_000)
+    resp = _mock_response(text=big, content_type="text/plain")
 
     with _patch_client(resp):
         result = await fetch_url("https://example.com/big")
 
-    assert "truncated" in result.lower()
-    assert "bytes" in result.lower()
+    assert "capped" in result.lower()
+    # Body must not exceed the cap (plus the short note).
+    assert len(result) <= _MAX_BYTES + 500
+
+
+@pytest.mark.anyio
+async def test_fetch_aborts_when_content_length_exceeds_limit(tmp_path):
+    """If the server *declares* a size over _MAX_DOWNLOAD, bail before reading
+    the body — return a clear error, write nothing, offload nothing."""
+    from marim_harness.tools.fetch import _MAX_DOWNLOAD
+
+    resp = _mock_response(
+        text="ignored — we never read this",
+        content_type="text/plain",
+        content_length=_MAX_DOWNLOAD + 1,
+    )
+
+    with _patch_client(resp):
+        result = await fetch_url("https://example.com/huge", workspace_root=tmp_path)
+
+    assert "aborted" in result.lower()
+    assert "ignored" not in result  # body was never read
+    assert not (tmp_path / ".marim" / "fetch").exists()
+
+
+@pytest.mark.anyio
+async def test_fetch_within_content_length_limit_is_read():
+    """A declared size under the limit is fetched normally."""
+    resp = _mock_response(
+        text="<p>Fine</p>", content_type="text/html", content_length=11
+    )
+
+    with _patch_client(resp):
+        result = await fetch_url("https://example.com/ok")
+
+    assert "Fine" in result
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +290,7 @@ async def test_fetch_truncates_large_page():
 async def test_fetch_follows_redirects():
     resp = _mock_response(text="<p>Final page</p>", content_type="text/html")
 
-    with _patch_client(resp) as mock_cls:
+    with _patch_client(resp):
         result = await fetch_url("https://example.com/old")
 
     # Just verify it succeeded — httpx handles redirects internally
