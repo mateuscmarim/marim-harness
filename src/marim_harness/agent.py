@@ -23,6 +23,48 @@ from .session import SessionController, SessionInfo, SessionManager, SessionStor
 from .tools.provider import ToolProvider
 
 
+def _short(exc: BaseException, limit: int = 200) -> str:
+    """A whitespace-collapsed, length-capped rendering of an exception — never a
+    traceback, just the one-line gist that's safe to hand back to the model."""
+    text = " ".join(str(exc).split())
+    return text[: limit - 1] + "…" if len(text) > limit else text
+
+
+def _actionable_error_note(exc: BaseException) -> Optional[str]:
+    """A terse, sanitized note about a failed turn that the *model* can act on,
+    or None when the failure is not the model's to fix. We surface only the
+    errors where adjusting the next turn could plausibly help — a malformed or
+    oversized request, a usage limit, the model failing to produce a usable
+    response — and stay silent on harness/render bugs, cancellations, and
+    transient infra (rate limits, 5xx), where a note would only mislead."""
+    from pydantic_ai.exceptions import (
+        ModelHTTPError,
+        UnexpectedModelBehavior,
+        UsageLimitExceeded,
+    )
+
+    head = "Note: your previous turn did not complete."
+    if isinstance(exc, ModelHTTPError):
+        # Client errors (context too long, malformed request) are the model's to
+        # fix; rate limits (429) and server errors (5xx) are transient infra that
+        # retrying — not re-prompting — should handle.
+        if 400 <= exc.status_code < 500 and exc.status_code != 429:
+            return (
+                f"{head} The request was rejected (HTTP {exc.status_code}). "
+                "Adjust your approach — e.g. shorten the input or fix the "
+                "request — before continuing."
+            )
+        return None
+    if isinstance(exc, UsageLimitExceeded):
+        return (
+            f"{head} A usage limit was reached ({_short(exc)}). Be more "
+            "economical with tool calls and continue."
+        )
+    if isinstance(exc, UnexpectedModelBehavior):
+        return f"{head} {_short(exc)}. Adjust your approach and continue."
+    return None
+
+
 class Harness:
     """Owns the Pydantic AI agent and drives one user turn to completion,
     resolving deferred tool approvals by the current mode."""
@@ -60,6 +102,10 @@ class Harness:
         self.current_model = model
         self.model_source = model_source
         self.model_id = model_id
+        # A one-shot note about the last actionable failure, prepended to the
+        # next turn's prompt so the model knows it didn't complete (see
+        # _actionable_error_note). None when there's nothing to surface.
+        self._pending_error_note: Optional[str] = None
         self.session = SessionController(
             store, manager, deps,
             max_context_tokens, keep_last_messages,
@@ -350,6 +396,11 @@ class Harness:
         digest = self.deps.jobs.take_finished_digest()
         if digest:
             prompt = f"{digest}\n\n{prompt}"
+        # Surface the prior turn's actionable failure (if any) once, so the model
+        # can correct course rather than blindly retrying. Consumed here.
+        if self._pending_error_note:
+            prompt = f"{self._pending_error_note}\n\n{prompt}"
+            self._pending_error_note = None
         user_prompt: Optional[str] = prompt
         deferred_results = None
         # Offer only the live servers that aren't disabled — a server muted at
@@ -374,10 +425,13 @@ class Harness:
                         event_stream_handler=event_stream_handler,
                         toolsets=toolsets,
                     )
-                except BaseException:
+                except BaseException as exc:
                     if captured:
                         self.session.history = list(captured)
                         self.session.persist()
+                    # Stash an actionable note (None for infra/render/cancel) to
+                    # prepend to the next turn's prompt.
+                    self._pending_error_note = _actionable_error_note(exc)
                     raise
             self.session.history = result.all_messages()
             self.session.usage += result.usage

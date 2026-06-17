@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -142,6 +143,93 @@ async def test_failed_turn_persists_so_a_new_harness_can_resume(tmp_path: Path):
         if type(p).__name__ == "UserPromptPart"
     ]
     assert any("a request that crashed the turn" in str(t) for t in user_texts)
+
+
+def test_actionable_error_note_surfaces_only_model_fixable_failures():
+    """Only failures the model itself can act on get a next-turn note. Harness
+    or render bugs, cancellations, and transient infra (rate limits, 5xx) get
+    None — re-prompting the model wouldn't help and would only add noise."""
+    from pydantic_ai.exceptions import (
+        ModelHTTPError,
+        UnexpectedModelBehavior,
+        UsageLimitExceeded,
+    )
+    from textual.markup import MarkupError
+
+    from marim_harness.agent import _actionable_error_note
+
+    # Not the model's to fix.
+    assert _actionable_error_note(MarkupError("bad markup")) is None
+    assert _actionable_error_note(RuntimeError("a render bug")) is None
+    assert _actionable_error_note(asyncio.CancelledError()) is None
+    assert _actionable_error_note(
+        ModelHTTPError(status_code=429, model_name="m")
+    ) is None  # rate limit — transient
+    assert _actionable_error_note(
+        ModelHTTPError(status_code=503, model_name="m")
+    ) is None  # server error — transient
+
+    # The model can adjust and continue from these.
+    assert _actionable_error_note(
+        ModelHTTPError(status_code=400, model_name="m", body="too long")
+    ) is not None
+    assert _actionable_error_note(
+        UnexpectedModelBehavior("Exceeded maximum retries")
+    ) is not None
+    assert _actionable_error_note(UsageLimitExceeded("limit reached")) is not None
+
+
+def _fail_once_then_echo_model(exc: BaseException) -> FunctionModel:
+    """Turn 1 raises ``exc``; every later turn echoes back the latest user
+    prompt text it received, so a test can assert what was prepended."""
+    state = {"n": 0}
+
+    def fn(messages, info):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise exc
+        latest = ""
+        for m in messages:
+            for p in getattr(m, "parts", []):
+                if type(p).__name__ == "UserPromptPart":
+                    latest = str(p.content)
+        return ModelResponse(parts=[TextPart(content=latest)])
+
+    return FunctionModel(fn)
+
+
+@pytest.mark.anyio
+async def test_actionable_failure_is_surfaced_to_model_next_turn(tmp_path: Path):
+    """After an actionable failure, the next turn's prompt carries a short note
+    so the model knows the prior turn did not complete and can adjust."""
+    from pydantic_ai.exceptions import UnexpectedModelBehavior
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    harness = _make_harness(
+        _fail_once_then_echo_model(UnexpectedModelBehavior("Exceeded max retries")),
+        deps,
+    )
+    with pytest.raises(UnexpectedModelBehavior):
+        await harness.run_turn("first request")
+    echoed = await harness.run_turn("second request")
+    assert "did not complete" in echoed  # the note rode along
+    assert "second request" in echoed  # ...prepended to the real prompt
+    # And it is one-shot: a third, clean turn carries no stale note.
+    again = await harness.run_turn("third request")
+    assert "did not complete" not in again
+
+
+@pytest.mark.anyio
+async def test_non_actionable_failure_leaves_no_note(tmp_path: Path):
+    """A plain harness/render failure must not pollute the next prompt — the
+    model can't fix it, so surfacing it would only mislead."""
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    harness = _make_harness(_fail_once_then_echo_model(RuntimeError("render boom")), deps)
+    with pytest.raises(RuntimeError):
+        await harness.run_turn("first request")
+    echoed = await harness.run_turn("second request")
+    assert "did not complete" not in echoed
+    assert echoed == "second request"
 
 
 @pytest.mark.anyio
