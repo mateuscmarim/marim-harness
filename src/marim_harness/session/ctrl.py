@@ -106,7 +106,6 @@ class SessionController:
                 self.history, self.max_context_tokens, self.keep_last_messages,
             )
         if did:
-            self.history = new_history
             if self.deps.hooks is not None:
                 await self.deps.hooks.dispatch(
                     hook_events.PRE_COMPACT,
@@ -119,6 +118,7 @@ class SessionController:
                         custom_instructions="",
                     ),
                 )
+            self.history = new_history
             if self.on_compact is not None:
                 self.on_compact(before, len(self.history))
 

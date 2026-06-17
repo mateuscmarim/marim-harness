@@ -1,11 +1,17 @@
 import json
+import stat as _stat
 from pathlib import Path
 
+import pytest
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
+from marim_harness.deps import Deps
+from marim_harness.hooks import events as hook_events
+from marim_harness.hooks.runner import HookRunner
 from marim_harness.session import SessionManager, SessionStore
+from marim_harness.session.ctrl import SessionController
 
 
 def _history() -> list:
@@ -277,14 +283,6 @@ def test_create_no_model_when_no_sessions(tmp_path: Path):
 # ---------------------------------------------------------------------------
 # PreCompact hook tests
 # ---------------------------------------------------------------------------
-import stat as _stat
-
-import pytest
-
-from marim_harness.deps import Deps
-from marim_harness.hooks.runner import HookRunner
-from marim_harness.hooks import events as hook_events
-from marim_harness.session.ctrl import SessionController
 
 
 def _hook_cmd(tmp_path, log):
