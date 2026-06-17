@@ -1,4 +1,5 @@
 import pytest
+from pydantic_ai.usage import RunUsage
 from textual.app import App, ComposeResult
 from textual.widgets import Collapsible, Markdown
 
@@ -8,8 +9,36 @@ from marim_harness.interfaces.tui.widgets import (
     ToolCallWidget,
     ToolGroupWidget,
     UserMessage,
+    format_cost,
+    format_usage,
     strip_line_numbers,
 )
+
+
+def test_format_cost_uses_more_precision_for_sub_cent_amounts():
+    assert format_cost(0.0042) == "$0.0042"
+    assert format_cost(0.07) == "$0.07"
+    assert format_cost(1.5) == "$1.50"
+
+
+def test_format_usage_shows_in_cached_out_and_cost():
+    u = RunUsage(
+        input_tokens=56000, output_tokens=2000,
+        cache_read_tokens=50000, cache_write_tokens=5000,
+    )
+    line = format_usage(u, "claude-sonnet-4-6")
+    assert "1k in" in line       # uncached input: 56000 - 50000 - 5000
+    assert "55k cached" in line  # cache read + write
+    assert "2k out" in line
+    assert "$" in line
+
+
+def test_format_usage_omits_cost_when_model_unpriced():
+    u = RunUsage(input_tokens=1000, output_tokens=200)
+    line = format_usage(u, "made-up-model-zzz")
+    assert "$" not in line
+    assert "1k in" in line
+    assert "200 out" in line
 
 # An unclosed, expression-style bracket sequence. Unlike a balanced ``[/]``,
 # ``rich``/``textual`` ``escape()`` will NOT neutralise this — its regex only

@@ -16,15 +16,11 @@ from pydantic_ai.messages import (
 )
 
 from ...agent import Harness
+from ...usage import usage_summary
 
 
 def _usage_dict(harness: Harness) -> dict:
-    u = harness.session.usage
-    return {
-        "input_tokens": u.input_tokens,
-        "output_tokens": u.output_tokens,
-        "total_tokens": u.total_tokens,
-    }
+    return usage_summary(harness.session.usage, harness.model_id)
 
 
 def _result_obj(harness: Harness, output: str) -> dict:

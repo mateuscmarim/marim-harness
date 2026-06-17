@@ -88,6 +88,44 @@ def test_core_commands_present():
 
 
 @pytest.mark.anyio
+async def test_usage_command_reports_split_and_cost():
+    from pydantic_ai.usage import RunUsage
+
+    app = _FakeApp()
+    app.harness = SimpleNamespace(
+        session=SimpleNamespace(
+            usage=RunUsage(
+                input_tokens=56000, output_tokens=2000,
+                cache_read_tokens=50000, cache_write_tokens=5000,
+            ),
+        ),
+        model_id="claude-sonnet-4-6",
+    )
+    await dispatch(app, "/usage")
+    msg = app.posted[-1].lower()
+    assert "in" in msg and "cached" in msg and "out" in msg
+    assert "$" in app.posted[-1]  # cost shown for a priced model
+
+
+@pytest.mark.anyio
+async def test_usage_command_alias_cost_resolves():
+    assert COMMANDS_BY_NAME.get("cost") is COMMANDS_BY_NAME.get("usage")
+
+
+@pytest.mark.anyio
+async def test_usage_command_omits_cost_for_unpriced_model():
+    from pydantic_ai.usage import RunUsage
+
+    app = _FakeApp()
+    app.harness = SimpleNamespace(
+        session=SimpleNamespace(usage=RunUsage(input_tokens=1000, output_tokens=200)),
+        model_id="some-local-unpriced-model",
+    )
+    await dispatch(app, "/usage")
+    assert "$" not in app.posted[-1]
+
+
+@pytest.mark.anyio
 async def test_remember_empty_arg_shows_usage():
     app = _FakeApp()
     await dispatch(app, "/remember")

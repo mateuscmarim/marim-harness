@@ -46,6 +46,30 @@ def human_tokens(n: int) -> str:
     return str(n)
 
 
+def format_cost(cost: float) -> str:
+    """Render a USD cost compactly — four decimals below a cent so small spends
+    don't collapse to ``$0.00``, two decimals above: ``$0.0042``, ``$0.07``."""
+    return f"${cost:.4f}" if cost < 0.01 else f"${cost:.2f}"
+
+
+def format_usage(usage, model_ref) -> str:
+    """The status-bar usage line: the in / cached / out token split with an
+    estimated cost appended when the model is priced — e.g.
+    ``1k in · 55k cached · 2k out · $0.07``. Cost is dropped when unknown."""
+    from ...usage import estimate_cost, split_tokens
+
+    s = split_tokens(usage)
+    parts = [
+        f"{human_tokens(s.uncached_input)} in",
+        f"{human_tokens(s.cached_input)} cached",
+        f"{human_tokens(s.output)} out",
+    ]
+    cost = estimate_cost(usage, model_ref)
+    if cost is not None:
+        parts.append(format_cost(cost))
+    return " · ".join(parts)
+
+
 class ToolCallWidget(Collapsible):
     """A single tool call: the (clickable) title shows a summary line; expanding
     reveals the arguments and the result."""

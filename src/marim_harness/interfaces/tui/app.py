@@ -19,6 +19,7 @@ from ...agent import Harness, strip_turn_context
 from ...compaction import estimate_tokens
 from ...history import PromptHistory
 from ...prefs import load_theme, save_theme
+from ...usage import estimate_cost
 from .approval import ApprovalModal
 from .commands import dispatch
 from .model_picker import ModelPickerModal
@@ -35,6 +36,7 @@ from .widgets import (
     ToolGroupWidget,
     UserMessage,
 )
+from .widgets import format_cost as _format_cost
 from .widgets import human_tokens as _human_tokens
 
 _BANNER = (
@@ -233,6 +235,12 @@ class HarnessApp(App):
         pct = round(used / max_ctx * 100) if max_ctx else 0
         ctx_text = f"ctx {_human_tokens(used)}/{_human_tokens(max_ctx)} ({pct}%)"
         ctx_style = "red" if pct >= 90 else "yellow" if pct >= 75 else ""
+        # Estimated spend for the committed usage; appended to the live counter
+        # when the active model is priced (local/unknown models show none).
+        cost = estimate_cost(self.harness.session.usage, self.harness.model_id)
+        tokens_text = f"{_human_tokens(spent)} tokens"
+        if cost is not None:
+            tokens_text += f" · {_format_cost(cost)}"
         mode = self.harness.deps.mode.value
         name = getattr(self.harness.session, "session_name", None)
         # session_name is model-generated and untrusted; render it as a literal
@@ -245,7 +253,7 @@ class HarnessApp(App):
             head,
             Content(cfg),
             Content.assemble((ctx_text, ctx_style)) if ctx_style else Content(ctx_text),
-            Content(f"{_human_tokens(spent)} tokens"),
+            Content(tokens_text),
         ]
         if self._busy:
             fields.append(Content("working…"))
