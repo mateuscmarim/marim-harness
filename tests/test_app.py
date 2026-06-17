@@ -45,6 +45,36 @@ async def test_status_bar_shows_token_count(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_status_bar_shows_estimated_cost_when_model_priced(tmp_path: Path):
+    """When the active model is priced, the status bar appends an estimated $cost
+    next to the live token counter."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.harness.model_id = "claude-sonnet-4-6"
+        app.harness.session.usage.input_tokens = 50000
+        app.harness.session.usage.output_tokens = 2000
+        app._refresh_status()
+        await pilot.pause()
+        assert "$" in str(app.query_one("#status-bar").render())
+
+
+@pytest.mark.anyio
+async def test_status_bar_omits_cost_for_unpriced_model(tmp_path: Path):
+    """An unknown/local model has no price, so no $cost is shown — just tokens."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.harness.model_id = "some-local-unpriced-model"
+        app.harness.session.usage.input_tokens = 5000
+        app._refresh_status()
+        await pilot.pause()
+        text = str(app.query_one("#status-bar").render())
+        assert "$" not in text
+        assert "tokens" in text
+
+
+@pytest.mark.anyio
 async def test_status_bar_includes_live_run_tokens_while_streaming(tmp_path: Path):
     """While a turn streams, the counter must include the in-flight run's tokens
     (not yet committed to session usage), so it climbs live instead of only

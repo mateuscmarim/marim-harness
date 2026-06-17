@@ -276,6 +276,30 @@ async def _mcp_toggle(app: HarnessApp, action: str, target: str) -> None:
     await app.post_system("\n".join([heading, "", *results]))
 
 
+async def _cmd_usage(app: HarnessApp, arg: str) -> None:
+    from ...usage import resolve_cost, split_tokens
+    from .widgets import format_cost, human_tokens
+
+    usage = app.harness.session.usage
+    s = split_tokens(usage)
+    lines = [
+        "**Token usage**",
+        "",
+        f"- Input (uncached): {human_tokens(s.uncached_input)}",
+        f"- Cache read: {human_tokens(s.cache_read)}",
+        f"- Cache write: {human_tokens(s.cache_write)}",
+        f"- Output: {human_tokens(s.output)}",
+        f"- Total: {human_tokens(s.total)}",
+    ]
+    cost, is_exact = resolve_cost(usage, app.harness.model_id)
+    if cost is not None:
+        label = "Cost (billed)" if is_exact else "Estimated cost"
+        lines.append(f"- {label}: {format_cost(cost)}")
+    else:
+        lines += ["", "_No price data for the active model — cost unavailable._"]
+    await app.post_system("\n".join(lines))
+
+
 async def _cmd_exit(app: HarnessApp, arg: str) -> None:
     app.exit()
 
@@ -293,6 +317,7 @@ COMMANDS: list[Command] = [
     Command("remember", "save a note to memory: /remember <fact>", _cmd_remember),
     Command("skill", "list or run skills: /skill [name [context]]", _cmd_skill),
     Command("mcp", "list MCP servers or toggle them: /mcp [enable|disable <name|all>]", _cmd_mcp),
+    Command("usage", "show token usage split and estimated cost", _cmd_usage, aliases=("cost",)),
     Command("exit", "quit the harness", _cmd_exit, aliases=("quit",)),
 ]
 
