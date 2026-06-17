@@ -604,6 +604,34 @@ async def test_resume_replays_history_into_log(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_resume_hides_injected_turn_context(tmp_path: Path):
+    """A resumed session whose user prompt has a turn-context envelope (job
+    digests, SessionStart/UserPromptSubmit hook output) must show only what the
+    user typed in the log — not the injected context."""
+    from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+
+    from marim_harness.agent import wrap_turn_context
+    from marim_harness.interfaces.tui.widgets import UserMessage
+
+    wrapped = wrap_turn_context(
+        "<agentmemory-context>pinned slots, files, …</agentmemory-context>",
+        "I want to implement a fetch tool similar to the one available at claude",
+    )
+    app = _app(tmp_path)
+    app.harness.session.history = [
+        ModelRequest(parts=[UserPromptPart(content=wrapped)]),
+        ModelResponse(parts=[TextPart(content="ok")]),
+    ]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        users = [str(w.render()) for w in app.query(UserMessage)]
+        assert any("implement a fetch tool" in u for u in users)
+        # The injected context must not leak into the displayed message.
+        assert not any("agentmemory-context" in u for u in users)
+        assert not any("pinned slots" in u for u in users)
+
+
+@pytest.mark.anyio
 async def test_gated_tool_renders_one_widget_not_two(tmp_path: Path):
     """A gated tool (bash) goes through the deferred-approval flow, which makes
     pydantic_ai emit the call event twice for one tool_call_id (approval pass +

@@ -15,7 +15,7 @@ from textual.content import Content
 from textual.css.query import NoMatches
 from textual.widgets import Footer, Header, Static
 
-from ...agent import Harness
+from ...agent import Harness, strip_turn_context
 from ...compaction import estimate_tokens
 from ...history import PromptHistory
 from ...prefs import load_theme, save_theme
@@ -182,7 +182,10 @@ class HarnessApp(App):
                     if isinstance(part, UserPromptPart):
                         content = part.content
                         text = content if isinstance(content, str) else str(content)
-                        await log.mount(UserMessage(text))
+                        # Drop any turn-context envelope (job digests, hook
+                        # output, error notes) so the log shows only what the
+                        # user typed — as the live path already does.
+                        await log.mount(UserMessage(strip_turn_context(text)))
                     elif isinstance(part, TextPart):
                         if part.content:
                             msg = AssistantMessage()
