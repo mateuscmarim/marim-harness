@@ -15,6 +15,8 @@ from .compaction import (
     make_titler,
 )
 from .deps import Deps
+from .hooks import events as hook_events
+from .hooks.runner import base_payload
 from .instructions import register_instructions
 from .mcp import McpManager
 from .permissions import Mode, resolve_approvals
@@ -123,6 +125,9 @@ class Harness:
         # next turn's prompt so the model knows it didn't complete (see
         # _actionable_error_note). None when there's nothing to surface.
         self._pending_error_note: Optional[str] = None
+        # One-shot context returned by a SessionStart hook, prepended to the next
+        # turn's prompt and consumed there (mirrors _pending_error_note).
+        self._pending_hook_context: Optional[str] = None
         self.session = SessionController(
             store, manager, deps,
             max_context_tokens, keep_last_messages,
@@ -284,6 +289,39 @@ class Harness:
     async def enable_server(self, name: str) -> Optional[str]:
         return await self.mcp.enable_server(name, self.deps.workspace_root)
 
+    def _hook_payload(self, event: str, **extra) -> dict:
+        """Build a hook payload with the common fields drawn from the live
+        session, plus any event-specific extras."""
+        store = self.session.store
+        return base_payload(
+            event,
+            session_id=store.session_id if store is not None else "",
+            cwd=str(self.deps.workspace_root),
+            transcript_path=str(store.path) if store is not None else "",
+            **extra,
+        )
+
+    async def session_start(self, source: str) -> None:
+        """Fire the SessionStart hook (``source`` is ``startup``/``resume``/
+        ``clear``) and stash any returned context for the next turn's prompt."""
+        if self.deps.hooks is None:
+            return
+        ctx = await self.deps.hooks.dispatch(
+            hook_events.SESSION_START,
+            self._hook_payload(hook_events.SESSION_START, source=source),
+        )
+        if ctx:
+            self._pending_hook_context = ctx
+
+    async def session_end(self, reason: str = "exit") -> None:
+        """Fire the SessionEnd hook on teardown. Observe-only."""
+        if self.deps.hooks is None:
+            return
+        await self.deps.hooks.dispatch(
+            hook_events.SESSION_END,
+            self._hook_payload(hook_events.SESSION_END, reason=reason),
+        )
+
     async def run_turn(self, prompt: str, event_stream_handler=None) -> str:
         """Run the agent until it produces a final text answer, looping through
         any approval rounds. Returns the final text output."""
@@ -296,6 +334,18 @@ class Harness:
         if self._pending_error_note:
             prompt = f"{self._pending_error_note}\n\n{prompt}"
             self._pending_error_note = None
+        # Prepend any SessionStart-injected context, once.
+        if self._pending_hook_context:
+            prompt = f"{self._pending_hook_context}\n\n{prompt}"
+            self._pending_hook_context = None
+        # Fire UserPromptSubmit and prepend any context it returns.
+        if self.deps.hooks is not None:
+            ctx = await self.deps.hooks.dispatch(
+                hook_events.USER_PROMPT_SUBMIT,
+                self._hook_payload(hook_events.USER_PROMPT_SUBMIT, prompt=prompt),
+            )
+            if ctx:
+                prompt = f"{ctx}\n\n{prompt}"
         user_prompt: Optional[str] = prompt
         deferred_results = None
         # Offer only the live servers that aren't disabled — a server muted at

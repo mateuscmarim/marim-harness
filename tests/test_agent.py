@@ -1,4 +1,6 @@
 import asyncio
+import stat
+import json as _json
 from pathlib import Path
 
 import pytest
@@ -7,6 +9,8 @@ from pydantic_ai.models.function import FunctionModel
 
 from marim_harness.agent import Harness
 from marim_harness.deps import Deps
+from marim_harness.hooks.runner import HookRunner
+from marim_harness.hooks import events as hook_events
 from marim_harness.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
 
@@ -1458,6 +1462,69 @@ def test_mcp_grant_note_handles_no_enabled_servers(tmp_path: Path):
     note = h.mcp.grant_note(["nope"])
     assert "nope" in note
     assert "none" in note.lower()
+
+
+# ---------------------------------------------------------------------------
+# Task 5: SessionStart / UserPromptSubmit hook context injection
+# ---------------------------------------------------------------------------
+
+def _hook_script(tmp_path: Path, name: str, body: str) -> str:
+    p = tmp_path / name
+    p.write_text("#!/usr/bin/env bash\n" + body, encoding="utf-8")
+    p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IRWXU)
+    return str(p)
+
+
+def _prompt_capturing_model(sink: list) -> FunctionModel:
+    """Records the LAST user-prompt text it sees per call (the current turn's
+    new prompt, not history), then replies 'ok'."""
+    def fn(messages, info):
+        latest = None
+        for msg in messages:
+            for part in getattr(msg, "parts", []):
+                content = getattr(part, "content", None)
+                if isinstance(content, str) and part.__class__.__name__ == "UserPromptPart":
+                    latest = content
+        if latest is not None:
+            sink.append(latest)
+        return ModelResponse(parts=[TextPart(content="ok")])
+    return FunctionModel(fn)
+
+
+@pytest.mark.anyio
+async def test_session_start_context_is_prepended_once(tmp_path):
+    cmd = _hook_script(tmp_path, "ss.sh", "echo SESSION_CTX\n")
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto,
+                hooks=HookRunner({hook_events.SESSION_START: [{"hooks": [{"type": "command", "command": cmd}]}]}))
+    sink: list = []
+    harness = _make_harness(_prompt_capturing_model(sink), deps)
+    await harness.session_start("startup")
+    await harness.run_turn("first")
+    assert "SESSION_CTX" in sink[0]
+    await harness.run_turn("second")
+    assert "SESSION_CTX" not in sink[1]  # consumed; not repeated
+
+
+@pytest.mark.anyio
+async def test_user_prompt_submit_context_is_prepended(tmp_path):
+    cmd = _hook_script(tmp_path, "ups.sh", "echo PROMPT_CTX\n")
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto,
+                hooks=HookRunner({hook_events.USER_PROMPT_SUBMIT: [{"hooks": [{"type": "command", "command": cmd}]}]}))
+    sink: list = []
+    harness = _make_harness(_prompt_capturing_model(sink), deps)
+    await harness.run_turn("do the thing")
+    assert "PROMPT_CTX" in sink[0]
+    assert "do the thing" in sink[0]
+
+
+@pytest.mark.anyio
+async def test_no_hooks_runs_turn_normally(tmp_path):
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)  # hooks=None
+    sink: list = []
+    harness = _make_harness(_prompt_capturing_model(sink), deps)
+    out = await harness.run_turn("hello")
+    assert out == "ok"
+    assert sink[0] == "hello"  # untouched
 
 
 def _capture_subagent(h, report="report"):
