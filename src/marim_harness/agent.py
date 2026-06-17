@@ -2,6 +2,7 @@ from typing import Optional
 
 from pydantic_ai import Agent, DeferredToolRequests, capture_run_messages
 from pydantic_ai.messages import FunctionToolCallEvent, FunctionToolResultEvent
+from pydantic_ai.settings import ModelSettings
 
 from .workspace import (
     discover_agents,
@@ -23,6 +24,13 @@ from .mcp import McpManager
 from .permissions import Mode, resolve_approvals
 from .session import SessionController, SessionManager, SessionStore
 from .tools.provider import ToolProvider
+
+# Force parallel tool calling on for both the main agent and spawned sub-agents.
+# It's a base ModelSettings key that each model reads with .get(): providers that
+# support it honor it (Anthropic maps it to disable_parallel_tool_use=False;
+# OpenAI/Groq/xAI pass it through), and providers that don't simply never read
+# the key — so this is "on where available" without breaking anything else.
+_DEFAULT_MODEL_SETTINGS = ModelSettings(parallel_tool_calls=True)
 
 # Envelope wrapped around any context injected into a turn's prompt — job
 # digests, error notes, and SessionStart/UserPromptSubmit hook output. It is
@@ -134,6 +142,7 @@ class Harness:
             # often need a second attempt to correct a malformed tool argument
             # before the turn fails with UnexpectedModelBehavior.
             retries=2,
+            model_settings=_DEFAULT_MODEL_SETTINGS,
         )
         self.provider = provider
         provider.register(self.agent)
@@ -257,6 +266,7 @@ class Harness:
             self.current_model,
             deps_type=Deps,
             instructions=subagent_instructions(defn, self.deps.workspace_root),
+            model_settings=_DEFAULT_MODEL_SETTINGS,
         )
         self.provider.register_subagent(sub, effective_tools(defn, allow_gated=allow_gated))
         return sub, None
