@@ -8,6 +8,9 @@ from pydantic_ai import Agent, RunContext
 if TYPE_CHECKING:
     from .mcp import McpManager
 
+from .config import config_dir
+from .deps import Deps
+from .tasks import render_tasks
 from .workspace import (
     agents_index_text,
     discover_agents,
@@ -17,8 +20,6 @@ from .workspace import (
     project_scope,
     skills_index_text,
 )
-from .deps import Deps
-from .tasks import render_tasks
 
 _PROJECT_INSTRUCTIONS_FILE = "AGENTS.md"
 
@@ -54,8 +55,31 @@ def load_project_instructions(
     return text or None
 
 
+def global_instructions_path() -> Path:
+    """The user-level agent instructions file, a sibling of the global config
+    (``~/.config/marim/AGENTS.md``)."""
+    return config_dir() / _PROJECT_INSTRUCTIONS_FILE
+
+
+def load_global_instructions() -> Optional[str]:
+    """Read user-level standing instructions from ``~/.config/marim/AGENTS.md``.
+    These apply across every project (unlike the per-project ``AGENTS.md``).
+    Same fail-safe semantics as :func:`load_project_instructions`."""
+    return load_project_instructions(config_dir())
+
+
 def register_instructions(agent: Agent, mcp_manager: McpManager, proactive_memory: bool) -> None:
     """Register all dynamic instruction closures on ``agent``."""
+
+    @agent.instructions
+    def _global_instructions(ctx: RunContext[Deps]) -> str:
+        text = load_global_instructions()
+        if not text:
+            return ""
+        return (
+            "Global instructions from ~/.config/marim/AGENTS.md "
+            f"(apply to every project):\n\n{text}"
+        )
 
     @agent.instructions
     def _project_instructions(ctx: RunContext[Deps]) -> str:

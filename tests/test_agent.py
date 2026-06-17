@@ -428,6 +428,48 @@ async def test_project_instructions_injected_and_dynamic(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_global_instructions_injected_and_dynamic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    captured: dict = {}
+
+    def fn(messages, info):
+        captured["instructions"] = _last_instructions(messages)
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    # Isolate the global config dir to a temp location (no global AGENTS.md yet).
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    (tmp_path / "cfg" / "marim").mkdir(parents=True)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    deps = Deps(workspace_root=workspace, mode=Mode.auto)
+    harness = Harness(
+        model=FunctionModel(fn), provider=BuiltinToolProvider(), deps=deps,
+        instructions="BASE PROMPT",
+    )
+
+    # No global file yet -> the global block is absent.
+    await harness.run_turn("hi")
+    assert "Global instructions" not in captured["instructions"]
+
+    # Creating it changes what the very next turn sees (dynamic reload).
+    (tmp_path / "cfg" / "marim" / "AGENTS.md").write_text("Never force-push.")
+    await harness.run_turn("hi again")
+    assert "Never force-push." in captured["instructions"]
+
+    # Ordering: base prompt, then global, then project instructions.
+    (workspace / "AGENTS.md").write_text("Project rule: use ruff.")
+    await harness.run_turn("third")
+    instr = captured["instructions"]
+    assert (
+        instr.index("BASE PROMPT")
+        < instr.index("Never force-push.")
+        < instr.index("Project rule: use ruff.")
+    )
+
+
+@pytest.mark.anyio
 async def test_memory_indexes_injected_and_dynamic(tmp_path: Path):
     from marim_harness.workspace import memory
 
