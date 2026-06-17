@@ -2,7 +2,9 @@ import re
 from pathlib import Path
 
 from rich.console import RenderableType
+from rich.markup import escape
 from rich.syntax import Syntax
+from rich.text import Text
 from textual import events
 from textual.containers import Vertical
 from textual.message import Message
@@ -53,13 +55,17 @@ class ToolCallWidget(Collapsible):
         self.args = args
         self.status = "pending"
         self.result_text = ""
-        self._body = Static(self._render_body(), id="tool-body")
+        # markup=False: tool args/results are arbitrary text (commands, file
+        # content, output) that may contain Rich markup syntax like `[/]`.
+        self._body = Static(self._render_body(), id="tool-body", markup=False)
         super().__init__(self._body, title=self._summary(), collapsed=True)
 
     def _summary(self) -> str:
         glyph = {"pending": "·", "done": "✓", "denied": "✕"}.get(self.status, "·")
         arg_preview = ", ".join(f"{k}={v!r}" for k, v in list(self.args.items())[:2])
-        return f"{glyph} {self.tool_name}({arg_preview})"
+        # Collapsible titles are parsed as markup; the arg preview is untrusted,
+        # so escape it to render literally rather than crash on a stray `[/]`.
+        return escape(f"{glyph} {self.tool_name}({arg_preview})")
 
     def _result_renderable(self) -> RenderableType:
         """The result body, syntax-highlighted when it is file source."""
@@ -83,7 +89,9 @@ class ToolCallWidget(Collapsible):
             return f"{arg_lines}\n\n{result}" if arg_lines else result
         from rich.console import Group
 
-        return Group(arg_lines, "", result)
+        # Text() keeps arg_lines literal: a bare str inside a Group would be
+        # markup-parsed by Rich even though the host Static has markup=False.
+        return Group(Text(arg_lines), "", result)
 
     def finish(self, result_text: str, status: str = "done") -> None:
         self.status = status
@@ -133,7 +141,9 @@ class TaskPanel(Static):
             self.update("")
             return
         self.display = True
-        self.update("[b $accent]Tasks[/]\n" + render_tasks(items))
+        # The header is intentional markup; escape the task body, whose text is
+        # untrusted and may contain markup syntax like `[/]`.
+        self.update("[b $accent]Tasks[/]\n" + escape(render_tasks(items)))
 
 
 class JobPanel(Static):
@@ -153,7 +163,9 @@ class JobPanel(Static):
             self.update("")
             return
         self.display = True
-        self.update("[b $accent]Jobs[/]\n" + render_jobs(jobs))
+        # The header is intentional markup; escape the job body, whose labels are
+        # untrusted and may contain markup syntax like `[/]`.
+        self.update("[b $accent]Jobs[/]\n" + escape(render_jobs(jobs)))
 
 
 class SubAgentWidget(Collapsible):
@@ -188,7 +200,9 @@ class SubAgentWidget(Collapsible):
         # The token count persists across finish — the final cost stays visible.
         if self.tokens:
             parts.append(f"{human_tokens(self.tokens)} tok")
-        return " · ".join(parts)
+        # Collapsible titles are parsed as markup; the task text is untrusted, so
+        # escape the line to render literally rather than crash on a stray `[/]`.
+        return escape(" · ".join(parts))
 
     def set_tokens(self, n: int) -> None:
         """Update the sub-agent's running token total and refresh the title."""

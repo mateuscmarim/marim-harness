@@ -149,6 +149,73 @@ async def test_log_messages_survive_markup_like_text():
             assert "[/]" in str(w.render())
 
 
+@pytest.mark.anyio
+async def test_tool_widget_survives_markup_like_args_and_result():
+    """Tool args and results are arbitrary (commands, file content, output) and
+    may contain Rich markup syntax like ``[/]``. Neither the title nor the body
+    may parse it as markup — otherwise a MarkupError crashes the turn."""
+    payload = "grep -n '[/]' file && echo [done]"
+
+    class H(App):
+        def compose(self) -> ComposeResult:
+            yield ToolCallWidget("bash", {"command": payload})
+
+    app = H()
+    async with app.run_test() as pilot:
+        w = app.query_one(ToolCallWidget)
+        w.finish("matched [/] on line 3 [reset]")
+        await pilot.pause()
+        body = str(w.query_one("#tool-body").render())
+        assert "[/]" in body
+
+
+@pytest.mark.anyio
+async def test_subagent_widget_survives_markup_like_task():
+    """A spawned sub-agent's task text is arbitrary and may contain markup
+    syntax; its title must render literally rather than crash."""
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+
+    class H(App):
+        def compose(self) -> ComposeResult:
+            yield SubAgentWidget("Explore", "find the [/] bug in render")
+
+    app = H()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        w = app.query_one(SubAgentWidget)
+        assert "[/]" in str(w.title)
+
+
+@pytest.mark.anyio
+async def test_task_and_job_panels_survive_markup_like_text():
+    """Task text and job labels are untrusted and may contain markup syntax;
+    the panels must render them literally rather than crash."""
+    from marim_harness.interfaces.tui.widgets import JobPanel, TaskPanel
+
+    class _Task:
+        status = "pending"
+        text = "fix the [/] bug"
+
+    class _Job:
+        id = "job-1"
+        kind = "agent"
+        status = "running"
+        label = "render the [/] panel"
+
+    class H(App):
+        def compose(self) -> ComposeResult:
+            yield TaskPanel()
+            yield JobPanel()
+
+    app = H()
+    async with app.run_test() as pilot:
+        app.query_one(TaskPanel).show_tasks([_Task()])
+        app.query_one(JobPanel).show_jobs([_Job()])
+        await pilot.pause()
+        assert "[/]" in str(app.query_one(TaskPanel).render())
+        assert "[/]" in str(app.query_one(JobPanel).render())
+
+
 class _PromptHost(App):
     def __init__(self) -> None:
         super().__init__()
