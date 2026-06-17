@@ -5,10 +5,10 @@ from pydantic_ai import Agent, RunContext
 
 from ..deps import Deps
 from ..jobs import render_jobs
+from ..tasks import Task, summarize
 from ..workspace.memory import global_scope, project_scope, read_memory, save_memory
 from ..workspace.skills import find_skill, read_bundled_file, read_skill_body
-from ..tasks import Task, summarize
-from . import fs, shell
+from . import fetch, fs, shell, web
 
 # Re-exported for backward compatibility; defined in the leaf module ``names``
 # so importers (e.g. workspace.agents) don't pull in all of ``provider`` and
@@ -20,6 +20,21 @@ _BASH_TIMEOUT = 60
 
 # --- tool implementations (module-level so they can be registered onto the main
 # agent gated, or onto a sub-agent plain, from a single source of truth) ---
+
+
+async def fetch_url(
+    ctx: RunContext[Deps],
+    url: str,
+    prompt: Optional[str] = None,
+) -> str:
+    """Fetch and read content from a specific URL to augment context with live web
+    content. Returns the page body as clean Markdown. Accepts a URL (http/https)
+    and an optional `prompt` describing what to extract or look for.
+
+    Use this when you need the actual content of a page — web_search only returns
+    titles and snippets. HTML pages are converted to Markdown; JSON is
+    pretty-printed; plain text is returned as-is. Pages over 1 MB are truncated."""
+    return await fetch.fetch_url(url, prompt=prompt)
 
 
 def read_file(ctx: RunContext[Deps], path: str) -> str:
@@ -125,6 +140,20 @@ def update_tasks(ctx: RunContext[Deps], tasks: list[Task]) -> str:
     visible; skip it for single-step requests. No approval is needed."""
     ctx.deps.tasks.replace(tasks)
     return summarize(ctx.deps.tasks.items)
+
+
+async def web_search(
+    ctx: RunContext[Deps],
+    query: str,
+    categories: Optional[str] = None,
+    max_results: int = 10,
+) -> str:
+    """Search the web via a self-hosted SearXNG instance and return formatted results.
+
+    *query* is the search string.  *categories* restricts results to a SearXNG
+    category (e.g. "general", "images", "news", "science").  *max_results*
+    caps how many hits are returned (default 10, max 50)."""
+    return await web.web_search(query, categories=categories, max_results=max_results)
 
 
 def _coerce_mcp(mcp: "list[str] | str | None") -> Optional[list[str]]:
@@ -267,6 +296,8 @@ _SUBAGENT_FNS = {
     "glob": glob,
     "tree": tree,
     "grep": grep,
+    "web_search": web_search,
+    "fetch_url": fetch_url,
     "write_file": write_file,
     "edit_file": edit_file,
     "bash": bash,
@@ -292,6 +323,8 @@ class BuiltinToolProvider:
         task / spawn tools, and the workspace-mutating tools behind approval."""
         for fn in (read_file, glob, tree, grep):
             agent.tool(fn)
+        agent.tool(web_search)
+        agent.tool(fetch_url)
         for fn in (remember, recall, activate_skill, read_skill_file, update_tasks):
             agent.tool(fn)
         agent.tool(spawn_agent)
