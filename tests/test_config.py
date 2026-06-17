@@ -68,15 +68,50 @@ def test_model_source_label_prefixes_provider():
     assert src.label("openai/gpt-5.2") == "openrouter/openai/gpt-5.2"
 
 
+def test_load_config_google_reads_api_key(monkeypatch):
+    monkeypatch.setenv("MARIM_PROVIDER", "google")
+    monkeypatch.setenv("GOOGLE_API_KEY", "AIza-test")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("MARIM_API_KEY", raising=False)
+    cfg = load_config()
+    assert cfg.provider == "google"
+    assert cfg.api_key == "AIza-test"
+    assert cfg.model  # non-empty default
+
+
+def test_load_config_google_falls_back_to_gemini_key(monkeypatch):
+    monkeypatch.setenv("MARIM_PROVIDER", "google")
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
+    monkeypatch.delenv("MARIM_API_KEY", raising=False)
+    cfg = load_config()
+    assert cfg.api_key == "gemini-key"
+
+
+def test_load_config_google_model_override(monkeypatch):
+    monkeypatch.setenv("MARIM_PROVIDER", "google")
+    monkeypatch.setenv("GOOGLE_API_KEY", "k")
+    monkeypatch.setenv("MARIM_MODEL", "gemini-2.0-flash")
+    cfg = load_config()
+    assert cfg.model == "gemini-2.0-flash"
+
+
 def test_model_source_is_local_reflects_provider():
     assert ModelSource(ModelConfig(provider="local", model="x")).is_local is True
     assert ModelSource(ModelConfig(provider="openrouter", model="x")).is_local is False
+    assert ModelSource(ModelConfig(provider="google", model="x")).is_local is False
 
 
 @pytest.mark.anyio
 async def test_model_source_list_models_empty_for_local():
     src = ModelSource(ModelConfig(provider="local", model="x"))
     assert await src.list_models() == []  # no catalog for local
+
+
+@pytest.mark.anyio
+async def test_model_source_list_models_empty_for_google():
+    src = ModelSource(ModelConfig(provider="google", model="gemini-2.5-flash"))
+    assert await src.list_models() == []  # no catalog for Google
 
 
 def test_model_source_build_swaps_in_the_model_id():

@@ -6,11 +6,12 @@ from ..workspace.catalog import ModelEntry, fetch_openrouter_models
 
 _DEFAULT_OPENROUTER_MODEL = "anthropic/claude-sonnet-4-6"
 _DEFAULT_LOCAL_MODEL = "qwen2.5-coder"
+_DEFAULT_GOOGLE_MODEL = "gemini-2.5-flash"
 
 
 @dataclass
 class ModelConfig:
-    provider: str  # "openrouter" | "local"
+    provider: str  # "openrouter" | "local" | "google"
     model: str
     base_url: Optional[str] = None
     api_key: Optional[str] = None
@@ -33,6 +34,19 @@ def load_config() -> ModelConfig:
             model=os.getenv("MARIM_MODEL", _DEFAULT_LOCAL_MODEL),
             base_url=os.getenv("MARIM_BASE_URL", "http://localhost:11434/v1"),
             api_key=os.getenv("MARIM_API_KEY", "local"),
+            max_context_tokens=max_context_tokens,
+            proactive_memory=proactive_memory,
+        )
+    if provider == "google":
+        return ModelConfig(
+            provider="google",
+            model=os.getenv("MARIM_MODEL", _DEFAULT_GOOGLE_MODEL),
+            base_url=None,
+            api_key=(
+                os.getenv("GOOGLE_API_KEY")
+                or os.getenv("GEMINI_API_KEY")
+                or os.getenv("MARIM_API_KEY")
+            ),
             max_context_tokens=max_context_tokens,
             proactive_memory=proactive_memory,
         )
@@ -76,6 +90,12 @@ def build_model(cfg: ModelConfig):
         provider = OpenAIProvider(base_url=cfg.base_url, api_key=cfg.api_key)
         return OpenAIChatModel(cfg.model, provider=provider)
 
+    if cfg.provider == "google":
+        from pydantic_ai.models.google import GoogleModel
+        from pydantic_ai.providers.google import GoogleProvider
+
+        return GoogleModel(cfg.model, provider=GoogleProvider(api_key=cfg.api_key))
+
     from pydantic_ai.providers.openrouter import OpenRouterProvider
 
     provider = OpenRouterProvider(api_key=cfg.api_key)
@@ -102,8 +122,8 @@ class ModelSource:
         return build_model(replace(self.cfg, model=model_id))
 
     async def list_models(self) -> list[ModelEntry]:
-        """Available models for the picker. OpenRouter exposes a public catalog;
-        local providers can't be enumerated, so they return an empty list."""
-        if self.is_local:
+        """Available models for the picker. Only OpenRouter exposes a public
+        catalog; all other providers return an empty list."""
+        if self.cfg.provider != "openrouter":
             return []
         return await fetch_openrouter_models(self.cfg.api_key)
