@@ -165,7 +165,10 @@ class SessionManager:
     def create(self, name: Optional[str] = None) -> SessionStore:
         """Start a new session. The id is a slug of ``name`` (or a timestamp);
         the display name is ``name`` verbatim (or that timestamp slug). An
-        unnamed session is flagged auto_named so it can be titled later."""
+        unnamed session is flagged auto_named so it can be titled later.
+
+        The new session inherits the model from the most recent session when
+        available, so the user doesn't have to re-select it every time."""
         if name:
             base_slug = _slugify(name)
             display = name
@@ -176,6 +179,9 @@ class SessionManager:
             auto = True
         store = self.store(self._unique_id(base_slug), display)
         store.auto_named = auto
+        # Inherit the model from the most recent session when none is set yet.
+        if store.model is None:
+            store.model = self.latest_model()
         return store
 
     def _unique_id(self, base: str) -> str:
@@ -189,6 +195,18 @@ class SessionManager:
     def latest(self) -> Optional[SessionInfo]:
         infos = self.list()
         return infos[0] if infos else None
+
+    def latest_model(self) -> Optional[str]:
+        """Return the model id of the most recent session, or *None*."""
+        latest = self.latest()
+        if latest is None:
+            return None
+        path = self._path(latest.id)
+        try:
+            data = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
+        return data.get("model")
 
     def delete(self, session_id: str) -> None:
         self._path(session_id).unlink(missing_ok=True)

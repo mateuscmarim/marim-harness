@@ -213,7 +213,7 @@ class Harness:
         self.session.reset()
 
     def new_session(self, name: Optional[str] = None) -> None:
-        self.session.new_session(name, model_id=self.model_id)
+        self.session.new_session(name)
 
     def switch_session(self, session_id: str) -> int:
         count = self.session.switch_session(session_id)

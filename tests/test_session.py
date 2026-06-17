@@ -198,3 +198,50 @@ def test_model_persists_and_recovers(tmp_path: Path):
     store.model = "openai/gpt-5.2"
     store.save(_history(), RunUsage())
     assert mgr.store(store.session_id).model == "openai/gpt-5.2"
+
+
+def test_latest_model_returns_most_recent(tmp_path: Path):
+    mgr = _manager(tmp_path)
+    _write_raw(
+        mgr, "old", updated="2026-01-01T00:00:00+00:00",
+        messages=[{}, {}],
+    )
+    # Write a session with a model set.
+    mgr.dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "id": "new",
+        "name": "new",
+        "updated": "2026-06-01T00:00:00+00:00",
+        "model": "openai/gpt-5.2",
+        "tokens": {"input": 0, "output": 0},
+        "messages": [],
+    }
+    (mgr.dir / "new.json").write_text(json.dumps(payload))
+    assert mgr.latest_model() == "openai/gpt-5.2"
+
+
+def test_latest_model_none_when_no_sessions(tmp_path: Path):
+    assert _manager(tmp_path).latest_model() is None
+
+
+def test_latest_model_none_when_no_model_set(tmp_path: Path):
+    mgr = _manager(tmp_path)
+    _write_raw(mgr, "s1", updated="2026-06-01T00:00:00+00:00")
+    assert mgr.latest_model() is None
+
+
+def test_create_inherits_model_from_latest_session(tmp_path: Path):
+    mgr = _manager(tmp_path)
+    # Create and save a session with a model.
+    first = mgr.create("First")
+    first.model = "openai/gpt-5.2"
+    first.save(_history(), RunUsage())
+    # A brand-new session should inherit that model.
+    second = mgr.create("Second")
+    assert second.model == "openai/gpt-5.2"
+
+
+def test_create_no_model_when_no_sessions(tmp_path: Path):
+    mgr = _manager(tmp_path)
+    store = mgr.create("Alone")
+    assert store.model is None
