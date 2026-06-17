@@ -349,8 +349,13 @@ class Harness:
             self._hook_payload(hook_events.SESSION_END, reason=reason),
         )
 
-    async def _fire_tool_event(self, event) -> None:
-        """Map a streamed tool event to a Pre/PostToolUse hook (observe-only)."""
+    async def _fire_tool_event(self, event, _call_inputs: dict | None = None) -> None:
+        """Map a streamed tool event to a Pre/PostToolUse hook (observe-only).
+
+        ``_call_inputs`` is a per-turn dict (tool_call_id → tool_input) used to
+        correlate a PostToolUse result with the args from its matching call, so
+        that CC plugin scripts receive ``tool_input`` on both event types.
+        """
         if self.deps.hooks is None:
             return
         if isinstance(event, FunctionToolCallEvent):
@@ -358,6 +363,9 @@ class Harness:
                 tool_input = event.part.args_as_dict()
             except Exception:
                 tool_input = {}
+            # Stash input so the paired PostToolUse event can include it.
+            if _call_inputs is not None:
+                _call_inputs[event.part.tool_call_id] = tool_input
             await self.deps.hooks.dispatch(
                 hook_events.PRE_TOOL_USE,
                 self._hook_payload(
@@ -367,11 +375,15 @@ class Harness:
                 ),
             )
         elif isinstance(event, FunctionToolResultEvent):
+            # Look up the stashed input by tool_call_id; fall back gracefully.
+            tool_input = ({} if _call_inputs is None
+                          else _call_inputs.get(event.tool_call_id, {}))
             await self.deps.hooks.dispatch(
                 hook_events.POST_TOOL_USE,
                 self._hook_payload(
                     hook_events.POST_TOOL_USE,
                     tool_name=getattr(event.part, "tool_name", ""),
+                    tool_input=tool_input,
                     tool_response=str(getattr(event.part, "content", "")),
                 ),
             )
@@ -409,11 +421,14 @@ class Harness:
         # Pre/PostToolUse, then forward to the original handler (or drain if none).
         if self.deps.hooks is not None:
             _base_handler = event_stream_handler
+            # Scoped to this single turn: maps tool_call_id → tool_input so the
+            # PostToolUse branch can include the call's args in its payload.
+            _call_inputs: dict = {}
 
             async def _hooked_handler(stream_ctx, events):
                 async def _relay():
                     async for event in events:
-                        await self._fire_tool_event(event)
+                        await self._fire_tool_event(event, _call_inputs)
                         yield event
 
                 if _base_handler is not None:

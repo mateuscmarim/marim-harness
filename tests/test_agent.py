@@ -1771,6 +1771,53 @@ async def test_pre_and_post_tool_use_fire(tmp_path):
     assert any(line.startswith("PostToolUse edit_file") for line in lines)
 
 
+@pytest.mark.anyio
+async def test_post_tool_use_includes_tool_input(tmp_path):
+    """PostToolUse payload must carry tool_input (the args) correlated from the
+    matching PreToolUse call so that CC plugin scripts can read the call's
+    input to correlate it with its result (CC-contract fidelity)."""
+    (tmp_path / "a.txt").write_text("foo")
+    log = tmp_path / "toolinput.log"
+    # Python helper logs the full JSON payload for PostToolUse events only.
+    helper = tmp_path / "loginput.py"
+    helper.write_text(
+        f"import sys, json\n"
+        f"d = json.load(sys.stdin)\n"
+        f"if d.get('hook_event_name') == 'PostToolUse':\n"
+        f"    open({str(log)!r}, 'a').write(json.dumps(d) + '\\n')\n",
+        encoding="utf-8",
+    )
+    cmd = _hook_script(
+        tmp_path, "toolinput.sh",
+        f"python3 {str(helper)}\n",
+    )
+    runner = HookRunner({
+        hook_events.PRE_TOOL_USE: [{"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}],
+        hook_events.POST_TOOL_USE: [{"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}],
+    })
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto, hooks=runner)
+    harness = _make_harness(_edit_then_done_model(), deps)
+    await harness.run_turn("change foo to bar")
+
+    # The log file must exist and contain at least one PostToolUse line.
+    assert log.exists(), "No PostToolUse hook fired"
+    import json as _json
+    post_payloads = [_json.loads(line) for line in log.read_text().splitlines() if line.strip()]
+    assert post_payloads, "No PostToolUse payloads logged"
+
+    # Every PostToolUse payload must carry tool_input with the actual args.
+    for payload in post_payloads:
+        assert "tool_input" in payload, (
+            f"PostToolUse payload missing tool_input: {payload}"
+        )
+    # Specifically: the edit_file call's args (path + edits) must be present.
+    edit_payloads = [p for p in post_payloads if p.get("tool_name") == "edit_file"]
+    assert edit_payloads, "No PostToolUse for edit_file found"
+    assert edit_payloads[0]["tool_input"].get("path") == "a.txt", (
+        f"Expected tool_input.path == 'a.txt', got: {edit_payloads[0]['tool_input']}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Task 8: SubagentStart / SubagentStop hooks
 # ---------------------------------------------------------------------------
