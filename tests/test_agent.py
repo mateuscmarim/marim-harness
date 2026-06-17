@@ -952,7 +952,7 @@ async def test_run_subagent_counts_usage_in_session_total(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_run_subagent_restricts_tools_by_mode(tmp_path: Path):
-    from marim_harness.tools.provider import READ_TOOLS, SUBAGENT_TOOLS
+    from marim_harness.tools.provider import NET_TOOLS, READ_TOOLS, SUBAGENT_TOOLS
 
     captured: dict = {}
 
@@ -963,10 +963,10 @@ async def test_run_subagent_restricts_tools_by_mode(tmp_path: Path):
     deps = Deps(workspace_root=tmp_path, mode=Mode.ask)
     h = _make_harness(FunctionModel(fn), deps)
 
-    # ask mode: general drops its gated tools, leaving the read-only set.
+    # ask mode: general drops its gated tools, keeping local reads + net tools.
     out = await h._run_subagent("general", "do it", "sid")
     assert out == "report"
-    assert captured["tools"] == set(READ_TOOLS)
+    assert captured["tools"] == set(READ_TOOLS | NET_TOOLS)
 
     # auto mode: the full set, including write/edit/bash.
     deps.mode = Mode.auto
@@ -1080,7 +1080,7 @@ async def test_run_background_subagent_unknown_type(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_run_background_subagent_respects_mode(tmp_path: Path):
-    from marim_harness.tools.provider import READ_TOOLS, SUBAGENT_TOOLS
+    from marim_harness.tools.provider import NET_TOOLS, READ_TOOLS, SUBAGENT_TOOLS
 
     captured: dict = {}
 
@@ -1091,7 +1091,7 @@ async def test_run_background_subagent_respects_mode(tmp_path: Path):
     deps = Deps(workspace_root=tmp_path, mode=Mode.ask)
     h = _make_harness(FunctionModel(fn), deps)
     await h._run_background_subagent("general", "x")
-    assert captured["tools"] == set(READ_TOOLS)
+    assert captured["tools"] == set(READ_TOOLS | NET_TOOLS)
     deps.mode = Mode.auto
     await h._run_background_subagent("general", "x")
     assert captured["tools"] == set(SUBAGENT_TOOLS)
