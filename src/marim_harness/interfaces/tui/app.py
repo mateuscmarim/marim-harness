@@ -32,6 +32,7 @@ from .widgets import (
     SubAgentWidget,
     TaskPanel,
     ToolCallWidget,
+    ToolGroupWidget,
     UserMessage,
 )
 from .widgets import human_tokens as _human_tokens
@@ -80,6 +81,12 @@ class HarnessApp(App):
         self.harness.session.on_rename = self._on_rename
         self._current_assistant: AssistantMessage | None = None
         self._tool_widgets: dict[str, ToolCallWidget] = {}
+        # The open group of consecutive top-level tool calls, or None when the run
+        # of tool calls was broken (by assistant text, a spawn, or a new run). The
+        # next tool call starts a fresh group. Sub-agent streams keep their own
+        # open group keyed by the owning spawn's tool_call_id.
+        self._tool_group: ToolGroupWidget | None = None
+        self._sub_tool_groups: dict[str, ToolGroupWidget] = {}
         # Per-stream live assistant text for spawned sub-agents, keyed by the
         # spawn_agent tool_call_id that owns the nested stream.
         self._sub_assistants: dict[str, AssistantMessage] = {}
@@ -176,10 +183,14 @@ class HarnessApp(App):
         )
 
         tool_widgets: dict[str, ToolCallWidget] = {}
+        # The open group of consecutive tool calls during replay, mirroring the
+        # live path so a resumed session groups bursts the same way.
+        group: ToolGroupWidget | None = None
         for message in self.harness.session.history:
             if isinstance(message, (ModelRequest, ModelResponse)):
                 for part in message.parts:
                     if isinstance(part, UserPromptPart):
+                        group = None
                         content = part.content
                         text = content if isinstance(content, str) else str(content)
                         # Drop any turn-context envelope (job digests, hook
@@ -188,13 +199,17 @@ class HarnessApp(App):
                         await log.mount(UserMessage(strip_turn_context(text)))
                     elif isinstance(part, TextPart):
                         if part.content:
+                            group = None
                             msg = AssistantMessage()
                             await log.mount(msg)
                             self._append_stream(msg, part.content)
                     elif isinstance(part, ToolCallPart):
                         widget = ToolCallWidget(part.tool_name, part.args_as_dict())
                         tool_widgets[part.tool_call_id] = widget
-                        await log.mount(widget)
+                        if group is None:
+                            group = ToolGroupWidget()
+                            await log.mount(group)
+                        await group.add_tool(widget)
                     elif isinstance(part, ToolReturnPart):
                         widget = tool_widgets.get(part.tool_call_id)
                         if widget is not None:
@@ -450,6 +465,14 @@ class HarnessApp(App):
             self._turn_worker = None
             self._set_busy(False)
 
+    async def _mount_grouped(self, widget: ToolCallWidget, log: VerticalScroll) -> None:
+        """Mount a top-level tool call into the open run-of-tools group, creating
+        the group on the first call after a break. A burst then folds to one line."""
+        if self._tool_group is None:
+            self._tool_group = ToolGroupWidget()
+            await log.mount(self._tool_group)
+        await self._tool_group.add_tool(widget)
+
     def _mount_spawn_widget(self, args: dict):
         """Build the widget for a foreground spawn_agent. When another sub-agent
         is already running, this is a fan-out — collapse every sibling (and this
@@ -474,6 +497,8 @@ class HarnessApp(App):
         # next round's usage replaces it rather than stacking (each agent.run gets
         # its own ctx.usage, cumulative for that run).
         self._live_run_tokens = 0
+        # A new run starts a fresh group of consecutive tool calls.
+        self._tool_group = None
         async for event in events:
             # ctx.usage carries the run's live running total (ctx is None in some
             # unit tests); fold it into the status counter via the flush tick.
@@ -481,6 +506,7 @@ class HarnessApp(App):
                 getattr(getattr(ctx, "usage", None), "total_tokens", 0) or 0
             )
             if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
+                self._tool_group = None  # assistant text ends the run of tools
                 self._current_assistant = AssistantMessage()
                 await log.mount(self._current_assistant)
                 if event.part.content:
@@ -503,11 +529,16 @@ class HarnessApp(App):
                 # stream its steps, so render it as a plain tool call (the live
                 # SubAgentWidget body is only meaningful for a foreground spawn).
                 if event.part.tool_name == "spawn_agent" and not args.get("background"):
+                    # A spawn has its own rich widget and shouldn't be buried in a
+                    # tool group; mount it standalone and break the run.
                     widget = self._mount_spawn_widget(args)
+                    self._tool_widgets[event.part.tool_call_id] = widget
+                    self._tool_group = None
+                    await log.mount(widget)
                 else:
                     widget = ToolCallWidget(event.part.tool_name, args)
-                self._tool_widgets[event.part.tool_call_id] = widget
-                await log.mount(widget)
+                    self._tool_widgets[event.part.tool_call_id] = widget
+                    await self._mount_grouped(widget, log)
             elif isinstance(event, FunctionToolResultEvent):
                 widget = self._tool_widgets.get(event.tool_call_id)
                 if widget is not None:
@@ -529,6 +560,7 @@ class HarnessApp(App):
         if tokens:
             parent.set_tokens(tokens)
         if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
+            self._sub_tool_groups.pop(stream_id, None)  # text ends the run of tools
             parent.note_text()  # live title status, useful while collapsed
             msg = AssistantMessage()
             self._sub_assistants[stream_id] = msg
@@ -549,7 +581,12 @@ class HarnessApp(App):
             parent.note_tool(event.part.tool_name)  # live title status
             widget = ToolCallWidget(event.part.tool_name, event.part.args_as_dict())
             self._tool_widgets[event.part.tool_call_id] = widget
-            await parent.add(widget)
+            group = self._sub_tool_groups.get(stream_id)
+            if group is None:
+                group = ToolGroupWidget()
+                self._sub_tool_groups[stream_id] = group
+                await parent.add(group)
+            await group.add_tool(widget)
         elif isinstance(event, FunctionToolResultEvent):
             widget = self._tool_widgets.get(event.tool_call_id)
             if widget is not None:

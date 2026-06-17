@@ -102,6 +102,42 @@ class ToolCallWidget(Collapsible):
         self._body.update(self._render_body())
 
 
+class ToolGroupWidget(Collapsible):
+    """A run of consecutive tool calls collapsed into one row. Its children are
+    the individual ToolCallWidgets; the title summarizes the batch (total count
+    plus a per-tool breakdown) so a frequent burst of reads is one line, not N.
+
+    A lone call leaves the group expanded — it then reads like a single tool row
+    with a thin header. The second call of a run collapses the group, so a burst
+    (e.g. parallel reads) folds away to its summary line."""
+
+    def __init__(self) -> None:
+        # Insertion-ordered count per tool name, for the title breakdown.
+        self._counts: dict[str, int] = {}
+        self.body = Vertical(classes="tool-group-body")
+        super().__init__(self.body, title=self._summary(), collapsed=False)
+
+    def _summary(self) -> Content:
+        total = sum(self._counts.values())
+        label = "1 tool" if total == 1 else f"{total} tools"
+        # "read_file ×3 · grep" — only show the multiplier when it repeats.
+        parts = [f"{name} ×{n}" if n > 1 else name for name, n in self._counts.items()]
+        breakdown = " · ".join(parts)
+        text = f"≡ {label} · {breakdown}" if breakdown else f"≡ {label}"
+        # Tool names are our own literals, but bypass markup parsing anyway for
+        # consistency with the other Collapsible titles in this module.
+        return Content(text)
+
+    async def add_tool(self, widget: ToolCallWidget) -> None:
+        """Mount a tool call into the group and refresh the summary. Collapses the
+        group as soon as it holds more than one call (a burst)."""
+        self._counts[widget.tool_name] = self._counts.get(widget.tool_name, 0) + 1
+        self.title = self._summary()
+        if sum(self._counts.values()) == 2:
+            self.collapsed = True
+        await self.body.mount(widget)
+
+
 # These three log widgets carry arbitrary text — user input, exception strings,
 # MCP errors — that may contain Rich markup syntax (e.g. a stray ``[/]``). Their
 # glyph and colour come from CSS classes, not inline markup, so render with

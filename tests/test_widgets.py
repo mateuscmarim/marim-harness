@@ -6,6 +6,7 @@ from marim_harness.interfaces.tui.widgets import (
     AssistantMessage,
     PromptInput,
     ToolCallWidget,
+    ToolGroupWidget,
     UserMessage,
     strip_line_numbers,
 )
@@ -59,6 +60,53 @@ async def test_tool_widget_is_collapsible_with_working_title():
         # The summary glyph shows the pending state in the title.
         assert "edit_file" in str(w.title)
         assert "·" in str(w.title)
+
+
+class _GroupHarness(App):
+    def compose(self) -> ComposeResult:
+        yield ToolGroupWidget()
+
+
+@pytest.mark.anyio
+async def test_tool_group_single_tool_stays_expanded():
+    """A lone tool call should read like a single row — its group stays expanded
+    so it isn't hidden behind an extra click."""
+    app = _GroupHarness()
+    async with app.run_test() as pilot:
+        g = app.query_one(ToolGroupWidget)
+        await g.add_tool(ToolCallWidget("read_file", {"path": "a.py"}))
+        await pilot.pause()
+        assert g.collapsed is False
+        assert len(g.query(ToolCallWidget)) == 1
+        assert "read_file" in str(g.title)
+
+
+@pytest.mark.anyio
+async def test_tool_group_collapses_and_summarizes_a_burst():
+    """Two-or-more consecutive calls collapse to one line; the title summarizes
+    the batch (total + per-tool breakdown)."""
+    app = _GroupHarness()
+    async with app.run_test() as pilot:
+        g = app.query_one(ToolGroupWidget)
+        await g.add_tool(ToolCallWidget("read_file", {"path": "a.py"}))
+        await g.add_tool(ToolCallWidget("read_file", {"path": "b.py"}))
+        await g.add_tool(ToolCallWidget("grep", {"pattern": "x"}))
+        await pilot.pause()
+        assert g.collapsed is True
+        title = str(g.title)
+        assert "3 tools" in title
+        assert "read_file ×2" in title
+        assert "grep" in title
+        assert len(g.query(ToolCallWidget)) == 3
+
+
+@pytest.mark.anyio
+async def test_tool_group_is_collapsible():
+    app = _GroupHarness()
+    async with app.run_test() as pilot:
+        g = app.query_one(ToolGroupWidget)
+        await pilot.pause()
+        assert isinstance(g, Collapsible)
 
 
 @pytest.mark.anyio
