@@ -12,13 +12,23 @@ truncated with a note.
 
 from __future__ import annotations
 
+import hashlib
+from pathlib import Path
 from typing import Optional
 
 import httpx
 from markdownify import markdownify as md  # type: ignore[import-untyped]
 
 _TIMEOUT = 30  # seconds
-_MAX_BYTES = 1_000_000  # 1 MB — generous but bounded
+_MAX_BYTES = 1_000_000  # 1 MB — hard ceiling on what we download/write to disk
+# When a workspace is available, a result larger than this is written to a file
+# and the agent gets a handle + preview instead of the whole body inline — so a
+# big page can't flood the turn's context. (read_file/grep can then page the
+# file.) ~50k chars ≈ ~12k tokens; small results stay inline, no round-trip.
+_INLINE_CHAR_LIMIT = 50_000
+_PREVIEW_LINES = 40  # lines of the body shown in the handle for large pages
+# Where offloaded fetch bodies live, relative to the workspace root. Gitignored.
+_FETCH_DIR = (".marim", "fetch")
 _ALLOWED_SCHEMES = frozenset({"http", "https"})
 
 # Common markers for boilerplate we want to strip from the output.
@@ -59,11 +69,45 @@ def _html_to_markdown(html: str) -> str:
     return md(cleaned_html, heading_style="ATX", strip=["img", "figure"]).strip()
 
 
+def _title_of(body: str, url: str) -> str:
+    """Best-effort one-line title: the first Markdown heading, else the URL."""
+    for line in body.splitlines():
+        stripped = line.lstrip("#").strip()
+        if line.startswith("#") and stripped:
+            return stripped
+    return url
+
+
+def _offload(body: str, url: str, workspace_root: Path) -> str:
+    """Write *body* to a gitignored file under the workspace and return a handle
+    (title, source, size, relative path) plus a short preview, so the agent can
+    page the rest with read_file/grep instead of taking the whole body inline."""
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+    rel = Path(*_FETCH_DIR, f"{digest}.md")
+    dest = workspace_root / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(body)
+
+    lines = body.splitlines()
+    preview = "\n".join(lines[:_PREVIEW_LINES])
+    rel_posix = rel.as_posix()
+    return (
+        f"# {_title_of(body, url)}\n"
+        f"Fetched {url}\n\n"
+        f"⚠️ Large page ({len(body):,} chars, {len(lines):,} lines) — full content "
+        f"saved to `{rel_posix}`. Read more with read_file (it paginates) or grep "
+        f"that path for what you need.\n\n"
+        f"--- preview (first {min(_PREVIEW_LINES, len(lines))} lines) ---\n"
+        f"{preview}"
+    )
+
+
 async def fetch_url(
     url: str,
     *,
     prompt: Optional[str] = None,
     timeout: int = _TIMEOUT,
+    workspace_root: Optional[Path] = None,
 ) -> str:
     """Fetch *url* and return its body as Markdown.
 
@@ -71,6 +115,12 @@ async def fetch_url(
     what to extract (included as a header in the output for context but
     does **not** alter the fetch itself).  *timeout* caps the request in
     seconds (default 30).
+
+    If *workspace_root* is given and the body exceeds ``_INLINE_CHAR_LIMIT``,
+    the full content is written to a gitignored file under the workspace and a
+    handle + preview is returned instead of the whole body — so a large page
+    can't flood the turn's context. Small bodies (and any call without a
+    workspace) are returned inline as before.
 
     Returns a Markdown-formatted string, or an error message on failure.
     """
@@ -129,4 +179,11 @@ async def fetch_url(
     if prompt:
         body = f"## Requested: {prompt}\n\n{body}"
 
-    return body if body else "Fetch succeeded but the page was empty."
+    if not body:
+        return "Fetch succeeded but the page was empty."
+
+    # --- offload large bodies so they don't flood context ---
+    if workspace_root is not None and len(body) > _INLINE_CHAR_LIMIT:
+        return _offload(body, url, workspace_root)
+
+    return body

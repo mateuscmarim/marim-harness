@@ -261,3 +261,72 @@ async def test_fetch_empty_page():
         result = await fetch_url("https://example.com/empty")
 
     assert "empty" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# Tests — offload-to-file for large pages (when a workspace_root is given)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_fetch_small_page_with_workspace_returned_inline(tmp_path):
+    """A small page is still returned inline even when a workspace is available —
+    no file round-trip for the common case."""
+    html = "<html><body><h1>Small</h1><p>Just a little content.</p></body></html>"
+    resp = _mock_response(text=html, content_type="text/html")
+
+    with _patch_client(resp):
+        result = await fetch_url("https://example.com/small", workspace_root=tmp_path)
+
+    assert "# Small" in result
+    assert "Just a little content." in result
+    # Nothing offloaded.
+    assert not (tmp_path / ".marim" / "fetch").exists()
+
+
+@pytest.mark.anyio
+async def test_fetch_large_page_offloaded_to_file(tmp_path):
+    """A large page is written to a gitignored workspace file; the tool returns a
+    handle + preview (so read_file/grep can page through) rather than flooding
+    context with the whole body."""
+    paras = "".join(
+        f"<p>Paragraph number {i} with several words here.</p>" for i in range(4000)
+    )
+    html = f"<html><body><h1>Big Doc</h1>{paras}</body></html>"
+    resp = _mock_response(text=html, content_type="text/html")
+
+    with _patch_client(resp):
+        result = await fetch_url("https://example.com/big-doc", workspace_root=tmp_path)
+
+    # The handle points at a workspace-relative path under .marim/fetch/.
+    assert ".marim/fetch/" in result
+    # Preview shows the start...
+    assert "Paragraph number 0 " in result
+    # ...but NOT the whole body (last paragraph must not be inline).
+    assert "Paragraph number 3999" not in result
+
+    # The full content lives on disk and is readable.
+    files = list((tmp_path / ".marim" / "fetch").glob("*.md"))
+    assert len(files) == 1
+    full = files[0].read_text()
+    assert "Paragraph number 0 " in full
+    assert "Paragraph number 3999" in full
+
+
+@pytest.mark.anyio
+async def test_fetch_offload_path_is_workspace_relative(tmp_path):
+    """The path in the handle must be relative to the workspace root so the agent
+    can hand it straight to read_file/grep (which are workspace-sandboxed)."""
+    paras = "".join(
+        f"<p>Filler paragraph {i} with enough text to grow.</p>" for i in range(4000)
+    )
+    html = f"<html><body>{paras}</body></html>"
+    resp = _mock_response(text=html, content_type="text/html")
+
+    with _patch_client(resp):
+        result = await fetch_url("https://example.com/big", workspace_root=tmp_path)
+
+    files = list((tmp_path / ".marim" / "fetch").glob("*.md"))
+    rel = files[0].relative_to(tmp_path).as_posix()
+    assert rel in result
+    assert str(tmp_path) not in result  # no absolute path leaks

@@ -33,8 +33,12 @@ async def fetch_url(
 
     Use this when you need the actual content of a page — web_search only returns
     titles and snippets. HTML pages are converted to Markdown; JSON is
-    pretty-printed; plain text is returned as-is. Pages over 1 MB are truncated."""
-    return await fetch.fetch_url(url, prompt=prompt)
+    pretty-printed; plain text is returned as-is. A large page is saved to a file
+    under the workspace and you get a handle + preview back — read_file/grep that
+    path to page through it — so it doesn't flood context."""
+    return await fetch.fetch_url(
+        url, prompt=prompt, workspace_root=ctx.deps.workspace_root
+    )
 
 
 def read_file(
