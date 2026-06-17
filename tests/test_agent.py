@@ -1701,6 +1701,27 @@ async def test_plain_turn_is_not_wrapped(tmp_path):
     assert strip_turn_context(persisted[0]) == "hello"
 
 
+def test_parallel_tool_calls_enabled_on_main_agent(tmp_path):
+    """The main agent forces parallel tool calls on, so providers that support
+    it (Anthropic, OpenAI, Groq, xAI, …) run same-turn tool calls concurrently
+    rather than relying on a provider default that may be off."""
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    harness = _make_harness(_edit_then_done_model(), deps)
+    assert harness.agent.model_settings is not None
+    assert harness.agent.model_settings.get("parallel_tool_calls") is True
+
+
+def test_parallel_tool_calls_enabled_on_subagent(tmp_path):
+    """Spawned sub-agents inherit the same setting — fan-out work should be as
+    parallel as the main agent's."""
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    harness = _make_harness(_edit_then_done_model(), deps)
+    sub, err = harness._build_subagent("explore")
+    assert err is None
+    assert sub.model_settings is not None
+    assert sub.model_settings.get("parallel_tool_calls") is True
+
+
 def _capture_subagent(h, report="report"):
     """Replace _build_subagent so the spawned agent's run() records the toolsets
     it was given and returns a canned report. Returns the capture dict."""
