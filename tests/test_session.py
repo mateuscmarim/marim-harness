@@ -1,11 +1,17 @@
 import json
+import stat as _stat
 from pathlib import Path
 
+import pytest
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
+from marim_harness.deps import Deps
+from marim_harness.hooks import events as hook_events
+from marim_harness.hooks.runner import HookRunner
 from marim_harness.session import SessionManager, SessionStore
+from marim_harness.session.ctrl import SessionController
 
 
 def _history() -> list:
@@ -272,3 +278,51 @@ def test_create_no_model_when_no_sessions(tmp_path: Path):
     mgr = _manager(tmp_path)
     store = mgr.create("Alone")
     assert store.model is None
+
+
+# ---------------------------------------------------------------------------
+# PreCompact hook tests
+# ---------------------------------------------------------------------------
+
+
+def _hook_cmd(tmp_path, log):
+    p = tmp_path / "pc.sh"
+    p.write_text(f"#!/usr/bin/env bash\ncat >> {log}\n", encoding="utf-8")
+    p.chmod(p.stat().st_mode | _stat.S_IEXEC | _stat.S_IRWXU)
+    return str(p)
+
+
+@pytest.mark.anyio
+async def test_pre_compact_fires_when_compaction_runs(tmp_path):
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    log = tmp_path / "pc.log"
+    cmd = _hook_cmd(tmp_path, log)
+    deps = Deps(
+        workspace_root=tmp_path,
+        hooks=HookRunner({hook_events.PRE_COMPACT: [{"hooks": [{"type": "command", "command": cmd}]}]}),
+    )
+    # A tiny token budget forces compaction of a non-trivial history.
+    ctrl = SessionController(None, None, deps, max_context_tokens=1, keep_last_messages=1)
+    ctrl.history = [
+        ModelRequest(parts=[UserPromptPart(content="x" * 5000)]),
+        ModelRequest(parts=[UserPromptPart(content="y" * 5000)]),
+        ModelRequest(parts=[UserPromptPart(content="z" * 5000)]),
+    ]
+    await ctrl.maybe_compact()
+    assert log.exists()
+    assert '"hook_event_name": "PreCompact"' in log.read_text()
+
+
+@pytest.mark.anyio
+async def test_pre_compact_does_not_fire_without_compaction(tmp_path):
+    log = tmp_path / "pc.log"
+    cmd = _hook_cmd(tmp_path, log)
+    deps = Deps(
+        workspace_root=tmp_path,
+        hooks=HookRunner({hook_events.PRE_COMPACT: [{"hooks": [{"type": "command", "command": cmd}]}]}),
+    )
+    ctrl = SessionController(None, None, deps, max_context_tokens=100_000, keep_last_messages=20)
+    ctrl.history = []  # nothing to compact
+    await ctrl.maybe_compact()
+    assert not log.exists()

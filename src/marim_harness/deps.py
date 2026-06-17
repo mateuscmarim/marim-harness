@@ -1,8 +1,12 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Awaitable, Callable, Optional
+from typing import TYPE_CHECKING, Awaitable, Callable, Optional
 
 from .command_policy import CommandPolicy
+
+if TYPE_CHECKING:
+    from .hooks.runner import HookRunner
+
 from .jobs import JobRegistry
 from .permissions import Mode
 from .tasks import TaskList
@@ -33,6 +37,9 @@ class Deps:
     # Allow/deny policy for shell commands, enforced inside the bash tool in
     # every mode. The default (empty) policy permits everything.
     command_policy: CommandPolicy = field(default_factory=CommandPolicy)
+    # Optional Claude-Code-compatible hook engine. None when no hooks.json is
+    # configured (every fire-point becomes a cheap ``is None`` no-op).
+    hooks: Optional["HookRunner"] = None
     # Lets the spawn_agent tool launch a sub-agent and stream its events.
     run_subagent: Optional[SubAgentRunner] = None
     on_subagent_event: Optional[SubAgentEventCb] = None

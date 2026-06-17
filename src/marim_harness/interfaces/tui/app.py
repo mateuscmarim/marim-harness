@@ -138,6 +138,9 @@ class HarnessApp(App):
         # Land focus on the prompt so the user can type immediately.
         self.query_one(PromptInput).focus()
         await self._connect_mcp(log)
+        await self.harness.session_start(
+            "resume" if self.harness.session.history else "startup"
+        )
 
     async def _connect_mcp(self, log: VerticalScroll) -> None:
         """Open the configured MCP servers and note the outcome. Connection
@@ -157,6 +160,7 @@ class HarnessApp(App):
         """Jobs are process-scoped — kill any still running when the app exits so
         no detached shell or agent run is left behind, and close MCP connections."""
         await self.harness.deps.jobs.cancel_all()
+        await self.harness.session_end("exit")
         await self.harness.aclose()
 
     async def _replay_history(self, log: VerticalScroll) -> None:
@@ -329,17 +333,20 @@ class HarnessApp(App):
     async def reset_conversation(self) -> None:
         """Wipe the conversation and re-show the welcome screen (the /clear cmd)."""
         self.harness.reset()
+        await self.harness.session_start("clear")
         await self._render_session(_WELCOME)
 
     async def start_new_session(self, name: str | None = None) -> None:
         """Begin a fresh named session, leaving existing ones on disk."""
         self.harness.new_session(name)
+        await self.harness.session_start("startup")
         label = self.harness.session.session_name or "new session"
         await self._render_session(f"**New session** — `{label}`.")
 
     async def switch_to_session_id(self, session_id: str) -> None:
         """Load an existing session and show where it left off."""
         n = self.harness.switch_session(session_id)
+        await self.harness.session_start("resume")
         label = self.harness.session.session_name or session_id
         await self._render_session(
             f"**Switched to** `{label}` — {n} messages restored."

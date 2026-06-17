@@ -18,6 +18,9 @@ class ModelConfig:
     api_key: Optional[str] = None
     max_context_tokens: int = 100_000
     proactive_memory: bool = False
+    # When true, project-local .marim/hooks.json hooks are honored; otherwise
+    # only the global hooks config runs (supply-chain guard for cloned repos).
+    trust_project_hooks: bool = False
     # Shell-command allow/deny patterns (regex), enforced in the bash tool in
     # every mode. Empty lists -> no restriction.
     command_denylist: list[str] = field(default_factory=list)
@@ -34,6 +37,7 @@ def load_config() -> ModelConfig:
     provider = os.getenv("MARIM_PROVIDER", "openrouter").lower()
     max_context_tokens = _int_env("MARIM_MAX_CONTEXT_TOKENS", 100_000)
     proactive_memory = _bool_env("MARIM_PROACTIVE_MEMORY", False)
+    trust_project_hooks = _bool_env("MARIM_TRUST_PROJECT_HOOKS", False)
     command_denylist = split_patterns(os.getenv("MARIM_COMMAND_DENYLIST", ""))
     command_allowlist = split_patterns(os.getenv("MARIM_COMMAND_ALLOWLIST", ""))
     if provider == "local":
@@ -44,6 +48,7 @@ def load_config() -> ModelConfig:
             api_key=os.getenv("MARIM_API_KEY", "local"),
             max_context_tokens=max_context_tokens,
             proactive_memory=proactive_memory,
+            trust_project_hooks=trust_project_hooks,
             command_denylist=command_denylist,
             command_allowlist=command_allowlist,
         )
@@ -59,6 +64,7 @@ def load_config() -> ModelConfig:
             ),
             max_context_tokens=max_context_tokens,
             proactive_memory=proactive_memory,
+            trust_project_hooks=trust_project_hooks,
             command_denylist=command_denylist,
             command_allowlist=command_allowlist,
         )
@@ -69,6 +75,7 @@ def load_config() -> ModelConfig:
         api_key=os.getenv("OPENROUTER_API_KEY") or os.getenv("MARIM_API_KEY"),
         max_context_tokens=max_context_tokens,
         proactive_memory=proactive_memory,
+        trust_project_hooks=trust_project_hooks,
         command_denylist=command_denylist,
         command_allowlist=command_allowlist,
     )

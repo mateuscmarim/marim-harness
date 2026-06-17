@@ -147,6 +147,36 @@ def test_fresh_harness_falls_back_to_config_default(tmp_path, monkeypatch):
     assert harness.session.store.model is None  # brand-new session, nothing inherited
 
 
+def test_build_harness_sets_hooks_when_global_config_present(tmp_path, monkeypatch):
+    import json
+    from marim_harness.bootstrap import build_harness
+    from marim_harness.permissions import Mode
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("MARIM_API_KEY", "x")
+    _stub_model_plumbing(monkeypatch)
+    cfg_path = tmp_path / "xdg" / "marim" / "hooks.json"
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text(json.dumps({"hooks": {"Stop": [{"hooks": []}]}}))
+
+    harness = build_harness(tmp_path / "ws", mode=Mode.ask)
+    assert harness.deps.hooks is not None
+
+
+def test_build_harness_hooks_none_without_config(tmp_path, monkeypatch):
+    from marim_harness.bootstrap import build_harness
+    from marim_harness.permissions import Mode
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("MARIM_API_KEY", "x")
+    _stub_model_plumbing(monkeypatch)
+
+    harness = build_harness(tmp_path / "ws", mode=Mode.ask)
+    assert harness.deps.hooks is None
+
+
 def test_resume_reattaches_to_latest_and_replays_history(tmp_path, monkeypatch):
     """resume=True reattaches to the most recent session and replays its saved
     history (message count > 0)."""

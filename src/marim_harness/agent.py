@@ -1,6 +1,7 @@
 from typing import Optional
 
 from pydantic_ai import Agent, DeferredToolRequests, capture_run_messages
+from pydantic_ai.messages import FunctionToolCallEvent, FunctionToolResultEvent
 
 from .workspace import (
     discover_agents,
@@ -15,6 +16,8 @@ from .compaction import (
     make_titler,
 )
 from .deps import Deps
+from .hooks import events as hook_events
+from .hooks.runner import base_payload
 from .instructions import register_instructions
 from .mcp import McpManager
 from .permissions import Mode, resolve_approvals
@@ -123,6 +126,9 @@ class Harness:
         # next turn's prompt so the model knows it didn't complete (see
         # _actionable_error_note). None when there's nothing to surface.
         self._pending_error_note: Optional[str] = None
+        # One-shot context returned by a SessionStart hook, prepended to the next
+        # turn's prompt and consumed there (mirrors _pending_error_note).
+        self._pending_hook_context: Optional[str] = None
         self.session = SessionController(
             store, manager, deps,
             max_context_tokens, keep_last_messages,
@@ -241,10 +247,23 @@ class Harness:
         if err is not None:
             return err
         granted, unknown = self.mcp.granted_servers(mcp_names)
+        if self.deps.hooks is not None:
+            await self.deps.hooks.dispatch(
+                hook_events.SUBAGENT_START,
+                self._hook_payload(hook_events.SUBAGENT_START, subagent_type=type, task=task),
+            )
         result = await sub.run(
             task, deps=self.deps, toolsets=granted,
             event_stream_handler=self._subagent_handler(stream_id),
         )
+        if self.deps.hooks is not None:
+            await self.deps.hooks.dispatch(
+                hook_events.SUBAGENT_STOP,
+                self._hook_payload(
+                    hook_events.SUBAGENT_STOP, subagent_type=type, task=task,
+                    result=result.output,
+                ),
+            )
         # A foreground spawn runs inside the current turn, so its spend is folded
         # into the session total here and persisted by run_turn's _persist.
         self.session.usage += result.usage
@@ -261,7 +280,20 @@ class Harness:
         if err is not None:
             return err
         granted, unknown = self.mcp.granted_servers(mcp_names)
+        if self.deps.hooks is not None:
+            await self.deps.hooks.dispatch(
+                hook_events.SUBAGENT_START,
+                self._hook_payload(hook_events.SUBAGENT_START, subagent_type=type, task=task),
+            )
         result = await sub.run(task, deps=self.deps, toolsets=granted)
+        if self.deps.hooks is not None:
+            await self.deps.hooks.dispatch(
+                hook_events.SUBAGENT_STOP,
+                self._hook_payload(
+                    hook_events.SUBAGENT_STOP, subagent_type=type, task=task,
+                    result=result.output,
+                ),
+            )
         # A background spawn finishes off-turn, so no run_turn will fold in its
         # spend — count it here and persist right away so the saved session
         # reflects it even if the process exits before the next turn.
@@ -284,6 +316,78 @@ class Harness:
     async def enable_server(self, name: str) -> Optional[str]:
         return await self.mcp.enable_server(name, self.deps.workspace_root)
 
+    def _hook_payload(self, event: str, **extra) -> dict:
+        """Build a hook payload with the common fields drawn from the live
+        session, plus any event-specific extras."""
+        store = self.session.store
+        return base_payload(
+            event,
+            session_id=store.session_id if store is not None else "",
+            cwd=str(self.deps.workspace_root),
+            transcript_path=str(store.path) if store is not None else "",
+            **extra,
+        )
+
+    async def session_start(self, source: str) -> None:
+        """Fire the SessionStart hook (``source`` is ``startup``/``resume``/
+        ``clear``) and stash any returned context for the next turn's prompt."""
+        if self.deps.hooks is None:
+            return
+        ctx = await self.deps.hooks.dispatch(
+            hook_events.SESSION_START,
+            self._hook_payload(hook_events.SESSION_START, source=source),
+        )
+        if ctx:
+            self._pending_hook_context = ctx
+
+    async def session_end(self, reason: str = "exit") -> None:
+        """Fire the SessionEnd hook on teardown. Observe-only."""
+        if self.deps.hooks is None:
+            return
+        await self.deps.hooks.dispatch(
+            hook_events.SESSION_END,
+            self._hook_payload(hook_events.SESSION_END, reason=reason),
+        )
+
+    async def _fire_tool_event(self, event, _call_inputs: dict | None = None) -> None:
+        """Map a streamed tool event to a Pre/PostToolUse hook (observe-only).
+
+        ``_call_inputs`` is a per-turn dict (tool_call_id → tool_input) used to
+        correlate a PostToolUse result with the args from its matching call, so
+        that CC plugin scripts receive ``tool_input`` on both event types.
+        """
+        if self.deps.hooks is None:
+            return
+        if isinstance(event, FunctionToolCallEvent):
+            try:
+                tool_input = event.part.args_as_dict()
+            except Exception:
+                tool_input = {}
+            # Stash input so the paired PostToolUse event can include it.
+            if _call_inputs is not None:
+                _call_inputs[event.part.tool_call_id] = tool_input
+            await self.deps.hooks.dispatch(
+                hook_events.PRE_TOOL_USE,
+                self._hook_payload(
+                    hook_events.PRE_TOOL_USE,
+                    tool_name=event.part.tool_name,
+                    tool_input=tool_input,
+                ),
+            )
+        elif isinstance(event, FunctionToolResultEvent):
+            # Look up the stashed input by tool_call_id; fall back gracefully.
+            tool_input = ({} if _call_inputs is None
+                          else _call_inputs.get(event.tool_call_id, {}))
+            await self.deps.hooks.dispatch(
+                hook_events.POST_TOOL_USE,
+                self._hook_payload(
+                    hook_events.POST_TOOL_USE,
+                    tool_name=getattr(event.part, "tool_name", ""),
+                    tool_input=tool_input,
+                    tool_response=str(getattr(event.part, "content", "")),
+                ),
+            )
+
     async def run_turn(self, prompt: str, event_stream_handler=None) -> str:
         """Run the agent until it produces a final text answer, looping through
         any approval rounds. Returns the final text output."""
@@ -296,11 +400,44 @@ class Harness:
         if self._pending_error_note:
             prompt = f"{self._pending_error_note}\n\n{prompt}"
             self._pending_error_note = None
+        # Prepend any SessionStart-injected context, once.
+        if self._pending_hook_context:
+            prompt = f"{self._pending_hook_context}\n\n{prompt}"
+            self._pending_hook_context = None
+        # Fire UserPromptSubmit and prepend any context it returns.
+        if self.deps.hooks is not None:
+            ctx = await self.deps.hooks.dispatch(
+                hook_events.USER_PROMPT_SUBMIT,
+                self._hook_payload(hook_events.USER_PROMPT_SUBMIT, prompt=prompt),
+            )
+            if ctx:
+                prompt = f"{ctx}\n\n{prompt}"
         user_prompt: Optional[str] = prompt
         deferred_results = None
         # Offer only the live servers that aren't disabled — a server muted at
         # runtime stays connected but its tools are withheld from the model.
         toolsets = self.mcp.live_toolsets()
+        # When hooks are configured, intercept each streamed tool event to fire
+        # Pre/PostToolUse, then forward to the original handler (or drain if none).
+        if self.deps.hooks is not None:
+            _base_handler = event_stream_handler
+            # Scoped to this single turn: maps tool_call_id → tool_input so the
+            # PostToolUse branch can include the call's args in its payload.
+            _call_inputs: dict = {}
+
+            async def _hooked_handler(stream_ctx, events):
+                async def _relay():
+                    async for event in events:
+                        await self._fire_tool_event(event, _call_inputs)
+                        yield event
+
+                if _base_handler is not None:
+                    await _base_handler(stream_ctx, _relay())
+                else:
+                    async for _ in _relay():
+                        pass
+
+            event_stream_handler = _hooked_handler
         while True:
             # The last persisted, resumable history — what we fall back to if
             # this round is interrupted before it completes cleanly.
@@ -357,5 +494,9 @@ class Harness:
                 continue
             self.session.persist()
             output = result.output
+            if self.deps.hooks is not None:
+                await self.deps.hooks.dispatch(
+                    hook_events.STOP, self._hook_payload(hook_events.STOP)
+                )
             await self._maybe_autoname()
             return output

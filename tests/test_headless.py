@@ -1,5 +1,6 @@
 import io
 import json
+import stat
 from pathlib import Path
 
 import pytest
@@ -8,14 +9,21 @@ from marim_harness.deps import Deps
 from marim_harness.permissions import Mode
 
 
-def _harness(tmp_path: Path, output_text: str = "hello from the model"):
+def _hook_script(tmp_path: Path, name: str, body: str) -> str:
+    p = tmp_path / name
+    p.write_text("#!/usr/bin/env bash\n" + body, encoding="utf-8")
+    p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IRWXU)
+    return str(p)
+
+
+def _harness(tmp_path: Path, output_text: str = "hello from the model", *, hooks=None):
     from pydantic_ai.models.test import TestModel
 
     from marim_harness.agent import Harness
     from marim_harness.session import SessionManager
     from marim_harness.tools.provider import BuiltinToolProvider
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto, hooks=hooks)
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     store = manager.create("headless")
     model = TestModel(call_tools=[], custom_output_text=output_text)
@@ -88,3 +96,34 @@ async def test_failed_turn_returns_nonzero_and_writes_stderr(tmp_path: Path):
     assert code == 1
     assert out.getvalue() == ""
     assert "upstream exploded" in err.getvalue()
+
+
+@pytest.mark.anyio
+async def test_headless_fires_session_start_and_end(tmp_path: Path):
+    """SessionStart and SessionEnd both fire when run_headless drives a turn."""
+    from marim_harness.hooks.runner import HookRunner
+    from marim_harness.hooks import events as hook_events
+    from marim_harness.interfaces.cli.headless import run_headless
+
+    log = tmp_path / "lifecycle.log"
+    helper = tmp_path / "lifecycle_hook.py"
+    helper.write_text(
+        f"import sys, json\n"
+        f"d = json.load(sys.stdin)\n"
+        f"open({str(log)!r}, 'a').write(d['hook_event_name'] + '\\n')\n",
+        encoding="utf-8",
+    )
+    cmd = _hook_script(tmp_path, "lifecycle.sh", f"python3 {str(helper)}\n")
+    runner = HookRunner({
+        hook_events.SESSION_START: [{"hooks": [{"type": "command", "command": cmd}]}],
+        hook_events.SESSION_END: [{"hooks": [{"type": "command", "command": cmd}]}],
+    })
+
+    out = io.StringIO()
+    harness = _harness(tmp_path, "lifecycle reply", hooks=runner)
+    code = await run_headless(harness, "hello", "text", out=out)
+    assert code == 0
+
+    logged = log.read_text()
+    assert "SessionStart" in logged, f"SessionStart not found in hook log: {logged!r}"
+    assert "SessionEnd" in logged, f"SessionEnd not found in hook log: {logged!r}"

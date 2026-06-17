@@ -4,6 +4,7 @@ from .agent import Harness, make_summarizer, make_titler
 from .command_policy import CommandPolicy
 from .config import ModelSource, build_model, load_config
 from .deps import Deps
+from .hooks import HookRunner, load_hooks_config
 from .mcp import build_mcp_servers, disabled_server_names, load_mcp_config
 from .permissions import Mode
 from .session import SessionManager
@@ -33,7 +34,14 @@ def build_harness(
     command_policy = CommandPolicy(
         denylist=cfg.command_denylist, allowlist=cfg.command_allowlist
     )
-    deps = Deps(workspace_root=workspace, mode=mode, command_policy=command_policy)
+    hooks_cfg = load_hooks_config(workspace, trust_project=cfg.trust_project_hooks)
+    hook_runner = HookRunner(hooks_cfg) if hooks_cfg else None
+    deps = Deps(
+        workspace_root=workspace,
+        mode=mode,
+        command_policy=command_policy,
+        hooks=hook_runner,
+    )
 
     manager = SessionManager(workspace)
     latest = manager.latest() if resume else None
