@@ -112,3 +112,23 @@ async def test_timeout_is_killed_and_swallowed(tmp_path):
 async def test_unconfigured_event_returns_none():
     runner = HookRunner({})
     assert await runner.dispatch(events.STOP, _payload(events.STOP)) is None
+
+
+@pytest.mark.anyio
+async def test_invalid_regex_matcher_is_treated_as_no_match(tmp_path):
+    out = tmp_path / "ran.txt"
+    cmd = _script(tmp_path, "h.sh", f"echo ran >> {out}\n")
+    runner = HookRunner({events.PRE_TOOL_USE: [_entry(cmd, matcher="[")]})
+    await runner.dispatch(events.PRE_TOOL_USE, _payload(events.PRE_TOOL_USE, tool_name="bash"))
+    assert not out.exists()  # invalid regex must not crash; treated as no-match
+
+
+@pytest.mark.anyio
+async def test_unknown_hook_type_is_skipped(tmp_path):
+    out = tmp_path / "ran.txt"
+    cmd = _script(tmp_path, "h.sh", f"echo ran >> {out}\n")
+    entry = {"hooks": [{"type": "mystery", "command": cmd}]}
+    runner = HookRunner({events.SESSION_START: [entry]})
+    ctx = await runner.dispatch(events.SESSION_START, _payload(events.SESSION_START))
+    assert ctx is None
+    assert not out.exists()  # non-"command" type never executes
