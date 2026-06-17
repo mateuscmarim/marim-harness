@@ -72,6 +72,22 @@ async def test_status_bar_shows_context_usage(tmp_path: Path):
         assert "50%" in str(bar.render())
 
 
+@pytest.mark.anyio
+async def test_status_bar_survives_markup_like_session_name(tmp_path: Path, monkeypatch):
+    """A session name is model-generated and may contain bracket sequences like
+    `[edit(x="…` that escape() can't neutralise; the status bar must render it
+    literally rather than crash the whole app on a MarkupError."""
+    bomb = '[/] and [edit(old_string="unterminated'
+    monkeypatch.setattr(type(_app(tmp_path).harness), "session_name", property(lambda self: bomb))
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._refresh_status()  # the parse happens here and on render
+        await pilot.pause()
+        # The literal name (including its brackets) is shown, not parsed away.
+        assert "[edit(old_string=" in str(app.query_one("#status-bar").render())
+
+
 def _submit(app, text):
     from marim_harness.interfaces.tui.widgets import PromptInput
 

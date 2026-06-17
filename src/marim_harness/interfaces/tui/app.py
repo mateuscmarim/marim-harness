@@ -11,6 +11,7 @@ from pydantic_ai.messages import (
 )
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
+from textual.content import Content
 from textual.css.query import NoMatches
 from textual.widgets import Footer, Header, Static
 
@@ -182,29 +183,31 @@ class HarnessApp(App):
                         if widget is not None:
                             widget.finish(str(part.content))
 
-    def _status_text(self) -> str:
+    def _status_text(self) -> Content:
         cfg = getattr(self.harness, "model_label", "model")
         spent = getattr(self.harness, "total_tokens", 0)
         used = estimate_tokens(self.harness.history)
         max_ctx = getattr(self.harness, "max_context_tokens", 0) or 0
         pct = round(used / max_ctx * 100) if max_ctx else 0
-        ctx = f"ctx {_human_tokens(used)}/{_human_tokens(max_ctx)} ({pct}%)"
-        if pct >= 90:
-            ctx = f"[red]{ctx}[/]"
-        elif pct >= 75:
-            ctx = f"[yellow]{ctx}[/]"
+        ctx_text = f"ctx {_human_tokens(used)}/{_human_tokens(max_ctx)} ({pct}%)"
+        ctx_style = "red" if pct >= 90 else "yellow" if pct >= 75 else ""
+        mode = self.harness.deps.mode.value
         name = getattr(self.harness, "session_name", None)
-        prefix = f"[b $accent]{name}[/] · " if name else ""
-        sep = " [dim]·[/] "
-        base = sep.join(
-            [
-                f"{prefix}{self.harness.deps.mode.value}",
-                cfg,
-                ctx,
-                f"{_human_tokens(spent)} tokens",
-            ]
+        # session_name is model-generated and untrusted; render it as a literal
+        # styled segment via assemble so a stray bracket sequence (e.g. `[edit(`)
+        # is never parsed as Textual markup — which would crash the status bar.
+        head = (
+            Content.assemble((name, "b $accent"), " · ", mode) if name else Content(mode)
         )
-        return f"{base}{sep}working…" if self._busy else base
+        fields = [
+            head,
+            Content(cfg),
+            Content.assemble((ctx_text, ctx_style)) if ctx_style else Content(ctx_text),
+            Content(f"{_human_tokens(spent)} tokens"),
+        ]
+        if self._busy:
+            fields.append(Content("working…"))
+        return Content.from_markup(" [dim]·[/] ").join(fields)
 
     def _refresh_status(self) -> None:
         try:

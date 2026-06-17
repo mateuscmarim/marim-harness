@@ -2,11 +2,11 @@ import re
 from pathlib import Path
 
 from rich.console import RenderableType
-from rich.markup import escape
 from rich.syntax import Syntax
 from rich.text import Text
 from textual import events
 from textual.containers import Vertical
+from textual.content import Content
 from textual.message import Message
 from textual.widgets import Collapsible, Markdown, Static, TextArea
 
@@ -60,12 +60,14 @@ class ToolCallWidget(Collapsible):
         self._body = Static(self._render_body(), id="tool-body", markup=False)
         super().__init__(self._body, title=self._summary(), collapsed=True)
 
-    def _summary(self) -> str:
+    def _summary(self) -> Content:
         glyph = {"pending": "·", "done": "✓", "denied": "✕"}.get(self.status, "·")
         arg_preview = ", ".join(f"{k}={v!r}" for k, v in list(self.args.items())[:2])
-        # Collapsible titles are parsed as markup; the arg preview is untrusted,
-        # so escape it to render literally rather than crash on a stray `[/]`.
-        return escape(f"{glyph} {self.tool_name}({arg_preview})")
+        # Collapsible titles are parsed as Textual markup; the arg preview is
+        # untrusted (file content, commands) and may contain bracket sequences
+        # like `[edit(x="…` that escape() does NOT neutralise but the parser
+        # still chokes on. A literal Content bypasses markup parsing entirely.
+        return Content(f"{glyph} {self.tool_name}({arg_preview})")
 
     def _result_renderable(self) -> RenderableType:
         """The result body, syntax-highlighted when it is file source."""
@@ -141,9 +143,10 @@ class TaskPanel(Static):
             self.update("")
             return
         self.display = True
-        # The header is intentional markup; escape the task body, whose text is
-        # untrusted and may contain markup syntax like `[/]`.
-        self.update("[b $accent]Tasks[/]\n" + escape(render_tasks(items)))
+        # The header is intentional markup; the task body is untrusted and may
+        # contain bracket sequences that escape() can't neutralise, so render it
+        # as a literal Content appended to the parsed header.
+        self.update(Content.from_markup("[b $accent]Tasks[/]\n") + Content(render_tasks(items)))
 
 
 class JobPanel(Static):
@@ -163,9 +166,10 @@ class JobPanel(Static):
             self.update("")
             return
         self.display = True
-        # The header is intentional markup; escape the job body, whose labels are
-        # untrusted and may contain markup syntax like `[/]`.
-        self.update("[b $accent]Jobs[/]\n" + escape(render_jobs(jobs)))
+        # The header is intentional markup; the job labels are untrusted and may
+        # contain bracket sequences that escape() can't neutralise, so render them
+        # as a literal Content appended to the parsed header.
+        self.update(Content.from_markup("[b $accent]Jobs[/]\n") + Content(render_jobs(jobs)))
 
 
 class SubAgentWidget(Collapsible):
@@ -190,7 +194,7 @@ class SubAgentWidget(Collapsible):
         self.body = Vertical(classes="subagent-body")
         super().__init__(self.body, title=self._summary(), collapsed=collapsed)
 
-    def _summary(self) -> str:
+    def _summary(self) -> Content:
         glyph = {"pending": "▸", "done": "✓", "denied": "✕"}.get(self.status, "▸")
         task = self.agent_task if len(self.agent_task) <= 40 else self.agent_task[:39] + "…"
         parts = [f"{glyph} spawn_agent({self.agent_type}: {task!r})"]
@@ -200,9 +204,10 @@ class SubAgentWidget(Collapsible):
         # The token count persists across finish — the final cost stays visible.
         if self.tokens:
             parts.append(f"{human_tokens(self.tokens)} tok")
-        # Collapsible titles are parsed as markup; the task text is untrusted, so
-        # escape the line to render literally rather than crash on a stray `[/]`.
-        return escape(" · ".join(parts))
+        # Collapsible titles are parsed as Textual markup; the task text is
+        # untrusted and may contain bracket sequences escape() can't neutralise,
+        # so a literal Content bypasses markup parsing entirely.
+        return Content(" · ".join(parts))
 
     def set_tokens(self, n: int) -> None:
         """Update the sub-agent's running token total and refresh the title."""

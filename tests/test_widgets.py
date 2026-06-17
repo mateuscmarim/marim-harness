@@ -10,6 +10,14 @@ from marim_harness.interfaces.tui.widgets import (
     strip_line_numbers,
 )
 
+# An unclosed, expression-style bracket sequence. Unlike a balanced ``[/]``,
+# ``rich``/``textual`` ``escape()`` will NOT neutralise this — its regex only
+# escapes brackets that look like a complete ``[tag]`` — yet Textual's markup
+# parser still treats ``[edit(`` as an opening tag and crashes on the dangling
+# quote with "Expected markup value". Untrusted text must therefore bypass
+# markup parsing entirely (literal Content), not merely be escaped.
+MARKUP_BOMB = "[/] and [edit(old_string=\"unterminated"
+
 
 class _Harness(App):
     def compose(self) -> ComposeResult:
@@ -132,7 +140,7 @@ async def test_log_messages_survive_markup_like_text():
     never parsed as markup — otherwise a MarkupError crashes the whole app."""
     from marim_harness.interfaces.tui.widgets import ErrorMessage, NoticeMessage
 
-    payload = "MarkupError: auto closing tag ('[/]') has nothing to close"
+    payload = "MarkupError: auto closing tag ('[/]') has nothing to close " + MARKUP_BOMB
 
     class H(App):
         def compose(self) -> ComposeResult:
@@ -154,7 +162,7 @@ async def test_tool_widget_survives_markup_like_args_and_result():
     """Tool args and results are arbitrary (commands, file content, output) and
     may contain Rich markup syntax like ``[/]``. Neither the title nor the body
     may parse it as markup — otherwise a MarkupError crashes the turn."""
-    payload = "grep -n '[/]' file && echo [done]"
+    payload = "grep -n '[/]' file && echo [done] " + MARKUP_BOMB
 
     class H(App):
         def compose(self) -> ComposeResult:
@@ -163,7 +171,7 @@ async def test_tool_widget_survives_markup_like_args_and_result():
     app = H()
     async with app.run_test() as pilot:
         w = app.query_one(ToolCallWidget)
-        w.finish("matched [/] on line 3 [reset]")
+        w.finish("matched [/] on line 3 [reset] " + MARKUP_BOMB)
         await pilot.pause()
         body = str(w.query_one("#tool-body").render())
         assert "[/]" in body
@@ -177,7 +185,8 @@ async def test_subagent_widget_survives_markup_like_task():
 
     class H(App):
         def compose(self) -> ComposeResult:
-            yield SubAgentWidget("Explore", "find the [/] bug in render")
+            # Kept short so the bomb survives the title's 40-char truncation.
+            yield SubAgentWidget("Explore", MARKUP_BOMB)
 
     app = H()
     async with app.run_test() as pilot:
@@ -194,13 +203,13 @@ async def test_task_and_job_panels_survive_markup_like_text():
 
     class _Task:
         status = "pending"
-        text = "fix the [/] bug"
+        text = "fix the [/] bug " + MARKUP_BOMB
 
     class _Job:
         id = "job-1"
         kind = "agent"
         status = "running"
-        label = "render the [/] panel"
+        label = "render the [/] panel " + MARKUP_BOMB
 
     class H(App):
         def compose(self) -> ComposeResult:
