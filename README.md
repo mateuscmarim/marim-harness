@@ -73,6 +73,7 @@ from the environment — they are never written to session files or logs.**
 | `MARIM_PROACTIVE_MEMORY` | Enable proactive memory writes (truthy to enable) |
 | `MARIM_COMMAND_DENYLIST` | Comma/newline-separated patterns to block |
 | `MARIM_COMMAND_ALLOWLIST` | If non-empty, only matching commands are allowed |
+| `MARIM_TRUST_PROJECT_HOOKS` | Trust project-local `.marim/hooks.json` — supply-chain risk; only set in repositories you control (default: off) |
 
 `MARIM_COMMAND_DENYLIST` / `MARIM_COMMAND_ALLOWLIST` entries are regular
 expressions (a literal substring also works); deny takes precedence over allow.
