@@ -99,6 +99,7 @@ class HarnessApp(App):
             self.register_theme(theme)
         self.theme = load_theme()
         self.title = "marim-harness"
+        self.sub_title = str(self.harness.deps.workspace_root)
         log = self.query_one("#log", VerticalScroll)
         await log.mount(Static(_BANNER, id="banner", markup=False))
         intro = AssistantMessage()
