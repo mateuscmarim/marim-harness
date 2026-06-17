@@ -64,12 +64,12 @@ async def test_run_turn_accumulates_token_usage(tmp_path: Path):
     (tmp_path / "a.txt").write_text("foo")
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     harness = _make_harness(_edit_then_done_model(), deps)
-    assert harness.total_tokens == 0
+    assert harness.session.total_tokens == 0
     await harness.run_turn("change foo to bar")
-    after_first = harness.total_tokens
+    after_first = harness.session.total_tokens
     assert after_first > 0
     await harness.run_turn("anything else")
-    assert harness.total_tokens > after_first  # accumulates across turns
+    assert harness.session.total_tokens > after_first  # accumulates across turns
 
 
 @pytest.mark.anyio
@@ -86,7 +86,7 @@ async def test_run_turn_persists_to_store(tmp_path: Path):
     await harness.run_turn("change foo to bar")
     messages, usage, _ = store.load()
     assert len(messages) > 0
-    assert usage.total_tokens == harness.total_tokens
+    assert usage.total_tokens == harness.session.total_tokens
 
 
 def _raising_model() -> FunctionModel:
@@ -109,7 +109,7 @@ async def test_failed_turn_preserves_user_prompt_in_history(tmp_path: Path):
         await harness.run_turn("please remember this request")
     user_texts = [
         p.content
-        for m in harness.history
+        for m in harness.session.history
         for p in getattr(m, "parts", [])
         if type(p).__name__ == "UserPromptPart"
     ]
@@ -138,7 +138,7 @@ async def test_failed_turn_persists_so_a_new_harness_can_resume(tmp_path: Path):
     resumed.resume()
     user_texts = [
         p.content
-        for m in resumed.history
+        for m in resumed.session.history
         for p in getattr(m, "parts", [])
         if type(p).__name__ == "UserPromptPart"
     ]
@@ -244,19 +244,19 @@ async def test_resume_restores_history_and_tokens(tmp_path: Path):
         instructions="x", store=store,
     )
     await first.run_turn("change foo to bar")
-    saved_count = len(first.history)
-    saved_tokens = first.total_tokens
+    saved_count = len(first.session.history)
+    saved_tokens = first.session.total_tokens
 
     # A brand-new harness on the same store resumes the prior conversation.
     second = Harness(
         model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
         instructions="x", store=store,
     )
-    assert second.history == []  # nothing until we resume
+    assert second.session.history == []  # nothing until we resume
     restored = second.resume()
     assert restored == saved_count
-    assert len(second.history) == saved_count
-    assert second.total_tokens == saved_tokens
+    assert len(second.session.history) == saved_count
+    assert second.session.total_tokens == saved_tokens
 
 
 def test_clean_title_strips_noise():
@@ -317,21 +317,21 @@ def _autoname_harness(tmp_path, titler, *, name=None):
 async def test_autoname_after_first_turn(tmp_path: Path):
     renames = []
     h = _autoname_harness(tmp_path, _fake_titler)
-    h.on_rename = lambda old, new: renames.append((old, new))
+    h.session.on_rename = lambda old, new: renames.append((old, new))
 
     await h.run_turn("hello there")
-    assert h.session_name == "Generated Title"
-    assert h.store.auto_named is False
+    assert h.session.session_name == "Generated Title"
+    assert h.session.store.auto_named is False
     assert renames and renames[-1][1] == "Generated Title"
     # persisted
-    assert h.manager.store(h.store.session_id).name == "Generated Title"
+    assert h.session.manager.store(h.session.store.session_id).name == "Generated Title"
 
 
 @pytest.mark.anyio
 async def test_explicitly_named_session_not_autorenamed(tmp_path: Path):
     h = _autoname_harness(tmp_path, _fake_titler, name="my project")
     await h.run_turn("hello")
-    assert h.session_name == "my project"
+    assert h.session.session_name == "my project"
 
 
 @pytest.mark.anyio
@@ -346,7 +346,7 @@ async def test_autoname_happens_only_once(tmp_path: Path):
     await h.run_turn("first")
     await h.run_turn("second")
     assert calls["n"] == 1
-    assert h.session_name == "Title 1"
+    assert h.session.session_name == "Title 1"
 
 
 @pytest.mark.anyio
@@ -354,11 +354,11 @@ async def test_rename_session_explicit_and_generated(tmp_path: Path):
     h = _autoname_harness(tmp_path, _fake_titler, name="start")
     # Explicit rename sets the name verbatim.
     assert await h.rename_session("Manual Name") == "Manual Name"
-    assert h.session_name == "Manual Name"
+    assert h.session.session_name == "Manual Name"
     # Blank rename regenerates from the conversation via the titler.
     await h.run_turn("do work")
     assert await h.rename_session() == "Generated Title"
-    assert h.session_name == "Generated Title"
+    assert h.session.session_name == "Generated Title"
 
 
 def _last_instructions(messages) -> str:
@@ -514,7 +514,7 @@ async def test_tasks_persist_and_restore_across_sessions(tmp_path: Path):
     )
     deps.tasks.replace([{"text": "ship it", "status": "in_progress"}])
     await harness.run_turn("go")  # persists tasks alongside history
-    alpha_id = harness.store.session_id
+    alpha_id = harness.session.store.session_id
 
     # A new session clears the checklist...
     harness.new_session("beta")
@@ -567,24 +567,24 @@ async def test_session_switch_preserves_each_conversation(tmp_path: Path):
         model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
         instructions="x", store=manager.create("alpha"), manager=manager,
     )
-    harness.history = [ModelRequest(parts=[UserPromptPart(content="in alpha")])]
-    harness._persist()
-    alpha_id = harness.store.session_id
+    harness.session.history = [ModelRequest(parts=[UserPromptPart(content="in alpha")])]
+    harness.session.persist()
+    alpha_id = harness.session.store.session_id
 
     # A fresh session starts empty without disturbing alpha.
     harness.new_session("beta")
-    assert harness.session_name == "beta"
-    assert harness.history == []
-    harness._persist()
+    assert harness.session.session_name == "beta"
+    assert harness.session.history == []
+    harness.session.persist()
 
-    names = {info.name for info in harness.sessions()}
+    names = {info.name for info in harness.session.sessions()}
     assert {"alpha", "beta"} <= names
 
     # Switching back restores alpha's conversation.
     restored = harness.switch_session(alpha_id)
     assert restored == 1
-    assert harness.session_name == "alpha"
-    assert harness.history[0].parts[0].content == "in alpha"
+    assert harness.session.session_name == "alpha"
+    assert harness.session.history[0].parts[0].content == "in alpha"
 
 
 @pytest.mark.anyio
@@ -604,15 +604,15 @@ async def test_run_turn_compacts_when_over_budget(tmp_path: Path):
         instructions="x", max_context_tokens=1, keep_last_messages=4,
     )
     notices = []
-    harness.on_compact = lambda before, after: notices.append((before, after))
+    harness.session.on_compact = lambda before, after: notices.append((before, after))
 
     # Seed a long prior history of clean user turns.
     for i in range(30):
-        harness.history.append(
+        harness.session.history.append(
             ModelRequest(parts=[UserPromptPart(content=f"old prompt {i}")])
         )
-        harness.history.append(ModelResponse(parts=[TextPart(content=f"old answer {i}")]))
-    before = len(harness.history)
+        harness.session.history.append(ModelResponse(parts=[TextPart(content=f"old answer {i}")]))
+    before = len(harness.session.history)
 
     await harness.run_turn("change foo to bar")
 
@@ -644,16 +644,16 @@ async def test_run_turn_summarizes_when_over_budget(tmp_path: Path):
         summarizer=summarizer,
     )
     for i in range(30):
-        harness.history.append(
+        harness.session.history.append(
             ModelRequest(parts=[UserPromptPart(content=f"old prompt {i}")])
         )
-        harness.history.append(ModelResponse(parts=[TextPart(content=f"old answer {i}")]))
+        harness.session.history.append(ModelResponse(parts=[TextPart(content=f"old answer {i}")]))
 
     await harness.run_turn("now do this")
 
     texts = [
         getattr(p, "content", "")
-        for m in harness.history
+        for m in harness.session.history
         for p in m.parts
         if isinstance(getattr(p, "content", ""), str)
     ]
@@ -681,9 +681,53 @@ async def test_run_turn_does_not_compact_under_budget(tmp_path: Path):
         instructions="x", max_context_tokens=1_000_000,
     )
     notices = []
-    harness.on_compact = lambda before, after: notices.append((before, after))
+    harness.session.on_compact = lambda before, after: notices.append((before, after))
     await harness.run_turn("change foo to bar")
     assert notices == []
+
+
+def _unanswered_tool_calls(messages) -> set:
+    """The tool names whose ToolCallPart has no matching ToolReturnPart — a
+    history with any is unresumable (every provider rejects an unanswered
+    tool_use). Computed here independently of the production helper."""
+    calls: dict = {}
+    returns: set = set()
+    for m in messages:
+        for p in getattr(m, "parts", []):
+            if type(p).__name__ == "ToolCallPart":
+                calls[p.tool_call_id] = p.tool_name
+            elif type(p).__name__ == "ToolReturnPart":
+                returns.add(p.tool_call_id)
+    return {name for cid, name in calls.items() if cid not in returns}
+
+
+@pytest.mark.anyio
+async def test_cancel_during_approval_keeps_session_resumable(tmp_path: Path):
+    """Cancelling the approval modal mid-turn must not leave the session ending
+    in an unanswered tool call — a dangling tool_use the provider would reject,
+    breaking every later turn until a manual clear."""
+    from marim_harness.session import SessionManager
+
+    (tmp_path / "a.txt").write_text("foo")
+
+    async def cancel_at_approval(call):
+        raise asyncio.CancelledError()
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.ask,
+                request_approval=cancel_at_approval)
+    store = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data").create()
+    harness = Harness(
+        model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
+        instructions="x", store=store,
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await harness.run_turn("change foo to bar")
+
+    # On disk: resumable (no dangling tool calls)...
+    messages, _, _ = store.load()
+    assert _unanswered_tool_calls(messages) == set()
+    # ...and in memory too, so the next turn can proceed.
+    assert _unanswered_tool_calls(harness.session.history) == set()
 
 
 @pytest.mark.anyio
@@ -763,18 +807,18 @@ async def test_set_model_rebuilds_configured_aux_agents(tmp_path: Path):
 
     h = _switch_harness(tmp_path, source=_FakeSource(),
                         summarizer=summarizer, titler=_fake_titler)
-    old_summarizer, old_titler = h.summarizer, h.titler
+    old_summarizer, old_titler = h.session.summarizer, h.session.titler
     h.set_model("openai/gpt-5.2")
-    assert h.summarizer is not old_summarizer  # repointed at the new model
-    assert h.titler is not old_titler
+    assert h.session.summarizer is not old_summarizer  # repointed at the new model
+    assert h.session.titler is not old_titler
 
 
 @pytest.mark.anyio
 async def test_set_model_leaves_unconfigured_aux_alone(tmp_path: Path):
     h = _switch_harness(tmp_path, source=_FakeSource())  # no summarizer/titler
     h.set_model("openai/gpt-5.2")
-    assert h.summarizer is None  # not fabricated
-    assert h.titler is None
+    assert h.session.summarizer is None  # not fabricated
+    assert h.session.titler is None
 
 
 def test_set_model_without_source_is_noop(tmp_path: Path):
@@ -788,15 +832,15 @@ def test_set_model_without_source_is_noop(tmp_path: Path):
 def test_set_model_persists_to_session(tmp_path: Path):
     h = _switch_harness(tmp_path, source=_FakeSource())
     h.set_model("openai/gpt-5.2")
-    assert h.store.model == "openai/gpt-5.2"
-    assert h.manager.store(h.store.session_id).model == "openai/gpt-5.2"
+    assert h.session.store.model == "openai/gpt-5.2"
+    assert h.session.manager.store(h.session.store.session_id).model == "openai/gpt-5.2"
 
 
 @pytest.mark.anyio
 async def test_switch_session_restores_its_model(tmp_path: Path):
     h = _switch_harness(tmp_path, source=_FakeSource())
     h.set_model("openai/gpt-5.2")
-    alpha_id = h.store.session_id
+    alpha_id = h.session.store.session_id
 
     # A fresh session reverts to the startup model...
     h.new_session("beta")
@@ -827,9 +871,9 @@ async def test_run_subagent_counts_usage_in_session_total(tmp_path: Path):
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(TestModel(call_tools=[], custom_output_text="FINDINGS"), deps)
-    assert h.total_tokens == 0
+    assert h.session.total_tokens == 0
     await h._run_subagent("explore", "find the parser", "sid")
-    assert h.total_tokens > 0
+    assert h.session.total_tokens > 0
 
 
 @pytest.mark.anyio
@@ -944,12 +988,12 @@ async def test_run_background_subagent_counts_and_persists_usage(tmp_path: Path)
         model=TestModel(call_tools=[], custom_output_text="BG"),
         provider=BuiltinToolProvider(), deps=deps, instructions="x", store=store,
     )
-    assert h.total_tokens == 0
+    assert h.session.total_tokens == 0
     await h._run_background_subagent("explore", "scan the repo")
-    assert h.total_tokens > 0
+    assert h.session.total_tokens > 0
     # The spend reached disk immediately, without waiting for a run_turn.
     _, usage, _ = store.load()
-    assert usage.total_tokens == h.total_tokens
+    assert usage.total_tokens == h.session.total_tokens
 
 
 @pytest.mark.anyio
@@ -1103,15 +1147,15 @@ async def test_connect_degrades_past_failing_server(tmp_path: Path):
 
     status = await h.connect()
     # The good server is live; the bad one is reported, not fatal.
-    assert good in h._live_servers
-    assert bad not in h._live_servers
+    assert good in h.mcp._live_servers
+    assert bad not in h.mcp._live_servers
     assert good.entered is True
     assert status["connected"] == ["good"]
     assert status["failed"] and status["failed"][0][0] == "bad"
 
     await h.aclose()
     assert good.entered is False  # connection closed on shutdown
-    assert h._live_servers == []
+    assert h.mcp._live_servers == []
 
 
 @pytest.mark.anyio
@@ -1132,7 +1176,7 @@ async def test_run_turn_forwards_live_toolsets(tmp_path: Path):
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(_text_model(), deps)
     sentinel = object()
-    h._live_servers = [sentinel]
+    h.mcp._live_servers = [sentinel]
 
     captured: dict = {}
 
@@ -1159,8 +1203,8 @@ async def test_connect_skips_disabled_servers(tmp_path: Path):
     status = await h.connect()
     assert status["connected"] == ["on"]
     assert off.entered is False  # config-disabled: never launched
-    assert on in h._live_servers
-    assert off not in h._live_servers
+    assert on in h.mcp._live_servers
+    assert off not in h.mcp._live_servers
     await h.aclose()
 
 
@@ -1173,8 +1217,8 @@ async def test_run_turn_omits_disabled_from_toolsets(tmp_path: Path):
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(_text_model(), deps)
     live_on, live_off = _FakeServer("on"), _FakeServer("off")
-    h._live_servers = [live_on, live_off]
-    h.disabled = {"off"}
+    h.mcp._live_servers = [live_on, live_off]
+    h.mcp.disabled = {"off"}
 
     captured: dict = {}
 
@@ -1197,7 +1241,7 @@ async def test_disable_server_keeps_connection_but_mutes(tmp_path: Path):
     assert srv.entered is True
 
     await h.disable_server("demo")
-    assert "demo" in h.disabled
+    assert "demo" in h.mcp.disabled
     assert srv.entered is True  # still connected, just not offered
     await h.aclose()
 
@@ -1213,10 +1257,28 @@ async def test_enable_server_connects_on_demand(tmp_path: Path):
 
     err = await h.enable_server("demo")
     assert err is None
-    assert "demo" not in h.disabled
+    assert "demo" not in h.mcp.disabled
     assert srv.entered is True  # connected on demand
-    assert srv in h._live_servers
-    assert "demo" in h.mcp_status["connected"]
+    assert srv in h.mcp._live_servers
+    assert "demo" in h.mcp.mcp_status["connected"]
+    await h.aclose()
+
+
+@pytest.mark.anyio
+async def test_enable_after_close_does_not_double_list_connected(tmp_path: Path):
+    """Re-enabling a server whose name is still in mcp_status['connected'] (e.g.
+    after an aclose that cleared the live list but not the status) must not add a
+    duplicate entry."""
+    srv = _FakeServer("demo")
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = Harness(model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
+                instructions="x", mcp_servers=[srv])
+    await h.connect()
+    assert h.mcp.mcp_status["connected"] == ["demo"]
+    await h.aclose()
+
+    await h.enable_server("demo")
+    assert h.mcp.mcp_status["connected"].count("demo") == 1
     await h.aclose()
 
 
@@ -1253,7 +1315,7 @@ async def test_enable_server_reports_connection_failure(tmp_path: Path):
 
     err = await h.enable_server("demo")
     assert err and "boom" in err  # surfaced, not fatal
-    assert srv not in h._live_servers
+    assert srv not in h.mcp._live_servers
     await h.aclose()
 
 
@@ -1284,9 +1346,9 @@ def test_granted_servers_resolves_named(tmp_path: Path):
     h = _make_harness(TestModel(), deps)
     a = SimpleNamespace(tool_prefix="mddocs")
     b = SimpleNamespace(tool_prefix="sentry")
-    h._live_servers = [a, b]
+    h.mcp._live_servers = [a, b]
 
-    granted, unknown = h._granted_servers(["mddocs"])
+    granted, unknown = h.mcp.granted_servers(["mddocs"])
     assert granted == [a]
     assert unknown == []
 
@@ -1298,10 +1360,10 @@ def test_granted_servers_none_grants_nothing(tmp_path: Path):
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(TestModel(), deps)
-    h._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
+    h.mcp._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
 
-    assert h._granted_servers(None) == ([], [])
-    assert h._granted_servers([]) == ([], [])
+    assert h.mcp.granted_servers(None) == ([], [])
+    assert h.mcp.granted_servers([]) == ([], [])
 
 
 def test_granted_servers_reports_unknown(tmp_path: Path):
@@ -1311,10 +1373,10 @@ def test_granted_servers_reports_unknown(tmp_path: Path):
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(TestModel(), deps)
-    h._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
+    h.mcp._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
 
-    granted, unknown = h._granted_servers(["mddocs", "nope"])
-    assert granted == [h._live_servers[0]]
+    granted, unknown = h.mcp.granted_servers(["mddocs", "nope"])
+    assert granted == [h.mcp._live_servers[0]]
     assert unknown == ["nope"]
 
 
@@ -1325,10 +1387,10 @@ def test_granted_servers_excludes_disabled(tmp_path: Path):
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(TestModel(), deps)
-    h._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
-    h.disabled = {"mddocs"}
+    h.mcp._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
+    h.mcp.disabled = {"mddocs"}
 
-    granted, unknown = h._granted_servers(["mddocs"])
+    granted, unknown = h.mcp.granted_servers(["mddocs"])
     assert granted == []
     assert unknown == ["mddocs"]
 
@@ -1341,9 +1403,9 @@ def test_granted_servers_dedupes(tmp_path: Path):
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(TestModel(), deps)
     a = SimpleNamespace(tool_prefix="mddocs")
-    h._live_servers = [a]
+    h.mcp._live_servers = [a]
 
-    granted, unknown = h._granted_servers(["mddocs", "mddocs"])
+    granted, unknown = h.mcp.granted_servers(["mddocs", "mddocs"])
     assert granted == [a]
     assert unknown == []
 
@@ -1353,9 +1415,9 @@ def test_granted_servers_dedupes_unknown(tmp_path: Path):
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(TestModel(), deps)
-    h._live_servers = []
+    h.mcp._live_servers = []
 
-    granted, unknown = h._granted_servers(["nope", "nope"])
+    granted, unknown = h.mcp.granted_servers(["nope", "nope"])
     assert granted == []
     assert unknown == ["nope"]
 
@@ -1367,12 +1429,12 @@ def test_mcp_grant_note_lists_unknown_and_enabled(tmp_path: Path):
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(TestModel(), deps)
-    h._live_servers = [
+    h.mcp._live_servers = [
         SimpleNamespace(tool_prefix="mddocs"),
         SimpleNamespace(tool_prefix="sentry"),
     ]
 
-    note = h._mcp_grant_note(["nope"])
+    note = h.mcp.grant_note(["nope"])
     assert "nope" in note
     assert "mddocs" in note and "sentry" in note
     assert note.endswith("\n\n")
@@ -1383,7 +1445,7 @@ def test_mcp_grant_note_empty_when_nothing_unknown(tmp_path: Path):
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(TestModel(), deps)
-    assert h._mcp_grant_note([]) == ""
+    assert h.mcp.grant_note([]) == ""
 
 
 def test_mcp_grant_note_handles_no_enabled_servers(tmp_path: Path):
@@ -1391,9 +1453,9 @@ def test_mcp_grant_note_handles_no_enabled_servers(tmp_path: Path):
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(TestModel(), deps)
-    h._live_servers = []  # nothing enabled
+    h.mcp._live_servers = []  # nothing enabled
 
-    note = h._mcp_grant_note(["nope"])
+    note = h.mcp.grant_note(["nope"])
     assert "nope" in note
     assert "none" in note.lower()
 
@@ -1426,7 +1488,7 @@ async def test_run_subagent_grants_named_server(tmp_path: Path):
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(TestModel(), deps)
     server = SimpleNamespace(tool_prefix="mddocs")
-    h._live_servers = [server]
+    h.mcp._live_servers = [server]
     cap = _capture_subagent(h)
 
     out = await h._run_subagent("explore", "read docs", "sid", ["mddocs"])
@@ -1444,7 +1506,7 @@ async def test_run_subagent_default_grants_no_servers(tmp_path: Path):
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(TestModel(), deps)
-    h._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
+    h.mcp._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
     cap = _capture_subagent(h)
 
     await h._run_subagent("explore", "investigate", "sid")
@@ -1457,7 +1519,7 @@ async def test_run_subagent_prepends_unknown_note(tmp_path: Path):
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(TestModel(), deps)
-    h._live_servers = []
+    h.mcp._live_servers = []
     _capture_subagent(h, report="FINDINGS")
 
     out = await h._run_subagent("explore", "investigate", "sid", ["nope"])
@@ -1474,7 +1536,7 @@ async def test_run_background_subagent_grants_named_server(tmp_path: Path):
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(TestModel(), deps)
     server = SimpleNamespace(tool_prefix="mddocs")
-    h._live_servers = [server]
+    h.mcp._live_servers = [server]
     cap = _capture_subagent(h)
 
     out = await h._run_background_subagent("general", "do it", ["mddocs"])
@@ -1490,7 +1552,7 @@ async def test_run_background_subagent_prepends_unknown_note(tmp_path: Path):
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(TestModel(), deps)
-    h._live_servers = []
+    h.mcp._live_servers = []
     _capture_subagent(h, report="DONE")
 
     out = await h._run_background_subagent("general", "do it", ["nope"])
@@ -1506,7 +1568,7 @@ async def test_run_background_subagent_default_grants_no_servers(tmp_path: Path)
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(TestModel(), deps)
-    h._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
+    h.mcp._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
     cap = _capture_subagent(h)
 
     await h._run_background_subagent("general", "do it")
@@ -1520,11 +1582,11 @@ def test_mcp_index_text_lists_enabled(tmp_path: Path):
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(TestModel(), deps)
-    h._live_servers = [
+    h.mcp._live_servers = [
         SimpleNamespace(tool_prefix="mddocs"),
         SimpleNamespace(tool_prefix="sentry"),
     ]
-    text = h.mcp_index_text()
+    text = h.mcp.mcp_index_text()
     assert "mddocs" in text and "sentry" in text
     assert "spawn_agent" in text  # tells the model how to use them
 
@@ -1534,8 +1596,8 @@ def test_mcp_index_text_silent_when_none(tmp_path: Path):
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(TestModel(), deps)
-    h._live_servers = []
-    assert h.mcp_index_text() == ""
+    h.mcp._live_servers = []
+    assert h.mcp.mcp_index_text() == ""
 
 
 def test_mcp_index_text_excludes_disabled(tmp_path: Path):
@@ -1545,11 +1607,11 @@ def test_mcp_index_text_excludes_disabled(tmp_path: Path):
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(TestModel(), deps)
-    h._live_servers = [
+    h.mcp._live_servers = [
         SimpleNamespace(tool_prefix="mddocs"),
         SimpleNamespace(tool_prefix="sentry"),
     ]
-    h.disabled = {"sentry"}
-    text = h.mcp_index_text()
+    h.mcp.disabled = {"sentry"}
+    text = h.mcp.mcp_index_text()
     assert "mddocs" in text
     assert "sentry" not in text

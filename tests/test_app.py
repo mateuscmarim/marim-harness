@@ -37,8 +37,8 @@ async def test_status_bar_shows_token_count(tmp_path: Path):
         await pilot.pause()
         bar = app.query_one("#status-bar")
         assert "0 tokens" in str(bar.render())  # starts at zero
-        app.harness.usage.input_tokens = 12
-        app.harness.usage.output_tokens = 8
+        app.harness.session.usage.input_tokens = 12
+        app.harness.session.usage.output_tokens = 8
         app._refresh_status()
         await pilot.pause()
         assert "20 tokens" in str(bar.render())
@@ -52,7 +52,7 @@ async def test_status_bar_includes_live_run_tokens_while_streaming(tmp_path: Pat
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.harness.usage.input_tokens = 100  # committed from prior turns
+        app.harness.session.usage.input_tokens = 100  # committed from prior turns
         app._set_busy(True)
         app._live_run_tokens = 50  # in-flight this turn
         app._refresh_status()
@@ -105,11 +105,45 @@ async def test_flush_refreshes_status_while_busy(tmp_path: Path):
     async with app.run_test() as pilot:
         await pilot.pause()
         app._set_busy(True)  # paints "0 tokens"
-        app.harness.usage.input_tokens = 200
+        app.harness.session.usage.input_tokens = 200
         app._live_run_tokens = 99
         app._flush_streams()  # the per-frame tick picks up the live total
         await pilot.pause()
         assert "299 tokens" in str(app.query_one("#status-bar").render())
+
+
+@pytest.mark.anyio
+async def test_flush_only_touches_buffered_messages(tmp_path: Path):
+    """The per-tick flush visits only streams that buffered new deltas, not the
+    whole message tree — a finished, already-rendered message is left alone so the
+    tick stays O(active streams) rather than O(every message ever shown)."""
+    from textual.containers import VerticalScroll
+
+    from marim_harness.interfaces.tui.widgets import AssistantMessage
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        log = app.query_one("#log", VerticalScroll)
+        clean = AssistantMessage()
+        dirty = AssistantMessage()
+        await log.mount(clean)
+        await log.mount(dirty)
+        await pilot.pause()
+
+        flushed: list[str] = []
+        clean.flush = lambda: flushed.append("clean")  # type: ignore[assignment]
+        dirty.flush = lambda: flushed.append("dirty")  # type: ignore[assignment]
+
+        app._append_stream(dirty, "hello")  # buffers a delta and marks it dirty
+        app._flush_streams()
+
+        assert flushed == ["dirty"]  # the clean, untouched message is skipped
+        # The dirty set drains each tick, so a second flush with no new deltas is
+        # a no-op (nothing re-flushed).
+        flushed.clear()
+        app._flush_streams()
+        assert flushed == []
 
 
 def test_human_tokens_formatting():
@@ -131,8 +165,8 @@ async def test_status_bar_shows_context_usage(tmp_path: Path):
         bar = app.query_one("#status-bar")
         assert "ctx" in str(bar.render()).lower()  # shown even when empty
         # ~500 tokens of content against a 1000-token window -> 50%
-        app.harness.max_context_tokens = 1000
-        app.harness.history = [
+        app.harness.session.max_context_tokens = 1000
+        app.harness.session.history = [
             ModelRequest(parts=[UserPromptPart(content="x" * 2000)])
         ]
         app._refresh_status()
@@ -146,7 +180,9 @@ async def test_status_bar_survives_markup_like_session_name(tmp_path: Path, monk
     `[edit(x="…` that escape() can't neutralise; the status bar must render it
     literally rather than crash the whole app on a MarkupError."""
     bomb = '[/] and [edit(old_string="unterminated'
-    monkeypatch.setattr(type(_app(tmp_path).harness), "session_name", property(lambda self: bomb))
+    monkeypatch.setattr(
+        type(_app(tmp_path).harness.session), "session_name", property(lambda self: bomb)
+    )
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -280,16 +316,16 @@ async def test_slash_clear_resets_conversation(tmp_path: Path):
 
     app = _app(tmp_path)
     store = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data").create()
-    app.harness.store = store
-    app.harness.history = [ModelRequest(parts=[UserPromptPart(content="old")])]
-    app.harness._persist()
+    app.harness.session.store = store
+    app.harness.session.history = [ModelRequest(parts=[UserPromptPart(content="old")])]
+    app.harness.session.persist()
     assert store.path.exists()
 
     async with app.run_test() as pilot:
         await pilot.pause()
         await _submit(app, "/clear")
         await pilot.pause()
-        assert app.harness.history == []
+        assert app.harness.session.history == []
         assert not store.path.exists()  # saved session wiped
         # the banner is back
         assert app.query_one("#banner") is not None
@@ -503,7 +539,7 @@ async def test_resumed_session_shows_banner(tmp_path: Path):
     app = _app(tmp_path)
     # Simulate a resumed conversation: history populated before mount.
     result = await Agent(TestModel(), instructions="x").run("hi")
-    app.harness.history = result.all_messages()
+    app.harness.session.history = result.all_messages()
     async with app.run_test() as pilot:
         await pilot.pause()
         log = app.query_one("#log")
@@ -531,7 +567,7 @@ async def test_resume_replays_history_into_log(tmp_path: Path):
     )
 
     app = _app(tmp_path)
-    app.harness.history = [
+    app.harness.session.history = [
         ModelRequest(parts=[UserPromptPart(content="read app.py")]),
         ModelResponse(
             parts=[
@@ -611,7 +647,7 @@ async def test_compaction_shows_notice_in_log(tmp_path: Path):
     async with app.run_test() as pilot:
         await pilot.pause()
         # Simulate the harness reporting a compaction mid-turn.
-        app.harness.on_compact(40, 10)
+        app.harness.session.on_compact(40, 10)
         await pilot.pause()
         notices = list(app.query(NoticeMessage))
         assert len(notices) == 1
@@ -835,7 +871,7 @@ async def test_new_command_starts_named_session(tmp_path: Path):
         await pilot.pause()
         await _submit(app, "/new project-x")
         await pilot.pause()
-        assert app.harness.session_name == "project-x"
+        assert app.harness.session.session_name == "project-x"
         assert "new session" in _log_text(app).lower()
 
 
@@ -843,9 +879,9 @@ async def test_new_command_starts_named_session(tmp_path: Path):
 async def test_sessions_command_lists_saved(tmp_path: Path):
     app = _app_with_manager(tmp_path)
     app.harness.new_session("first")
-    app.harness._persist()
+    app.harness.session.persist()
     app.harness.new_session("second")
-    app.harness._persist()
+    app.harness.session.persist()
     async with app.run_test() as pilot:
         await pilot.pause()
         await _submit(app, "/sessions")
@@ -861,18 +897,18 @@ async def test_switch_command_loads_session(tmp_path: Path):
 
     app = _app_with_manager(tmp_path)
     app.harness.new_session("alpha")
-    app.harness.history = [ModelRequest(parts=[UserPromptPart(content="hello alpha")])]
-    app.harness._persist()
+    app.harness.session.history = [ModelRequest(parts=[UserPromptPart(content="hello alpha")])]
+    app.harness.session.persist()
     app.harness.new_session("beta")
-    app.harness._persist()
-    assert app.harness.history == []
+    app.harness.session.persist()
+    assert app.harness.session.history == []
 
     async with app.run_test() as pilot:
         await pilot.pause()
         await _submit(app, "/switch alpha")
         await pilot.pause()
-        assert app.harness.session_name == "alpha"
-        assert len(app.harness.history) == 1
+        assert app.harness.session.session_name == "alpha"
+        assert len(app.harness.session.history) == 1
         assert "switched to" in _log_text(app).lower()
 
 
@@ -912,7 +948,7 @@ async def test_name_command_sets_title(tmp_path: Path):
         await pilot.pause()
         await _submit(app, "/name My Project")
         await pilot.pause()
-        assert app.harness.session_name == "My Project"
+        assert app.harness.session.session_name == "My Project"
         assert "My Project" in str(app.query_one("#status-bar").render())
         assert "renamed" in _log_text(app).lower()
 
@@ -922,12 +958,12 @@ async def test_name_command_regenerates_with_titler(tmp_path: Path):
     from pydantic_ai.messages import ModelRequest, UserPromptPart
 
     app = _autoname_app(tmp_path)
-    app.harness.history = [ModelRequest(parts=[UserPromptPart(content="do work")])]
+    app.harness.session.history = [ModelRequest(parts=[UserPromptPart(content="do work")])]
     async with app.run_test() as pilot:
         await pilot.pause()
         await _submit(app, "/name")  # blank -> regenerate from conversation
         await pilot.pause()
-        assert app.harness.session_name == "Auto Title"
+        assert app.harness.session.session_name == "Auto Title"
 
 
 @pytest.mark.anyio
@@ -937,7 +973,7 @@ async def test_autoname_posts_notice_after_first_turn(tmp_path: Path):
         await pilot.pause()
         await app.harness.run_turn("hello")
         await pilot.pause()
-        assert app.harness.session_name == "Auto Title"
+        assert app.harness.session.session_name == "Auto Title"
         assert "Auto Title" in _log_text(app)
         assert "Auto Title" in str(app.query_one("#status-bar").render())
 

@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Optional
 
 from pydantic_ai import DeferredToolRequests, DeferredToolResults, ToolDenied
 
@@ -17,12 +17,14 @@ class Mode(str, Enum):
 async def resolve_approvals(
     requests: DeferredToolRequests,
     mode: Mode,
-    request_approval: Callable[[object], Awaitable[object]],
+    request_approval: Optional[Callable[[object], Awaitable[object]]],
 ) -> DeferredToolResults:
     """Turn pending tool-approval requests into results based on the current mode.
 
     auto -> approve all. plan -> deny all (read-only). ask -> delegate to callback,
-    which returns True (approve) or a ToolDenied (reject).
+    which returns True (approve) or a ToolDenied (reject). In ask mode with no
+    callback wired (e.g. a non-interactive run), deny rather than crash — nothing
+    can grant approval, so the safe answer is to refuse.
     """
     results = DeferredToolResults()
     for call in requests.approvals:
@@ -30,6 +32,10 @@ async def resolve_approvals(
             results.approvals[call.tool_call_id] = True
         elif mode is Mode.plan:
             results.approvals[call.tool_call_id] = ToolDenied("read-only plan mode")
+        elif request_approval is None:
+            results.approvals[call.tool_call_id] = ToolDenied(
+                "no approver available; denied"
+            )
         else:  # Mode.ask
             results.approvals[call.tool_call_id] = await request_approval(call)
     return results

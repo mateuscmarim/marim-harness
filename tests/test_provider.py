@@ -209,3 +209,36 @@ async def test_spawn_agent_coerces_comma_separated_mcp_background(tmp_path):
 
     await spawn_agent(ctx, "general", "do it", background=True, mcp="mddocs, sentry")
     assert captured["mcp_names"] == ["mddocs", "sentry"]
+
+
+@pytest.mark.anyio
+async def test_bash_blocks_denylisted_command(tmp_path: Path):
+    """A denylisted command is refused before the shell runs — and because the
+    gate lives in the tool, it holds in every mode, not just at an approval
+    prompt that auto mode would skip."""
+    from types import SimpleNamespace
+
+    from marim_harness.command_policy import CommandPolicy
+    from marim_harness.tools import provider
+
+    sentinel = tmp_path / "ran.txt"
+    deps = Deps(
+        workspace_root=tmp_path,
+        command_policy=CommandPolicy(denylist=["touch"]),
+    )
+    ctx = SimpleNamespace(deps=deps)
+    out = await provider.bash(ctx, f"touch {sentinel}")
+    assert "Blocked by command policy" in out
+    assert not sentinel.exists()  # the shell never ran
+
+
+@pytest.mark.anyio
+async def test_bash_allows_permitted_command(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from marim_harness.tools import provider
+
+    deps = Deps(workspace_root=tmp_path)  # empty policy -> allow all
+    ctx = SimpleNamespace(deps=deps)
+    out = await provider.bash(ctx, "echo hello")
+    assert "hello" in out

@@ -13,17 +13,28 @@ async def run_bash(
     timeout: int = _DEFAULT_TIMEOUT,
     max_output: int = _DEFAULT_MAX_OUTPUT,
 ) -> str:
-    """Run a shell command in the workspace root, capturing combined output."""
+    """Run a shell command in the workspace root, capturing combined output.
+
+    Runs in its own session so a timeout can signal the whole process group and
+    take down any children the command spawned, not just the shell."""
     proc = await asyncio.create_subprocess_shell(
         command,
         cwd=str(root),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
+        start_new_session=True,
     )
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
-        proc.kill()
+        # Kill the whole process group (best-effort) so children die too.
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
         await proc.wait()
         return f"(timed out after {timeout}s)"
     text = stdout.decode(errors="replace")

@@ -102,6 +102,9 @@ class McpManager:
             self._mcp_stack = None
         self._live_servers = []
         self._connected = False
+        # Nothing is connected once closed; reset the status so a later
+        # reconnect/enable starts from a clean slate (and can't double-list).
+        self.mcp_status = {"connected": [], "failed": []}
 
     def disable_server(self, name: str, workspace_root: Path) -> None:
         self.disabled.add(name)
@@ -119,7 +122,8 @@ class McpManager:
             return f"no such server {name!r}"
         err = await self._connect_one(server)
         if err is None:
-            self.mcp_status["connected"].append(name)
+            if name not in self.mcp_status["connected"]:
+                self.mcp_status["connected"].append(name)
             self.mcp_status["failed"] = [
                 f for f in self.mcp_status["failed"] if f[0] != name
             ]

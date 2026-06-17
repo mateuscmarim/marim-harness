@@ -10,15 +10,12 @@ from ..workspace.skills import find_skill, read_bundled_file, read_skill_body
 from ..tasks import Task, summarize
 from . import fs, shell
 
-_BASH_TIMEOUT = 60
+# Re-exported for backward compatibility; defined in the leaf module ``names``
+# so importers (e.g. workspace.agents) don't pull in all of ``provider`` and
+# form an import cycle.
+from .names import GATED_TOOLS, READ_TOOLS, SUBAGENT_TOOLS  # noqa: F401
 
-# The tools a sub-agent may be granted. READ_TOOLS are always safe; GATED_TOOLS
-# mutate the workspace and are only handed to a sub-agent in auto mode (where
-# they run un-prompted). Memory, skill, task, and spawn tools are main-agent
-# only — a sub-agent's job is its task, not the session's bookkeeping.
-READ_TOOLS = frozenset({"read_file", "glob", "tree", "grep"})
-GATED_TOOLS = frozenset({"write_file", "edit_file", "bash"})
-SUBAGENT_TOOLS = READ_TOOLS | GATED_TOOLS
+_BASH_TIMEOUT = 60
 
 
 # --- tool implementations (module-level so they can be registered onto the main
@@ -221,6 +218,9 @@ async def bash(ctx: RunContext[Deps], command: str, background: bool = False) ->
     wait_for_job, or stop it with cancel_job. A foreground run (the default) waits
     for the command and is subject to a timeout, so use background for anything
     that won't finish promptly."""
+    reason = ctx.deps.command_policy.check(command)
+    if reason is not None:
+        return f"Blocked by command policy: {reason}"
     if background:
         bp = await shell.start_bash(ctx.deps.workspace_root, command)
         job_id = ctx.deps.jobs.register(

@@ -19,7 +19,7 @@ from ...agent import Harness
 
 
 def _usage_dict(harness: Harness) -> dict:
-    u = harness.usage
+    u = harness.session.usage
     return {
         "input_tokens": u.input_tokens,
         "output_tokens": u.output_tokens,
@@ -28,11 +28,12 @@ def _usage_dict(harness: Harness) -> dict:
 
 
 def _result_obj(harness: Harness, output: str) -> dict:
+    store = harness.session.store
     return {
         "type": "result",
         "output": output,
-        "session_id": harness.store.session_id if harness.store is not None else None,
-        "name": harness.session_name,
+        "session_id": store.session_id if store is not None else None,
+        "name": harness.session.session_name,
         "usage": _usage_dict(harness),
     }
 

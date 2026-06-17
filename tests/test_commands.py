@@ -147,12 +147,14 @@ async def test_skill_no_arg_no_skills(tmp_path: Path, monkeypatch):
 async def test_mcp_lists_server_status():
     app = _FakeApp()
     app.harness = SimpleNamespace(
-        mcp_servers=[
-            SimpleNamespace(id="files"),
-            SimpleNamespace(id="web"),
-            SimpleNamespace(id="idle"),
-        ],
-        mcp_status={"connected": ["files"], "failed": [("web", "boom")]},
+        mcp=SimpleNamespace(
+            mcp_servers=[
+                SimpleNamespace(id="files"),
+                SimpleNamespace(id="web"),
+                SimpleNamespace(id="idle"),
+            ],
+            mcp_status={"connected": ["files"], "failed": [("web", "boom")]},
+        )
     )
     await dispatch(app, "/mcp")
     out = app.posted[0]
@@ -165,7 +167,9 @@ async def test_mcp_lists_server_status():
 async def test_mcp_none_configured():
     app = _FakeApp()
     app.harness = SimpleNamespace(
-        mcp_servers=[], mcp_status={"connected": [], "failed": []}
+        mcp=SimpleNamespace(
+            mcp_servers=[], mcp_status={"connected": [], "failed": []}
+        )
     )
     await dispatch(app, "/mcp")
     assert "No MCP servers configured" in app.posted[0]
@@ -176,25 +180,26 @@ class _FakeMcpHarness:
 
     def __init__(self, names, *, disabled=(), enable_error=None):
         self._names = list(names)
-        self.disabled = set(disabled)
-        self.mcp_servers = [SimpleNamespace(id=n) for n in names]
-        self.mcp_status = {"connected": list(names), "failed": []}
+        # MCP state lives on a nested manager, mirroring the real harness.mcp.
+        self.mcp = SimpleNamespace(
+            disabled=set(disabled),
+            mcp_servers=[SimpleNamespace(id=n) for n in names],
+            mcp_status={"connected": list(names), "failed": []},
+            configured_names=lambda: list(self._names),
+        )
         self.enabled_calls: list[str] = []
         self.disabled_calls: list[str] = []
         self._enable_error = enable_error
 
-    def configured_names(self):
-        return list(self._names)
-
     async def disable_server(self, name):
         self.disabled_calls.append(name)
-        self.disabled.add(name)
+        self.mcp.disabled.add(name)
 
     async def enable_server(self, name):
         self.enabled_calls.append(name)
         if self._enable_error:
             return self._enable_error
-        self.disabled.discard(name)
+        self.mcp.disabled.discard(name)
         return None
 
 

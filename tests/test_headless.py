@@ -46,7 +46,7 @@ async def test_json_format_emits_structured_object(tmp_path: Path):
     assert code == 0
     obj = json.loads(out.getvalue())
     assert obj["output"] == "structured reply"
-    assert obj["session_id"] == harness.store.session_id
+    assert obj["session_id"] == harness.session.store.session_id
     assert obj["name"] == "headless"
     assert set(obj["usage"]) == {"input_tokens", "output_tokens", "total_tokens"}
 

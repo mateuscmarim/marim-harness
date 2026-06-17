@@ -1,7 +1,8 @@
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
+from ..command_policy import split_patterns
 from ..workspace.catalog import ModelEntry, fetch_google_models, fetch_openrouter_models
 
 _DEFAULT_OPENROUTER_MODEL = "anthropic/claude-sonnet-4-6"
@@ -17,17 +18,24 @@ class ModelConfig:
     api_key: Optional[str] = None
     max_context_tokens: int = 100_000
     proactive_memory: bool = False
+    # Shell-command allow/deny patterns (regex), enforced in the bash tool in
+    # every mode. Empty lists -> no restriction.
+    command_denylist: list[str] = field(default_factory=list)
+    command_allowlist: list[str] = field(default_factory=list)
 
 
 def load_config() -> ModelConfig:
     """Build a ModelConfig from environment variables.
 
     MARIM_PROVIDER (openrouter|local), MARIM_MODEL, MARIM_BASE_URL,
-    OPENROUTER_API_KEY / MARIM_API_KEY.
+    OPENROUTER_API_KEY / MARIM_API_KEY. MARIM_COMMAND_DENYLIST /
+    MARIM_COMMAND_ALLOWLIST hold comma- or newline-separated command patterns.
     """
     provider = os.getenv("MARIM_PROVIDER", "openrouter").lower()
     max_context_tokens = _int_env("MARIM_MAX_CONTEXT_TOKENS", 100_000)
     proactive_memory = _bool_env("MARIM_PROACTIVE_MEMORY", False)
+    command_denylist = split_patterns(os.getenv("MARIM_COMMAND_DENYLIST", ""))
+    command_allowlist = split_patterns(os.getenv("MARIM_COMMAND_ALLOWLIST", ""))
     if provider == "local":
         return ModelConfig(
             provider="local",
@@ -36,6 +44,8 @@ def load_config() -> ModelConfig:
             api_key=os.getenv("MARIM_API_KEY", "local"),
             max_context_tokens=max_context_tokens,
             proactive_memory=proactive_memory,
+            command_denylist=command_denylist,
+            command_allowlist=command_allowlist,
         )
     if provider == "google":
         return ModelConfig(
@@ -49,6 +59,8 @@ def load_config() -> ModelConfig:
             ),
             max_context_tokens=max_context_tokens,
             proactive_memory=proactive_memory,
+            command_denylist=command_denylist,
+            command_allowlist=command_allowlist,
         )
     return ModelConfig(
         provider="openrouter",
@@ -57,6 +69,8 @@ def load_config() -> ModelConfig:
         api_key=os.getenv("OPENROUTER_API_KEY") or os.getenv("MARIM_API_KEY"),
         max_context_tokens=max_context_tokens,
         proactive_memory=proactive_memory,
+        command_denylist=command_denylist,
+        command_allowlist=command_allowlist,
     )
 
 

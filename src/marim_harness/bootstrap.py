@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from .agent import Harness, make_summarizer, make_titler
+from .command_policy import CommandPolicy
 from .config import ModelSource, build_model, load_config
 from .deps import Deps
 from .mcp import build_mcp_servers, disabled_server_names, load_mcp_config
@@ -29,7 +30,10 @@ def build_harness(
     model_source = ModelSource(cfg)
     model = build_model(cfg)
     model_id = cfg.model
-    deps = Deps(workspace_root=workspace, mode=mode)
+    command_policy = CommandPolicy(
+        denylist=cfg.command_denylist, allowlist=cfg.command_allowlist
+    )
+    deps = Deps(workspace_root=workspace, mode=mode, command_policy=command_policy)
 
     manager = SessionManager(workspace)
     latest = manager.latest() if resume else None

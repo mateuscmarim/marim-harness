@@ -89,17 +89,25 @@ class JobRegistry:
         job = Job(id=self._next_id(), kind=kind, label=label,
                   kill=kill, output_fn=output_fn)
 
-        async def wrapper() -> None:
-            try:
-                result = await coro
-                self._settle(job, "done", result)
-            except asyncio.CancelledError:
-                self._settle(job, "cancelled")
-                raise
-            except Exception as exc:  # a job failure never escapes into the loop
-                self._settle(job, "failed", f"{type(exc).__name__}: {exc}")
+        # Drive the caller's coroutine directly as the task and settle from a
+        # done-callback. A wrapper coroutine that merely `await`s ``coro`` would,
+        # if cancelled before it ever ran, drop ``coro`` un-started and unawaited
+        # (a "coroutine was never awaited" leak); making ``coro`` itself the task
+        # means asyncio closes it cleanly even on a cancel-before-start.
+        task = asyncio.ensure_future(coro)
 
-        job.task = asyncio.create_task(wrapper())
+        def _on_done(t: "asyncio.Task") -> None:
+            if t.cancelled():
+                self._settle(job, "cancelled")
+                return
+            exc = t.exception()
+            if exc is not None:  # a job failure never escapes into the loop
+                self._settle(job, "failed", f"{type(exc).__name__}: {exc}")
+            else:
+                self._settle(job, "done", t.result())
+
+        task.add_done_callback(_on_done)
+        job.task = task
         self._jobs[job.id] = job
         self._notify()
         return job.id
@@ -137,6 +145,9 @@ class JobRegistry:
             return f"job {job_id} still running after {timeout:g}s"
         except asyncio.CancelledError:
             pass  # the job itself was cancelled while we waited
+        except Exception:
+            pass  # the task is now the job's own coroutine; its failure is
+            # already settled into job.result by the done-callback
         return job.result if job.result is not None else f"({job.status})"
 
     async def cancel(self, job_id: str) -> str:

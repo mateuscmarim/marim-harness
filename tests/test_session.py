@@ -44,6 +44,33 @@ def test_create_save_and_load_roundtrip(tmp_path: Path):
     assert tasks == []
 
 
+def test_usage_round_trips_all_fields(tmp_path: Path):
+    # The full RunUsage must survive a save/load, not just input+output:
+    # requests, cache tokens, and details were previously dropped, so a
+    # resumed session under-reported its usage.
+    mgr = _manager(tmp_path)
+    store = mgr.create("Rich Usage")
+    usage = RunUsage(
+        input_tokens=30,
+        output_tokens=70,
+        requests=4,
+        cache_read_tokens=5,
+        cache_write_tokens=3,
+        input_audio_tokens=1,
+        output_audio_tokens=2,
+        details={"reasoning": 9},
+    )
+    store.save(_history(), usage)
+
+    _, loaded, _ = mgr.store(store.session_id).load()
+    assert loaded == usage
+    assert loaded.total_tokens == usage.total_tokens
+    assert loaded.requests == 4
+    assert loaded.cache_read_tokens == 5
+    assert loaded.cache_write_tokens == 3
+    assert loaded.details == {"reasoning": 9}
+
+
 def test_load_missing_returns_empty(tmp_path: Path):
     mgr = _manager(tmp_path)
     store = mgr.create()

@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
+from .command_policy import CommandPolicy
 from .jobs import JobRegistry
 from .permissions import Mode
 from .tasks import TaskList
@@ -29,6 +30,9 @@ class Deps:
     # The session's live background jobs. Tools launch/inspect via ctx.deps; the
     # TUI renders a live panel. Not persisted — process-scoped.
     jobs: JobRegistry = field(default_factory=JobRegistry)
+    # Allow/deny policy for shell commands, enforced inside the bash tool in
+    # every mode. The default (empty) policy permits everything.
+    command_policy: CommandPolicy = field(default_factory=CommandPolicy)
     # Lets the spawn_agent tool launch a sub-agent and stream its events.
     run_subagent: Optional[SubAgentRunner] = None
     on_subagent_event: Optional[SubAgentEventCb] = None
