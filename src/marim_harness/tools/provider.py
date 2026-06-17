@@ -37,9 +37,16 @@ async def fetch_url(
     return await fetch.fetch_url(url, prompt=prompt)
 
 
-def read_file(ctx: RunContext[Deps], path: str) -> str:
-    """Read a text file. `path` is relative to the workspace root."""
-    return fs.read_file(ctx.deps.workspace_root, path)
+def read_file(
+    ctx: RunContext[Deps], path: str, offset: int = 1, limit: Optional[int] = None
+) -> str:
+    """Read a text file. `path` is relative to the workspace root.
+
+    For large files, read a window instead of the whole thing: `offset` is the
+    1-based line to start at and `limit` caps the line count. Prefer locating
+    what you need first (with `grep`/`tree`) and reading a targeted range — a
+    read with no `limit` is capped and will tell you how to page on."""
+    return fs.read_file(ctx.deps.workspace_root, path, offset=offset, limit=limit)
 
 
 def glob(ctx: RunContext[Deps], pattern: str) -> str:

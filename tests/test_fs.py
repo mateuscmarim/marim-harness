@@ -17,6 +17,61 @@ def test_read_missing_file_raises_model_retry(tmp_path: Path):
         fs.read_file(tmp_path, "nope.txt")
 
 
+def test_read_file_offset_starts_at_line(tmp_path: Path):
+    (tmp_path / "a.txt").write_text("a\nb\nc\nd")
+    out = fs.read_file(tmp_path, "a.txt", offset=3)
+    # Real line numbers are preserved, and a window != whole file gets a footer.
+    assert out.startswith("3\tc\n4\td")
+    assert "of 4]" in out
+
+
+def test_read_file_limit_caps_lines(tmp_path: Path):
+    (tmp_path / "a.txt").write_text("a\nb\nc\nd\ne")
+    out = fs.read_file(tmp_path, "a.txt", limit=2)
+    body = out.split("\n\n[")[0]
+    assert body == "1\ta\n2\tb"  # only the first two lines
+    assert "of 5]" in out  # footer signals more remain
+
+
+def test_read_file_offset_and_limit_window(tmp_path: Path):
+    (tmp_path / "a.txt").write_text("a\nb\nc\nd\ne")
+    out = fs.read_file(tmp_path, "a.txt", offset=2, limit=2)
+    body = out.split("\n\n[")[0]
+    assert body == "2\tb\n3\tc"
+    assert "lines 2-3 of 5]" in out
+
+
+def test_read_file_default_cap_truncates(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(fs, "_DEFAULT_READ_LIMIT", 3)
+    (tmp_path / "a.txt").write_text("\n".join("l%d" % i for i in range(1, 6)))
+    out = fs.read_file(tmp_path, "a.txt")  # no explicit limit -> capped at 3
+    body = out.split("\n\n[")[0]
+    assert body == "1\tl1\n2\tl2\n3\tl3"
+    assert "of 5]" in out
+
+
+def test_read_file_explicit_limit_overrides_default_cap(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(fs, "_DEFAULT_READ_LIMIT", 2)
+    (tmp_path / "a.txt").write_text("a\nb\nc\nd")
+    # An explicit limit larger than the default cap is honored.
+    out = fs.read_file(tmp_path, "a.txt", limit=10)
+    assert out == "1\ta\n2\tb\n3\tc\n4\td"  # whole file, no footer
+
+
+def test_read_file_offset_past_eof_raises(tmp_path: Path):
+    (tmp_path / "a.txt").write_text("a\nb")
+    with pytest.raises(ModelRetry):
+        fs.read_file(tmp_path, "a.txt", offset=5)
+
+
+def test_read_file_rejects_bad_offset_and_limit(tmp_path: Path):
+    (tmp_path / "a.txt").write_text("a\nb")
+    with pytest.raises(ModelRetry):
+        fs.read_file(tmp_path, "a.txt", offset=0)
+    with pytest.raises(ModelRetry):
+        fs.read_file(tmp_path, "a.txt", limit=0)
+
+
 def test_write_file_creates_parents(tmp_path: Path):
     fs.write_file(tmp_path, "sub/a.txt", "hello")
     assert (tmp_path / "sub/a.txt").read_text() == "hello"
