@@ -1813,3 +1813,34 @@ async def test_subagent_start_and_stop_fire(tmp_path):
     lines = log.read_text().splitlines()
     assert "SubagentStart" in lines
     assert "SubagentStop" in lines
+
+
+@pytest.mark.anyio
+async def test_background_subagent_start_and_stop_fire(tmp_path):
+    _make_subagent_def(tmp_path)
+    log = tmp_path / "bg_sub.log"
+    # Use a Python helper file to avoid bash single-quote escaping issues when
+    # embedding the log path (same pattern as test_pre_and_post_tool_use_fire).
+    helper = tmp_path / "bghook.py"
+    helper.write_text(
+        f"import sys, json\n"
+        f"d = json.load(sys.stdin)\n"
+        f"open({str(log)!r}, 'a').write(d['hook_event_name'] + '\\n')\n",
+        encoding="utf-8",
+    )
+    cmd = _hook_script(
+        tmp_path, "bgsub.sh",
+        f"python3 {str(helper)}\n",
+    )
+    runner = HookRunner({
+        hook_events.SUBAGENT_START: [{"hooks": [{"type": "command", "command": cmd}]}],
+        hook_events.SUBAGENT_STOP: [{"hooks": [{"type": "command", "command": cmd}]}],
+    })
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto, hooks=runner)
+    # A model the sub-agent will run: just reply 'bg-done'.
+    harness = _make_harness(FunctionModel(lambda m, i: ModelResponse(parts=[TextPart(content="bg-done")])), deps)
+    out = await harness._run_background_subagent("helper", "do a thing")
+    assert "bg-done" in out
+    lines = log.read_text().splitlines()
+    assert "SubagentStart" in lines
+    assert "SubagentStop" in lines
