@@ -2,6 +2,12 @@ from pathlib import Path
 
 import pytest
 
+from marim_harness.tools.provider import (
+    GATED_TOOLS,
+    NET_TOOLS,
+    READ_TOOLS,
+    SUBAGENT_TOOLS,
+)
 from marim_harness.workspace import (
     AgentDef,
     agent_roots,
@@ -11,7 +17,6 @@ from marim_harness.workspace import (
     find_agent,
     subagent_instructions,
 )
-from marim_harness.tools.provider import GATED_TOOLS, READ_TOOLS, SUBAGENT_TOOLS
 
 
 def _make_agent(
@@ -58,11 +63,14 @@ def test_builtins_always_present(isolated_home):
     assert {"explore", "general"} <= names
 
 
-def test_builtin_explore_is_read_only(isolated_home):
+def test_builtin_explore_has_local_reads_and_net_but_no_mutators(isolated_home):
     ws = isolated_home / "ws"
     explore = find_agent(ws, "explore")
     assert explore is not None
-    assert explore.tools == READ_TOOLS
+    # Local reads + network egress (web lookups), but nothing that mutates.
+    assert explore.tools == READ_TOOLS | NET_TOOLS
+    assert NET_TOOLS <= explore.tools
+    assert not (explore.tools & GATED_TOOLS)
     assert explore.source == "built-in"
 
 
@@ -90,7 +98,10 @@ def test_discover_custom_agent(isolated_home):
 def test_custom_agent_without_tools_defaults_read_only(isolated_home):
     ws = isolated_home / "ws"
     _make_agent(ws / ".marim" / "agents", "notes", description="Takes notes.")
-    assert find_agent(ws, "notes").tools == READ_TOOLS
+    tools = find_agent(ws, "notes").tools
+    assert tools == READ_TOOLS
+    # No network egress by default — a custom agent must opt into NET_TOOLS.
+    assert not (tools & NET_TOOLS)
 
 
 def test_custom_tools_intersect_known_set(isolated_home):
@@ -165,8 +176,30 @@ def test_agents_index_text_lists_all(isolated_home):
 
 def test_effective_tools_drops_gated_without_auto():
     general = AgentDef("general", "d", "p", SUBAGENT_TOOLS, "built-in")
-    assert effective_tools(general, allow_gated=False) == READ_TOOLS
+    # Without auto, only the mutating (gated) tools are dropped — local reads and
+    # network tools survive.
+    assert effective_tools(general, allow_gated=False) == READ_TOOLS | NET_TOOLS
     assert effective_tools(general, allow_gated=True) == SUBAGENT_TOOLS
+
+
+def test_effective_tools_keeps_net_but_drops_gated_without_auto():
+    """Network tools aren't gated by mode — only workspace mutators are."""
+    defn = AgentDef(
+        "net-writer", "d", "p",
+        frozenset({"read_file", "web_search", "fetch_url", "write_file"}), "p",
+    )
+    assert effective_tools(defn, allow_gated=False) == frozenset(
+        {"read_file", "web_search", "fetch_url"}
+    )
+    assert effective_tools(defn, allow_gated=True) == defn.tools
+
+
+def test_tool_groups_are_disjoint():
+    """The three trust tiers must not overlap, or the boundaries blur."""
+    assert not (READ_TOOLS & NET_TOOLS)
+    assert not (READ_TOOLS & GATED_TOOLS)
+    assert not (NET_TOOLS & GATED_TOOLS)
+    assert SUBAGENT_TOOLS == READ_TOOLS | NET_TOOLS | GATED_TOOLS
 
 
 def test_effective_tools_read_only_agent_unaffected():

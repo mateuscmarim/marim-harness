@@ -22,7 +22,11 @@ from pathlib import Path
 import yaml
 
 from ..config import config_dir
-from ..tools.names import READ_TOOLS, SUBAGENT_TOOLS
+from ..tools.names import GATED_TOOLS, NET_TOOLS, READ_TOOLS, SUBAGENT_TOOLS
+
+# What the built-in ``explore`` role may reach: local reads plus network egress
+# (web lookups are genuinely useful mid-investigation), but nothing that mutates.
+_EXPLORE_TOOLS = READ_TOOLS | NET_TOOLS
 
 # Same identifier rules as skills: 1-64 chars, lowercase alphanumerics, single
 # hyphens, no leading/trailing/consecutive hyphens.
@@ -33,7 +37,8 @@ _EXPLORE_PROMPT = (
     "You are an exploration sub-agent. Investigate the workspace to answer the "
     "task you are given — read and search files as needed — then report your "
     "findings as your final message. Be specific: name files and line ranges. "
-    "You cannot modify anything."
+    "You may also use web_search and fetch_url to consult external docs when the "
+    "answer isn't in the workspace. You cannot modify anything."
 )
 _GENERAL_PROMPT = (
     "You are a general-purpose sub-agent. Carry out the task you are given "
@@ -61,7 +66,7 @@ def _builtins() -> dict[str, AgentDef]:
         "explore": AgentDef(
             "explore",
             "Read-only investigation; reports findings, changes nothing.",
-            _EXPLORE_PROMPT, READ_TOOLS, "built-in",
+            _EXPLORE_PROMPT, _EXPLORE_TOOLS, "built-in",
         ),
         "general": AgentDef(
             "general",
@@ -171,10 +176,11 @@ def find_agent(workspace_root, name: str) -> AgentDef | None:
 
 def effective_tools(defn: AgentDef, *, allow_gated: bool) -> frozenset[str]:
     """The tool names a spawn should actually grant: the definition's tools, with
-    workspace-mutating tools removed unless the mode allows them (auto)."""
+    workspace-mutating (gated) tools removed unless the mode allows them (auto).
+    Network tools are not gated here — they're decided by the definition itself."""
     if allow_gated:
         return defn.tools
-    return defn.tools & READ_TOOLS
+    return defn.tools - GATED_TOOLS
 
 
 def subagent_instructions(defn: AgentDef, workspace_root) -> str:

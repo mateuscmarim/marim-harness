@@ -13,7 +13,7 @@ from . import fetch, fs, shell, web
 # Re-exported for backward compatibility; defined in the leaf module ``names``
 # so importers (e.g. workspace.agents) don't pull in all of ``provider`` and
 # form an import cycle.
-from .names import GATED_TOOLS, READ_TOOLS, SUBAGENT_TOOLS  # noqa: F401
+from .names import GATED_TOOLS, NET_TOOLS, READ_TOOLS, SUBAGENT_TOOLS  # noqa: F401
 
 _BASH_TIMEOUT = 60
 
