@@ -22,6 +22,7 @@ def _edit_then_done_model() -> FunctionModel:
     from pydantic_ai.models.function import DeltaToolCall
 
     state = {"n": 0}
+    stream_state = {"n": 0}
 
     def fn(messages, info):
         state["n"] += 1
@@ -40,8 +41,8 @@ def _edit_then_done_model() -> FunctionModel:
         return ModelResponse(parts=[TextPart(content="done")])
 
     async def stream_fn(messages, info):
-        state["n"] += 1
-        if state["n"] == 1:
+        stream_state["n"] += 1
+        if stream_state["n"] == 1:
             yield {
                 0: DeltaToolCall(
                     name="edit_file",

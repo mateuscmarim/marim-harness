@@ -1,6 +1,7 @@
 from typing import Optional
 
 from pydantic_ai import Agent, DeferredToolRequests, capture_run_messages
+from pydantic_ai.messages import FunctionToolCallEvent, FunctionToolResultEvent
 
 from .workspace import (
     discover_agents,
@@ -324,11 +325,6 @@ class Harness:
 
     async def _fire_tool_event(self, event) -> None:
         """Map a streamed tool event to a Pre/PostToolUse hook (observe-only)."""
-        from pydantic_ai.messages import (
-            FunctionToolCallEvent,
-            FunctionToolResultEvent,
-        )
-
         if self.deps.hooks is None:
             return
         if isinstance(event, FunctionToolCallEvent):
@@ -388,14 +384,14 @@ class Harness:
         if self.deps.hooks is not None:
             _base_handler = event_stream_handler
 
-            async def _hooked_handler(ctx, events):
+            async def _hooked_handler(stream_ctx, events):
                 async def _relay():
                     async for event in events:
                         await self._fire_tool_event(event)
                         yield event
 
                 if _base_handler is not None:
-                    await _base_handler(ctx, _relay())
+                    await _base_handler(stream_ctx, _relay())
                 else:
                     async for _ in _relay():
                         pass
