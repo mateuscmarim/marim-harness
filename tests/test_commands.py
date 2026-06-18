@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -402,3 +403,54 @@ def test_settings_command_registered():
     assert "settings" in COMMANDS_BY_NAME
     assert "config" in COMMANDS_BY_NAME  # alias
     assert COMMANDS_BY_NAME["config"].name == "settings"
+
+
+def test_worktree_registered():
+    assert "worktree" in COMMANDS_BY_NAME
+
+
+def test_worktree_non_git_dir_posts_error(tmp_path):
+    import asyncio
+    app = _FakeApp(workspace_root=tmp_path)
+    asyncio.run(dispatch(app, "/worktree list"))
+    assert any("Not a git repository" in m for m in app.posted)
+
+
+def _git_repo(tmp_path):
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    (tmp_path / "README.md").write_text("hi\n")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=tmp_path, check=True)
+    return tmp_path
+
+
+def test_worktree_create_posts_launch_hint(tmp_path):
+    import asyncio
+    repo = _git_repo(tmp_path)
+    app = _FakeApp(workspace_root=repo)
+    asyncio.run(dispatch(app, "/worktree create feat/x"))
+    joined = "\n".join(app.posted)
+    assert "marim --worktree feat/x" in joined
+    assert (repo / ".worktrees" / "feat/x").exists()
+
+
+def test_worktree_create_requires_branch(tmp_path):
+    import asyncio
+    repo = _git_repo(tmp_path)
+    app = _FakeApp(workspace_root=repo)
+    asyncio.run(dispatch(app, "/worktree create"))
+    assert any("Usage:" in m for m in app.posted)
+
+
+def test_worktree_list_shows_branches(tmp_path):
+    import asyncio
+    repo = _git_repo(tmp_path)
+    app = _FakeApp(workspace_root=repo)
+    asyncio.run(dispatch(app, "/worktree create feat/x"))
+    app.posted.clear()
+    asyncio.run(dispatch(app, "/worktree list"))
+    joined = "\n".join(app.posted)
+    assert "main" in joined
+    assert "feat/x" in joined
