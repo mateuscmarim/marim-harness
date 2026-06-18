@@ -23,6 +23,7 @@ from ...history import PromptHistory
 from ...prefs import load_theme, save_theme
 from ...usage import resolve_cost
 from .approval import ApprovalModal
+from .ask_user import AskUserModal
 from .commands import dispatch
 from .model_picker import ModelPickerModal
 from .settings import SettingsModal
@@ -195,6 +196,7 @@ class HarnessApp(App):
         # persistent one so Up/Down recall prompts across restarts.
         self._history = history if history is not None else PromptHistory()
         self.harness.deps.request_approval = self._request_approval
+        self.harness.deps.ask_user = self._ask_user
         self.harness.deps.tasks.on_change = self._on_tasks_changed
         self.harness.deps.jobs.on_change = self._on_jobs_changed
         self.harness.deps.on_subagent_event = self._on_subagent_event
@@ -613,6 +615,12 @@ class HarnessApp(App):
             ApprovalModal(call.tool_name, call.args_as_dict())
         )
         return True if approved else ToolDenied("denied by user")
+
+    async def _ask_user(self, questions):
+        """Put a structured question to the user and return their {header:
+        answer} mapping, or None if they dismissed it. Runs inside the turn
+        worker, so push_screen_wait is valid (same as _request_approval)."""
+        return await self.push_screen_wait(AskUserModal(questions))
 
     async def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
         text = event.value.strip()
