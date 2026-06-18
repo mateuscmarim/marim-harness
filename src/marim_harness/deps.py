@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from .hooks.runner import HookRunner
     from .lsp.manager import LspManager
 
+from .ask_user import Question
 from .jobs import JobRegistry
 from .permissions import Mode
 from .tasks import TaskList
@@ -32,12 +33,20 @@ BackgroundAgentRunner = Callable[
     [str, str, Optional[list[str]], Optional[int]], Awaitable[str]
 ]
 
+# (questions) -> {header: answer}, where answer is a str (single-select) or a
+# list[str] (multi-select); None when the user cancelled. Wired by the TUI; None
+# when there's no interactive UI (headless), so the tool degrades gracefully.
+AskUserFn = Callable[[list[Question]], Awaitable[Optional[dict]]]
+
 
 @dataclass
 class Deps:
     workspace_root: Path
     mode: Mode = Mode.ask
     request_approval: Optional[ApprovalFn] = None
+    # Lets the ask_user tool put a structured question to the user mid-turn. None
+    # when headless (the tool then returns a graceful note).
+    ask_user: Optional[AskUserFn] = None
     # The session's live checklist. Tools mutate it via ctx.deps; the Harness
     # persists it and the TUI renders it. Every Deps gets its own.
     tasks: TaskList = field(default_factory=TaskList)

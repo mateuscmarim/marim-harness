@@ -1881,3 +1881,26 @@ async def test_user_turn_resets_auto_depth(tmp_path: Path):
         app._auto_turn_depth = 2
         await _submit(app, "do something")  # a user-initiated turn
         assert app._auto_turn_depth == 0
+
+
+@pytest.mark.anyio
+async def test_ask_user_callback_is_wired(tmp_path: Path):
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.harness.deps.ask_user == app._ask_user
+
+
+@pytest.mark.anyio
+async def test_ask_user_callback_shows_modal_and_returns_answer(tmp_path: Path):
+    from marim_harness.ask_user import Choice, Question
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        qs = [Question("Pick one", "Pick", [Choice("Alpha"), Choice("Beta")])]
+        worker = app.run_worker(app._ask_user(qs))
+        await pilot.pause()
+        await pilot.press("enter")  # selects highlighted "Alpha"
+        await pilot.pause()
+        assert worker.result == {"Pick": "Alpha"}
