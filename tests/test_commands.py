@@ -454,3 +454,96 @@ def test_worktree_list_shows_branches(tmp_path):
     joined = "\n".join(app.posted)
     assert "main" in joined
     assert "feat/x" in joined
+
+
+@pytest.mark.anyio
+async def test_jobs_command_registered():
+    assert "jobs" in COMMANDS_BY_NAME
+
+
+@pytest.mark.anyio
+async def test_jobs_lists_running_jobs():
+    import asyncio
+
+    from marim_harness.jobs import JobRegistry
+
+    async def slow():
+        await asyncio.sleep(5)
+        return "x"
+
+    reg = JobRegistry()
+    reg.register("agent", "explore: map", slow())
+    app = _FakeApp()
+    app.harness = SimpleNamespace(deps=SimpleNamespace(jobs=reg))
+    await dispatch(app, "/jobs")
+    out = app.posted[-1]
+    assert "job-1" in out and "explore: map" in out
+    await reg.cancel_all()
+
+
+@pytest.mark.anyio
+async def test_jobs_empty_reports_none():
+    from marim_harness.jobs import JobRegistry
+
+    app = _FakeApp()
+    app.harness = SimpleNamespace(deps=SimpleNamespace(jobs=JobRegistry()))
+    await dispatch(app, "/jobs")
+    assert "No background jobs" in app.posted[-1]
+
+
+@pytest.mark.anyio
+async def test_jobs_output_prints_result():
+    from marim_harness.jobs import JobRegistry
+
+    async def quick():
+        return "the report body"
+
+    reg = JobRegistry()
+    job_id = reg.register("agent", "a", quick())
+    await reg.wait(job_id)
+    app = _FakeApp()
+    app.harness = SimpleNamespace(deps=SimpleNamespace(jobs=reg))
+    await dispatch(app, "/jobs output job-1")
+    assert "the report body" in app.posted[-1]
+
+
+@pytest.mark.anyio
+async def test_jobs_cancel_cancels_job():
+    import asyncio
+
+    from marim_harness.jobs import JobRegistry
+
+    async def slow():
+        await asyncio.sleep(5)
+        return "x"
+
+    reg = JobRegistry()
+    job_id = reg.register("bash", "sleep", slow())
+    app = _FakeApp()
+    app.harness = SimpleNamespace(deps=SimpleNamespace(jobs=reg))
+    await dispatch(app, "/jobs cancel job-1")
+    assert reg.get(job_id).status == "cancelled"
+    assert "cancel" in app.posted[-1].lower()
+
+
+@pytest.mark.anyio
+async def test_jobs_wake_toggles_app_flag():
+    app = _FakeApp()
+    app.autonomous_wake = True
+    app.harness = SimpleNamespace(deps=SimpleNamespace(jobs=None))
+    await dispatch(app, "/jobs wake off")
+    assert app.autonomous_wake is False
+    assert "off" in app.posted[-1].lower()
+    await dispatch(app, "/jobs wake on")
+    assert app.autonomous_wake is True
+    assert "on" in app.posted[-1].lower()
+
+
+@pytest.mark.anyio
+async def test_jobs_unknown_subcommand_shows_usage():
+    from marim_harness.jobs import JobRegistry
+
+    app = _FakeApp()
+    app.harness = SimpleNamespace(deps=SimpleNamespace(jobs=JobRegistry()))
+    await dispatch(app, "/jobs frobnicate")
+    assert "usage" in app.posted[-1].lower()

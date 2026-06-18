@@ -9,6 +9,7 @@ immediately. The harness wires ``run``/``run_background`` onto ``Deps`` so the
 ``spawn_agent`` tool reaches them the same way other tools reach shared state.
 """
 
+from dataclasses import replace
 from typing import Optional
 
 from pydantic_ai import Agent
@@ -16,6 +17,7 @@ from pydantic_ai import Agent
 from .deps import Deps, SubAgent
 from .hooks.dispatch import TurnHooks
 from .permissions import Mode
+from .tasks import TaskList
 from .tools import fs
 from .workspace import (
     cap_subagent_output,
@@ -143,7 +145,12 @@ class SubagentRunner:
             return f"Failed to build sub-agent {type!r}."
         granted, unknown = self.mcp.granted_servers(mcp_names)
         await self.hooks.subagent_start(type, task)
-        result = await sub.run(task, deps=self.deps, toolsets=granted)
+        # A background sub-agent runs detached and concurrently with the user's
+        # turn. Give it its own empty TaskList so its multi-step work never
+        # mutates — or persists as — the user's session checklist. Every other
+        # Deps field (jobs, workspace, hooks, lsp, …) stays shared.
+        bg_deps = replace(self.deps, tasks=TaskList())
+        result = await sub.run(task, deps=bg_deps, toolsets=granted)
         await self.hooks.subagent_stop(type, task, result.output)
         # A background spawn finishes off-turn, so no run_turn will fold in its
         # spend — count it here and persist right away so the saved session

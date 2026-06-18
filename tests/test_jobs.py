@@ -243,6 +243,23 @@ async def test_cancel_before_start_closes_coroutine():
     assert getcoroutinestate(coro) == CORO_CLOSED
 
 
+@pytest.mark.anyio
+async def test_has_finished_pending_reflects_set_without_consuming():
+    reg = JobRegistry()
+    # Nothing finished yet.
+    assert reg.has_finished_pending() is False
+    job_id = reg.register("agent", "a", _sleep_then("R", 0.01))
+    assert reg.has_finished_pending() is False  # still running
+    await reg.wait(job_id)
+    # Finished -> pending, and checking it does NOT drain the digest.
+    assert reg.has_finished_pending() is True
+    assert reg.has_finished_pending() is True  # non-consuming
+    digest = reg.take_finished_digest()
+    assert "job-1 (agent) done" in digest  # the digest survived the peeks
+    # Draining clears the pending flag.
+    assert reg.has_finished_pending() is False
+
+
 def _sleep_then(value, seconds):
     async def coro():
         await asyncio.sleep(seconds)

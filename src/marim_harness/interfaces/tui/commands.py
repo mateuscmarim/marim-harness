@@ -359,6 +359,42 @@ async def _cmd_worktree(app: HarnessApp, arg: str) -> None:
         )
 
 
+async def _cmd_jobs(app: "HarnessApp", arg: str) -> None:
+    from ...jobs import render_jobs
+
+    jobs = app.harness.deps.jobs
+    sub, _, rest = arg.strip().partition(" ")
+    rest = rest.strip()
+    if sub in ("", "list"):
+        rendered = render_jobs(jobs.list())
+        await app.post_system(rendered or "No background jobs.")
+    elif sub == "output":
+        if not rest:
+            await app.post_system("Usage: /jobs output <id>")
+            return
+        await app.post_system(jobs.output(rest))
+    elif sub == "cancel":
+        if not rest:
+            await app.post_system("Usage: /jobs cancel <id>")
+            return
+        await app.post_system(await jobs.cancel(rest))
+    elif sub == "wake":
+        if rest in ("on", "off"):
+            app.autonomous_wake = rest == "on"
+            await app.post_system(f"Autonomous wake: {rest}.")
+        elif rest == "":
+            state = "on" if app.autonomous_wake else "off"
+            await app.post_system(
+                f"Autonomous wake is {state}. Use `/jobs wake on|off` to change it."
+            )
+        else:
+            await app.post_system("Usage: /jobs wake [on|off]")
+    else:
+        await app.post_system(
+            "Usage: /jobs [list | output <id> | cancel <id> | wake [on|off]]"
+        )
+
+
 async def _cmd_settings(app: HarnessApp, arg: str) -> None:
     app.open_settings()
 
@@ -385,6 +421,11 @@ COMMANDS: list[Command] = [
         "worktree",
         "manage git worktrees: /worktree [list|create <b>|remove <b>]",
         _cmd_worktree,
+    ),
+    Command(
+        "jobs",
+        "background jobs: /jobs [list | output <id> | cancel <id> | wake [on|off]]",
+        _cmd_jobs,
     ),
     Command("settings", "open the settings screen", _cmd_settings, aliases=("config",)),
     Command("exit", "quit the harness", _cmd_exit, aliases=("quit",)),

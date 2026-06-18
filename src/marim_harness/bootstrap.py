@@ -88,6 +88,8 @@ def build_harness(
             model_source=model_source,
             model_id=model_id,
             proactive_memory=cfg.proactive_memory,
+            autonomous_wake=cfg.autonomous_wake,
+            wake_depth_cap=cfg.wake_depth_cap,
             mcp_servers=mcp_servers,
             mcp_disabled=mcp_disabled,
         ),
