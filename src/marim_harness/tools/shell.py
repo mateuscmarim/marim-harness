@@ -88,12 +88,14 @@ class BashProcess:
     async def wait(self) -> str:
         """Read the process's output to EOF into the buffer, then return the
         final result. Safe to call once; the pump owns the stream."""
-        assert self._proc.stdout is not None
-        while True:
-            chunk = await self._proc.stdout.readline()
-            if not chunk:
-                break
-            self._buffer.append(chunk.decode(errors="replace"))
+        # Normally stdout is a PIPE; guard rather than assert so a process built
+        # without one degrades to "no output" instead of crashing the caller.
+        if self._proc.stdout is not None:
+            while True:
+                chunk = await self._proc.stdout.readline()
+                if not chunk:
+                    break
+                self._buffer.append(chunk.decode(errors="replace"))
         await self._proc.wait()
         return f"exit {self._proc.returncode}\n{self.output()}"
 

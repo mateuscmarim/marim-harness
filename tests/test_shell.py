@@ -113,6 +113,24 @@ async def test_start_bash_streams_buffer_then_final(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_bash_process_wait_without_pipe_returns_exit_line(tmp_path: Path):
+    """wait() must not crash if the process has no stdout pipe to read. A guard
+    (not a bare assert, which would raise AssertionError) skips the read and still
+    returns the exit line."""
+
+    class _FakeProc:
+        stdout = None
+        returncode = 0
+
+        async def wait(self):
+            return 0
+
+    bp = shell.BashProcess(_FakeProc(), max_output=200)
+    final = await bp.wait()
+    assert "exit 0" in final
+
+
+@pytest.mark.anyio
 async def test_start_bash_kill_stops_process(tmp_path: Path):
     bp = await shell.start_bash(tmp_path, "sleep 30")
     bp.kill()

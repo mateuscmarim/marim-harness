@@ -1,3 +1,4 @@
+import pytest
 from pydantic_ai.usage import RunUsage
 
 from marim_harness.usage import (
@@ -159,3 +160,18 @@ def test_estimate_cost_no_model_is_none():
     u = RunUsage(input_tokens=1000, output_tokens=100)
     assert estimate_cost(u, None) is None
     assert estimate_cost(u, "") is None
+
+
+def test_estimate_cost_propagates_programming_errors(monkeypatch):
+    """A genuine bug (e.g. a genai-prices API change) must surface, not be
+    swallowed into a silent None alongside the expected 'unknown model' case —
+    otherwise a broken cost path looks identical to an unpriced model."""
+    import genai_prices
+
+    def boom(*a, **k):
+        raise TypeError("calc_price() got an unexpected keyword argument")
+
+    monkeypatch.setattr(genai_prices, "calc_price", boom)
+    u = RunUsage(input_tokens=1000, output_tokens=100)
+    with pytest.raises(TypeError):
+        estimate_cost(u, "claude-sonnet-4-6")
