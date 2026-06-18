@@ -137,3 +137,40 @@ async def test_write_without_lsp_is_unchanged(tmp_path):
     ctx = _Ctx(Deps(workspace_root=tmp_path, lsp=None))
     out = await provider.write_file(ctx, "n.py", "z = 3\n")
     assert out == "wrote n.py (6 bytes)"
+
+
+@pytest.mark.anyio
+async def test_diagnostics_exception_returns_unchanged_result(tmp_path):
+    """Exception in lsp.diagnostics must not fail the write/edit."""
+    class _FailingLsp:
+        async def diagnostics(self, path, *, settle=1.5):
+            raise RuntimeError("boom")
+
+    ctx = _Ctx(Deps(workspace_root=tmp_path, lsp=_FailingLsp()))
+    out = await provider.write_file(ctx, "n.py", "z = 3\n")
+    # No diagnostics block; result unchanged
+    assert out == "wrote n.py (6 bytes)"
+    assert "boom" not in out
+
+
+@pytest.mark.anyio
+async def test_real_diagnostic_not_suppressed_by_path_containing_disabled(tmp_path):
+    """Path/message containing 'disabled' must not suppress real diagnostics."""
+    # Real diagnostic line for a path containing "disabled"
+    lsp = _DiagLsp("feature_disabled.py:3:1: error: undefined name")
+    ctx = _Ctx(Deps(workspace_root=tmp_path, lsp=lsp))
+    out = await provider.write_file(ctx, "feature_disabled.py", "bad code\n")
+    # The real diagnostic must be appended
+    assert "diagnostics:" in out
+    assert "undefined name" in out
+
+
+@pytest.mark.anyio
+async def test_clean_report_suppresses_diagnostics_block(tmp_path):
+    """A 'no diagnostics' clean report must not append a diagnostics block."""
+    lsp = _DiagLsp("n.py: no diagnostics")
+    ctx = _Ctx(Deps(workspace_root=tmp_path, lsp=lsp))
+    out = await provider.write_file(ctx, "n.py", "z = 3\n")
+    # No diagnostics block appended
+    assert "diagnostics:" not in out
+    assert "no diagnostics" not in out

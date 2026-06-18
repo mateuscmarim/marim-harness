@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Iterable, Literal, Optional, Protocol
 
 from pydantic_ai import RunContext
@@ -324,6 +325,14 @@ async def spawn_agent(
     )
 
 
+# A real diagnostics report is one or more "path:line:col: severity: message"
+# lines (see lsp.diagnostics.format_diagnostics). The manager's clean /
+# unavailable / disabled responses never take that shape, so detect actual
+# diagnostics structurally — a filename or message containing a word like
+# "disabled" must not suppress real errors.
+_DIAGNOSTIC_LINE = re.compile(r":\d+:\d+: (?:error|warning|info|hint): ")
+
+
 async def _with_diagnostics(ctx: RunContext[Deps], path: str, result: str) -> str:
     """Append best-effort LSP diagnostics for ``path`` to a write/edit ``result``.
 
@@ -336,9 +345,7 @@ async def _with_diagnostics(ctx: RunContext[Deps], path: str, result: str) -> st
         report = await ctx.deps.lsp.diagnostics(path, settle=0.8)
     except Exception:  # noqa: BLE001 — diagnostics must never fail an edit
         return result
-    low = report.lower()
-    if not report or "no diagnostics" in low or "unavailable" in low \
-            or "no language server" in low or "disabled" in low:
+    if not report or not _DIAGNOSTIC_LINE.search(report):
         return result
     return f"{result}\n\ndiagnostics:\n{report}"
 
