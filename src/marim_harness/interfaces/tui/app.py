@@ -222,6 +222,15 @@ class HarnessApp(App):
         self._dirty_streams: set[AssistantMessage] = set()
         self._busy = False
         self._turn_worker = None
+        # Autonomous wake-on-completion (interactive TUI only). When a background
+        # job finishes while the turn worker is idle, fire a digest-only turn so
+        # the agent reacts without waiting for the user. Seeded from config;
+        # toggled at runtime by `/jobs wake on|off`.
+        self.autonomous_wake = harness.autonomous_wake
+        self._wake_depth_cap = harness.wake_depth_cap
+        # Consecutive autonomous turns since the last user turn; reset on any
+        # user-initiated turn. Bounds wake→spawn→wake chains.
+        self._auto_turn_depth = 0
         # The current turn's in-flight token total, read off ctx.usage as events
         # stream. Session usage only commits when a run finishes, so this is added
         # on top to make the counter climb live; reset to 0 once the turn ends
@@ -425,6 +434,31 @@ class HarnessApp(App):
         finish. Each job runs as a task on the app's event loop, so the callback
         fires there and direct widget mutation is safe."""
         self._render_jobs()
+        self._maybe_wake()
+
+    def _maybe_wake(self) -> None:
+        """Fire one digest-only autonomous turn iff a background job has finished
+        and nothing is blocking. Guards (all must hold): wake enabled, the turn
+        worker is idle, the depth cap is not yet reached, and there is a pending
+        finished-job digest. The digest itself is consumed later inside the turn
+        by ``_assemble_prompt('')`` -> ``take_finished_digest()`` — this predicate
+        only peeks, so a queued digest survives until a turn actually runs."""
+        if not self.is_running:
+            return  # firing during teardown would race the unmount
+        if not self.autonomous_wake:
+            return
+        if self._turn_worker is not None:
+            return  # a turn is running; the digest drains on the next turn
+        if self._auto_turn_depth >= self._wake_depth_cap:
+            return  # loop guard: wait for the user
+        if not self.harness.deps.jobs.has_finished_pending():
+            return  # nothing finished -> no empty turn
+        self._auto_turn_depth += 1
+        # Mounted synchronously (we may be in a sync on_change callback), mirroring
+        # _on_compact / _on_rename.
+        log = self.query_one("#log", VerticalScroll)
+        log.mount(NoticeMessage("⏰ Resumed — background job(s) finished"))
+        self._turn_worker = self.run_worker(self._run_turn(""), exclusive=True)
 
     def action_cycle_mode(self) -> None:
         self.harness.deps.mode = self.harness.deps.mode.cycle()
@@ -592,6 +626,7 @@ class HarnessApp(App):
         log = self.query_one("#log", VerticalScroll)
         await log.mount(UserMessage(text))
         self._current_assistant = None
+        self._auto_turn_depth = 0  # a user turn breaks any autonomous-wake chain
         self._turn_worker = self.run_worker(self._run_turn(text), exclusive=True)
 
     async def _run_turn(self, text: str) -> None:
@@ -609,6 +644,7 @@ class HarnessApp(App):
         finally:
             self._turn_worker = None
             self._set_busy(False)
+            self._maybe_wake()  # a job that finished mid-turn drains now
 
     async def _add_tool_to_run(
         self,

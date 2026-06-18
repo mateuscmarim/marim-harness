@@ -4,6 +4,7 @@ import pytest
 
 from marim_harness.deps import Deps
 from marim_harness.interfaces.tui.app import HarnessApp
+from marim_harness.interfaces.tui.widgets import NoticeMessage
 from marim_harness.permissions import Mode
 
 
@@ -1791,3 +1792,92 @@ async def test_tool_result_still_resolves_widget_inside_a_group(tmp_path: Path):
         assert w.status == "done"
         assert w.result_text == "file body"
         assert "marim-green" in app.available_themes
+
+
+def _done(value: str):
+    """A coroutine that resolves immediately to ``value`` — a finished job body."""
+    async def coro():
+        return value
+    return coro()
+
+
+@pytest.mark.anyio
+async def test_wake_fires_autonomous_turn_when_job_finishes_idle(tmp_path: Path):
+    """A background job finishing while the turn worker is idle fires exactly one
+    autonomous (empty-prompt) turn and arms the depth counter."""
+    started: list = []
+
+    def fake_worker(coro, *a, **k):
+        started.append(coro)
+        coro.close()  # don't actually run the turn
+        return "worker"
+
+    app = _app(tmp_path)
+    app.run_worker = fake_worker  # type: ignore[method-assign]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.autonomous_wake is True  # seeded from harness default
+        job_id = app.harness.deps.jobs.register("agent", "explore: x", _done("R"))
+        await app.harness.deps.jobs.wait(job_id)  # completion fires on_change
+        await pilot.pause()
+        assert len(started) == 1  # one autonomous turn started
+        assert app._auto_turn_depth == 1
+        assert any("Resumed" in str(n.render()) for n in app.query(NoticeMessage))
+
+
+@pytest.mark.anyio
+async def test_wake_disabled_does_not_fire(tmp_path: Path):
+    started: list = []
+    app = _app(tmp_path)
+    app.run_worker = lambda c, *a, **k: (started.append(c), c.close())  # type: ignore[method-assign]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.autonomous_wake = False
+        job_id = app.harness.deps.jobs.register("agent", "explore: x", _done("R"))
+        await app.harness.deps.jobs.wait(job_id)
+        await pilot.pause()
+        assert started == []
+        # The digest is left pending for the next user turn.
+        assert app.harness.deps.jobs.has_finished_pending() is True
+
+
+@pytest.mark.anyio
+async def test_wake_stops_at_depth_cap(tmp_path: Path):
+    started: list = []
+    app = _app(tmp_path)
+    app.run_worker = lambda c, *a, **k: (started.append(c), c.close())  # type: ignore[method-assign]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._auto_turn_depth = app._wake_depth_cap  # already at the cap
+        job_id = app.harness.deps.jobs.register("agent", "explore: x", _done("R"))
+        await app.harness.deps.jobs.wait(job_id)
+        await pilot.pause()
+        assert started == []  # capped, no further autonomous turn
+
+
+@pytest.mark.anyio
+async def test_wake_does_not_fire_while_a_turn_is_running(tmp_path: Path):
+    started: list = []
+    app = _app(tmp_path)
+    app.run_worker = lambda c, *a, **k: (started.append(c), c.close())  # type: ignore[method-assign]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._turn_worker = object()  # pretend a turn is in flight
+        job_id = app.harness.deps.jobs.register("agent", "explore: x", _done("R"))
+        await app.harness.deps.jobs.wait(job_id)
+        await pilot.pause()
+        assert started == []  # queued; drains on the next turn's completion
+        app._turn_worker = None  # turn ends -> finally calls _maybe_wake
+        app._maybe_wake()
+        assert len(started) == 1
+
+
+@pytest.mark.anyio
+async def test_user_turn_resets_auto_depth(tmp_path: Path):
+    app = _app(tmp_path)
+    app.run_worker = lambda c, *a, **k: (c.close() if hasattr(c, "close") else None)  # type: ignore[method-assign]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._auto_turn_depth = 2
+        await _submit(app, "do something")  # a user-initiated turn
+        assert app._auto_turn_depth == 0
