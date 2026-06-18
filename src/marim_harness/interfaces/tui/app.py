@@ -63,6 +63,121 @@ _WELCOME = (
 )
 
 
+class _StreamSink:
+    """Where one event stream's widgets land and how its run-state is read/written.
+
+    Routing a streamed turn is identical whether the events come from the
+    top-level agent or a nested sub-agent — the only things that differ are the
+    mount container, where this stream's run-state and current assistant message
+    live, the title bookkeeping, and whether a tool call gets intercepted (the
+    spawn_agent special case). A sink captures exactly those, so one dispatch core
+    (:meth:`HarnessApp._dispatch_stream_event`) serves both. Hooks default to
+    no-ops; sub-classes override only what their scope needs."""
+
+    container: object  # mount target for assistant text and bare tool widgets
+
+    def get_run(self) -> tuple:
+        """This stream's (group, solo) run-of-consecutive-tools state."""
+        raise NotImplementedError
+
+    def set_run(self, group, solo) -> None:
+        raise NotImplementedError
+
+    def get_assistant(self):
+        """The AssistantMessage currently receiving text deltas, or None."""
+        raise NotImplementedError
+
+    def set_assistant(self, msg) -> None:
+        raise NotImplementedError
+
+    def on_text(self) -> None:
+        """Called when the stream starts a text part (title status, sub only)."""
+
+    def on_tool(self, tool_name: str) -> None:
+        """Called when the stream makes a tool call (title status, sub only)."""
+
+    async def intercept_tool(self, event, args: dict) -> bool:
+        """Give the scope first refusal on a tool call; return True to claim it and
+        skip the default ToolCallWidget path. Default: never intercepts."""
+        return False
+
+    def on_result(self, event) -> None:
+        """Called after a tool result is rendered (cleanup hook)."""
+
+
+class _TopLevelSink(_StreamSink):
+    """The top-level turn stream: mounts into the main log, keeps run-state and the
+    current assistant on the app's scalar fields, and claims foreground spawn_agent
+    calls so they render as a live SubAgentWidget instead of a generic tool."""
+
+    def __init__(self, app: "HarnessApp", container) -> None:
+        self._app = app
+        self.container = container
+
+    def get_run(self) -> tuple:
+        return self._app._tool_group, self._app._solo_tool
+
+    def set_run(self, group, solo) -> None:
+        self._app._tool_group = group
+        self._app._solo_tool = solo
+
+    def get_assistant(self):
+        return self._app._current_assistant
+
+    def set_assistant(self, msg) -> None:
+        self._app._current_assistant = msg
+
+    async def intercept_tool(self, event, args: dict) -> bool:
+        # A background spawn returns a job id immediately and doesn't stream its
+        # steps, so it falls through to a plain tool widget; only a foreground
+        # spawn gets the live SubAgentWidget (and is mounted standalone, breaking
+        # the run so it isn't buried in a tool group).
+        if event.part.tool_name == "spawn_agent" and not args.get("background"):
+            widget = self._app._mount_spawn_widget(args)
+            self._app._tool_widgets[event.part.tool_call_id] = widget
+            self.set_run(None, None)
+            await self.container.mount(widget)
+            return True
+        return False
+
+    def on_result(self, event) -> None:
+        # A foreground spawn's stream_id is its tool_call_id; drop its sub-agent
+        # assistant entry once the spawn returns.
+        self._app._sub_assistants.pop(event.tool_call_id, None)
+
+
+class _SubAgentSink(_StreamSink):
+    """A nested sub-agent stream: mounts into its SubAgentWidget body, keeps
+    run-state and the current assistant in per-stream dicts keyed by ``stream_id``,
+    and pushes live text/tool activity into the (collapsed) widget title."""
+
+    def __init__(self, app: "HarnessApp", parent: SubAgentWidget, stream_id: str) -> None:
+        self._app = app
+        self._parent = parent
+        self._sid = stream_id
+        self.container = parent.body
+
+    def get_run(self) -> tuple:
+        return (self._app._sub_tool_groups.get(self._sid),
+                self._app._sub_solo_tools.get(self._sid))
+
+    def set_run(self, group, solo) -> None:
+        self._app._sub_tool_groups[self._sid] = group
+        self._app._sub_solo_tools[self._sid] = solo
+
+    def get_assistant(self):
+        return self._app._sub_assistants.get(self._sid)
+
+    def set_assistant(self, msg) -> None:
+        self._app._sub_assistants[self._sid] = msg
+
+    def on_text(self) -> None:
+        self._parent.note_text()
+
+    def on_tool(self, tool_name: str) -> None:
+        self._parent.note_tool(tool_name)
+
+
 class HarnessApp(App):
     CSS_PATH = "styles.tcss"
     BINDINGS = [
@@ -526,7 +641,6 @@ class HarnessApp(App):
         return widget
 
     async def _on_events(self, ctx, events) -> None:
-        log = self.query_one("#log", VerticalScroll)
         # Fresh run: clear any in-flight tally from a prior approval round so the
         # next round's usage replaces it rather than stacking (each agent.run gets
         # its own ctx.usage, cumulative for that run).
@@ -534,104 +648,71 @@ class HarnessApp(App):
         # A new run starts a fresh run of consecutive tool calls.
         self._tool_group = None
         self._solo_tool = None
+        sink = _TopLevelSink(self, self.query_one("#log", VerticalScroll))
         async for event in events:
             # ctx.usage carries the run's live running total (ctx is None in some
             # unit tests); fold it into the status counter via the flush tick.
             self._live_run_tokens = (
                 getattr(getattr(ctx, "usage", None), "total_tokens", 0) or 0
             )
-            if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
-                self._tool_group = None  # assistant text ends the run of tools
-                self._solo_tool = None
-                self._current_assistant = AssistantMessage()
-                await log.mount(self._current_assistant)
-                if event.part.content:
-                    self._append_stream(self._current_assistant, event.part.content)
-            elif isinstance(event, PartDeltaEvent) and isinstance(
-                event.delta, TextPartDelta
-            ):
-                if self._current_assistant is not None:
-                    self._append_stream(
-                        self._current_assistant, event.delta.content_delta or ""
-                    )
-            elif isinstance(event, FunctionToolCallEvent):
-                # A gated tool re-emits its call event on the post-approval
-                # execution pass; reuse the widget already mounted for this id
-                # rather than mounting an orphaned duplicate.
-                if event.part.tool_call_id in self._tool_widgets:
-                    continue
-                args = event.part.args_as_dict()
-                # A background spawn returns a job id immediately and doesn't
-                # stream its steps, so render it as a plain tool call (the live
-                # SubAgentWidget body is only meaningful for a foreground spawn).
-                if event.part.tool_name == "spawn_agent" and not args.get("background"):
-                    # A spawn has its own rich widget and shouldn't be buried in a
-                    # tool group; mount it standalone and break the run.
-                    widget = self._mount_spawn_widget(args)
-                    self._tool_widgets[event.part.tool_call_id] = widget
-                    self._tool_group = None
-                    self._solo_tool = None
-                    await log.mount(widget)
-                else:
-                    widget = ToolCallWidget(event.part.tool_name, args)
-                    self._tool_widgets[event.part.tool_call_id] = widget
-                    self._tool_group, self._solo_tool = await self._add_tool_to_run(
-                        widget, log, self._tool_group, self._solo_tool
-                    )
-            elif isinstance(event, FunctionToolResultEvent):
-                widget = self._tool_widgets.get(event.tool_call_id)
-                if widget is not None:
-                    widget.finish(str(getattr(event.part, "content", "")))
-                self._sub_assistants.pop(event.tool_call_id, None)
+            await self._dispatch_stream_event(event, sink)
 
     async def _on_subagent_event(
         self, stream_id: str, event, tokens: int = 0
     ) -> None:
         """Route a spawned sub-agent's own stream into the SubAgentWidget that owns
-        it. Mirrors _on_events, but mounts the sub-agent's text and (nested) tool
-        calls inside the widget body instead of the top-level log. ``tokens`` is the
-        run's live total token count, surfaced in the (collapsed) title. Fired on
-        the app's event loop, so direct widget mutation is safe and parallel streams
-        stay race-free by stream_id."""
+        it. Shares _dispatch_stream_event with the top-level handler, but through a
+        sub-agent sink that mounts into the widget body and tracks per-stream state.
+        ``tokens`` is the run's live total token count, surfaced in the (collapsed)
+        title. Fired on the app's event loop, so direct widget mutation is safe and
+        parallel streams stay race-free by stream_id."""
         parent = self._tool_widgets.get(stream_id)
         if not isinstance(parent, SubAgentWidget):
             return
         if tokens:
             parent.set_tokens(tokens)
+        await self._dispatch_stream_event(event, _SubAgentSink(self, parent, stream_id))
+
+    async def _dispatch_stream_event(self, event, sink: _StreamSink) -> None:
+        """Route one streamed event to the right widget via ``sink``, which knows
+        where to mount and how to read/write this stream's run-state. The top-level
+        and sub-agent handlers differ only in that sink (and their own pre/post
+        bookkeeping), so the four event branches live here once."""
         if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
-            self._sub_tool_groups.pop(stream_id, None)  # text ends the run of tools
-            self._sub_solo_tools.pop(stream_id, None)
-            parent.note_text()  # live title status, useful while collapsed
+            sink.set_run(None, None)  # assistant text ends the run of tools
+            sink.on_text()  # live title status, useful while collapsed
             msg = AssistantMessage()
-            self._sub_assistants[stream_id] = msg
-            await parent.add(msg)
+            sink.set_assistant(msg)
+            await sink.container.mount(msg)
             if event.part.content:
                 self._append_stream(msg, event.part.content)
         elif isinstance(event, PartDeltaEvent) and isinstance(
             event.delta, TextPartDelta
         ):
-            msg = self._sub_assistants.get(stream_id)
+            msg = sink.get_assistant()
             if msg is not None:
                 self._append_stream(msg, event.delta.content_delta or "")
         elif isinstance(event, FunctionToolCallEvent):
-            # A gated tool re-emits its call event on the post-approval
-            # execution pass; reuse the already-mounted widget for this id.
+            # A gated tool re-emits its call event on the post-approval execution
+            # pass; reuse the widget already mounted for this id rather than
+            # mounting an orphaned duplicate.
             if event.part.tool_call_id in self._tool_widgets:
                 return
-            parent.note_tool(event.part.tool_name)  # live title status
-            widget = ToolCallWidget(event.part.tool_name, event.part.args_as_dict())
+            args = event.part.args_as_dict()
+            if await sink.intercept_tool(event, args):
+                return
+            sink.on_tool(event.part.tool_name)  # live title status
+            widget = ToolCallWidget(event.part.tool_name, args)
             self._tool_widgets[event.part.tool_call_id] = widget
+            group, solo = sink.get_run()
             group, solo = await self._add_tool_to_run(
-                widget,
-                parent.body,
-                self._sub_tool_groups.get(stream_id),
-                self._sub_solo_tools.get(stream_id),
+                widget, sink.container, group, solo
             )
-            # Keep the run state in sync; a key with value None just means "no open
-            # group / no lone call" for this stream.
-            self._sub_tool_groups[stream_id] = group
-            self._sub_solo_tools[stream_id] = solo
+            # Keep the run state in sync; a None value just means "no open group /
+            # no lone call" for this stream.
+            sink.set_run(group, solo)
         elif isinstance(event, FunctionToolResultEvent):
             widget = self._tool_widgets.get(event.tool_call_id)
             if widget is not None:
                 widget.finish(str(getattr(event.part, "content", "")))
+            sink.on_result(event)
