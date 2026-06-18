@@ -25,6 +25,7 @@ from ...usage import resolve_cost
 from .approval import ApprovalModal
 from .commands import dispatch
 from .model_picker import ModelPickerModal
+from .settings import SettingsModal
 from .themes import MARIM_THEMES
 from .widgets import (
     AssistantMessage,
@@ -502,6 +503,19 @@ class HarnessApp(App):
         label = self.harness.session.session_name or session_id
         await self._render_session(
             f"**Switched to** `{label}` — {n} messages restored."
+        )
+
+    def open_settings(self) -> None:
+        """Open the settings modal: runtime settings apply live; env-backed
+        settings save to the global .env on demand."""
+        from ...config import load_config
+
+        self.push_screen(
+            SettingsModal(
+                harness=self.harness,
+                current_theme=self.theme,
+                env_cfg=load_config(),
+            )
         )
 
     async def open_model_picker(self) -> None:
