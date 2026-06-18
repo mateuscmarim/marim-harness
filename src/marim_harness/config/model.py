@@ -31,6 +31,13 @@ class ModelConfig:
     # Prototype: collapse the four job tools (jobs/job_output/wait_for_job/
     # cancel_job) into one job(action, …) tool. Off ⇒ the four separate tools.
     job_tool_combined: bool = False
+    # Autonomous wake-on-completion (interactive TUI only): when a background job
+    # finishes while the turn worker is idle, fire a digest-only turn so the agent
+    # reacts without waiting for the user. Off ⇒ today's passive behavior.
+    autonomous_wake: bool = True
+    # Cap on consecutive autonomous turns before one is forced to wait for the
+    # user — a loop guard for wake→spawn→wake chains.
+    wake_depth_cap: int = 3
     # Shell-command allow/deny patterns (regex), enforced in the bash tool in
     # every mode. Empty lists -> no restriction.
     command_denylist: list[str] = field(default_factory=list)
@@ -51,6 +58,8 @@ def load_config() -> ModelConfig:
     lsp_enabled = _bool_env("MARIM_LSP", True)
     lsp_tools_enabled = _bool_env("MARIM_LSP_TOOLS", True)
     job_tool_combined = _bool_env("MARIM_JOB_TOOL_COMBINED", False)
+    autonomous_wake = _bool_env("MARIM_AUTONOMOUS_WAKE", True)
+    wake_depth_cap = _int_env("MARIM_WAKE_DEPTH_CAP", 3)
     command_denylist = split_patterns(os.getenv("MARIM_COMMAND_DENYLIST", ""))
     command_allowlist = split_patterns(os.getenv("MARIM_COMMAND_ALLOWLIST", ""))
     if provider == "local":
@@ -65,6 +74,8 @@ def load_config() -> ModelConfig:
             lsp_enabled=lsp_enabled,
             lsp_tools_enabled=lsp_tools_enabled,
             job_tool_combined=job_tool_combined,
+            autonomous_wake=autonomous_wake,
+            wake_depth_cap=wake_depth_cap,
             command_denylist=command_denylist,
             command_allowlist=command_allowlist,
         )
@@ -84,6 +95,8 @@ def load_config() -> ModelConfig:
             lsp_enabled=lsp_enabled,
             lsp_tools_enabled=lsp_tools_enabled,
             job_tool_combined=job_tool_combined,
+            autonomous_wake=autonomous_wake,
+            wake_depth_cap=wake_depth_cap,
             command_denylist=command_denylist,
             command_allowlist=command_allowlist,
         )
@@ -98,6 +111,8 @@ def load_config() -> ModelConfig:
         lsp_enabled=lsp_enabled,
         lsp_tools_enabled=lsp_tools_enabled,
         job_tool_combined=job_tool_combined,
+        autonomous_wake=autonomous_wake,
+        wake_depth_cap=wake_depth_cap,
         command_denylist=command_denylist,
         command_allowlist=command_allowlist,
     )

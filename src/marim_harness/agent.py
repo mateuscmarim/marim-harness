@@ -207,6 +207,10 @@ class HarnessConfig:
     # diagnostics-on-edit no-ops. Navigation-tool registration is gated separately
     # on the provider (see build_harness), keyed on lsp_enabled and lsp_tools_enabled.
     lsp_enabled: bool = True
+    # Autonomous wake-on-completion knobs, surfaced to the TUI app. Defaults
+    # match ModelConfig: wake on, cap 3.
+    autonomous_wake: bool = True
+    wake_depth_cap: int = 3
 
 
 class Harness:
@@ -249,6 +253,9 @@ class Harness:
         self.current_model = model
         self.model_source = cfg.model_source
         self.model_id = cfg.model_id
+        # Surfaced for the TUI wake scheduler (interactive only).
+        self.autonomous_wake = cfg.autonomous_wake
+        self.wake_depth_cap = cfg.wake_depth_cap
         # A one-shot note about the last actionable failure, prepended to the
         # next turn's prompt so the model knows it didn't complete (see
         # _actionable_error_note). None when there's nothing to surface.

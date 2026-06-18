@@ -392,3 +392,25 @@ async def test_run_background_subagent_default_grants_no_servers(tmp_path: Path)
 
     await h.subagents.run_background("general", "do it")
     assert cap["toolsets"] == []
+
+
+def test_harness_exposes_wake_defaults(tmp_path: Path):
+    """The Harness surfaces the wake knobs so the TUI app can seed its scheduler;
+    with no config passed, the defaults are on / cap 3."""
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(_text_model(), deps)
+    assert h.autonomous_wake is True
+    assert h.wake_depth_cap == 3
+
+
+def test_harness_takes_wake_flags_from_config(tmp_path: Path):
+    from marim_harness.agent import HarnessConfig
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = Harness(
+        model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
+        instructions="x",
+        config=HarnessConfig(autonomous_wake=False, wake_depth_cap=7),
+    )
+    assert h.autonomous_wake is False
+    assert h.wake_depth_cap == 7

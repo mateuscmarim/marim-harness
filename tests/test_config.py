@@ -243,3 +243,28 @@ def test_trust_project_hooks_env_truthy(monkeypatch):
     from marim_harness.config.model import load_config
     monkeypatch.setenv("MARIM_TRUST_PROJECT_HOOKS", "1")
     assert load_config().trust_project_hooks is True
+
+
+def test_autonomous_wake_defaults_on(monkeypatch):
+    monkeypatch.delenv("MARIM_AUTONOMOUS_WAKE", raising=False)
+    monkeypatch.setenv("MARIM_PROVIDER", "openrouter")
+    assert load_config().autonomous_wake is True
+
+
+@pytest.mark.parametrize("raw", ["0", "false", "off", "no"])
+def test_autonomous_wake_falsy_disables(monkeypatch, raw):
+    monkeypatch.setenv("MARIM_AUTONOMOUS_WAKE", raw)
+    monkeypatch.setenv("MARIM_PROVIDER", "openrouter")
+    assert load_config().autonomous_wake is False
+
+
+def test_wake_depth_cap_defaults_to_three(monkeypatch):
+    monkeypatch.delenv("MARIM_WAKE_DEPTH_CAP", raising=False)
+    monkeypatch.setenv("MARIM_PROVIDER", "openrouter")
+    assert load_config().wake_depth_cap == 3
+
+
+def test_wake_depth_cap_reads_env(monkeypatch):
+    monkeypatch.setenv("MARIM_WAKE_DEPTH_CAP", "5")
+    monkeypatch.setenv("MARIM_PROVIDER", "openrouter")
+    assert load_config().wake_depth_cap == 5
