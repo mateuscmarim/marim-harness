@@ -79,6 +79,65 @@ def _has_unanswered_tool_calls(history: list) -> bool:
     return bool(calls - returns)
 
 
+_INTERRUPTED_TOOL_NOTE = (
+    "Tool call was interrupted before completion and did not run (the turn was "
+    "aborted). Re-issue it if you still need the result."
+)
+
+
+def _repair_unanswered_tool_calls(history: list) -> list:
+    """Return a history in which every ToolCallPart has a matching ToolReturnPart,
+    synthesizing an interrupted-tool return for any that lack one. An aborted
+    turn (API failure, usage limit, cancel) can leave a ToolCallPart with no
+    return; every provider then rejects the next request, so a session persisted
+    in that state is unresumable until repaired. The synthesized return is placed
+    in a ModelRequest right after the response that made the call, so it stays
+    valid for providers that require results to immediately follow their call.
+    Returns the input list unchanged when nothing is dangling, so callers can
+    skip a redundant persist."""
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ModelResponse,
+        ToolCallPart,
+        ToolReturnPart,
+    )
+
+    answered = {
+        part.tool_call_id
+        for message in history
+        for part in getattr(message, "parts", [])
+        if isinstance(part, ToolReturnPart)
+    }
+    repaired: list = []
+    changed = False
+    for message in history:
+        repaired.append(message)
+        if not isinstance(message, ModelResponse):
+            continue
+        missing = [
+            part
+            for part in message.parts
+            if isinstance(part, ToolCallPart) and part.tool_call_id not in answered
+        ]
+        if not missing:
+            continue
+        repaired.append(
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name=part.tool_name,
+                        content=_INTERRUPTED_TOOL_NOTE,
+                        tool_call_id=part.tool_call_id,
+                    )
+                    for part in missing
+                ]
+            )
+        )
+        answered.update(part.tool_call_id for part in missing)
+        changed = True
+    return repaired if changed else history
+
+
 def _short(exc: BaseException, limit: int = 200) -> str:
     """A whitespace-collapsed, length-capped rendering of an exception — never a
     traceback, just the one-line gist that's safe to hand back to the model."""
@@ -373,10 +432,21 @@ class Harness:
                         pass
 
             event_stream_handler = _hooked_handler
+        # Self-heal a session left mid-exchange by an earlier aborted turn: a
+        # persisted ToolCallPart with no matching return makes every provider
+        # reject the next request ("unprocessed tool calls"), wedging the
+        # session. Repair it before running so the session resumes instead.
+        repaired = _repair_unanswered_tool_calls(self.session.history)
+        if repaired is not self.session.history:
+            self.session.history = repaired
+            self.session.persist()
+        # The last persisted, resumable history — guaranteed free of unanswered
+        # tool calls. Captured once here and refreshed only after a clean
+        # persist; the deferred-approval round below deliberately holds a dirty
+        # history in self.session.history, so this must NOT be recomputed from it
+        # per iteration (that poisoned the rollback baseline across rounds).
+        resumable = list(self.session.history)
         while True:
-            # The last persisted, resumable history — what we fall back to if
-            # this round is interrupted before it completes cleanly.
-            clean_history = list(self.session.history)
             # capture_run_messages exposes the messages exchanged even when the
             # run aborts (a render error in the event handler, an API failure,
             # the user cancelling). Each agent.run gets its own context — the
@@ -396,13 +466,14 @@ class Harness:
                         toolsets=toolsets,
                     )
                 except BaseException as exc:
-                    # Persist what survives the failure — but never a history
-                    # ending in an unanswered tool call (the captured messages
-                    # may stop right after one). That would corrupt the session,
-                    # so fall back to the last clean state in that case.
-                    recovered = list(captured) if captured else clean_history
-                    if _has_unanswered_tool_calls(recovered):
-                        recovered = clean_history
+                    # Persist what survives the failure so the user's prompt and
+                    # any completed work aren't lost, repairing any tool call the
+                    # abort left unanswered (the captured messages may stop right
+                    # after one) so the session stays resumable. Fall back to the
+                    # last clean history if the run produced nothing.
+                    recovered = _repair_unanswered_tool_calls(
+                        list(captured) if captured else resumable
+                    )
                     self.session.history = recovered
                     self.session.persist()
                     # Stash an actionable note (None for infra/render/cancel) to
@@ -422,12 +493,15 @@ class Harness:
                         result.output, self.deps.mode, self.deps.request_approval
                     )
                 except BaseException:
-                    self.session.history = clean_history
+                    self.session.history = resumable
                     self.session.persist()
                     raise
                 user_prompt = None  # continuation is driven by deferred_results
                 continue
             self.session.persist()
+            # This round completed cleanly and is persisted — it becomes the new
+            # rollback baseline for any subsequent round.
+            resumable = list(self.session.history)
             output = result.output
             await self.hooks.stop()
             await self._maybe_autoname()

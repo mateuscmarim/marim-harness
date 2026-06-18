@@ -1,0 +1,199 @@
+"""Regression tests for resuming a session left mid-exchange by an aborted turn.
+
+A turn that dies after the model emits a tool call but before the tool returns
+(API outage, usage limit, cancel) can persist a ``ToolCallPart`` with no
+matching ``ToolReturnPart``. Every provider then rejects the next request with
+"unprocessed tool calls", wedging the session. These cover the repair helper
+and the loop paths that must heal — or never persist — such a history.
+"""
+
+import json
+
+import pytest
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
+from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+
+from marim_harness.agent import (
+    Harness,
+    _has_unanswered_tool_calls,
+    _repair_unanswered_tool_calls,
+)
+from marim_harness.deps import Deps
+from marim_harness.permissions import Mode
+from marim_harness.tools.provider import BuiltinToolProvider
+
+pytestmark = pytest.mark.anyio
+
+
+def _harness(model, deps):
+    return Harness(
+        model=model,
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="You are a coding agent.",
+    )
+
+
+def _dangling_history():
+    """A history ending in an unanswered tool call — the wedged shape."""
+    return [
+        ModelRequest(parts=[UserPromptPart(content="do something")]),
+        ModelResponse(
+            parts=[ToolCallPart(tool_name="edit_file", args={}, tool_call_id="tc-stuck")]
+        ),
+    ]
+
+
+# --- unit: the repair helper -------------------------------------------------
+
+
+def test_repair_is_noop_on_clean_history():
+    clean = [
+        ModelRequest(parts=[UserPromptPart(content="hi")]),
+        ModelResponse(parts=[TextPart(content="hello")]),
+    ]
+    # Same object back, so callers can skip a redundant persist.
+    assert _repair_unanswered_tool_calls(clean) is clean
+
+
+def test_repair_synthesizes_return_for_dangling_call():
+    history = _dangling_history()
+    assert _has_unanswered_tool_calls(history)
+    repaired = _repair_unanswered_tool_calls(history)
+    assert not _has_unanswered_tool_calls(repaired)
+    returns = [
+        p
+        for m in repaired
+        for p in getattr(m, "parts", [])
+        if isinstance(p, ToolReturnPart)
+    ]
+    assert [r.tool_call_id for r in returns] == ["tc-stuck"]
+    assert returns[0].tool_name == "edit_file"
+
+
+def test_repair_localizes_each_return_after_its_response():
+    """A dangling call mid-history gets its return inserted right after the
+    response that made it (provider requirement), not lumped at the very end."""
+    history = [
+        ModelResponse(
+            parts=[ToolCallPart(tool_name="read_file", args={}, tool_call_id="a")]
+        ),
+        ModelResponse(
+            parts=[ToolCallPart(tool_name="grep", args={}, tool_call_id="b")]
+        ),
+    ]
+    repaired = _repair_unanswered_tool_calls(history)
+    shape = [
+        (type(m).__name__, [getattr(p, "tool_call_id", None) for p in m.parts])
+        for m in repaired
+    ]
+    assert shape == [
+        ("ModelResponse", ["a"]),
+        ("ModelRequest", ["a"]),
+        ("ModelResponse", ["b"]),
+        ("ModelRequest", ["b"]),
+    ]
+    assert not _has_unanswered_tool_calls(repaired)
+
+
+# --- e2e: self-heal on resume (the reported bug) -----------------------------
+
+
+async def test_resume_heals_dangling_tool_call_then_runs(tmp_path):
+    """The reported symptom: a session whose persisted history ends in an
+    unanswered tool call must resume on the next prompt, not raise pydantic-ai's
+    'Cannot provide a new user prompt ... unprocessed tool calls' UserError."""
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+
+    def reply(messages, info):
+        return ModelResponse(parts=[TextPart(content="resumed")])
+
+    harness = _harness(FunctionModel(reply), deps)
+    harness.session.history = _dangling_history()
+
+    output = await harness.run_turn("continue")  # must NOT raise
+
+    assert output == "resumed"
+    assert not _has_unanswered_tool_calls(harness.session.history)
+
+
+# --- Part A: a failed continuation after an approval round stays resumable ----
+
+
+def _deferred_then_inflight_model():
+    """Turn 1 emits an edit (needs approval → deferred round); the continuation
+    emits a fresh read_file call that the test aborts while still in flight."""
+    n = {"stream": 0}
+
+    def fn(messages, info):
+        # Non-streaming path is unused once event_stream_handler is set, but the
+        # model must still be constructable with it.
+        return ModelResponse(parts=[TextPart(content="unused")])
+
+    async def stream_fn(messages, info):
+        n["stream"] += 1
+        if n["stream"] == 1:
+            yield {
+                0: DeltaToolCall(
+                    name="edit_file",
+                    json_args=json.dumps(
+                        {
+                            "path": "a.txt",
+                            "edits": [{"old_string": "foo", "new_string": "bar"}],
+                        }
+                    ),
+                    tool_call_id="tc-edit",
+                )
+            }
+        else:
+            yield {
+                0: DeltaToolCall(
+                    name="read_file",
+                    json_args=json.dumps({"path": "a.txt"}),
+                    tool_call_id="tc-read",
+                )
+            }
+
+    return FunctionModel(fn, stream_function=stream_fn), n
+
+
+async def test_failed_continuation_after_approval_persists_resumable(tmp_path):
+    """After an approval round, a continuation that dies with a tool call still
+    in flight must persist a resumable history — never the raw dangling state.
+    Reproduces the exact path that wedged the user's session (UsageLimitExceeded
+    deep in a deferred continuation, then UserError on the next prompt)."""
+    (tmp_path / "a.txt").write_text("foo")
+
+    model, n = _deferred_then_inflight_model()
+
+    async def approve(_call):
+        return True
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.ask, request_approval=approve)
+    harness = _harness(model, deps)
+
+    aborted = {"done": False}
+
+    async def boom_handler(stream_ctx, events):
+        async for _event in events:
+            # Abort once we're in the continuation (after the approved edit).
+            if n["stream"] >= 2:
+                aborted["done"] = True
+                raise RuntimeError("continuation boom")
+
+    with pytest.raises(RuntimeError):
+        await harness.run_turn(
+            "change foo to bar", event_stream_handler=boom_handler
+        )
+
+    assert aborted["done"], "test did not reach the continuation"
+    # The dangling read_file (and any leftover edit) must be repaired, not
+    # persisted raw — otherwise the next prompt raises the UserError.
+    assert not _has_unanswered_tool_calls(harness.session.history)
