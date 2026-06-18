@@ -1,9 +1,11 @@
 import io
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from marim_harness.interfaces.cli import default_cmd, router
+from marim_harness.interfaces.cli.default_cmd import _build_parser, _enter_worktree
 from marim_harness.permissions import Mode
 
 
@@ -168,3 +170,46 @@ def test_management_stubs_return_nonzero():
 
     for mod in (sessions, config, models):
         assert mod.main([]) == 2
+
+
+def _git_repo(tmp_path: Path) -> Path:
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    (tmp_path / "README.md").write_text("hi\n")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=tmp_path, check=True)
+    return tmp_path
+
+
+def test_parser_accepts_worktree_flag():
+    args = _build_parser().parse_args(["--worktree", "feat/x"])
+    assert args.worktree == "feat/x"
+
+
+def test_parser_worktree_defaults_none():
+    args = _build_parser().parse_args([])
+    assert args.worktree is None
+
+
+def test_enter_worktree_resolves_path(tmp_path: Path):
+    repo = _git_repo(tmp_path)
+    err = io.StringIO()
+    result = _enter_worktree(repo, "feat/x", err)
+    assert result == repo / ".worktrees" / "feat/x"
+    assert err.getvalue() == ""
+
+
+def test_enter_worktree_non_git_dir_returns_none(tmp_path: Path):
+    err = io.StringIO()
+    result = _enter_worktree(tmp_path, "feat/x", err)
+    assert result is None
+    assert "not a git repository" in err.getvalue()
+
+
+def test_enter_worktree_bad_branch_returns_none(tmp_path: Path):
+    repo = _git_repo(tmp_path)
+    err = io.StringIO()
+    result = _enter_worktree(repo, "../escape", err)
+    assert result is None
+    assert "--worktree" in err.getvalue()
