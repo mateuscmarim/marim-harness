@@ -9,10 +9,12 @@ from pydantic_ai.messages import (
     TextPart,
     TextPartDelta,
 )
+from pydantic_ai.tools import DeferredToolApprovalResult
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
+from textual.widget import Widget
 from textual.widgets import Footer, Header, Static
 
 from ...agent import Harness, strip_turn_context
@@ -74,7 +76,7 @@ class _StreamSink:
     (:meth:`HarnessApp._dispatch_stream_event`) serves both. Hooks default to
     no-ops; sub-classes override only what their scope needs."""
 
-    container: object  # mount target for assistant text and bare tool widgets
+    container: Widget  # mount target for assistant text and bare tool widgets
 
     def get_run(self) -> tuple:
         """This stream's (group, solo) run-of-consecutive-tools state."""
@@ -198,7 +200,7 @@ class HarnessApp(App):
         self.harness.session.on_compact = self._on_compact
         self.harness.session.on_rename = self._on_rename
         self._current_assistant: AssistantMessage | None = None
-        self._tool_widgets: dict[str, ToolCallWidget] = {}
+        self._tool_widgets: dict[str, ToolCallWidget | SubAgentWidget] = {}
         # State of the current run of consecutive top-level tool calls. A run only
         # becomes a group once it holds 2+ calls — a lone call stays a bare
         # ToolCallWidget (_solo_tool), since wrapping one tool adds a redundant
@@ -558,7 +560,7 @@ class HarnessApp(App):
         if self._busy:
             self._refresh_status()
 
-    async def _request_approval(self, call) -> object:
+    async def _request_approval(self, call) -> DeferredToolApprovalResult | bool:
         approved = await self.push_screen_wait(
             ApprovalModal(call.tool_name, call.args_as_dict())
         )

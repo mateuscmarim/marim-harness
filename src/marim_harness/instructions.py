@@ -3,13 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import RunContext
 
 if TYPE_CHECKING:
     from .mcp import McpManager
 
 from .config import config_dir
-from .deps import Deps
+from .deps import Deps, HarnessAgent
 from .tasks import render_tasks
 from .workspace import (
     agents_index_text,
@@ -68,7 +68,9 @@ def load_global_instructions() -> Optional[str]:
     return load_project_instructions(config_dir())
 
 
-def register_instructions(agent: Agent, mcp_manager: McpManager, proactive_memory: bool) -> None:
+def register_instructions(
+    agent: HarnessAgent, mcp_manager: McpManager, proactive_memory: bool
+) -> None:
     """Register all dynamic instruction closures on ``agent``."""
 
     @agent.instructions

@@ -1629,8 +1629,12 @@ def _prompt_capturing_model(sink: list) -> FunctionModel:
 @pytest.mark.anyio
 async def test_session_start_context_is_prepended_once(tmp_path):
     cmd = _hook_script(tmp_path, "ss.sh", "echo SESSION_CTX\n")
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto,
-                hooks=HookRunner({hook_events.SESSION_START: [{"hooks": [{"type": "command", "command": cmd}]}]}))
+    deps = Deps(
+        workspace_root=tmp_path, mode=Mode.auto,
+        hooks=HookRunner(
+            {hook_events.SESSION_START: [{"hooks": [{"type": "command", "command": cmd}]}]}
+        ),
+    )
     sink: list = []
     harness = _make_harness(_prompt_capturing_model(sink), deps)
     await harness.session_start("startup")
@@ -1643,8 +1647,12 @@ async def test_session_start_context_is_prepended_once(tmp_path):
 @pytest.mark.anyio
 async def test_user_prompt_submit_context_is_prepended(tmp_path):
     cmd = _hook_script(tmp_path, "ups.sh", "echo PROMPT_CTX\n")
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto,
-                hooks=HookRunner({hook_events.USER_PROMPT_SUBMIT: [{"hooks": [{"type": "command", "command": cmd}]}]}))
+    deps = Deps(
+        workspace_root=tmp_path, mode=Mode.auto,
+        hooks=HookRunner(
+            {hook_events.USER_PROMPT_SUBMIT: [{"hooks": [{"type": "command", "command": cmd}]}]}
+        ),
+    )
     sink: list = []
     harness = _make_harness(_prompt_capturing_model(sink), deps)
     await harness.run_turn("do the thing")
@@ -1657,8 +1665,12 @@ async def test_user_prompt_submit_fires_on_every_turn(tmp_path):
     """UserPromptSubmit hook fires on every turn, not just the first. The hook
     context is prepended to each turn's prompt, proving repeated activation."""
     cmd = _hook_script(tmp_path, "ups_every.sh", "echo PROMPT_CTX\n")
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto,
-                hooks=HookRunner({hook_events.USER_PROMPT_SUBMIT: [{"hooks": [{"type": "command", "command": cmd}]}]}))
+    deps = Deps(
+        workspace_root=tmp_path, mode=Mode.auto,
+        hooks=HookRunner(
+            {hook_events.USER_PROMPT_SUBMIT: [{"hooks": [{"type": "command", "command": cmd}]}]}
+        ),
+    )
     sink: list = []
     harness = _make_harness(_prompt_capturing_model(sink), deps)
     await harness.run_turn("first")
@@ -1942,7 +1954,8 @@ async def test_pre_and_post_tool_use_fire(tmp_path):
     helper.write_text(
         f"import sys, json\n"
         f"d = json.load(sys.stdin)\n"
-        f"open({str(log)!r}, 'a').write(d['hook_event_name'] + ' ' + d.get('tool_name', '') + '\\n')\n",
+        f"open({str(log)!r}, 'a').write("
+        f"d['hook_event_name'] + ' ' + d.get('tool_name', '') + '\\n')\n",
         encoding="utf-8",
     )
     cmd = _hook_script(
@@ -1950,8 +1963,12 @@ async def test_pre_and_post_tool_use_fire(tmp_path):
         f"python3 {str(helper)}\n",
     )
     runner = HookRunner({
-        hook_events.PRE_TOOL_USE: [{"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}],
-        hook_events.POST_TOOL_USE: [{"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}],
+        hook_events.PRE_TOOL_USE: [
+            {"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}
+        ],
+        hook_events.POST_TOOL_USE: [
+            {"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}
+        ],
     })
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto, hooks=runner)
     harness = _make_harness(_edit_then_done_model(), deps)
@@ -1982,8 +1999,12 @@ async def test_post_tool_use_includes_tool_input(tmp_path):
         f"python3 {str(helper)}\n",
     )
     runner = HookRunner({
-        hook_events.PRE_TOOL_USE: [{"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}],
-        hook_events.POST_TOOL_USE: [{"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}],
+        hook_events.PRE_TOOL_USE: [
+            {"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}
+        ],
+        hook_events.POST_TOOL_USE: [
+            {"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}
+        ],
     })
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto, hooks=runner)
     harness = _make_harness(_edit_then_done_model(), deps)
@@ -2044,7 +2065,9 @@ async def test_subagent_start_and_stop_fire(tmp_path):
     })
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto, hooks=runner)
     # A model the sub-agent will run: just reply 'sub-done'.
-    harness = _make_harness(FunctionModel(lambda m, i: ModelResponse(parts=[TextPart(content="sub-done")])), deps)
+    harness = _make_harness(
+        FunctionModel(lambda m, i: ModelResponse(parts=[TextPart(content="sub-done")])), deps
+    )
     out = await harness.subagents.run("helper", "do a thing", "stream-1")
     assert "sub-done" in out
     lines = log.read_text().splitlines()
@@ -2061,7 +2084,9 @@ async def test_stop_fires_at_turn_end(tmp_path):
     log = tmp_path / "stop.log"
     cmd = _hook_script(tmp_path, "stop.sh", f"cat >> {log}\n")
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto,
-                hooks=HookRunner({hook_events.STOP: [{"hooks": [{"type": "command", "command": cmd}]}]}))
+                hooks=HookRunner(
+                    {hook_events.STOP: [{"hooks": [{"type": "command", "command": cmd}]}]}
+                ))
     # Use a streaming-capable model: hooks configure a hooked_handler that forces
     # streaming mode (same discipline as test_pre_and_post_tool_use_fire).
     sink: list = []
@@ -2076,8 +2101,12 @@ async def test_session_end_fires(tmp_path):
     log = tmp_path / "end.log"
     cmd = _hook_script(tmp_path, "end.sh", f"cat >> {log}\n")
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto,
-                hooks=HookRunner({hook_events.SESSION_END: [{"hooks": [{"type": "command", "command": cmd}]}]}))
-    harness = _make_harness(FunctionModel(lambda m, i: ModelResponse(parts=[TextPart(content="x")])), deps)
+                hooks=HookRunner(
+                    {hook_events.SESSION_END: [{"hooks": [{"type": "command", "command": cmd}]}]}
+                ))
+    harness = _make_harness(
+        FunctionModel(lambda m, i: ModelResponse(parts=[TextPart(content="x")])), deps
+    )
     await harness.session_end("exit")
     assert '"hook_event_name": "SessionEnd"' in log.read_text()
     assert '"reason": "exit"' in log.read_text()
@@ -2106,7 +2135,9 @@ async def test_background_subagent_start_and_stop_fire(tmp_path):
     })
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto, hooks=runner)
     # A model the sub-agent will run: just reply 'bg-done'.
-    harness = _make_harness(FunctionModel(lambda m, i: ModelResponse(parts=[TextPart(content="bg-done")])), deps)
+    harness = _make_harness(
+        FunctionModel(lambda m, i: ModelResponse(parts=[TextPart(content="bg-done")])), deps
+    )
     out = await harness.subagents.run_background("helper", "do a thing")
     assert "bg-done" in out
     lines = log.read_text().splitlines()

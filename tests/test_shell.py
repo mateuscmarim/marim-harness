@@ -14,6 +14,23 @@ def _pid_alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True
+    # The pid is in the process table, but a SIGKILLed child becomes a zombie
+    # until its parent reaps it — and when run_bash kills the whole group the
+    # parent shell dies too, so the child reparents to PID 1. Under a real init
+    # (systemd) that zombie is reaped almost immediately; in a minimal CI
+    # container PID 1 doesn't reap orphans, so the dead child lingers as
+    # <defunct> indefinitely. A zombie has been killed, which is exactly what
+    # callers mean by "not alive" — so read /proc and treat state 'Z' as dead.
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            data = f.read()
+        # Format: "pid (comm) state ...". comm may contain spaces/parens, so
+        # find the LAST ')' (the close of comm); state is the next field.
+        state = data[data.rindex(")") + 1:].split()[0]
+        if state == "Z":
+            return False
+    except (FileNotFoundError, ProcessLookupError, ValueError, IndexError):
+        return False
     return True
 
 

@@ -108,8 +108,8 @@ async def test_failed_turn_returns_nonzero_and_writes_stderr(tmp_path: Path):
 @pytest.mark.anyio
 async def test_headless_fires_session_start_and_end(tmp_path: Path):
     """SessionStart and SessionEnd both fire when run_headless drives a turn."""
-    from marim_harness.hooks.runner import HookRunner
     from marim_harness.hooks import events as hook_events
+    from marim_harness.hooks.runner import HookRunner
     from marim_harness.interfaces.cli.headless import run_headless
 
     log = tmp_path / "lifecycle.log"

@@ -1,5 +1,4 @@
 # tests/test_hooks_runner.py
-import os
 import stat
 from pathlib import Path
 
@@ -48,7 +47,9 @@ async def test_injection_via_hook_specific_output(tmp_path):
         'echo \'{"hookSpecificOutput": {"additionalContext": "RECALLED"}}\'\n',
     )
     runner = HookRunner({events.SESSION_START: [_entry(cmd)]})
-    ctx = await runner.dispatch(events.SESSION_START, _payload(events.SESSION_START, source="startup"))
+    ctx = await runner.dispatch(
+        events.SESSION_START, _payload(events.SESSION_START, source="startup")
+    )
     assert ctx == "RECALLED"
 
 
@@ -56,7 +57,9 @@ async def test_injection_via_hook_specific_output(tmp_path):
 async def test_injection_via_plain_stdout(tmp_path):
     cmd = _script(tmp_path, "h.sh", "echo PLAINTEXT\n")
     runner = HookRunner({events.USER_PROMPT_SUBMIT: [_entry(cmd)]})
-    ctx = await runner.dispatch(events.USER_PROMPT_SUBMIT, _payload(events.USER_PROMPT_SUBMIT, prompt="hi"))
+    ctx = await runner.dispatch(
+        events.USER_PROMPT_SUBMIT, _payload(events.USER_PROMPT_SUBMIT, prompt="hi")
+    )
     assert ctx == "PLAINTEXT"
 
 
@@ -65,7 +68,9 @@ async def test_multiple_hooks_concatenate(tmp_path):
     a = _script(tmp_path, "a.sh", "echo AAA\n")
     b = _script(tmp_path, "b.sh", "echo BBB\n")
     runner = HookRunner({events.SESSION_START: [_entry(a), _entry(b)]})
-    ctx = await runner.dispatch(events.SESSION_START, _payload(events.SESSION_START, source="startup"))
+    ctx = await runner.dispatch(
+        events.SESSION_START, _payload(events.SESSION_START, source="startup")
+    )
     assert ctx == "AAA\nBBB"
 
 
@@ -73,7 +78,9 @@ async def test_multiple_hooks_concatenate(tmp_path):
 async def test_observe_event_returns_none_even_with_stdout(tmp_path):
     cmd = _script(tmp_path, "h.sh", "echo IGNORED\n")
     runner = HookRunner({events.POST_TOOL_USE: [_entry(cmd, matcher="*")]})
-    ctx = await runner.dispatch(events.POST_TOOL_USE, _payload(events.POST_TOOL_USE, tool_name="bash"))
+    ctx = await runner.dispatch(
+        events.POST_TOOL_USE, _payload(events.POST_TOOL_USE, tool_name="bash")
+    )
     assert ctx is None
 
 
@@ -142,6 +149,8 @@ async def test_non_string_matcher_is_treated_as_no_match(tmp_path):
     entry = {"matcher": {"bad": "object"}, "hooks": [{"type": "command", "command": cmd}]}
     runner = HookRunner({events.PRE_TOOL_USE: [entry]})
     # dispatch must not raise; non-string matcher treated as no-match
-    ctx = await runner.dispatch(events.PRE_TOOL_USE, _payload(events.PRE_TOOL_USE, tool_name="bash"))
+    ctx = await runner.dispatch(
+        events.PRE_TOOL_USE, _payload(events.PRE_TOOL_USE, tool_name="bash")
+    )
     assert ctx is None
     assert not out.exists()  # non-string matcher must not crash; treated as no-match
