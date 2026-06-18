@@ -9,6 +9,7 @@ from .command_policy import CommandPolicy
 
 if TYPE_CHECKING:
     from .hooks.runner import HookRunner
+    from .lsp.manager import LspManager
 
 from .jobs import JobRegistry
 from .permissions import Mode
@@ -49,6 +50,9 @@ class Deps:
     # Optional Claude-Code-compatible hook engine. None when no hooks.json is
     # configured (every fire-point becomes a cheap ``is None`` no-op).
     hooks: Optional["HookRunner"] = None
+    # Optional session-scoped LSP server pool. None when no LSP is wired (every
+    # LSP tool becomes a cheap ``is None`` guard returning an unavailable note).
+    lsp: Optional["LspManager"] = None
     # Lets the spawn_agent tool launch a sub-agent and stream its events.
     run_subagent: Optional[SubAgentRunner] = None
     on_subagent_event: Optional[SubAgentEventCb] = None
