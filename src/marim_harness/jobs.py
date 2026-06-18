@@ -196,6 +196,13 @@ class JobRegistry:
             compact = "…" + compact[-_DIGEST_RESULT_CHARS:]
         return f": {compact}"
 
+    def has_finished_pending(self) -> bool:
+        """True if one or more jobs finished since the last
+        :meth:`take_finished_digest`. Read-only — unlike ``take_finished_digest``
+        it does **not** drain the buffer, so the wake scheduler can decide whether
+        to fire an autonomous turn without consuming the digest the turn needs."""
+        return bool(self._finished_since_turn)
+
     def take_finished_digest(self) -> str:
         """Summary of jobs that finished since this was last called, then clear the
         buffer. Empty string when nothing finished. Each line carries a tail of the
