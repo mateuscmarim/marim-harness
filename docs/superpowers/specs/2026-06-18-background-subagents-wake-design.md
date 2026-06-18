@@ -69,22 +69,24 @@ digest) to autonomous (a turn fires when work completes).
 
 ## Architecture
 
-Five units, each with one responsibility:
+Four units, each with one responsibility:
 
 1. **Wake scheduler** — decides when an autonomous turn fires and enforces the
    depth cap + kill switch. Lives in the TUI layer (it owns the turn worker).
+   (Component A)
 2. **Turn entry for autonomous turns** — a digest-only turn path reusing the
-   existing prompt-assembly + digest plumbing.
-3. **Session persist serialization** — an `asyncio.Lock` making `persist()` +
-   `usage` accumulation race-free.
-4. **Background sub-agent task isolation** — give each background sub-agent its
-   own `TaskList`.
-5. **`/jobs` command** — human-facing mirror of the agent's job tools, plus the
-   wake toggle.
+   existing prompt-assembly + digest plumbing. (Component B)
+3. **Background sub-agent task isolation** — give each background sub-agent its
+   own `TaskList`. (Component D)
+4. **`/jobs` command** — human-facing mirror of the agent's job tools, plus the
+   wake toggle. (Component E)
+
+Component C (session persist serialization) was **dropped** — see its section
+below for the rationale.
 
 Everything reuses the existing `JobRegistry`, `take_finished_digest()`,
 `_assemble_prompt()`, and `on_change` plumbing; the new code is the scheduler and
-the four targeted fixes.
+the targeted fixes.
 
 ## Component A — Wake scheduler (TUI)
 
@@ -144,22 +146,31 @@ No new turn engine. The autonomous turn is an ordinary `_run_turn("")`:
 - In `ask` mode, gated tools prompt the user normally (the user is present);
   no special handling.
 
-## Component C — Usage-race fix
+## Component C — Usage-race fix — DROPPED
 
-Problem: `session.usage` is incremented by the main turn and by background
-sub-agents (`subagents.py:151–152`), and `persist()` serializes the whole
-session — concurrent writers can lose an increment.
+**Status: dropped during writing-plans (not implemented).**
 
-Fix:
-- Add an `asyncio.Lock` to the session (e.g. `Session._persist_lock`).
-- All `persist()` calls acquire the lock.
-- `usage` is a single shared accumulator object; increments and the persist that
-  follows happen under the lock so no update is lost. Background sub-agents and the
-  main turn both go through the locked path.
+The fix guarded a race that cannot occur. marim runs on a single-threaded
+asyncio event loop. Tracing the read-modify-write of `session.usage` and the
+persist that follows:
 
-Exact field names and call sites are pinned during writing-plans against the
-current `session/` code. Requirement: **no lost usage** under concurrent
-background + main-turn completion.
+- Background sub-agent completion (`subagents.py:151–152`):
+  `self.session.usage += result.usage` immediately followed by
+  `self.session.persist()` — no `await` between them.
+- Main-turn completion (`agent.py`): `self.session.usage += result.usage`
+  then `self.session.persist()` — again no `await` between.
+- `SessionController.persist()` and `SessionStore.save()` are **synchronous**
+  (no `await` inside) — they run to completion without yielding the loop.
+
+Because neither read-modify-write yields the event loop between the `+=` and the
+`save()`, no second coroutine can interleave and clobber the increment. An
+`asyncio.Lock` would serialize sections that are already atomic with respect to
+each other — pure overhead, and a TDD test for it would assert nothing real
+(there is no interleaving to provoke). YAGNI.
+
+This becomes relevant only if marim ever moves `usage`/`persist` off the single
+loop (threads, multiprocessing, or an `await` introduced mid-sequence). Recorded
+in Out of Scope below so the deferral is not silently lost.
 
 ## Component D — Background sub-agent task isolation
 
@@ -233,8 +244,6 @@ user sends a message
   - Finishes while a turn is running ⇒ queued; drains on the following turn.
   - Several finish together ⇒ one batched autonomous turn.
   - Depth cap: a chain of wake→spawn→wake stops at the cap.
-- **Concurrency:** main turn + a background sub-agent both completing ⇒ no lost
-  `session.usage` (assert summed total persisted).
 - **Isolation:** a background sub-agent mutating its task list does not change the
   parent's `Deps.tasks`.
 - **Command:** `/jobs` resolves in `COMMANDS_BY_NAME`; `wake off` flips
@@ -253,5 +262,9 @@ green.
   TUI concern.
 - **Per-job wake opt-out** — backgrounding implies wake; if a need for
   "background but don't wake me" appears, revisit then (YAGNI).
+- **Usage-race lock (former Component C)** — no lock is added; the
+  read-modify-write of `session.usage` + `persist()` is already atomic on the
+  single-threaded asyncio loop (no `await` between the `+=` and the synchronous
+  `save()`). Revisit only if `usage`/`persist` ever moves off the single loop.
 - **Recursive sub-agent spawning** — unchanged; sub-agents still cannot spawn
   sub-agents.
