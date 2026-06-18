@@ -4,6 +4,7 @@ from typing import Iterable, Literal, Optional, Protocol
 
 from pydantic_ai import RunContext
 
+from ..ask_user import Question, answers_to_json, coerce_questions
 from ..deps import Deps, HarnessAgent, SubAgent
 from ..jobs import render_jobs
 from ..tasks import Task, summarize
@@ -18,6 +19,12 @@ from . import fetch, fs, shell, web
 from .names import GATED_TOOLS, LSP_TOOLS, NET_TOOLS, READ_TOOLS, SUBAGENT_TOOLS  # noqa: F401
 
 _BASH_TIMEOUT = 60
+
+_ASK_USER_EMPTY = "ask_user needs at least one question, each with at least one option."
+_ASK_USER_NO_UI = (
+    "Can't ask the user — no interactive UI here. Proceed with your best judgment."
+)
+_ASK_USER_CANCELLED = "User dismissed the prompt without answering."
 
 
 # --- tool implementations (module-level so they can be registered onto the main
@@ -209,6 +216,34 @@ def update_tasks(ctx: RunContext[Deps], tasks: list[Task]) -> str:
     visible; skip it for single-step requests. No approval is needed."""
     ctx.deps.tasks.replace(tasks)
     return summarize(ctx.deps.tasks.items)
+
+
+async def ask_user(ctx: RunContext[Deps], questions: list[Question]) -> str:
+    """Ask the user to choose between concrete options, pausing your turn until
+    they answer. Use this only when the user's decision changes what you do next
+    and you can't settle it yourself or from the code — not for things you can
+    verify or reasonably assume.
+
+    Pass 1–4 questions. Each is {question, header, options, multi}: `header` is a
+    short label the answer is returned under; `options` is a list of {label,
+    description} choices (description optional); set `multi` true to let the user
+    pick several. A free-text field is offered on every question automatically —
+    don't add an "other" option yourself.
+
+    Returns a JSON object keyed by each question's `header`: a single-select
+    answer is the chosen label (or the user's typed free text); a multi-select
+    answer is a list of chosen labels. If there's no interactive UI, or the user
+    dismisses the prompt, you get a short note instead — proceed with your best
+    judgment."""
+    coerced = coerce_questions(questions)
+    if not coerced:
+        return _ASK_USER_EMPTY
+    if ctx.deps.ask_user is None:
+        return _ASK_USER_NO_UI
+    answers = await ctx.deps.ask_user(coerced)
+    if not answers:
+        return _ASK_USER_CANCELLED
+    return answers_to_json(answers)
 
 
 async def web_search(
@@ -512,6 +547,7 @@ class BuiltinToolProvider:
         agent.tool(activate_skill)
         agent.tool(read_skill_file)
         agent.tool(update_tasks)
+        agent.tool(ask_user)
         agent.tool(spawn_agent)
         if self._combined_job_tool:
             agent.tool(job)
