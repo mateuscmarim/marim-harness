@@ -11,6 +11,7 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "pyyaml>=6",
     "textual>=0.80",
+    "multilspy>=0.0.10",
 ]
 
 [project.scripts]
