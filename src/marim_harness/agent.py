@@ -266,11 +266,14 @@ class Harness:
         """Fire the SessionEnd hook on teardown. Observe-only."""
         await self.hooks.session_end(reason)
 
-    async def run_turn(self, prompt: str, event_stream_handler=None) -> str:
-        """Run the agent until it produces a final text answer, looping through
-        any approval rounds. Returns the final text output."""
-        await self._maybe_compact()
-        typed = prompt  # what the user actually typed; stays the prompt's suffix
+    async def _assemble_prompt(self, typed: str) -> str:
+        """Build the turn's prompt from what the user ``typed``, prepending any
+        pending context — a finished-jobs digest, the prior turn's actionable
+        error note, SessionStart-injected context, and UserPromptSubmit hook
+        output — then wrapping the injected prefix in the turn-context envelope
+        so a resumed session can recover just the typed text. The one-shot notes
+        and the digest are consumed here."""
+        prompt = typed
         digest = self.deps.jobs.take_finished_digest()
         if digest:
             prompt = f"{digest}\n\n{prompt}"
@@ -293,7 +296,13 @@ class Harness:
         if prompt != typed:
             injected = prompt[: len(prompt) - len(typed)].rstrip("\n")
             prompt = wrap_turn_context(injected, typed)
-        user_prompt: Optional[str] = prompt
+        return prompt
+
+    async def run_turn(self, prompt: str, event_stream_handler=None) -> str:
+        """Run the agent until it produces a final text answer, looping through
+        any approval rounds. Returns the final text output."""
+        await self._maybe_compact()
+        user_prompt: Optional[str] = await self._assemble_prompt(prompt)
         deferred_results = None
         # Offer only the live servers that aren't disabled — a server muted at
         # runtime stays connected but its tools are withheld from the model.
