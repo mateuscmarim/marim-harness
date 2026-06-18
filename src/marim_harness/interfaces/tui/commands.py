@@ -181,7 +181,7 @@ async def _cmd_skill(app: HarnessApp, arg: str) -> None:
         if not skills:
             await app.post_system(
                 "No skills found. Drop a skill directory under `.marim/skills/` "
-                "(or `.claude/skills/`) with a `SKILL.md` inside."
+                "or `~/.config/marim/skills/` with a `SKILL.md` inside."
             )
             return
         lines = ["**Skills**", ""]
@@ -301,6 +301,64 @@ async def _cmd_usage(app: HarnessApp, arg: str) -> None:
     await app.post_system("\n".join(lines))
 
 
+async def _cmd_worktree(app: HarnessApp, arg: str) -> None:
+    from ...workspace.worktree import (
+        WorktreeError,
+        create_or_reuse_worktree,
+        list_worktrees,
+        remove_worktree,
+        repo_root,
+    )
+
+    ws = app.harness.deps.workspace_root
+    root = repo_root(ws)
+    if root is None:
+        await app.post_system("Not a git repository.")
+        return
+
+    sub, _, rest = arg.partition(" ")
+    rest = rest.strip()
+    if sub in ("", "list"):
+        try:
+            rows = list_worktrees(root, current=ws)
+        except WorktreeError as exc:
+            await app.post_system(f"Could not list worktrees: {exc}")
+            return
+        lines = ["| | branch | path |", "|---|---|---|"]
+        for r in rows:
+            marker = "•" if r.is_current else ""
+            branch = r.branch or "(detached)"
+            lines.append(f"| {marker} | `{branch}` | `{r.path}` |")
+        await app.post_system("\n".join(lines))
+    elif sub == "create":
+        if not rest:
+            await app.post_system("Usage: /worktree create <branch>")
+            return
+        try:
+            path = create_or_reuse_worktree(root, rest)
+        except WorktreeError as exc:
+            await app.post_system(f"Could not create worktree: {exc}")
+            return
+        await app.post_system(
+            f"Created worktree at `{path}`.\n"
+            f"Launch into it with `marim --worktree {rest}` in a new terminal."
+        )
+    elif sub == "remove":
+        if not rest:
+            await app.post_system("Usage: /worktree remove <branch>")
+            return
+        try:
+            remove_worktree(root, rest)
+        except WorktreeError as exc:
+            await app.post_system(f"Could not remove worktree: {exc}")
+            return
+        await app.post_system(f"Removed worktree for `{rest}`.")
+    else:
+        await app.post_system(
+            "Usage: /worktree [list | create <branch> | remove <branch>]"
+        )
+
+
 async def _cmd_settings(app: HarnessApp, arg: str) -> None:
     app.open_settings()
 
@@ -323,6 +381,11 @@ COMMANDS: list[Command] = [
     Command("skill", "list or run skills: /skill [name [context]]", _cmd_skill),
     Command("mcp", "list MCP servers or toggle them: /mcp [enable|disable <name|all>]", _cmd_mcp),
     Command("usage", "show token usage split and estimated cost", _cmd_usage, aliases=("cost",)),
+    Command(
+        "worktree",
+        "manage git worktrees: /worktree [list|create <b>|remove <b>]",
+        _cmd_worktree,
+    ),
     Command("settings", "open the settings screen", _cmd_settings, aliases=("config",)),
     Command("exit", "quit the harness", _cmd_exit, aliases=("quit",)),
 ]

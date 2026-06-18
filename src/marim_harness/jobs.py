@@ -19,11 +19,11 @@ and are cancelled on exit. The agent reaches results by *pulling*
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable, Optional
+from typing import Awaitable, Callable, Literal, Optional
 
 logger = logging.getLogger(__name__)
 
-Status = str  # "running" | "done" | "failed" | "cancelled"
+Status = Literal["running", "done", "failed", "cancelled"]
 
 _GLYPH = {"running": "▸", "done": "+", "failed": "x", "cancelled": "x"}
 

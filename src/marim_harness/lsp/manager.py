@@ -161,7 +161,8 @@ class LspManager:
         server, _lang, err = await self._server_for(path)
         if err:
             return err
-        assert server is not None
+        if server is None:
+            return f"goto_definition: no server available for {path!r}."
         res, err = await self._call(
             server.request_definition(path, line - 1, col - 1), "goto_definition"
         )
@@ -171,7 +172,8 @@ class LspManager:
         server, _lang, err = await self._server_for(path)
         if err:
             return err
-        assert server is not None
+        if server is None:
+            return f"find_references: no server available for {path!r}."
         res, err = await self._call(
             server.request_references(path, line - 1, col - 1), "find_references"
         )
@@ -181,7 +183,8 @@ class LspManager:
         server, _lang, err = await self._server_for(path)
         if err:
             return err
-        assert server is not None
+        if server is None:
+            return f"hover: no server available for {path!r}."
         res, err = await self._call(
             server.request_hover(path, line - 1, col - 1), "hover"
         )
@@ -193,7 +196,8 @@ class LspManager:
         server, _lang, err = await self._server_for(path)
         if err:
             return err
-        assert server is not None
+        if server is None:
+            return f"document_symbols: no server available for {path!r}."
         res, err = await self._call(
             server.request_document_symbols(path), "document_symbols"
         )
@@ -238,7 +242,8 @@ class LspManager:
         server, language, err = await self._server_for(path)
         if err:
             return err
-        assert server is not None
+        if server is None:
+            return f"diagnostics: no server available for {path!r}."
         collector = self._collectors.get(language or "")
         if collector is None or not collector.enabled:
             return f"{path}: diagnostics unavailable for this language server."

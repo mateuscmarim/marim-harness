@@ -6,9 +6,12 @@ navigates over ``entries`` and the app appends submissions via ``add``.
 """
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 def default_history_path() -> Path:
@@ -39,9 +42,11 @@ class PromptHistory:
             try:
                 value = json.loads(line)
             except json.JSONDecodeError:
+                logger.debug("skipping corrupt line in %s", self.path)
                 continue  # skip a corrupt line rather than lose the whole history
             if isinstance(value, str):
                 entries.append(value)
+        logger.debug("loaded %d prompt history entries from %s", len(entries), self.path)
         return entries[-self.max_entries:]
 
     def add(self, text: str) -> None:

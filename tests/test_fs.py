@@ -260,3 +260,32 @@ def test_tree_truncates_huge_listings(tmp_path: Path):
     out = fs.tree(tmp_path, ".", depth=1)
     assert "(truncated)" in out
     assert len(out.splitlines()) == fs._MAX_TREE_ENTRIES + 1  # entries + marker
+
+
+def test_tree_lists_but_does_not_descend_worktrees(tmp_path: Path):
+    wt = tmp_path / ".worktrees" / "feat-x"
+    wt.mkdir(parents=True)
+    (wt / "secret.txt").write_text("x")
+    out = fs.tree(tmp_path, ".", depth=3)
+    assert ".worktrees/" in out
+    assert "secret.txt" not in out
+
+
+def test_grep_skips_worktrees(tmp_path: Path):
+    (tmp_path / "main.txt").write_text("needle here\n")
+    wt = tmp_path / ".worktrees" / "feat-x"
+    wt.mkdir(parents=True)
+    (wt / "copy.txt").write_text("needle here\n")
+    out = fs.grep(tmp_path, "needle")
+    assert "main.txt" in out
+    assert ".worktrees" not in out
+
+
+def test_glob_skips_worktrees(tmp_path: Path):
+    (tmp_path / "a.py").write_text("x")
+    wt = tmp_path / ".worktrees" / "feat-x"
+    wt.mkdir(parents=True)
+    (wt / "b.py").write_text("x")
+    out = fs.glob_files(tmp_path, "**/*.py")
+    assert "a.py" in out
+    assert ".worktrees" not in out

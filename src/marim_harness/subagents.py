@@ -110,7 +110,8 @@ class SubagentRunner:
         sub, err = self.build(type, max_output_chars)
         if err is not None:
             return err
-        assert sub is not None  # err is None ⇒ build returned an agent
+        if sub is None:
+            return f"Failed to build sub-agent {type!r}."
         granted, unknown = self.mcp.granted_servers(mcp_names)
         await self.hooks.subagent_start(type, task)
         result = await sub.run(
@@ -138,7 +139,8 @@ class SubagentRunner:
         sub, err = self.build(type, max_output_chars)
         if err is not None:
             return err
-        assert sub is not None  # err is None ⇒ build returned an agent
+        if sub is None:
+            return f"Failed to build sub-agent {type!r}."
         granted, unknown = self.mcp.granted_servers(mcp_names)
         await self.hooks.subagent_start(type, task)
         result = await sub.run(task, deps=self.deps, toolsets=granted)

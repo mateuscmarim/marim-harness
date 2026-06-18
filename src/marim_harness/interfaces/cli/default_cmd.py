@@ -37,12 +37,37 @@ def _build_parser() -> argparse.ArgumentParser:
         "--mode", choices=["plan", "auto"], default=None,
         help="headless permission mode (default: auto). 'ask' needs the TUI",
     )
+    p.add_argument(
+        "--worktree", metavar="BRANCH", default=None,
+        help="run inside a git worktree for BRANCH under <repo>/.worktrees/, "
+             "creating it (from current HEAD) or reusing it",
+    )
     return p
 
 
 def _is_headless(prompt, *, stdin_isatty: bool) -> bool:
     """Headless when an explicit prompt/flag was given, or stdin is piped."""
     return prompt is not None or not stdin_isatty
+
+
+def _enter_worktree(workspace, branch, err):
+    """Resolve `workspace` to a git worktree for `branch`. Returns the worktree
+    path, or None after printing an error to `err`."""
+    from ...workspace.worktree import (
+        WorktreeError,
+        create_or_reuse_worktree,
+        repo_root,
+    )
+
+    root = repo_root(workspace)
+    if root is None:
+        print(f"--worktree: {workspace} is not a git repository", file=err)
+        return None
+    try:
+        return create_or_reuse_worktree(root, branch)
+    except WorktreeError as exc:
+        print(f"--worktree: {exc}", file=err)
+        return None
 
 
 def run_default(argv, *, stdin=None, out=None, err=None) -> int:
@@ -52,6 +77,11 @@ def run_default(argv, *, stdin=None, out=None, err=None) -> int:
 
     args = _build_parser().parse_args(argv)
     workspace = Path(args.workspace).resolve() if args.workspace else Path.cwd()
+
+    if args.worktree:
+        workspace = _enter_worktree(workspace, args.worktree, err)
+        if workspace is None:
+            return 2
 
     if _is_headless(args.prompt, stdin_isatty=stdin.isatty()):
         prompt = args.prompt if isinstance(args.prompt, str) else stdin.read()

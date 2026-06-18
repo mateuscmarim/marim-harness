@@ -2,8 +2,8 @@
 
 A skill is a *directory* whose name is its identity, containing a ``SKILL.md``
 (YAML frontmatter + markdown body) and optionally bundling ``scripts/``,
-``references/``, and ``assets/``. marim discovers skills from four roots in
-precedence order — project before global, marim before claude within a scope —
+``references/``, and ``assets/``. marim discovers skills from two roots in
+precedence order — project before global —
 injects a one-line ``name — description`` index into the prompt each turn, and
 loads full bodies and bundled files on demand (the standard's progressive
 disclosure). Scripts run through the ordinary ``bash`` tool using the absolute
@@ -14,6 +14,7 @@ frontmatter, missing description, name/dir mismatch, illegal name) is skipped,
 never fatal.
 """
 
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,6 +23,8 @@ import yaml
 
 from ..config import config_dir
 from .fs import WorkspaceError, resolve_in_workspace
+
+logger = logging.getLogger(__name__)
 
 _SKILL_FILE = "SKILL.md"
 # Per the spec: 1-64 chars, lowercase alphanumerics and single hyphens, no
@@ -34,7 +37,7 @@ _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)\Z", re.DOTALL)
 class Skill:
     """One discovered skill: its identity, where it lives, and its metadata.
     ``root`` is the skill's own (absolute) directory; ``source`` names the
-    discovery root it came from (e.g. ``project`` or ``global/.claude``)."""
+    discovery root it came from (e.g. ``project`` or ``global``)."""
 
     name: str
     description: str
@@ -46,14 +49,11 @@ class Skill:
 
 
 def skill_roots(workspace_root) -> list[tuple[str, Path]]:
-    """The four discovery roots, highest precedence first: project over global,
-    marim over claude within each scope."""
+    """The two discovery roots, highest precedence first: project over global."""
     ws = Path(workspace_root)
     return [
         ("project", ws / ".marim" / "skills"),
-        ("project/.claude", ws / ".claude" / "skills"),
         ("global", config_dir() / "skills"),
-        ("global/.claude", Path.home() / ".claude" / "skills"),
     ]
 
 
@@ -131,7 +131,8 @@ def read_skill_body(skill: Skill) -> str:
     gone (e.g. deleted between discovery and read)."""
     try:
         return (skill.root / _SKILL_FILE).read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    except (OSError, UnicodeDecodeError) as exc:
+        logger.debug("failed to read skill %s: %s", skill.name, exc)
         return f"Skill {skill.name!r} has no readable {_SKILL_FILE}."
 
 
@@ -147,6 +148,7 @@ def read_bundled_file(skill: Skill, relpath: str) -> str:
     try:
         return path.read_text(errors="replace")
     except OSError as exc:
+        logger.debug("failed to read bundled file %s in skill %s: %s", relpath, skill.name, exc)
         return f"could not read {relpath}: {exc}"
 
 
