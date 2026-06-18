@@ -18,6 +18,7 @@ from .compaction import (
 from .deps import Deps
 from .hooks.dispatch import TurnHooks
 from .instructions import register_instructions
+from .lsp.manager import LspManager
 from .mcp import McpManager
 from .permissions import resolve_approvals
 from .session import SessionController, SessionManager, SessionStore
@@ -175,6 +176,10 @@ class Harness:
         self.mcp = McpManager(cfg.mcp_servers or [], set(cfg.mcp_disabled or []))
         register_instructions(self.agent, self.mcp, cfg.proactive_memory)
         self.deps = deps
+        # Session-scoped LSP server pool, reachable by the navigation/diagnostics
+        # tools through deps. Subagents share this deps object, so they get LSP too.
+        self.lsp = LspManager(deps.workspace_root)
+        self.deps.lsp = self.lsp
         self.model_label = cfg.model_label
         # The model object used for each turn (swappable at runtime), the source
         # that builds new ones, and the id of the active model.
@@ -278,6 +283,7 @@ class Harness:
 
     async def aclose(self) -> None:
         await self.mcp.aclose()
+        await self.lsp.aclose()
 
     async def disable_server(self, name: str) -> None:
         self.mcp.disable_server(name, self.deps.workspace_root)
