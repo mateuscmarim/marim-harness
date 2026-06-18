@@ -232,6 +232,12 @@ class SubAgentWidget(Collapsible):
     body is a live stream of the sub-agent's own text and tool calls, mounted as
     child widgets as its events arrive."""
 
+    DEFAULT_CSS = """
+    SubAgentWidget .subagent-usage {
+        color: $text-muted;
+    }
+    """
+
     def __init__(
         self, agent_type: str, agent_task: str, collapsed: bool = False
     ) -> None:
@@ -243,10 +249,18 @@ class SubAgentWidget(Collapsible):
         # legible at a glance without expanding each stream.
         self.activity = ""
         self.tool_count = 0
-        # Live token usage, shown in the (collapsed) title so a fan-out of agents
-        # exposes each one's consumption at a glance.
+        # Live token usage. The total + cost ride in the (collapsed) title so a
+        # fan-out exposes each agent's consumption at a glance; the full cache
+        # split is reserved for the expanded body, where there's room for it.
         self.tokens = 0
-        self.body = Vertical(classes="subagent-body")
+        self.cost_text: str | None = None
+        self.split_text = ""
+        # A muted header line inside the expanded body carrying the detailed
+        # split + cost (mirrors the session status bar). Hidden until populated
+        # so an as-yet-unmetered agent doesn't show a blank line.
+        self._usage_line = Static("", classes="subagent-usage")
+        self._usage_line.display = False
+        self.body = Vertical(self._usage_line, classes="subagent-body")
         super().__init__(self.body, title=self._summary(), collapsed=collapsed)
 
     def _summary(self) -> Content:
@@ -256,9 +270,13 @@ class SubAgentWidget(Collapsible):
         # Only a running agent carries an activity tail; a finished one is clean.
         if self.status == "pending" and self.activity:
             parts.append(self.activity)
-        # The token count persists across finish — the final cost stays visible.
+        # Token count and cost persist across finish — the final spend stays
+        # visible. The three-way split is intentionally NOT here: it would bloat
+        # the title and hurt fan-out legibility, so it lives in the body instead.
         if self.tokens:
             parts.append(f"{human_tokens(self.tokens)} tok")
+        if self.cost_text:
+            parts.append(self.cost_text)
         # Collapsible titles are parsed as Textual markup; the task text is
         # untrusted and may contain bracket sequences escape() can't neutralise,
         # so a literal Content bypasses markup parsing entirely.
@@ -268,6 +286,22 @@ class SubAgentWidget(Collapsible):
         """Update the sub-agent's running token total and refresh the title."""
         self.tokens = n
         self.title = self._summary()
+
+    def set_usage(self, total: int, cost_text: str | None, split_text: str) -> None:
+        """Fold a full usage reading in: the title shows the running ``total`` (and
+        ``cost_text`` when priced), while the expanded body's muted header shows the
+        detailed ``split_text`` + cost — the status-bar view, where there's room."""
+        self.cost_text = cost_text
+        self.split_text = split_text
+        self.set_tokens(total)  # updates the token total + repaints the title
+        self._refresh_usage_line()
+
+    def _refresh_usage_line(self) -> None:
+        detail = self.split_text
+        if self.cost_text:
+            detail = f"{detail} · {self.cost_text}" if detail else self.cost_text
+        self._usage_line.update(detail)
+        self._usage_line.display = bool(detail)
 
     def note_tool(self, tool_name: str) -> None:
         """Record that the sub-agent just called ``tool_name`` and refresh the

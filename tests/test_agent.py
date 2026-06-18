@@ -8,8 +8,8 @@ from pydantic_ai.models.function import FunctionModel
 
 from marim_harness.agent import Harness
 from marim_harness.deps import Deps
-from marim_harness.hooks.runner import HookRunner
 from marim_harness.hooks import events as hook_events
+from marim_harness.hooks.runner import HookRunner
 from marim_harness.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
 
@@ -19,6 +19,7 @@ def _edit_then_done_model() -> FunctionModel:
     Supports both non-streamed and streamed requests so tests using
     event_stream_handler (e.g. the Pre/PostToolUse hook test) work correctly."""
     import json as _json
+
     from pydantic_ai.models.function import DeltaToolCall
 
     state = {"n": 0}
@@ -1020,15 +1021,16 @@ async def test_run_subagent_restricts_tools_by_mode(tmp_path: Path):
 
 
 @pytest.mark.anyio
-async def test_subagent_handler_forwards_token_usage(tmp_path: Path):
+async def test_subagent_handler_forwards_run_usage(tmp_path: Path):
     """The sub-agent event handler tags each forwarded event with the run's live
-    total token count, so the UI can show it in the (collapsed) widget title."""
+    usage (the whole RunUsage), so the UI can show the token total, cache split,
+    and cost in the widget — not just a bare count."""
     from types import SimpleNamespace
 
     recorded: list = []
 
-    async def cb(stream_id, event, tokens):
-        recorded.append((stream_id, event, tokens))
+    async def cb(stream_id, event, usage):
+        recorded.append((stream_id, event, usage))
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto, on_subagent_event=cb)
     h = _make_harness(_text_model(), deps)
@@ -1038,12 +1040,14 @@ async def test_subagent_handler_forwards_token_usage(tmp_path: Path):
         yield "evt-a"
         yield "evt-b"
 
-    ctx = SimpleNamespace(usage=SimpleNamespace(total_tokens=4096))
+    usage = SimpleNamespace(total_tokens=4096)
+    ctx = SimpleNamespace(usage=usage)
     await handler(ctx, events())
 
+    # The full usage object is forwarded verbatim, tagged with the stream id.
     assert recorded == [
-        ("sid", "evt-a", 4096),
-        ("sid", "evt-b", 4096),
+        ("sid", "evt-a", usage),
+        ("sid", "evt-b", usage),
     ]
 
 
