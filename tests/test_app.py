@@ -3,8 +3,8 @@ from pathlib import Path
 import pytest
 
 from marim_harness.deps import Deps
-from marim_harness.permissions import Mode
 from marim_harness.interfaces.tui.app import HarnessApp
+from marim_harness.permissions import Mode
 
 
 def _app(tmp_path: Path) -> HarnessApp:
@@ -673,11 +673,11 @@ async def test_gated_tool_renders_one_widget_not_two(tmp_path: Path):
     pydantic_ai emit the call event twice for one tool_call_id (approval pass +
     execution pass). The log must still show a single finished ToolCallWidget,
     not an orphaned 'pending' entry plus a finished one."""
-    from pydantic_ai.models.function import FunctionModel, DeltaToolCall
+    from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
     from marim_harness.agent import Harness
-    from marim_harness.tools.provider import BuiltinToolProvider
     from marim_harness.interfaces.tui.widgets import ToolCallWidget
+    from marim_harness.tools.provider import BuiltinToolProvider
 
     state = {"n": 0}
 
@@ -911,6 +911,58 @@ async def test_subagent_event_without_widget_is_noop(tmp_path: Path):
         assert app.is_running is True
 
 
+@pytest.mark.anyio
+async def test_subagent_event_usage_populates_title_total_and_body_split(tmp_path: Path):
+    """A sub-agent event carrying a RunUsage drives the widget: the collapsed
+    title shows the running total, and the expanded body shows the full split."""
+    from pydantic_ai.messages import (
+        FunctionToolCallEvent,
+        PartStartEvent,
+        TextPart,
+        ToolCallPart,
+    )
+    from pydantic_ai.usage import RunUsage
+    from textual.widgets import Static
+
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+
+    spawn = FunctionToolCallEvent(
+        part=ToolCallPart(
+            tool_name="spawn_agent",
+            args={"type": "explore", "task": "look around"},
+            tool_call_id="s1",
+        )
+    )
+
+    async def spawn_gen():
+        yield spawn
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._on_events(None, spawn_gen())
+        await pilot.pause()
+        parent = app._tool_widgets["s1"]
+        assert isinstance(parent, SubAgentWidget)
+
+        usage = RunUsage(
+            input_tokens=56000, output_tokens=2000,
+            cache_read_tokens=50000, cache_write_tokens=5000,
+        )
+        await app._on_subagent_event(
+            "s1",
+            PartStartEvent(index=0, part=TextPart(content="checking")),
+            usage,
+        )
+        await pilot.pause()
+
+        # 56k in + 2k out = 58k total, shown compactly in the title.
+        assert "58k" in str(parent.title)
+        # The full split lands in the body (cost may be absent if unpriced).
+        usage_line = parent.body.query_one(".subagent-usage", Static)
+        assert "1k↑ 55k⚡ 2k↓" in str(usage_line.visual)
+
+
 def _app_with_manager(tmp_path: Path) -> HarnessApp:
     from pydantic_ai.models.test import TestModel
 
@@ -1099,8 +1151,8 @@ async def test_model_command_sets_model_directly(tmp_path: Path):
 async def test_model_command_opens_picker_from_input(tmp_path: Path):
     """Regression: `/model` (no arg) dispatches from the input handler, which is
     not a worker. The picker must open there without raising NoActiveWorker."""
-    from marim_harness.workspace import ModelEntry
     from marim_harness.interfaces.tui.model_picker import ModelPickerModal
+    from marim_harness.workspace import ModelEntry
 
     source = _FakeSource(entries=[ModelEntry(id="openai/gpt-5.2", name="GPT-5.2")])
     app = _switch_app(tmp_path, source)
@@ -1118,8 +1170,8 @@ async def test_model_command_opens_picker_from_input(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_model_picker_applies_choice(tmp_path: Path):
-    from marim_harness.workspace import ModelEntry
     from marim_harness.interfaces.tui.widgets import NoticeMessage
+    from marim_harness.workspace import ModelEntry
 
     source = _FakeSource(entries=[ModelEntry(id="openai/gpt-5.2", name="GPT-5.2")])
     app = _switch_app(tmp_path, source)
@@ -1161,8 +1213,8 @@ async def test_picker_opens_without_blocking_on_catalog_fetch(tmp_path: Path):
     holds the UI hostage."""
     import anyio
 
-    from marim_harness.workspace import ModelEntry
     from marim_harness.interfaces.tui.model_picker import ModelPickerModal
+    from marim_harness.workspace import ModelEntry
 
     gate = anyio.Event()
 
@@ -1430,6 +1482,7 @@ async def test_subagent_event_updates_token_usage_in_title(tmp_path: Path):
         FunctionToolCallEvent,
         ToolCallPart,
     )
+    from pydantic_ai.usage import RunUsage
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:
@@ -1445,8 +1498,10 @@ async def test_subagent_event_updates_token_usage_in_title(tmp_path: Path):
                 tool_name="grep", args={"pattern": "x"}, tool_call_id="t1"
             )
         )
-        # The handler forwards the run's live token count into the widget title.
-        await app._on_subagent_event("s1", tool_call, tokens=2000)
+        # The handler forwards the run's live usage; the title shows the total.
+        await app._on_subagent_event(
+            "s1", tool_call, RunUsage(input_tokens=1500, output_tokens=500)
+        )
         await pilot.pause()
         parent = app._tool_widgets["s1"]
         assert "2k" in str(parent.title)

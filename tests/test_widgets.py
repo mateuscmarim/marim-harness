@@ -603,3 +603,56 @@ async def test_subagent_token_usage_survives_finish():
         # The final token count stays visible after the run finishes.
         assert "2.4k" in str(w.title)
         assert "tok" in str(w.title)
+
+
+@pytest.mark.anyio
+async def test_subagent_title_shows_cost_alongside_tokens():
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+
+    app = _SubHarness()
+    async with app.run_test() as pilot:
+        w = app.query_one(SubAgentWidget)
+        await pilot.pause()
+        # set_usage carries the total (for the title) plus a cost and the full
+        # split (for the expanded body). The compact title gains the cost.
+        w.set_usage(1500, "$0.03", "1k↑ 0⚡ 500↓")
+        title = str(w.title)
+        assert "1.5k" in title and "tok" in title  # total still in the title
+        assert "$0.03" in title  # cost now sits alongside it
+        # …but the three-way split stays OUT of the title to keep it legible.
+        assert "⚡" not in title
+
+
+@pytest.mark.anyio
+async def test_subagent_expanded_body_shows_full_split_and_cost():
+    from textual.widgets import Static
+
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+
+    app = _SubHarness()
+    async with app.run_test() as pilot:
+        w = app.query_one(SubAgentWidget)
+        await pilot.pause()
+        w.set_usage(56000, "$0.12", "1k↑ 55k⚡ 2k↓")
+        await pilot.pause()
+        # The detailed split + cost live in the (expanded) body, where there's
+        # room — mirroring the session status bar.
+        usage_line = w.body.query_one(".subagent-usage", Static)
+        text = str(usage_line.visual)
+        assert "1k↑ 55k⚡ 2k↓" in text
+        assert "$0.12" in text
+
+
+@pytest.mark.anyio
+async def test_subagent_title_omits_cost_when_unpriced():
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+
+    app = _SubHarness()
+    async with app.run_test() as pilot:
+        w = app.query_one(SubAgentWidget)
+        await pilot.pause()
+        # An unpriced model yields no cost — the title shows tokens, no stray '$'.
+        w.set_usage(1500, None, "1k↑ 0⚡ 500↓")
+        title = str(w.title)
+        assert "1.5k" in title
+        assert "$" not in title

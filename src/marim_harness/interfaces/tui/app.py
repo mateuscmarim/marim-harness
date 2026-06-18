@@ -658,19 +658,22 @@ class HarnessApp(App):
             await self._dispatch_stream_event(event, sink)
 
     async def _on_subagent_event(
-        self, stream_id: str, event, tokens: int = 0
+        self, stream_id: str, event, usage=None
     ) -> None:
         """Route a spawned sub-agent's own stream into the SubAgentWidget that owns
         it. Shares _dispatch_stream_event with the top-level handler, but through a
         sub-agent sink that mounts into the widget body and tracks per-stream state.
-        ``tokens`` is the run's live total token count, surfaced in the (collapsed)
-        title. Fired on the app's event loop, so direct widget mutation is safe and
-        parallel streams stay race-free by stream_id."""
+        ``usage`` is the run's live RunUsage (or None): its total + cost ride in the
+        (collapsed) title and the full cache split lands in the expanded body. Fired
+        on the app's event loop, so direct widget mutation is safe and parallel
+        streams stay race-free by stream_id."""
         parent = self._tool_widgets.get(stream_id)
         if not isinstance(parent, SubAgentWidget):
             return
-        if tokens:
-            parent.set_tokens(tokens)
+        if usage is not None and usage.total_tokens:
+            cost, _ = resolve_cost(usage, self.harness.model_id)
+            cost_text = _format_cost(cost) if cost is not None else None
+            parent.set_usage(usage.total_tokens, cost_text, _format_token_split(usage))
         await self._dispatch_stream_event(event, _SubAgentSink(self, parent, stream_id))
 
     async def _dispatch_stream_event(self, event, sink: _StreamSink) -> None:

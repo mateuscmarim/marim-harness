@@ -17,10 +17,10 @@ ApprovalFn = Callable[[object], Awaitable[object]]
 SubAgentRunner = Callable[
     [str, str, str, Optional[list[str]], Optional[int]], Awaitable[str]
 ]
-# (stream_id, event, tokens) -> None. Forwards a sub-agent's run events to the UI
-# so it can stream them nested under the spawn, tagged with the run's live total
-# token count. Wired by the TUI; None when headless.
-SubAgentEventCb = Callable[[str, object, int], Awaitable[None]]
+# (stream_id, event, usage) -> None. Forwards a sub-agent's run events to the UI
+# so it can stream them nested under the spawn, tagged with the run's live usage
+# (a RunUsage, or None) so the UI can show the token total, cache split, and cost.
+SubAgentEventCb = Callable[[str, object, object], Awaitable[None]]
 # (type, task, mcp_names, max_output_chars) -> the sub-agent's final report. Like
 # SubAgentRunner but with no streaming — used to run a sub-agent as a detached
 # background job.
