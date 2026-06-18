@@ -74,6 +74,29 @@ class LspManager:
 
     # --- lifecycle -----------------------------------------------------------
 
+    async def _start_language(self, language: str) -> Optional[str]:
+        """Acquire the lock, double-check, start and register the server for
+        ``language``. Returns None on success or a short error string on failure.
+        Callers must have already verified the language is eligible (not disabled,
+        available, not already in self._servers)."""
+        async with self._lock:
+            if language in self._servers:  # double-checked after acquiring
+                return None
+            try:
+                server = self._factory(language, self.root)
+                await asyncio.wait_for(
+                    self._stack.enter_async_context(server.start_server()),
+                    timeout=self._start_timeout,
+                )
+            except Exception as exc:  # noqa: BLE001 — degrade to a message
+                logger.debug("failed to start %s server: %s", language, exc)
+                return f"Could not start the {language} language server: {exc}"
+            collector = DiagnosticsCollector()
+            collector.attach(server)
+            self._servers[language] = server
+            self._collectors[language] = collector
+            return None
+
     async def _server_for(
         self, path: str
     ) -> tuple[Optional[Any], Optional[str], Optional[str]]:
@@ -89,23 +112,10 @@ class LspManager:
             return None, language, f"No {language} language server available; {avail.hint}."
         if language in self._servers:
             return self._servers[language], language, None
-        async with self._lock:
-            if language in self._servers:  # double-checked after acquiring
-                return self._servers[language], language, None
-            try:
-                server = self._factory(language, self.root)
-                await asyncio.wait_for(
-                    self._stack.enter_async_context(server.start_server()),
-                    timeout=self._start_timeout,
-                )
-            except Exception as exc:  # noqa: BLE001 — degrade to a message
-                logger.debug("failed to start %s server: %s", language, exc)
-                return None, language, f"Could not start the {language} language server: {exc}"
-            collector = DiagnosticsCollector()
-            collector.attach(server)
-            self._servers[language] = server
-            self._collectors[language] = collector
-            return server, language, None
+        err = await self._start_language(language)
+        if err:
+            return None, language, err
+        return self._servers[language], language, None
 
     async def aclose(self) -> None:
         """Shut down every started language server. Safe to call when none ran."""
@@ -203,7 +213,7 @@ class LspManager:
         if not self._servers:
             return "No language server is active; open a file with another LSP tool first."
         lines: list[str] = []
-        for language, server in self._servers.items():
+        for language, server in list(self._servers.items()):
             res, err = await self._call(
                 server.request_workspace_symbol(query), f"workspace_symbols[{language}]"
             )
@@ -219,25 +229,10 @@ class LspManager:
 
     async def _start_named(self, language: str) -> None:
         """Lazily start a server by language name (no path), for workspace_symbols.
-        Mirrors _server_for's start path; failures are swallowed (best-effort)."""
+        Delegates to _start_language; failures are swallowed (best-effort)."""
         if language in self._servers:
             return
-        async with self._lock:
-            if language in self._servers:
-                return
-            try:
-                server = self._factory(language, self.root)
-                await asyncio.wait_for(
-                    self._stack.enter_async_context(server.start_server()),
-                    timeout=self._start_timeout,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("failed to start %s server: %s", language, exc)
-                return
-            collector = DiagnosticsCollector()
-            collector.attach(server)
-            self._servers[language] = server
-            self._collectors[language] = collector
+        await self._start_language(language)  # ignore returned error — best-effort
 
     async def diagnostics(self, path: str, *, settle: float = 1.5) -> str:
         server, language, err = await self._server_for(path)

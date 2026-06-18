@@ -135,6 +135,42 @@ async def test_hover_and_document_symbols(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_workspace_symbols_aggregates(tmp_path):
+    """workspace_symbols returns aggregated, 1-based-line formatted results.
+
+    To ensure a server is already in the pool (avoiding dependency on
+    locally_installed_languages()), we first trigger a server via goto_definition,
+    then call workspace_symbols. The fake returns a symbol named "foo" at
+    range.start.line == 3, so the formatted output must contain "a.py:4".
+    """
+    (tmp_path / "m.py").write_text("x = 1\n")
+    fakes: list = []
+    mgr = _manager(tmp_path, fakes)
+    # Seed the pool with a running server.
+    await mgr.goto_definition("m.py", 1, 1)
+    assert len(mgr._servers) == 1, "server should be in pool after goto_definition"
+
+    out = await mgr.workspace_symbols("foo")
+    assert "foo" in out
+    assert "a.py:4" in out  # line 3 (0-based) → 4 (1-based)
+    await mgr.aclose()
+
+
+@pytest.mark.anyio
+async def test_diagnostics_no_diagnostics_pushed(tmp_path):
+    """With the fake server's on_notification accepting registration without error,
+    collector.attach succeeds (enabled=True), but no diagnostics are ever pushed.
+    diagnostics() should return the 'no diagnostics' string from format_diagnostics.
+    """
+    (tmp_path / "m.py").write_text("x = 1\n")
+    fakes: list = []
+    mgr = _manager(tmp_path, fakes)
+    out = await mgr.diagnostics("m.py")
+    assert "no diagnostics" in out
+    await mgr.aclose()
+
+
+@pytest.mark.anyio
 async def test_request_timeout_degrades(tmp_path):
     import asyncio
 
