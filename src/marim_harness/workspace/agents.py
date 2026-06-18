@@ -6,8 +6,8 @@ A sub-agent is launched by the main agent via the ``spawn_agent`` tool. It runs
 in isolation on the same model, with a tool reach decided by its definition
 intersected with the current mode (gated tools only in ``auto``). Two built-ins
 always exist — ``explore`` (read-only) and ``general`` (full toolset). Custom
-agents live in ``.marim/agents/<name>.md`` (and the parallel claude/global
-roots); their file body is the role's system prompt and an optional ``tools:``
+agents live in ``.marim/agents/<name>.md`` (and the parallel global
+root); their file body is the role's system prompt and an optional ``tools:``
 frontmatter line narrows the toolset. A custom file may reuse a built-in name to
 override it.
 
@@ -77,14 +77,11 @@ def _builtins() -> dict[str, AgentDef]:
 
 
 def agent_roots(workspace_root) -> list[tuple[str, Path]]:
-    """The four discovery roots, highest precedence first: project over global,
-    marim over claude within each scope."""
+    """The two discovery roots, highest precedence first: project over global."""
     ws = Path(workspace_root)
     return [
         ("project", ws / ".marim" / "agents"),
-        ("project/.claude", ws / ".claude" / "agents"),
         ("global", config_dir() / "agents"),
-        ("global/.claude", Path.home() / ".claude" / "agents"),
     ]
 
 

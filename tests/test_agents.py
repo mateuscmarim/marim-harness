@@ -49,12 +49,23 @@ def isolated_home(tmp_path, monkeypatch):
 
 
 def test_agent_roots_order_and_precedence(tmp_path):
+    from marim_harness.config import config_dir
+
     ws = tmp_path / "ws"
     roots = agent_roots(ws)
     sources = [s for s, _ in roots]
-    assert sources == ["project", "project/.claude", "global", "global/.claude"]
+    # Only marim's own roots: project before global. No .claude interop roots.
+    assert sources == ["project", "global"]
     assert roots[0][1] == ws / ".marim" / "agents"
-    assert roots[1][1] == ws / ".claude" / "agents"
+    assert roots[1][1] == config_dir() / "agents"
+    assert not any(".claude" in str(p) for _, p in roots)
+
+
+def test_ignores_claude_agents_dir(isolated_home):
+    ws = isolated_home / "ws"
+    _make_agent(ws / ".claude" / "agents", "from-claude")
+    names = {a.name for a in discover_agents(ws)}
+    assert "from-claude" not in names
 
 
 def test_builtins_always_present(isolated_home):
