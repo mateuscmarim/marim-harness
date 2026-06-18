@@ -85,3 +85,55 @@ def test_lsp_tools_in_subagent_fns():
     for name in ("goto_definition", "find_references", "hover",
                  "document_symbols", "workspace_symbols", "diagnostics"):
         assert name in provider._SUBAGENT_FNS
+
+
+class _DiagLsp:
+    def __init__(self, report):
+        self.report = report
+        self.seen = []
+
+    async def diagnostics(self, path, *, settle=1.5):
+        self.seen.append((path, settle))
+        return self.report
+
+
+@pytest.mark.anyio
+async def test_edit_appends_diagnostics(tmp_path):
+    f = tmp_path / "m.py"
+    f.write_text("x = 1\n")
+    lsp = _DiagLsp("m.py:1:1: error: bad")
+    ctx = _Ctx(Deps(workspace_root=tmp_path, lsp=lsp))
+    from marim_harness.tools import fs
+    out = await provider.edit_file(ctx, "m.py", [fs.Edit(old_string="x = 1", new_string="y = 2")])
+    assert "edited m.py" in out
+    assert "m.py:1:1: error: bad" in out
+    assert lsp.seen and lsp.seen[0][0] == "m.py"
+
+
+@pytest.mark.anyio
+async def test_write_appends_diagnostics(tmp_path):
+    lsp = _DiagLsp("n.py:2:3: warning: meh")
+    ctx = _Ctx(Deps(workspace_root=tmp_path, lsp=lsp))
+    out = await provider.write_file(ctx, "n.py", "z = 3\n")
+    assert "wrote n.py" in out
+    assert "n.py:2:3: warning: meh" in out
+
+
+@pytest.mark.anyio
+async def test_edit_no_diagnostics_block_when_clean(tmp_path):
+    f = tmp_path / "m.py"
+    f.write_text("x = 1\n")
+    lsp = _DiagLsp("m.py: no diagnostics")
+    ctx = _Ctx(Deps(workspace_root=tmp_path, lsp=lsp))
+    from marim_harness.tools import fs
+    out = await provider.edit_file(ctx, "m.py", [fs.Edit(old_string="x = 1", new_string="y = 2")])
+    # A clean file adds no noise.
+    assert "no diagnostics" not in out
+    assert out.strip().endswith("edit)")
+
+
+@pytest.mark.anyio
+async def test_write_without_lsp_is_unchanged(tmp_path):
+    ctx = _Ctx(Deps(workspace_root=tmp_path, lsp=None))
+    out = await provider.write_file(ctx, "n.py", "z = 3\n")
+    assert out == "wrote n.py (6 bytes)"

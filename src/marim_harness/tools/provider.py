@@ -324,16 +324,37 @@ async def spawn_agent(
     )
 
 
-def write_file(ctx: RunContext[Deps], path: str, content: str) -> str:
+async def _with_diagnostics(ctx: RunContext[Deps], path: str, result: str) -> str:
+    """Append best-effort LSP diagnostics for ``path`` to a write/edit ``result``.
+
+    No-op when no LSP is wired, when the language isn't served, or when the file
+    is clean — so a successful edit only grows output when there's something the
+    model should fix. Never raises: any failure leaves ``result`` untouched."""
+    if ctx.deps.lsp is None:
+        return result
+    try:
+        report = await ctx.deps.lsp.diagnostics(path, settle=0.8)
+    except Exception:  # noqa: BLE001 — diagnostics must never fail an edit
+        return result
+    low = report.lower()
+    if not report or "no diagnostics" in low or "unavailable" in low \
+            or "no language server" in low or "disabled" in low:
+        return result
+    return f"{result}\n\ndiagnostics:\n{report}"
+
+
+async def write_file(ctx: RunContext[Deps], path: str, content: str) -> str:
     """Create or overwrite a file. `path` is relative to the workspace root."""
-    return fs.write_file(ctx.deps.workspace_root, path, content)
+    result = fs.write_file(ctx.deps.workspace_root, path, content)
+    return await _with_diagnostics(ctx, path, result)
 
 
-def edit_file(ctx: RunContext[Deps], path: str, edits: list[fs.Edit]) -> str:
+async def edit_file(ctx: RunContext[Deps], path: str, edits: list[fs.Edit]) -> str:
     """Apply one or more find/replace edits to a file, in order and
     all-or-nothing. Each edit is {old_string, new_string, replace_all?};
     old_string must match exactly once unless replace_all is set."""
-    return fs.edit_file(ctx.deps.workspace_root, path, edits)
+    result = fs.edit_file(ctx.deps.workspace_root, path, edits)
+    return await _with_diagnostics(ctx, path, result)
 
 
 async def bash(ctx: RunContext[Deps], command: str, background: bool = False) -> str:
