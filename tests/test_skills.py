@@ -42,7 +42,7 @@ def _make_skill(
 
 @pytest.fixture
 def isolated_home(tmp_path, monkeypatch):
-    """Point the global roots (config dir + ~/.claude) at tmp so tests don't see
+    """Point the global root (config dir) at tmp so tests don't see
     the real user's skills."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
@@ -50,13 +50,16 @@ def isolated_home(tmp_path, monkeypatch):
 
 
 def test_skill_roots_order_and_precedence(tmp_path):
+    from marim_harness.config import config_dir
+
     ws = tmp_path / "ws"
     roots = skill_roots(ws)
     sources = [s for s, _ in roots]
-    # project before global; marim before claude within a scope
-    assert sources == ["project", "project/.claude", "global", "global/.claude"]
+    # Only marim's own roots: project before global. No .claude interop roots.
+    assert sources == ["project", "global"]
     assert roots[0][1] == ws / ".marim" / "skills"
-    assert roots[1][1] == ws / ".claude" / "skills"
+    assert roots[1][1] == config_dir() / "skills"
+    assert not any(".claude" in str(p) for _, p in roots)
 
 
 def test_discover_finds_project_marim_skill(isolated_home):
@@ -118,12 +121,10 @@ def test_discover_skips_consecutive_hyphens(isolated_home):
     assert discover_skills(ws) == []
 
 
-def test_discover_claude_skills(isolated_home):
+def test_ignores_claude_skills_dir(isolated_home):
     ws = isolated_home / "ws"
     _make_skill(ws / ".claude" / "skills", "from-claude")
-    skills = discover_skills(ws)
-    assert [s.name for s in skills] == ["from-claude"]
-    assert skills[0].source == "project/.claude"
+    assert discover_skills(ws) == []
 
 
 def test_precedence_project_over_global(isolated_home, monkeypatch):
@@ -135,16 +136,6 @@ def test_precedence_project_over_global(isolated_home, monkeypatch):
     assert len(skills) == 1
     assert skills[0].source == "project"
     assert skills[0].description == "project version"
-
-
-def test_precedence_marim_over_claude(isolated_home):
-    ws = isolated_home / "ws"
-    _make_skill(ws / ".marim" / "skills", "dup", description="marim version")
-    _make_skill(ws / ".claude" / "skills", "dup", description="claude version")
-    skills = discover_skills(ws)
-    assert len(skills) == 1
-    assert skills[0].source == "project"
-    assert skills[0].description == "marim version"
 
 
 def test_disable_model_invocation_parsed(isolated_home):

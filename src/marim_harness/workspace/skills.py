@@ -2,8 +2,8 @@
 
 A skill is a *directory* whose name is its identity, containing a ``SKILL.md``
 (YAML frontmatter + markdown body) and optionally bundling ``scripts/``,
-``references/``, and ``assets/``. marim discovers skills from four roots in
-precedence order — project before global, marim before claude within a scope —
+``references/``, and ``assets/``. marim discovers skills from two roots in
+precedence order — project before global —
 injects a one-line ``name — description`` index into the prompt each turn, and
 loads full bodies and bundled files on demand (the standard's progressive
 disclosure). Scripts run through the ordinary ``bash`` tool using the absolute
@@ -34,7 +34,7 @@ _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)\Z", re.DOTALL)
 class Skill:
     """One discovered skill: its identity, where it lives, and its metadata.
     ``root`` is the skill's own (absolute) directory; ``source`` names the
-    discovery root it came from (e.g. ``project`` or ``global/.claude``)."""
+    discovery root it came from (e.g. ``project`` or ``global``)."""
 
     name: str
     description: str
@@ -46,14 +46,11 @@ class Skill:
 
 
 def skill_roots(workspace_root) -> list[tuple[str, Path]]:
-    """The four discovery roots, highest precedence first: project over global,
-    marim over claude within each scope."""
+    """The two discovery roots, highest precedence first: project over global."""
     ws = Path(workspace_root)
     return [
         ("project", ws / ".marim" / "skills"),
-        ("project/.claude", ws / ".claude" / "skills"),
         ("global", config_dir() / "skills"),
-        ("global/.claude", Path.home() / ".claude" / "skills"),
     ]
 
 

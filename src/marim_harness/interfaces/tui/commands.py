@@ -181,7 +181,7 @@ async def _cmd_skill(app: HarnessApp, arg: str) -> None:
         if not skills:
             await app.post_system(
                 "No skills found. Drop a skill directory under `.marim/skills/` "
-                "(or `.claude/skills/`) with a `SKILL.md` inside."
+                "or `~/.config/marim/skills/` with a `SKILL.md` inside."
             )
             return
         lines = ["**Skills**", ""]
