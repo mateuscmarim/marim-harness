@@ -1,0 +1,137 @@
+"""Git worktree operations: create/list/remove worktrees under <repo>/.worktrees.
+
+UI-agnostic. The only module that shells out to ``git`` for worktree management.
+Every function takes an already-resolved repo root (see ``repo_root``). Git
+failures surface as ``WorktreeError`` carrying git's stderr; callers decide how
+to present them. Nothing here imports Deps, Textual, or the agent.
+"""
+
+from __future__ import annotations
+
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+
+WORKTREES_DIRNAME = ".worktrees"
+
+
+class WorktreeError(Exception):
+    """A git worktree operation failed; message carries git's stderr."""
+
+
+@dataclass(frozen=True)
+class WorktreeInfo:
+    path: Path        # absolute worktree path
+    branch: str       # branch name without refs/heads/, or "" if detached
+    head: str         # commit sha
+    is_current: bool  # True if path == the `current` arg passed to list_worktrees
+
+
+def _git(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args], cwd=repo_root, capture_output=True, text=True
+    )
+
+
+def _check(result: subprocess.CompletedProcess[str]) -> subprocess.CompletedProcess[str]:
+    if result.returncode != 0:
+        raise WorktreeError(result.stderr.strip() or result.stdout.strip())
+    return result
+
+
+def repo_root(path: Path) -> Path | None:
+    """`git -C <path> rev-parse --show-toplevel`, or None if `path` is not in a
+    git repo, does not exist, or git is not installed. Returns the **main**
+    worktree's toplevel."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=path, capture_output=True, text=True,
+        )
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    if result.returncode != 0:
+        return None
+    return Path(result.stdout.strip())
+
+
+def _validate_branch(branch: str) -> None:
+    """Reject empty, leading '-', leading '/', or any '.'/'..'/empty segment.
+    Slashes are otherwise allowed (e.g. 'feat/x')."""
+    segments = branch.split("/")
+    if (
+        not branch
+        or branch.startswith("-")
+        or any(seg in ("", ".", "..") for seg in segments)
+    ):
+        raise WorktreeError(f"invalid branch name: {branch!r}")
+
+
+def _branch_exists(repo_root: Path, branch: str) -> bool:
+    return _git(
+        repo_root, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"
+    ).returncode == 0
+
+
+def list_worktrees(repo_root: Path, current: Path | None = None) -> list[WorktreeInfo]:
+    """Parse `git worktree list --porcelain` into WorktreeInfo rows. `is_current`
+    is True for the row whose path resolves to `current`."""
+    result = _check(_git(repo_root, "worktree", "list", "--porcelain"))
+    cur = current.resolve() if current is not None else None
+    infos: list[WorktreeInfo] = []
+    path: Path | None = None
+    head = ""
+    branch = ""
+
+    def flush() -> None:
+        nonlocal path, head, branch
+        if path is not None:
+            infos.append(WorktreeInfo(
+                path=path,
+                branch=branch,
+                head=head,
+                is_current=cur is not None and path.resolve() == cur,
+            ))
+        path, head, branch = None, "", ""
+
+    for line in result.stdout.splitlines():
+        if line.startswith("worktree "):
+            flush()
+            path = Path(line[len("worktree "):])
+        elif line.startswith("HEAD "):
+            head = line[len("HEAD "):]
+        elif line.startswith("branch "):
+            branch = line[len("branch "):].removeprefix("refs/heads/")
+        elif line == "detached":
+            branch = ""
+    flush()
+    return infos
+
+
+def create_or_reuse_worktree(repo_root: Path, branch: str) -> Path:
+    """Return the worktree path for `branch` under <repo_root>/.worktrees/<branch>.
+
+    - If a worktree for `branch` already exists, return its path (idempotent).
+    - Else if branch `branch` exists, add a worktree checking it out there.
+    - Else create `branch` from current HEAD and add the worktree.
+    Raises WorktreeError on validation failure or any git failure (e.g. the
+    branch is already checked out in another worktree)."""
+    _validate_branch(branch)
+    for info in list_worktrees(repo_root):
+        if info.branch == branch:
+            return info.path
+    target = repo_root / WORKTREES_DIRNAME / branch
+    if _branch_exists(repo_root, branch):
+        _check(_git(repo_root, "worktree", "add", str(target), branch))
+    else:
+        _check(_git(repo_root, "worktree", "add", "-b", branch, str(target)))
+    return target
+
+
+def remove_worktree(repo_root: Path, branch: str) -> None:
+    """`git worktree remove <repo_root>/.worktrees/<branch>`. Refuses if the
+    worktree is dirty or is the current one (git's own rules). Never deletes the
+    branch. Raises WorktreeError on failure."""
+    _validate_branch(branch)
+    target = repo_root / WORKTREES_DIRNAME / branch
+    _check(_git(repo_root, "worktree", "remove", str(target)))
