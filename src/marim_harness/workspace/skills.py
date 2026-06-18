@@ -14,6 +14,7 @@ frontmatter, missing description, name/dir mismatch, illegal name) is skipped,
 never fatal.
 """
 
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,6 +23,8 @@ import yaml
 
 from ..config import config_dir
 from .fs import WorkspaceError, resolve_in_workspace
+
+logger = logging.getLogger(__name__)
 
 _SKILL_FILE = "SKILL.md"
 # Per the spec: 1-64 chars, lowercase alphanumerics and single hyphens, no
@@ -128,7 +131,8 @@ def read_skill_body(skill: Skill) -> str:
     gone (e.g. deleted between discovery and read)."""
     try:
         return (skill.root / _SKILL_FILE).read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    except (OSError, UnicodeDecodeError) as exc:
+        logger.debug("failed to read skill %s: %s", skill.name, exc)
         return f"Skill {skill.name!r} has no readable {_SKILL_FILE}."
 
 
@@ -144,6 +148,7 @@ def read_bundled_file(skill: Skill, relpath: str) -> str:
     try:
         return path.read_text(errors="replace")
     except OSError as exc:
+        logger.debug("failed to read bundled file %s in skill %s: %s", relpath, skill.name, exc)
         return f"could not read {relpath}: {exc}"
 
 

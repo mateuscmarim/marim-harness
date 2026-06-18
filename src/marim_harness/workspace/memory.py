@@ -10,12 +10,15 @@ the ``remember`` tool and the ``/remember`` command, so the file format lives in
 one place. Nothing here ever raises into a turn — dirs are created on demand.
 """
 
+import logging
 import re
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..config import config_dir
+
+logger = logging.getLogger(__name__)
 
 _INDEX_FILE = "MEMORY.md"
 _VALID_TYPES = ("user", "feedback", "project", "reference")
@@ -55,7 +58,8 @@ def load_index(scope: MemoryScope) -> str | None:
     path = scope.root / _INDEX_FILE
     try:
         text = path.read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeDecodeError):
+    except (OSError, UnicodeDecodeError) as exc:
+        logger.debug("failed to load memory index %s: %s", path, exc)
         return None
     return text or None
 
@@ -71,7 +75,8 @@ def read_memory(scope: MemoryScope, name: str) -> str:
     path = scope.root / f"{slug}.md"
     try:
         return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    except (OSError, UnicodeDecodeError) as exc:
+        logger.debug("failed to read memory %s: %s", path, exc)
         return f"No {scope.name} memory named {slug!r}."
 
 
@@ -125,6 +130,7 @@ def save_memory(
     frontmatter = _render_frontmatter(slug=slug, description=description, mem_type=mem_type)
     path = scope.root / f"{slug}.md"
     path.write_text(f"{frontmatter}\n{body.strip()}\n", encoding="utf-8")
+    logger.debug("saved memory %s (%s)", path, scope.name)
 
     _upsert_index_line(scope, slug=slug, title=title, hook=description)
     return path

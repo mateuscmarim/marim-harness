@@ -13,7 +13,7 @@ Two strategies share the same head/tail split:
 """
 
 import logging
-from typing import Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from pydantic_ai import Agent
 from pydantic_ai.messages import (
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 _CHARS_PER_TOKEN = 4
 
-Summarizer = Callable[[list], Awaitable[str]]
+Summarizer = Callable[[list[Any]], Awaitable[str]]
 
 
 def estimate_tokens(history: list) -> int:
@@ -183,7 +183,7 @@ async def compact_history_with_summary(
     return history[:1] + history[start:], True
 
 
-Titler = Callable[[list], Awaitable[str]]
+Titler = Callable[[list[Any]], Awaitable[str]]
 
 _SUMMARY_INSTRUCTIONS = (
     "You compress a coding-session transcript into a dense summary so the agent "

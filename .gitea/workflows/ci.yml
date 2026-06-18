@@ -47,7 +47,14 @@ jobs:
         run: uv run pyright
 
       - name: Test (pytest)
-        run: uv run pytest -q
+        run: uv run pytest
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-py${{ matrix.python-version }}
+          path: coverage.xml
 
       # Trim cache to only what this run actually used, keeping the saved cache lean.
       - name: Prune uv cache
