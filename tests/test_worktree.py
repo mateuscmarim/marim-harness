@@ -102,3 +102,10 @@ def test_validate_rejects_bad_branches(repo: Path, bad: str):
 def test_validate_allows_slashes(repo: Path):
     path = wt.create_or_reuse_worktree(repo, "feat/nested/x")
     assert path == repo / ".worktrees" / "feat/nested/x"
+
+
+def test_repo_root_from_inside_linked_worktree(repo: Path):
+    """repo_root must return the MAIN worktree toplevel even when called from
+    inside a linked worktree — not the linked worktree's own path."""
+    linked = wt.create_or_reuse_worktree(repo, "feat/x")
+    assert wt.repo_root(linked) == repo.resolve()

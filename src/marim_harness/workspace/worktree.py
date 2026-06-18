@@ -40,19 +40,25 @@ def _check(result: subprocess.CompletedProcess[str]) -> subprocess.CompletedProc
 
 
 def repo_root(path: Path) -> Path | None:
-    """`git -C <path> rev-parse --show-toplevel`, or None if `path` is not in a
-    git repo, does not exist, or git is not installed. Returns the **main**
-    worktree's toplevel."""
+    """The main worktree's toplevel for the repo containing `path`, or None if
+    `path` is not in a git repo, does not exist, or git is not installed.
+
+    Uses the first row of `git worktree list --porcelain`, which git always
+    reports as the main worktree — so this returns the main toplevel even when
+    `path` is inside a linked worktree (e.g. under .worktrees/)."""
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
+            ["git", "worktree", "list", "--porcelain"],
             cwd=path, capture_output=True, text=True,
         )
     except (FileNotFoundError, NotADirectoryError):
         return None
     if result.returncode != 0:
         return None
-    return Path(result.stdout.strip())
+    for line in result.stdout.splitlines():
+        if line.startswith("worktree "):
+            return Path(line[len("worktree "):])
+    return None
 
 
 def _validate_branch(branch: str) -> None:
