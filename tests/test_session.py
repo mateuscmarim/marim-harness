@@ -315,6 +315,38 @@ async def test_pre_compact_fires_when_compaction_runs(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_pre_compact_fires_before_compaction_work(tmp_path):
+    """PreCompact must run BEFORE the compaction work, not after it. The whole
+    point of the hook (matching Claude Code) is to let a tool snapshot the full
+    transcript before it's summarized/collapsed — so the dispatch has to precede
+    the (potentially expensive) summarizer call, not trail it."""
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    order: list[str] = []
+
+    class _RecordingHooks:
+        async def dispatch(self, event, payload):
+            order.append(f"hook:{event}")
+
+    async def _summarizer(middle):
+        order.append("summarizer")
+        return "SUMMARY"
+
+    deps = Deps(workspace_root=tmp_path, hooks=_RecordingHooks())
+    ctrl = SessionController(
+        None, None, deps, max_context_tokens=1, keep_last_messages=1,
+        summarizer=_summarizer,
+    )
+    ctrl.history = [
+        ModelRequest(parts=[UserPromptPart(content="x" * 5000)]),
+        ModelRequest(parts=[UserPromptPart(content="y" * 5000)]),
+        ModelRequest(parts=[UserPromptPart(content="z" * 5000)]),
+    ]
+    await ctrl.maybe_compact()
+    assert order == [f"hook:{hook_events.PRE_COMPACT}", "summarizer"]
+
+
+@pytest.mark.anyio
 async def test_pre_compact_does_not_fire_without_compaction(tmp_path):
     log = tmp_path / "pc.log"
     cmd = _hook_cmd(tmp_path, log)

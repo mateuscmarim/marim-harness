@@ -8,6 +8,7 @@ from ..compaction import (
     Titler,
     compact_history,
     compact_history_with_summary,
+    will_compact,
 )
 from ..deps import Deps
 from ..hooks import events as hook_events
@@ -99,6 +100,25 @@ class SessionController:
 
     async def maybe_compact(self) -> None:
         before = len(self.history)
+        # Fire PreCompact *before* the compaction work, while the transcript is
+        # still full — matching Claude Code, where the hook can snapshot the
+        # conversation before it's summarized/collapsed. The predicate mirrors
+        # compact_history's own decision exactly, so the hook fires iff a
+        # compaction will actually happen.
+        if self.deps.hooks is not None and will_compact(
+            self.history, self.max_context_tokens, self.keep_last_messages
+        ):
+            await self.deps.hooks.dispatch(
+                hook_events.PRE_COMPACT,
+                base_payload(
+                    hook_events.PRE_COMPACT,
+                    session_id=self.store.session_id if self.store is not None else "",
+                    cwd=str(self.deps.workspace_root),
+                    transcript_path=str(self.store.path) if self.store is not None else "",
+                    trigger="auto",
+                    custom_instructions="",
+                ),
+            )
         if self.summarizer is not None:
             new_history, did = await compact_history_with_summary(
                 self.history, self.max_context_tokens, self.summarizer,
@@ -109,18 +129,6 @@ class SessionController:
                 self.history, self.max_context_tokens, self.keep_last_messages,
             )
         if did:
-            if self.deps.hooks is not None:
-                await self.deps.hooks.dispatch(
-                    hook_events.PRE_COMPACT,
-                    base_payload(
-                        hook_events.PRE_COMPACT,
-                        session_id=self.store.session_id if self.store is not None else "",
-                        cwd=str(self.deps.workspace_root),
-                        transcript_path=str(self.store.path) if self.store is not None else "",
-                        trigger="auto",
-                        custom_instructions="",
-                    ),
-                )
             self.history = new_history
             if self.on_compact is not None:
                 self.on_compact(before, len(self.history))
