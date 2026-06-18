@@ -1,8 +1,10 @@
+import anyio
 import pytest
 from textual.app import App
+from textual.widgets import OptionList
 
-from marim_harness.workspace import ModelEntry
 from marim_harness.interfaces.tui.model_picker import ModelPickerModal
+from marim_harness.workspace import ModelEntry
 
 _ENTRIES = [
     ModelEntry(id="anthropic/claude-sonnet-4-6", name="Claude Sonnet 4.6"),
@@ -74,3 +76,74 @@ async def test_empty_enter_does_not_dismiss_without_free_text():
         await pilot.press("escape")
         await pilot.pause()
     assert app.result is None
+
+
+class _PushHost(App):
+    """Pushes the modal (not push_screen_wait) so its on_mount/worker run, the way
+    the real app opens it — used to exercise the async catalog-loading path."""
+
+    def __init__(self, modal):
+        super().__init__()
+        self._modal = modal
+        self.result = "unset"
+
+    def on_mount(self) -> None:
+        self.push_screen(self._modal, lambda r: setattr(self, "result", r))
+
+
+@pytest.mark.anyio
+async def test_async_fetch_does_not_block_and_populates_when_it_returns():
+    gate = anyio.Event()
+
+    async def fetch():
+        await gate.wait()
+        return _ENTRIES
+
+    modal = ModelPickerModal(fetch=fetch)
+    app = _PushHost(modal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        opts = modal.query_one("#model-options", OptionList)
+        assert opts.option_count == 0  # modal is up though the fetch is pending
+        gate.set()
+        await pilot.pause()
+        await pilot.pause()
+        assert opts.option_count == len(_ENTRIES)  # populated once it returned
+
+
+@pytest.mark.anyio
+async def test_free_text_works_before_catalog_loads():
+    gate = anyio.Event()  # never set: the fetch stays pending the whole test
+
+    async def fetch():
+        await gate.wait()
+        return _ENTRIES
+
+    modal = ModelPickerModal(fetch=fetch)
+    app = _PushHost(modal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        for ch in "my/model":
+            await pilot.press(ch)
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+    assert app.result == "my/model"
+
+
+@pytest.mark.anyio
+async def test_empty_remote_catalog_allows_free_text_after_load():
+    async def fetch():
+        return []  # remote fetch failed/empty
+
+    modal = ModelPickerModal(fetch=fetch, is_local=False)
+    app = _PushHost(modal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        for ch in "raw/id":
+            await pilot.press(ch)
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+    assert app.result == "raw/id"

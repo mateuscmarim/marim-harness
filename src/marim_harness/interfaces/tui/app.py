@@ -388,8 +388,10 @@ class HarnessApp(App):
         )
 
     async def open_model_picker(self) -> None:
-        """Fetch the provider's catalog and let the user pick a model, applying
-        the choice to the harness. Degrades to free-text when no catalog loads.
+        """Open the picker and let the user choose a model, applying the choice to
+        the harness. The catalog loads inside the modal's own worker, so the
+        picker appears instantly even on a slow provider; it degrades to free-text
+        when no catalog loads.
 
         Uses the callback form of push_screen (not push_screen_wait) so it works
         when called straight from the command-dispatch path, which is not a
@@ -399,16 +401,11 @@ class HarnessApp(App):
         if source is None:
             await self.post_system("Model switching isn't available here.")
             return
-        entries = await source.list_models()
-        if not entries and not source.is_local:
-            await self.post_system(
-                "Couldn't fetch the model catalog — type a model id to set it directly."
-            )
         self.push_screen(
             ModelPickerModal(
-                entries,
-                allow_free_text=source.is_local or not entries,
                 current=self.harness.model_id,
+                fetch=source.list_models,
+                is_local=source.is_local,
             ),
             self._on_model_chosen,
         )

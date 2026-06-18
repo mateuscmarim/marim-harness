@@ -1155,6 +1155,35 @@ async def test_model_picker_cancel_keeps_model(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_picker_opens_without_blocking_on_catalog_fetch(tmp_path: Path):
+    """The picker must appear immediately even when the catalog fetch is slow —
+    the modal loads the catalog in its own worker, so a stalled provider never
+    holds the UI hostage."""
+    import anyio
+
+    from marim_harness.workspace import ModelEntry
+    from marim_harness.interfaces.tui.model_picker import ModelPickerModal
+
+    gate = anyio.Event()
+
+    class _SlowSource(_FakeSource):
+        async def list_models(self):
+            await gate.wait()
+            return [ModelEntry(id="openai/gpt-5.2", name="GPT-5.2")]
+
+    app = _switch_app(tmp_path, _SlowSource())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _submit(app, "/model")  # the input-handler path
+        await pilot.pause()
+        # picker is on screen even though list_models is still awaiting the gate
+        assert isinstance(app.screen, ModelPickerModal)
+        gate.set()  # let the fetch finish; nothing should have blocked
+        await pilot.pause()
+        await pilot.pause()
+
+
+@pytest.mark.anyio
 async def test_enter_keypress_submits_and_clears(tmp_path: Path):
     """Real key path: Enter routes through the prompt widget to the app, mounts
     the user message, clears the box, and starts a turn."""
