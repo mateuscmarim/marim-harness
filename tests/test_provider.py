@@ -96,6 +96,75 @@ def test_read_tool_executes_via_agent(tmp_path: Path):
     assert result is not None
 
 
+_JOB_FOUR = {"jobs", "job_output", "wait_for_job", "cancel_job"}
+
+
+def test_register_uses_four_job_tools_by_default():
+    agent = Agent(TestModel(), deps_type=Deps)
+    BuiltinToolProvider().register(agent)
+    names = _tool_names(agent)
+    assert _JOB_FOUR <= names
+    assert "job" not in names
+
+
+def test_register_combined_job_tool_replaces_the_four():
+    agent = Agent(TestModel(), deps_type=Deps)
+    BuiltinToolProvider(combined_job_tool=True).register(agent)
+    names = _tool_names(agent)
+    assert "job" in names
+    assert not (_JOB_FOUR & names)  # the four are gone
+
+
+def _job_ctx(tmp_path):
+    from types import SimpleNamespace
+
+    calls = {}
+
+    class FakeJobs:
+        def list(self):
+            calls["list"] = True
+            return []
+
+        def output(self, id):
+            calls["output"] = id
+            return f"out:{id}"
+
+        async def wait(self, id, timeout):
+            calls["wait"] = (id, timeout)
+            return f"waited:{id}:{timeout}"
+
+        async def cancel(self, id):
+            calls["cancel"] = id
+            return f"cancelled:{id}"
+
+    deps = Deps(workspace_root=tmp_path)
+    deps.jobs = FakeJobs()
+    return SimpleNamespace(deps=deps), calls
+
+
+@pytest.mark.anyio
+async def test_job_dispatches_each_action(tmp_path):
+    from marim_harness.tools.provider import job
+
+    ctx, calls = _job_ctx(tmp_path)
+    assert await job(ctx, "list") == "No background jobs."
+    assert calls["list"] is True
+    assert await job(ctx, "output", id="j1") == "out:j1"
+    assert await job(ctx, "wait", id="j2", timeout=5) == "waited:j2:5"
+    assert calls["wait"] == ("j2", 5)
+    assert await job(ctx, "cancel", id="j3") == "cancelled:j3"
+
+
+@pytest.mark.anyio
+async def test_job_requires_id_for_targeted_actions(tmp_path):
+    from marim_harness.tools.provider import job
+
+    ctx, _ = _job_ctx(tmp_path)
+    for action in ("output", "wait", "cancel"):
+        out = await job(ctx, action)  # no id
+        assert "id" in out.lower()  # a guidance message, not a crash
+
+
 @pytest.mark.anyio
 async def test_spawn_agent_forwards_mcp_foreground(tmp_path):
     from types import SimpleNamespace

@@ -71,7 +71,10 @@ def build_harness(
 
     harness = Harness(
         model=model,
-        provider=BuiltinToolProvider(register_lsp_tools=register_lsp_tools),
+        provider=BuiltinToolProvider(
+            register_lsp_tools=register_lsp_tools,
+            combined_job_tool=cfg.job_tool_combined,
+        ),
         deps=deps,
         instructions=INSTRUCTIONS,
         config=HarnessConfig(

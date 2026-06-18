@@ -415,6 +415,31 @@ async def cancel_job(ctx: RunContext[Deps], id: str) -> str:
     return await ctx.deps.jobs.cancel(id)
 
 
+async def job(
+    ctx: RunContext[Deps],
+    action: Literal["list", "output", "wait", "cancel"],
+    id: str = "",
+    timeout: float = 60,
+) -> str:
+    """Manage background jobs you've launched this session. `action`:
+    - "list": show every job with its id, kind (bash/agent), label, and status.
+    - "output": read job `id`'s output without blocking — final result if done,
+      live output so far for a running bash job.
+    - "wait": block until job `id` finishes (up to `timeout` seconds) and return
+      its result; a still-running note if the timeout elapses (the job keeps going).
+    - "cancel": stop running job `id` (kills its process or cancels its run).
+    `id` is required for every action except "list"; `timeout` applies only to "wait"."""
+    if action == "list":
+        return render_jobs(ctx.deps.jobs.list()) or "No background jobs."
+    if not id:
+        return f"job: action {action!r} needs an id (use action=\"list\" to find it)."
+    if action == "output":
+        return ctx.deps.jobs.output(id)
+    if action == "wait":
+        return await ctx.deps.jobs.wait(id, timeout)
+    return await ctx.deps.jobs.cancel(id)  # action == "cancel"
+
+
 # Name -> implementation for the tools a sub-agent may receive. The Harness
 # decides which names to grant; register_subagent registers exactly those.
 _SUBAGENT_FNS = {
@@ -450,12 +475,18 @@ class ToolProvider(Protocol):
 class BuiltinToolProvider:
     """Hand-written fs + shell tools backed by the pure functions in this package."""
 
-    def __init__(self, *, register_lsp_tools: bool = True) -> None:
+    def __init__(self, *, register_lsp_tools: bool = True,
+                 combined_job_tool: bool = False) -> None:
         """``register_lsp_tools`` gates the six LSP navigation tools for both the
         main agent and sub-agents. The harness derives it from the LSP config
         (``lsp_enabled and lsp_tools_enabled``); diagnostics-on-edit is wired
-        separately through ``deps.lsp`` and is unaffected by this flag."""
+        separately through ``deps.lsp`` and is unaffected by this flag.
+
+        ``combined_job_tool`` (prototype) swaps the four job tools
+        (jobs/job_output/wait_for_job/cancel_job) for a single ``job(action, …)``
+        tool. Job tools are main-agent only, so this affects ``register`` only."""
         self._register_lsp_tools = register_lsp_tools
+        self._combined_job_tool = combined_job_tool
 
     def register(self, agent: HarnessAgent) -> None:
         """Register the full main-agent toolset: read tools, the memory / skill /
@@ -482,10 +513,13 @@ class BuiltinToolProvider:
         agent.tool(read_skill_file)
         agent.tool(update_tasks)
         agent.tool(spawn_agent)
-        agent.tool(jobs)
-        agent.tool(job_output)
-        agent.tool(wait_for_job)
-        agent.tool(cancel_job)
+        if self._combined_job_tool:
+            agent.tool(job)
+        else:
+            agent.tool(jobs)
+            agent.tool(job_output)
+            agent.tool(wait_for_job)
+            agent.tool(cancel_job)
         agent.tool(requires_approval=True)(write_file)
         agent.tool(requires_approval=True)(edit_file)
         agent.tool(requires_approval=True, timeout=_BASH_TIMEOUT)(bash)

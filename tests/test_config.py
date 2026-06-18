@@ -220,6 +220,19 @@ def test_lsp_tools_switch_off(monkeypatch, raw):
     assert cfg.lsp_tools_enabled is False
 
 
+def test_job_tool_combined_defaults_off(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.delenv("MARIM_JOB_TOOL_COMBINED", raising=False)
+    assert load_config().job_tool_combined is False
+
+
+@pytest.mark.parametrize("raw", ["1", "true", "on", "yes"])
+def test_job_tool_combined_truthy_enables(monkeypatch, raw):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setenv("MARIM_JOB_TOOL_COMBINED", raw)
+    assert load_config().job_tool_combined is True
+
+
 def test_trust_project_hooks_defaults_false(monkeypatch):
     from marim_harness.config.model import load_config
     monkeypatch.delenv("MARIM_TRUST_PROJECT_HOOKS", raising=False)
