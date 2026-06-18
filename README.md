@@ -74,6 +74,8 @@ from the environment — they are never written to session files or logs.**
 | `MARIM_COMMAND_DENYLIST` | Comma/newline-separated patterns to block |
 | `MARIM_COMMAND_ALLOWLIST` | If non-empty, only matching commands are allowed |
 | `MARIM_TRUST_PROJECT_HOOKS` | Trust project-local `.marim/hooks.json` — supply-chain risk; only set in repositories you control (default: off) |
+| `MARIM_LSP` | LSP master switch (default: on). Falsey ⇒ no language servers start: the navigation tools are not registered and diagnostics-on-edit is a no-op |
+| `MARIM_LSP_TOOLS` | LSP navigation tools (default: on). Falsey (while `MARIM_LSP` is on) ⇒ the six navigation tools are not registered, but diagnostics-on-edit keeps running |
 
 `MARIM_COMMAND_DENYLIST` / `MARIM_COMMAND_ALLOWLIST` entries are regular
 expressions (a literal substring also works); deny takes precedence over allow.

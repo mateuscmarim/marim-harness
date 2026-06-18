@@ -15,7 +15,7 @@ from . import fetch, fs, shell, web
 # Re-exported for backward compatibility; defined in the leaf module ``names``
 # so importers (e.g. workspace.agents) don't pull in all of ``provider`` and
 # form an import cycle.
-from .names import GATED_TOOLS, NET_TOOLS, READ_TOOLS, SUBAGENT_TOOLS  # noqa: F401
+from .names import GATED_TOOLS, LSP_TOOLS, NET_TOOLS, READ_TOOLS, SUBAGENT_TOOLS  # noqa: F401
 
 _BASH_TIMEOUT = 60
 
@@ -450,6 +450,13 @@ class ToolProvider(Protocol):
 class BuiltinToolProvider:
     """Hand-written fs + shell tools backed by the pure functions in this package."""
 
+    def __init__(self, *, register_lsp_tools: bool = True) -> None:
+        """``register_lsp_tools`` gates the six LSP navigation tools for both the
+        main agent and sub-agents. The harness derives it from the LSP config
+        (``lsp_enabled and lsp_tools_enabled``); diagnostics-on-edit is wired
+        separately through ``deps.lsp`` and is unaffected by this flag."""
+        self._register_lsp_tools = register_lsp_tools
+
     def register(self, agent: HarnessAgent) -> None:
         """Register the full main-agent toolset: read tools, the memory / skill /
         task / spawn tools, and the workspace-mutating tools behind approval."""
@@ -460,12 +467,13 @@ class BuiltinToolProvider:
         agent.tool(glob)
         agent.tool(tree)
         agent.tool(grep)
-        agent.tool(goto_definition)
-        agent.tool(find_references)
-        agent.tool(hover)
-        agent.tool(document_symbols)
-        agent.tool(workspace_symbols)
-        agent.tool(diagnostics)
+        if self._register_lsp_tools:
+            agent.tool(goto_definition)
+            agent.tool(find_references)
+            agent.tool(hover)
+            agent.tool(document_symbols)
+            agent.tool(workspace_symbols)
+            agent.tool(diagnostics)
         agent.tool(web_search)
         agent.tool(fetch_url)
         agent.tool(remember)
@@ -488,6 +496,8 @@ class BuiltinToolProvider:
         which names the Harness grants, not by prompting mid-run. spawn_agent is
         never among them, so sub-agents can't recurse."""
         for name in sorted(set(tool_names)):
+            if not self._register_lsp_tools and name in LSP_TOOLS:
+                continue
             fn = _SUBAGENT_FNS.get(name)
             if fn is None:
                 continue

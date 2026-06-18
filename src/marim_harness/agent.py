@@ -144,6 +144,10 @@ class HarnessConfig:
     proactive_memory: bool = False
     mcp_servers: list = field(default_factory=list)
     mcp_disabled: Optional[set] = None
+    # LSP master switch. False ⇒ no LspManager is built (deps.lsp stays None), so
+    # diagnostics-on-edit no-ops. Navigation-tool registration is gated separately
+    # on the provider (see build_harness), keyed on lsp_enabled and lsp_tools_enabled.
+    lsp_enabled: bool = True
 
 
 class Harness:
@@ -178,7 +182,7 @@ class Harness:
         self.deps = deps
         # Session-scoped LSP server pool, reachable by the navigation/diagnostics
         # tools through deps. Subagents share this deps object, so they get LSP too.
-        self.lsp = LspManager(deps.workspace_root)
+        self.lsp = LspManager(deps.workspace_root) if cfg.lsp_enabled else None
         self.deps.lsp = self.lsp
         self.model_label = cfg.model_label
         # The model object used for each turn (swappable at runtime), the source

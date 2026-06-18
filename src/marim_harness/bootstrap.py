@@ -65,12 +65,17 @@ def build_harness(
         logger.warning("MCP config: %s", warning)
     mcp_disabled = disabled_server_names(mcp_specs)
 
+    # LSP navigation tools are registered only when LSP is on AND tools are on;
+    # diagnostics-on-edit is gated separately by lsp_enabled (the manager).
+    register_lsp_tools = cfg.lsp_enabled and cfg.lsp_tools_enabled
+
     harness = Harness(
         model=model,
-        provider=BuiltinToolProvider(),
+        provider=BuiltinToolProvider(register_lsp_tools=register_lsp_tools),
         deps=deps,
         instructions=INSTRUCTIONS,
         config=HarnessConfig(
+            lsp_enabled=cfg.lsp_enabled,
             model_label=model_source.label(model_id),
             store=store,
             manager=manager,
