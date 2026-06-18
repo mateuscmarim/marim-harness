@@ -28,6 +28,9 @@ class ModelConfig:
     # tools are not registered, but the manager still runs so diagnostics-on-edit
     # keeps grounding the agent after writes.
     lsp_tools_enabled: bool = True
+    # Prototype: collapse the four job tools (jobs/job_output/wait_for_job/
+    # cancel_job) into one job(action, …) tool. Off ⇒ the four separate tools.
+    job_tool_combined: bool = False
     # Shell-command allow/deny patterns (regex), enforced in the bash tool in
     # every mode. Empty lists -> no restriction.
     command_denylist: list[str] = field(default_factory=list)
@@ -47,6 +50,7 @@ def load_config() -> ModelConfig:
     trust_project_hooks = _bool_env("MARIM_TRUST_PROJECT_HOOKS", False)
     lsp_enabled = _bool_env("MARIM_LSP", True)
     lsp_tools_enabled = _bool_env("MARIM_LSP_TOOLS", True)
+    job_tool_combined = _bool_env("MARIM_JOB_TOOL_COMBINED", False)
     command_denylist = split_patterns(os.getenv("MARIM_COMMAND_DENYLIST", ""))
     command_allowlist = split_patterns(os.getenv("MARIM_COMMAND_ALLOWLIST", ""))
     if provider == "local":
@@ -60,6 +64,7 @@ def load_config() -> ModelConfig:
             trust_project_hooks=trust_project_hooks,
             lsp_enabled=lsp_enabled,
             lsp_tools_enabled=lsp_tools_enabled,
+            job_tool_combined=job_tool_combined,
             command_denylist=command_denylist,
             command_allowlist=command_allowlist,
         )
@@ -78,6 +83,7 @@ def load_config() -> ModelConfig:
             trust_project_hooks=trust_project_hooks,
             lsp_enabled=lsp_enabled,
             lsp_tools_enabled=lsp_tools_enabled,
+            job_tool_combined=job_tool_combined,
             command_denylist=command_denylist,
             command_allowlist=command_allowlist,
         )
@@ -91,6 +97,7 @@ def load_config() -> ModelConfig:
         trust_project_hooks=trust_project_hooks,
         lsp_enabled=lsp_enabled,
         lsp_tools_enabled=lsp_tools_enabled,
+        job_tool_combined=job_tool_combined,
         command_denylist=command_denylist,
         command_allowlist=command_allowlist,
     )
