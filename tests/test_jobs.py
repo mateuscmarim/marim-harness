@@ -170,6 +170,36 @@ async def test_finished_digest_empty_when_nothing_finished():
 
 
 @pytest.mark.anyio
+async def test_finished_digest_includes_result_tail():
+    """The digest carries a tail of each finished job's output so the model reads
+    the verdict inline, without spending a separate job_output pull."""
+    reg = JobRegistry()
+    result = (
+        "exit 0\n"
+        + "\n".join(f"noise{i}" for i in range(300))
+        + "\n=== 717 passed in 12.3s ==="
+    )
+    j = reg.register("bash", "tests", _sleep_then(result, 0.01))
+    await reg.wait(j)
+    digest = reg.take_finished_digest()
+    assert "job-1 (bash) done" in digest
+    assert "717 passed in 12.3s" in digest  # the verdict (tail) is inline
+
+
+@pytest.mark.anyio
+async def test_finished_digest_caps_result_tail():
+    """A huge result is bounded in the digest — it keeps the tail (verdict) but
+    doesn't dump the whole buffer into the next turn's prompt."""
+    reg = JobRegistry()
+    result = "x" * 5000 + "VERDICT-END"
+    j = reg.register("bash", "big", _sleep_then(result, 0.01))
+    await reg.wait(j)
+    digest = reg.take_finished_digest()
+    assert "VERDICT-END" in digest  # tail kept
+    assert len(digest) < 1000  # bounded, not the full 5000-char result
+
+
+@pytest.mark.anyio
 async def test_finished_digest_includes_cancelled_and_failed():
     reg = JobRegistry()
     slow = reg.register("bash", "sleep", _sleep_then("x", 5))
