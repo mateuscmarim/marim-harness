@@ -1,8 +1,6 @@
-import logging
 from typing import Optional
 
 from pydantic_ai import Agent, DeferredToolRequests, capture_run_messages
-from pydantic_ai.messages import FunctionToolCallEvent, FunctionToolResultEvent
 from pydantic_ai.settings import ModelSettings
 
 from .compaction import (
@@ -12,23 +10,13 @@ from .compaction import (
     make_titler,
 )
 from .deps import Deps
-from .hooks import events as hook_events
-from .hooks.runner import base_payload
+from .hooks.dispatch import TurnHooks
 from .instructions import register_instructions
 from .mcp import McpManager
-from .permissions import Mode, resolve_approvals
+from .permissions import resolve_approvals
 from .session import SessionController, SessionManager, SessionStore
-from .tools import fs
+from .subagents import SubagentRunner
 from .tools.provider import ToolProvider
-from .workspace import (
-    cap_subagent_output,
-    discover_agents,
-    effective_tools,
-    find_agent,
-    subagent_instructions,
-)
-
-logger = logging.getLogger(__name__)
 
 # Force parallel tool calling on for both the main agent and spawned sub-agents.
 # It's a base ModelSettings key that each model reads with .get(): providers that
@@ -154,10 +142,6 @@ class Harness:
         self.mcp = McpManager(mcp_servers or [], set(mcp_disabled or []))
         register_instructions(self.agent, self.mcp, proactive_memory)
         self.deps = deps
-        # The spawn_agent tool reaches the runners through Deps, the same way
-        # other tools reach shared state. Wired here so they track model switches.
-        self.deps.run_subagent = self._run_subagent
-        self.deps.run_background_agent = self._run_background_subagent
         self.model_label = model_label
         # The model object used for each turn (swappable at runtime), the source
         # that builds new ones, and the id of the active model.
@@ -176,6 +160,17 @@ class Harness:
             max_context_tokens, keep_last_messages,
             summarizer, titler,
         )
+        self.hooks = TurnHooks(self.deps, self.session)
+        # The spawn_agent tool reaches the runner through Deps, the same way
+        # other tools reach shared state. The runner reads the current model via
+        # the closure, so a runtime /model switch is tracked without rewiring.
+        self.subagents = SubagentRunner(
+            self.provider, self.mcp, self.deps, self.hooks, self.session,
+            get_model=lambda: self.current_model,
+            model_settings=_DEFAULT_MODEL_SETTINGS,
+        )
+        self.deps.run_subagent = self.subagents.run
+        self.deps.run_background_agent = self.subagents.run_background
 
     # --- session lifecycle (operations carrying harness-level logic; plain
     # state and persistence live on ``self.session`` and are reached directly) ---
@@ -242,132 +237,6 @@ class Harness:
         ):
             self.set_model(self.session.store.model, persist=False)
 
-    def _subagent_handler(self, stream_id: str):
-        """An event_stream_handler for a sub-agent run that forwards each event to
-        the UI, tagged with ``stream_id`` so it can stream nested under the spawn.
-        None when no UI is listening (headless) — the run just doesn't stream."""
-        cb = self.deps.on_subagent_event
-        if cb is None:
-            return None
-
-        async def handler(ctx, events) -> None:
-            async for event in events:
-                tokens = getattr(getattr(ctx, "usage", None), "total_tokens", 0) or 0
-                await cb(stream_id, event, tokens)
-
-        return handler
-
-    def _build_subagent(self, type: str, max_output_chars: int | None = None):
-        """Build an isolated sub-agent of ``type`` on the current model, with its
-        reach decided up front: gated tools only in auto mode, so a run never
-        needs an approval round. ``max_output_chars``, when the spawner set one,
-        is folded into the sub-agent's instructions as a soft output budget.
-        Returns ``(agent, None)`` or, for an unknown type, ``(None, message)``
-        listing what's available."""
-        defn = find_agent(self.deps.workspace_root, type)
-        if defn is None:
-            names = ", ".join(a.name for a in discover_agents(self.deps.workspace_root))
-            return None, f"No sub-agent type {type!r}. Available: {names}."
-        allow_gated = self.deps.mode is Mode.auto
-        sub = Agent(
-            self.current_model,
-            deps_type=Deps,
-            instructions=subagent_instructions(
-                defn, self.deps.workspace_root, max_output_chars
-            ),
-            model_settings=_DEFAULT_MODEL_SETTINGS,
-        )
-        self.provider.register_subagent(sub, effective_tools(defn, allow_gated=allow_gated))
-        return sub, None
-
-    def _cap_output(self, output: str, max_output_chars: int | None, ref: str) -> str:
-        """Apply a spawner-set output cap to a sub-agent's report. Over budget,
-        the full report is spilled to a workspace file and the main agent gets a
-        within-budget head + pointer; otherwise the report passes through. The
-        cap is lossless — nothing is discarded, only relocated."""
-        rel = f".marim/subagent-output/{ref}.md"
-        text, spill = cap_subagent_output(output, max_output_chars, rel)
-        if spill is not None:
-            fs.write_file(self.deps.workspace_root, rel, spill)
-        return text
-
-    async def _run_subagent(
-        self, type: str, task: str, stream_id: str,
-        mcp_names: list[str] | None = None, max_output_chars: int | None = None,
-    ) -> str:
-        """Spawn one isolated sub-agent of ``type``, run it to completion on
-        ``task``, and return its final report — streaming its events to the UI
-        nested under the spawn. Shares the workspace Deps (read-only use) but
-        starts a fresh conversation, so the sub-agent gets a clean context.
-        ``mcp_names`` is the MCP servers the main agent granted this spawn (none
-        by default); granted servers gate via the same approval hook as the main
-        agent's. ``max_output_chars`` is an optional soft output budget the
-        spawner sets: the sub-agent is told to distill toward it, and any report
-        over budget is spilled to a file and replaced with a within-budget
-        pointer so the inflow stays bounded."""
-        sub, err = self._build_subagent(type, max_output_chars)
-        if err is not None:
-            return err
-        granted, unknown = self.mcp.granted_servers(mcp_names)
-        if self.deps.hooks is not None:
-            await self.deps.hooks.dispatch(
-                hook_events.SUBAGENT_START,
-                self._hook_payload(hook_events.SUBAGENT_START, subagent_type=type, task=task),
-            )
-        result = await sub.run(
-            task, deps=self.deps, toolsets=granted,
-            event_stream_handler=self._subagent_handler(stream_id),
-        )
-        if self.deps.hooks is not None:
-            await self.deps.hooks.dispatch(
-                hook_events.SUBAGENT_STOP,
-                self._hook_payload(
-                    hook_events.SUBAGENT_STOP, subagent_type=type, task=task,
-                    result=result.output,
-                ),
-            )
-        # A foreground spawn runs inside the current turn, so its spend is folded
-        # into the session total here and persisted by run_turn's _persist.
-        self.session.usage += result.usage
-        capped = self._cap_output(result.output, max_output_chars, stream_id)
-        return self.mcp.grant_note(unknown) + capped
-
-    async def _run_background_subagent(
-        self, type: str, task: str, mcp_names: list[str] | None = None,
-        max_output_chars: int | None = None,
-    ) -> str:
-        """Run a sub-agent as a detached background job: same isolation, mode-based
-        reach, and MCP grant as a foreground spawn, but with no event streaming —
-        the job's result is its final report, surfaced when the agent pulls it.
-        Any unknown-server note rides along on that report. ``max_output_chars``
-        applies only as a soft instruction here (the report is pulled later via
-        the jobs API, which has no spill hook), so a background report is not
-        hard-capped the way a foreground one is."""
-        sub, err = self._build_subagent(type, max_output_chars)
-        if err is not None:
-            return err
-        granted, unknown = self.mcp.granted_servers(mcp_names)
-        if self.deps.hooks is not None:
-            await self.deps.hooks.dispatch(
-                hook_events.SUBAGENT_START,
-                self._hook_payload(hook_events.SUBAGENT_START, subagent_type=type, task=task),
-            )
-        result = await sub.run(task, deps=self.deps, toolsets=granted)
-        if self.deps.hooks is not None:
-            await self.deps.hooks.dispatch(
-                hook_events.SUBAGENT_STOP,
-                self._hook_payload(
-                    hook_events.SUBAGENT_STOP, subagent_type=type, task=task,
-                    result=result.output,
-                ),
-            )
-        # A background spawn finishes off-turn, so no run_turn will fold in its
-        # spend — count it here and persist right away so the saved session
-        # reflects it even if the process exits before the next turn.
-        self.session.usage += result.usage
-        self.session.persist()
-        return self.mcp.grant_note(unknown) + result.output
-
     # --- MCP lifecycle (connection control; server state and grant resolution
     # live on ``self.mcp`` and are reached directly) ---
 
@@ -383,78 +252,19 @@ class Harness:
     async def enable_server(self, name: str) -> Optional[str]:
         return await self.mcp.enable_server(name, self.deps.workspace_root)
 
-    def _hook_payload(self, event: str, **extra) -> dict:
-        """Build a hook payload with the common fields drawn from the live
-        session, plus any event-specific extras."""
-        store = self.session.store
-        return base_payload(
-            event,
-            session_id=store.session_id if store is not None else "",
-            cwd=str(self.deps.workspace_root),
-            transcript_path=str(store.path) if store is not None else "",
-            **extra,
-        )
+    # --- hooks (observe-only except session_start, which injects context into
+    # the next turn; dispatch + payload assembly live on ``self.hooks``) ---
 
     async def session_start(self, source: str) -> None:
         """Fire the SessionStart hook (``source`` is ``startup``/``resume``/
         ``clear``) and stash any returned context for the next turn's prompt."""
-        if self.deps.hooks is None:
-            return
-        ctx = await self.deps.hooks.dispatch(
-            hook_events.SESSION_START,
-            self._hook_payload(hook_events.SESSION_START, source=source),
-        )
+        ctx = await self.hooks.session_start(source)
         if ctx:
             self._pending_hook_context = ctx
 
     async def session_end(self, reason: str = "exit") -> None:
         """Fire the SessionEnd hook on teardown. Observe-only."""
-        if self.deps.hooks is None:
-            return
-        await self.deps.hooks.dispatch(
-            hook_events.SESSION_END,
-            self._hook_payload(hook_events.SESSION_END, reason=reason),
-        )
-
-    async def _fire_tool_event(self, event, _call_inputs: dict | None = None) -> None:
-        """Map a streamed tool event to a Pre/PostToolUse hook (observe-only).
-
-        ``_call_inputs`` is a per-turn dict (tool_call_id → tool_input) used to
-        correlate a PostToolUse result with the args from its matching call, so
-        that CC plugin scripts receive ``tool_input`` on both event types.
-        """
-        if self.deps.hooks is None:
-            return
-        if isinstance(event, FunctionToolCallEvent):
-            try:
-                tool_input = event.part.args_as_dict()
-            except Exception as exc:
-                logger.debug("failed to parse tool args: %s", exc)
-                tool_input = {}
-            # Stash input so the paired PostToolUse event can include it.
-            if _call_inputs is not None:
-                _call_inputs[event.part.tool_call_id] = tool_input
-            await self.deps.hooks.dispatch(
-                hook_events.PRE_TOOL_USE,
-                self._hook_payload(
-                    hook_events.PRE_TOOL_USE,
-                    tool_name=event.part.tool_name,
-                    tool_input=tool_input,
-                ),
-            )
-        elif isinstance(event, FunctionToolResultEvent):
-            # Look up the stashed input by tool_call_id; fall back gracefully.
-            tool_input = ({} if _call_inputs is None
-                          else _call_inputs.get(event.tool_call_id, {}))
-            await self.deps.hooks.dispatch(
-                hook_events.POST_TOOL_USE,
-                self._hook_payload(
-                    hook_events.POST_TOOL_USE,
-                    tool_name=getattr(event.part, "tool_name", ""),
-                    tool_input=tool_input,
-                    tool_response=str(getattr(event.part, "content", "")),
-                ),
-            )
+        await self.hooks.session_end(reason)
 
     async def run_turn(self, prompt: str, event_stream_handler=None) -> str:
         """Run the agent until it produces a final text answer, looping through
@@ -474,13 +284,9 @@ class Harness:
             prompt = f"{self._pending_hook_context}\n\n{prompt}"
             self._pending_hook_context = None
         # Fire UserPromptSubmit and prepend any context it returns.
-        if self.deps.hooks is not None:
-            ctx = await self.deps.hooks.dispatch(
-                hook_events.USER_PROMPT_SUBMIT,
-                self._hook_payload(hook_events.USER_PROMPT_SUBMIT, prompt=prompt),
-            )
-            if ctx:
-                prompt = f"{ctx}\n\n{prompt}"
+        ctx = await self.hooks.user_prompt_submit(prompt)
+        if ctx:
+            prompt = f"{ctx}\n\n{prompt}"
         # If anything was injected above, wrap it in the turn-context envelope so
         # a resumed session can recover just the typed text. The injected blocks
         # are the prefix; `typed` is the unchanged suffix, sliced back out here.
@@ -503,7 +309,7 @@ class Harness:
             async def _hooked_handler(stream_ctx, events):
                 async def _relay():
                     async for event in events:
-                        await self._fire_tool_event(event, _call_inputs)
+                        await self.hooks.tool_event(event, _call_inputs)
                         yield event
 
                 if _base_handler is not None:
@@ -569,9 +375,6 @@ class Harness:
                 continue
             self.session.persist()
             output = result.output
-            if self.deps.hooks is not None:
-                await self.deps.hooks.dispatch(
-                    hook_events.STOP, self._hook_payload(hook_events.STOP)
-                )
+            await self.hooks.stop()
             await self._maybe_autoname()
             return output
