@@ -122,5 +122,10 @@ def estimate_cost(usage: RunUsage, model_ref: Optional[str]) -> Optional[float]:
         )
         calc = calc_price(priced, model_ref=ref, provider_id=provider_id)
         return float(calc.total_price)
-    except Exception:
+    except (ImportError, LookupError, ValueError, KeyError, AttributeError):
+        # Expected, recoverable misses: genai-prices not installed (ImportError),
+        # the model/provider not in the price table (LookupError — what calc_price
+        # raises for an unknown id), or a malformed price entry. Anything else
+        # (a TypeError from an API change, say) is a real bug and must surface,
+        # not masquerade as an unpriced model.
         return None

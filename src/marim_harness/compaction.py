@@ -79,6 +79,18 @@ def _plan_tail_start(
     return start
 
 
+def will_compact(
+    history: list,
+    max_tokens: int,
+    keep_last_messages: int = 20,
+) -> bool:
+    """Whether compacting ``history`` would actually drop anything — the same
+    decision ``compact_history``/``compact_history_with_summary`` make, exposed
+    so a caller can act *before* the (possibly expensive) compaction runs, e.g.
+    firing a pre-compaction hook while the transcript is still full."""
+    return _plan_tail_start(history, max_tokens, keep_last_messages) is not None
+
+
 def compact_history(
     history: list,
     max_tokens: int,

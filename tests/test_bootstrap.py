@@ -84,6 +84,30 @@ def test_build_harness_seeds_config_disabled_servers(tmp_path: Path, monkeypatch
     assert harness.mcp.disabled == {"off"}
 
 
+def test_build_harness_logs_malformed_mcp_spec(tmp_path: Path, monkeypatch, caplog):
+    """A malformed MCP spec is dropped (so one bad entry can't sink the rest), but
+    the user must get feedback — the warning is logged, not silently discarded."""
+    import logging
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    _stub_model_plumbing(monkeypatch)
+
+    ws = tmp_path / "ws"
+    cfg = ws / ".marim" / "mcp.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        # "bad" is neither stdio (no command) nor HTTP/SSE (no url) -> skipped.
+        json.dumps({"mcpServers": {"bad": {"nonsense": True}}}),
+        encoding="utf-8",
+    )
+
+    with caplog.at_level(logging.WARNING, logger="marim_harness.bootstrap"):
+        harness = bootstrap.build_harness(ws, mode=Mode.ask)
+
+    assert harness.mcp.mcp_servers == []  # the bad spec was dropped
+    assert any("bad" in r.getMessage() for r in caplog.records)
+
+
 def test_build_harness_wires_command_policy(tmp_path: Path, monkeypatch):
     """The configured command denylist reaches deps.command_policy, so the bash
     tool enforces it in every mode."""
@@ -149,6 +173,7 @@ def test_fresh_harness_falls_back_to_config_default(tmp_path, monkeypatch):
 
 def test_build_harness_sets_hooks_when_global_config_present(tmp_path, monkeypatch):
     import json
+
     from marim_harness.bootstrap import build_harness
     from marim_harness.permissions import Mode
 

@@ -93,6 +93,18 @@ def test_edit_file_no_match_raises(tmp_path: Path):
         fs.edit_file(tmp_path, "a.txt", [_edit("missing", "x")])
 
 
+def test_edit_file_rejects_non_utf8_file(tmp_path: Path):
+    """A non-UTF-8 file can't be safely round-tripped (decode-replace would
+    corrupt the undecodable bytes on write-back), so edit_file refuses with a
+    ModelRetry instead of crashing with UnicodeDecodeError or mangling the file."""
+    p = tmp_path / "latin1.txt"
+    p.write_bytes(b"caf\xe9 foo")  # 0xe9 is 'é' in latin-1, invalid UTF-8
+    with pytest.raises(ModelRetry):
+        fs.edit_file(tmp_path, "latin1.txt", [_edit("foo", "bar")])
+    # The original bytes are untouched — no partial/corrupting write happened.
+    assert p.read_bytes() == b"caf\xe9 foo"
+
+
 def test_edit_file_multiple_matches_raises(tmp_path: Path):
     (tmp_path / "a.txt").write_text("foo foo")
     with pytest.raises(ModelRetry):

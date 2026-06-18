@@ -13,6 +13,7 @@ from marim_harness.compaction import (
     compact_history_with_summary,
     estimate_tokens,
     render_transcript,
+    will_compact,
 )
 
 
@@ -91,6 +92,23 @@ def test_compacts_when_over_threshold():
     result, did = compact_history(history, max_tokens=1, keep_last_messages=8)
     assert did is True
     assert len(result) < len(history)
+
+
+@pytest.mark.parametrize(
+    "n_rounds, max_tokens, keep_last",
+    [
+        (3, 1_000_000, 20),  # under threshold -> no compaction
+        (1, 1, 20),          # too short to drop anything
+        (20, 1, 8),          # over threshold -> compacts
+    ],
+)
+def test_will_compact_matches_compact_history_decision(n_rounds, max_tokens, keep_last):
+    """The predicate that gates the pre-compaction hook must agree exactly with
+    whether compact_history actually compacts — otherwise the hook could fire on
+    a turn that doesn't compact (or stay silent on one that does)."""
+    history = _history(n_rounds)
+    _, did = compact_history(history, max_tokens=max_tokens, keep_last_messages=keep_last)
+    assert will_compact(history, max_tokens=max_tokens, keep_last_messages=keep_last) is did
 
 
 def test_head_is_preserved():

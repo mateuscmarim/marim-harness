@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 from .agent import Harness, HarnessConfig, make_summarizer, make_titler
@@ -9,6 +10,8 @@ from .mcp import build_mcp_servers, disabled_server_names, load_mcp_config
 from .permissions import Mode
 from .session import SessionManager
 from .tools.provider import BuiltinToolProvider
+
+logger = logging.getLogger(__name__)
 
 INSTRUCTIONS = (
     "You are a coding agent operating inside a workspace directory. "
@@ -57,7 +60,9 @@ def build_harness(
     # dropped (build returns warnings); connections are opened later by the caller
     # (the TUI on mount, headless around its run).
     mcp_specs = load_mcp_config(workspace)
-    mcp_servers, _ = build_mcp_servers(mcp_specs)
+    mcp_servers, mcp_warnings = build_mcp_servers(mcp_specs)
+    for warning in mcp_warnings:
+        logger.warning("MCP config: %s", warning)
     mcp_disabled = disabled_server_names(mcp_specs)
 
     harness = Harness(

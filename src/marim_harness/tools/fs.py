@@ -104,7 +104,14 @@ def edit_file(root: Path, path: str, edits: list[Edit]) -> str:
     p = _safe(root, path)
     if not p.is_file():
         raise ModelRetry(f"not a file: {path}")
-    text = p.read_text()
+    # Strict decode: unlike read_file (display-only, errors="replace"), edit_file
+    # reads-modifies-writes, so a lossy decode would round-trip the undecodable
+    # bytes back as U+FFFD and corrupt regions the edit never touched. Refuse
+    # instead, with clear feedback.
+    try:
+        text = p.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        raise ModelRetry(f"can't edit {path}: not a UTF-8 text file.") from None
     for i, edit in enumerate(edits, 1):
         text = _apply_edit(text, edit, path, i)
     p.write_text(text)
