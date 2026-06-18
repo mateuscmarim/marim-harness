@@ -21,6 +21,13 @@ class ModelConfig:
     # When true, project-local .marim/hooks.json hooks are honored; otherwise
     # only the global hooks config runs (supply-chain guard for cloned repos).
     trust_project_hooks: bool = False
+    # LSP master switch. False ⇒ no language-server pool is built, so the six
+    # navigation tools are not registered and diagnostics-on-edit is a no-op.
+    lsp_enabled: bool = True
+    # LSP navigation-tools switch. False (while lsp_enabled is True) ⇒ the six
+    # tools are not registered, but the manager still runs so diagnostics-on-edit
+    # keeps grounding the agent after writes.
+    lsp_tools_enabled: bool = True
     # Shell-command allow/deny patterns (regex), enforced in the bash tool in
     # every mode. Empty lists -> no restriction.
     command_denylist: list[str] = field(default_factory=list)
@@ -38,6 +45,8 @@ def load_config() -> ModelConfig:
     max_context_tokens = _int_env("MARIM_MAX_CONTEXT_TOKENS", 100_000)
     proactive_memory = _bool_env("MARIM_PROACTIVE_MEMORY", False)
     trust_project_hooks = _bool_env("MARIM_TRUST_PROJECT_HOOKS", False)
+    lsp_enabled = _bool_env("MARIM_LSP", True)
+    lsp_tools_enabled = _bool_env("MARIM_LSP_TOOLS", True)
     command_denylist = split_patterns(os.getenv("MARIM_COMMAND_DENYLIST", ""))
     command_allowlist = split_patterns(os.getenv("MARIM_COMMAND_ALLOWLIST", ""))
     if provider == "local":
@@ -49,6 +58,8 @@ def load_config() -> ModelConfig:
             max_context_tokens=max_context_tokens,
             proactive_memory=proactive_memory,
             trust_project_hooks=trust_project_hooks,
+            lsp_enabled=lsp_enabled,
+            lsp_tools_enabled=lsp_tools_enabled,
             command_denylist=command_denylist,
             command_allowlist=command_allowlist,
         )
@@ -65,6 +76,8 @@ def load_config() -> ModelConfig:
             max_context_tokens=max_context_tokens,
             proactive_memory=proactive_memory,
             trust_project_hooks=trust_project_hooks,
+            lsp_enabled=lsp_enabled,
+            lsp_tools_enabled=lsp_tools_enabled,
             command_denylist=command_denylist,
             command_allowlist=command_allowlist,
         )
@@ -76,6 +89,8 @@ def load_config() -> ModelConfig:
         max_context_tokens=max_context_tokens,
         proactive_memory=proactive_memory,
         trust_project_hooks=trust_project_hooks,
+        lsp_enabled=lsp_enabled,
+        lsp_tools_enabled=lsp_tools_enabled,
         command_denylist=command_denylist,
         command_allowlist=command_allowlist,
     )

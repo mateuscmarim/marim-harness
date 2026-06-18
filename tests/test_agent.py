@@ -68,6 +68,26 @@ def _make_harness(model, deps) -> Harness:
                    instructions="You are a coding agent.")
 
 
+def test_lsp_manager_built_by_default(tmp_path: Path):
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    harness = _make_harness(_edit_then_done_model(), deps)
+    assert isinstance(harness.lsp, LspManager)
+    assert deps.lsp is harness.lsp
+
+
+def test_lsp_disabled_builds_no_manager(tmp_path: Path):
+    from marim_harness.agent import HarnessConfig
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    harness = Harness(
+        model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
+        instructions="You are a coding agent.",
+        config=HarnessConfig(lsp_enabled=False),
+    )
+    assert harness.lsp is None
+    assert deps.lsp is None
+
+
 @pytest.mark.anyio
 async def test_auto_mode_applies_edit(tmp_path: Path):
     (tmp_path / "a.txt").write_text("foo")

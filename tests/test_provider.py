@@ -14,6 +14,39 @@ def _build_agent() -> Agent:
     return agent
 
 
+def _tool_names(agent: Agent) -> set[str]:
+    return set(agent._function_toolset.tools.keys())
+
+
+def test_register_includes_lsp_tools_by_default():
+    from marim_harness.tools.names import LSP_TOOLS
+
+    agent = Agent(TestModel(), deps_type=Deps)
+    BuiltinToolProvider().register(agent)
+    assert LSP_TOOLS <= _tool_names(agent)
+
+
+def test_register_omits_lsp_tools_when_disabled():
+    from marim_harness.tools.names import LSP_TOOLS
+
+    agent = Agent(TestModel(), deps_type=Deps)
+    BuiltinToolProvider(register_lsp_tools=False).register(agent)
+    names = _tool_names(agent)
+    assert not (LSP_TOOLS & names)  # none of the six present
+    assert "read_file" in names  # other read tools unaffected
+
+
+def test_register_subagent_omits_lsp_tools_when_disabled():
+    from marim_harness.tools.names import SUBAGENT_TOOLS
+
+    agent = Agent(TestModel(), deps_type=Deps)
+    # Grant every subagent-eligible tool; the flag must still strip the LSP six.
+    BuiltinToolProvider(register_lsp_tools=False).register_subagent(agent, SUBAGENT_TOOLS)
+    names = _tool_names(agent)
+    assert "goto_definition" not in names
+    assert "grep" in names  # non-LSP read tool still granted
+
+
 def test_registers_all_tools(tmp_path: Path):
     agent = _build_agent()
     with agent.override(model=TestModel(call_tools=[])):

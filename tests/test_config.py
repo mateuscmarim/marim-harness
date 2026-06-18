@@ -194,6 +194,32 @@ def test_load_environment_real_env_wins(isolated_env, monkeypatch, tmp_path):
     assert os.environ["OPENROUTER_API_KEY"] == "real-key"  # shell env beats files
 
 
+def test_lsp_defaults_on(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.delenv("MARIM_LSP", raising=False)
+    monkeypatch.delenv("MARIM_LSP_TOOLS", raising=False)
+    cfg = load_config()
+    assert cfg.lsp_enabled is True
+    assert cfg.lsp_tools_enabled is True
+
+
+@pytest.mark.parametrize("raw", ["0", "false", "off", "no"])
+def test_lsp_master_switch_off(monkeypatch, raw):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setenv("MARIM_LSP", raw)
+    assert load_config().lsp_enabled is False
+
+
+@pytest.mark.parametrize("raw", ["0", "false", "off", "no"])
+def test_lsp_tools_switch_off(monkeypatch, raw):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setenv("MARIM_LSP_TOOLS", raw)
+    cfg = load_config()
+    # tools off does not flip the master switch — diagnostics-on-edit survives.
+    assert cfg.lsp_enabled is True
+    assert cfg.lsp_tools_enabled is False
+
+
 def test_trust_project_hooks_defaults_false(monkeypatch):
     from marim_harness.config.model import load_config
     monkeypatch.delenv("MARIM_TRUST_PROJECT_HOOKS", raising=False)
