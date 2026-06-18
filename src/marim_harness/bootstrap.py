@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from .agent import Harness, make_summarizer, make_titler
+from .agent import Harness, HarnessConfig, make_summarizer, make_titler
 from .command_policy import CommandPolicy
 from .config import ModelSource, build_model, load_config
 from .deps import Deps
@@ -65,17 +65,19 @@ def build_harness(
         provider=BuiltinToolProvider(),
         deps=deps,
         instructions=INSTRUCTIONS,
-        model_label=model_source.label(model_id),
-        store=store,
-        manager=manager,
-        max_context_tokens=cfg.max_context_tokens,
-        summarizer=make_summarizer(model),
-        titler=make_titler(model),
-        model_source=model_source,
-        model_id=model_id,
-        proactive_memory=cfg.proactive_memory,
-        mcp_servers=mcp_servers,
-        mcp_disabled=mcp_disabled,
+        config=HarnessConfig(
+            model_label=model_source.label(model_id),
+            store=store,
+            manager=manager,
+            max_context_tokens=cfg.max_context_tokens,
+            summarizer=make_summarizer(model),
+            titler=make_titler(model),
+            model_source=model_source,
+            model_id=model_id,
+            proactive_memory=cfg.proactive_memory,
+            mcp_servers=mcp_servers,
+            mcp_disabled=mcp_disabled,
+        ),
     )
     if resume:
         harness.resume()

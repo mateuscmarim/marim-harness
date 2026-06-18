@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
 from typing import Optional
 
 from pydantic_ai import Agent, DeferredToolRequests, capture_run_messages
@@ -114,18 +117,45 @@ def _actionable_error_note(exc: BaseException) -> Optional[str]:
     return None
 
 
+@dataclass
+class HarnessConfig:
+    """Bundles the optional knobs for :class:`Harness`.
+
+    Every field has a sensible default so callers only set what they need.
+    ``model_label``, ``model_source``, ``model_id``, ``store``, ``manager``,
+    ``max_context_tokens``, ``keep_last_messages``, ``summarizer``, ``titler``,
+    ``proactive_memory``, ``mcp_servers``, and ``mcp_disabled`` were formerly
+    individual keyword arguments on ``Harness.__init__``.
+    """
+
+    model_label: str = "model"
+    store: Optional[SessionStore] = None
+    manager: Optional[SessionManager] = None
+    max_context_tokens: int = 100_000
+    keep_last_messages: int = 20
+    summarizer: Optional[Summarizer] = None
+    titler: Optional[Titler] = None
+    model_source: object = None
+    model_id: Optional[str] = None
+    proactive_memory: bool = False
+    mcp_servers: list = field(default_factory=list)
+    mcp_disabled: Optional[set] = None
+
+
 class Harness:
     """Owns the Pydantic AI agent and drives one user turn to completion,
     resolving deferred tool approvals by the current mode."""
 
     def __init__(self, model, provider: ToolProvider, deps: Deps, instructions: str,
-                 model_label: str = "model", store: Optional[SessionStore] = None,
-                 manager: Optional[SessionManager] = None,
-                 max_context_tokens: int = 100_000, keep_last_messages: int = 20,
-                 summarizer: Optional[Summarizer] = None,
-                 titler: Optional[Titler] = None, model_source=None,
-                 model_id: Optional[str] = None, proactive_memory: bool = False,
-                 mcp_servers=None, mcp_disabled=None):
+                 *, config: Optional[HarnessConfig] = None, **kwargs):
+        """Create a Harness.
+
+        ``config`` bundles the optional knobs (session store, model identity,
+        MCP servers, etc.).  For backward compatibility, individual keyword
+        arguments (``model_label``, ``store``, ``model_id``, …) are still
+        accepted via ``**kwargs`` and merged over the config defaults.
+        """
+        cfg = config or HarnessConfig(**kwargs)
         self.agent = Agent(
             model,
             deps_type=Deps,
@@ -139,15 +169,15 @@ class Harness:
         )
         self.provider = provider
         provider.register(self.agent)
-        self.mcp = McpManager(mcp_servers or [], set(mcp_disabled or []))
-        register_instructions(self.agent, self.mcp, proactive_memory)
+        self.mcp = McpManager(cfg.mcp_servers or [], set(cfg.mcp_disabled or []))
+        register_instructions(self.agent, self.mcp, cfg.proactive_memory)
         self.deps = deps
-        self.model_label = model_label
+        self.model_label = cfg.model_label
         # The model object used for each turn (swappable at runtime), the source
         # that builds new ones, and the id of the active model.
         self.current_model = model
-        self.model_source = model_source
-        self.model_id = model_id
+        self.model_source = cfg.model_source
+        self.model_id = cfg.model_id
         # A one-shot note about the last actionable failure, prepended to the
         # next turn's prompt so the model knows it didn't complete (see
         # _actionable_error_note). None when there's nothing to surface.
@@ -156,9 +186,9 @@ class Harness:
         # turn's prompt and consumed there (mirrors _pending_error_note).
         self._pending_hook_context: Optional[str] = None
         self.session = SessionController(
-            store, manager, deps,
-            max_context_tokens, keep_last_messages,
-            summarizer, titler,
+            cfg.store, cfg.manager, deps,
+            cfg.max_context_tokens, cfg.keep_last_messages,
+            cfg.summarizer, cfg.titler,
         )
         self.hooks = TurnHooks(self.deps, self.session)
         # The spawn_agent tool reaches the runner through Deps, the same way

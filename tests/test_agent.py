@@ -367,6 +367,7 @@ def _text_model() -> FunctionModel:
 
 
 def _autoname_harness(tmp_path, titler, *, name=None):
+    from marim_harness.agent import HarnessConfig
     from marim_harness.session import SessionManager
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
@@ -374,7 +375,8 @@ def _autoname_harness(tmp_path, titler, *, name=None):
     store = manager.create(name)
     return Harness(
         model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
-        instructions="x", store=store, manager=manager, titler=titler,
+        instructions="x",
+        config=HarnessConfig(store=store, manager=manager, titler=titler),
     )
 
 
@@ -889,14 +891,19 @@ class _FakeSource:
 
 
 def _switch_harness(tmp_path, *, source=None, summarizer=None, titler=None):
+    from marim_harness.agent import HarnessConfig
     from marim_harness.session import SessionManager
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     return Harness(
         model=_named_model("startup"), provider=BuiltinToolProvider(), deps=deps,
-        instructions="x", store=manager.create(), manager=manager,
-        model_source=source, model_id="startup", summarizer=summarizer, titler=titler,
+        instructions="x",
+        config=HarnessConfig(
+            store=manager.create(), manager=manager,
+            model_source=source, model_id="startup",
+            summarizer=summarizer, titler=titler,
+        ),
     )
 
 

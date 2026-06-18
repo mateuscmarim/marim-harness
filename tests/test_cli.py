@@ -10,7 +10,7 @@ from marim_harness.permissions import Mode
 def _cli_harness(tmp_path: Path, output_text: str = "ok"):
     from pydantic_ai.models.test import TestModel
 
-    from marim_harness.agent import Harness
+    from marim_harness.agent import Harness, HarnessConfig
     from marim_harness.deps import Deps
     from marim_harness.session import SessionManager
     from marim_harness.tools.provider import BuiltinToolProvider
@@ -21,7 +21,8 @@ def _cli_harness(tmp_path: Path, output_text: str = "ok"):
     model = TestModel(call_tools=[], custom_output_text=output_text)
     return Harness(
         model, BuiltinToolProvider(), deps,
-        instructions="test", store=store, manager=manager,
+        instructions="test",
+        config=HarnessConfig(store=store, manager=manager),
     )
 
 

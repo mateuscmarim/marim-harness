@@ -27,9 +27,12 @@ def _harness(tmp_path: Path, output_text: str = "hello from the model", *, hooks
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     store = manager.create("headless")
     model = TestModel(call_tools=[], custom_output_text=output_text)
+    from marim_harness.agent import HarnessConfig
+
     return Harness(
         model, BuiltinToolProvider(), deps,
-        instructions="test", store=store, manager=manager,
+        instructions="test",
+        config=HarnessConfig(store=store, manager=manager),
     )
 
 
