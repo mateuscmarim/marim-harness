@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Iterable, Literal, Optional, Protocol
 
 from pydantic_ai import RunContext
@@ -68,6 +69,62 @@ def tree(ctx: RunContext[Deps], path: str = ".", depth: int = 2) -> str:
 def grep(ctx: RunContext[Deps], pattern: str, path: Optional[str] = None) -> str:
     """Search file contents for a regex. Optionally scope to `path`."""
     return fs.grep(ctx.deps.workspace_root, pattern, path)
+
+
+_LSP_UNAVAILABLE = "LSP is not available in this session."
+
+
+async def goto_definition(ctx: RunContext[Deps], path: str, line: int, col: int) -> str:
+    """Jump to where the symbol at `path:line:col` is defined, returning the
+    target location(s) as `path:line:col`. Coordinates are 1-based — read them
+    off `read_file`/`grep` output. Prefer this over grepping for a definition."""
+    if ctx.deps.lsp is None:
+        return _LSP_UNAVAILABLE
+    return await ctx.deps.lsp.goto_definition(path, line, col)
+
+
+async def find_references(ctx: RunContext[Deps], path: str, line: int, col: int) -> str:
+    """List every use of the symbol at `path:line:col` across the project, as
+    `path:line:col` lines. Coordinates are 1-based. Use before renaming or
+    removing a symbol to see its blast radius."""
+    if ctx.deps.lsp is None:
+        return _LSP_UNAVAILABLE
+    return await ctx.deps.lsp.find_references(path, line, col)
+
+
+async def hover(ctx: RunContext[Deps], path: str, line: int, col: int) -> str:
+    """Show the type/signature and docs for the symbol at `path:line:col`
+    (1-based), as the language server's hover text. Use to learn a value's type
+    without opening its definition."""
+    if ctx.deps.lsp is None:
+        return _LSP_UNAVAILABLE
+    return await ctx.deps.lsp.hover(path, line, col)
+
+
+async def document_symbols(ctx: RunContext[Deps], path: str) -> str:
+    """Outline one file: its classes, functions, and methods with line numbers.
+    A fast way to understand a file's shape before reading it in full."""
+    if ctx.deps.lsp is None:
+        return _LSP_UNAVAILABLE
+    return await ctx.deps.lsp.document_symbols(path)
+
+
+async def workspace_symbols(ctx: RunContext[Deps], query: str) -> str:
+    """Find a symbol by name across the whole project, returning matches as
+    `name  path:line`. Use to locate a class/function when you know its name but
+    not its file."""
+    if ctx.deps.lsp is None:
+        return _LSP_UNAVAILABLE
+    return await ctx.deps.lsp.workspace_symbols(query)
+
+
+async def diagnostics(ctx: RunContext[Deps], path: str) -> str:
+    """Report the language server's errors and warnings for `path`, as
+    `path:line:col: severity: message`. Edits already append fresh diagnostics
+    automatically; call this to re-check a file on demand."""
+    if ctx.deps.lsp is None:
+        return _LSP_UNAVAILABLE
+    return await ctx.deps.lsp.diagnostics(path)
 
 
 def remember(
@@ -268,16 +325,43 @@ async def spawn_agent(
     )
 
 
-def write_file(ctx: RunContext[Deps], path: str, content: str) -> str:
+# A real diagnostics report is one or more "path:line:col: severity: message"
+# lines (see lsp.diagnostics.format_diagnostics). The manager's clean /
+# unavailable / disabled responses never take that shape, so detect actual
+# diagnostics structurally — a filename or message containing a word like
+# "disabled" must not suppress real errors.
+_DIAGNOSTIC_LINE = re.compile(r":\d+:\d+: (?:error|warning|info|hint): ")
+
+
+async def _with_diagnostics(ctx: RunContext[Deps], path: str, result: str) -> str:
+    """Append best-effort LSP diagnostics for ``path`` to a write/edit ``result``.
+
+    No-op when no LSP is wired, when the language isn't served, or when the file
+    is clean — so a successful edit only grows output when there's something the
+    model should fix. Never raises: any failure leaves ``result`` untouched."""
+    if ctx.deps.lsp is None:
+        return result
+    try:
+        report = await ctx.deps.lsp.diagnostics(path, settle=0.8)
+    except Exception:  # noqa: BLE001 — diagnostics must never fail an edit
+        return result
+    if not report or not _DIAGNOSTIC_LINE.search(report):
+        return result
+    return f"{result}\n\ndiagnostics:\n{report}"
+
+
+async def write_file(ctx: RunContext[Deps], path: str, content: str) -> str:
     """Create or overwrite a file. `path` is relative to the workspace root."""
-    return fs.write_file(ctx.deps.workspace_root, path, content)
+    result = fs.write_file(ctx.deps.workspace_root, path, content)
+    return await _with_diagnostics(ctx, path, result)
 
 
-def edit_file(ctx: RunContext[Deps], path: str, edits: list[fs.Edit]) -> str:
+async def edit_file(ctx: RunContext[Deps], path: str, edits: list[fs.Edit]) -> str:
     """Apply one or more find/replace edits to a file, in order and
     all-or-nothing. Each edit is {old_string, new_string, replace_all?};
     old_string must match exactly once unless replace_all is set."""
-    return fs.edit_file(ctx.deps.workspace_root, path, edits)
+    result = fs.edit_file(ctx.deps.workspace_root, path, edits)
+    return await _with_diagnostics(ctx, path, result)
 
 
 async def bash(ctx: RunContext[Deps], command: str, background: bool = False) -> str:
@@ -338,6 +422,12 @@ _SUBAGENT_FNS = {
     "glob": glob,
     "tree": tree,
     "grep": grep,
+    "goto_definition": goto_definition,
+    "find_references": find_references,
+    "hover": hover,
+    "document_symbols": document_symbols,
+    "workspace_symbols": workspace_symbols,
+    "diagnostics": diagnostics,
     "web_search": web_search,
     "fetch_url": fetch_url,
     "write_file": write_file,
@@ -370,6 +460,12 @@ class BuiltinToolProvider:
         agent.tool(glob)
         agent.tool(tree)
         agent.tool(grep)
+        agent.tool(goto_definition)
+        agent.tool(find_references)
+        agent.tool(hover)
+        agent.tool(document_symbols)
+        agent.tool(workspace_symbols)
+        agent.tool(diagnostics)
         agent.tool(web_search)
         agent.tool(fetch_url)
         agent.tool(remember)

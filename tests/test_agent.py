@@ -10,6 +10,7 @@ from marim_harness.agent import Harness
 from marim_harness.deps import Deps
 from marim_harness.hooks import events as hook_events
 from marim_harness.hooks.runner import HookRunner
+from marim_harness.lsp.manager import LspManager
 from marim_harness.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
 
@@ -2143,3 +2144,43 @@ async def test_background_subagent_start_and_stop_fire(tmp_path):
     lines = log.read_text().splitlines()
     assert "SubagentStart" in lines
     assert "SubagentStop" in lines
+
+
+# ---------------------------------------------------------------------------
+# Task 7: LspManager lifecycle wiring
+# ---------------------------------------------------------------------------
+
+
+def _minimal_harness(tmp_path: Path):
+    """Build a Harness with the simplest valid wiring for lifecycle tests."""
+    from pydantic_ai.models.test import TestModel
+
+    from marim_harness.agent import Harness
+    from marim_harness.deps import Deps
+    from marim_harness.tools.provider import BuiltinToolProvider
+
+    return Harness(
+        TestModel(),
+        BuiltinToolProvider(),
+        Deps(workspace_root=tmp_path),
+        instructions="test",
+    )
+
+
+def test_harness_wires_lsp_manager(tmp_path):
+    h = _minimal_harness(tmp_path)
+    assert isinstance(h.lsp, LspManager)
+    assert h.deps.lsp is h.lsp
+
+
+@pytest.mark.anyio
+async def test_harness_aclose_shuts_down_lsp(tmp_path):
+    h = _minimal_harness(tmp_path)
+    closed = {"n": 0}
+
+    async def fake_aclose():
+        closed["n"] += 1
+
+    h.lsp.aclose = fake_aclose  # type: ignore[method-assign]
+    await h.aclose()
+    assert closed["n"] == 1
