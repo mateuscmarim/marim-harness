@@ -378,3 +378,27 @@ async def test_skill_with_name_spawns_activation_turn():
     assert "activate_skill" in prompt
     assert "only the parser" in prompt  # extra context threaded through
     assert app._turn_worker is not None
+
+
+@pytest.mark.anyio
+async def test_settings_command_opens_screen():
+    app = _FakeApp()
+    opened = []
+    app.open_settings = lambda: opened.append(True)  # type: ignore[attr-defined]
+    await dispatch(app, "/settings")
+    assert opened == [True]
+
+
+@pytest.mark.anyio
+async def test_config_alias_opens_settings():
+    app = _FakeApp()
+    opened = []
+    app.open_settings = lambda: opened.append(True)  # type: ignore[attr-defined]
+    await dispatch(app, "/config")
+    assert opened == [True]
+
+
+def test_settings_command_registered():
+    assert "settings" in COMMANDS_BY_NAME
+    assert "config" in COMMANDS_BY_NAME  # alias
+    assert COMMANDS_BY_NAME["config"].name == "settings"

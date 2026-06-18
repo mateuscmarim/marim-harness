@@ -78,6 +78,11 @@ from the environment — they are never written to session files or logs.**
 | `MARIM_LSP_TOOLS` | LSP navigation tools (default: on). Falsey (while `MARIM_LSP` is on) ⇒ the six navigation tools are not registered, but diagnostics-on-edit keeps running |
 | `MARIM_JOB_TOOL_COMBINED` | Prototype (default: off). Truthy ⇒ the four job tools collapse into one `job(action, …)` tool |
 
+You can also view and change these from inside the TUI with `/settings` (alias
+`/config`): mode, model, theme, and MCP servers apply immediately, while the
+env-backed toggles (LSP, job tool, context budget, proactive memory) save to
+`~/.config/marim/.env` and take effect on the next launch.
+
 `MARIM_COMMAND_DENYLIST` / `MARIM_COMMAND_ALLOWLIST` entries are regular
 expressions (a literal substring also works); deny takes precedence over allow.
 The policy gates the shell tool in `auto` and `ask` modes; `plan` mode is

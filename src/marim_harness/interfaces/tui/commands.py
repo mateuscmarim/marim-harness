@@ -301,6 +301,10 @@ async def _cmd_usage(app: HarnessApp, arg: str) -> None:
     await app.post_system("\n".join(lines))
 
 
+async def _cmd_settings(app: HarnessApp, arg: str) -> None:
+    app.open_settings()
+
+
 async def _cmd_exit(app: HarnessApp, arg: str) -> None:
     app.exit()
 
@@ -319,6 +323,7 @@ COMMANDS: list[Command] = [
     Command("skill", "list or run skills: /skill [name [context]]", _cmd_skill),
     Command("mcp", "list MCP servers or toggle them: /mcp [enable|disable <name|all>]", _cmd_mcp),
     Command("usage", "show token usage split and estimated cost", _cmd_usage, aliases=("cost",)),
+    Command("settings", "open the settings screen", _cmd_settings, aliases=("config",)),
     Command("exit", "quit the harness", _cmd_exit, aliases=("quit",)),
 ]
 
