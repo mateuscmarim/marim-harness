@@ -67,7 +67,40 @@ async def test_bash_truncates_long_output(tmp_path: Path):
     out = await shell.run_bash(
         tmp_path, "for i in $(seq 1 5000); do echo line$i; done", max_output=200
     )
-    assert "(truncated)" in out
+    assert "truncated" in out
+
+
+@pytest.mark.anyio
+async def test_bash_truncation_keeps_head_and_tail(tmp_path: Path):
+    """Over-cap output is cut from the MIDDLE, not the head: the start and the
+    verdict at the very end both survive. For tests/builds the result line lives
+    at the tail, which a head-only cut would silently drop."""
+    cmd = (
+        "echo HEAD-MARKER; "
+        "for i in $(seq 1 5000); do echo filler$i; done; "
+        "echo TAIL-VERDICT"
+    )
+    out = await shell.run_bash(tmp_path, cmd, max_output=200)
+    assert "HEAD-MARKER" in out  # head kept
+    assert "TAIL-VERDICT" in out  # tail kept — the part a head-only cut drops
+    assert "truncated" in out
+
+
+@pytest.mark.anyio
+async def test_start_bash_output_keeps_head_and_tail(tmp_path: Path):
+    """The live-buffer / background-job path truncates from the middle too, so a
+    pulled background result still shows the verdict at the end."""
+    bp = await shell.start_bash(
+        tmp_path,
+        "echo HEAD-MARKER; "
+        "for i in $(seq 1 5000); do echo filler$i; done; "
+        "echo TAIL-VERDICT",
+        max_output=200,
+    )
+    final = await bp.wait()
+    assert "HEAD-MARKER" in final
+    assert "TAIL-VERDICT" in final
+    assert "truncated" in final
 
 
 @pytest.mark.anyio

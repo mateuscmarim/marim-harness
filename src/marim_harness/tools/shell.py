@@ -7,6 +7,21 @@ _DEFAULT_TIMEOUT = 30
 _DEFAULT_MAX_OUTPUT = 20_000
 
 
+def _truncate(text: str, max_output: int) -> str:
+    """Cap ``text`` to ``max_output`` chars, dropping the MIDDLE rather than the
+    tail. The head carries a command's opening (setup, first errors); the tail
+    carries its verdict (a test summary, a final traceback) — and for tests and
+    builds the result lives at the very end, so a head-only cut would silently hide
+    exactly what the reader needs. The elided middle is replaced with a marker
+    noting how many chars were dropped."""
+    if len(text) <= max_output:
+        return text
+    head = max_output // 2
+    tail = max_output - head
+    dropped = len(text) - max_output
+    return f"{text[:head]}\n… ({dropped} chars truncated) …\n{text[-tail:]}"
+
+
 async def run_bash(
     root: Path,
     command: str,
@@ -37,9 +52,7 @@ async def run_bash(
                 pass
         await proc.wait()
         return f"(timed out after {timeout}s)"
-    text = stdout.decode(errors="replace")
-    if len(text) > max_output:
-        text = text[:max_output] + "\n(truncated)"
+    text = _truncate(stdout.decode(errors="replace"), max_output)
     return f"exit {proc.returncode}\n{text}"
 
 
@@ -59,11 +72,8 @@ class BashProcess:
         return self._proc.returncode
 
     def output(self) -> str:
-        """The combined output captured so far, truncated to the cap."""
-        text = "".join(self._buffer)
-        if len(text) > self._max_output:
-            text = text[: self._max_output] + "\n(truncated)"
-        return text
+        """The combined output captured so far, truncated (head+tail) to the cap."""
+        return _truncate("".join(self._buffer), self._max_output)
 
     def kill(self) -> None:
         """Kill the process group (best-effort; already-dead is fine)."""
