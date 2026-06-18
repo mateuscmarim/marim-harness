@@ -26,6 +26,17 @@ jobs:
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      # Cache uv's download/build cache (compiled wheels for grpcio, cryptography,
+      # pydantic-core, …) so a cold matrix leg doesn't rebuild them every run. Keyed
+      # on uv.lock; first-party actions/* already resolve here (see checkout above).
+      - name: Cache uv
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            uv-${{ runner.os }}-py${{ matrix.python-version }}-
+
       - name: Sync dependencies
         run: uv sync --python ${{ matrix.python-version }}
 
@@ -37,3 +48,8 @@ jobs:
 
       - name: Test (pytest)
         run: uv run pytest -q
+
+      # Trim cache to only what this run actually used, keeping the saved cache lean.
+      - name: Prune uv cache
+        if: always()
+        run: uv cache prune --ci
