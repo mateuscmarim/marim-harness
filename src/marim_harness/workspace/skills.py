@@ -88,6 +88,7 @@ def _parse_skill(source: str, directory: Path) -> Skill | None:
     description = data.get("description")
     if not isinstance(description, str) or not description.strip():
         return None
+    metadata = data.get("metadata")
     return Skill(
         name=name,
         description=description.strip(),
@@ -95,7 +96,7 @@ def _parse_skill(source: str, directory: Path) -> Skill | None:
         source=source,
         disable_model_invocation=bool(data.get("disable-model-invocation", False)),
         allowed_tools=str(data.get("allowed-tools", "") or ""),
-        metadata=data.get("metadata") if isinstance(data.get("metadata"), dict) else {},
+        metadata=metadata if isinstance(metadata, dict) else {},
     )
 
 

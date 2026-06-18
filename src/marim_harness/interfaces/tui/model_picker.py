@@ -95,6 +95,7 @@ class ModelPickerModal(ModalScreen[Optional[str]]):
         (respecting any filter typed while loading) and recompute free-text from
         the result — a catalog narrows you to its entries; an empty/failed remote
         fetch keeps free-text open so an id can still be typed."""
+        assert self._fetch is not None  # only scheduled when a fetch was provided
         entries = await self._fetch()
         self.entries = entries
         self._loading = False

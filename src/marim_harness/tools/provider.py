@@ -1,9 +1,9 @@
 import json
 from typing import Iterable, Literal, Optional, Protocol
 
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import RunContext
 
-from ..deps import Deps
+from ..deps import Deps, HarnessAgent, SubAgent
 from ..jobs import render_jobs
 from ..tasks import Task, summarize
 from ..workspace.agents import compose_subagent_task
@@ -264,7 +264,7 @@ async def spawn_agent(
     if ctx.deps.run_subagent is None:
         return "Sub-agents are not available in this context."
     return await ctx.deps.run_subagent(
-        type, task, ctx.tool_call_id, mcp_names, max_output_chars
+        type, task, ctx.tool_call_id or "", mcp_names, max_output_chars
     )
 
 
@@ -350,33 +350,43 @@ class ToolProvider(Protocol):
     """Registers a set of tools onto an Agent. The swap point for future
     pydantic-ai-harness FileSystem/Shell capabilities."""
 
-    def register(self, agent: Agent) -> None:
+    def register(self, agent: HarnessAgent) -> None:
         ...
 
-    def register_subagent(self, agent: Agent, tool_names: Iterable[str]) -> None:
+    def register_subagent(self, agent: SubAgent, tool_names: Iterable[str]) -> None:
         ...
 
 
 class BuiltinToolProvider:
     """Hand-written fs + shell tools backed by the pure functions in this package."""
 
-    def register(self, agent: Agent) -> None:
+    def register(self, agent: HarnessAgent) -> None:
         """Register the full main-agent toolset: read tools, the memory / skill /
         task / spawn tools, and the workspace-mutating tools behind approval."""
-        for fn in (read_file, glob, tree, grep):
-            agent.tool(fn)
+        # Registered individually rather than via a loop: each tool has a distinct
+        # signature, and a loop variable unions them into a type the .tool()
+        # overloads can't resolve.
+        agent.tool(read_file)
+        agent.tool(glob)
+        agent.tool(tree)
+        agent.tool(grep)
         agent.tool(web_search)
         agent.tool(fetch_url)
-        for fn in (remember, recall, activate_skill, read_skill_file, update_tasks):
-            agent.tool(fn)
+        agent.tool(remember)
+        agent.tool(recall)
+        agent.tool(activate_skill)
+        agent.tool(read_skill_file)
+        agent.tool(update_tasks)
         agent.tool(spawn_agent)
-        for fn in (jobs, job_output, wait_for_job, cancel_job):
-            agent.tool(fn)
+        agent.tool(jobs)
+        agent.tool(job_output)
+        agent.tool(wait_for_job)
+        agent.tool(cancel_job)
         agent.tool(requires_approval=True)(write_file)
         agent.tool(requires_approval=True)(edit_file)
         agent.tool(requires_approval=True, timeout=_BASH_TIMEOUT)(bash)
 
-    def register_subagent(self, agent: Agent, tool_names: Iterable[str]) -> None:
+    def register_subagent(self, agent: SubAgent, tool_names: Iterable[str]) -> None:
         """Register exactly ``tool_names`` onto a sub-agent. Gated tools are
         registered *plain* (no approval round) — reach is decided up front by
         which names the Harness grants, not by prompting mid-run. spawn_agent is

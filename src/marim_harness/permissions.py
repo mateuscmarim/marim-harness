@@ -2,6 +2,7 @@ from enum import Enum
 from typing import Awaitable, Callable, Optional
 
 from pydantic_ai import DeferredToolRequests, DeferredToolResults, ToolDenied
+from pydantic_ai.tools import DeferredToolApprovalResult
 
 
 class Mode(str, Enum):
@@ -17,7 +18,7 @@ class Mode(str, Enum):
 async def resolve_approvals(
     requests: DeferredToolRequests,
     mode: Mode,
-    request_approval: Optional[Callable[[object], Awaitable[object]]],
+    request_approval: Optional[Callable[[object], Awaitable[DeferredToolApprovalResult | bool]]],
 ) -> DeferredToolResults:
     """Turn pending tool-approval requests into results based on the current mode.
 

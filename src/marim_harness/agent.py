@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from pydantic_ai import Agent, DeferredToolRequests, capture_run_messages
 from pydantic_ai.settings import ModelSettings
+
+if TYPE_CHECKING:
+    from .config.model import ModelSource
 
 from .compaction import (
     Summarizer,
@@ -135,7 +138,7 @@ class HarnessConfig:
     keep_last_messages: int = 20
     summarizer: Optional[Summarizer] = None
     titler: Optional[Titler] = None
-    model_source: object = None
+    model_source: "Optional[ModelSource]" = None
     model_id: Optional[str] = None
     proactive_memory: bool = False
     mcp_servers: list = field(default_factory=list)

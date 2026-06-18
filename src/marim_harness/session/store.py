@@ -174,7 +174,7 @@ class SessionManager:
             except (json.JSONDecodeError, OSError):
                 saved = None
         if name is None:
-            name = (saved or {}).get("name") or session_id
+            name = str((saved or {}).get("name") or session_id)
         auto_named = bool((saved or {}).get("auto", False))
         model = (saved or {}).get("model")
         self._reserved.add(session_id)

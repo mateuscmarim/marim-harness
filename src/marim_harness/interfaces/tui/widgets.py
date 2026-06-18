@@ -78,7 +78,11 @@ class ToolCallWidget(Collapsible):
         # markup=False: tool args/results are arbitrary text (commands, file
         # content, output) that may contain Rich markup syntax like `[/]`.
         self._body = Static(self._render_body(), id="tool-body", markup=False)
-        super().__init__(self._body, title=self._summary(), collapsed=True)
+        # title is a Content (not str) on purpose — see _summary; Textual renders
+        # it at runtime, but its stub types title as str.
+        super().__init__(
+            self._body, title=self._summary(), collapsed=True  # pyright: ignore[reportArgumentType]
+        )
 
     def _summary(self) -> Content:
         glyph = {"pending": "·", "done": "✓", "denied": "✕"}.get(self.status, "·")
@@ -135,7 +139,10 @@ class ToolGroupWidget(Collapsible):
         # Insertion-ordered count per tool name, for the title breakdown.
         self._counts: dict[str, int] = {}
         self.body = Vertical(classes="tool-group-body")
-        super().__init__(self.body, title=self._summary(), collapsed=True)
+        # title is a Content (not str) on purpose — see _summary.
+        super().__init__(
+            self.body, title=self._summary(), collapsed=True  # pyright: ignore[reportArgumentType]
+        )
 
     def _summary(self) -> Content:
         total = sum(self._counts.values())
@@ -261,7 +268,10 @@ class SubAgentWidget(Collapsible):
         self._usage_line = Static("", classes="subagent-usage")
         self._usage_line.display = False
         self.body = Vertical(self._usage_line, classes="subagent-body")
-        super().__init__(self.body, title=self._summary(), collapsed=collapsed)
+        # title is a Content (not str) on purpose — see _summary.
+        super().__init__(
+            self.body, title=self._summary(), collapsed=collapsed  # pyright: ignore[reportArgumentType]
+        )
 
     def _summary(self) -> Content:
         glyph = {"pending": "▸", "done": "✓", "denied": "✕"}.get(self.status, "▸")

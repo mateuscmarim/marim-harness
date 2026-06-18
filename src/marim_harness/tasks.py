@@ -10,7 +10,7 @@ callback. Nothing here does I/O; persistence and rendering live with their owner
 """
 
 from dataclasses import dataclass
-from typing import Callable, Literal, Optional
+from typing import Callable, Literal, Optional, cast
 
 Status = Literal["pending", "in_progress", "done"]
 _VALID: frozenset[str] = frozenset({"pending", "in_progress", "done"})
@@ -42,7 +42,7 @@ def _coerce(item) -> Optional[Task]:
         return None
     if status not in _VALID:
         status = "pending"
-    return Task(text=text, status=status)
+    return Task(text=text, status=cast(Status, status))
 
 
 def _normalize(raw) -> list[Task]:

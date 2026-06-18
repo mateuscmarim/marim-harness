@@ -7,7 +7,6 @@ import pytest
 
 from marim_harness.tools.web import web_search
 
-
 # --- unit tests (no network) ---
 
 
@@ -122,7 +121,10 @@ async def test_web_search_max_results_clamped():
     """Results list longer than max_results should be truncated."""
     payload = {
         "results": [
-            {"url": f"https://example.com/{i}", "title": f"R{i}", "content": "", "engines": [], "publishedDate": None}
+            {
+                "url": f"https://example.com/{i}", "title": f"R{i}",
+                "content": "", "engines": [], "publishedDate": None,
+            }
             for i in range(20)
         ]
     }

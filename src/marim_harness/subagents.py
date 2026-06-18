@@ -9,9 +9,11 @@ immediately. The harness wires ``run``/``run_background`` onto ``Deps`` so the
 ``spawn_agent`` tool reaches them the same way other tools reach shared state.
 """
 
+from typing import Optional
+
 from pydantic_ai import Agent
 
-from .deps import Deps
+from .deps import Deps, SubAgent
 from .hooks.dispatch import TurnHooks
 from .permissions import Mode
 from .tools import fs
@@ -55,7 +57,9 @@ class SubagentRunner:
 
         return handler
 
-    def build(self, type: str, max_output_chars: int | None = None):
+    def build(
+        self, type: str, max_output_chars: int | None = None
+    ) -> "tuple[Optional[SubAgent], Optional[str]]":
         """Build an isolated sub-agent of ``type`` on the current model, with its
         reach decided up front: gated tools only in auto mode, so a run never
         needs an approval round. ``max_output_chars``, when the spawner set one,
@@ -106,6 +110,7 @@ class SubagentRunner:
         sub, err = self.build(type, max_output_chars)
         if err is not None:
             return err
+        assert sub is not None  # err is None ⇒ build returned an agent
         granted, unknown = self.mcp.granted_servers(mcp_names)
         await self.hooks.subagent_start(type, task)
         result = await sub.run(
@@ -133,6 +138,7 @@ class SubagentRunner:
         sub, err = self.build(type, max_output_chars)
         if err is not None:
             return err
+        assert sub is not None  # err is None ⇒ build returned an agent
         granted, unknown = self.mcp.granted_servers(mcp_names)
         await self.hooks.subagent_start(type, task)
         result = await sub.run(task, deps=self.deps, toolsets=granted)

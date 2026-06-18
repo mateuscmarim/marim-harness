@@ -6,7 +6,6 @@ import pytest
 
 from marim_harness.interfaces.cli import router
 
-
 # --- _setup_logging -----------------------------------------------------------
 
 

@@ -3,7 +3,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from marim_harness.session import SessionInfo
 from marim_harness.interfaces.tui.commands import (
     COMMANDS,
     COMMANDS_BY_NAME,
@@ -11,6 +10,7 @@ from marim_harness.interfaces.tui.commands import (
     resolve_ref,
 )
 from marim_harness.interfaces.tui.themes import THEME_NAMES
+from marim_harness.session import SessionInfo
 
 
 class _FakeApp:

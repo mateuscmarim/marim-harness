@@ -16,6 +16,7 @@ from ...workspace import discover_skills
 from .themes import THEME_NAMES
 
 if TYPE_CHECKING:
+    from ...session.store import SessionInfo
     from .app import HarnessApp
 
 Handler = Callable[["HarnessApp", str], Awaitable[None]]
@@ -48,7 +49,7 @@ async def _cmd_clear(app: HarnessApp, arg: str) -> None:
     await app.reset_conversation()
 
 
-def resolve_ref(infos: list, ref: str) -> object | None:
+def resolve_ref(infos: "list[SessionInfo]", ref: str) -> "SessionInfo | None":
     """Find a session by 1-based list position, exact id, or exact name
     (case-insensitive). Returns the matching SessionInfo or None."""
     ref = ref.strip()

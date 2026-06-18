@@ -300,7 +300,9 @@ async def test_pre_compact_fires_when_compaction_runs(tmp_path):
     cmd = _hook_cmd(tmp_path, log)
     deps = Deps(
         workspace_root=tmp_path,
-        hooks=HookRunner({hook_events.PRE_COMPACT: [{"hooks": [{"type": "command", "command": cmd}]}]}),
+        hooks=HookRunner(
+            {hook_events.PRE_COMPACT: [{"hooks": [{"type": "command", "command": cmd}]}]}
+        ),
     )
     # A tiny token budget forces compaction of a non-trivial history.
     ctrl = SessionController(None, None, deps, max_context_tokens=1, keep_last_messages=1)
@@ -352,7 +354,9 @@ async def test_pre_compact_does_not_fire_without_compaction(tmp_path):
     cmd = _hook_cmd(tmp_path, log)
     deps = Deps(
         workspace_root=tmp_path,
-        hooks=HookRunner({hook_events.PRE_COMPACT: [{"hooks": [{"type": "command", "command": cmd}]}]}),
+        hooks=HookRunner(
+            {hook_events.PRE_COMPACT: [{"hooks": [{"type": "command", "command": cmd}]}]}
+        ),
     )
     ctrl = SessionController(None, None, deps, max_context_tokens=100_000, keep_last_messages=20)
     ctrl.history = []  # nothing to compact
