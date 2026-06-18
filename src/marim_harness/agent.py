@@ -283,7 +283,9 @@ class Harness:
 
     async def aclose(self) -> None:
         await self.mcp.aclose()
-        await self.lsp.aclose()
+        lsp = getattr(self, "lsp", None)
+        if lsp is not None:
+            await lsp.aclose()
 
     async def disable_server(self, name: str) -> None:
         self.mcp.disable_server(name, self.deps.workspace_root)

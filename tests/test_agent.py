@@ -10,6 +10,7 @@ from marim_harness.agent import Harness
 from marim_harness.deps import Deps
 from marim_harness.hooks import events as hook_events
 from marim_harness.hooks.runner import HookRunner
+from marim_harness.lsp.manager import LspManager
 from marim_harness.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
 
@@ -2148,8 +2149,6 @@ async def test_background_subagent_start_and_stop_fire(tmp_path):
 # ---------------------------------------------------------------------------
 # Task 7: LspManager lifecycle wiring
 # ---------------------------------------------------------------------------
-
-from marim_harness.lsp.manager import LspManager  # noqa: E402
 
 
 def _minimal_harness(tmp_path: Path):
