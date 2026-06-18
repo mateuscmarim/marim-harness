@@ -73,22 +73,26 @@ class Choice:
 
 class Question:
     question: str
-    header: str
-    options: list[Choice]
+    header: str = ""
+    options: list[Choice] = []
     multi: bool = False
 ```
 
 Rules:
 - 1–4 questions per call. Each question needs at least one listed `Choice`.
-- The "Other" (free-text) entry is appended automatically to every question —
+- The "Other" (free-text) field is offered automatically on every question —
   the agent never specifies it.
 - `multi=False` (default) → single-select; `multi=True` → multi-select.
 
-**Weak-model tolerance** (same spirit as `_coerce_mcp`):
-- A `Choice` supplied as a bare string coerces to `{label: <str>, description: None}`.
-- A missing/empty `header` falls back to a truncation of `question` (so the
-  result is always keyed by something stable).
-- `questions` supplied as a JSON-encoded string is parsed before validation.
+**Schema + normalization.** The param is typed `list[Question]`, so pydantic-ai
+builds a clean schema the model follows, validates the call, and retries a
+malformed one (the agent loop already handles tool-arg retries). On top of that,
+a `coerce_questions` pass normalizes the validated list defensively:
+- A missing/empty `header` falls back to a truncation of `question`, so the
+  result is always keyed by something stable.
+- Choices with a blank `label` are dropped; questions left with no usable
+  options (or a blank `question`) are dropped.
+- The list is capped at 4 questions so a bad call can't open an unbounded modal.
 
 **Return value:** always a compact JSON object string keyed by `header`:
 - single-select question → the chosen option's `label`, or the typed "Other"
@@ -123,13 +127,17 @@ reference picker (one question with its option list visible; footer
 `↑/↓ navigate · Enter select · Esc cancel`; a `Question 2/3` indicator shown
 only when there is more than one question).
 
-- **Single-select** → `OptionList` of the choices plus a trailing `Other…`
-  entry. Arrows / number keys move the highlight; Enter (or selecting an entry)
-  confirms the current question and advances. Choosing `Other…` reveals an
-  `Input`; submitting it records the typed text as the answer and advances.
-- **Multi-select** → Textual `SelectionList` (checkboxes), plus an `Other…`
-  checkbox. Space toggles; Enter confirms the question and advances. If `Other…`
-  is checked, its `Input` text joins the selected labels.
+A free-text field (`Input`, labelled "or type your own") is always visible
+beneath the options, so "Other" is offered on every question without a reveal
+step.
+
+- **Single-select** → `OptionList` of the choices. Arrows / number keys move the
+  highlight; Enter (or selecting an entry) records the choice and advances.
+  Typing in the free-text field and pressing Enter records that text instead and
+  advances.
+- **Multi-select** → Textual `SelectionList` (checkboxes) plus a `Confirm`
+  button. Space toggles options; pressing `Confirm` records all checked labels
+  (plus the free-text field's contents, if any) and advances.
 - Each `Choice.description` renders as dim secondary text beneath its label.
 - **Esc** cancels the entire prompt → the modal dismisses with a cancel
   sentinel (callback returns `None`).
@@ -175,20 +183,23 @@ only when there is more than one question).
 
 ## Testing
 
-- **Tool unit tests** (`tests/test_tools.py` or a focused new test module):
-  - bare-string `Choice` coercion; JSON-string `questions` parsing.
+- **Normalization unit tests** (`tests/test_ask_user.py`):
+  - blank-label `Choice` dropped; option-less or blank-question `Question` dropped.
   - missing `header` → falls back to truncated question as the key.
+  - more than 4 questions → capped at 4.
+  - `answers_to_json`: single value stays a string, list value stays a list,
+    object keyed by header.
+- **Tool unit tests** (`tests/test_ask_user_tool.py`, FunctionModel pattern):
   - `ask_user is None` → returns the headless note.
-  - callback returns `None` → returns the cancelled note.
-  - JSON return shape: single-select → string value; multi-select → list value;
-    object always keyed by header.
-  - empty/malformed input → error string, no raise.
-- **Modal tests** via Textual `run_test()` pilot (mirroring existing
-  `test_app.py` / model-picker tests):
+  - callback returns `None`/empty → returns the cancelled note.
+  - callback returns answers → tool returns the header-keyed JSON.
+  - empty `questions` (after normalization) → error string, no raise.
+  - `ask_user` is registered on the main agent and NOT on sub-agents.
+- **Modal tests** via Textual `run_test()` pilot (mirroring `test_approval.py`):
   - single-select: highlight + Enter returns the chosen label.
-  - multi-select: Space toggles two options, Enter confirms, returns the list.
-  - "Other": choosing `Other…` + typing returns the typed text.
-  - Esc returns the cancel sentinel.
+  - multi-select: Space toggles options, `Confirm` returns the list.
+  - free-text: typing in the field + Enter returns the typed text.
+  - Esc returns the cancel sentinel (`None`).
   - multi-question: answering Q1 advances to Q2; final dismiss carries both
     answers keyed by header.
 
