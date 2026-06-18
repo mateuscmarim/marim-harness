@@ -1,6 +1,7 @@
 # tests/test_ask_user_modal.py
 import pytest
 from textual.app import App
+from textual.widgets import Button, SelectionList
 
 from marim_harness.ask_user import Choice, Question
 from marim_harness.interfaces.tui.ask_user import AskUserModal
@@ -79,6 +80,42 @@ async def test_escape_cancels():
         await pilot.press("escape")
         await pilot.pause()
     assert app.result is None
+
+
+@pytest.mark.anyio
+async def test_multi_select_empty_confirm_is_ignored():
+    """Confirm with nothing checked and no free-text must not dismiss or advance."""
+    qs = [Question("Pick many", "Feat", [Choice("a"), Choice("b")], multi=True)]
+    app = _Harness(qs)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Click Confirm without selecting anything or typing free-text
+        await pilot.click("#ask-confirm")
+        await pilot.pause()
+        # Modal must NOT have dismissed: result stays at sentinel
+        assert app.result == "unset"
+        # The SelectionList must still be mounted
+        assert app.screen.query_one("#ask-select", SelectionList) is not None
+
+
+@pytest.mark.anyio
+async def test_multi_select_empty_confirm_then_valid_confirm():
+    """After an empty-confirm no-op, the user can still complete the question."""
+    qs = [Question("Pick many", "Feat", [Choice("a"), Choice("b")], multi=True)]
+    app = _Harness(qs)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # First click: empty — ignored
+        await pilot.click("#ask-confirm")
+        await pilot.pause()
+        assert app.result == "unset"
+        # Directly toggle option 0 via the SelectionList API then confirm
+        sel = app.screen.query_one("#ask-select", SelectionList)
+        sel.select(0)
+        await pilot.pause()
+        app.screen.query_one("#ask-confirm", Button).press()
+        await pilot.pause()
+    assert app.result == {"Feat": ["a"]}
 
 
 @pytest.mark.anyio

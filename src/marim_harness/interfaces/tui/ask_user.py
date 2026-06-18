@@ -144,11 +144,18 @@ class AskUserModal(ModalScreen[Optional[dict]]):
             self._confirm_multi()
 
     def _confirm_multi(self) -> None:
-        """Collect the checked labels plus any free-text, then advance."""
+        """Collect the checked labels plus any free-text, then advance.
+
+        If nothing is checked and no free-text is present the submission is
+        ignored: the user must select at least one option, type free-text, or
+        press Escape to cancel.
+        """
         q = self._questions[self._index]
         sel = self.query_one("#ask-select", SelectionList)
         labels = [q.options[i].label for i in sel.selected]
         other = self.query_one("#ask-other", Input).value.strip()
+        if not labels and not other:
+            return
         if other:
             labels.append(other)
         self._record(labels)
