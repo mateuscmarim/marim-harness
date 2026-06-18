@@ -394,6 +394,42 @@ async def test_run_background_subagent_default_grants_no_servers(tmp_path: Path)
     assert cap["toolsets"] == []
 
 
+@pytest.mark.anyio
+async def test_run_background_isolates_task_list(tmp_path: Path):
+    """A background sub-agent gets its OWN empty TaskList so its checklist never
+    pollutes (or persists as) the user's session tasks. The foreground path keeps
+    sharing the parent's tasks (it runs inside the turn, no race)."""
+    from types import SimpleNamespace
+
+    from pydantic_ai.usage import RunUsage
+
+    from marim_harness.tasks import TaskList
+
+    cap: dict = {}
+
+    class _StubAgent:
+        async def run(self, task, **kwargs):
+            cap["deps"] = kwargs.get("deps")
+            return SimpleNamespace(output="report", usage=RunUsage())
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    # Give the parent a non-empty checklist so a leak would be visible.
+    deps.tasks.replace([{"text": "user task", "status": "in_progress"}])
+    h = _make_harness(_text_model(), deps)
+    h.subagents.build = lambda type, max_output_chars=None: (_StubAgent(), None)
+
+    await h.subagents.run_background("explore", "scan")
+    bg_deps = cap["deps"]
+    # Background got a DIFFERENT, empty TaskList object...
+    assert isinstance(bg_deps.tasks, TaskList)
+    assert bg_deps.tasks is not deps.tasks
+    assert bg_deps.tasks.to_payload() == []
+    # ...while jobs (and the rest of Deps) stay shared.
+    assert bg_deps.jobs is deps.jobs
+    # The parent's checklist is untouched.
+    assert deps.tasks.to_payload() == [{"text": "user task", "status": "in_progress"}]
+
+
 def test_harness_exposes_wake_defaults(tmp_path: Path):
     """The Harness surfaces the wake knobs so the TUI app can seed its scheduler;
     with no config passed, the defaults are on / cap 3."""
