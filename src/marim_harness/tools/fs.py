@@ -18,6 +18,7 @@ _DEFAULT_READ_LIMIT = 2000
 _TREE_SKIP_DIRS = {
     ".git", "node_modules", "__pycache__", ".venv", ".mypy_cache",
     ".pytest_cache", ".ruff_cache", "dist", "build", ".egg-info",
+    ".worktrees",
 }
 
 
@@ -168,6 +169,8 @@ def glob_files(root: Path, pattern: str) -> str:
     for p in candidates:
         if not p.is_file():
             continue
+        if ".worktrees" in p.relative_to(root).parts:
+            continue  # skip sibling worktree checkouts
         rel = str(p.relative_to(root))
         try:
             resolve_in_workspace(root, rel)
@@ -185,6 +188,8 @@ def grep(root: Path, pattern: str, path: Optional[str] = None) -> str:
     files = [base] if base.is_file() else [p for p in base.rglob("*") if p.is_file()]
     out: list[str] = []
     for f in files:
+        if ".worktrees" in f.relative_to(root).parts:
+            continue  # skip sibling worktree checkouts
         # Skip files that resolve outside the workspace — e.g. an in-tree symlink
         # pointing at /etc/passwd. rglob yields the link; reading it would follow
         # it out of the sandbox, so gate each match the same way read_file does.
