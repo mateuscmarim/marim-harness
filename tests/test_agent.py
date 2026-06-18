@@ -128,7 +128,7 @@ async def test_subagent_output_cap_spills_full_and_returns_pointer(tmp_path: Pat
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     harness = _make_harness(FunctionModel(fn), deps)
-    result = await harness._run_subagent("explore", "go", "tc-1", None, 200)
+    result = await harness.subagents.run("explore", "go", "tc-1", None, 200)
 
     assert len(result) <= 200
     assert result.startswith("CONCLUSION first.")
@@ -148,7 +148,7 @@ async def test_subagent_no_cap_returns_full_output(tmp_path: Path):
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     harness = _make_harness(FunctionModel(fn), deps)
-    result = await harness._run_subagent("explore", "go", "tc-2", None, None)
+    result = await harness.subagents.run("explore", "go", "tc-2", None, None)
 
     assert result == long
     assert not (tmp_path / ".marim" / "subagent-output").exists()
@@ -971,7 +971,7 @@ async def test_run_subagent_returns_output(tmp_path: Path):
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(TestModel(call_tools=[], custom_output_text="FINDINGS"), deps)
-    out = await h._run_subagent("explore", "find the parser", "sid")
+    out = await h.subagents.run("explore", "find the parser", "sid")
     assert out == "FINDINGS"
 
 
@@ -984,7 +984,7 @@ async def test_run_subagent_counts_usage_in_session_total(tmp_path: Path):
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(TestModel(call_tools=[], custom_output_text="FINDINGS"), deps)
     assert h.session.total_tokens == 0
-    await h._run_subagent("explore", "find the parser", "sid")
+    await h.subagents.run("explore", "find the parser", "sid")
     assert h.session.total_tokens > 0
 
 
@@ -1002,13 +1002,13 @@ async def test_run_subagent_restricts_tools_by_mode(tmp_path: Path):
     h = _make_harness(FunctionModel(fn), deps)
 
     # ask mode: general drops its gated tools, keeping local reads + net tools.
-    out = await h._run_subagent("general", "do it", "sid")
+    out = await h.subagents.run("general", "do it", "sid")
     assert out == "report"
     assert captured["tools"] == set(READ_TOOLS | NET_TOOLS)
 
     # auto mode: the full set, including write/edit/bash.
     deps.mode = Mode.auto
-    await h._run_subagent("general", "do it", "sid")
+    await h.subagents.run("general", "do it", "sid")
     assert captured["tools"] == set(SUBAGENT_TOOLS)
 
 
@@ -1025,7 +1025,7 @@ async def test_subagent_handler_forwards_token_usage(tmp_path: Path):
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto, on_subagent_event=cb)
     h = _make_harness(_text_model(), deps)
-    handler = h._subagent_handler("sid")
+    handler = h.subagents.handler("sid")
 
     async def events():
         yield "evt-a"
@@ -1044,14 +1044,14 @@ async def test_subagent_handler_forwards_token_usage(tmp_path: Path):
 async def test_subagent_handler_none_without_listener(tmp_path: Path):
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)  # no on_subagent_event
     h = _make_harness(_text_model(), deps)
-    assert h._subagent_handler("sid") is None
+    assert h.subagents.handler("sid") is None
 
 
 @pytest.mark.anyio
 async def test_run_subagent_unknown_type(tmp_path: Path):
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(_text_model(), deps)
-    out = await h._run_subagent("ghost", "do it", "sid")
+    out = await h.subagents.run("ghost", "do it", "sid")
     assert "No sub-agent type 'ghost'" in out
     assert "explore" in out and "general" in out  # lists what's available
 
@@ -1082,7 +1082,7 @@ async def test_run_background_subagent_returns_output(tmp_path: Path):
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(TestModel(call_tools=[], custom_output_text="BG REPORT"), deps)
-    out = await h._run_background_subagent("explore", "scan the repo")
+    out = await h.subagents.run_background("explore", "scan the repo")
     assert out == "BG REPORT"
 
 
@@ -1101,7 +1101,7 @@ async def test_run_background_subagent_counts_and_persists_usage(tmp_path: Path)
         provider=BuiltinToolProvider(), deps=deps, instructions="x", store=store,
     )
     assert h.session.total_tokens == 0
-    await h._run_background_subagent("explore", "scan the repo")
+    await h.subagents.run_background("explore", "scan the repo")
     assert h.session.total_tokens > 0
     # The spend reached disk immediately, without waiting for a run_turn.
     _, usage, _ = store.load()
@@ -1112,7 +1112,7 @@ async def test_run_background_subagent_counts_and_persists_usage(tmp_path: Path)
 async def test_run_background_subagent_unknown_type(tmp_path: Path):
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(_text_model(), deps)
-    out = await h._run_background_subagent("ghost", "do it")
+    out = await h.subagents.run_background("ghost", "do it")
     assert "No sub-agent type 'ghost'" in out
 
 
@@ -1128,17 +1128,17 @@ async def test_run_background_subagent_respects_mode(tmp_path: Path):
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.ask)
     h = _make_harness(FunctionModel(fn), deps)
-    await h._run_background_subagent("general", "x")
+    await h.subagents.run_background("general", "x")
     assert captured["tools"] == set(READ_TOOLS | NET_TOOLS)
     deps.mode = Mode.auto
-    await h._run_background_subagent("general", "x")
+    await h.subagents.run_background("general", "x")
     assert captured["tools"] == set(SUBAGENT_TOOLS)
 
 
 def test_background_agent_runner_wired(tmp_path: Path):
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(_text_model(), deps)
-    assert deps.run_background_agent == h._run_background_subagent
+    assert deps.run_background_agent == h.subagents.run_background
 
 
 def _spawn_then_done_model() -> FunctionModel:
@@ -1754,7 +1754,7 @@ def test_parallel_tool_calls_enabled_on_subagent(tmp_path):
     parallel as the main agent's."""
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     harness = _make_harness(_edit_then_done_model(), deps)
-    sub, err = harness._build_subagent("explore")
+    sub, err = harness.subagents.build("explore")
     assert err is None
     assert sub.model_settings is not None
     assert sub.model_settings.get("parallel_tool_calls") is True
@@ -1775,7 +1775,7 @@ def _capture_subagent(h, report="report"):
             cap["toolsets"] = kwargs.get("toolsets")
             return SimpleNamespace(output=report, usage=RunUsage())
 
-    h._build_subagent = lambda type, max_output_chars=None: (_StubAgent(), None)
+    h.subagents.build = lambda type, max_output_chars=None: (_StubAgent(), None)
     return cap
 
 
@@ -1791,7 +1791,7 @@ async def test_run_subagent_grants_named_server(tmp_path: Path):
     h.mcp._live_servers = [server]
     cap = _capture_subagent(h)
 
-    out = await h._run_subagent("explore", "read docs", "sid", ["mddocs"])
+    out = await h.subagents.run("explore", "read docs", "sid", ["mddocs"])
     assert out == "report"
     # Identity, not just equality: gating relies on the SAME hooked server
     # object reaching run() — a copy would silently drop the approval hook.
@@ -1809,7 +1809,7 @@ async def test_run_subagent_default_grants_no_servers(tmp_path: Path):
     h.mcp._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
     cap = _capture_subagent(h)
 
-    await h._run_subagent("explore", "investigate", "sid")
+    await h.subagents.run("explore", "investigate", "sid")
     assert cap["toolsets"] == []
 
 
@@ -1822,7 +1822,7 @@ async def test_run_subagent_prepends_unknown_note(tmp_path: Path):
     h.mcp._live_servers = []
     _capture_subagent(h, report="FINDINGS")
 
-    out = await h._run_subagent("explore", "investigate", "sid", ["nope"])
+    out = await h.subagents.run("explore", "investigate", "sid", ["nope"])
     assert "nope" in out
     assert out.rstrip().endswith("FINDINGS")
 
@@ -1839,7 +1839,7 @@ async def test_run_background_subagent_grants_named_server(tmp_path: Path):
     h.mcp._live_servers = [server]
     cap = _capture_subagent(h)
 
-    out = await h._run_background_subagent("general", "do it", ["mddocs"])
+    out = await h.subagents.run_background("general", "do it", ["mddocs"])
     assert out == "report"
     # Identity, not just equality: the background path must also forward the
     # SAME hooked server object so its approval gating is preserved.
@@ -1855,7 +1855,7 @@ async def test_run_background_subagent_prepends_unknown_note(tmp_path: Path):
     h.mcp._live_servers = []
     _capture_subagent(h, report="DONE")
 
-    out = await h._run_background_subagent("general", "do it", ["nope"])
+    out = await h.subagents.run_background("general", "do it", ["nope"])
     assert "nope" in out
     assert out.rstrip().endswith("DONE")
 
@@ -1871,7 +1871,7 @@ async def test_run_background_subagent_default_grants_no_servers(tmp_path: Path)
     h.mcp._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
     cap = _capture_subagent(h)
 
-    await h._run_background_subagent("general", "do it")
+    await h.subagents.run_background("general", "do it")
     assert cap["toolsets"] == []
 
 
@@ -2034,7 +2034,7 @@ async def test_subagent_start_and_stop_fire(tmp_path):
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto, hooks=runner)
     # A model the sub-agent will run: just reply 'sub-done'.
     harness = _make_harness(FunctionModel(lambda m, i: ModelResponse(parts=[TextPart(content="sub-done")])), deps)
-    out = await harness._run_subagent("helper", "do a thing", "stream-1")
+    out = await harness.subagents.run("helper", "do a thing", "stream-1")
     assert "sub-done" in out
     lines = log.read_text().splitlines()
     assert "SubagentStart" in lines
@@ -2096,7 +2096,7 @@ async def test_background_subagent_start_and_stop_fire(tmp_path):
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto, hooks=runner)
     # A model the sub-agent will run: just reply 'bg-done'.
     harness = _make_harness(FunctionModel(lambda m, i: ModelResponse(parts=[TextPart(content="bg-done")])), deps)
-    out = await harness._run_background_subagent("helper", "do a thing")
+    out = await harness.subagents.run_background("helper", "do a thing")
     assert "bg-done" in out
     lines = log.read_text().splitlines()
     assert "SubagentStart" in lines
