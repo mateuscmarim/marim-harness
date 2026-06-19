@@ -54,6 +54,23 @@ marim config     # view configuration
 marim models     # list available models for the active provider
 ```
 
+### Image input
+
+Vision-capable models can read pasted images.
+
+- **Paste a screenshot:** copy an image, then press **`Ctrl+V`** in the prompt
+  (the harness reads the OS clipboard and inserts an `[Image #N]` marker).
+  Note: your terminal's *native* paste (often `Ctrl+Shift+V` / `Cmd+V`) only
+  pastes **text** — image bytes arrive only through the app-intercepted `Ctrl+V`.
+- **Paste a file path:** paste or drag an image file; a bare path to an existing
+  image is attached automatically.
+
+Clipboard image reading needs a helper per platform: `wl-clipboard` (Wayland),
+`xclip` (X11), `pngpaste` (macOS); Windows uses built-in PowerShell. Without one,
+the file-path method still works. If the active model is known to be text-only,
+the harness warns instead of sending. Cached images live under
+`~/.marim/image-cache/` (override with `MARIM_IMAGE_CACHE_DIR`).
+
 ## Configuration
 
 Configuration is read from the environment and from `.env` files (a project
