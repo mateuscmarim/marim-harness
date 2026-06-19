@@ -68,6 +68,29 @@ async def test_submit_forwards_attachments_to_run_turn(tmp_path, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_paste_image_path_inserts_token_not_path(tmp_path, monkeypatch):
+    """Bracketed file-path paste attaches the image and inserts [Image #N],
+    suppressing TextArea's default raw-path insertion."""
+    monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path / "cache"))
+    from textual import events
+
+    from marim_harness.interfaces.tui.widgets import PromptInput
+
+    img = tmp_path / "foo.png"
+    img.write_bytes(b"\x89PNGbytes")
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        box = app.query_one(PromptInput)
+        box.focus()
+        box.post_message(events.Paste(str(img)))
+        await pilot.pause()
+        assert "[Image #1]" in box.text
+        assert str(img) not in box.text  # raw path must NOT appear
+        assert len(box.attachments) == 1
+
+
+@pytest.mark.anyio
 async def test_ctrl_v_invokes_paste_image_hook(tmp_path):
     from marim_harness.interfaces.tui.widgets import PromptInput
 
