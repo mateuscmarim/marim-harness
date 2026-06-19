@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
 
 from pydantic_ai import Agent, DeferredToolRequests, capture_run_messages
+from pydantic_ai.messages import BinaryContent
 from pydantic_ai.settings import ModelSettings
 
 if TYPE_CHECKING:
@@ -409,11 +410,15 @@ class Harness:
             prompt = wrap_turn_context(injected, typed)
         return prompt
 
-    async def run_turn(self, prompt: str, event_stream_handler=None) -> str:
+    async def run_turn(self, prompt: str, event_stream_handler=None,
+                       attachments: Optional[list[tuple[bytes, str]]] = None) -> str:
         """Run the agent until it produces a final text answer, looping through
         any approval rounds. Returns the final text output."""
         await self._maybe_compact()
-        user_prompt: Optional[str] = await self._assemble_prompt(prompt)
+        user_prompt: str | list[str | BinaryContent] | None = await self._assemble_prompt(prompt)
+        if attachments and user_prompt is not None:
+            user_prompt = [user_prompt, *(BinaryContent(data=d, media_type=m)
+                                          for d, m in attachments)]
         deferred_results = None
         # Offer only the live servers that aren't disabled — a server muted at
         # runtime stays connected but its tools are withheld from the model.

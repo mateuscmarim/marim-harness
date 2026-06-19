@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from pydantic_ai import Agent
+from pydantic_ai.messages import BinaryContent, ModelRequest, UserPromptPart
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
@@ -362,3 +363,19 @@ async def test_pre_compact_does_not_fire_without_compaction(tmp_path):
     ctrl.history = []  # nothing to compact
     await ctrl.maybe_compact()
     assert not log.exists()
+
+
+def test_session_save_load_round_trips_image(tmp_path, monkeypatch):
+    monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path / "imgs"))
+    mgr = SessionManager(tmp_path / "ws", base_dir=tmp_path / "sessions")
+    store = mgr.create("with-image")
+    history = [ModelRequest(parts=[UserPromptPart(
+        content=["see this", BinaryContent(data=b"\x89PNGz", media_type="image/png")]
+    )])]
+    store.save(history, RunUsage())
+    # session JSON must not carry the base64 payload inline
+    assert "marim-image-cache://" in store.path.read_text()
+    loaded, _usage, _tasks = store.load()
+    parts = loaded[0].parts
+    binaries = [c for c in parts[0].content if isinstance(c, BinaryContent)]
+    assert binaries and binaries[0].data == b"\x89PNGz"

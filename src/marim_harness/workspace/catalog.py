@@ -14,10 +14,12 @@ _GOOGLE_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
 @dataclass(frozen=True)
 class ModelEntry:
-    """One selectable model: its provider id and a human-readable name."""
+    """One selectable model: its provider id and a human-readable name.
+    ``supports_images`` is True/False when the catalog states it, else None."""
 
     id: str
     name: str
+    supports_images: Optional[bool] = None
 
 
 def parse_models(payload: dict) -> list[ModelEntry]:
@@ -35,7 +37,14 @@ def parse_models(payload: dict) -> list[ModelEntry]:
             continue
         name = row.get("name")
         display = name if isinstance(name, str) and name else model_id
-        entries.append(ModelEntry(id=model_id, name=display))
+        arch = row.get("architecture")
+        supports_images: Optional[bool] = None
+        if isinstance(arch, dict):
+            mods = arch.get("input_modalities")
+            if isinstance(mods, list):
+                supports_images = "image" in mods
+        entries.append(ModelEntry(id=model_id, name=display,
+                                  supports_images=supports_images))
     entries.sort(key=lambda e: e.id)
     return entries
 
@@ -67,7 +76,7 @@ def parse_google_models(payload: dict) -> list[ModelEntry]:
             continue
         model_id = raw_name.removeprefix("models/")
         display = row.get("displayName") or model_id
-        entries.append(ModelEntry(id=model_id, name=display))
+        entries.append(ModelEntry(id=model_id, name=display, supports_images=True))
     entries.sort(key=lambda e: e.id)
     return entries
 
@@ -105,3 +114,12 @@ async def fetch_openrouter_models(
     except Exception as exc:
         logger.warning("failed to fetch OpenRouter model catalog: %s", exc)
         return []
+
+
+def model_supports_images(entries: list[ModelEntry], model_id: str) -> Optional[bool]:
+    """Whether ``model_id`` accepts image input per the catalog; None if the id
+    is not present (capability unknown)."""
+    for entry in entries:
+        if entry.id == model_id:
+            return entry.supports_images
+    return None

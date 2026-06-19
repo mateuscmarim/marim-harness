@@ -222,6 +222,7 @@ class HarnessApp(App):
         # these (instead of walking the whole message tree every frame) keeps the
         # tick O(active streams), not O(every message ever shown).
         self._dirty_streams: set[AssistantMessage] = set()
+        self._vision_caps: dict[str, bool | None] = {}
         self._busy = False
         self._turn_worker = None
         # Autonomous wake-on-completion (interactive TUI only). When a background
@@ -276,6 +277,13 @@ class HarnessApp(App):
         log.anchor()
         self._render_tasks()  # reflect any checklist restored with the session
         self._render_jobs()  # process-scoped jobs survive session switches
+        # Seed vision capabilities in the background so the text-only-model
+        # warning can fire even before the user opens the model picker.
+        source = self.harness.model_source
+        if source is not None:
+            self.run_worker(
+                self._refresh_vision_caps(source.list_models), exclusive=False
+            )
         # Coalesce streaming text deltas: render buffered AssistantMessages on a
         # shared interval instead of re-parsing the markdown on every token.
         self.set_interval(_STREAM_FLUSH_INTERVAL, self._flush_streams)
@@ -568,6 +576,8 @@ class HarnessApp(App):
         if source is None:
             await self.post_system("Model switching isn't available here.")
             return
+        self.run_worker(self._refresh_vision_caps(source.list_models),
+                        exclusive=False)
         self.push_screen(
             ModelPickerModal(
                 current=self.harness.model_id,
@@ -576,6 +586,13 @@ class HarnessApp(App):
             ),
             self._on_model_chosen,
         )
+
+    async def _refresh_vision_caps(self, fetch) -> None:
+        try:
+            entries = await fetch()
+        except Exception:
+            return  # unknown stays unknown; never blocks submit
+        self._vision_caps = {e.id: e.supports_images for e in entries}
 
     def _on_model_chosen(self, chosen: str | None) -> None:
         """Apply a model selected in the picker. Invoked by push_screen when the
@@ -610,6 +627,17 @@ class HarnessApp(App):
         if self._busy:
             self._refresh_status()
 
+    def _image_block_reason(self, attachments) -> str | None:
+        """A warning to show instead of submitting, or None to proceed. Only a
+        positive text-only capability blocks; unknown always proceeds."""
+        if not attachments:
+            return None
+        model_id = self.harness.model_id
+        if model_id is not None and self._vision_caps.get(model_id) is False:
+            return (f"{model_id} can't read images — "
+                    "switch to a vision model (Ctrl+P) or remove the image.")
+        return None
+
     async def _request_approval(self, call) -> DeferredToolApprovalResult | bool:
         approved = await self.push_screen_wait(
             ApprovalModal(call.tool_name, call.args_as_dict())
@@ -631,17 +659,28 @@ class HarnessApp(App):
         if text.startswith("/"):
             await dispatch(self, text)
             return
+        reason = self._image_block_reason(event.attachments)
+        if reason is not None:
+            log = self.query_one("#log", VerticalScroll)
+            await log.mount(NoticeMessage(reason))
+            return
         log = self.query_one("#log", VerticalScroll)
         await log.mount(UserMessage(text))
         self._current_assistant = None
         self._auto_turn_depth = 0  # a user turn breaks any autonomous-wake chain
-        self._turn_worker = self.run_worker(self._run_turn(text), exclusive=True)
+        self._turn_worker = self.run_worker(
+            self._run_turn(text, event.attachments), exclusive=True
+        )
 
-    async def _run_turn(self, text: str) -> None:
+    async def _run_turn(
+        self, text: str, attachments: list[tuple[bytes, str]] | None = None
+    ) -> None:
         self._set_busy(True)
         log = self.query_one("#log", VerticalScroll)
         try:
-            await self.harness.run_turn(text, event_stream_handler=self._on_events)
+            await self.harness.run_turn(
+                text, event_stream_handler=self._on_events, attachments=attachments
+            )
         except CancelledError:
             # User pressed escape; mount synchronously (we are unwinding) and
             # let the worker finish as cancelled.
