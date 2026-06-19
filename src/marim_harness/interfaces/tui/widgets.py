@@ -337,6 +337,9 @@ class SubAgentWidget(Collapsible):
         self.title = self._summary()
 
 
+_IMAGE_MARKER = re.compile(r"\[Image #(\d+)\]")
+
+
 class PromptInput(TextArea):
     """The multi-line message box. Enter submits; Shift+Enter and Ctrl+J insert a
     newline. The box auto-grows with its content up to ``_MAX_LINES``, then
@@ -398,6 +401,10 @@ class PromptInput(TextArea):
                 event.prevent_default()
                 event.stop()
                 return
+        if event.key in ("backspace", "delete") and self._delete_markers(event.key):
+            event.prevent_default()
+            event.stop()
+            return
         await super()._on_key(event)
 
     def _on_paste_image(self) -> bool:
@@ -439,6 +446,62 @@ class PromptInput(TextArea):
         event.prevent_default()
         event.stop()
         self._cache_and_insert(path.read_bytes(), media_type)
+
+    def _offset(self, loc: tuple[int, int]) -> int:
+        """Absolute character offset of a (row, col) cursor location."""
+        row, col = loc
+        lines = self.text.split("\n")
+        return sum(len(line) + 1 for line in lines[:row]) + col
+
+    def _location(self, offset: int) -> tuple[int, int]:
+        """The (row, col) location of an absolute character offset in self.text."""
+        head = self.text[:offset]
+        return (head.count("\n"), offset - (head.rfind("\n") + 1))
+
+    def _delete_markers(self, key: str) -> bool:
+        """Keep ``[Image #N]`` markers atomic: if a backspace/delete touches any
+        part of a marker (including its brackets), remove the whole marker and
+        drop the matching attachment instead of breaking the text. Surviving
+        markers renumber so they stay ``#1..#M`` aligned with ``attachments``.
+        Returns True when it consumed the edit, False to fall through to the
+        normal TextArea editing."""
+        text = self.text
+        spans = [(m.start(), m.end(), int(m.group(1)))
+                 for m in _IMAGE_MARKER.finditer(text)]
+        if not spans:
+            return False
+        lo = self._offset(self.selection.start)
+        hi = self._offset(self.selection.end)
+        if lo > hi:
+            lo, hi = hi, lo
+        if lo == hi:  # no selection — a single-character edit
+            if key == "backspace":
+                if lo == 0:
+                    return False
+                lo -= 1
+            else:  # delete
+                if hi >= len(text):
+                    return False
+                hi += 1
+        hit = [s for s in spans if s[0] < hi and s[1] > lo]
+        if not hit:
+            return False
+        lo = min(lo, min(s[0] for s in hit))
+        hi = max(hi, max(s[1] for s in hit))
+        removed = {s[2] for s in hit}
+        for n in sorted(removed, reverse=True):
+            if 1 <= n <= len(self.attachments):
+                del self.attachments[n - 1]
+
+        def _renumber(m: "re.Match[str]") -> str:
+            n = int(m.group(1))
+            return f"[Image #{n - sum(r < n for r in removed)}]"
+
+        new_prefix = _IMAGE_MARKER.sub(_renumber, text[:lo])
+        new_text = new_prefix + _IMAGE_MARKER.sub(_renumber, text[hi:])
+        self.text = new_text
+        self.move_cursor(self._location(len(new_prefix)))
+        return True
 
     def _at_first_line(self) -> bool:
         return self.cursor_location[0] == 0
