@@ -64,6 +64,11 @@ _STREAM_FLUSH_INTERVAL = 0.08
 # advances without a turn running. The streaming tick covers refreshes mid-turn.
 _CLOCK_TICK_INTERVAL = 1.0
 
+# Working-indicator animation: a rotating quarter-circle cycled while a turn runs
+# (idle shows a static ○). Frames advance on _SPINNER_TICK_INTERVAL.
+_SPINNER = "◐◓◑◒"
+_SPINNER_TICK_INTERVAL = 0.18
+
 
 def _osc_title(text: str) -> str:
     """The OSC 0 escape sequence that sets the terminal's tab AND window title.
@@ -256,6 +261,7 @@ class HarnessApp(App):
         # _turn_start marks the active turn for the live "working… Ns" timer.
         self._session_start = time.monotonic()
         self._turn_start = time.monotonic()
+        self._spin = 0  # working-indicator animation frame index
         # Autonomous wake-on-completion (interactive TUI only). When a background
         # job finishes while the turn worker is idle, fire a digest-only turn so
         # the agent reacts without waiting for the user. Seeded from config;
@@ -322,6 +328,8 @@ class HarnessApp(App):
         # the session duration advances even with no turn running.
         self._session_start = time.monotonic()
         self.set_interval(_CLOCK_TICK_INTERVAL, self._refresh_status)
+        # Animate the working indicator while a turn runs (no-op when idle).
+        self.set_interval(_SPINNER_TICK_INTERVAL, self._tick_spinner)
         # Land focus on the prompt so the user can type immediately.
         self.query_one(PromptInput).focus()
         await self._connect_mcp(log)
@@ -453,20 +461,30 @@ class HarnessApp(App):
         title (via an OSC sequence Textual doesn't emit on its own) to an
         idle/working mark + the session name. The title is a plain string, not
         markup-parsed, so a model-generated name needs no escaping."""
-        mark = "●" if self._busy else "○"
+        mark = _SPINNER[self._spin] if self._busy else "○"
         name = self.harness.session.session_name or "marim-harness"
         self.title = f"{mark} {name}"  # in-app Header
         if self._driver is not None:  # the actual terminal tab
             self._driver.write(_osc_title(f"{mark} {name}"))
             self._driver.flush()
 
+    def _tick_spinner(self) -> None:
+        """Advance the working-indicator animation while a turn runs. No-op when
+        idle, so the title/tab aren't rewritten and the static ○ stays put."""
+        if not self._busy:
+            return
+        self._spin = (self._spin + 1) % len(_SPINNER)
+        self._refresh_title()
+
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
-        if not busy:
+        if busy:
+            self._spin = 0  # start the working animation at the first frame
+        else:
             # The finished run is now folded into session usage by run_turn; drop
             # the in-flight tally so it isn't added on top a second time.
             self._live_run_tokens = 0
-        self._refresh_title()  # flip ● / ○
+        self._refresh_title()  # spinner ↔ static ○
         self._refresh_status()
 
     def _render_tasks(self) -> None:
@@ -500,6 +518,14 @@ class HarnessApp(App):
         self._render_jobs()
         self._maybe_wake()
 
+    def _notify(self, title: str, body: str, event_type: str) -> None:
+        """Fire a desktop notification if one is wired on deps. Best-effort —
+        the notifier itself swallows all errors, so this is a safe no-op when
+        notifications are off or the platform lacks a daemon."""
+        notifier = self.harness.deps.notifier
+        if notifier is not None:
+            notifier.send(title, body, event_type)
+
     def _maybe_wake(self) -> None:
         """Fire one digest-only autonomous turn iff a background job has finished
         and nothing is blocking. Guards (all must hold): wake enabled, the turn
@@ -522,6 +548,7 @@ class HarnessApp(App):
         # _on_compact / _on_rename.
         log = self.query_one("#log", VerticalScroll)
         log.mount(NoticeMessage("⏰ Resumed — background job(s) finished"))
+        self._notify("Background job finished", "A background job completed", "job_done")
         self._turn_worker = self.run_worker(self._run_turn(""), exclusive=True)
 
     def action_cycle_mode(self) -> None:
@@ -707,6 +734,11 @@ class HarnessApp(App):
         return None
 
     async def _request_approval(self, call) -> DeferredToolApprovalResult | bool:
+        self._notify(
+            "Approval needed",
+            f"Tool: {call.tool_name}",
+            "approval_needed",
+        )
         approved = await self.push_screen_wait(
             ApprovalModal(call.tool_name, call.args_as_dict())
         )
@@ -716,6 +748,8 @@ class HarnessApp(App):
         """Put a structured question to the user and return their {header:
         answer} mapping, or None if they dismissed it. Runs inside the turn
         worker, so push_screen_wait is valid (same as _request_approval)."""
+        prompt = questions[0].question if questions else ""
+        self._notify("Question from agent", prompt, "ask_user")
         return await self.push_screen_wait(AskUserModal(questions))
 
     async def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
@@ -754,6 +788,7 @@ class HarnessApp(App):
             # only; cancelled/errored turns surface an ErrorMessage instead).
             elapsed = _format_duration(time.monotonic() - self._turn_start, precise=True)
             await log.mount(TurnMeta(elapsed))
+            self._notify("Turn complete", f"Finished in {elapsed}", "turn_complete")
         except CancelledError:
             # User pressed escape; mount synchronously (we are unwinding) and
             # let the worker finish as cancelled.
@@ -761,6 +796,7 @@ class HarnessApp(App):
             raise
         except Exception as exc:  # keep the session alive on any turn failure
             await log.mount(ErrorMessage(f"{type(exc).__name__}: {exc}"))
+            self._notify("Turn error", f"{type(exc).__name__}: {exc}", "error")
         finally:
             self._turn_worker = None
             self._set_busy(False)

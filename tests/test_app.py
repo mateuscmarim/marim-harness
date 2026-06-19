@@ -2005,8 +2005,9 @@ async def test_title_shows_idle_and_working_indicator(tmp_path: Path, monkeypatc
         await pilot.pause()
         assert app.title == "○ my-session"
         app._busy = True
+        app._spin = 0  # first spinner frame
         app._refresh_title()
-        assert app.title == "● my-session"
+        assert app.title == "◐ my-session"
         # workspace path stays in the sub_title
         assert str(tmp_path) in app.sub_title
 
@@ -2057,8 +2058,52 @@ async def test_refresh_title_writes_osc_to_terminal(tmp_path: Path, monkeypatch)
         app._driver.write = lambda data: calls.append(data)
         try:
             app._busy = True
+            app._spin = 0  # first spinner frame
             app._refresh_title()
         finally:
             app._driver.write = real_write
         blob = "".join(calls)
-        assert "\033]0;● my-session\007" in blob
+        assert "\033]0;◐ my-session\007" in blob
+
+
+@pytest.mark.anyio
+async def test_busy_title_uses_spinner_frame(tmp_path: Path, monkeypatch):
+    from marim_harness.interfaces.tui.app import _SPINNER
+
+    monkeypatch.setattr(
+        type(_app(tmp_path).harness.session),
+        "session_name", property(lambda self: "my-session"),
+    )
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._busy = True
+        for frame_idx, glyph in enumerate(_SPINNER):
+            app._spin = frame_idx
+            app._refresh_title()
+            assert app.title == f"{glyph} my-session"
+
+
+@pytest.mark.anyio
+async def test_tick_spinner_advances_only_when_busy(tmp_path: Path, monkeypatch):
+    from marim_harness.interfaces.tui.app import _SPINNER
+
+    monkeypatch.setattr(
+        type(_app(tmp_path).harness.session),
+        "session_name", property(lambda self: "my-session"),
+    )
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Idle: the tick is a no-op and the title stays the static ○.
+        app._busy = False
+        app._spin = 0
+        app._tick_spinner()
+        assert app._spin == 0
+        assert app.title == "○ my-session"
+        # Busy: the tick advances the frame and re-renders the title.
+        app._busy = True
+        app._spin = 0
+        app._tick_spinner()
+        assert app._spin == 1
+        assert app.title == f"{_SPINNER[1]} my-session"
