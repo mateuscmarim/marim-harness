@@ -10,6 +10,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -65,13 +66,57 @@ def _read_wayland() -> Optional[tuple[bytes, str]]:
     return data, target
 
 
-def read_clipboard_image() -> Optional[tuple[bytes, str]]:
-    """The image currently on the OS clipboard as (bytes, media_type), or None.
+def _read_x11() -> Optional[tuple[bytes, str]]:
+    if not shutil.which("xclip"):
+        return None
+    targets = _run(["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"])
+    if not targets:
+        return None
+    available = targets.decode("utf-8", "replace").split()
+    target = "image/png" if "image/png" in available else next(
+        (t for t in available if t.startswith("image/")), None)
+    if target is None:
+        return None
+    data = _run(["xclip", "-selection", "clipboard", "-t", target, "-o"])
+    if not data:
+        return None
+    return data, target
 
-    Only Wayland is wired here; other platforms are added later and return None
-    for now so callers degrade to 'no image / install a helper'."""
+
+def _read_macos() -> Optional[tuple[bytes, str]]:
+    if not shutil.which("pngpaste"):
+        return None
+    data = _run(["pngpaste", "-"])
+    if not data:
+        return None
+    return data, "image/png"
+
+
+def _read_windows() -> Optional[tuple[bytes, str]]:
+    script = (
+        "Add-Type -AssemblyName System.Windows.Forms;"
+        "$i=[System.Windows.Forms.Clipboard]::GetImage();"
+        "if($i -ne $null){$m=New-Object System.IO.MemoryStream;"
+        "$i.Save($m,[System.Drawing.Imaging.ImageFormat]::Png);"
+        "[Console]::OpenStandardOutput().Write($m.ToArray(),0,$m.Length)}"
+    )
+    data = _run(["powershell", "-NoProfile", "-Command", script])
+    if not data:
+        return None
+    return data, "image/png"
+
+
+def read_clipboard_image() -> Optional[tuple[bytes, str]]:
+    """The image currently on the OS clipboard as (bytes, media_type), or None
+    when there is none or no platform helper is available."""
     if os.environ.get("WAYLAND_DISPLAY"):
         return _read_wayland()
+    if os.environ.get("DISPLAY"):
+        return _read_x11()
+    if sys.platform == "darwin":
+        return _read_macos()
+    if sys.platform == "win32":
+        return _read_windows()
     return None
 
 

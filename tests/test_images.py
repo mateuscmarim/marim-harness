@@ -1,5 +1,6 @@
 import base64
 import subprocess
+import sys
 
 from marim_harness import images
 
@@ -116,3 +117,30 @@ def test_rehydrate_degrades_when_cache_missing(tmp_path, monkeypatch):
                "vendor_metadata": None}]}]}]
     back = images.rehydrate_images(msgs, "sess")
     assert back[0]["parts"][0]["content"][1] == "[image unavailable]"
+
+
+def test_read_clipboard_image_x11(monkeypatch):
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(images.shutil, "which", lambda n: "/usr/bin/" + n)
+
+    def fake_run(cmd, **kw):
+        if "TARGETS" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"image/png\n")
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"\x89PNGx11")
+
+    monkeypatch.setattr(images.subprocess, "run", fake_run)
+    assert images.read_clipboard_image() == (b"\x89PNGx11", "image/png")
+
+
+def test_read_clipboard_image_macos(monkeypatch):
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(images.shutil, "which", lambda n: "/usr/bin/pngpaste")
+
+    def fake_run(cmd, **kw):
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"\x89PNGmac")
+
+    monkeypatch.setattr(images.subprocess, "run", fake_run)
+    assert images.read_clipboard_image() == (b"\x89PNGmac", "image/png")
