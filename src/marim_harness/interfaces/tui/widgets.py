@@ -387,7 +387,18 @@ class PromptInput(TextArea):
             event.prevent_default()
             event.stop()
             return
+        if event.key == "ctrl+v":
+            if self._on_paste_image():
+                event.prevent_default()
+                event.stop()
+                return
         await super()._on_key(event)
+
+    def _on_paste_image(self) -> bool:
+        """Hook: try to attach an image from the OS clipboard. Returns True when
+        an image was consumed; False to fall through to default paste handling.
+        Replaced with real logic in the clipboard-paste task."""
+        return False
 
     def _at_first_line(self) -> bool:
         return self.cursor_location[0] == 0
