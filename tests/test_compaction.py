@@ -73,6 +73,21 @@ def test_estimate_tokens_grows_with_content():
     assert estimate_tokens([]) == 0
 
 
+def test_estimate_tokens_does_not_count_image_bytes_as_text():
+    from pydantic_ai.messages import BinaryContent
+
+    big_image = BinaryContent(data=b"\x89PNG" + b"\x00" * 500_000,
+                              media_type="image/png")
+    hist = [ModelRequest(parts=[UserPromptPart(content=["look at this", big_image])])]
+    est = estimate_tokens(hist)
+    # A ~500KB image must not be counted as ~500k text tokens; it contributes a
+    # small flat nominal cost plus the accompanying text.
+    assert est < 5000
+    assert est > estimate_tokens(
+        [ModelRequest(parts=[UserPromptPart(content="look at this")])]
+    )
+
+
 def test_no_compaction_under_threshold():
     history = _history(3)
     result, did = compact_history(history, max_tokens=1_000_000)

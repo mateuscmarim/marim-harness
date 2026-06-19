@@ -17,6 +17,7 @@ from typing import Any, Awaitable, Callable, Optional
 
 from pydantic_ai import Agent
 from pydantic_ai.messages import (
+    BinaryContent,
     ModelRequest,
     TextPart,
     ThinkingPart,
@@ -28,22 +29,38 @@ from pydantic_ai.messages import (
 logger = logging.getLogger(__name__)
 
 _CHARS_PER_TOKEN = 4
+# Rough flat cost for a binary attachment (image). A vision model tokenizes an
+# image by its pixels/tiles, NOT by its base64 size, so counting the raw bytes
+# as text would wildly overcount (a ~500KB screenshot is ~1-2k image tokens, not
+# ~500k). This nominal value keeps the context gauge and compaction planning sane.
+_IMAGE_TOKEN_ESTIMATE = 1500
 
 Summarizer = Callable[[list[Any]], Awaitable[str]]
 
 
 def estimate_tokens(history: list) -> int:
-    """Rough token estimate (~4 chars/token) over the serialized part content."""
+    """Rough token estimate (~4 chars/token) over the serialized part content.
+
+    Binary attachments (images) are counted as a flat nominal cost rather than by
+    their base64 length, which would massively overcount — image bytes are not
+    tokenized as text by vision models."""
     chars = 0
+    images = 0
     for message in history:
         for part in getattr(message, "parts", []):
             content = getattr(part, "content", None)
-            if content is not None:
+            if isinstance(content, (list, tuple)):
+                for item in content:
+                    if isinstance(item, BinaryContent):
+                        images += 1
+                    elif item is not None:
+                        chars += len(str(item))
+            elif content is not None:
                 chars += len(str(content))
             args = getattr(part, "args", None)
             if args is not None:
                 chars += len(str(args))
-    return chars // _CHARS_PER_TOKEN
+    return chars // _CHARS_PER_TOKEN + images * _IMAGE_TOKEN_ESTIMATE
 
 
 def _is_user_turn(message) -> bool:
