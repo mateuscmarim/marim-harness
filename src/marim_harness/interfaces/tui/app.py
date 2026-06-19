@@ -1,3 +1,4 @@
+import time
 from asyncio import CancelledError
 
 from pydantic_ai import ToolDenied
@@ -38,6 +39,7 @@ from .widgets import (
     TaskPanel,
     ToolCallWidget,
     ToolGroupWidget,
+    TurnMeta,
     UserMessage,
 )
 from .widgets import format_cost as _format_cost
@@ -57,6 +59,22 @@ _BANNER = (
 # How often (seconds) buffered streaming text is rendered. ~12 flushes/sec reads
 # as smooth while collapsing many per-token markdown re-parses into one.
 _STREAM_FLUSH_INTERVAL = 0.08
+
+# How often (seconds) the status bar refreshes while idle, so the session timer
+# advances without a turn running. The streaming tick covers refreshes mid-turn.
+_CLOCK_TICK_INTERVAL = 1.0
+
+
+def _format_duration(seconds: float, *, precise: bool = False) -> str:
+    """Human-readable elapsed time. ``precise`` (for the per-turn stamp) keeps a
+    decimal under a minute (``12.4s``); otherwise whole units (``12s``, ``3m``,
+    ``1h 5m``)."""
+    if seconds < 60:
+        return f"{seconds:.1f}s" if precise else f"{int(seconds)}s"
+    minutes = int(seconds // 60)
+    if minutes < 60:
+        return f"{minutes}m"
+    return f"{minutes // 60}h {minutes % 60}m"
 
 _WELCOME = (
     "Type a message below to start, or `/help` for commands.\n\n"
@@ -227,6 +245,10 @@ class HarnessApp(App):
         self._vision_caps: dict[str, bool | None] = {}
         self._busy = False
         self._turn_worker = None
+        # Wall-clock timers (monotonic). _session_start is re-stamped at mount;
+        # _turn_start marks the active turn for the live "working… Ns" timer.
+        self._session_start = time.monotonic()
+        self._turn_start = time.monotonic()
         # Autonomous wake-on-completion (interactive TUI only). When a background
         # job finishes while the turn worker is idle, fire a digest-only turn so
         # the agent reacts without waiting for the user. Seeded from config;
@@ -289,6 +311,10 @@ class HarnessApp(App):
         # Coalesce streaming text deltas: render buffered AssistantMessages on a
         # shared interval instead of re-parsing the markdown on every token.
         self.set_interval(_STREAM_FLUSH_INTERVAL, self._flush_streams)
+        # Anchor the session timer at mount and tick the status bar while idle so
+        # the session duration advances even with no turn running.
+        self._session_start = time.monotonic()
+        self.set_interval(_CLOCK_TICK_INTERVAL, self._refresh_status)
         # Land focus on the prompt so the user can type immediately.
         self.query_one(PromptInput).focus()
         await self._connect_mcp(log)
@@ -389,14 +415,17 @@ class HarnessApp(App):
         head = (
             Content.assemble((name, "b $accent"), " · ", mode) if name else Content(mode)
         )
+        session_text = f"session {_format_duration(time.monotonic() - self._session_start)}"
         fields = [
             head,
             Content(cfg),
             Content.assemble((ctx_text, ctx_style)) if ctx_style else Content(ctx_text),
             Content(tokens_text),
+            Content(session_text),
         ]
         if self._busy:
-            fields.append(Content("working…"))
+            elapsed = _format_duration(time.monotonic() - self._turn_start)
+            fields.append(Content(f"working… {elapsed}"))
         return Content.from_markup(" [dim]·[/] ").join(fields)
 
     def _refresh_status(self) -> None:
@@ -689,12 +718,17 @@ class HarnessApp(App):
     async def _run_turn(
         self, text: str, attachments: list[tuple[bytes, str]] | None = None
     ) -> None:
+        self._turn_start = time.monotonic()
         self._set_busy(True)
         log = self.query_one("#log", VerticalScroll)
         try:
             await self.harness.run_turn(
                 text, event_stream_handler=self._on_events, attachments=attachments
             )
+            # Stamp the just-finished turn's duration under its reply (success
+            # only; cancelled/errored turns surface an ErrorMessage instead).
+            elapsed = _format_duration(time.monotonic() - self._turn_start, precise=True)
+            await log.mount(TurnMeta(elapsed))
         except CancelledError:
             # User pressed escape; mount synchronously (we are unwinding) and
             # let the worker finish as cancelled.

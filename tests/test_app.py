@@ -1924,3 +1924,71 @@ async def test_ask_user_callback_shows_modal_and_returns_answer(tmp_path: Path):
         await pilot.press("enter")  # selects highlighted "Alpha"
         await pilot.pause()
         assert worker.result == {"Pick": "Alpha"}
+
+
+def test_format_duration_units():
+    from marim_harness.interfaces.tui.app import _format_duration
+
+    assert _format_duration(5) == "5s"
+    assert _format_duration(5, precise=True) == "5.0s"
+    assert _format_duration(65) == "1m"
+    assert _format_duration(3725) == "1h 2m"
+
+
+@pytest.mark.anyio
+async def test_status_shows_session_duration(tmp_path: Path):
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        text = str(app.query_one("#status-bar").render())
+        assert "session" in text
+
+
+@pytest.mark.anyio
+async def test_status_shows_live_turn_timer_when_busy(tmp_path: Path):
+    import time
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._busy = True
+        app._turn_start = time.monotonic() - 5  # 5s into a turn
+        app._refresh_status()
+        await pilot.pause()
+        text = str(app.query_one("#status-bar").render())
+        assert "working" in text and "5s" in text
+
+
+@pytest.mark.anyio
+async def test_successful_turn_stamps_duration(tmp_path: Path):
+    from marim_harness.interfaces.tui.widgets import TurnMeta
+
+    async def fake_run_turn(*a, **k):
+        return "ok"
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.harness.run_turn = fake_run_turn
+        await app._run_turn("hi")
+        await pilot.pause()
+        metas = list(app.query(TurnMeta))
+        assert len(metas) == 1
+        assert "s" in str(metas[0].render())
+
+
+@pytest.mark.anyio
+async def test_errored_turn_does_not_stamp_duration(tmp_path: Path):
+    from marim_harness.interfaces.tui.widgets import ErrorMessage, TurnMeta
+
+    async def boom(*a, **k):
+        raise RuntimeError("nope")
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.harness.run_turn = boom
+        await app._run_turn("hi")
+        await pilot.pause()
+        assert list(app.query(TurnMeta)) == []
+        assert list(app.query(ErrorMessage))  # error surfaced instead
