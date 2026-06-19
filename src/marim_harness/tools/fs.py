@@ -1,6 +1,7 @@
+import os
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 from pydantic import BaseModel
 from pydantic_ai import ModelRetry
@@ -13,8 +14,10 @@ from .offload import MAX_OUTPUT_BYTES, offload_if_large
 # to page through the rest. An explicit ``limit`` overrides this cap.
 _DEFAULT_READ_LIMIT = 2000
 
-# Directories that are almost always noise in a tree view: listed, never expanded.
-_TREE_SKIP_DIRS = {
+# Directories that are almost always noise: tree lists them without expanding;
+# grep skips them entirely (the dominant cost of searching a large repo is
+# descending into .git/node_modules/.venv rather than the real source).
+_NOISE_DIRS = {
     ".git", "node_modules", "__pycache__", ".venv", ".mypy_cache",
     ".pytest_cache", ".ruff_cache", "dist", "build", ".egg-info",
     ".worktrees",
@@ -154,7 +157,7 @@ def _walk_tree(directory: Path, depth: int, level: int, lines: list[str],
             line = f"{indent}{entry.name}/"
             lines.append(line)
             size[0] += len(line) + 1
-            if entry.name not in _TREE_SKIP_DIRS and level + 1 < depth:
+            if entry.name not in _NOISE_DIRS and level + 1 < depth:
                 if _walk_tree(entry, depth, level + 1, lines, size):
                     return True
         else:
@@ -201,33 +204,62 @@ def glob_files(root: Path, pattern: str) -> str:
     )
 
 
+def _is_binary(path: Path) -> bool:
+    """Cheap binary check: a NUL byte in the first 8 KB. Unreadable files are
+    treated as binary (so grep skips them rather than erroring)."""
+    try:
+        with open(path, "rb") as fh:
+            return b"\x00" in fh.read(8192)
+    except OSError:
+        return True
+
+
+def _walk_files(base: Path) -> Iterator[Path]:
+    """Yield files under ``base``, pruning noise dirs (.git, node_modules, …) so a
+    search never descends into them. ``os.walk`` does not follow symlinked dirs by
+    default, so the walk cannot wander outside the tree."""
+    if base.is_file():
+        yield base
+        return
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = [d for d in dirnames if d not in _NOISE_DIRS]
+        for name in filenames:
+            yield Path(dirpath) / name
+
+
 def grep(root: Path, pattern: str, path: Optional[str] = None) -> str:
     """Search file contents for a regex, returning `relpath:line:text` hits.
-    Large result sets are offloaded to a file (handle + preview) instead of
-    flooding the response; collection stops at MAX_OUTPUT_BYTES."""
+    Skips noise dirs (.git, node_modules, .venv, …) and binary files; large
+    result sets are offloaded to a file (handle + preview) instead of flooding the
+    response; collection stops at MAX_OUTPUT_BYTES."""
     rx = re.compile(pattern)
     base = _safe(root, path) if path else root
-    files = [base] if base.is_file() else [p for p in base.rglob("*") if p.is_file()]
     out: list[str] = []
     size = 0
     capped = False
-    for f in files:
-        if ".worktrees" in f.relative_to(root).parts:
-            continue  # skip sibling worktree checkouts
-        try:
-            resolve_in_workspace(root, str(f.relative_to(root)))
-        except (WorkspaceError, ValueError):
+    for f in _walk_files(base):
+        # os.walk won't descend symlinked dirs; a symlinked *file* could still
+        # point outside the workspace, so gate just that rare case.
+        if f.is_symlink():
+            try:
+                resolve_in_workspace(root, str(f.relative_to(root)))
+            except (WorkspaceError, ValueError):
+                continue
+        if not f.is_file() or _is_binary(f):
             continue
+        rel = f.relative_to(root)
         try:
-            for i, line in enumerate(f.read_text().splitlines(), 1):
-                if rx.search(line):
-                    hit = f"{f.relative_to(root)}:{i}:{line}"
-                    out.append(hit)
-                    size += len(hit) + 1
-                    if size >= MAX_OUTPUT_BYTES:
-                        capped = True
-                        break
-        except (UnicodeDecodeError, OSError):
+            with open(f, encoding="utf-8", errors="replace") as fh:
+                for i, raw in enumerate(fh, 1):
+                    line = raw.rstrip("\n")
+                    if rx.search(line):
+                        hit = f"{rel}:{i}:{line}"
+                        out.append(hit)
+                        size += len(hit) + 1
+                        if size >= MAX_OUTPUT_BYTES:
+                            capped = True
+                            break
+        except OSError:
             continue
         if capped:
             break
