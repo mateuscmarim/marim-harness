@@ -1,4 +1,4 @@
-from marim_harness.workspace import ModelEntry, filter_entries, parse_models
+from marim_harness.workspace import ModelEntry, filter_entries, model_supports_images, parse_models
 
 _SAMPLE = {
     "data": [
@@ -44,3 +44,25 @@ def test_filter_entries_matches_id_and_name_case_insensitively():
     assert filter_entries(entries, "   ") == entries
     # no match -> empty
     assert filter_entries(entries, "zzz") == []
+
+
+def test_parse_models_reads_image_modality():
+    payload = {"data": [
+        {"id": "a/vision", "name": "V",
+         "architecture": {"input_modalities": ["text", "image"]}},
+        {"id": "b/text", "name": "T",
+         "architecture": {"input_modalities": ["text"]}},
+        {"id": "c/unknown", "name": "U"},
+    ]}
+    by_id = {e.id: e for e in parse_models(payload)}
+    assert by_id["a/vision"].supports_images is True
+    assert by_id["b/text"].supports_images is False
+    assert by_id["c/unknown"].supports_images is None
+
+
+def test_model_supports_images_lookup():
+    entries = parse_models({"data": [
+        {"id": "a/vision", "architecture": {"input_modalities": ["image"]}},
+    ]})
+    assert model_supports_images(entries, "a/vision") is True
+    assert model_supports_images(entries, "missing/model") is None
