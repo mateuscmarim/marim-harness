@@ -64,9 +64,10 @@ _STREAM_FLUSH_INTERVAL = 0.08
 # advances without a turn running. The streaming tick covers refreshes mid-turn.
 _CLOCK_TICK_INTERVAL = 1.0
 
-# Working-indicator animation: a rotating quarter-circle cycled while a turn runs
-# (idle shows a static ○). Frames advance on _SPINNER_TICK_INTERVAL.
-_SPINNER = "◐◓◑◒"
+# Working-indicator animation: a circle that breathes — fills to full, then drains
+# back to empty — cycled while a turn runs (idle shows a static ○). Frames advance
+# on _SPINNER_TICK_INTERVAL.
+_SPINNER = "○◔◑◕●◕◑◔"
 _SPINNER_TICK_INTERVAL = 0.18
 
 
