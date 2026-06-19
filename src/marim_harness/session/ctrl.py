@@ -41,6 +41,7 @@ class SessionController:
         self.history: list = []
         self.usage: RunUsage = RunUsage()
         self.on_compact: Optional[Callable[[int, int], None]] = None
+        self.on_compact_start: Optional[Callable[[], None]] = None
         self.on_rename: Optional[Callable[[str, str], None]] = None
 
     @property
@@ -100,14 +101,16 @@ class SessionController:
 
     async def maybe_compact(self) -> None:
         before = len(self.history)
+        # This predicate mirrors compact_history's own decision exactly, so the
+        # PreCompact hook and the on_compact_start indicator fire iff a compaction
+        # will actually happen.
+        going = will_compact(
+            self.history, self.max_context_tokens, self.keep_last_messages
+        )
         # Fire PreCompact *before* the compaction work, while the transcript is
         # still full — matching Claude Code, where the hook can snapshot the
-        # conversation before it's summarized/collapsed. The predicate mirrors
-        # compact_history's own decision exactly, so the hook fires iff a
-        # compaction will actually happen.
-        if self.deps.hooks is not None and will_compact(
-            self.history, self.max_context_tokens, self.keep_last_messages
-        ):
+        # conversation before it's summarized/collapsed.
+        if going and self.deps.hooks is not None:
             await self.deps.hooks.dispatch(
                 hook_events.PRE_COMPACT,
                 base_payload(
@@ -119,6 +122,10 @@ class SessionController:
                     custom_instructions="",
                 ),
             )
+        # Surface a live "compacting…" indicator before the (possibly slow,
+        # summarizer-driven) work begins; the on_compact finish callback clears it.
+        if going and self.on_compact_start is not None:
+            self.on_compact_start()
         if self.summarizer is not None:
             new_history, did = await compact_history_with_summary(
                 self.history, self.max_context_tokens, self.summarizer,
