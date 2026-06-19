@@ -65,6 +65,13 @@ _STREAM_FLUSH_INTERVAL = 0.08
 _CLOCK_TICK_INTERVAL = 1.0
 
 
+def _osc_title(text: str) -> str:
+    """The OSC 0 escape sequence that sets the terminal's tab AND window title.
+    Textual only feeds App.title to the in-app Header, so we emit this ourselves
+    to reach the actual terminal tab."""
+    return f"\033]0;{text}\007"
+
+
 def _format_duration(seconds: float, *, precise: bool = False) -> str:
     """Human-readable elapsed time. ``precise`` (for the per-turn stamp) keeps a
     decimal under a minute (``12.4s``); otherwise whole units (``12s``, ``3m``,
@@ -339,6 +346,14 @@ class HarnessApp(App):
     async def on_unmount(self) -> None:
         """Jobs are process-scoped — kill any still running when the app exits so
         no detached shell or agent run is left behind, and close MCP connections."""
+        # Reset the terminal tab title so a stale "● working" mark doesn't linger
+        # after exit. Best-effort: the driver may already be tearing down.
+        if self._driver is not None:
+            try:
+                self._driver.write(_osc_title("marim-harness"))
+                self._driver.flush()
+            except Exception:
+                pass
         await self.harness.deps.jobs.cancel_all()
         await self.harness.session_end("exit")
         await self.harness.aclose()
@@ -434,13 +449,16 @@ class HarnessApp(App):
         bar.update(self._status_text())
 
     def _refresh_title(self) -> None:
-        """Terminal title (and Header): an idle/working mark + the session name.
-        Textual couples title/sub_title to both the OS terminal title and the
-        in-app Header. The title is a plain string assignment (not markup-parsed),
-        so a model-generated name needs no escaping."""
+        """Set the in-app Header (via App.title) AND the real terminal tab/window
+        title (via an OSC sequence Textual doesn't emit on its own) to an
+        idle/working mark + the session name. The title is a plain string, not
+        markup-parsed, so a model-generated name needs no escaping."""
         mark = "●" if self._busy else "○"
         name = self.harness.session.session_name or "marim-harness"
-        self.title = f"{mark} {name}"
+        self.title = f"{mark} {name}"  # in-app Header
+        if self._driver is not None:  # the actual terminal tab
+            self._driver.write(_osc_title(f"{mark} {name}"))
+            self._driver.flush()
 
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy

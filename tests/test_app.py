@@ -2034,3 +2034,31 @@ async def test_session_name_in_title_not_status_bar(tmp_path: Path, monkeypatch)
         await pilot.pause()
         assert "secret-session" in app.title
         assert "secret-session" not in str(app.query_one("#status-bar").render())
+
+
+def test_osc_title_sequence_format():
+    from marim_harness.interfaces.tui.app import _osc_title
+
+    # OSC 0 sets both the terminal tab and window title: ESC ] 0 ; <text> BEL
+    assert _osc_title("● my-session") == "\033]0;● my-session\007"
+
+
+@pytest.mark.anyio
+async def test_refresh_title_writes_osc_to_terminal(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        type(_app(tmp_path).harness.session),
+        "session_name", property(lambda self: "my-session"),
+    )
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        calls: list[str] = []
+        real_write = app._driver.write
+        app._driver.write = lambda data: calls.append(data)
+        try:
+            app._busy = True
+            app._refresh_title()
+        finally:
+            app._driver.write = real_write
+        blob = "".join(calls)
+        assert "\033]0;● my-session\007" in blob
