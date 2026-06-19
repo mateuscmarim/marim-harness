@@ -326,3 +326,39 @@ def test_tree_offloads_large_listing(tmp_path, monkeypatch):
     assert len(saved) == 1
     assert saved[0].read_text().count(".txt") == 100
     assert "(truncated)" not in out
+
+
+def test_grep_skips_noise_dirs(tmp_path: Path):
+    (tmp_path / "a.txt").write_text("needle here")
+    (tmp_path / "node_modules" / "pkg").mkdir(parents=True)
+    (tmp_path / "node_modules" / "pkg" / "x.js").write_text("needle in node_modules")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_text("needle in git")
+    out = fs.grep(tmp_path, "needle")
+    assert "a.txt:1:needle here" in out
+    assert "node_modules" not in out
+    assert ".git" not in out
+
+
+def test_grep_searches_non_noise_dotfile_dir(tmp_path: Path):
+    (tmp_path / ".github").mkdir()
+    (tmp_path / ".github" / "ci.yml").write_text("needle in ci")
+    out = fs.grep(tmp_path, "needle")
+    assert ".github/ci.yml:1:needle in ci" in out
+
+
+def test_grep_skips_binary_files(tmp_path: Path):
+    # A NUL byte marks the file binary; its "needle" must not be returned.
+    (tmp_path / "blob.bin").write_bytes(b"\x00needle\x00binary")
+    (tmp_path / "code.txt").write_text("needle in text")
+    out = fs.grep(tmp_path, "needle")
+    assert "code.txt:1:needle in text" in out
+    assert "blob.bin" not in out
+
+
+def test_grep_finds_deeply_nested_match(tmp_path: Path):
+    deep = tmp_path / "a" / "b" / "c"
+    deep.mkdir(parents=True)
+    (deep / "d.txt").write_text("first\nneedle on line two")
+    out = fs.grep(tmp_path, "needle")
+    assert "a/b/c/d.txt:2:needle on line two" in out
