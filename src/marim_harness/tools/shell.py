@@ -3,6 +3,8 @@ import os
 import signal
 from pathlib import Path
 
+from .offload import MAX_OUTPUT_BYTES, offload_if_large
+
 _DEFAULT_TIMEOUT = 30
 _DEFAULT_MAX_OUTPUT = 20_000
 
@@ -52,8 +54,15 @@ async def run_bash(
                 pass
         await proc.wait()
         return f"(timed out after {timeout}s)"
-    text = _truncate(stdout.decode(errors="replace"), max_output)
-    return f"exit {proc.returncode}\n{text}"
+    text = stdout.decode(errors="replace")
+    if len(text) > MAX_OUTPUT_BYTES:
+        text = text[:MAX_OUTPUT_BYTES]
+        capped = True
+    else:
+        capped = False
+    body = f"exit {proc.returncode}\n{text}"
+    return offload_if_large(body, kind="bash", key=command,
+                            workspace_root=root, capped=capped)
 
 
 class BashProcess:
@@ -62,9 +71,12 @@ class BashProcess:
     output to completion and returns the final ``exit N\\n<output>`` text.
     :meth:`kill` terminates the whole process group so children die too."""
 
-    def __init__(self, proc: asyncio.subprocess.Process, max_output: int) -> None:
+    def __init__(self, proc: asyncio.subprocess.Process, max_output: int,
+                 root: Path, command: str) -> None:
         self._proc = proc
         self._max_output = max_output
+        self._root = root
+        self._command = command
         self._buffer: list[str] = []
 
     @property
@@ -97,7 +109,15 @@ class BashProcess:
                     break
                 self._buffer.append(chunk.decode(errors="replace"))
         await self._proc.wait()
-        return f"exit {self._proc.returncode}\n{self.output()}"
+        text = "".join(self._buffer)
+        if len(text) > MAX_OUTPUT_BYTES:
+            text = text[:MAX_OUTPUT_BYTES]
+            capped = True
+        else:
+            capped = False
+        body = f"exit {self._proc.returncode}\n{text}"
+        return offload_if_large(body, kind="bash", key=self._command,
+                                workspace_root=self._root, capped=capped)
 
 
 async def start_bash(
@@ -113,4 +133,4 @@ async def start_bash(
         stderr=asyncio.subprocess.STDOUT,
         start_new_session=True,
     )
-    return BashProcess(proc, max_output)
+    return BashProcess(proc, max_output, root, command)
