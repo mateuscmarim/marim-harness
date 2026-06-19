@@ -180,3 +180,92 @@ async def test_unknown_capability_allows_image_submit(tmp_path, monkeypatch):
         await pilot.press("enter")
         await pilot.pause()
         assert called["run"] is True
+
+
+@pytest.mark.anyio
+async def test_backspace_after_marker_removes_marker_and_attachment(tmp_path, monkeypatch):
+    monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path / "cache"))
+    from marim_harness import images
+    from marim_harness.interfaces.tui.widgets import PromptInput
+
+    monkeypatch.setattr(images, "read_clipboard_image",
+                        lambda: (b"\x89PNGbytes", "image/png"))
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        box = app.query_one(PromptInput)
+        box.focus()
+        await pilot.press("ctrl+v")
+        await pilot.pause()
+        assert box.text == "[Image #1]" and len(box.attachments) == 1
+        box.move_cursor((0, len("[Image #1]")))  # cursor just after the ']'
+        await pilot.press("backspace")
+        await pilot.pause()
+        assert box.text == ""
+        assert box.attachments == []
+
+
+@pytest.mark.anyio
+async def test_delete_on_marker_start_removes_whole_marker(tmp_path, monkeypatch):
+    monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path / "cache"))
+    from marim_harness import images
+    from marim_harness.interfaces.tui.widgets import PromptInput
+
+    monkeypatch.setattr(images, "read_clipboard_image",
+                        lambda: (b"\x89PNGbytes", "image/png"))
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        box = app.query_one(PromptInput)
+        box.focus()
+        await pilot.press("ctrl+v")
+        await pilot.pause()
+        box.move_cursor((0, 0))  # cursor on the '[' — delete should take the whole marker
+        await pilot.press("delete")
+        await pilot.pause()
+        assert box.text == ""
+        assert box.attachments == []
+
+
+@pytest.mark.anyio
+async def test_deleting_middle_marker_renumbers_remaining(tmp_path, monkeypatch):
+    monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path / "cache"))
+    from marim_harness import images
+    from marim_harness.interfaces.tui.widgets import PromptInput
+
+    seq = iter([b"img1", b"img2", b"img3"])
+    monkeypatch.setattr(images, "read_clipboard_image",
+                        lambda: (next(seq), "image/png"))
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        box = app.query_one(PromptInput)
+        box.focus()
+        for _ in range(3):
+            await pilot.press("ctrl+v")
+            await pilot.pause()
+        assert box.text == "[Image #1][Image #2][Image #3]"
+        paths = [p for p, _ in box.attachments]
+        box.move_cursor((0, 15))  # inside the [Image #2] span (offsets 10..20)
+        await pilot.press("backspace")
+        await pilot.pause()
+        # the middle marker is gone and the third renumbers down to #2
+        assert box.text == "[Image #1][Image #2]"
+        assert [p for p, _ in box.attachments] == [paths[0], paths[2]]
+
+
+@pytest.mark.anyio
+async def test_backspace_in_plain_text_is_unaffected(tmp_path):
+    from marim_harness.interfaces.tui.widgets import PromptInput
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        box = app.query_one(PromptInput)
+        box.focus()
+        box.text = "hello"
+        box.move_cursor((0, 5))
+        await pilot.press("backspace")
+        await pilot.pause()
+        assert box.text == "hell"
+        assert box.attachments == []
