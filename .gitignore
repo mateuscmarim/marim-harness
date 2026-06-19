@@ -12,6 +12,7 @@ __pycache__/
 # Offloaded fetch_url bodies — large pages written to disk so they don't flood
 # context. Local scratch, never committed.
 .marim/fetch/
+.marim/output/
 
 # Git worktrees created by --worktree / the /worktree command.
 .worktrees/
