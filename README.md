@@ -64,6 +64,8 @@ Vision-capable models can read pasted images.
   pastes **text** — image bytes arrive only through the app-intercepted `Ctrl+V`.
 - **Paste a file path:** paste or drag an image file; a bare path to an existing
   image is attached automatically.
+- **Marker note:** editing or deleting an `[Image #N]` marker in the prompt does
+  **not** detach the already-attached image — attachments are sent as composed.
 
 Clipboard image reading needs a helper per platform: `wl-clipboard` (Wayland),
 `xclip` (X11), `pngpaste` (macOS); Windows uses built-in PowerShell. Without one,

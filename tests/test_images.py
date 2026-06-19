@@ -144,3 +144,12 @@ def test_read_clipboard_image_macos(monkeypatch):
 
     monkeypatch.setattr(images.subprocess, "run", fake_run)
     assert images.read_clipboard_image() == (b"\x89PNGmac", "image/png")
+
+
+def test_read_clipboard_image_windows_missing_helper(monkeypatch):
+    import sys
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(images.shutil, "which", lambda n: None)
+    assert images.read_clipboard_image() is None

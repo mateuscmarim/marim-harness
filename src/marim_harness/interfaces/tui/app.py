@@ -277,6 +277,13 @@ class HarnessApp(App):
         log.anchor()
         self._render_tasks()  # reflect any checklist restored with the session
         self._render_jobs()  # process-scoped jobs survive session switches
+        # Seed vision capabilities in the background so the text-only-model
+        # warning can fire even before the user opens the model picker.
+        source = self.harness.model_source
+        if source is not None:
+            self.run_worker(
+                self._refresh_vision_caps(source.list_models), exclusive=False
+            )
         # Coalesce streaming text deltas: render buffered AssistantMessages on a
         # shared interval instead of re-parsing the markdown on every token.
         self.set_interval(_STREAM_FLUSH_INTERVAL, self._flush_streams)

@@ -93,6 +93,8 @@ def _read_macos() -> Optional[tuple[bytes, str]]:
 
 
 def _read_windows() -> Optional[tuple[bytes, str]]:
+    if not shutil.which("powershell"):
+        return None
     script = (
         "Add-Type -AssemblyName System.Windows.Forms;"
         "$i=[System.Windows.Forms.Clipboard]::GetImage();"
@@ -233,7 +235,7 @@ def rehydrate_images(messages: list[dict], session_id: str) -> list[dict]:
             ext = media_ext(item.get("media_type", "image/png"))
             path = image_cache_root() / session_id / f"{sha}.{ext}"
             try:
-                content[i] = item  # keep ref unless we can restore
+                # mutate item in place on success; replace with placeholder on OSError
                 raw = path.read_bytes()
             except OSError:
                 content[i] = "[image unavailable]"
