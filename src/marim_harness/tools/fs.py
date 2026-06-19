@@ -157,7 +157,8 @@ def _walk_tree(directory: Path, depth: int, level: int, lines: list[str]) -> Non
 
 
 def glob_files(root: Path, pattern: str) -> str:
-    """List files under the workspace matching a glob pattern."""
+    """List files under the workspace matching a glob pattern. Large match lists
+    are offloaded to a file (handle + preview) instead of flooding the response."""
     try:
         candidates = list(root.glob(pattern))
     except (NotImplementedError, ValueError) as exc:
@@ -166,6 +167,8 @@ def glob_files(root: Path, pattern: str) -> str:
             "no leading '/' or '..'"
         ) from exc
     matches = []
+    size = 0
+    capped = False
     for p in candidates:
         if not p.is_file():
             continue
@@ -177,8 +180,17 @@ def glob_files(root: Path, pattern: str) -> str:
         except WorkspaceError:
             continue  # skip matches that escape the workspace root
         matches.append(rel)
+        size += len(rel) + 1
+        if size >= MAX_OUTPUT_BYTES:
+            capped = True
+            break
+    if not matches:
+        return "(no matches)"
     matches.sort()
-    return "\n".join(matches) if matches else "(no matches)"
+    return offload_if_large(
+        "\n".join(matches), kind="glob", key=pattern,
+        workspace_root=root, capped=capped,
+    )
 
 
 def grep(root: Path, pattern: str, path: Optional[str] = None) -> str:

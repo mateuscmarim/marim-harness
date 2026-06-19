@@ -308,3 +308,15 @@ def test_grep_small_result_still_inline(tmp_path):
     (tmp_path / "a.txt").write_text("alpha\nbeta")
     out = fs.grep(tmp_path, "alpha")
     assert out == "a.txt:1:alpha"
+
+
+def test_glob_offloads_large_result(tmp_path, monkeypatch):
+    from marim_harness.tools import offload
+    monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 50)
+    for i in range(100):
+        (tmp_path / f"f{i}.txt").write_text("x")
+    out = fs.glob_files(tmp_path, "*.txt")
+    assert "full output saved to" in out and "glob result" in out
+    saved = list((tmp_path / ".marim" / "output").glob("glob-*.txt"))
+    assert len(saved) == 1
+    assert saved[0].read_text().count(".txt") == 100
