@@ -64,3 +64,25 @@ def test_store_image_is_content_addressed(tmp_path, monkeypatch):
     # different bytes -> different file
     c = images.store_image("sess1", b"other", "image/png")
     assert c.sha != a.sha
+
+
+def test_detect_image_path_only_for_bare_existing_image(tmp_path):
+    img = tmp_path / "shot.png"
+    img.write_bytes(b"\x89PNG")
+    assert images.detect_image_path(f"  {img}  ") == img
+    # quoted (drag-and-drop often quotes) still works
+    assert images.detect_image_path(f'"{img}"') == img
+    # path inside prose -> not an attachment
+    assert images.detect_image_path(f"see {img} please") is None
+    # non-image extension -> None
+    other = tmp_path / "notes.txt"
+    other.write_text("hi")
+    assert images.detect_image_path(str(other)) is None
+    # nonexistent -> None
+    assert images.detect_image_path(str(tmp_path / "nope.png")) is None
+
+
+def test_media_type_for_path():
+    assert images.media_type_for_path(images.Path("a.PNG")) == "image/png"
+    assert images.media_type_for_path(images.Path("a.jpg")) == "image/jpeg"
+    assert images.media_type_for_path(images.Path("a.txt")) is None

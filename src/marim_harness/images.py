@@ -103,3 +103,36 @@ def store_image(session_id: str, data: bytes, media_type: str) -> CachedImage:
         tmp.write_bytes(data)
         tmp.replace(out)
     return CachedImage(path=out, sha=sha, media_type=media_type)
+
+
+_EXT_TO_MEDIA = {
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "webp": "image/webp",
+    "gif": "image/gif",
+}
+
+
+def media_type_for_path(path: Path) -> Optional[str]:
+    """Return the media type for a path based on its extension, or None if not
+    a known image extension."""
+    return _EXT_TO_MEDIA.get(path.suffix.lower().lstrip("."))
+
+
+def detect_image_path(text: str) -> Optional[Path]:
+    """A bare path to an existing image file, or None. The whole text (minus
+    surrounding whitespace/quotes) must be the path — a path embedded in a
+    sentence is deliberately ignored to avoid false positives."""
+    token = text.strip().strip('"').strip("'")
+    if not token or "\n" in token:
+        return None
+    path = Path(token).expanduser()
+    if media_type_for_path(path) is None:
+        return None
+    try:
+        if not path.is_file():
+            return None
+    except OSError:
+        return None
+    return path
