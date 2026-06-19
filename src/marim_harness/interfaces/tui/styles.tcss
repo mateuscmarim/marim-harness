@@ -25,6 +25,7 @@ PromptInput { height: 5; max-height: 12; border: round $accent; padding: 0 1; }
 .user-msg { color: $accent; text-style: bold; margin-top: 1; }
 .error-msg { color: $error; text-style: bold; margin: 1 0; }
 .notice-msg { color: $text-muted; text-style: italic; margin: 1 0; }
+.turn-meta { color: $text-muted; text-style: dim; margin: 0 0 1 0; }
 
 /* Accent block-ASCII seated above a thin accent rule that divides it from the
    conversation. Both recolor with the theme. */

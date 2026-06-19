@@ -188,6 +188,13 @@ class NoticeMessage(Static):
         super().__init__(f"· {text}", classes="notice-msg", markup=False)
 
 
+class TurnMeta(Static):
+    """A dim per-turn footer stamped under a reply — e.g. how long the turn took."""
+
+    def __init__(self, text: str) -> None:
+        super().__init__(f"· {text}", classes="turn-meta", markup=False)
+
+
 class TaskPanel(Static):
     """The agent's live checklist, pinned above the status bar. Hidden whenever
     the list is empty so it takes no space when unused."""
