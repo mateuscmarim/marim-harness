@@ -212,10 +212,10 @@ async def test_status_bar_shows_context_usage(tmp_path: Path):
 
 
 @pytest.mark.anyio
-async def test_status_bar_survives_markup_like_session_name(tmp_path: Path, monkeypatch):
+async def test_title_survives_markup_like_session_name(tmp_path: Path, monkeypatch):
     """A session name is model-generated and may contain bracket sequences like
-    `[edit(x="…` that escape() can't neutralise; the status bar must render it
-    literally rather than crash the whole app on a MarkupError."""
+    `[edit(x="…`. It now lives in the terminal title (a plain string assignment,
+    not markup-parsed), so the app must carry it literally and not crash."""
     bomb = '[/] and [edit(old_string="unterminated'
     monkeypatch.setattr(
         type(_app(tmp_path).harness.session), "session_name", property(lambda self: bomb)
@@ -223,10 +223,10 @@ async def test_status_bar_survives_markup_like_session_name(tmp_path: Path, monk
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._refresh_status()  # the parse happens here and on render
+        app._refresh_title()
         await pilot.pause()
-        # The literal name (including its brackets) is shown, not parsed away.
-        assert "[edit(old_string=" in str(app.query_one("#status-bar").render())
+        # The literal name (including its brackets) is in the title, intact.
+        assert "[edit(old_string=" in app.title
 
 
 def _submit(app, text):
@@ -1086,7 +1086,7 @@ async def test_name_command_sets_title(tmp_path: Path):
         await _submit(app, "/name My Project")
         await pilot.pause()
         assert app.harness.session.session_name == "My Project"
-        assert "My Project" in str(app.query_one("#status-bar").render())
+        assert "My Project" in app.title  # name now lives in the terminal title
         assert "renamed" in _log_text(app).lower()
 
 
@@ -1112,7 +1112,7 @@ async def test_autoname_posts_notice_after_first_turn(tmp_path: Path):
         await pilot.pause()
         assert app.harness.session.session_name == "Auto Title"
         assert "Auto Title" in _log_text(app)
-        assert "Auto Title" in str(app.query_one("#status-bar").render())
+        assert "Auto Title" in app.title  # name now lives in the terminal title
 
 
 class _FakeSource:
@@ -1992,3 +1992,45 @@ async def test_errored_turn_does_not_stamp_duration(tmp_path: Path):
         await pilot.pause()
         assert list(app.query(TurnMeta)) == []
         assert list(app.query(ErrorMessage))  # error surfaced instead
+
+
+@pytest.mark.anyio
+async def test_title_shows_idle_and_working_indicator(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        type(_app(tmp_path).harness.session),
+        "session_name", property(lambda self: "my-session"),
+    )
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.title == "○ my-session"
+        app._busy = True
+        app._refresh_title()
+        assert app.title == "● my-session"
+        # workspace path stays in the sub_title
+        assert str(tmp_path) in app.sub_title
+
+
+@pytest.mark.anyio
+async def test_unnamed_session_title_falls_back(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        type(_app(tmp_path).harness.session),
+        "session_name", property(lambda self: None),
+    )
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.title == "○ marim-harness"
+
+
+@pytest.mark.anyio
+async def test_session_name_in_title_not_status_bar(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        type(_app(tmp_path).harness.session),
+        "session_name", property(lambda self: "secret-session"),
+    )
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert "secret-session" in app.title
+        assert "secret-session" not in str(app.query_one("#status-bar").render())

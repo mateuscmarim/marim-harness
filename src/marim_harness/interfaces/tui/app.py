@@ -277,8 +277,8 @@ class HarnessApp(App):
         for theme in MARIM_THEMES:
             self.register_theme(theme)
         self.theme = load_theme()
-        self.title = "marim-harness"
         self.sub_title = str(self.harness.deps.workspace_root)
+        self._refresh_title()
         log = self.query_one("#log", VerticalScroll)
         await log.mount(Static(_BANNER, id="banner", markup=False))
         intro = AssistantMessage()
@@ -408,16 +408,11 @@ class HarnessApp(App):
         if cost is not None:
             tokens_text += f" · {_format_cost(cost)}"
         mode = self.harness.deps.mode.value
-        name = getattr(self.harness.session, "session_name", None)
-        # session_name is model-generated and untrusted; render it as a literal
-        # styled segment via assemble so a stray bracket sequence (e.g. `[edit(`)
-        # is never parsed as Textual markup — which would crash the status bar.
-        head = (
-            Content.assemble((name, "b $accent"), " · ", mode) if name else Content(mode)
-        )
+        # The session name now lives in the terminal title (see _refresh_title);
+        # the status-bar head is just the permission mode.
         session_text = f"session {_format_duration(time.monotonic() - self._session_start)}"
         fields = [
-            head,
+            Content(mode),
             Content(cfg),
             Content.assemble((ctx_text, ctx_style)) if ctx_style else Content(ctx_text),
             Content(tokens_text),
@@ -438,12 +433,22 @@ class HarnessApp(App):
             return
         bar.update(self._status_text())
 
+    def _refresh_title(self) -> None:
+        """Terminal title (and Header): an idle/working mark + the session name.
+        Textual couples title/sub_title to both the OS terminal title and the
+        in-app Header. The title is a plain string assignment (not markup-parsed),
+        so a model-generated name needs no escaping."""
+        mark = "●" if self._busy else "○"
+        name = self.harness.session.session_name or "marim-harness"
+        self.title = f"{mark} {name}"
+
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
         if not busy:
             # The finished run is now folded into session usage by run_turn; drop
             # the in-flight tally so it isn't added on top a second time.
             self._live_run_tokens = 0
+        self._refresh_title()  # flip ● / ○
         self._refresh_status()
 
     def _render_tasks(self) -> None:
@@ -541,6 +546,7 @@ class HarnessApp(App):
         run_turn; mount without awaiting."""
         log = self.query_one("#log", VerticalScroll)
         log.mount(NoticeMessage(f"session renamed: {new}"))
+        self._refresh_title()  # the new name shows in the terminal title
         self._refresh_status()
 
     async def post_system(self, markdown: str) -> None:
@@ -566,6 +572,7 @@ class HarnessApp(App):
             await self._replay_history(log)
         self._flush_streams()  # render the rebuilt log before first paint
         log.anchor()  # re-pin to the bottom for the freshly loaded session
+        self._refresh_title()  # reflect the switched-to session's name
         self._refresh_status()
         self._render_tasks()
         self._render_jobs()  # jobs are process-scoped, not per-session

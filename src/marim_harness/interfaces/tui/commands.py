@@ -97,6 +97,7 @@ async def _cmd_name(app: HarnessApp, arg: str) -> None:
             "conversation first so it can be auto-titled."
         )
         return
+    app._refresh_title()  # the new name shows in the terminal title
     app._refresh_status()
     await app.post_system(f"Renamed session to `{new}`.")
 
