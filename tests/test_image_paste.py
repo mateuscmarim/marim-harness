@@ -104,3 +104,62 @@ async def test_ctrl_v_invokes_paste_image_hook(tmp_path):
         await pilot.press("ctrl+v")
         await pilot.pause()
         assert calls == [1]
+
+
+@pytest.mark.anyio
+async def test_text_only_model_blocks_image_submit_with_warning(tmp_path, monkeypatch):
+    monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path / "cache"))
+    from marim_harness import images
+    from marim_harness.interfaces.tui.widgets import NoticeMessage, PromptInput
+
+    monkeypatch.setattr(images, "read_clipboard_image",
+                        lambda: (b"\x89PNGbytes", "image/png"))
+    called = {"run": False}
+
+    async def fake_run_turn(*a, **k):
+        called["run"] = True
+        return "ok"
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.harness.run_turn = fake_run_turn
+        app.harness.model_id = "b/text"
+        app._vision_caps = {"b/text": False}
+        box = app.query_one(PromptInput)
+        box.focus()
+        await pilot.press("ctrl+v")
+        box.text = "[Image #1] look"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert called["run"] is False
+        log = app.query_one("#log")
+        assert any(isinstance(w, NoticeMessage) for w in log.walk_children())
+
+
+@pytest.mark.anyio
+async def test_unknown_capability_allows_image_submit(tmp_path, monkeypatch):
+    monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path / "cache"))
+    from marim_harness import images
+    from marim_harness.interfaces.tui.widgets import PromptInput
+
+    monkeypatch.setattr(images, "read_clipboard_image",
+                        lambda: (b"\x89PNGbytes", "image/png"))
+    called = {"run": False}
+
+    async def fake_run_turn(*a, **k):
+        called["run"] = True
+        return "ok"
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.harness.run_turn = fake_run_turn
+        app._vision_caps = {}  # unknown
+        box = app.query_one(PromptInput)
+        box.focus()
+        await pilot.press("ctrl+v")
+        box.text = "[Image #1] look"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert called["run"] is True

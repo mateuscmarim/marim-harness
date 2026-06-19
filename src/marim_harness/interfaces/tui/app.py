@@ -222,6 +222,7 @@ class HarnessApp(App):
         # these (instead of walking the whole message tree every frame) keeps the
         # tick O(active streams), not O(every message ever shown).
         self._dirty_streams: set[AssistantMessage] = set()
+        self._vision_caps: dict[str, bool | None] = {}
         self._busy = False
         self._turn_worker = None
         # Autonomous wake-on-completion (interactive TUI only). When a background
@@ -568,6 +569,8 @@ class HarnessApp(App):
         if source is None:
             await self.post_system("Model switching isn't available here.")
             return
+        self.run_worker(self._refresh_vision_caps(source.list_models),
+                        exclusive=False)
         self.push_screen(
             ModelPickerModal(
                 current=self.harness.model_id,
@@ -576,6 +579,13 @@ class HarnessApp(App):
             ),
             self._on_model_chosen,
         )
+
+    async def _refresh_vision_caps(self, fetch) -> None:
+        try:
+            entries = await fetch()
+        except Exception:
+            return  # unknown stays unknown; never blocks submit
+        self._vision_caps = {e.id: e.supports_images for e in entries}
 
     def _on_model_chosen(self, chosen: str | None) -> None:
         """Apply a model selected in the picker. Invoked by push_screen when the
@@ -610,6 +620,17 @@ class HarnessApp(App):
         if self._busy:
             self._refresh_status()
 
+    def _image_block_reason(self, attachments) -> str | None:
+        """A warning to show instead of submitting, or None to proceed. Only a
+        positive text-only capability blocks; unknown always proceeds."""
+        if not attachments:
+            return None
+        model_id = self.harness.model_id
+        if model_id is not None and self._vision_caps.get(model_id) is False:
+            return (f"{model_id} can't read images — "
+                    "switch to a vision model (Ctrl+P) or remove the image.")
+        return None
+
     async def _request_approval(self, call) -> DeferredToolApprovalResult | bool:
         approved = await self.push_screen_wait(
             ApprovalModal(call.tool_name, call.args_as_dict())
@@ -630,6 +651,11 @@ class HarnessApp(App):
         self.query_one(PromptInput).text = ""
         if text.startswith("/"):
             await dispatch(self, text)
+            return
+        reason = self._image_block_reason(event.attachments)
+        if reason is not None:
+            log = self.query_one("#log", VerticalScroll)
+            await log.mount(NoticeMessage(reason))
             return
         log = self.query_one("#log", VerticalScroll)
         await log.mount(UserMessage(text))
