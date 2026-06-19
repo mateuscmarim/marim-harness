@@ -4,10 +4,13 @@ disk cache, image file-path detection, and session-history externalization.
 The clipboard reader is the only part that shells out to the OS; it is isolated
 here behind read_clipboard_image() so every other unit is testable with a mock."""
 
+import hashlib
 import logging
 import os
 import shutil
 import subprocess
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -69,3 +72,34 @@ def read_clipboard_image() -> Optional[tuple[bytes, str]]:
     if os.environ.get("WAYLAND_DISPLAY"):
         return _read_wayland()
     return None
+
+
+def image_cache_root() -> Path:
+    """Root directory for the content-addressed image cache.
+
+    Override via MARIM_IMAGE_CACHE_DIR environment variable; defaults to
+    ~/.marim/image-cache."""
+    override = os.environ.get("MARIM_IMAGE_CACHE_DIR")
+    return Path(override) if override else Path.home() / ".marim" / "image-cache"
+
+
+@dataclass(frozen=True)
+class CachedImage:
+    """A cached image record: its path, content hash, and media type."""
+
+    path: Path
+    sha: str
+    media_type: str
+
+
+def store_image(session_id: str, data: bytes, media_type: str) -> CachedImage:
+    """Cache image bytes under <root>/<session_id>/<sha256>.<ext>. Idempotent:
+    identical bytes map to the same path and are not rewritten."""
+    sha = hashlib.sha256(data).hexdigest()
+    out = image_cache_root() / session_id / f"{sha}.{media_ext(media_type)}"
+    if not out.exists():
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out.with_suffix(out.suffix + ".tmp")
+        tmp.write_bytes(data)
+        tmp.replace(out)
+    return CachedImage(path=out, sha=sha, media_type=media_type)
