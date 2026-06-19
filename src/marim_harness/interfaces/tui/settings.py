@@ -153,6 +153,17 @@ class SettingsModal(ModalScreen[None]):
                         id="ctx-input",
                         type="integer",
                     )
+                with Horizontal(classes="row"):
+                    yield Label("Desktop notifications")
+                    yield Switch(
+                        value=self.env_cfg.notifications_enabled, id="sw-notifications"
+                    )
+                with Horizontal(classes="row"):
+                    yield Label("Notification events")
+                    yield Input(
+                        value=", ".join(sorted(self.env_cfg.notification_events)),
+                        id="notif-events-input",
+                    )
                 yield Button("Save to .env", id="save-env", variant="success")
                 yield Static("", id="save-status")
                 yield Static(
@@ -261,6 +272,10 @@ class SettingsModal(ModalScreen[None]):
             "MARIM_JOB_TOOL_COMBINED": _b(self.query_one("#sw-job", Switch).value),
             "MARIM_PROACTIVE_MEMORY": _b(self.query_one("#sw-mem", Switch).value),
             "MARIM_MAX_CONTEXT_TOKENS": str(ctx),
+            "MARIM_NOTIFICATIONS": _b(self.query_one("#sw-notifications", Switch).value),
+            "MARIM_NOTIFICATION_EVENTS": self.query_one(
+                "#notif-events-input", Input
+            ).value.strip(),
         }
         try:
             path = save_env_settings(values)

@@ -21,6 +21,7 @@ from .hooks.dispatch import TurnHooks
 from .instructions import register_instructions
 from .lsp.manager import LspManager
 from .mcp import McpManager
+from .notifications import NotificationConfig
 from .permissions import resolve_approvals
 from .session import SessionController, SessionManager, SessionStore
 from .subagents import SubagentRunner
@@ -212,6 +213,9 @@ class HarnessConfig:
     # match ModelConfig: wake on, cap 3.
     autonomous_wake: bool = True
     wake_depth_cap: int = 3
+    # Desktop-notification config. Disabled by default; the TUI and headless
+    # runner build a Notifier from this and fire at key event points.
+    notifications: NotificationConfig = field(default_factory=NotificationConfig.disabled)
 
 
 class Harness:

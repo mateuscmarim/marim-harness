@@ -19,6 +19,13 @@ from ...agent import Harness
 from ...usage import usage_summary
 
 
+def _notify(harness: Harness, title: str, body: str, event_type: str) -> None:
+    """Fire a desktop notification if one is wired on deps. Best-effort."""
+    notifier = harness.deps.notifier
+    if notifier is not None:
+        notifier.send(title, body, event_type)
+
+
 def _usage_dict(harness: Harness) -> dict:
     return usage_summary(harness.session.usage, harness.model_id)
 
@@ -89,10 +96,13 @@ async def run_headless(
         output = await harness.run_turn(prompt, event_stream_handler=handler)
     except Exception as exc:  # keep the failure surface small and scriptable
         print(f"{type(exc).__name__}: {exc}", file=err)
+        _notify(harness, "Turn error", f"{type(exc).__name__}: {exc}", "error")
         return 1
     finally:
         await harness.session_end("exit")
         await harness.aclose()
+
+    _notify(harness, "Turn complete", "Headless run finished", "turn_complete")
 
     if output_format == "json":
         obj = _result_obj(harness, output)

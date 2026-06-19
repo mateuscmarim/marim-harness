@@ -10,6 +10,7 @@ from .command_policy import CommandPolicy
 if TYPE_CHECKING:
     from .hooks.runner import HookRunner
     from .lsp.manager import LspManager
+    from .notifications import Notifier
 
 from .ask_user import Question
 from .jobs import JobRegistry
@@ -67,6 +68,10 @@ class Deps:
     on_subagent_event: Optional[SubAgentEventCb] = None
     # Lets spawn_agent(background=True) run a sub-agent as a detached job.
     run_background_agent: Optional[BackgroundAgentRunner] = None
+    # Optional desktop notifier. None when notifications are disabled; the TUI
+    # and headless runner fire it at key event points (turn complete, error,
+    # approval needed, ask user, background job finished).
+    notifier: "Optional[Notifier]" = None
 
 
 # The main agent's concrete generic type: deps are ``Deps`` and a turn yields

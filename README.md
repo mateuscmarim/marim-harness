@@ -97,6 +97,8 @@ from the environment — they are never written to session files or logs.**
 | `MARIM_LSP` | LSP master switch (default: on). Falsey ⇒ no language servers start: the navigation tools are not registered and diagnostics-on-edit is a no-op |
 | `MARIM_LSP_TOOLS` | LSP navigation tools (default: on). Falsey (while `MARIM_LSP` is on) ⇒ the six navigation tools are not registered, but diagnostics-on-edit keeps running |
 | `MARIM_JOB_TOOL_COMBINED` | Prototype (default: off). Truthy ⇒ the four job tools collapse into one `job(action, …)` tool |
+| `MARIM_NOTIFICATIONS` | Enable desktop notifications (default: off). Truthy ⇒ native OS notifications fire for configured events |
+| `MARIM_NOTIFICATION_EVENTS` | Comma-separated events that trigger a notification (default: `turn_complete,error,approval_needed,ask_user`). Also `job_done` |
 
 You can also view and change these from inside the TUI with `/settings` (alias
 `/config`): mode, model, theme, and MCP servers apply immediately, while the
@@ -144,6 +146,25 @@ execute shell commands from the repo and are a supply-chain risk). Events:
 stdin; `SessionStart` and `UserPromptSubmit` may inject context via
 `additionalContext` on stdout. Hooks never block a tool or a turn. See
 `examples/agentmemory/` for a worked setup with agentmemory.
+
+### Notifications
+
+marim can fire native desktop notifications so you're alerted when a turn
+finishes, errors, or needs your attention — useful when you've switched to
+another window. Enable with `MARIM_NOTIFICATIONS=1` and pick which events fire
+via `MARIM_NOTIFICATION_EVENTS` (comma-separated):
+
+| Event | When it fires |
+| --- | --- |
+| `turn_complete` | A turn finished successfully |
+| `error` | A turn failed with an exception |
+| `approval_needed` | The agent is waiting for tool approval |
+| `ask_user` | The agent asked a structured question |
+| `job_done` | A background job finished and triggered a wake |
+
+Linux uses `notify-send`, macOS uses `osascript`, and Windows uses a PowerShell
+balloon tip — no extra dependencies. Notifications are best-effort: a missing
+daemon or a failed call is silently ignored and never interrupts the agent.
 
 ## Development
 

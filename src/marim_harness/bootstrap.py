@@ -7,6 +7,7 @@ from .config import ModelSource, build_model, load_config
 from .deps import Deps
 from .hooks import HookRunner, load_hooks_config
 from .mcp import build_mcp_servers, disabled_server_names, load_mcp_config
+from .notifications import NotificationConfig, Notifier
 from .permissions import Mode
 from .session import SessionManager
 from .tools.provider import BuiltinToolProvider
@@ -39,11 +40,13 @@ def build_harness(
     )
     hooks_cfg = load_hooks_config(workspace, trust_project=cfg.trust_project_hooks)
     hook_runner = HookRunner(hooks_cfg) if hooks_cfg else None
+    notifier = Notifier() if cfg.notifications_enabled else None
     deps = Deps(
         workspace_root=workspace,
         mode=mode,
         command_policy=command_policy,
         hooks=hook_runner,
+        notifier=notifier,
     )
 
     manager = SessionManager(workspace)
@@ -92,6 +95,9 @@ def build_harness(
             wake_depth_cap=cfg.wake_depth_cap,
             mcp_servers=mcp_servers,
             mcp_disabled=mcp_disabled,
+            notifications=NotificationConfig(
+                enabled=cfg.notifications_enabled, events=cfg.notification_events
+            ),
         ),
     )
     if resume:

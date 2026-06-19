@@ -3,6 +3,7 @@ from dataclasses import dataclass, field, replace
 from typing import Optional
 
 from ..command_policy import split_patterns
+from ..notifications import DEFAULT_EVENTS, parse_events
 from ..workspace.catalog import ModelEntry, fetch_google_models, fetch_openrouter_models
 
 _DEFAULT_OPENROUTER_MODEL = "anthropic/claude-sonnet-4-6"
@@ -42,6 +43,10 @@ class ModelConfig:
     # every mode. Empty lists -> no restriction.
     command_denylist: list[str] = field(default_factory=list)
     command_allowlist: list[str] = field(default_factory=list)
+    # Desktop notifications: off by default. When on, fire native OS
+    # notifications for the events listed in ``notification_events``.
+    notifications_enabled: bool = False
+    notification_events: set[str] = field(default_factory=lambda: set(DEFAULT_EVENTS))
 
 
 def load_config() -> ModelConfig:
@@ -62,6 +67,8 @@ def load_config() -> ModelConfig:
     wake_depth_cap = _int_env("MARIM_WAKE_DEPTH_CAP", 3)
     command_denylist = split_patterns(os.getenv("MARIM_COMMAND_DENYLIST", ""))
     command_allowlist = split_patterns(os.getenv("MARIM_COMMAND_ALLOWLIST", ""))
+    notifications_enabled = _bool_env("MARIM_NOTIFICATIONS", False)
+    notification_events = parse_events(os.getenv("MARIM_NOTIFICATION_EVENTS", ""))
     if provider == "local":
         return ModelConfig(
             provider="local",
@@ -78,6 +85,8 @@ def load_config() -> ModelConfig:
             wake_depth_cap=wake_depth_cap,
             command_denylist=command_denylist,
             command_allowlist=command_allowlist,
+            notifications_enabled=notifications_enabled,
+            notification_events=notification_events,
         )
     if provider == "google":
         return ModelConfig(
@@ -99,6 +108,8 @@ def load_config() -> ModelConfig:
             wake_depth_cap=wake_depth_cap,
             command_denylist=command_denylist,
             command_allowlist=command_allowlist,
+            notifications_enabled=notifications_enabled,
+            notification_events=notification_events,
         )
     return ModelConfig(
         provider="openrouter",
@@ -115,6 +126,8 @@ def load_config() -> ModelConfig:
         wake_depth_cap=wake_depth_cap,
         command_denylist=command_denylist,
         command_allowlist=command_allowlist,
+        notifications_enabled=notifications_enabled,
+        notification_events=notification_events,
     )
 
 
