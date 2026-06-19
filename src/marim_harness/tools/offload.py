@@ -39,6 +39,17 @@ def _write_handle(content: str, *, kind: str, key: str,
     )
 
 
+def write_preview_file(content: str, *, rel: Path, workspace_root: Path) -> tuple[str, str, int]:
+    """Write *content* to ``workspace_root/rel`` and return (rel_posix, preview,
+    line_count) for the caller to format into a handle."""
+    dest = workspace_root / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(content)
+    lines = content.splitlines()
+    preview = "\n".join(lines[:_PREVIEW_LINES])
+    return rel.as_posix(), preview, len(lines)
+
+
 def offload_if_large(content: str, *, kind: str, key: str,
                      workspace_root: Optional[Path], capped: bool = False) -> str:
     """Return ``content`` inline when small; otherwise offload to a file and

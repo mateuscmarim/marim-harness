@@ -363,6 +363,19 @@ async def test_fetch_large_page_offloaded_to_file(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_fetch_offload_handle_has_title_and_saved_path(tmp_path, monkeypatch):
+    from marim_harness.tools import fetch
+    monkeypatch.setattr(fetch, "_INLINE_CHAR_LIMIT", 20)
+    body = "# My Title\n" + "\n".join(f"para {i}" for i in range(50))
+    out = fetch._offload(body, "https://example.com/x", tmp_path)
+    assert out.startswith("# My Title")
+    assert "Fetched https://example.com/x" in out
+    assert "saved to" in out
+    saved = list((tmp_path / ".marim" / "fetch").glob("*.md"))
+    assert len(saved) == 1 and saved[0].read_text() == body
+
+
+@pytest.mark.anyio
 async def test_fetch_offload_path_is_workspace_relative(tmp_path):
     """The path in the handle must be relative to the workspace root so the agent
     can hand it straight to read_file/grep (which are workspace-sandboxed)."""

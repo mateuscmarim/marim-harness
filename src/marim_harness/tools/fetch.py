@@ -94,22 +94,20 @@ def _offload(body: str, url: str, workspace_root: Path) -> str:
     """Write *body* to a gitignored file under the workspace and return a handle
     (title, source, size, relative path) plus a short preview, so the agent can
     page the rest with read_file/grep instead of taking the whole body inline."""
+    from .offload import _PREVIEW_LINES as _PL
+    from .offload import write_preview_file
+
     digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
     rel = Path(*_FETCH_DIR, f"{digest}.md")
-    dest = workspace_root / rel
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(body)
-
-    lines = body.splitlines()
-    preview = "\n".join(lines[:_PREVIEW_LINES])
-    rel_posix = rel.as_posix()
+    rel_posix, preview, n_lines = write_preview_file(body, rel=rel,
+                                                     workspace_root=workspace_root)
     return (
         f"# {_title_of(body, url)}\n"
         f"Fetched {url}\n\n"
-        f"⚠️ Large page ({len(body):,} chars, {len(lines):,} lines) — full content "
+        f"⚠️ Large page ({len(body):,} chars, {n_lines:,} lines) — full content "
         f"saved to `{rel_posix}`. Read more with read_file (it paginates) or grep "
         f"that path for what you need.\n\n"
-        f"--- preview (first {min(_PREVIEW_LINES, len(lines))} lines) ---\n"
+        f"--- preview (first {min(_PL, n_lines)} lines) ---\n"
         f"{preview}"
     )
 
