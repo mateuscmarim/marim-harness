@@ -722,6 +722,26 @@ async def test_compaction_shows_notice_in_log(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_compacting_indicator_shown_then_replaced(tmp_path: Path):
+    from marim_harness.interfaces.tui.widgets import NoticeMessage
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Compaction begins: the live "compacting…" indicator appears.
+        app.harness.session.on_compact_start()
+        await pilot.pause()
+        live = [str(n.render()) for n in app.query(NoticeMessage)]
+        assert any("compacting" in t.lower() for t in live)
+        # Compaction finishes: the indicator is replaced by the result line.
+        app.harness.session.on_compact(40, 10)
+        await pilot.pause()
+        final = [str(n.render()) for n in app.query(NoticeMessage)]
+        assert not any("compacting conversation" in t.lower() for t in final)
+        assert any("40" in t and "10" in t for t in final)
+
+
+@pytest.mark.anyio
 async def test_mode_keybinding_cycles(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:

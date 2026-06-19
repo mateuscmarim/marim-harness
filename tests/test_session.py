@@ -365,6 +365,33 @@ async def test_pre_compact_does_not_fire_without_compaction(tmp_path):
     assert not log.exists()
 
 
+@pytest.mark.anyio
+async def test_on_compact_start_fires_before_finish_when_compacting(tmp_path):
+    deps = Deps(workspace_root=tmp_path)
+    ctrl = SessionController(None, None, deps, max_context_tokens=1, keep_last_messages=1)
+    ctrl.history = [
+        ModelRequest(parts=[UserPromptPart(content="x" * 5000)]),
+        ModelRequest(parts=[UserPromptPart(content="y" * 5000)]),
+        ModelRequest(parts=[UserPromptPart(content="z" * 5000)]),
+    ]
+    events: list[str] = []
+    ctrl.on_compact_start = lambda: events.append("start")
+    ctrl.on_compact = lambda before, after: events.append("done")
+    await ctrl.maybe_compact()
+    assert events == ["start", "done"]
+
+
+@pytest.mark.anyio
+async def test_on_compact_start_not_fired_without_compaction(tmp_path):
+    deps = Deps(workspace_root=tmp_path)
+    ctrl = SessionController(None, None, deps, max_context_tokens=100_000, keep_last_messages=20)
+    ctrl.history = []  # nothing to compact
+    fired: list[int] = []
+    ctrl.on_compact_start = lambda: fired.append(1)
+    await ctrl.maybe_compact()
+    assert fired == []
+
+
 def test_session_save_load_round_trips_image(tmp_path, monkeypatch):
     monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path / "imgs"))
     mgr = SessionManager(tmp_path / "ws", base_dir=tmp_path / "sessions")

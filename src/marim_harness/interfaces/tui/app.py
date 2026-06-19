@@ -201,7 +201,9 @@ class HarnessApp(App):
         self.harness.deps.jobs.on_change = self._on_jobs_changed
         self.harness.deps.on_subagent_event = self._on_subagent_event
         self.harness.session.on_compact = self._on_compact
+        self.harness.session.on_compact_start = self._on_compact_start
         self.harness.session.on_rename = self._on_rename
+        self._compacting_notice: NoticeMessage | None = None
         self._current_assistant: AssistantMessage | None = None
         self._tool_widgets: dict[str, ToolCallWidget | SubAgentWidget] = {}
         # State of the current run of consecutive top-level tool calls. A run only
@@ -484,10 +486,22 @@ class HarnessApp(App):
         if self._busy and self._turn_worker is not None:
             self._turn_worker.cancel()
 
+    def _on_compact_start(self) -> None:
+        """Show a live note while compaction runs — the summarizer call can take a
+        few seconds, which would otherwise be indistinguishable from a slow turn.
+        Cleared by _on_compact when the work finishes. Called synchronously from
+        run_turn; mount without awaiting."""
+        log = self.query_one("#log", VerticalScroll)
+        self._compacting_notice = NoticeMessage("compacting conversation…")
+        log.mount(self._compacting_notice)
+
     def _on_compact(self, before: int, after: int) -> None:
         """Note in the log when history was trimmed to stay under the token budget.
         Called synchronously from run_turn; mount without awaiting."""
         log = self.query_one("#log", VerticalScroll)
+        if self._compacting_notice is not None:
+            self._compacting_notice.remove()  # replace the live "compacting…" line
+            self._compacting_notice = None
         log.mount(
             NoticeMessage(f"compacted history: {before} → {after} messages")
         )
