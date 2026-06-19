@@ -2005,9 +2005,9 @@ async def test_title_shows_idle_and_working_indicator(tmp_path: Path, monkeypatc
         await pilot.pause()
         assert app.title == "○ my-session"
         app._busy = True
-        app._spin = 4  # the "full" frame of the breathing pulse (●)
+        app._spin = 7  # the "full" frame of the breathing bar (█)
         app._refresh_title()
-        assert app.title == "● my-session"
+        assert app.title == "█ my-session"
         # workspace path stays in the sub_title
         assert str(tmp_path) in app.sub_title
 
@@ -2058,12 +2058,12 @@ async def test_refresh_title_writes_osc_to_terminal(tmp_path: Path, monkeypatch)
         app._driver.write = lambda data: calls.append(data)
         try:
             app._busy = True
-            app._spin = 4  # the "full" frame of the breathing pulse (●)
+            app._spin = 7  # the "full" frame of the breathing bar (█)
             app._refresh_title()
         finally:
             app._driver.write = real_write
         blob = "".join(calls)
-        assert "\033]0;● my-session\007" in blob
+        assert "\033]0;█ my-session\007" in blob
 
 
 @pytest.mark.anyio
