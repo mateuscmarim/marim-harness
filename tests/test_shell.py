@@ -80,33 +80,9 @@ async def test_bash_timeout_reaps_child_processes(tmp_path: Path):
 
 
 @pytest.mark.anyio
-async def test_bash_truncates_long_output(tmp_path: Path):
-    out = await shell.run_bash(
-        tmp_path, "for i in $(seq 1 5000); do echo line$i; done", max_output=200
-    )
-    assert "truncated" in out
-
-
-@pytest.mark.anyio
-async def test_bash_truncation_keeps_head_and_tail(tmp_path: Path):
-    """Over-cap output is cut from the MIDDLE, not the head: the start and the
-    verdict at the very end both survive. For tests/builds the result line lives
-    at the tail, which a head-only cut would silently drop."""
-    cmd = (
-        "echo HEAD-MARKER; "
-        "for i in $(seq 1 5000); do echo filler$i; done; "
-        "echo TAIL-VERDICT"
-    )
-    out = await shell.run_bash(tmp_path, cmd, max_output=200)
-    assert "HEAD-MARKER" in out  # head kept
-    assert "TAIL-VERDICT" in out  # tail kept — the part a head-only cut drops
-    assert "truncated" in out
-
-
-@pytest.mark.anyio
 async def test_start_bash_output_keeps_head_and_tail(tmp_path: Path):
-    """The live-buffer / background-job path truncates from the middle too, so a
-    pulled background result still shows the verdict at the end."""
+    """The live-buffer output() path truncates from the middle (head+tail), so a
+    pulled live preview still shows the verdict at the end."""
     bp = await shell.start_bash(
         tmp_path,
         "echo HEAD-MARKER; "
@@ -115,9 +91,10 @@ async def test_start_bash_output_keeps_head_and_tail(tmp_path: Path):
         max_output=200,
     )
     final = await bp.wait()
-    assert "HEAD-MARKER" in final
-    assert "TAIL-VERDICT" in final
-    assert "truncated" in final
+    _ = final  # populate the buffer; assertions are on the live output() path
+    assert "HEAD-MARKER" in bp.output()
+    assert "TAIL-VERDICT" in bp.output()
+    assert "truncated" in bp.output()
 
 
 @pytest.mark.anyio
@@ -142,7 +119,7 @@ async def test_bash_process_wait_without_pipe_returns_exit_line(tmp_path: Path):
         async def wait(self):
             return 0
 
-    bp = shell.BashProcess(_FakeProc(), max_output=200)
+    bp = shell.BashProcess(_FakeProc(), 200, tmp_path, "noop")
     final = await bp.wait()
     assert "exit 0" in final
 
@@ -154,3 +131,37 @@ async def test_start_bash_kill_stops_process(tmp_path: Path):
     final = await bp.wait()  # returns promptly once killed, not after 30s
     assert "exit" in final
     assert bp.returncode is not None
+
+
+@pytest.mark.anyio
+async def test_run_bash_offloads_large_output(tmp_path, monkeypatch):
+    from marim_harness.tools import offload
+    monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 100)
+    out = await shell.run_bash(tmp_path, "for i in $(seq 1 500); do echo line $i; done")
+    assert "full output saved to" in out and "bash result" in out
+    saved = list((tmp_path / ".marim" / "output").glob("bash-*.txt"))
+    assert len(saved) == 1
+    body = saved[0].read_text()
+    assert body.startswith("exit 0\n")
+    assert body.count("line ") == 500
+
+
+@pytest.mark.anyio
+async def test_run_bash_small_output_inline(tmp_path):
+    out = await shell.run_bash(tmp_path, "echo hi")
+    assert out == "exit 0\nhi\n"
+
+
+@pytest.mark.anyio
+async def test_background_wait_offloads_but_live_output_truncates(tmp_path, monkeypatch):
+    from marim_harness.tools import offload
+    monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 100)
+    bp = await shell.start_bash(
+        tmp_path, "for i in $(seq 1 500); do echo line $i; done", max_output=80
+    )
+    final = await bp.wait()
+    assert "full output saved to" in final and "bash result" in final
+    saved = list((tmp_path / ".marim" / "output").glob("bash-*.txt"))
+    assert len(saved) == 1 and saved[0].read_text().count("line ") == 500
+    # the live preview path stays bounded by max_output (head+tail truncation)
+    assert len(bp.output()) <= 80 + 64  # cap + the "… (N chars truncated) …" marker
