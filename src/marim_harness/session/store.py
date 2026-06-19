@@ -11,6 +11,8 @@ from typing import Optional
 from pydantic_ai.messages import ModelMessagesTypeAdapter
 from pydantic_ai.usage import RunUsage
 
+from ..images import externalize_images, rehydrate_images
+
 logger = logging.getLogger(__name__)
 
 
@@ -92,8 +94,10 @@ class SessionStore:
                 "details": usage.details,
             },
             "tasks": tasks or [],
-            "messages": json.loads(ModelMessagesTypeAdapter.dump_json(history)),
         }
+        messages_json = json.loads(ModelMessagesTypeAdapter.dump_json(history))
+        messages_json = externalize_images(messages_json, self.session_id)
+        payload["messages"] = messages_json
         tmp = self.path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload))
         tmp.replace(self.path)  # atomic swap so a crash mid-write can't corrupt
@@ -104,7 +108,8 @@ class SessionStore:
         if not self.path.exists():
             return [], RunUsage(), []
         data = json.loads(self.path.read_text())
-        messages = ModelMessagesTypeAdapter.validate_python(data.get("messages", []))
+        raw_messages = rehydrate_images(data.get("messages", []), self.session_id)
+        messages = ModelMessagesTypeAdapter.validate_python(raw_messages)
         tok = data.get("tokens", {})
         # Old files predate the extra fields, so each defaults to 0 / {}.
         usage = RunUsage(

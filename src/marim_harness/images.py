@@ -4,6 +4,7 @@ disk cache, image file-path detection, and session-history externalization.
 The clipboard reader is the only part that shells out to the OS; it is isolated
 here behind read_clipboard_image() so every other unit is testable with a mock."""
 
+import base64
 import hashlib
 import logging
 import os
@@ -136,3 +137,61 @@ def detect_image_path(text: str) -> Optional[Path]:
     except OSError:
         return None
     return path
+
+
+_REF_PREFIX = "marim-image-cache://"
+
+
+def _iter_user_content(messages: list[dict]):
+    """Yield each user-prompt content list so callers can edit binary items
+    in place."""
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        for part in msg.get("parts", []) or []:
+            if not isinstance(part, dict) or part.get("part_kind") != "user-prompt":
+                continue
+            content = part.get("content")
+            if isinstance(content, list):
+                yield content
+
+
+def externalize_images(messages: list[dict], session_id: str) -> list[dict]:
+    """Replace inline base64 in binary user-content with cache references."""
+    for content in _iter_user_content(messages):
+        for item in content:
+            if not (isinstance(item, dict) and item.get("kind") == "binary"):
+                continue
+            data = item.get("data")
+            if not isinstance(data, str) or data.startswith(_REF_PREFIX):
+                continue
+            try:
+                raw = base64.b64decode(data)
+            except (ValueError, TypeError):
+                continue
+            cached = store_image(session_id, raw, item.get("media_type", "image/png"))
+            item["data"] = f"{_REF_PREFIX}{cached.sha}"
+    return messages
+
+
+def rehydrate_images(messages: list[dict], session_id: str) -> list[dict]:
+    """Restore base64 from cache references; missing files degrade to a text
+    placeholder so the session still loads."""
+    for content in _iter_user_content(messages):
+        for i, item in enumerate(content):
+            if not (isinstance(item, dict) and item.get("kind") == "binary"):
+                continue
+            data = item.get("data")
+            if not (isinstance(data, str) and data.startswith(_REF_PREFIX)):
+                continue
+            sha = data[len(_REF_PREFIX):]
+            ext = media_ext(item.get("media_type", "image/png"))
+            path = image_cache_root() / session_id / f"{sha}.{ext}"
+            try:
+                content[i] = item  # keep ref unless we can restore
+                raw = path.read_bytes()
+            except OSError:
+                content[i] = "[image unavailable]"
+                continue
+            item["data"] = base64.b64encode(raw).decode()
+    return messages

@@ -1,3 +1,4 @@
+import base64
 import subprocess
 
 from marim_harness import images
@@ -86,3 +87,32 @@ def test_media_type_for_path():
     assert images.media_type_for_path(images.Path("a.PNG")) == "image/png"
     assert images.media_type_for_path(images.Path("a.jpg")) == "image/jpeg"
     assert images.media_type_for_path(images.Path("a.txt")) is None
+
+
+def _binary_message(data_b64, media_type="image/png"):
+    return [{"parts": [{"part_kind": "user-prompt", "content": [
+        "hi", {"kind": "binary", "data": data_b64, "media_type": media_type,
+               "identifier": "x", "vendor_metadata": None}]}]}]
+
+
+def test_externalize_then_rehydrate_round_trips(tmp_path, monkeypatch):
+    monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path))
+    raw_bytes = b"\x89PNGpayload"
+    b64 = base64.b64encode(raw_bytes).decode()
+    msgs = _binary_message(b64)
+    out = images.externalize_images(msgs, "sess")
+    item = out[0]["parts"][0]["content"][1]
+    assert item["data"].startswith("marim-image-cache://")
+    assert b64 not in str(out)  # base64 no longer inline
+    back = images.rehydrate_images(out, "sess")
+    assert back[0]["parts"][0]["content"][1]["data"] == b64
+
+
+def test_rehydrate_degrades_when_cache_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path))
+    msgs = [{"parts": [{"part_kind": "user-prompt", "content": [
+        "hi", {"kind": "binary", "data": "marim-image-cache://deadbeef",
+               "media_type": "image/png", "identifier": "x",
+               "vendor_metadata": None}]}]}]
+    back = images.rehydrate_images(msgs, "sess")
+    assert back[0]["parts"][0]["content"][1] == "[image unavailable]"
