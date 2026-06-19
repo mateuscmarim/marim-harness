@@ -38,7 +38,6 @@ _MAX_DOWNLOAD = 25_000_000  # 25 MB
 # big page can't flood the turn's context. (read_file/grep can then page the
 # file.) ~50k chars ≈ ~12k tokens; small results stay inline, no round-trip.
 _INLINE_CHAR_LIMIT = 50_000
-_PREVIEW_LINES = 40  # lines of the body shown in the handle for large pages
 # Where offloaded fetch bodies live, relative to the workspace root. Gitignored.
 _FETCH_DIR = (".marim", "fetch")
 _ALLOWED_SCHEMES = frozenset({"http", "https"})

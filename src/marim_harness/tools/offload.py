@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Optional
 
 _INLINE_CHAR_LIMIT = 50_000      # at/below this, return inline (~12k tokens)
-MAX_OUTPUT_BYTES = 5_000_000     # hard ceiling producers stop collecting at
+# Measured in characters (~bytes for ASCII); producers stop collecting here and callers may offload.
+MAX_OUTPUT_BYTES = 5_000_000
 _PREVIEW_LINES = 40
 _OUTPUT_DIR = (".marim", "output")
 
@@ -22,7 +23,7 @@ def _write_handle(content: str, *, kind: str, key: str,
     rel = Path(*_OUTPUT_DIR, f"{kind}-{digest}.txt")
     dest = workspace_root / rel
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(content)
+    dest.write_text(content, encoding="utf-8")
     lines = content.splitlines()
     preview = "\n".join(lines[:_PREVIEW_LINES])
     cap_note = (
@@ -44,7 +45,7 @@ def write_preview_file(content: str, *, rel: Path, workspace_root: Path) -> tupl
     line_count) for the caller to format into a handle."""
     dest = workspace_root / rel
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(content)
+    dest.write_text(content, encoding="utf-8")
     lines = content.splitlines()
     preview = "\n".join(lines[:_PREVIEW_LINES])
     return rel.as_posix(), preview, len(lines)

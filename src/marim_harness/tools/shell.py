@@ -28,7 +28,6 @@ async def run_bash(
     root: Path,
     command: str,
     timeout: int = _DEFAULT_TIMEOUT,
-    max_output: int = _DEFAULT_MAX_OUTPUT,
 ) -> str:
     """Run a shell command in the workspace root, capturing combined output.
 
