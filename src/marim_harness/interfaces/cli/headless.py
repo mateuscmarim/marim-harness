@@ -26,6 +26,20 @@ def _notify(harness: Harness, title: str, body: str, event_type: str) -> None:
         notifier.send(title, body, event_type)
 
 
+def _preview(text: str, max_len: int = 80) -> str:
+    """Return a short preview of *text* for notification bodies.
+
+    Newlines are collapsed to spaces and the result is truncated to *max_len*
+    characters, with an ellipsis when trimmed.  Empty input yields a
+    generic fallback so the notification is never blank."""
+    if not text or not text.strip():
+        return "(empty response)"
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= max_len:
+        return collapsed
+    return collapsed[: max_len - 1] + "…"
+
+
 def _usage_dict(harness: Harness) -> dict:
     return usage_summary(harness.session.usage, harness.model_id)
 
@@ -102,7 +116,7 @@ async def run_headless(
         await harness.session_end("exit")
         await harness.aclose()
 
-    _notify(harness, "Turn complete", "Headless run finished", "turn_complete")
+    _notify(harness, "Turn complete", _preview(output), "turn_complete")
 
     if output_format == "json":
         obj = _result_obj(harness, output)

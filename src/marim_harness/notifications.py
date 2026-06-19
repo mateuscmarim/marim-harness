@@ -17,6 +17,7 @@ import logging
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,9 @@ class NotificationConfig:
 
     enabled: bool = False
     events: set[str] = field(default_factory=lambda: set(DEFAULT_EVENTS))
+    # Minimum seconds between two notifications of the same event type.
+    # Rapid duplicate events (e.g. multiple ask_user calls) are suppressed.
+    coalesce_seconds: float = 2.0
 
     @classmethod
     def disabled(cls) -> "NotificationConfig":
@@ -79,6 +83,9 @@ class Notifier:
     def __init__(self, config: NotificationConfig | None = None) -> None:
         self.config = config or NotificationConfig.disabled()
         self._platform = sys.platform
+        # Per-event-type monotonic timestamp of the last dispatched
+        # notification. Used for coalescing rapid duplicates.
+        self._last_fired: dict[str, float] = {}
 
     @property
     def enabled(self) -> bool:
@@ -90,13 +97,22 @@ class Notifier:
         ``title`` and ``body`` are the notification's title/body text. Any
         error from the underlying OS call is caught and logged at debug —
         notifications are purely cosmetic and must never interrupt the agent.
+
+        **Coalescing:** if the same ``event_type`` was dispatched less than
+        ``coalesce_seconds`` ago, the call is silently skipped. This prevents
+        a burst of duplicate notifications (e.g. rapid ask_user calls).
         """
         if not self.config.enabled:
             return
         if event_type not in self.config.events:
             return
+        now = time.monotonic()
+        last = self._last_fired.get(event_type)
+        if last is not None and (now - last) < self.config.coalesce_seconds:
+            return
         try:
             self._dispatch(title, body)
+            self._last_fired[event_type] = now
         except Exception as exc:  # never let notifications break a turn
             logger.debug("notification failed (%s): %s", event_type, exc)
 

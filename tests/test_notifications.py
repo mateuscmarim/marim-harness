@@ -83,6 +83,8 @@ def test_notifier_swallows_errors():
     n = Notifier(NotificationConfig(enabled=True, events={"error"}))
     with patch.object(n, "_dispatch", side_effect=OSError("no daemon")):
         n.send("t", "b", EVENT_ERROR)  # should not raise
+    # The timestamp should NOT be recorded on failure so a later retry works.
+    assert EVENT_ERROR not in n._last_fired
 
 
 def test_notifier_all_events_are_documented():
@@ -93,6 +95,59 @@ def test_notifier_all_events_are_documented():
         EVENT_JOB_DONE,
         "approval_needed",
     }
+
+
+# ---------------------------------------------------------------------------
+# Coalescing
+# ---------------------------------------------------------------------------
+
+
+def test_coalescing_suppresses_rapid_duplicates():
+    cfg = NotificationConfig(
+        enabled=True,
+        events={"ask_user"},
+        coalesce_seconds=5.0,
+    )
+    n = Notifier(cfg)
+    with patch.object(n, "_dispatch") as mock_dispatch:
+        n.send("t", "b", "ask_user")
+        n.send("t", "b", "ask_user")  # within window → suppressed
+        n.send("t", "b", "ask_user")  # still within → suppressed
+        assert mock_dispatch.call_count == 1
+
+
+def test_coalescing_different_events_fire_independently():
+    cfg = NotificationConfig(
+        enabled=True,
+        events={"ask_user", "error"},
+        coalesce_seconds=5.0,
+    )
+    n = Notifier(cfg)
+    with patch.object(n, "_dispatch") as mock_dispatch:
+        n.send("q", "a", "ask_user")
+        n.send("e", "x", "error")
+        assert mock_dispatch.call_count == 2
+
+
+def test_coalescing_resets_after_window():
+    cfg = NotificationConfig(
+        enabled=True,
+        events={"turn_complete"},
+        coalesce_seconds=0.01,  # 10ms window for fast tests
+    )
+    n = Notifier(cfg)
+    with patch.object(n, "_dispatch") as mock_dispatch:
+        n.send("t", "b", "turn_complete")
+        assert mock_dispatch.call_count == 1
+        # Artificially back-date the last fire to outside the window
+        n._last_fired["turn_complete"] = -10.0
+        n.send("t", "b", "turn_complete")
+        assert mock_dispatch.call_count == 2
+
+
+def test_coalescing_disabled_by_default():
+    cfg = NotificationConfig()
+    assert cfg.coalesce_seconds == 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -165,3 +220,32 @@ def test_deps_notifier_can_be_set(tmp_path: Path):
     n = Notifier(NotificationConfig.disabled())
     d.notifier = n
     assert d.notifier is n
+
+
+# ---------------------------------------------------------------------------
+# Headless _preview helper
+# ---------------------------------------------------------------------------
+
+def test_preview_short_text_unchanged():
+    from marim_harness.interfaces.cli.headless import _preview
+    assert _preview("hello world") == "hello world"
+
+
+def test_preview_long_text_truncated():
+    from marim_harness.interfaces.cli.headless import _preview
+    text = "a" * 100
+    result = _preview(text)
+    assert len(result) == 80
+    assert result.endswith("…")
+
+
+def test_preview_collapses_whitespace():
+    from marim_harness.interfaces.cli.headless import _preview
+    assert _preview("  hello  \n  world  ") == "hello world"
+
+
+def test_preview_empty_returns_fallback():
+    from marim_harness.interfaces.cli.headless import _preview
+    assert _preview("") == "(empty response)"
+    assert _preview("   ") == "(empty response)"
+    assert _preview(None) == "(empty response)"
