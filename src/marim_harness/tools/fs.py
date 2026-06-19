@@ -6,8 +6,8 @@ from pydantic import BaseModel
 from pydantic_ai import ModelRetry
 
 from ..workspace.fs import WorkspaceError, resolve_in_workspace
+from .offload import MAX_OUTPUT_BYTES, offload_if_large
 
-_MAX_GREP_HITS = 200
 _MAX_TREE_ENTRIES = 500
 # When no explicit ``limit`` is given, a read is capped at this many lines so a
 # blind read of a huge file can't flood the context. Pass ``offset``/``limit``
@@ -182,17 +182,18 @@ def glob_files(root: Path, pattern: str) -> str:
 
 
 def grep(root: Path, pattern: str, path: Optional[str] = None) -> str:
-    """Search file contents for a regex, returning `relpath:line:text` hits."""
+    """Search file contents for a regex, returning `relpath:line:text` hits.
+    Large result sets are offloaded to a file (handle + preview) instead of
+    flooding the response; collection stops at MAX_OUTPUT_BYTES."""
     rx = re.compile(pattern)
     base = _safe(root, path) if path else root
     files = [base] if base.is_file() else [p for p in base.rglob("*") if p.is_file()]
     out: list[str] = []
+    size = 0
+    capped = False
     for f in files:
         if ".worktrees" in f.relative_to(root).parts:
             continue  # skip sibling worktree checkouts
-        # Skip files that resolve outside the workspace — e.g. an in-tree symlink
-        # pointing at /etc/passwd. rglob yields the link; reading it would follow
-        # it out of the sandbox, so gate each match the same way read_file does.
         try:
             resolve_in_workspace(root, str(f.relative_to(root)))
         except (WorkspaceError, ValueError):
@@ -200,10 +201,19 @@ def grep(root: Path, pattern: str, path: Optional[str] = None) -> str:
         try:
             for i, line in enumerate(f.read_text().splitlines(), 1):
                 if rx.search(line):
-                    out.append(f"{f.relative_to(root)}:{i}:{line}")
-                    if len(out) >= _MAX_GREP_HITS:
-                        out.append("(truncated)")
-                        return "\n".join(out)
+                    hit = f"{f.relative_to(root)}:{i}:{line}"
+                    out.append(hit)
+                    size += len(hit) + 1
+                    if size >= MAX_OUTPUT_BYTES:
+                        capped = True
+                        break
         except (UnicodeDecodeError, OSError):
             continue
-    return "\n".join(out) if out else "(no matches)"
+        if capped:
+            break
+    if not out:
+        return "(no matches)"
+    return offload_if_large(
+        "\n".join(out), kind="grep", key=f"{pattern}\0{path or ''}",
+        workspace_root=root, capped=capped,
+    )

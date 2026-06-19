@@ -289,3 +289,22 @@ def test_glob_skips_worktrees(tmp_path: Path):
     out = fs.glob_files(tmp_path, "**/*.py")
     assert "a.py" in out
     assert ".worktrees" not in out
+
+
+def test_grep_offloads_large_result(tmp_path, monkeypatch):
+    from marim_harness.tools import offload
+    monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 50)
+    (tmp_path / "big.txt").write_text("\n".join(f"match {i}" for i in range(100)))
+    out = fs.grep(tmp_path, "match")
+    assert "full output saved to" in out and "grep result" in out
+    saved = list((tmp_path / ".marim" / "output").glob("grep-*.txt"))
+    assert len(saved) == 1
+    # every hit is in the file, nothing truncated
+    assert saved[0].read_text().count("big.txt:") == 100
+    assert "(truncated)" not in out
+
+
+def test_grep_small_result_still_inline(tmp_path):
+    (tmp_path / "a.txt").write_text("alpha\nbeta")
+    out = fs.grep(tmp_path, "alpha")
+    assert out == "a.txt:1:alpha"
