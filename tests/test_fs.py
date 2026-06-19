@@ -254,13 +254,6 @@ def test_tree_empty_dir(tmp_path: Path):
     assert fs.tree(tmp_path, ".", depth=1) == "(empty)"
 
 
-def test_tree_truncates_huge_listings(tmp_path: Path):
-    for i in range(fs._MAX_TREE_ENTRIES + 50):
-        (tmp_path / f"f{i:04d}.txt").write_text("")
-    out = fs.tree(tmp_path, ".", depth=1)
-    assert "(truncated)" in out
-    assert len(out.splitlines()) == fs._MAX_TREE_ENTRIES + 1  # entries + marker
-
 
 def test_tree_lists_but_does_not_descend_worktrees(tmp_path: Path):
     wt = tmp_path / ".worktrees" / "feat-x"
@@ -320,3 +313,16 @@ def test_glob_offloads_large_result(tmp_path, monkeypatch):
     saved = list((tmp_path / ".marim" / "output").glob("glob-*.txt"))
     assert len(saved) == 1
     assert saved[0].read_text().count(".txt") == 100
+
+
+def test_tree_offloads_large_listing(tmp_path, monkeypatch):
+    from marim_harness.tools import offload
+    monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 50)
+    for i in range(100):
+        (tmp_path / f"f{i:03d}.txt").write_text("x")
+    out = fs.tree(tmp_path, ".", depth=1)
+    assert "full output saved to" in out and "tree result" in out
+    saved = list((tmp_path / ".marim" / "output").glob("tree-*.txt"))
+    assert len(saved) == 1
+    assert saved[0].read_text().count(".txt") == 100
+    assert "(truncated)" not in out

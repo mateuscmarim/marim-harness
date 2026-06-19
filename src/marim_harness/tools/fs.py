@@ -8,7 +8,6 @@ from pydantic_ai import ModelRetry
 from ..workspace.fs import WorkspaceError, resolve_in_workspace
 from .offload import MAX_OUTPUT_BYTES, offload_if_large
 
-_MAX_TREE_ENTRIES = 500
 # When no explicit ``limit`` is given, a read is capped at this many lines so a
 # blind read of a huge file can't flood the context. Pass ``offset``/``limit``
 # to page through the rest. An explicit ``limit`` overrides this cap.
@@ -123,37 +122,46 @@ def edit_file(root: Path, path: str, edits: list[Edit]) -> str:
 def tree(root: Path, path: str = ".", depth: int = 2) -> str:
     """Render an indented directory tree rooted at ``path``, descending up to
     ``depth`` levels. Dirs sort first (with a trailing slash); known-noise dirs
-    are listed but not expanded."""
+    are listed but not expanded. Large trees are offloaded to a file."""
     base = _safe(root, path)
     if not base.is_dir():
         raise ModelRetry(f"not a directory: {path}")
     lines: list[str] = []
-    _walk_tree(base, depth, 0, lines)
+    capped = _walk_tree(base, depth, 0, lines, [0])
     if not lines:
         return "(empty)"
-    if len(lines) > _MAX_TREE_ENTRIES:
-        lines = lines[:_MAX_TREE_ENTRIES] + ["(truncated)"]
-    return "\n".join(lines)
+    return offload_if_large(
+        "\n".join(lines), kind="tree", key=f"{path}\0{depth}",
+        workspace_root=root, capped=capped,
+    )
 
 
-def _walk_tree(directory: Path, depth: int, level: int, lines: list[str]) -> None:
+def _walk_tree(directory: Path, depth: int, level: int, lines: list[str],
+               size: list[int]) -> bool:
     """Append the entries of ``directory`` to ``lines``, recursing while depth
-    allows. Stops early once the entry cap is reached."""
+    allows. ``size`` is a 1-element running byte total; returns True once the
+    MAX_OUTPUT_BYTES ceiling is reached so callers stop early."""
     try:
         entries = list(directory.iterdir())
     except OSError:
-        return
+        return False
     entries.sort(key=lambda p: (p.is_file(), p.name.lower()))
     indent = "  " * level
     for entry in entries:
-        if len(lines) > _MAX_TREE_ENTRIES:
-            return
+        if size[0] >= MAX_OUTPUT_BYTES:
+            return True
         if entry.is_dir():
-            lines.append(f"{indent}{entry.name}/")
+            line = f"{indent}{entry.name}/"
+            lines.append(line)
+            size[0] += len(line) + 1
             if entry.name not in _TREE_SKIP_DIRS and level + 1 < depth:
-                _walk_tree(entry, depth, level + 1, lines)
+                if _walk_tree(entry, depth, level + 1, lines, size):
+                    return True
         else:
-            lines.append(f"{indent}{entry.name}")
+            line = f"{indent}{entry.name}"
+            lines.append(line)
+            size[0] += len(line) + 1
+    return False
 
 
 def glob_files(root: Path, pattern: str) -> str:
