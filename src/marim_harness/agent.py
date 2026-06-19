@@ -415,7 +415,7 @@ class Harness:
         """Run the agent until it produces a final text answer, looping through
         any approval rounds. Returns the final text output."""
         await self._maybe_compact()
-        user_prompt: Optional[str] = await self._assemble_prompt(prompt)
+        user_prompt: str | list[str | BinaryContent] | None = await self._assemble_prompt(prompt)
         if attachments and user_prompt is not None:
             user_prompt = [user_prompt, *(BinaryContent(data=d, media_type=m)
                                           for d, m in attachments)]
