@@ -635,13 +635,19 @@ class HarnessApp(App):
         await log.mount(UserMessage(text))
         self._current_assistant = None
         self._auto_turn_depth = 0  # a user turn breaks any autonomous-wake chain
-        self._turn_worker = self.run_worker(self._run_turn(text), exclusive=True)
+        self._turn_worker = self.run_worker(
+            self._run_turn(text, event.attachments), exclusive=True
+        )
 
-    async def _run_turn(self, text: str) -> None:
+    async def _run_turn(
+        self, text: str, attachments: list[tuple[bytes, str]] | None = None
+    ) -> None:
         self._set_busy(True)
         log = self.query_one("#log", VerticalScroll)
         try:
-            await self.harness.run_turn(text, event_stream_handler=self._on_events)
+            await self.harness.run_turn(
+                text, event_stream_handler=self._on_events, attachments=attachments
+            )
         except CancelledError:
             # User pressed escape; mount synchronously (we are unwinding) and
             # let the worker finish as cancelled.

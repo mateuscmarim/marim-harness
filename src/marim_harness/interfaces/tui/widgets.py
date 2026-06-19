@@ -350,10 +350,13 @@ class PromptInput(TextArea):
     _MAX_LINES = 10
 
     class Submitted(Message):
-        """Posted when the user presses Enter; carries the box's full text."""
+        """Posted when the user presses Enter; carries the box's full text and
+        any attached images as (bytes, media_type) tuples."""
 
-        def __init__(self, value: str) -> None:
+        def __init__(self, value: str,
+                     attachments: list[tuple[bytes, str]] | None = None) -> None:
             self.value = value
+            self.attachments = attachments or []
             super().__init__()
 
     def __init__(self, history=None) -> None:
@@ -366,12 +369,15 @@ class PromptInput(TextArea):
         self._hist_idx: int | None = None
         self._draft = ""
         super().__init__(soft_wrap=True, show_line_numbers=False)
+        self.attachments: list[tuple[Path, str]] = []
 
     async def _on_key(self, event: events.Key) -> None:
         if event.key == "enter":
             event.prevent_default()
             event.stop()
-            self.post_message(self.Submitted(self.text))
+            atts = [(p.read_bytes(), m) for p, m in self.attachments]
+            self.post_message(self.Submitted(self.text, atts))
+            self.attachments = []
             self._reset_nav()
             return
         if event.key in ("shift+enter", "ctrl+j"):
@@ -395,10 +401,44 @@ class PromptInput(TextArea):
         await super()._on_key(event)
 
     def _on_paste_image(self) -> bool:
-        """Hook: try to attach an image from the OS clipboard. Returns True when
-        an image was consumed; False to fall through to default paste handling.
-        Replaced with real logic in the clipboard-paste task."""
-        return False
+        from ... import images
+
+        got = images.read_clipboard_image()
+        if got is None:
+            return False
+        data, media_type = got
+        return self._cache_and_insert(data, media_type)
+
+    def _cache_and_insert(self, data: bytes, media_type: str) -> bool:
+        from ... import images
+
+        cached = images.store_image(self._session_id(), data, media_type)
+        self.attachments.append((cached.path, media_type))
+        self.insert(f"[Image #{len(self.attachments)}]")
+        return True
+
+    def _session_id(self) -> str:
+        # Resolve lazily from the running app's harness; fall back to a constant
+        # bucket if unavailable (e.g. isolated widget tests). Persistence (the
+        # externalize task) re-stores under the real session id regardless, so a
+        # fallback bucket here only affects the transient paste-time cache path.
+        try:
+            return self.app.harness.session.store.session_id  # type: ignore[attr-defined]
+        except Exception:
+            return "default"
+
+    def on_paste(self, event: events.Paste) -> None:
+        from ... import images
+
+        path = images.detect_image_path(event.text)
+        if path is None:
+            return  # let TextArea insert the pasted text normally
+        media_type = images.media_type_for_path(path)
+        if media_type is None:
+            return
+        event.prevent_default()
+        event.stop()
+        self._cache_and_insert(path.read_bytes(), media_type)
 
     def _at_first_line(self) -> bool:
         return self.cursor_location[0] == 0
