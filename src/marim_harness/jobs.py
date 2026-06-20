@@ -142,11 +142,19 @@ class JobRegistry:
 
     async def wait(self, job_id: str, timeout: float = 60) -> str:
         """Block until the job finishes or ``timeout`` elapses, then return its
-        result. A timeout leaves the job running (it isn't cancelled)."""
+        result. A timeout leaves the job running (it isn't cancelled).
+
+        When the job completes during the wait its id is removed from the
+        finished-since-turn digest so the autonomous wake scheduler won't
+        fire a redundant turn — the caller already has the result."""
         job = self._jobs.get(job_id)
         if job is None:
             return f"No job {job_id!r}."
         if job.status != "running" or job.task is None:
+            # Already finished — consume if pending.
+            self._finished_since_turn = [
+                jid for jid in self._finished_since_turn if jid != job_id
+            ]
             return job.result if job.result is not None else f"({job.status})"
         try:
             await asyncio.wait_for(asyncio.shield(job.task), timeout)
@@ -156,6 +164,10 @@ class JobRegistry:
             pass  # the job itself was cancelled while we waited
         except Exception as exc:
             logger.debug("wait for job %s: %s (already settled)", job_id, exc)
+        # Job finished (or was already settled) — consume from digest.
+        self._finished_since_turn = [
+            jid for jid in self._finished_since_turn if jid != job_id
+        ]
         return job.result if job.result is not None else f"({job.status})"
 
     async def cancel(self, job_id: str) -> str:
