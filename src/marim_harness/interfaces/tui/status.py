@@ -93,7 +93,7 @@ class StatusPresenter:
         title (via an OSC sequence Textual doesn't emit on its own) to an
         idle/working mark + the session name. The title is a plain string, not
         markup-parsed, so a model-generated name needs no escaping."""
-        mark = _SPINNER[self.spin] if self.busy else "○"
+        mark = _SPINNER[self.spin] if self.busy else "●"
         name = self.app.harness.session.session_name or "marim-harness"
         self.app.title = f"{mark} {name}"  # in-app Header
         if self.app._driver is not None:  # the actual terminal tab
