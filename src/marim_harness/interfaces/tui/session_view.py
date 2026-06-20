@@ -117,17 +117,24 @@ class SessionView:
         intro note, then a replay of any restored history."""
         self.app.stream.reset()
         log = self.app.query_one("#log", VerticalScroll)
-        log.anchor(False)  # drop any anchor inherited from the previous session
-        await log.remove_children()
-        intro = await self.mount_header(log)
-        self.app.stream.append_stream(intro, note)
-        if self.app.harness.session.history:
-            await self.replay_history(log)
-        self.app.stream.flush_streams()  # render the rebuilt log before first paint
+        # Guard the rebuild: while old content is torn down and new content mounted,
+        # the log's max_scroll_y is stale, so an interval flush tick must not anchor
+        # off it (that left a cleared session bottom-aligned). We set the final
+        # anchor state ourselves once the new content is laid out.
+        self.app.stream.rebuilding = True
+        try:
+            log.anchor(False)  # drop any anchor inherited from the previous session
+            await log.remove_children()
+            intro = await self.mount_header(log)
+            self.app.stream.append_stream(intro, note)
+            if self.app.harness.session.history:
+                await self.replay_history(log)
+            self.app.stream.flush_streams()  # render the rebuilt log before first paint
+        finally:
+            self.app.stream.rebuilding = False
         # A restored session opens at the bottom; a fresh/cleared one stays top-
         # aligned (header pinned) until a turn's output overflows the viewport.
-        if self.app.harness.session.history:
-            log.anchor()
+        log.anchor(bool(self.app.harness.session.history))
         self.app.status.refresh_title()  # reflect the switched-to session's name
         self.app.status.refresh_status()
         self.app._render_tasks()

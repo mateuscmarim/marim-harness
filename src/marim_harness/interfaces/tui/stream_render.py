@@ -172,6 +172,10 @@ class StreamRenderer:
         self.dirty_streams: set[AssistantMessage] = set()
         self.live_run_tokens = 0
         self.show_all_output = False  # Ctrl+O reveal-all toggle
+        # True while a session view is being rebuilt (clear/switch/new). During the
+        # rebuild the log's max_scroll_y is briefly stale (old content removed, new
+        # not laid out), so an interval flush tick must not anchor off it.
+        self.rebuilding = False
 
     def reset(self) -> None:
         """Clear per-session stream state when the log is rebuilt (new/switch/clear)."""
@@ -233,6 +237,10 @@ class StreamRenderer:
         enough — Textual releases on a user scroll-up and re-engages at the bottom."""
         from textual.containers import VerticalScroll
 
+        # Never anchor off a stale max_scroll_y mid-rebuild — render_session sets the
+        # final anchor state itself once the new content is laid out.
+        if self.rebuilding:
+            return
         try:
             log = self.app.query_one("#log", VerticalScroll)
         except Exception:
