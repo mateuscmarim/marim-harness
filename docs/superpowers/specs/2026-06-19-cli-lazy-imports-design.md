@@ -88,25 +88,28 @@ Behavior is identical (same keywords, same `module.main(argv[1:])` call, same
 
 ### 2. `src/marim_harness/interfaces/cli/default_cmd.py` — defer heavy imports
 
-Today the module top imports the agent-building machinery:
+Today the module top imports the agent-building machinery **and `Mode`**:
 
 ```python
 from ...bootstrap import build_harness
+from ...permissions import Mode
 from ..tui.app import HarnessApp
 from .headless import run_headless
 ```
 
-Move these three into `run_default()`, **after** argparse has parsed/validated args
-(so `--help` and validation errors exit first). Keep `argparse`, `asyncio`, `sys`,
-`Path`, `...history`, `...permissions` at the top — they are light and used by the
-arg-parsing shell. The heavy imports happen only on the line where the TUI/headless
-run actually begins.
+All **four** of these pull in `pydantic_ai` (measured: `permissions` itself does
+`from pydantic_ai import DeferredToolRequests, …` at module top, so even `Mode`
+drags the whole package). Move all four into `run_default()`, **after** argparse has
+parsed/validated args (so `--help` and validation errors exit first). Keep
+`argparse`, `asyncio`, `sys`, `Path`, and `...history` (`PromptHistory`,
+`default_history_path`) at the top — these are light and `Mode` is **not** referenced
+by `_build_parser()` (it's used only at the launch branches, lines 92/98).
 
-Concretely: inside `run_default`, immediately before the first use of
-`build_harness` / `run_headless` / `HarnessApp`, add the local imports. Both the
-headless branch and the TUI branch need `build_harness`; import it once at the point
-control commits to launching (after `--help`/error exits), and import `run_headless`
-/ `HarnessApp` in their respective branches.
+Concretely: inside `run_default`, after the worktree handling and before the first
+use of `Mode` / `build_harness` / `run_headless` / `HarnessApp`, add the local
+imports. Both the headless branch and the TUI branch need `build_harness` and
+`Mode`; import those at the point control commits to launching (after `--help`/error
+exits), and import `run_headless` / `HarnessApp` in their respective branches.
 
 Result: `marim --help` and arg errors never import `pydantic_ai`; the real launch
 still does (unchanged).
