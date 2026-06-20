@@ -59,12 +59,13 @@ def test_parser_rejects_ask_mode():
 
 
 def test_router_dispatches_management(monkeypatch):
+    # Dispatch now imports the matched subcommand module lazily and calls its
+    # main(argv[1:]); patch the real sessions.main rather than a _MANAGEMENT dict.
+    import marim_harness.interfaces.cli.sessions as sessions_cmd
+
     seen = {}
     monkeypatch.setattr(router, "load_environment", lambda: None)
-    monkeypatch.setattr(
-        router, "_MANAGEMENT",
-        {"sessions": lambda argv: seen.update(argv=argv) or 7},
-    )
+    monkeypatch.setattr(sessions_cmd, "main", lambda argv: seen.update(argv=argv) or 7)
     monkeypatch.setattr("sys.argv", ["marim", "sessions", "list", "--json"])
     with pytest.raises(SystemExit) as ei:
         router.main()
@@ -73,9 +74,12 @@ def test_router_dispatches_management(monkeypatch):
 
 
 def test_router_falls_through_to_default(monkeypatch):
+    # run_default is now imported lazily inside main() from default_cmd; patch it
+    # at its source module so the local `from .default_cmd import run_default` binds
+    # the fake.
     monkeypatch.setattr(router, "load_environment", lambda: None)
     monkeypatch.setattr(
-        router, "run_default", lambda argv: 0 if argv == ["-p", "hi"] else 99
+        default_cmd, "run_default", lambda argv: 0 if argv == ["-p", "hi"] else 99
     )
     monkeypatch.setattr("sys.argv", ["marim", "-p", "hi"])
     with pytest.raises(SystemExit) as ei:
@@ -84,13 +88,15 @@ def test_router_falls_through_to_default(monkeypatch):
 
 
 def test_run_default_headless_uses_auto_mode(monkeypatch, tmp_path: Path):
+    import marim_harness.bootstrap as bootstrap
+
     captured = {}
 
     def fake_build(workspace, *, mode, resume):
         captured.update(mode=mode, workspace=workspace, resume=resume)
         return _cli_harness(tmp_path, "auto-ran")
 
-    monkeypatch.setattr(default_cmd, "build_harness", fake_build)
+    monkeypatch.setattr(bootstrap, "build_harness", fake_build)
     out = io.StringIO()
     stdin = io.StringIO()
     stdin.isatty = lambda: True  # not piped; -p forces headless
@@ -101,13 +107,15 @@ def test_run_default_headless_uses_auto_mode(monkeypatch, tmp_path: Path):
 
 
 def test_run_default_respects_mode_override(monkeypatch, tmp_path: Path):
+    import marim_harness.bootstrap as bootstrap
+
     captured = {}
 
     def fake_build(workspace, *, mode, resume):
         captured["mode"] = mode
         return _cli_harness(tmp_path)
 
-    monkeypatch.setattr(default_cmd, "build_harness", fake_build)
+    monkeypatch.setattr(bootstrap, "build_harness", fake_build)
     stdin = io.StringIO()
     stdin.isatty = lambda: True
     default_cmd.run_default(["-p", "hi", "--mode", "plan"], stdin=stdin, out=io.StringIO())
@@ -115,8 +123,10 @@ def test_run_default_respects_mode_override(monkeypatch, tmp_path: Path):
 
 
 def test_piped_stdin_triggers_headless(monkeypatch, tmp_path: Path):
+    import marim_harness.bootstrap as bootstrap
+
     monkeypatch.setattr(
-        default_cmd, "build_harness",
+        bootstrap, "build_harness",
         lambda workspace, *, mode, resume: _cli_harness(tmp_path, "piped-ok"),
     )
     out = io.StringIO()
@@ -128,6 +138,9 @@ def test_piped_stdin_triggers_headless(monkeypatch, tmp_path: Path):
 
 
 def test_run_default_tui_uses_ask_mode(monkeypatch, tmp_path: Path):
+    import marim_harness.bootstrap as bootstrap
+    import marim_harness.interfaces.tui.app as tui_app
+
     captured = {}
 
     class FakeApp:
@@ -140,10 +153,10 @@ def test_run_default_tui_uses_ask_mode(monkeypatch, tmp_path: Path):
 
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))  # keep off the real file
     monkeypatch.setattr(
-        default_cmd, "build_harness",
+        bootstrap, "build_harness",
         lambda workspace, *, mode, resume: captured.update(mode=mode) or object(),
     )
-    monkeypatch.setattr(default_cmd, "HarnessApp", FakeApp)
+    monkeypatch.setattr(tui_app, "HarnessApp", FakeApp)
     stdin = io.StringIO()
     stdin.isatty = lambda: True  # interactive
     code = default_cmd.run_default([], stdin=stdin)
