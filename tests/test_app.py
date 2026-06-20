@@ -1727,6 +1727,29 @@ async def test_fresh_log_top_aligned_then_anchors_on_overflow(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_flush_does_not_anchor_during_rebuild(tmp_path: Path):
+    """A flush tick firing while a session is being rebuilt must not anchor off the
+    stale max_scroll_y — that left a cleared session bottom-aligned instead of
+    pinning the header at the top."""
+    from marim_harness.interfaces.tui.widgets import UserMessage
+
+    app = _app(tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        log = app.query_one("#log")
+        for i in range(40):  # overflow ⇒ max_scroll_y > 0
+            await log.mount(UserMessage(f"line {i}"))
+        await pilot.pause()
+        log.anchor(False)
+        app.stream.rebuilding = True
+        app.stream.flush_streams()  # the mid-rebuild interval tick
+        assert log.is_anchored is False  # guard suppressed the stale anchor
+        app.stream.rebuilding = False
+        app.stream.flush_streams()
+        assert log.is_anchored is True  # anchors normally once the rebuild is done
+
+
+@pytest.mark.anyio
 async def test_flush_skips_streams_in_collapsed_widgets(tmp_path: Path):
     """A collapsed sub-agent's streaming body must not be re-rendered on every
     flush tick — re-parsing the full markdown of N folded agents each tick blocks
