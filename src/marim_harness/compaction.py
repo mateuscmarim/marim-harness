@@ -158,16 +158,24 @@ def _clip(value, limit: int) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
+# Marks the synthetic message that replaces a compacted middle. The TUI keys off
+# this prefix to render the summary as a distinct block instead of a user message.
+SUMMARY_PREFIX = "[Summary of earlier conversation, condensed to save context]"
+
+
+def summary_text(content) -> Optional[str]:
+    """Return the summary body if ``content`` is a compaction summary message
+    (a ``str`` starting with :data:`SUMMARY_PREFIX` followed by a non-empty body),
+    else ``None``. The single source of truth for detecting/parsing a summary."""
+    if not isinstance(content, str) or not content.startswith(SUMMARY_PREFIX):
+        return None
+    body = content[len(SUMMARY_PREFIX):].strip()
+    return body or None
+
+
 def _summary_message(summary: str) -> ModelRequest:
     return ModelRequest(
-        parts=[
-            UserPromptPart(
-                content=(
-                    "[Summary of earlier conversation, condensed to save context]\n\n"
-                    f"{summary}"
-                )
-            )
-        ]
+        parts=[UserPromptPart(content=f"{SUMMARY_PREFIX}\n\n{summary}")]
     )
 
 

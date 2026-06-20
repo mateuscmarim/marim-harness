@@ -11,6 +11,7 @@ from textual.widgets import Footer, Header, Static
 from ...agent import Harness
 from ...history import PromptHistory
 from ...prefs import load_theme, save_theme
+from ...usage import resolve_cost
 from .approval import ApprovalModal
 from .ask_user import AskUserModal
 from .commands import dispatch
@@ -26,13 +27,13 @@ from .status import (
 )
 from .stream_render import StreamRenderer
 from .themes import MARIM_THEMES
-from ...usage import resolve_cost
 from .widgets import (
     AssistantMessage,
     ErrorMessage,
     JobPanel,
     NoticeMessage,
     PromptInput,
+    SummaryWidget,
     TaskPanel,
     TurnMeta,
     UserMessage,
@@ -312,7 +313,24 @@ class HarnessApp(App):
         log.mount(
             NoticeMessage(f"compacted history: {before} → {after} messages")
         )
+        # Surface the just-created summary as its own collapsed block so the
+        # condensed context is legible immediately, not just on the next resume.
+        body = self._latest_summary()
+        if body is not None:
+            log.mount(SummaryWidget(body))
         self.status.refresh_status()  # context gauge shrinks immediately
+
+    def _latest_summary(self) -> "str | None":
+        """The body of the most recent compaction summary in history, or None."""
+        from ...compaction import summary_text
+
+        found = None
+        for message in self.harness.session.history:
+            for part in getattr(message, "parts", []):
+                body = summary_text(getattr(part, "content", None))
+                if body is not None:
+                    found = body
+        return found
 
     async def post_system(self, markdown: str) -> None:
         """Render a system/command message into the log (markdown)."""

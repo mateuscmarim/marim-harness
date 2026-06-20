@@ -763,6 +763,20 @@ def test_render_file_diff_shows_numbers_markers_and_content():
     assert added == 1 and removed == 1
 
 
+def test_summary_widget_is_collapsed_and_shows_body():
+    from textual.widgets import Collapsible
+
+    from marim_harness.interfaces.tui.widgets import SummaryWidget
+
+    w = SummaryWidget("We fixed the parser and added tests.")
+    assert isinstance(w, Collapsible)
+    assert w.collapsed is True  # unobtrusive; click to read
+    assert "Conversation summary" in str(w.title)
+    body = str(w._body.render())
+    assert "We fixed the parser and added tests." in body
+    assert "Summary of earlier conversation" not in body  # prefix already stripped
+
+
 def test_render_file_diff_context_lines_have_no_background():
     # Context (unchanged) lines must carry NO background so they inherit the
     # widget's themed background. Rich's Syntax bakes a "default" bg into every

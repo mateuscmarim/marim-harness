@@ -183,6 +183,57 @@ async def test_flush_only_touches_buffered_messages(tmp_path: Path):
         assert flushed == []
 
 
+@pytest.mark.anyio
+async def test_replay_renders_compaction_summary_as_widget(tmp_path: Path):
+    """A restored summary message renders as a distinct SummaryWidget, while a
+    normal prompt still renders as a UserMessage."""
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    from marim_harness.compaction import SUMMARY_PREFIX
+    from marim_harness.interfaces.tui.widgets import SummaryWidget, UserMessage
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        app.harness.session.history = [
+            ModelRequest(parts=[UserPromptPart(
+                content=f"{SUMMARY_PREFIX}\n\nthe condensed story")]),
+            ModelRequest(parts=[UserPromptPart(content="a normal question")]),
+        ]
+        await app.session.render_session("resume")
+        await pilot.pause()
+
+        summaries = list(app.query(SummaryWidget))
+        assert len(summaries) == 1
+        assert "the condensed story" in str(summaries[0]._body.render())
+
+        users = [str(u.render()) for u in app.query(UserMessage)]
+        assert any("a normal question" in u for u in users)
+        assert not any("Summary of earlier conversation" in u for u in users)
+
+
+@pytest.mark.anyio
+async def test_live_compaction_mounts_summary_widget(tmp_path: Path):
+    """When compaction happens during a session, _on_compact mounts the just-made
+    summary as a SummaryWidget right after the notice."""
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    from marim_harness.compaction import SUMMARY_PREFIX
+    from marim_harness.interfaces.tui.widgets import SummaryWidget
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        app.harness.session.history = [
+            ModelRequest(parts=[UserPromptPart(content="original task")]),
+            ModelRequest(parts=[UserPromptPart(
+                content=f"{SUMMARY_PREFIX}\n\nlive-made summary body")]),
+        ]
+        app._on_compact(80, 22)
+        await pilot.pause()
+        widgets = list(app.query(SummaryWidget))
+        assert len(widgets) == 1
+        assert "live-made summary body" in str(widgets[0]._body.render())
+
+
 def test_human_tokens_formatting():
     from marim_harness.interfaces.tui.widgets import human_tokens as _human_tokens
 

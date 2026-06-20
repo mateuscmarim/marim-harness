@@ -9,12 +9,26 @@ from pydantic_ai.messages import (
 )
 
 from marim_harness.compaction import (
+    SUMMARY_PREFIX,
     compact_history,
     compact_history_with_summary,
     estimate_tokens,
     render_transcript,
+    summary_text,
     will_compact,
 )
+
+
+def test_summary_text_extracts_body_from_summary_message():
+    content = f"{SUMMARY_PREFIX}\n\nWe discussed the parser and fixed a bug."
+    assert summary_text(content) == "We discussed the parser and fixed a bug."
+
+
+def test_summary_text_none_for_non_summary_and_bad_input():
+    assert summary_text("just a normal prompt") is None
+    assert summary_text(["look", {"kind": "binary"}]) is None  # list content
+    assert summary_text(123) is None  # non-str
+    assert summary_text(SUMMARY_PREFIX) is None  # prefix only, no body
 
 
 def _round(n: int, content_size: int = 40) -> list:
