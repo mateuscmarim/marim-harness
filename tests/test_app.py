@@ -2003,7 +2003,7 @@ async def test_title_shows_idle_and_working_indicator(tmp_path: Path, monkeypatc
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert app.title == "○ my-session"
+        assert app.title == "● my-session"
         app.status.busy = True
         app.status.spin = 0  # first spinner frame (⠋)
         app.status.refresh_title()
@@ -2021,7 +2021,7 @@ async def test_unnamed_session_title_falls_back(tmp_path: Path, monkeypatch):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert app.title == "○ marim-harness"
+        assert app.title == "● marim-harness"
 
 
 @pytest.mark.anyio
@@ -2120,12 +2120,12 @@ async def test_tick_spinner_advances_only_when_busy(tmp_path: Path, monkeypatch)
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        # Idle: the tick is a no-op and the title stays the static ○.
+        # Idle: the tick is a no-op and the title stays the static ●.
         app.status.busy = False
         app.status.spin = 0
         app.status.tick_spinner()
         assert app.status.spin == 0
-        assert app.title == "○ my-session"
+        assert app.title == "● my-session"
         # Busy: the tick advances the frame and re-renders the title.
         app.status.busy = True
         app.status.spin = 0
