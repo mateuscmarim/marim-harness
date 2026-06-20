@@ -228,12 +228,29 @@ _TITLE_INSTRUCTIONS = (
 _MAX_TITLE_CHARS = 50
 
 
+def _summarize_prompt(transcript: str) -> str:
+    """Wrap the transcript in an explicit, in-message summarize instruction. A bare
+    transcript with the rules only in the system prompt lets weaker models reply
+    conversationally instead of summarizing; restating the task in the user turn
+    and delimiting the transcript keeps them on task."""
+    return (
+        "Summarize the coding-session transcript below into dense notes, following "
+        "the rules in your instructions (goals, decisions, files changed, command "
+        "results, open problems; terse notes, not prose). Output only the summary "
+        "— do not reply conversationally or address the user.\n\n"
+        "=== TRANSCRIPT START ===\n"
+        f"{transcript}\n"
+        "=== TRANSCRIPT END ===\n\n"
+        "Summary:"
+    )
+
+
 def make_summarizer(model) -> Summarizer:
     """Build a summarizer backed by a dedicated, tool-free agent on ``model``."""
     summary_agent = Agent(model, instructions=_SUMMARY_INSTRUCTIONS)
 
     async def summarize(messages: list) -> str:
-        result = await summary_agent.run(render_transcript(messages))
+        result = await summary_agent.run(_summarize_prompt(render_transcript(messages)))
         return result.output
 
     return summarize

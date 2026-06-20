@@ -258,3 +258,33 @@ async def test_no_summary_under_threshold():
     assert did is False
     assert result is history
     assert called == []  # never paid for a summary we didn't need
+
+
+def test_summarize_prompt_frames_transcript_with_explicit_instruction():
+    from marim_harness.compaction import _summarize_prompt
+
+    p = _summarize_prompt("User: hi\nAssistant: hello")
+    assert "User: hi" in p and "Assistant: hello" in p  # the transcript is included
+    assert "ummariz" in p  # an explicit in-message summarize instruction
+    assert p.rstrip().endswith("Summary:")  # cues the model to emit the summary
+    # tells the model not to reply conversationally (the weak-model failure mode)
+    assert "only the summary" in p.lower() or "do not reply" in p.lower()
+
+
+@pytest.mark.anyio
+async def test_make_summarizer_sends_framed_prompt_to_model():
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+    from marim_harness.compaction import make_summarizer
+
+    seen: dict = {}
+
+    def fn(messages: list, info: AgentInfo) -> ModelResponse:
+        seen["prompt"] = str(getattr(messages[-1].parts[-1], "content", ""))
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    summarize = make_summarizer(FunctionModel(fn))
+    out = await summarize([ModelRequest(parts=[UserPromptPart(content="explain this")])])
+    assert out == "ok"
+    assert "explain this" in seen["prompt"]  # the transcript reached the model
+    assert "ummariz" in seen["prompt"]  # wrapped with the explicit framing
