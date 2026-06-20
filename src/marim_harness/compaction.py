@@ -158,16 +158,24 @@ def _clip(value, limit: int) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
+# Marks the synthetic message that replaces a compacted middle. The TUI keys off
+# this prefix to render the summary as a distinct block instead of a user message.
+SUMMARY_PREFIX = "[Summary of earlier conversation, condensed to save context]"
+
+
+def summary_text(content) -> Optional[str]:
+    """Return the summary body if ``content`` is a compaction summary message
+    (a ``str`` starting with :data:`SUMMARY_PREFIX` followed by a non-empty body),
+    else ``None``. The single source of truth for detecting/parsing a summary."""
+    if not isinstance(content, str) or not content.startswith(SUMMARY_PREFIX):
+        return None
+    body = content[len(SUMMARY_PREFIX):].strip()
+    return body or None
+
+
 def _summary_message(summary: str) -> ModelRequest:
     return ModelRequest(
-        parts=[
-            UserPromptPart(
-                content=(
-                    "[Summary of earlier conversation, condensed to save context]\n\n"
-                    f"{summary}"
-                )
-            )
-        ]
+        parts=[UserPromptPart(content=f"{SUMMARY_PREFIX}\n\n{summary}")]
     )
 
 
@@ -220,12 +228,29 @@ _TITLE_INSTRUCTIONS = (
 _MAX_TITLE_CHARS = 50
 
 
+def _summarize_prompt(transcript: str) -> str:
+    """Wrap the transcript in an explicit, in-message summarize instruction. A bare
+    transcript with the rules only in the system prompt lets weaker models reply
+    conversationally instead of summarizing; restating the task in the user turn
+    and delimiting the transcript keeps them on task."""
+    return (
+        "Summarize the coding-session transcript below into dense notes, following "
+        "the rules in your instructions (goals, decisions, files changed, command "
+        "results, open problems; terse notes, not prose). Output only the summary "
+        "— do not reply conversationally or address the user.\n\n"
+        "=== TRANSCRIPT START ===\n"
+        f"{transcript}\n"
+        "=== TRANSCRIPT END ===\n\n"
+        "Summary:"
+    )
+
+
 def make_summarizer(model) -> Summarizer:
     """Build a summarizer backed by a dedicated, tool-free agent on ``model``."""
     summary_agent = Agent(model, instructions=_SUMMARY_INSTRUCTIONS)
 
     async def summarize(messages: list) -> str:
-        result = await summary_agent.run(render_transcript(messages))
+        result = await summary_agent.run(_summarize_prompt(render_transcript(messages)))
         return result.output
 
     return summarize

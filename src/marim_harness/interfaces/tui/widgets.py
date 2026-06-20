@@ -520,6 +520,22 @@ class NoticeMessage(Static):
         super().__init__(f"· {text}", classes="notice-msg", markup=False)
 
 
+class SummaryWidget(Collapsible):
+    """A compaction summary shown as a distinct, collapsed block in the log so it
+    reads as condensed earlier context — not as something the user typed. The body
+    is the summary text; markup=False because it is untrusted model output."""
+
+    def __init__(self, summary_body: str) -> None:
+        # markup=False: the summary is model-generated prose that may contain
+        # bracket sequences Rich would otherwise try (and fail) to parse.
+        self._body = Static(summary_body, markup=False)
+        # A literal Content title bypasses Textual's markup parsing, matching the
+        # other Collapsible titles in this module.
+        super().__init__(
+            self._body, title=Content("≡ Conversation summary"), collapsed=True  # pyright: ignore[reportArgumentType]
+        )
+
+
 class TurnMeta(Static):
     """A dim per-turn footer stamped under a reply — e.g. how long the turn took."""
 

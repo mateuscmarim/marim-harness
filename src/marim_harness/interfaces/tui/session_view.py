@@ -8,9 +8,11 @@ from textual.containers import VerticalScroll
 from textual.widgets import Static
 
 from ...agent import strip_turn_context
+from ...compaction import summary_text
 from .widgets import (
     AssistantMessage,
     NoticeMessage,
+    SummaryWidget,
     ToolCallWidget,
     ToolGroupWidget,
     UserMessage,
@@ -58,6 +60,12 @@ class SessionView:
                             )
                         else:
                             text = str(content)
+                        # A compaction summary renders as its own collapsed block,
+                        # not as a user message it would otherwise be mistaken for.
+                        body = summary_text(text)
+                        if body is not None:
+                            await log.mount(SummaryWidget(body))
+                            continue
                         # Drop any turn-context envelope (job digests, hook
                         # output, error notes) so the log shows only what the
                         # user typed — as the live path already does.
