@@ -7,18 +7,10 @@ import os
 import sys
 
 from ...config import load_environment
-from . import config as config_cmd
-from . import models as models_cmd
-from . import sessions as sessions_cmd
-from .default_cmd import run_default
 
 # Reserved first-token keywords. argparse subparsers would claim the workspace
 # positional, so we route manually before any parser sees the args.
-_MANAGEMENT = {
-    "sessions": sessions_cmd.main,
-    "config": config_cmd.main,
-    "models": models_cmd.main,
-}
+_MANAGEMENT = {"sessions", "config", "models"}
 
 
 def _setup_logging() -> None:
@@ -36,5 +28,12 @@ def main() -> None:
     _setup_logging()
     argv = sys.argv[1:]
     if argv and argv[0] in _MANAGEMENT:
-        raise SystemExit(_MANAGEMENT[argv[0]](argv[1:]))
+        # Import only the chosen management command so the common, non-agent
+        # commands (config/models) don't pay for pydantic_ai via their siblings.
+        from importlib import import_module
+
+        module = import_module(f".{argv[0]}", __package__)
+        raise SystemExit(module.main(argv[1:]))
+    from .default_cmd import run_default
+
     raise SystemExit(run_default(argv))

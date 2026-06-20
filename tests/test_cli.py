@@ -59,12 +59,13 @@ def test_parser_rejects_ask_mode():
 
 
 def test_router_dispatches_management(monkeypatch):
+    # Dispatch now imports the matched subcommand module lazily and calls its
+    # main(argv[1:]); patch the real sessions.main rather than a _MANAGEMENT dict.
+    import marim_harness.interfaces.cli.sessions as sessions_cmd
+
     seen = {}
     monkeypatch.setattr(router, "load_environment", lambda: None)
-    monkeypatch.setattr(
-        router, "_MANAGEMENT",
-        {"sessions": lambda argv: seen.update(argv=argv) or 7},
-    )
+    monkeypatch.setattr(sessions_cmd, "main", lambda argv: seen.update(argv=argv) or 7)
     monkeypatch.setattr("sys.argv", ["marim", "sessions", "list", "--json"])
     with pytest.raises(SystemExit) as ei:
         router.main()
@@ -73,9 +74,12 @@ def test_router_dispatches_management(monkeypatch):
 
 
 def test_router_falls_through_to_default(monkeypatch):
+    # run_default is now imported lazily inside main() from default_cmd; patch it
+    # at its source module so the local `from .default_cmd import run_default` binds
+    # the fake.
     monkeypatch.setattr(router, "load_environment", lambda: None)
     monkeypatch.setattr(
-        router, "run_default", lambda argv: 0 if argv == ["-p", "hi"] else 99
+        default_cmd, "run_default", lambda argv: 0 if argv == ["-p", "hi"] else 99
     )
     monkeypatch.setattr("sys.argv", ["marim", "-p", "hi"])
     with pytest.raises(SystemExit) as ei:
