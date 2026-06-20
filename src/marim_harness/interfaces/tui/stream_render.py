@@ -4,8 +4,6 @@ Turns a turn's (and each sub-agent's) streamed events into the log's live
 AssistantMessage / ToolCallWidget / SubAgentWidget tree. Owns all per-turn stream
 state; reaches the app and the status presenter through ``self.app``."""
 
-from typing import TYPE_CHECKING
-
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
@@ -26,9 +24,6 @@ from .widgets import (
 )
 from .widgets import format_cost as _format_cost
 from .widgets import format_token_split as _format_token_split
-
-if TYPE_CHECKING:
-    from .stream_render import StreamRenderer
 
 
 class _StreamSink:
