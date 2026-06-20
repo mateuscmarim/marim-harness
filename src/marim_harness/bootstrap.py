@@ -40,7 +40,12 @@ def build_harness(
     )
     hooks_cfg = load_hooks_config(workspace, trust_project=cfg.trust_project_hooks)
     hook_runner = HookRunner(hooks_cfg) if hooks_cfg else None
-    notifier = Notifier() if cfg.notifications_enabled else None
+    notifier = Notifier(
+        NotificationConfig(
+            enabled=cfg.notifications_enabled,
+            events=cfg.notification_events,
+        )
+    )
     deps = Deps(
         workspace_root=workspace,
         mode=mode,
