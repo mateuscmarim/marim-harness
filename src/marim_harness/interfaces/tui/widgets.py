@@ -7,7 +7,7 @@ from rich.console import RenderableType
 from rich.segment import Segment
 from rich.style import Style
 from rich.syntax import Syntax
-from rich.text import Text
+from rich.text import Span, Text
 from textual import events
 from textual.containers import Vertical
 from textual.content import Content
@@ -135,6 +135,26 @@ def compute_diff_rows(old_text: str, new_text: str, context: int = 3):
     return rows, added, removed
 
 
+def _strip_bg(style):
+    """Drop a style's background so only the diff band decides the line color.
+    Rich's Syntax bakes a background in two ways — a whole-line ``"on default"``
+    string span and a ``default`` bgcolor on each token; left on, context rows
+    render with the terminal default (often black) instead of inheriting the
+    widget background. Foreground and text attributes are preserved."""
+    if isinstance(style, str):
+        try:
+            style = Style.parse(style)
+        except Exception:
+            return style
+    if not isinstance(style, Style) or style.bgcolor is None:
+        return style
+    return Style(
+        color=style.color, bold=style.bold, dim=style.dim, italic=style.italic,
+        underline=style.underline, blink=style.blink, reverse=style.reverse,
+        conceal=style.conceal, strike=style.strike,
+    )
+
+
 def _highlight_lines(text: str, lexer: "str | None") -> list[Text]:
     """Syntax-highlight ``text`` and split it into one ``Text`` per source line,
     aligned 1:1 with ``text.split("\\n")`` so a line number indexes its row. Plain
@@ -147,6 +167,11 @@ def _highlight_lines(text: str, lexer: "str | None") -> list[Text]:
         lines = list(highlighted.split("\n"))
     except Exception:
         return [Text(line) for line in plain]
+    # Strip the syntax-baked background so the diff band (or none) owns each line's
+    # background — otherwise context rows show a stray default-bg box.
+    for line in lines:
+        line.style = _strip_bg(line.style)
+        line.spans = [Span(s.start, s.end, _strip_bg(s.style)) for s in line.spans]
     # Rich's Text.split drops the trailing empty line that str.split keeps for a
     # newline-terminated file; pad it back so a line number indexes its row.
     while len(lines) < len(plain):
@@ -259,7 +284,10 @@ def _reverse_edits(new_text: str, edits) -> "str | None":
 
 
 def human_tokens(n: int) -> str:
-    """Compact token count: 950 -> '950', 1500 -> '1.5k', 100000 -> '100k'."""
+    """Compact token count: 950 -> '950', 1500 -> '1.5k', 100000 -> '100k',
+    1500000 -> '1.5M'."""
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M".replace(".0M", "M")
     if n >= 1000:
         return f"{n / 1000:.1f}k".replace(".0k", "k")
     return str(n)
