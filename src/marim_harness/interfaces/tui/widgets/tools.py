@@ -14,6 +14,14 @@ from textual.widgets import Collapsible, Static
 from .diff import _DIFF_CAP, _reverse_edits, render_edit_diff, render_file_diff
 from .highlight import _LEXERS, _highlight_lines, strip_line_numbers
 
+# Max chars of the title's argument preview before it's ellipsized, so a long
+# command (e.g. a multi-line git commit) can't run off the right edge.
+_PREVIEW_CAP = 80
+
+
+def _clip(text: str, limit: int = _PREVIEW_CAP) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
 
 class ToolCallWidget(Collapsible):
     """A single tool call: the (clickable) title shows a summary line; expanding
@@ -51,12 +59,18 @@ class ToolCallWidget(Collapsible):
             _, added, removed = self._edit_diff(cap=None)
             path = self.args.get("path", "")
             return Content(f"{glyph} edit_file({path}) +{added} -{removed}")
-        arg_preview = ", ".join(f"{k}={v!r}" for k, v in list(self.args.items())[:2])
+        items = list(self.args.items())
+        # A single-arg tool reads cleaner as "tool · value" (no redundant key=,
+        # no repr quotes) — e.g. `bash · uv run pytest …`; multiple args keep the
+        # keyed form. Either way the preview is clipped so it can't overflow.
+        if len(items) == 1:
+            return Content(f"{glyph} {self.tool_name} · {_clip(str(items[0][1]))}")
+        preview = _clip(", ".join(f"{k}={v!r}" for k, v in items[:2]))
         # Collapsible titles are parsed as Textual markup; the arg preview is
         # untrusted (file content, commands) and may contain bracket sequences
         # like `[edit(x="…` that escape() does NOT neutralise but the parser
         # still chokes on. A literal Content bypasses markup parsing entirely.
-        return Content(f"{glyph} {self.tool_name}({arg_preview})")
+        return Content(f"{glyph} {self.tool_name}({preview})")
 
     def _highlight(self, code: str, path: str) -> RenderableType:
         """Syntax-highlight ``code`` by the file's extension into a single Text with

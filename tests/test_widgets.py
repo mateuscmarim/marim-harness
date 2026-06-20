@@ -940,3 +940,28 @@ def test_write_file_widget_highlights_content():
 def test_non_special_tool_stays_collapsed():
     w = ToolCallWidget("bash", {"command": "ls"})
     assert w.collapsed is True
+
+
+def test_single_arg_tool_title_drops_key_and_quotes():
+    # A one-arg tool reads as "tool · value" — no redundant key=, no repr quotes.
+    w = ToolCallWidget("bash", {"command": "uv run pytest"})
+    title = str(w.title)
+    assert "bash · uv run pytest" in title
+    assert "command=" not in title
+    assert "'" not in title  # not the repr form
+
+
+def test_multi_arg_tool_title_keeps_keyed_form():
+    w = ToolCallWidget("read_file", {"path": "a.py", "offset": 515})
+    title = str(w.title)
+    assert "read_file(" in title
+    assert "path=" in title and "offset=515" in title
+
+
+def test_long_arg_preview_is_truncated():
+    # A long command must not run off the title; it's clipped with an ellipsis.
+    long_cmd = "git commit -m " + "x" * 200
+    w = ToolCallWidget("bash", {"command": long_cmd})
+    title = str(w.title)
+    assert "…" in title
+    assert len(title) < 120  # bounded, not the full 200+ chars
