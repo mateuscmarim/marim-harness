@@ -357,14 +357,18 @@ class ToolCallWidget(Collapsible):
         return Content(f"{glyph} {self.tool_name}({arg_preview})")
 
     def _highlight(self, code: str, path: str) -> RenderableType:
-        """Syntax-highlight ``code`` by the file's extension, or plain on miss."""
+        """Syntax-highlight ``code`` by the file's extension into a single Text with
+        the syntax-baked background stripped, so it inherits the widget background
+        instead of rendering a stray dark box. Plain ``code`` on a lexer miss."""
         lexer = _LEXERS.get(Path(path).suffix.lower())
         if not lexer:
             return code
-        try:
-            return Syntax(code, lexer, background_color="default", word_wrap=True)
-        except Exception:
-            return code
+        out = Text()
+        for i, line in enumerate(_highlight_lines(code, lexer)):
+            if i:
+                out.append("\n")
+            out.append_text(line)
+        return out
 
     def _result_renderable(self) -> RenderableType:
         """The result body, syntax-highlighted when it is file source."""
