@@ -261,30 +261,32 @@ async def test_has_finished_pending_reflects_set_without_consuming():
 
 @pytest.mark.anyio
 async def test_wait_consumes_finished_digest():
-    """wait_for_job removes the job from the finished-since-turn digest so the
-    autonomous wake scheduler won't fire a redundant turn."""
+    """wait_for_job marks the job as wake-consumed so the wake scheduler
+    won't fire a redundant turn, but the digest is preserved for the model."""
     reg = JobRegistry()
     job_id = reg.register("bash", "echo", _sleep_then("hello", 0.01))
     assert reg.has_finished_pending() is False
     result = await reg.wait(job_id)
     assert result == "hello"
+    # Wake-consumed: has_finished_pending returns False for wake scheduler.
     assert reg.has_finished_pending() is False
+    # But digest is still there for the model.
     digest = reg.take_finished_digest()
-    assert digest == ""  # nothing left
+    assert "job-1 (bash) done" in digest
 
 
 @pytest.mark.anyio
 async def test_wait_already_finished_consumes_digest():
-    """wait on an already-finished job also consumes from the digest."""
+    """wait on an already-finished job also marks as wake-consumed."""
     reg = JobRegistry()
     job_id = reg.register("bash", "echo", _sleep_then("done", 0.01))
     await asyncio.sleep(0.1)  # let it finish
     assert reg.has_finished_pending() is True
     result = await reg.wait(job_id)
     assert result == "done"
-    assert reg.has_finished_pending() is False
+    assert reg.has_finished_pending() is False  # wake-consumed
     digest = reg.take_finished_digest()
-    assert digest == ""
+    assert "job-1 (bash) done" in digest  # digest preserved
 
 
 def _sleep_then(value, seconds):

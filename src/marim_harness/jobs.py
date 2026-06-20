@@ -62,6 +62,10 @@ class JobRegistry:
         # drained — surfaced to the model at the start of its next turn so a
         # fire-and-forget result is never silently forgotten.
         self._finished_since_turn: list[str] = []
+        # Ids of jobs whose result was already consumed by wait_for_job during
+        # the current turn — the wake scheduler skips these so a redundant
+        # autonomous turn doesn't fire after the agent already got the result.
+        self._wake_consumed: set[str] = set()
 
     def _notify(self) -> None:
         if self.on_change is not None:
@@ -144,17 +148,16 @@ class JobRegistry:
         """Block until the job finishes or ``timeout`` elapses, then return its
         result. A timeout leaves the job running (it isn't cancelled).
 
-        When the job completes during the wait its id is removed from the
-        finished-since-turn digest so the autonomous wake scheduler won't
-        fire a redundant turn — the caller already has the result."""
+        When the job completes during the wait its id is marked as
+        wake-consumed so the autonomous wake scheduler won't fire a redundant
+        turn — the caller already has the result. The digest entry is preserved
+        so the model still sees it at the start of its next turn."""
         job = self._jobs.get(job_id)
         if job is None:
             return f"No job {job_id!r}."
         if job.status != "running" or job.task is None:
-            # Already finished — consume if pending.
-            self._finished_since_turn = [
-                jid for jid in self._finished_since_turn if jid != job_id
-            ]
+            # Already finished — mark as wake-consumed.
+            self._wake_consumed.add(job_id)
             return job.result if job.result is not None else f"({job.status})"
         try:
             await asyncio.wait_for(asyncio.shield(job.task), timeout)
@@ -164,10 +167,8 @@ class JobRegistry:
             pass  # the job itself was cancelled while we waited
         except Exception as exc:
             logger.debug("wait for job %s: %s (already settled)", job_id, exc)
-        # Job finished (or was already settled) — consume from digest.
-        self._finished_since_turn = [
-            jid for jid in self._finished_since_turn if jid != job_id
-        ]
+        # Job finished (or was already settled) — mark as wake-consumed.
+        self._wake_consumed.add(job_id)
         return job.result if job.result is not None else f"({job.status})"
 
     async def cancel(self, job_id: str) -> str:
@@ -210,10 +211,11 @@ class JobRegistry:
 
     def has_finished_pending(self) -> bool:
         """True if one or more jobs finished since the last
-        :meth:`take_finished_digest`. Read-only — unlike ``take_finished_digest``
-        it does **not** drain the buffer, so the wake scheduler can decide whether
+        :meth:`take_finished_digest` **and** were not already consumed by
+        :meth:`wait`. Read-only — unlike ``take_finished_digest`` it does
+        **not** drain the buffer, so the wake scheduler can decide whether
         to fire an autonomous turn without consuming the digest the turn needs."""
-        return bool(self._finished_since_turn)
+        return any(jid not in self._wake_consumed for jid in self._finished_since_turn)
 
     def take_finished_digest(self) -> str:
         """Summary of jobs that finished since this was last called, then clear the
@@ -222,6 +224,7 @@ class JobRegistry:
         the next turn so the model notices completions it didn't wait on."""
         ids = self._finished_since_turn
         self._finished_since_turn = []
+        self._wake_consumed.clear()
         parts = []
         for jid in ids:
             job = self._jobs.get(jid)

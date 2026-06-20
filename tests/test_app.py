@@ -1857,8 +1857,9 @@ async def test_wake_disabled_does_not_fire(tmp_path: Path):
         await app.harness.deps.jobs.wait(job_id)
         await pilot.pause()
         assert started == []
-        # The digest is left pending for the next user turn.
-        assert app.harness.deps.jobs.has_finished_pending() is True
+        # The digest is left for the next user turn, but wake-consumed.
+        assert app.harness.deps.jobs.has_finished_pending() is False
+        assert "job-1 (agent) done" in app.harness.deps.jobs.take_finished_digest()
 
 
 @pytest.mark.anyio
@@ -1886,10 +1887,10 @@ async def test_wake_does_not_fire_while_a_turn_is_running(tmp_path: Path):
         job_id = app.harness.deps.jobs.register("agent", "explore: x", _done("R"))
         await app.harness.deps.jobs.wait(job_id)
         await pilot.pause()
-        assert started == []  # queued; drains on the next turn's completion
+        assert started == []  # queued; but wake-consumed by wait()
         app._turn_worker = None  # turn ends -> finally calls _maybe_wake
         app._maybe_wake()
-        assert len(started) == 1
+        assert len(started) == 0  # no redundant wake — result already consumed
 
 
 @pytest.mark.anyio
