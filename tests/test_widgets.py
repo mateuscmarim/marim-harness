@@ -964,4 +964,49 @@ def test_long_arg_preview_is_truncated():
     w = ToolCallWidget("bash", {"command": long_cmd})
     title = str(w.title)
     assert "…" in title
-    assert len(title) < 120  # bounded, not the full 200+ chars
+    assert len(title) < 140  # bounded, not the full 200+ chars
+
+
+def test_preview_cap_allows_up_to_100_chars():
+    value = "x" * 95  # under the 100-char cap
+    w = ToolCallWidget("bash", {"command": value})
+    title = str(w.title)
+    assert value in title and "…" not in title
+
+
+def test_bash_nonzero_exit_marks_failed_and_keeps_expanded():
+    w = ToolCallWidget("bash", {"command": "false"})
+    w.finish("exit 1\nsome error output")
+    assert w.status == "failed"
+    assert w.collapsed is False  # failures stay open
+    assert "✗" in str(w.title)  # status indicator shows failure
+    assert "✓" not in str(w.title)
+
+
+def test_bash_zero_exit_stays_done_and_collapsed():
+    w = ToolCallWidget("bash", {"command": "true"})
+    w.finish("exit 0\nok")
+    assert w.status == "done"
+    assert w.collapsed is True
+    assert "✓" in str(w.title)
+
+
+def test_non_bash_exit_text_is_not_a_failure():
+    # A non-bash tool whose output happens to contain "exit 1" must not be flagged.
+    w = ToolCallWidget("read_file", {"path": "log.txt"})
+    w.finish("1\texit 1 was logged here")
+    assert w.status == "done"
+
+
+def test_bash_failure_output_renders_red():
+    import io
+
+    from rich.console import Console
+
+    w = ToolCallWidget("bash", {"command": "false"})
+    w.finish("exit 1\nboom error here")
+    con = Console(width=60, color_system="truecolor", file=io.StringIO())
+    lines = con.render_lines(w._render_body(), con.options.update_width(60))
+    reds = [s.text for line in lines for s in line
+            if s.style and s.style.color and "d9544f" in str(s.style.color).lower()]
+    assert any("boom" in t for t in reds)  # the output is colored red

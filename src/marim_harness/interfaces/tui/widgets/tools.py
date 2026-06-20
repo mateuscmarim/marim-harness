@@ -3,6 +3,7 @@ consecutive calls (``ToolGroupWidget``). ``ToolCallWidget`` special-cases the
 file tools — an inline diff for ``edit_file``, highlighted content for
 ``write_file``/``read_file``."""
 
+import re
 from pathlib import Path
 
 from rich.console import RenderableType
@@ -16,7 +17,13 @@ from .highlight import _LEXERS, _highlight_lines, strip_line_numbers
 
 # Max chars of the title's argument preview before it's ellipsized, so a long
 # command (e.g. a multi-line git commit) can't run off the right edge.
-_PREVIEW_CAP = 80
+_PREVIEW_CAP = 100
+
+# The bash tool prefixes its result with "exit N" (inline) or carries it as the
+# first preview line of an offloaded result — a non-zero N is a failed command.
+_EXIT_RE = re.compile(r"(?m)^exit (-?\d+)")
+# Foreground for failed bash output (the shared error red, see themes.py).
+_FAIL_FG = "#d9544f"
 
 
 def _clip(text: str, limit: int = _PREVIEW_CAP) -> str:
@@ -53,24 +60,41 @@ class ToolCallWidget(Collapsible):
         )
 
     def _summary(self) -> Content:
+        body = self._summary_body()
+        # A failed tool gets a red ✗ at the status indicator; the (untrusted) body
+        # is appended as a literal Content so markup in it is never parsed.
+        if self.status == "failed":
+            return Content.from_markup(f"[{_FAIL_FG}]✗[/]") + Content(f" {body}")
         glyph = {"pending": "·", "done": "✓", "denied": "✕"}.get(self.status, "·")
+        return Content(f"{glyph} {body}")
+
+    def _summary_body(self) -> str:
+        """The title text after the status glyph (the tool + arg preview)."""
         # edit_file: show just the path + a +N -M line stat (the diff is the body).
         if self.tool_name == "edit_file":
             _, added, removed = self._edit_diff(cap=None)
-            path = self.args.get("path", "")
-            return Content(f"{glyph} edit_file({path}) +{added} -{removed}")
+            return f"edit_file({self.args.get('path', '')}) +{added} -{removed}"
         items = list(self.args.items())
         # A single-arg tool reads cleaner as "tool · value" (no redundant key=,
         # no repr quotes) — e.g. `bash · uv run pytest …`; multiple args keep the
         # keyed form. Either way the preview is clipped so it can't overflow.
         if len(items) == 1:
-            return Content(f"{glyph} {self.tool_name} · {_clip(str(items[0][1]))}")
-        preview = _clip(", ".join(f"{k}={v!r}" for k, v in items[:2]))
-        # Collapsible titles are parsed as Textual markup; the arg preview is
-        # untrusted (file content, commands) and may contain bracket sequences
-        # like `[edit(x="…` that escape() does NOT neutralise but the parser
-        # still chokes on. A literal Content bypasses markup parsing entirely.
-        return Content(f"{glyph} {self.tool_name}({preview})")
+            return f"{self.tool_name} · {_clip(str(items[0][1]))}"
+        return f"{self.tool_name}({_clip(', '.join(f'{k}={v!r}' for k, v in items[:2]))})"
+
+    def _bash_failed(self) -> bool:
+        """True when this is a bash call whose result reports a non-zero exit."""
+        if self.tool_name != "bash" or not self.result_text:
+            return False
+        m = _EXIT_RE.search(self.result_text)
+        return bool(m) and m.group(1) != "0"
+
+    def _default_collapsed(self) -> bool:
+        """Whether this tool collapses by default: edit_file and failed tools stay
+        open (the diff / the error is the point), everything else collapses."""
+        if self.status == "failed":
+            return False
+        return self.tool_name != "edit_file"
 
     def _highlight(self, code: str, path: str) -> RenderableType:
         """Syntax-highlight ``code`` by the file's extension into a single Text with
@@ -152,6 +176,10 @@ class ToolCallWidget(Collapsible):
         if not self.result_text:
             return arg_lines or "(no arguments)"
         result = self._result_renderable()
+        # A failed command's output is shown red so the error stands out.
+        if self.status == "failed" and isinstance(result, str):
+            red = Text(result, style=_FAIL_FG)
+            return Group(Text(arg_lines), "", red) if arg_lines else red
         if isinstance(result, str):
             return f"{arg_lines}\n\n{result}" if arg_lines else result
         # Text() keeps arg_lines literal: a bare str inside a Group would be
@@ -162,7 +190,7 @@ class ToolCallWidget(Collapsible):
         """Reveal (uncap) the edit diff and expand, or restore the default
         capped/collapsed state. Driven by the app's Ctrl+O reveal-all toggle."""
         self.reveal = value
-        self.collapsed = False if value else (self.tool_name != "edit_file")
+        self.collapsed = False if value else self._default_collapsed()
         self._body.update(self._render_body())
 
     def finish(self, result_text: str, status: str = "done") -> None:
@@ -170,6 +198,11 @@ class ToolCallWidget(Collapsible):
         self.result_text = result_text
         if self.tool_name == "edit_file" and status == "done":
             self._load_diff()
+        # A bash command that exited non-zero is a failure: flag it (red ✗ in the
+        # title, red output) and keep it expanded so the error is visible.
+        if status == "done" and self._bash_failed():
+            self.status = "failed"
+            self.collapsed = False
         self.title = self._summary()
         self._body.update(self._render_body())
 
