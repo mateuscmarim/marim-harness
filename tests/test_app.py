@@ -2067,6 +2067,31 @@ async def test_refresh_title_writes_osc_to_terminal(tmp_path: Path, monkeypatch)
 
 
 @pytest.mark.anyio
+async def test_ctrl_o_toggles_reveal_all_outputs(tmp_path: Path):
+    from textual.containers import VerticalScroll
+
+    from marim_harness.interfaces.tui.widgets import ToolCallWidget
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        log = app.query_one("#log", VerticalScroll)
+        w = ToolCallWidget(
+            "edit_file",
+            {"path": "a.py", "edits": [{"old_string": "x", "new_string": "y"}]},
+        )
+        await log.mount(w)
+        await pilot.pause()
+        assert w.reveal is False and app._show_all_output is False
+        app.action_toggle_outputs()
+        await pilot.pause()
+        assert app._show_all_output is True and w.reveal is True
+        app.action_toggle_outputs()
+        await pilot.pause()
+        assert app._show_all_output is False and w.reveal is False
+
+
+@pytest.mark.anyio
 async def test_busy_title_uses_spinner_frame(tmp_path: Path, monkeypatch):
     from marim_harness.interfaces.tui.app import _SPINNER
 

@@ -1,5 +1,7 @@
 import pytest
 from pydantic_ai.usage import RunUsage
+from rich.syntax import Syntax
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.widgets import Collapsible, Markdown
 
@@ -11,6 +13,7 @@ from marim_harness.interfaces.tui.widgets import (
     UserMessage,
     format_cost,
     format_token_split,
+    render_edit_diff,
     strip_line_numbers,
 )
 
@@ -46,7 +49,9 @@ MARKUP_BOMB = "[/] and [edit(old_string=\"unterminated"
 
 class _Harness(App):
     def compose(self) -> ComposeResult:
-        yield ToolCallWidget("edit_file", {"path": "a.txt"})
+        # read_file renders generically (collapsed, arg-repr body) — edit_file now
+        # has special diff rendering covered by the diff tests below.
+        yield ToolCallWidget("read_file", {"path": "a.txt"})
 
 
 @pytest.mark.anyio
@@ -82,7 +87,7 @@ async def test_tool_widget_is_collapsible_with_working_title():
         # Collapsible builds its own title bar; ours must still exist.
         assert w.query_one(Collapsible.Contents) is not None
         # The summary glyph shows the pending state in the title.
-        assert "edit_file" in str(w.title)
+        assert "read_file" in str(w.title)
         assert "·" in str(w.title)
 
 
@@ -656,3 +661,83 @@ async def test_subagent_title_omits_cost_when_unpriced():
         title = str(w.title)
         assert "1.5k" in title
         assert "$" not in title
+
+
+def _plain(renderable) -> str:
+    """Flatten a Text/Group/str renderable to its plain text for assertions."""
+    if isinstance(renderable, Text):
+        return renderable.plain
+    parts = getattr(renderable, "renderables", None)
+    if parts is not None:
+        return "\n".join(_plain(p) for p in parts)
+    return str(renderable)
+
+
+def test_render_edit_diff_basic():
+    text, added, removed = render_edit_diff(
+        [{"old_string": "foo\nbar", "new_string": "baz"}], cap=None
+    )
+    plain = text.plain
+    assert "- foo" in plain and "- bar" in plain
+    assert "+ baz" in plain
+    assert removed == 2 and added == 1
+
+
+def test_render_edit_diff_multi_edit_counts():
+    _, added, removed = render_edit_diff(
+        [
+            {"old_string": "a", "new_string": "b"},
+            {"old_string": "c", "new_string": "d\ne"},
+        ],
+        cap=None,
+    )
+    assert added == 3 and removed == 2  # b + d + e ; a + c
+
+
+def test_render_edit_diff_caps_and_footers():
+    edits = [{"old_string": "\n".join(f"o{i}" for i in range(30)), "new_string": "x"}]
+    capped, _, _ = render_edit_diff(edits, cap=20)
+    assert "more lines (ctrl+o)" in capped.plain
+    assert len(capped.plain.splitlines()) <= 21  # ~20 lines + the footer
+    full, _, _ = render_edit_diff(edits, cap=None)
+    assert "more lines" not in full.plain
+    assert len(full.plain.splitlines()) >= 30
+
+
+def test_render_edit_diff_empty_and_malformed():
+    text, a, r = render_edit_diff([], cap=None)
+    assert text.plain == "" and a == 0 and r == 0
+    text2, a2, r2 = render_edit_diff(["nope", {"new_string": "only add"}], cap=None)
+    assert "+ only add" in text2.plain and r2 == 0 and a2 == 1
+
+
+def test_edit_file_widget_renders_diff_and_is_expanded():
+    w = ToolCallWidget(
+        "edit_file", {"path": "a.py", "edits": [{"old_string": "x", "new_string": "y"}]}
+    )
+    assert w.collapsed is False  # auto-expanded inline
+    body = _plain(w._render_body())
+    assert "- x" in body and "+ y" in body
+    assert "edits=[" not in body  # not the raw repr
+    title = str(w.title)
+    assert "a.py" in title and "+1" in title and "1" in title  # path + stat
+
+
+def test_edit_file_diff_caps_until_revealed():
+    edits = [{"old_string": "\n".join(f"o{i}" for i in range(40)), "new_string": "z"}]
+    w = ToolCallWidget("edit_file", {"path": "a.py", "edits": edits})
+    assert "more lines (ctrl+o)" in _plain(w._render_body())  # capped by default
+    w.reveal = True  # what set_reveal flips (the mounted path is covered in test_app)
+    assert "more lines" not in _plain(w._render_body())  # uncapped when revealed
+
+
+def test_write_file_widget_highlights_content():
+    w = ToolCallWidget("write_file", {"path": "a.py", "content": "x = 1\n"})
+    body = w._render_body()
+    assert isinstance(body, Syntax) or "x = 1" in _plain(body)
+    assert "content=" not in _plain(body)  # not the raw arg repr
+
+
+def test_non_special_tool_stays_collapsed():
+    w = ToolCallWidget("bash", {"command": "ls"})
+    assert w.collapsed is True
