@@ -518,6 +518,10 @@ class Harness:
             # This round completed cleanly and is persisted — it becomes the new
             # rollback baseline for any subsequent round.
             resumable = list(self.session.history)
+            # Compact after the turn completes so the gauge never shows >100%
+            # for long: the mid-turn growth is folded in immediately rather
+            # than waiting for the next turn's start-of-turn check.
+            await self._maybe_compact()
             output = result.output
             await self.hooks.stop()
             await self._maybe_autoname()
