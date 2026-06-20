@@ -40,7 +40,7 @@ async def test_status_bar_shows_token_split(tmp_path: Path):
         assert "0↑" in str(bar.render())  # starts at zero
         app.harness.session.usage.input_tokens = 12
         app.harness.session.usage.output_tokens = 8
-        app._refresh_status()
+        app.status.refresh_status()
         await pilot.pause()
         text = str(bar.render())
         assert "12↑" in text  # uncached input
@@ -57,7 +57,7 @@ async def test_status_bar_shows_estimated_cost_when_model_priced(tmp_path: Path)
         app.harness.model_id = "claude-sonnet-4-6"
         app.harness.session.usage.input_tokens = 50000
         app.harness.session.usage.output_tokens = 2000
-        app._refresh_status()
+        app.status.refresh_status()
         await pilot.pause()
         assert "$" in str(app.query_one("#status-bar").render())
 
@@ -70,7 +70,7 @@ async def test_status_bar_omits_cost_for_unpriced_model(tmp_path: Path):
         await pilot.pause()
         app.harness.model_id = "some-local-unpriced-model"
         app.harness.session.usage.input_tokens = 5000
-        app._refresh_status()
+        app.status.refresh_status()
         await pilot.pause()
         text = str(app.query_one("#status-bar").render())
         assert "$" not in text
@@ -86,9 +86,9 @@ async def test_status_bar_includes_live_run_tokens_while_streaming(tmp_path: Pat
     async with app.run_test() as pilot:
         await pilot.pause()
         app.harness.session.usage.input_tokens = 100  # committed from prior turns
-        app._set_busy(True)
-        app._live_run_tokens = 50  # in-flight this turn
-        app._refresh_status()
+        app.status.set_busy(True)
+        app.stream.live_run_tokens = 50  # in-flight this turn
+        app.status.refresh_status()
         await pilot.pause()
         text = str(app.query_one("#status-bar").render())
         assert "100↑" in text  # committed split
@@ -116,8 +116,8 @@ async def test_on_events_tracks_live_run_tokens_from_ctx_usage(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._on_events(ctx, gen())
-        assert app._live_run_tokens == 1234
+        await app.stream.on_events(ctx, gen())
+        assert app.stream.live_run_tokens == 1234
 
 
 @pytest.mark.anyio
@@ -127,9 +127,9 @@ async def test_live_run_tokens_reset_when_turn_ends(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._live_run_tokens = 500
-        app._set_busy(False)
-        assert app._live_run_tokens == 0
+        app.stream.live_run_tokens = 500
+        app.status.set_busy(False)
+        assert app.stream.live_run_tokens == 0
 
 
 @pytest.mark.anyio
@@ -139,10 +139,10 @@ async def test_flush_refreshes_status_while_busy(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._set_busy(True)  # paints the initial split
+        app.status.set_busy(True)  # paints the initial split
         app.harness.session.usage.input_tokens = 200
-        app._live_run_tokens = 99
-        app._flush_streams()  # the per-frame tick picks up the live delta
+        app.stream.live_run_tokens = 99
+        app.stream.flush_streams()  # the per-frame tick picks up the live delta
         await pilot.pause()
         text = str(app.query_one("#status-bar").render())
         assert "200↑" in text  # committed split
@@ -172,19 +172,19 @@ async def test_flush_only_touches_buffered_messages(tmp_path: Path):
         clean.flush = lambda: flushed.append("clean")  # type: ignore[assignment]
         dirty.flush = lambda: flushed.append("dirty")  # type: ignore[assignment]
 
-        app._append_stream(dirty, "hello")  # buffers a delta and marks it dirty
-        app._flush_streams()
+        app.stream.append_stream(dirty, "hello")  # buffers a delta and marks it dirty
+        app.stream.flush_streams()
 
         assert flushed == ["dirty"]  # the clean, untouched message is skipped
         # The dirty set drains each tick, so a second flush with no new deltas is
         # a no-op (nothing re-flushed).
         flushed.clear()
-        app._flush_streams()
+        app.stream.flush_streams()
         assert flushed == []
 
 
 def test_human_tokens_formatting():
-    from marim_harness.interfaces.tui.app import _human_tokens
+    from marim_harness.interfaces.tui.widgets import human_tokens as _human_tokens
 
     assert _human_tokens(0) == "0"
     assert _human_tokens(950) == "950"
@@ -206,7 +206,7 @@ async def test_status_bar_shows_context_usage(tmp_path: Path):
         app.harness.session.history = [
             ModelRequest(parts=[UserPromptPart(content="x" * 2000)])
         ]
-        app._refresh_status()
+        app.status.refresh_status()
         await pilot.pause()
         assert "50%" in str(bar.render())
 
@@ -223,7 +223,7 @@ async def test_title_survives_markup_like_session_name(tmp_path: Path, monkeypat
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._refresh_title()
+        app.status.refresh_title()
         await pilot.pause()
         # The literal name (including its brackets) is in the title, intact.
         assert "[edit(old_string=" in app.title
@@ -413,15 +413,15 @@ async def test_cancel_turn_aborts_and_shows_message(tmp_path: Path):
             await pilot.pause()
             if started.is_set():
                 break
-        assert app._busy is True
+        assert app.status.busy is True
 
         app.action_cancel_turn()
         for _ in range(50):
             await pilot.pause()
-            if not app._busy:
+            if not app.status.busy:
                 break
 
-        assert app._busy is False
+        assert app.status.busy is False
         assert app.is_running is True
         errors = list(app.query(ErrorMessage))
         assert any("cancel" in str(e.render()).lower() for e in errors)
@@ -447,10 +447,10 @@ async def test_status_bar_shows_busy_indicator(tmp_path: Path):
         await pilot.pause()
         bar = app.query_one("#status-bar")
         assert "working" not in str(bar.render()).lower()
-        app._set_busy(True)
+        app.status.set_busy(True)
         await pilot.pause()
         assert "working" in str(bar.render()).lower()
-        app._set_busy(False)
+        app.status.set_busy(False)
         await pilot.pause()
         assert "working" not in str(bar.render()).lower()
 
@@ -468,8 +468,8 @@ async def test_set_busy_survives_missing_status_bar(tmp_path: Path):
         app.query_one("#status-bar", Static).remove()
         await pilot.pause()
         # No status bar in the DOM; updating status must be a quiet no-op.
-        app._set_busy(False)
-        app._refresh_status()
+        app.status.set_busy(False)
+        app.status.refresh_status()
         assert app.is_running is True
 
 
@@ -785,10 +785,10 @@ async def test_on_events_mounts_and_finishes_tool_widget(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._on_events(None, gen())
+        await app.stream.on_events(None, gen())
         await pilot.pause()
 
-        widget = app._tool_widgets.get("call-1")
+        widget = app.stream.tool_widgets.get("call-1")
         assert isinstance(widget, ToolCallWidget)
         log = app.query_one("#log")
         assert widget in log.walk_children()
@@ -831,10 +831,10 @@ async def test_spawn_agent_mounts_subagent_widget(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._on_events(None, gen())
+        await app.stream.on_events(None, gen())
         await pilot.pause()
 
-        widget = app._tool_widgets.get("spawn-1")
+        widget = app.stream.tool_widgets.get("spawn-1")
         assert isinstance(widget, SubAgentWidget)
         assert widget.agent_type == "explore"
         assert "find the config loader" in widget.agent_task
@@ -877,17 +877,17 @@ async def test_subagent_event_routes_stream_into_widget(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._on_events(None, spawn_gen())
+        await app.stream.on_events(None, spawn_gen())
         await pilot.pause()
 
-        parent = app._tool_widgets["s1"]
+        parent = app.stream.tool_widgets["s1"]
         assert isinstance(parent, SubAgentWidget)
 
         # The sub-agent emits text, then a nested read_file call + result.
-        await app._on_subagent_event(
+        await app.stream.on_subagent_event(
             "s1", PartStartEvent(index=0, part=TextPart(content="checking files"))
         )
-        await app._on_subagent_event(
+        await app.stream.on_subagent_event(
             "s1",
             FunctionToolCallEvent(
                 part=ToolCallPart(
@@ -897,7 +897,7 @@ async def test_subagent_event_routes_stream_into_widget(tmp_path: Path):
                 )
             ),
         )
-        await app._on_subagent_event(
+        await app.stream.on_subagent_event(
             "s1",
             FunctionToolResultEvent(
                 part=ToolReturnPart(
@@ -925,7 +925,7 @@ async def test_subagent_event_without_widget_is_noop(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._on_subagent_event(
+        await app.stream.on_subagent_event(
             "ghost", PartStartEvent(index=0, part=TextPart(content="orphan"))
         )
         await pilot.pause()
@@ -961,16 +961,16 @@ async def test_subagent_event_usage_populates_title_total_and_body_split(tmp_pat
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._on_events(None, spawn_gen())
+        await app.stream.on_events(None, spawn_gen())
         await pilot.pause()
-        parent = app._tool_widgets["s1"]
+        parent = app.stream.tool_widgets["s1"]
         assert isinstance(parent, SubAgentWidget)
 
         usage = RunUsage(
             input_tokens=56000, output_tokens=2000,
             cache_read_tokens=50000, cache_write_tokens=5000,
         )
-        await app._on_subagent_event(
+        await app.stream.on_subagent_event(
             "s1",
             PartStartEvent(index=0, part=TextPart(content="checking")),
             usage,
@@ -1391,9 +1391,9 @@ async def test_background_spawn_renders_as_tool_widget(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._on_events(None, gen())
+        await app.stream.on_events(None, gen())
         await pilot.pause()
-        widget = app._tool_widgets.get("spawn-bg")
+        widget = app.stream.tool_widgets.get("spawn-bg")
         assert isinstance(widget, ToolCallWidget)
         assert not isinstance(widget, SubAgentWidget)
         assert widget.status == "done"
@@ -1440,9 +1440,9 @@ async def test_single_subagent_stays_expanded(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._on_events(None, gen())
+        await app.stream.on_events(None, gen())
         await pilot.pause()
-        w = app._tool_widgets["s1"]
+        w = app.stream.tool_widgets["s1"]
         assert isinstance(w, SubAgentWidget)
         assert w.collapsed is False
 
@@ -1461,10 +1461,10 @@ async def test_parallel_subagents_collapse(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._on_events(None, gen())
+        await app.stream.on_events(None, gen())
         await pilot.pause()
         for sid in ("s1", "s2", "s3"):
-            w = app._tool_widgets[sid]
+            w = app.stream.tool_widgets[sid]
             assert isinstance(w, SubAgentWidget)
             assert w.collapsed is True
 
@@ -1483,7 +1483,7 @@ async def test_subagent_event_updates_activity_title(tmp_path: Path):
         async def spawn():
             yield _spawn_call("s1", "look")
 
-        await app._on_events(None, spawn())
+        await app.stream.on_events(None, spawn())
         await pilot.pause()
         # A nested tool call inside the sub-agent updates the parent's title.
         tool_call = FunctionToolCallEvent(
@@ -1491,9 +1491,9 @@ async def test_subagent_event_updates_activity_title(tmp_path: Path):
                 tool_name="grep", args={"pattern": "x"}, tool_call_id="t1"
             )
         )
-        await app._on_subagent_event("s1", tool_call)
+        await app.stream.on_subagent_event("s1", tool_call)
         await pilot.pause()
-        parent = app._tool_widgets["s1"]
+        parent = app.stream.tool_widgets["s1"]
         assert "grep" in str(parent.title)
 
 
@@ -1512,7 +1512,7 @@ async def test_subagent_event_updates_token_usage_in_title(tmp_path: Path):
         async def spawn():
             yield _spawn_call("s1", "look")
 
-        await app._on_events(None, spawn())
+        await app.stream.on_events(None, spawn())
         await pilot.pause()
         tool_call = FunctionToolCallEvent(
             part=ToolCallPart(
@@ -1520,11 +1520,11 @@ async def test_subagent_event_updates_token_usage_in_title(tmp_path: Path):
             )
         )
         # The handler forwards the run's live usage; the title shows the total.
-        await app._on_subagent_event(
+        await app.stream.on_subagent_event(
             "s1", tool_call, RunUsage(input_tokens=1500, output_tokens=500)
         )
         await pilot.pause()
-        parent = app._tool_widgets["s1"]
+        parent = app.stream.tool_widgets["s1"]
         assert "2k" in str(parent.title)
         assert "tok" in str(parent.title)
 
@@ -1548,16 +1548,16 @@ async def test_lone_nested_tool_call_is_not_wrapped_in_a_group(tmp_path: Path):
         async def spawn():
             yield _spawn_call("s1", "look")
 
-        await app._on_events(None, spawn())
+        await app.stream.on_events(None, spawn())
         await pilot.pause()
-        await app._on_subagent_event(
+        await app.stream.on_subagent_event(
             "s1",
             FunctionToolCallEvent(
                 part=ToolCallPart(tool_name="grep", args={}, tool_call_id="t1")
             ),
         )
         await pilot.pause()
-        parent = app._tool_widgets["s1"]
+        parent = app.stream.tool_widgets["s1"]
         assert isinstance(parent, SubAgentWidget)
         assert len(parent.query(ToolGroupWidget)) == 0
         assert len(parent.query(ToolCallWidget)) == 1
@@ -1583,13 +1583,13 @@ async def test_nested_tool_burst_groups_under_a_subagent(tmp_path: Path):
         async def spawn():
             yield _spawn_call("s1", "look")
 
-        await app._on_events(None, spawn())
+        await app.stream.on_events(None, spawn())
         await pilot.pause()
-        await app._on_subagent_event("s1", nested("t1"))
-        await app._on_subagent_event("s1", nested("t2"))
-        await app._on_subagent_event("s1", nested("t3"))
+        await app.stream.on_subagent_event("s1", nested("t1"))
+        await app.stream.on_subagent_event("s1", nested("t2"))
+        await app.stream.on_subagent_event("s1", nested("t3"))
         await pilot.pause()
-        parent = app._tool_widgets["s1"]
+        parent = app.stream.tool_widgets["s1"]
         groups = parent.query(ToolGroupWidget)
         assert len(groups) == 1
         assert len(groups.first().query(ToolCallWidget)) == 3
@@ -1612,8 +1612,8 @@ async def test_streaming_text_is_debounced_until_flush(tmp_path: Path):
             yield PartStartEvent(index=0, part=TextPart(content="# Hi"))
             yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta=" there"))
 
-        await app._on_events(None, stream())
-        msg = app._current_assistant
+        await app.stream.on_events(None, stream())
+        msg = app.stream.current_assistant
         # The full text is buffered into the widget...
         assert msg.text == "# Hi there"
         # ...and a delta marks it dirty without rendering (the per-delta debounce).
@@ -1621,7 +1621,7 @@ async def test_streaming_text_is_debounced_until_flush(tmp_path: Path):
         msg.append("!")
         assert msg._pending is True
         # The shared flush renders it and clears the pending flag.
-        app._flush_streams()
+        app.stream.flush_streams()
         assert msg._pending is False
 
 
@@ -1638,16 +1638,16 @@ async def test_flush_streams_renders_nested_subagent_text(tmp_path: Path):
         async def spawn():
             yield _spawn_call("s1", "look")
 
-        await app._on_events(None, spawn())
+        await app.stream.on_events(None, spawn())
         await pilot.pause()
-        await app._on_subagent_event(
+        await app.stream.on_subagent_event(
             "s1", PartStartEvent(index=0, part=TextPart(content="nested"))
         )
-        msg = app._sub_assistants["s1"]
+        msg = app.stream.sub_assistants["s1"]
         # Synchronous append → assert → flush so the interval timer can't interleave.
         msg.append("!")
         assert msg._pending is True
-        app._flush_streams()
+        app.stream.flush_streams()
         assert msg._pending is False
 
 
@@ -1688,7 +1688,7 @@ async def test_stream_does_not_yank_when_scrolled_up(tmp_path: Path):
         async def gen():
             yield PartStartEvent(index=0, part=TextPart(content="new streamed text"))
 
-        await app._on_events(None, gen())
+        await app.stream.on_events(None, gen())
         await pilot.pause()
         assert log.scroll_offset.y == 0
 
@@ -1740,7 +1740,7 @@ async def test_consecutive_tool_calls_group_into_one_widget(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._on_events(None, gen())
+        await app.stream.on_events(None, gen())
         await pilot.pause()
         groups = app.query(ToolGroupWidget)
         assert len(groups) == 1
@@ -1759,7 +1759,7 @@ async def test_lone_tool_call_is_not_wrapped_in_a_group(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._on_events(None, gen())
+        await app.stream.on_events(None, gen())
         await pilot.pause()
         assert len(app.query(ToolGroupWidget)) == 0
         assert len(app.query(ToolCallWidget)) == 1
@@ -1779,7 +1779,7 @@ async def test_text_between_tool_calls_breaks_the_group(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._on_events(None, gen())
+        await app.stream.on_events(None, gen())
         await pilot.pause()
         assert len(app.query(ToolGroupWidget)) == 0
         assert len(app.query(ToolCallWidget)) == 2
@@ -1805,9 +1805,9 @@ async def test_tool_result_still_resolves_widget_inside_a_group(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._on_events(None, gen())
+        await app.stream.on_events(None, gen())
         await pilot.pause()
-        w = app._tool_widgets["c1"]
+        w = app.stream.tool_widgets["c1"]
         assert isinstance(w, ToolCallWidget)
         assert w.status == "done"
         assert w.result_text == "file body"
@@ -1927,7 +1927,7 @@ async def test_ask_user_callback_shows_modal_and_returns_answer(tmp_path: Path):
 
 
 def test_format_duration_units():
-    from marim_harness.interfaces.tui.app import _format_duration
+    from marim_harness.interfaces.tui.status import format_duration as _format_duration
 
     assert _format_duration(5) == "5s"
     assert _format_duration(5, precise=True) == "5.0s"
@@ -1951,9 +1951,9 @@ async def test_status_shows_live_turn_timer_when_busy(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._busy = True
-        app._turn_start = time.monotonic() - 5  # 5s into a turn
-        app._refresh_status()
+        app.status.busy = True
+        app.status.turn_start = time.monotonic() - 5  # 5s into a turn
+        app.status.refresh_status()
         await pilot.pause()
         text = str(app.query_one("#status-bar").render())
         assert "working" in text and "5s" in text
@@ -2004,9 +2004,9 @@ async def test_title_shows_idle_and_working_indicator(tmp_path: Path, monkeypatc
     async with app.run_test() as pilot:
         await pilot.pause()
         assert app.title == "○ my-session"
-        app._busy = True
-        app._spin = 0  # first spinner frame (⠋)
-        app._refresh_title()
+        app.status.busy = True
+        app.status.spin = 0  # first spinner frame (⠋)
+        app.status.refresh_title()
         assert app.title == "⠋ my-session"
         # workspace path stays in the sub_title
         assert str(tmp_path) in app.sub_title
@@ -2038,7 +2038,7 @@ async def test_session_name_in_title_not_status_bar(tmp_path: Path, monkeypatch)
 
 
 def test_osc_title_sequence_format():
-    from marim_harness.interfaces.tui.app import _osc_title
+    from marim_harness.interfaces.tui.status import osc_title as _osc_title
 
     # OSC 0 sets both the terminal tab and window title: ESC ] 0 ; <text> BEL
     assert _osc_title("● my-session") == "\033]0;● my-session\007"
@@ -2057,9 +2057,9 @@ async def test_refresh_title_writes_osc_to_terminal(tmp_path: Path, monkeypatch)
         real_write = app._driver.write
         app._driver.write = lambda data: calls.append(data)
         try:
-            app._busy = True
-            app._spin = 0  # first spinner frame (⠋)
-            app._refresh_title()
+            app.status.busy = True
+            app.status.spin = 0  # first spinner frame (⠋)
+            app.status.refresh_title()
         finally:
             app._driver.write = real_write
         blob = "".join(calls)
@@ -2082,18 +2082,18 @@ async def test_ctrl_o_toggles_reveal_all_outputs(tmp_path: Path):
         )
         await log.mount(w)
         await pilot.pause()
-        assert w.reveal is False and app._show_all_output is False
+        assert w.reveal is False and app.stream.show_all_output is False
         app.action_toggle_outputs()
         await pilot.pause()
-        assert app._show_all_output is True and w.reveal is True
+        assert app.stream.show_all_output is True and w.reveal is True
         app.action_toggle_outputs()
         await pilot.pause()
-        assert app._show_all_output is False and w.reveal is False
+        assert app.stream.show_all_output is False and w.reveal is False
 
 
 @pytest.mark.anyio
 async def test_busy_title_uses_spinner_frame(tmp_path: Path, monkeypatch):
-    from marim_harness.interfaces.tui.app import _SPINNER
+    from marim_harness.interfaces.tui.status import _SPINNER
 
     monkeypatch.setattr(
         type(_app(tmp_path).harness.session),
@@ -2102,16 +2102,16 @@ async def test_busy_title_uses_spinner_frame(tmp_path: Path, monkeypatch):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._busy = True
+        app.status.busy = True
         for frame_idx, glyph in enumerate(_SPINNER):
-            app._spin = frame_idx
-            app._refresh_title()
+            app.status.spin = frame_idx
+            app.status.refresh_title()
             assert app.title == f"{glyph} my-session"
 
 
 @pytest.mark.anyio
 async def test_tick_spinner_advances_only_when_busy(tmp_path: Path, monkeypatch):
-    from marim_harness.interfaces.tui.app import _SPINNER
+    from marim_harness.interfaces.tui.status import _SPINNER
 
     monkeypatch.setattr(
         type(_app(tmp_path).harness.session),
@@ -2121,14 +2121,14 @@ async def test_tick_spinner_advances_only_when_busy(tmp_path: Path, monkeypatch)
     async with app.run_test() as pilot:
         await pilot.pause()
         # Idle: the tick is a no-op and the title stays the static ○.
-        app._busy = False
-        app._spin = 0
-        app._tick_spinner()
-        assert app._spin == 0
+        app.status.busy = False
+        app.status.spin = 0
+        app.status.tick_spinner()
+        assert app.status.spin == 0
         assert app.title == "○ my-session"
         # Busy: the tick advances the frame and re-renders the title.
-        app._busy = True
-        app._spin = 0
-        app._tick_spinner()
-        assert app._spin == 1
+        app.status.busy = True
+        app.status.spin = 0
+        app.status.tick_spinner()
+        assert app.status.spin == 1
         assert app.title == f"{_SPINNER[1]} my-session"

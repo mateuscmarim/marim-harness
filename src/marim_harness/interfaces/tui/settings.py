@@ -199,7 +199,7 @@ class SettingsModal(ModalScreen[None]):
             return
         if event.radio_set.id == "mode-set":
             self.harness.deps.mode = Mode(_MODES[event.index])
-            self.app._refresh_status()  # type: ignore[attr-defined]
+            self.app.status.refresh_status()  # type: ignore[attr-defined]
         elif event.radio_set.id == "theme-set":
             self.app.theme = THEME_NAMES[event.index]  # type: ignore[attr-defined]
 
@@ -233,7 +233,7 @@ class SettingsModal(ModalScreen[None]):
         if not chosen:
             return
         self.harness.set_model(chosen)
-        self.app._refresh_status()  # type: ignore[attr-defined]
+        self.app.status.refresh_status()  # type: ignore[attr-defined]
         self.query_one("#model-label", Static).update(
             f"Model: {self.harness.model_label}"
         )
@@ -253,7 +253,7 @@ class SettingsModal(ModalScreen[None]):
             state.update(self._mcp_state(name))
         btn = self.query_one(f"#mcp-btn-{index}", Button)
         btn.label = "enable" if name in mcp.disabled else "disable"
-        self.app._refresh_status()  # type: ignore[attr-defined]
+        self.app.status.refresh_status()  # type: ignore[attr-defined]
 
     def _save_env(self) -> None:
         status = self.query_one("#save-status", Static)

@@ -97,8 +97,8 @@ async def _cmd_name(app: HarnessApp, arg: str) -> None:
             "conversation first so it can be auto-titled."
         )
         return
-    app._refresh_title()  # the new name shows in the terminal title
-    app._refresh_status()
+    app.status.refresh_title()  # the new name shows in the terminal title
+    app.status.refresh_status()
     await app.post_system(f"Renamed session to `{new}`.")
 
 
@@ -124,7 +124,7 @@ async def _cmd_mode(app: HarnessApp, arg: str) -> None:
         except ValueError:
             await app.post_system(f"Unknown mode: `{arg}`. Use ask, auto, or plan.")
             return
-    app._refresh_status()
+    app.status.refresh_status()
     await app.post_system(f"Mode: **{app.harness.deps.mode.value}**")
 
 
@@ -132,7 +132,7 @@ async def _cmd_model(app: HarnessApp, arg: str) -> None:
     arg = arg.strip()
     if arg:
         app.harness.set_model(arg)
-        app._refresh_status()
+        app.status.refresh_status()
         await app.post_system(f"Model: `{app.harness.model_label}`")
         return
     await app.open_model_picker()
@@ -171,7 +171,7 @@ async def _cmd_remember(app: HarnessApp, arg: str) -> None:
         "Pick an appropriate scope (project vs global), type, and a concise title "
         f"and one-line description.\n\nFact: {arg}"
     )
-    app._current_assistant = None
+    app.stream.current_assistant = None
     app._turn_worker = app.run_worker(app._run_turn(prompt), exclusive=True)
 
 
@@ -200,7 +200,7 @@ async def _cmd_skill(app: HarnessApp, arg: str) -> None:
     )
     if extra:
         prompt += f"\n\nAdditional context for this run: {extra}"
-    app._current_assistant = None
+    app.stream.current_assistant = None
     app._turn_worker = app.run_worker(app._run_turn(prompt), exclusive=True)
 
 

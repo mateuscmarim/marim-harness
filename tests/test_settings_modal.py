@@ -39,12 +39,13 @@ def _env_cfg():
 
 class _Host(App):
     def __init__(self, harness, env_cfg):
+        from types import SimpleNamespace
+
         super().__init__()
         self._harness = harness
         self._env_cfg = env_cfg
-
-    def _refresh_status(self) -> None:  # the modal calls this on live changes
-        pass
+        # The modal refreshes the status bar via app.status.refresh_status().
+        self.status = SimpleNamespace(refresh_status=lambda: None)
 
     def on_mount(self) -> None:
         self.push_screen(

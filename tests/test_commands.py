@@ -21,7 +21,7 @@ class _FakeApp:
         self.posted: list[str] = []
         self.turn_prompts: list[str] = []
         self._turn_worker = None
-        self._current_assistant = "sentinel"
+        self.stream = SimpleNamespace(current_assistant="sentinel")
         self.harness = SimpleNamespace(
             deps=SimpleNamespace(workspace_root=workspace_root)
         )
