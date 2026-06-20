@@ -14,6 +14,7 @@ from pydantic_ai.messages import (
 )
 from textual.containers import VerticalScroll
 from textual.widget import Widget
+from textual.widgets import Collapsible
 
 from ...usage import resolve_cost
 from .widgets import (
@@ -24,6 +25,17 @@ from .widgets import (
 )
 from .widgets import format_cost as _format_cost
 from .widgets import format_token_split as _format_token_split
+
+
+def _hidden_in_collapsed(widget: Widget) -> bool:
+    """True when ``widget`` sits inside a collapsed Collapsible (e.g. a folded
+    sub-agent body) and so isn't visible — re-rendering it would be wasted work."""
+    node = widget.parent
+    while node is not None:
+        if isinstance(node, Collapsible) and node.collapsed:
+            return True
+        node = node.parent
+    return False
 
 
 class _StreamSink:
@@ -200,6 +212,13 @@ class StreamRenderer:
         streams."""
         dirty, self.dirty_streams = self.dirty_streams, set()
         for m in dirty:
+            # Skip streams hidden inside a collapsed widget (e.g. folded sub-agent
+            # bodies): re-parsing their full markdown every tick — ×N during a
+            # fan-out — blocks the event loop and freezes the UI for no visible
+            # gain. Keep them pending so they render the moment they're expanded.
+            if _hidden_in_collapsed(m):
+                self.dirty_streams.add(m)
+                continue
             m.flush()
         self._anchor_on_overflow()
         # Piggyback on the same per-frame tick to repaint the status bar while a
