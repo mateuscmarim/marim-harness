@@ -118,9 +118,7 @@ class HarnessApp(App):
         self.sub_title = str(self.harness.deps.workspace_root)
         self.status.refresh_title()
         log = self.query_one("#log", VerticalScroll)
-        await log.mount(Static(_BANNER, id="banner", markup=False))
-        intro = AssistantMessage()
-        await log.mount(intro)
+        intro = await self.session.mount_header(log)
         if self.harness.session.history:
             n = len(self.harness.session.history)
             tokens = self.harness.session.total_tokens

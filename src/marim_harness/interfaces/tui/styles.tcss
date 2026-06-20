@@ -27,9 +27,14 @@ PromptInput { height: 5; max-height: 12; border: round $accent; padding: 0 1; }
 .notice-msg { color: $text-muted; text-style: italic; margin: 1 0; }
 .turn-meta { color: $text-muted; text-style: dim; margin: 0 0 1 0; }
 
-/* Accent block-ASCII seated above a thin accent rule that divides it from the
-   conversation. Both recolor with the theme. */
-#banner { color: $accent; height: auto; margin: 1 0 1 0; border-bottom: solid $accent; }
+/* Two-column intro header (Claude-style): the accent block-ASCII banner on the
+   left, the welcome/resume text on the right behind a vertical accent divider,
+   the whole row seated above a thin accent rule that splits it from the chat. */
+#intro-header { height: auto; margin: 1 0 1 0; border-bottom: solid $accent; }
+#banner { color: $accent; height: auto; width: auto; padding: 0 2 0 0; }
+#intro-header AssistantMessage {
+    width: 1fr; height: 100%; margin: 0; padding: 0 0 0 2; border-left: solid $accent;
+}
 
 AssistantMessage { margin: 0 0 1 0; }
 ToolCallWidget { margin: 0 0 1 0; border-left: tall $primary; padding-left: 1; }
