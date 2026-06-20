@@ -118,9 +118,7 @@ class HarnessApp(App):
         self.sub_title = str(self.harness.deps.workspace_root)
         self.status.refresh_title()
         log = self.query_one("#log", VerticalScroll)
-        await log.mount(Static(_BANNER, id="banner", markup=False))
-        intro = AssistantMessage()
-        await log.mount(intro)
+        intro = await self.session.mount_header(log)
         if self.harness.session.history:
             n = len(self.harness.session.history)
             tokens = self.harness.session.total_tokens
@@ -132,11 +130,11 @@ class HarnessApp(App):
         else:
             self.stream.append_stream(intro, _WELCOME)
         self.stream.flush_streams()  # render the static intro/replay before first paint
-        # Keep the log pinned to the bottom as content streams in. Textual's anchor
-        # re-pins to the true bottom during layout (so it can't drift behind a
-        # burst of text), auto-releases when the user scrolls up to read, and
-        # auto-re-anchors when they scroll back down.
-        log.anchor()
+        # A resumed session opens at the bottom (where you left off); a fresh one
+        # starts top-aligned with the header pinned at the top and only anchors
+        # once a turn's output overflows the viewport (see _anchor_on_overflow).
+        if self.harness.session.history:
+            log.anchor()
         self._render_tasks()  # reflect any checklist restored with the session
         self._render_jobs()  # process-scoped jobs survive session switches
         # Seed vision capabilities in the background so the text-only-model

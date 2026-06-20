@@ -1706,14 +1706,51 @@ async def test_flush_streams_renders_nested_subagent_text(tmp_path: Path):
 
 
 @pytest.mark.anyio
-async def test_log_is_anchored_to_bottom(tmp_path: Path):
-    """The log uses Textual's scroll anchor so streaming content stays pinned to
-    the bottom (and re-pins to the true bottom during layout)."""
+async def test_fresh_log_top_aligned_then_anchors_on_overflow(tmp_path: Path):
+    """A fresh session starts top-aligned — the intro header pinned at the top, not
+    bottom-anchored — and only anchors once content overflows the viewport, so the
+    header then scrolls away with the messages."""
+    from marim_harness.interfaces.tui.widgets import UserMessage
+
     app = _app(tmp_path)
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         log = app.query_one("#log")
-        assert log.is_anchored is True
+        assert log.is_anchored is False  # header pinned at the top
+        assert log.scroll_offset.y == 0
+        # Overflow the viewport; the flush tick anchors on overflow.
+        for i in range(40):
+            await log.mount(UserMessage(f"line {i}"))
+        app.stream.flush_streams()
+        await pilot.pause()
+        assert log.is_anchored is True  # now tail-follows the newest content
+
+
+@pytest.mark.anyio
+async def test_flush_skips_streams_in_collapsed_widgets(tmp_path: Path):
+    """A collapsed sub-agent's streaming body must not be re-rendered on every
+    flush tick — re-parsing the full markdown of N folded agents each tick blocks
+    the event loop and freezes the UI. It stays pending and renders once expanded."""
+    from marim_harness.interfaces.tui.widgets import AssistantMessage, SubAgentWidget
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        log = app.query_one("#log")
+        sa = SubAgentWidget("explore", "task")
+        sa.collapsed = True
+        await log.mount(sa)
+        msg = AssistantMessage()
+        await sa.add(msg)
+        await pilot.pause()
+
+        app.stream.append_stream(msg, "hello world")
+        app.stream.flush_streams()
+        assert msg._pending is True  # skipped while hidden (not re-rendered)
+        assert msg in app.stream.dirty_streams  # kept pending for later
+
+        sa.collapsed = False  # expand → the next flush renders it
+        app.stream.flush_streams()
+        assert msg._pending is False
 
 
 @pytest.mark.anyio

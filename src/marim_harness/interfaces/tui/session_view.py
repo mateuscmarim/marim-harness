@@ -4,7 +4,7 @@ Rebuilds the log when the active session changes (new / switch / clear), replays
 restored conversation, and notes auto-renames. Behavior only — it holds no state;
 it reaches the app, status presenter, and stream renderer through ``self.app``."""
 
-from textual.containers import VerticalScroll
+from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Static
 
 from ...agent import strip_turn_context
@@ -88,6 +88,22 @@ class SessionView:
                         if widget is not None:
                             widget.finish(str(part.content))
 
+    async def mount_header(self, log: VerticalScroll) -> AssistantMessage:
+        """Mount the two-column intro header — the MARIM banner on the left, the
+        welcome/resume text on the right (Claude-style) — and return the intro
+        AssistantMessage for the caller to stream into."""
+        from .app import _BANNER
+
+        intro = AssistantMessage()
+        await log.mount(
+            Horizontal(
+                Static(_BANNER, id="banner", markup=False),
+                intro,
+                id="intro-header",
+            )
+        )
+        return intro
+
     def on_rename(self, old: str, new: str) -> None:
         """Note an automatic session title in the log. Called synchronously from
         run_turn; mount without awaiting."""
@@ -99,19 +115,19 @@ class SessionView:
     async def render_session(self, note: str) -> None:
         """Rebuild the log for a fresh view of the active session: banner, an
         intro note, then a replay of any restored history."""
-        from .app import _BANNER
-
         self.app.stream.reset()
         log = self.app.query_one("#log", VerticalScroll)
+        log.anchor(False)  # drop any anchor inherited from the previous session
         await log.remove_children()
-        await log.mount(Static(_BANNER, id="banner", markup=False))
-        intro = AssistantMessage()
-        await log.mount(intro)
+        intro = await self.mount_header(log)
         self.app.stream.append_stream(intro, note)
         if self.app.harness.session.history:
             await self.replay_history(log)
         self.app.stream.flush_streams()  # render the rebuilt log before first paint
-        log.anchor()  # re-pin to the bottom for the freshly loaded session
+        # A restored session opens at the bottom; a fresh/cleared one stays top-
+        # aligned (header pinned) until a turn's output overflows the viewport.
+        if self.app.harness.session.history:
+            log.anchor()
         self.app.status.refresh_title()  # reflect the switched-to session's name
         self.app.status.refresh_status()
         self.app._render_tasks()
