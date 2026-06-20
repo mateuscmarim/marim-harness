@@ -203,6 +203,10 @@ def _iter_user_content(messages: list[dict]):
                 yield content
 
 
+# pydantic_ai serializes BinaryContent.data as URL-safe base64 ("-"/"_"), so the
+# cache round-trip must use the same alphabet. Standard base64 ("+"/"/") silently
+# drops the URL-safe chars and corrupts the image, which the model then rejects as
+# "Multimodal data is corrupted" on every resumed turn.
 def externalize_images(messages: list[dict], session_id: str) -> list[dict]:
     """Replace inline base64 in binary user-content with cache references."""
     for content in _iter_user_content(messages):
@@ -213,7 +217,7 @@ def externalize_images(messages: list[dict], session_id: str) -> list[dict]:
             if not isinstance(data, str) or data.startswith(_REF_PREFIX):
                 continue
             try:
-                raw = base64.b64decode(data)
+                raw = base64.urlsafe_b64decode(data)
             except (ValueError, TypeError):
                 continue
             cached = store_image(session_id, raw, item.get("media_type", "image/png"))
@@ -240,5 +244,5 @@ def rehydrate_images(messages: list[dict], session_id: str) -> list[dict]:
             except OSError:
                 content[i] = "[image unavailable]"
                 continue
-            item["data"] = base64.b64encode(raw).decode()
+            item["data"] = base64.urlsafe_b64encode(raw).decode()
     return messages
