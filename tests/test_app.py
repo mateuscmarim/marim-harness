@@ -190,6 +190,9 @@ def test_human_tokens_formatting():
     assert _human_tokens(950) == "950"
     assert _human_tokens(1500) == "1.5k"
     assert _human_tokens(100_000) == "100k"
+    assert _human_tokens(1_000_000) == "1M"
+    assert _human_tokens(1_500_000) == "1.5M"
+    assert _human_tokens(12_820_900) == "12.8M"
 
 
 @pytest.mark.anyio

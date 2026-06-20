@@ -763,6 +763,25 @@ def test_render_file_diff_shows_numbers_markers_and_content():
     assert added == 1 and removed == 1
 
 
+def test_render_file_diff_context_lines_have_no_background():
+    # Context (unchanged) lines must carry NO background so they inherit the
+    # widget's themed background. Rich's Syntax bakes a "default" bg into every
+    # token; left unstripped it renders as the terminal default (often black),
+    # producing an ugly text-width dark box on context rows.
+    import io
+
+    from rich.console import Console
+
+    diff, _, _ = render_file_diff("a = 1\nb = 2\nc = 3\n", "a = 1\nb = 9\nc = 3\n",
+                                  cap=None, lexer="python")
+    con = Console(width=40, color_system="truecolor", file=io.StringIO())
+    opts = con.options.update_width(40)
+    rows = con.render_lines(diff, opts)
+    # Row 0 is context ("a = 1"); none of its segments may set a background.
+    bgs = [s.style.bgcolor for s in rows[0] if s.style and s.style.bgcolor is not None]
+    assert bgs == [], f"context line should have no bg, got {bgs}"
+
+
 def test_render_file_diff_caps_and_reveals():
     old = "\n".join(f"o{i}" for i in range(40))
     new = "\n".join(f"n{i}" for i in range(40))
