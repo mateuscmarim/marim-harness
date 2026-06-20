@@ -7,11 +7,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-from ...bootstrap import build_harness
 from ...history import PromptHistory, default_history_path
-from ...permissions import Mode
-from ..tui.app import HarnessApp
-from .headless import run_headless
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -83,17 +79,26 @@ def run_default(argv, *, stdin=None, out=None, err=None) -> int:
         if workspace is None:
             return 2
 
+    # Heavy imports (pydantic_ai) deferred to here so `--help` and arg errors stay
+    # fast; only an actual launch pays for the agent.
+    from ...bootstrap import build_harness
+    from ...permissions import Mode
+
     if _is_headless(args.prompt, stdin_isatty=stdin.isatty()):
         prompt = args.prompt if isinstance(args.prompt, str) else stdin.read()
         prompt = (prompt or "").strip()
         if not prompt:
             print("no prompt provided", file=err)
             return 2
+        from .headless import run_headless
+
         mode = Mode(args.mode) if args.mode else Mode.auto
         harness = build_harness(workspace, mode=mode, resume=args.resume)
         return asyncio.run(
             run_headless(harness, prompt, args.output_format, out=out, err=err)
         )
+
+    from ..tui.app import HarnessApp
 
     harness = build_harness(workspace, mode=Mode.ask, resume=args.resume)
     HarnessApp(harness, history=PromptHistory(default_history_path())).run()

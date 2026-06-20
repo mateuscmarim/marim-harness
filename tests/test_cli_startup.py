@@ -20,3 +20,30 @@ def test_router_import_does_not_load_pydantic_ai():
     # Importing the CLI router must not drag in pydantic_ai, or every command
     # (config/models/--help) pays ~1s for an agent it never builds.
     assert not _imports_pydantic_ai("marim_harness.interfaces.cli.router")
+
+
+def test_default_cmd_import_does_not_load_pydantic_ai():
+    # The default command's module must stay import-clean so `marim --help` and
+    # arg-validation errors exit before pydantic_ai loads. The real TUI/headless
+    # launch still imports it inside run_default() — that's expected and untested
+    # here.
+    assert not _imports_pydantic_ai("marim_harness.interfaces.cli.default_cmd")
+
+
+def test_help_exits_fast_without_pydantic_ai(tmp_path):
+    # `marim --help` must print usage and exit 0 in a fresh interpreter without
+    # ever importing pydantic_ai.
+    code = (
+        "import sys\n"
+        "sys.argv = ['marim', '--help']\n"
+        "from marim_harness.interfaces.cli.router import main\n"
+        "try:\n"
+        "    main()\n"
+        "except SystemExit as e:\n"
+        "    assert e.code in (0, None), e.code\n"
+        "assert 'pydantic_ai' not in sys.modules, 'pydantic_ai loaded on --help'\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, cwd=tmp_path
+    )
+    assert result.returncode == 0, result.stderr
