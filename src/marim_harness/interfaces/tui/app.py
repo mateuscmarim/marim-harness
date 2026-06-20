@@ -217,6 +217,7 @@ class HarnessApp(App):
     CSS_PATH = "styles.tcss"
     BINDINGS = [
         ("ctrl+t", "cycle_mode", "Cycle mode"),
+        ("ctrl+o", "toggle_outputs", "Show all output"),
         ("escape", "cancel_turn", "Cancel turn"),
     ]
 
@@ -263,6 +264,7 @@ class HarnessApp(App):
         self._session_start = time.monotonic()
         self._turn_start = time.monotonic()
         self._spin = 0  # working-indicator animation frame index
+        self._show_all_output = False  # Ctrl+O reveal-all toggle
         # Autonomous wake-on-completion (interactive TUI only). When a background
         # job finishes while the turn worker is idle, fire a digest-only turn so
         # the agent reacts without waiting for the user. Seeded from config;
@@ -555,6 +557,15 @@ class HarnessApp(App):
     def action_cycle_mode(self) -> None:
         self.harness.deps.mode = self.harness.deps.mode.cycle()
         self._refresh_status()
+
+    def action_toggle_outputs(self) -> None:
+        """Ctrl+O: reveal every tool output in full (expand groups, uncap edit
+        diffs), or restore the default view on a second press."""
+        self._show_all_output = not self._show_all_output
+        for group in self.query(ToolGroupWidget):
+            group.collapsed = not self._show_all_output
+        for widget in self.query(ToolCallWidget):
+            widget.set_reveal(self._show_all_output)
 
     def watch_theme(self, theme: str) -> None:
         """Persist the active theme so it's the startup theme next run. Only the

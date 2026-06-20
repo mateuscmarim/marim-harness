@@ -39,6 +39,48 @@ def strip_line_numbers(text: str) -> str:
     return _LINE_PREFIX.sub("", text)
 
 
+# Lines of an edit_file diff shown inline before truncating (Ctrl+O reveals all).
+_DIFF_CAP = 20
+
+
+def render_edit_diff(edits, *, cap):
+    """Render an ``edit_file`` call's edits as a red ``- old`` / green ``+ new``
+    diff (one ``Text``), returning ``(text, added, removed)`` line counts. Each
+    edit's old lines are removals, its new lines additions; edits are blank-line
+    separated. When ``cap`` is an int and the diff exceeds it, the first ``cap``
+    rows are kept and a dim ``… +M more lines (ctrl+o)`` footer is appended;
+    ``cap=None`` shows everything. Pure — no file reads."""
+    rows: list[tuple[str, str]] = []
+    added = removed = 0
+    for edit in edits or []:
+        if not isinstance(edit, dict):
+            continue
+        old = str(edit.get("old_string", ""))
+        new = str(edit.get("new_string", ""))
+        if rows:
+            rows.append(("", ""))  # blank line between edits
+        for line in old.split("\n") if old else []:
+            rows.append(("red", f"- {line}"))
+            removed += 1
+        for line in new.split("\n") if new else []:
+            rows.append(("green", f"+ {line}"))
+            added += 1
+
+    if cap is not None and len(rows) > cap:
+        shown, hidden = rows[:cap], len(rows) - cap
+    else:
+        shown, hidden = rows, 0
+    text = Text()
+    for i, (style, line) in enumerate(shown):
+        if i:
+            text.append("\n")
+        text.append(line, style=style or None)
+    if hidden:
+        text.append("\n")
+        text.append(f"… +{hidden} more lines (ctrl+o)", style="dim")
+    return text, added, removed
+
+
 def human_tokens(n: int) -> str:
     """Compact token count: 950 -> '950', 1500 -> '1.5k', 100000 -> '100k'."""
     if n >= 1000:
@@ -75,17 +117,28 @@ class ToolCallWidget(Collapsible):
         self.args = args
         self.status = "pending"
         self.result_text = ""
+        # Show edit diffs uncapped (Ctrl+O / "reveal all" flips this on).
+        self.reveal = False
         # markup=False: tool args/results are arbitrary text (commands, file
         # content, output) that may contain Rich markup syntax like `[/]`.
         self._body = Static(self._render_body(), id="tool-body", markup=False)
+        # edit_file auto-expands so its diff shows inline; everything else stays
+        # collapsed and click-to-expand.
         # title is a Content (not str) on purpose — see _summary; Textual renders
         # it at runtime, but its stub types title as str.
         super().__init__(
-            self._body, title=self._summary(), collapsed=True  # pyright: ignore[reportArgumentType]
+            self._body,
+            title=self._summary(),  # pyright: ignore[reportArgumentType]
+            collapsed=tool_name != "edit_file",
         )
 
     def _summary(self) -> Content:
         glyph = {"pending": "·", "done": "✓", "denied": "✕"}.get(self.status, "·")
+        # edit_file: show just the path + a +N -M line stat (the diff is the body).
+        if self.tool_name == "edit_file":
+            _, added, removed = render_edit_diff(self.args.get("edits", []), cap=None)
+            path = self.args.get("path", "")
+            return Content(f"{glyph} edit_file({path}) +{added} -{removed}")
         arg_preview = ", ".join(f"{k}={v!r}" for k, v in list(self.args.items())[:2])
         # Collapsible titles are parsed as Textual markup; the arg preview is
         # untrusted (file content, commands) and may contain bracket sequences
@@ -93,31 +146,63 @@ class ToolCallWidget(Collapsible):
         # still chokes on. A literal Content bypasses markup parsing entirely.
         return Content(f"{glyph} {self.tool_name}({arg_preview})")
 
+    def _highlight(self, code: str, path: str) -> RenderableType:
+        """Syntax-highlight ``code`` by the file's extension, or plain on miss."""
+        lexer = _LEXERS.get(Path(path).suffix.lower())
+        if not lexer:
+            return code
+        try:
+            return Syntax(code, lexer, background_color="default", word_wrap=True)
+        except Exception:
+            return code
+
     def _result_renderable(self) -> RenderableType:
         """The result body, syntax-highlighted when it is file source."""
         if self.tool_name == "read_file" and self.result_text:
-            path = str(self.args.get("path", ""))
-            lexer = _LEXERS.get(Path(path).suffix.lower())
-            if lexer:
-                code = strip_line_numbers(self.result_text)
-                try:
-                    return Syntax(code, lexer, background_color="default", word_wrap=True)
-                except Exception:
-                    return code
+            return self._highlight(
+                strip_line_numbers(self.result_text), str(self.args.get("path", ""))
+            )
         return self.result_text
 
+    def _primary_renderable(self) -> "RenderableType | None":
+        """The per-tool body that replaces the raw arg repr: a diff for edit_file,
+        highlighted content for write_file. None for tools rendered generically."""
+        if self.tool_name == "edit_file":
+            cap = None if self.reveal else _DIFF_CAP
+            diff, _, _ = render_edit_diff(self.args.get("edits", []), cap=cap)
+            return diff
+        if self.tool_name == "write_file":
+            return self._highlight(
+                str(self.args.get("content", "")), str(self.args.get("path", ""))
+            )
+        return None
+
     def _render_body(self) -> RenderableType:
+        from rich.console import Group
+
+        primary = self._primary_renderable()
+        if primary is not None:
+            if not self.result_text:
+                return primary
+            # Text() keeps the result literal inside the Group (markup=False).
+            return Group(primary, "", Text(self.result_text))
+
         arg_lines = "\n".join(f"{k}: {v!r}" for k, v in self.args.items())
         if not self.result_text:
             return arg_lines or "(no arguments)"
         result = self._result_renderable()
         if isinstance(result, str):
             return f"{arg_lines}\n\n{result}" if arg_lines else result
-        from rich.console import Group
-
         # Text() keeps arg_lines literal: a bare str inside a Group would be
         # markup-parsed by Rich even though the host Static has markup=False.
         return Group(Text(arg_lines), "", result)
+
+    def set_reveal(self, value: bool) -> None:
+        """Reveal (uncap) the edit diff and expand, or restore the default
+        capped/collapsed state. Driven by the app's Ctrl+O reveal-all toggle."""
+        self.reveal = value
+        self.collapsed = False if value else (self.tool_name != "edit_file")
+        self._body.update(self._render_body())
 
     def finish(self, result_text: str, status: str = "done") -> None:
         self.status = status
