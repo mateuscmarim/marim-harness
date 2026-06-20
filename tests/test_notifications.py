@@ -180,8 +180,11 @@ def test_notify_send_macos_calls_osascript():
          patch("marim_harness.notifications.subprocess.run") as mock_run:
         n.send("Title", "Body", EVENT_TURN_COMPLETE)
         mock_run.assert_called_once()
-        script = mock_run.call_args[0][0][2]
+        # Script is passed on stdin, not as a CLI argument.
+        assert mock_run.call_args.kwargs.get("input") or mock_run.call_args[1].get("input")
+        script = (mock_run.call_args.kwargs.get("input") or mock_run.call_args[1]["input"]).decode()
         assert "display notification" in script
+        assert 'with title "marim"' in script
 
 
 # ---------------------------------------------------------------------------

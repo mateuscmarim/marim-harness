@@ -142,12 +142,15 @@ class Notifier:
     def _osascript(title: str, body: str) -> None:
         if shutil.which("osascript") is None:
             return
-        # Escape double quotes inside the strings for the AppleScript literal.
-        t = title.replace('"', '\\"')
-        b = body.replace('"', '\\"')
-        script = f'display notification "{b}" with title "marim" subtitle "{t}"'
+        # Pass the script on stdin to avoid shell interpretation entirely —
+        # no escaping of title/body needed since they never touch a shell.
+        script = (
+            'display notification "' + body.replace('"', '\\"') + '" '
+            'with title "marim" subtitle "' + title.replace('"', '\\"') + '"'
+        )
         subprocess.run(
-            ["osascript", "-e", script],
+            ["osascript", "-"],
+            input=script.encode(),
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -157,22 +160,22 @@ class Notifier:
     def _powershell(title: str, body: str) -> None:
         # Use the BurntToast-free fallback: a balloon tip via the system tray.
         # This avoids any module install; works on Windows 10/11 PowerShell 5+.
-        t = title.replace("'", "''")
-        b = body.replace("'", "''")
+        # Pass the script on stdin to avoid shell interpretation.
         ps = (
             "[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms')"
             " | Out-Null;"
             "$n = New-Object System.Windows.Forms.NotifyIcon;"
-            f"$n.Icon = [System.Drawing.SystemIcons]::Information;"
-            f"$n.BalloonTipTitle = '{t}';"
-            f"$n.BalloonTipText = '{b}';"
+            "$n.Icon = [System.Drawing.SystemIcons]::Information;"
+            f"$n.BalloonTipTitle = '{title.replace(chr(39), chr(39)*2)}';"
+            f"$n.BalloonTipText = '{body.replace(chr(39), chr(39)*2)}';"
             "$n.Visible = $true;"
             "$n.ShowBalloonTip(5000);"
             "Start-Sleep -Milliseconds 5500;"
             "$n.Dispose()"
         )
         subprocess.run(
-            ["powershell", "-NoProfile", "-Command", ps],
+            ["powershell", "-NoProfile", "-Command", "-"],
+            input=ps.encode(),
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
