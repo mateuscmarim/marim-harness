@@ -1,7 +1,11 @@
+import difflib
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from rich.console import RenderableType
+from rich.segment import Segment
+from rich.style import Style
 from rich.syntax import Syntax
 from rich.text import Text
 from textual import events
@@ -81,6 +85,179 @@ def render_edit_diff(edits, *, cap):
     return text, added, removed
 
 
+# Claude-style banded diff colors, tuned for the neutral dark base (themes.py).
+# Diffs stay red/green regardless of the accent theme — the colors are semantic,
+# not chrome — so they live here as Rich styles rather than theme variables.
+_ADD_BG = "#16321f"
+_REM_BG = "#3a1d1d"
+_GUTTER = "#6b7079"
+_ADD_MARK = "#5fae7e"
+_REM_MARK = "#d9544f"
+
+
+@dataclass
+class _DiffRow:
+    """One rendered diff line. ``kind`` is ``context``/``add``/``remove``/``gap``;
+    ``old_no``/``new_no`` are 1-based file line numbers (the gutter shows the old
+    number for removals, the new number otherwise). ``gap`` rows mark elided
+    unchanged regions between hunks."""
+
+    kind: str
+    old_no: "int | None"
+    new_no: "int | None"
+    text: str
+
+
+def compute_diff_rows(old_text: str, new_text: str, context: int = 3):
+    """Line-diff ``old_text`` vs ``new_text`` into ``_DiffRow``s with real file
+    line numbers, grouping changes into hunks with ``context`` lines around each
+    and a ``gap`` row between hunks. Returns ``(rows, added, removed)`` where the
+    counts are total added/removed lines (pre-cap). Pure."""
+    old_lines = old_text.split("\n")
+    new_lines = new_text.split("\n")
+    sm = difflib.SequenceMatcher(a=old_lines, b=new_lines, autojunk=False)
+    rows: list[_DiffRow] = []
+    added = removed = 0
+    for gi, group in enumerate(sm.get_grouped_opcodes(context)):
+        if gi:
+            rows.append(_DiffRow("gap", None, None, "⋮"))
+        for tag, i1, i2, j1, j2 in group:
+            if tag == "equal":
+                for i, j in zip(range(i1, i2), range(j1, j2)):
+                    rows.append(_DiffRow("context", i + 1, j + 1, old_lines[i]))
+            else:
+                for i in range(i1, i2):
+                    rows.append(_DiffRow("remove", i + 1, None, old_lines[i]))
+                    removed += 1
+                for j in range(j1, j2):
+                    rows.append(_DiffRow("add", None, j + 1, new_lines[j]))
+                    added += 1
+    return rows, added, removed
+
+
+def _highlight_lines(text: str, lexer: "str | None") -> list[Text]:
+    """Syntax-highlight ``text`` and split it into one ``Text`` per source line,
+    aligned 1:1 with ``text.split("\\n")`` so a line number indexes its row. Plain
+    ``Text`` per line when there's no lexer or highlighting fails or mis-aligns."""
+    plain = text.split("\n")
+    if not lexer:
+        return [Text(line) for line in plain]
+    try:
+        highlighted = Syntax(text, lexer, background_color="default").highlight(text)
+        lines = list(highlighted.split("\n"))
+    except Exception:
+        return [Text(line) for line in plain]
+    # Rich's Text.split drops the trailing empty line that str.split keeps for a
+    # newline-terminated file; pad it back so a line number indexes its row.
+    while len(lines) < len(plain):
+        lines.append(Text(""))
+    return lines[: len(plain)] if len(lines) >= len(plain) else [Text(x) for x in plain]
+
+
+class EditDiff:
+    """A Claude-style banded diff: a dim line-number gutter, a ``+``/``-`` marker,
+    syntax-highlighted content, and a full-width red/green background band on
+    changed lines. A custom renderable so each line can be padded to the console
+    width (a plain ``Text`` background only colors its glyphs, not the full row)."""
+
+    def __init__(
+        self,
+        rows: list[_DiffRow],
+        hidden: int,
+        old_hl: list[Text],
+        new_hl: list[Text],
+    ) -> None:
+        self.rows = rows
+        self.hidden = hidden
+        self.old_hl = old_hl
+        self.new_hl = new_hl
+        nums = [n for r in rows for n in (r.old_no, r.new_no) if n is not None]
+        self._gw = max((len(str(n)) for n in nums), default=1)
+
+    def __rich_console__(self, console, options):
+        width = options.max_width
+        for row in self.rows:
+            yield from self._render_row(console, row, width)
+            yield Segment("\n")
+        if self.hidden:
+            yield Segment(
+                f"… +{self.hidden} more lines (ctrl+o)", Style(dim=True)
+            )
+            yield Segment("\n")
+
+    def _render_row(self, console, row: _DiffRow, width: int):
+        if row.kind == "gap":
+            yield Segment((" " * self._gw) + " ⋮", Style(color=_GUTTER, dim=True))
+            return
+        bg = {"add": _ADD_BG, "remove": _REM_BG}.get(row.kind)
+        band = Style(bgcolor=bg) if bg else Style()
+        num = row.old_no if row.kind == "remove" else row.new_no
+        gutter = (str(num) if num is not None else "").rjust(self._gw)
+        mark = {"add": "+", "remove": "-"}.get(row.kind, " ")
+        mark_color = {"add": _ADD_MARK, "remove": _REM_MARK}.get(row.kind)
+        yield Segment(gutter + " ", Style(color=_GUTTER) + band)
+        yield Segment(mark + " ", Style(color=mark_color, bold=bool(bg)) + band)
+        used = self._gw + 3  # gutter + space + marker + space
+
+        src = self.old_hl if row.kind == "remove" else self.new_hl
+        idx = (row.old_no if row.kind == "remove" else row.new_no)
+        line = src[idx - 1].copy() if idx and idx - 1 < len(src) else Text(row.text)
+        avail = max(0, width - used)
+        line.truncate(avail, overflow="ellipsis")
+        for seg in line.render(console, end=""):
+            yield Segment(seg.text, (seg.style or Style()) + band)
+        pad = width - used - line.cell_len
+        if pad > 0 and bg:
+            yield Segment(" " * pad, band)
+
+
+def render_file_diff(
+    old_text: str,
+    new_text: str,
+    *,
+    cap,
+    lexer: "str | None" = None,
+    context: int = 3,
+):
+    """Render a real before/after file diff Claude-style — an ``EditDiff`` with
+    gutter line numbers, context, and red/green bands — returning ``(renderable,
+    added, removed)``. When ``cap`` is an int and the rows exceed it, the first
+    ``cap`` are kept and a ``… +M more lines (ctrl+o)`` footer is shown."""
+    rows, added, removed = compute_diff_rows(old_text, new_text, context)
+    if cap is not None and len(rows) > cap:
+        shown, hidden = rows[:cap], len(rows) - cap
+    else:
+        shown, hidden = rows, 0
+    diff = EditDiff(shown, hidden, _highlight_lines(old_text, lexer),
+                    _highlight_lines(new_text, lexer))
+    return diff, added, removed
+
+
+def _reverse_edits(new_text: str, edits) -> "str | None":
+    """Reconstruct the pre-edit file text from the post-edit ``new_text`` by
+    reverse-applying ``edits`` (swapping each ``new_string`` back to its
+    ``old_string``, in reverse order). Returns the reconstruction only if
+    re-applying the edits forward reproduces ``new_text`` exactly — otherwise
+    ``None``, so an ambiguous reversal falls back to the simple diff rather than
+    showing a wrong one. ``replace_all`` edits are a known best-effort limit."""
+    if not edits or not all(isinstance(e, dict) for e in edits):
+        return None
+    old = new_text
+    for e in reversed(edits):
+        o, n = str(e.get("old_string", "")), str(e.get("new_string", ""))
+        old = old.replace(n, o) if e.get("replace_all") else old.replace(n, o, 1)
+    check = old
+    for e in edits:
+        o, n = str(e.get("old_string", "")), str(e.get("new_string", ""))
+        if e.get("replace_all"):
+            check = check.replace(o, n)
+        else:
+            if check.count(o) != 1:
+                return None
+            check = check.replace(o, n, 1)
+    return old if check == new_text else None
+
+
 def human_tokens(n: int) -> str:
     """Compact token count: 950 -> '950', 1500 -> '1.5k', 100000 -> '100k'."""
     if n >= 1000:
@@ -119,6 +296,11 @@ class ToolCallWidget(Collapsible):
         self.result_text = ""
         # Show edit diffs uncapped (Ctrl+O / "reveal all" flips this on).
         self.reveal = False
+        # Post-edit file text + reconstructed pre-edit text, loaded at finish() so
+        # edit_file renders a real before/after diff (gutter line numbers, context,
+        # bands). None until then ⇒ the simple old/new-string diff is the fallback.
+        self._old_text: str | None = None
+        self._new_text: str | None = None
         # markup=False: tool args/results are arbitrary text (commands, file
         # content, output) that may contain Rich markup syntax like `[/]`.
         self._body = Static(self._render_body(), id="tool-body", markup=False)
@@ -136,7 +318,7 @@ class ToolCallWidget(Collapsible):
         glyph = {"pending": "·", "done": "✓", "denied": "✕"}.get(self.status, "·")
         # edit_file: show just the path + a +N -M line stat (the diff is the body).
         if self.tool_name == "edit_file":
-            _, added, removed = render_edit_diff(self.args.get("edits", []), cap=None)
+            _, added, removed = self._edit_diff(cap=None)
             path = self.args.get("path", "")
             return Content(f"{glyph} edit_file({path}) +{added} -{removed}")
         arg_preview = ", ".join(f"{k}={v!r}" for k, v in list(self.args.items())[:2])
@@ -169,13 +351,44 @@ class ToolCallWidget(Collapsible):
         highlighted content for write_file. None for tools rendered generically."""
         if self.tool_name == "edit_file":
             cap = None if self.reveal else _DIFF_CAP
-            diff, _, _ = render_edit_diff(self.args.get("edits", []), cap=cap)
+            diff, _, _ = self._edit_diff(cap=cap)
             return diff
         if self.tool_name == "write_file":
             return self._highlight(
                 str(self.args.get("content", "")), str(self.args.get("path", ""))
             )
         return None
+
+    def _edit_diff(self, *, cap):
+        """The edit_file diff renderable + (added, removed) counts: a real
+        before/after file diff once the file text is loaded, else the simple
+        old/new-string diff."""
+        if self._old_text is not None and self._new_text is not None:
+            lexer = _LEXERS.get(Path(str(self.args.get("path", ""))).suffix.lower())
+            return render_file_diff(
+                self._old_text, self._new_text, cap=cap, lexer=lexer
+            )
+        return render_edit_diff(self.args.get("edits", []), cap=cap)
+
+    def _load_diff(self) -> None:
+        """Read the just-edited file and reconstruct its pre-edit text so the body
+        can render a real diff. Best-effort: any failure (no app context, unreadable
+        file, ambiguous reversal) leaves ``_old_text``/``_new_text`` None and the
+        simple diff in place."""
+        try:
+            root = self.app.harness.deps.workspace_root  # type: ignore[attr-defined]
+        except Exception:
+            return
+        from ...tools import fs
+
+        try:
+            path = fs._safe(root, str(self.args.get("path", "")))
+            new_text = path.read_text(encoding="utf-8")
+        except Exception:
+            return
+        old_text = _reverse_edits(new_text, self.args.get("edits", []))
+        if old_text is not None:
+            self._old_text, self._new_text = old_text, new_text
 
     def _render_body(self) -> RenderableType:
         from rich.console import Group
@@ -207,6 +420,8 @@ class ToolCallWidget(Collapsible):
     def finish(self, result_text: str, status: str = "done") -> None:
         self.status = status
         self.result_text = result_text
+        if self.tool_name == "edit_file" and status == "done":
+            self._load_diff()
         self.title = self._summary()
         self._body.update(self._render_body())
 
