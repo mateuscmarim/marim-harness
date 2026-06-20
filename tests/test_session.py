@@ -51,6 +51,30 @@ def test_create_save_and_load_roundtrip(tmp_path: Path):
     assert tasks == []
 
 
+def test_image_bytes_survive_save_and_load(tmp_path: Path, monkeypatch):
+    """A pasted image must come back byte-identical after a save/load. pydantic_ai
+    serializes BinaryContent.data as URL-safe base64, so the cache round-trip must
+    use the same alphabet — standard base64 silently corrupts any image whose
+    payload maps to '+'/'/' and the model then rejects it as corrupt multimodal
+    data on every resumed turn."""
+    monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path / "imgcache"))
+    # Bytes chosen so standard base64 yields '+'/'/' (URL-safe yields '-'/'_').
+    raw = bytes([0xff, 0xff, 0xff, 0xfb, 0xef, 0xbe]) * 4
+    mgr = _manager(tmp_path)
+    store = mgr.create("Has Image")
+    history = [
+        ModelRequest(parts=[UserPromptPart(content=[
+            "look at this", BinaryContent(data=raw, media_type="image/png"),
+        ])])
+    ]
+    store.save(history, RunUsage())
+
+    messages, _, _, _ = mgr.store(store.session_id).load()
+    loaded = messages[0].parts[0].content[1]
+    assert isinstance(loaded, BinaryContent)
+    assert loaded.data == raw  # byte-identical, not double-encoded/garbled
+
+
 def test_usage_round_trips_all_fields(tmp_path: Path):
     # The full RunUsage must survive a save/load, not just input+output:
     # requests, cache tokens, and details were previously dropped, so a
