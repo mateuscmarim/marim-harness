@@ -11,9 +11,12 @@ from marim_harness.interfaces.tui.widgets import (
     ToolCallWidget,
     ToolGroupWidget,
     UserMessage,
+    _reverse_edits,
+    compute_diff_rows,
     format_cost,
     format_token_split,
     render_edit_diff,
+    render_file_diff,
     strip_line_numbers,
 )
 
@@ -709,6 +712,147 @@ def test_render_edit_diff_empty_and_malformed():
     assert text.plain == "" and a == 0 and r == 0
     text2, a2, r2 = render_edit_diff(["nope", {"new_string": "only add"}], cap=None)
     assert "+ only add" in text2.plain and r2 == 0 and a2 == 1
+
+
+def _render_lines(renderable, width=80) -> list[str]:
+    """Render a Rich renderable to plain text lines (styles stripped) for asserting
+    on the visible diff text — line numbers, +/- markers, content."""
+    import io
+
+    from rich.console import Console
+
+    con = Console(width=width, file=io.StringIO(), color_system=None)
+    con.print(renderable)
+    return con.file.getvalue().splitlines()
+
+
+def test_compute_diff_rows_classifies_lines_with_real_numbers():
+    rows, added, removed = compute_diff_rows("a\nb\nc\n", "a\nX\nc\n")
+    kinds = [(r.kind, r.old_no, r.new_no, r.text) for r in rows]
+    assert ("context", 1, 1, "a") in kinds
+    assert ("remove", 2, None, "b") in kinds
+    assert ("add", None, 2, "X") in kinds
+    assert ("context", 3, 3, "c") in kinds
+    assert added == 1 and removed == 1
+
+
+def test_compute_diff_rows_gaps_between_separated_hunks():
+    old = "\n".join(str(i) for i in range(1, 21))
+    new = old.replace("2", "TWO").replace("19", "NINETEEN")
+    rows, _, _ = compute_diff_rows(old, new, context=2)
+    assert any(r.kind == "gap" for r in rows)  # the unchanged middle is collapsed
+
+
+def test_highlight_lines_styles_newline_terminated_source():
+    # A newline-terminated file: str.split keeps a trailing "" that Rich's split
+    # drops — the rows must still align AND keep syntax styling (regression: the
+    # count mismatch used to silently fall back to unstyled plain text).
+    from marim_harness.interfaces.tui.widgets import _highlight_lines
+
+    lines = _highlight_lines("def foo(x):\n    return x + 1\n", "python")
+    assert len(lines) == 3  # "def…", "    return…", ""
+    assert any(line.spans for line in lines)  # actually syntax-highlighted
+
+
+def test_render_file_diff_shows_numbers_markers_and_content():
+    diff, added, removed = render_file_diff("a\nb\nc\n", "a\nX\nc\n", cap=None)
+    text = "\n".join(_render_lines(diff))
+    assert "- b" in text or "-  b" in text or "- " in text and "b" in text
+    assert "+ X" in text or "X" in text
+    assert "2" in text  # a real line number in the gutter
+    assert added == 1 and removed == 1
+
+
+def test_render_file_diff_caps_and_reveals():
+    old = "\n".join(f"o{i}" for i in range(40))
+    new = "\n".join(f"n{i}" for i in range(40))
+    capped, _, _ = render_file_diff(old, new, cap=20)
+    assert "more lines (ctrl+o)" in "\n".join(_render_lines(capped))
+    full, _, _ = render_file_diff(old, new, cap=None)
+    assert "more lines" not in "\n".join(_render_lines(full))
+
+
+def test_reverse_edits_reconstructs_and_verifies():
+    new_text = "hello world\nsecond line\n"
+    edits = [{"old_string": "planet", "new_string": "world"}]
+    # The pre-edit file had "planet" where "world" now is.
+    assert _reverse_edits(new_text, edits) == "hello planet\nsecond line\n"
+
+
+def test_reverse_edits_returns_none_when_unverifiable():
+    # "ab" appears twice in new_text, so reverse-replacing the first one yields a
+    # text where old_string "a" no longer matches uniquely — the forward re-check
+    # fails and we bail to the simple diff rather than show a wrong reconstruction.
+    new_text = "ab\nab\n"
+    edits = [{"old_string": "a", "new_string": "ab"}]
+    assert _reverse_edits(new_text, edits) is None
+
+
+def test_edit_file_widget_uses_file_diff_when_text_loaded():
+    w = ToolCallWidget(
+        "edit_file", {"path": "a.py", "edits": [{"old_string": "b", "new_string": "X"}]}
+    )
+    w._old_text = "a\nb\nc\n"
+    w._new_text = "a\nX\nc\n"
+    body = "\n".join(_render_lines(w._render_body()))
+    assert "X" in body and "b" in body
+    assert "2" in body  # gutter line numbers, the file-diff hallmark
+
+
+class _EditHarness(App):
+    """Mounts a single edit_file widget; the diff tests drive finish() on it."""
+
+    def __init__(self, args: dict) -> None:
+        self._args = args
+        super().__init__()
+
+    def compose(self) -> ComposeResult:
+        yield ToolCallWidget("edit_file", self._args)
+
+
+@pytest.mark.anyio
+async def test_finish_loads_real_file_and_renders_gutter_diff(tmp_path):
+    """The real path: finish() reads the post-edit file via the app's workspace
+    root, reconstructs the pre-edit text, and renders a gutter/line-number diff.
+    Exercises _load_diff → fs._safe → read_text → _reverse_edits end to end —
+    the chain every other diff test stubs past."""
+    import types
+
+    (tmp_path / "g.py").write_text("a\nX\nc\n")  # post-edit content on disk
+    app = _EditHarness(
+        {"path": "g.py", "edits": [{"old_string": "b", "new_string": "X"}]}
+    )
+    app.harness = types.SimpleNamespace(
+        deps=types.SimpleNamespace(workspace_root=tmp_path)
+    )
+    async with app.run_test() as pilot:
+        w = app.query_one(ToolCallWidget)
+        w.finish("edited g.py (1 edit)")
+        await pilot.pause()
+        assert w._old_text == "a\nb\nc\n"  # reconstructed pre-edit text
+        body = "\n".join(_render_lines(w._render_body()))
+        assert "1 " in body and "2 " in body  # real gutter line numbers
+        assert "b" in body and "X" in body  # the removed/added content
+
+
+@pytest.mark.anyio
+async def test_finish_falls_back_when_file_unreadable(tmp_path):
+    """If the file can't be read (missing/changed), finish() leaves the simple
+    diff in place instead of crashing or blanking — the swallowed-error path."""
+    import types
+
+    app = _EditHarness(
+        {"path": "gone.py", "edits": [{"old_string": "b", "new_string": "X"}]}
+    )
+    app.harness = types.SimpleNamespace(
+        deps=types.SimpleNamespace(workspace_root=tmp_path)
+    )
+    async with app.run_test() as pilot:
+        w = app.query_one(ToolCallWidget)
+        w.finish("edited gone.py")  # file does not exist
+        await pilot.pause()
+        assert w._old_text is None  # no reconstruction
+        assert "+ X" in _plain(w._render_body())  # simple diff still shows
 
 
 def test_edit_file_widget_renders_diff_and_is_expanded():
