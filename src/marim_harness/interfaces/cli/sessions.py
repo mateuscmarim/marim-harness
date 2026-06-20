@@ -6,8 +6,9 @@ import sys
 from pathlib import Path
 
 from ...session import SessionManager
+from ..tui.status import format_duration
 
-_COLUMNS = ("ID", "NAME", "UPDATED", "MESSAGES", "TOKENS")
+_COLUMNS = ("ID", "NAME", "UPDATED", "MESSAGES", "TOKENS", "DURATION")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -49,6 +50,7 @@ def _cmd_list(args, *, out, err) -> int:
                 "updated": info.updated,
                 "message_count": info.message_count,
                 "tokens": info.tokens,
+                "duration_seconds": info.duration_seconds,
             }
             for info in infos
         ]
@@ -59,8 +61,12 @@ def _cmd_list(args, *, out, err) -> int:
         print("No sessions saved for this workspace.", file=out)
         return 0
 
+    def _fmt_duration(d):
+        return format_duration(d) if d else "-"
+
     rows = [
-        (info.id, info.name, info.updated, str(info.message_count), str(info.tokens))
+        (info.id, info.name, info.updated, str(info.message_count),
+         str(info.tokens), _fmt_duration(info.duration_seconds))
         for info in infos
     ]
     widths = [

@@ -26,6 +26,7 @@ from .status import (
 )
 from .stream_render import StreamRenderer
 from .themes import MARIM_THEMES
+from ...usage import resolve_cost
 from .widgets import (
     AssistantMessage,
     ErrorMessage,
@@ -35,6 +36,8 @@ from .widgets import (
     TaskPanel,
     TurnMeta,
     UserMessage,
+    format_cost,
+    human_tokens,
 )
 
 _BANNER = (
@@ -148,6 +151,10 @@ class HarnessApp(App):
         # Anchor the session timer at mount and tick the status bar while idle so
         # the session duration advances even with no turn running.
         self.status.session_start = time.monotonic()
+        # Ensure the controller's segment timer is running even on fresh sessions
+        # (resume() sets it for resumed sessions, but fresh starts skip resume).
+        if self.harness.session._segment_start == 0.0:
+            self.harness.session._segment_start = time.monotonic()
         self.set_interval(_CLOCK_TICK_INTERVAL, self.status.refresh_status)
         # Animate the working indicator while a turn runs (no-op when idle).
         self.set_interval(_SPINNER_TICK_INTERVAL, self.status.tick_spinner)
@@ -175,11 +182,27 @@ class HarnessApp(App):
     async def on_unmount(self) -> None:
         """Jobs are process-scoped — kill any still running when the app exits so
         no detached shell or agent run is left behind, and close MCP connections."""
+        # Persist session duration before tearing down.
+        session = self.harness.session
+        elapsed = (time.monotonic() - session._segment_start) if session._segment_start else 0.0
+        session.duration_seconds += elapsed
+        session.persist()
+        # Show a brief session summary in the terminal after exit.
+        total = session.duration_seconds
+        usage = session.usage
+        total_tokens = usage.input_tokens + usage.output_tokens
+        cost, _ = resolve_cost(usage, self.harness.model_id)
+        parts = [f"Session: {format_duration(total)}"]
+        parts.append(f"Tokens: {human_tokens(total_tokens)}")
+        if cost is not None:
+            parts.append(f"Cost: {format_cost(cost)}")
+        summary = " · ".join(parts)
         # Reset the terminal tab title so a stale "● working" mark doesn't linger
         # after exit. Best-effort: the driver may already be tearing down.
         if self._driver is not None:
             try:
                 self._driver.write(osc_title("marim-harness"))
+                self._driver.write(f"\r\n{summary}\r\n")
                 self._driver.flush()
             except Exception:
                 pass

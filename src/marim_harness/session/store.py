@@ -53,6 +53,7 @@ class SessionInfo:
     updated: str
     message_count: int
     tokens: int
+    duration_seconds: Optional[float] = None
 
 
 class SessionStore:
@@ -72,7 +73,8 @@ class SessionStore:
         self.model = model
 
     def save(self, history: list, usage: RunUsage,
-             tasks: Optional[list] = None) -> None:
+             tasks: Optional[list] = None,
+             duration_seconds: Optional[float] = None) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "id": self.session_id,
@@ -81,6 +83,7 @@ class SessionStore:
             "model": self.model,
             "workspace": str(self.workspace_root),
             "updated": _now(),
+            "duration_seconds": duration_seconds,
             "tokens": {
                 "input": usage.input_tokens,
                 "output": usage.output_tokens,
@@ -102,11 +105,11 @@ class SessionStore:
         tmp.write_text(json.dumps(payload))
         tmp.replace(self.path)  # atomic swap so a crash mid-write can't corrupt
 
-    def load(self) -> tuple[list, RunUsage, list]:
-        """Return ``(messages, usage, tasks)``. Files written before task
-        tracking simply have no ``tasks`` key and load as an empty list."""
+    def load(self) -> tuple[list, RunUsage, list, Optional[float]]:
+        """Return ``(messages, usage, tasks, duration_seconds)``. Files written
+        before task/duration tracking simply have no key and load as defaults."""
         if not self.path.exists():
-            return [], RunUsage(), []
+            return [], RunUsage(), [], None
         data = json.loads(self.path.read_text())
         raw_messages = rehydrate_images(data.get("messages", []), self.session_id)
         messages = ModelMessagesTypeAdapter.validate_python(raw_messages)
@@ -124,7 +127,7 @@ class SessionStore:
             tool_calls=tok.get("tool_calls", 0),
             details=tok.get("details") or {},
         )
-        return messages, usage, data.get("tasks", [])
+        return messages, usage, data.get("tasks", []), data.get("duration_seconds")
 
     def clear(self) -> None:
         self.path.unlink(missing_ok=True)
@@ -163,6 +166,7 @@ class SessionManager:
                     updated=data.get("updated", ""),
                     message_count=len(data.get("messages", [])),
                     tokens=_total_tokens(data.get("tokens", {})),
+                    duration_seconds=data.get("duration_seconds"),
                 )
             )
         infos.sort(key=lambda info: info.updated, reverse=True)

@@ -44,7 +44,7 @@ def test_create_save_and_load_roundtrip(tmp_path: Path):
 
     # A fresh store for the same id loads the saved conversation.
     again = mgr.store(store.session_id)
-    messages, usage, tasks = again.load()
+    messages, usage, tasks, _ = again.load()
     assert len(messages) == len(history)
     assert type(messages[0]).__name__ == type(history[0]).__name__
     assert usage.total_tokens == 20
@@ -69,7 +69,7 @@ def test_usage_round_trips_all_fields(tmp_path: Path):
     )
     store.save(_history(), usage)
 
-    _, loaded, _ = mgr.store(store.session_id).load()
+    _, loaded, _, _ = mgr.store(store.session_id).load()
     assert loaded == usage
     assert loaded.total_tokens == usage.total_tokens
     assert loaded.requests == 4
@@ -81,7 +81,7 @@ def test_usage_round_trips_all_fields(tmp_path: Path):
 def test_load_missing_returns_empty(tmp_path: Path):
     mgr = _manager(tmp_path)
     store = mgr.create()
-    messages, usage, tasks = store.load()
+    messages, usage, tasks, _ = store.load()
     assert messages == []
     assert usage.total_tokens == 0
     assert tasks == []
@@ -95,7 +95,7 @@ def test_tasks_round_trip(tmp_path: Path):
         {"text": "second", "status": "in_progress"},
     ]
     store.save(_history(), RunUsage(), tasks)
-    _, _, loaded = mgr.store(store.session_id).load()
+    _, _, loaded, _ = mgr.store(store.session_id).load()
     assert loaded == tasks
 
 
@@ -107,7 +107,7 @@ def test_legacy_file_without_tasks_loads_empty(tmp_path: Path):
     data = json.loads(store.path.read_text())
     del data["tasks"]
     store.path.write_text(json.dumps(data))
-    _, _, loaded = mgr.store(store.session_id).load()
+    _, _, loaded, _ = mgr.store(store.session_id).load()
     assert loaded == []
 
 
@@ -402,7 +402,7 @@ def test_session_save_load_round_trips_image(tmp_path, monkeypatch):
     store.save(history, RunUsage())
     # session JSON must not carry the base64 payload inline
     assert "marim-image-cache://" in store.path.read_text()
-    loaded, _usage, _tasks = store.load()
+    loaded, _usage, _tasks, _ = store.load()
     parts = loaded[0].parts
     binaries = [c for c in parts[0].content if isinstance(c, BinaryContent)]
     assert binaries and binaries[0].data == b"\x89PNGz"

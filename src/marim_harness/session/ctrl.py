@@ -1,4 +1,5 @@
 import logging
+import time
 from typing import Callable, Optional
 
 from pydantic_ai.usage import RunUsage
@@ -40,6 +41,8 @@ class SessionController:
         self.titler = titler
         self.history: list = []
         self.usage: RunUsage = RunUsage()
+        self.duration_seconds: float = 0.0
+        self._segment_start: float = 0.0
         self.on_compact: Optional[Callable[[int, int], None]] = None
         self.on_compact_start: Optional[Callable[[], None]] = None
         self.on_rename: Optional[Callable[[str, str], None]] = None
@@ -59,7 +62,11 @@ class SessionController:
 
     def persist(self) -> None:
         if self.store is not None:
-            self.store.save(self.history, self.usage, self.deps.tasks.to_payload())
+            elapsed = (time.monotonic() - self._segment_start) if self._segment_start else 0.0
+            self.store.save(
+                self.history, self.usage, self.deps.tasks.to_payload(),
+                duration_seconds=self.duration_seconds + elapsed,
+            )
 
     def set_model(self, model_id: str) -> None:
         if self.store is not None:
@@ -69,13 +76,17 @@ class SessionController:
     def resume(self) -> int:
         if self.store is None:
             return 0
-        self.history, self.usage, tasks = self.store.load()
+        self.history, self.usage, tasks, prev_duration = self.store.load()
         self.deps.tasks.load(tasks)
+        self.duration_seconds = prev_duration or 0.0
+        self._segment_start = time.monotonic()
         return len(self.history)
 
     def reset(self) -> None:
         self.history = []
         self.usage = RunUsage()
+        self.duration_seconds = 0.0
+        self._segment_start = 0.0
         self.deps.tasks.clear()
         if self.store is not None:
             self.store.clear()
@@ -89,14 +100,18 @@ class SessionController:
             self.store.model = model_id
         self.history = []
         self.usage = RunUsage()
+        self.duration_seconds = 0.0
+        self._segment_start = time.monotonic()
         self.deps.tasks.clear()
 
     def switch_session(self, session_id: str) -> int:
         if self.manager is None:
             return 0
         self.store = self.manager.store(session_id)
-        self.history, self.usage, tasks = self.store.load()
+        self.history, self.usage, tasks, prev_duration = self.store.load()
         self.deps.tasks.load(tasks)
+        self.duration_seconds = prev_duration or 0.0
+        self._segment_start = time.monotonic()
         return len(self.history)
 
     async def maybe_compact(self) -> None:

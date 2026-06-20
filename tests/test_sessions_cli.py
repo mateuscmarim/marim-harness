@@ -66,7 +66,7 @@ def test_list_json_objects(workspace):
     assert code == 0
     data = json.loads(out.getvalue())
     assert isinstance(data, list) and len(data) == 2
-    keys = {"id", "name", "updated", "message_count", "tokens"}
+    keys = {"id", "name", "updated", "message_count", "tokens", "duration_seconds"}
     for obj in data:
         assert set(obj.keys()) == keys
     names = {obj["name"] for obj in data}

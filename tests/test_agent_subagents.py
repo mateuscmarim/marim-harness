@@ -232,7 +232,7 @@ async def test_run_background_subagent_counts_and_persists_usage(tmp_path: Path)
     await h.subagents.run_background("explore", "scan the repo")
     assert h.session.total_tokens > 0
     # The spend reached disk immediately, without waiting for a run_turn.
-    _, usage, _ = store.load()
+    _, usage, _, _ = store.load()
     assert usage.total_tokens == h.session.total_tokens
 
 
