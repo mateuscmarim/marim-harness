@@ -49,7 +49,15 @@ class SessionView:
                         group = None
                         solo = None
                         content = part.content
-                        text = content if isinstance(content, str) else str(content)
+                        if isinstance(content, str):
+                            text = content
+                        elif isinstance(content, list):
+                            text = " ".join(
+                                item for item in content
+                                if isinstance(item, str)
+                            )
+                        else:
+                            text = str(content)
                         # Drop any turn-context envelope (job digests, hook
                         # output, error notes) so the log shows only what the
                         # user typed — as the live path already does.
