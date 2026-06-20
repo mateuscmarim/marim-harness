@@ -57,8 +57,8 @@ class StatusPresenter:
         # tokens as a live +N delta (they aren't split until the turn commits),
         # then spend — billed when the provider reports it, else estimated.
         tokens_text = format_token_split(self.app.harness.session.usage)
-        if self.app._live_run_tokens:
-            tokens_text += f" +{human_tokens(self.app._live_run_tokens)}"
+        if self.app.stream.live_run_tokens:
+            tokens_text += f" +{human_tokens(self.app.stream.live_run_tokens)}"
         cost, _ = resolve_cost(self.app.harness.session.usage, self.app.harness.model_id)
         if cost is not None:
             tokens_text += f" · {format_cost(cost)}"
@@ -115,6 +115,6 @@ class StatusPresenter:
         else:
             # The finished run is now folded into session usage by run_turn; drop
             # the in-flight tally so it isn't added on top a second time.
-            self.app._live_run_tokens = 0
+            self.app.stream.reset_live_tokens()
         self.refresh_title()  # spinner ↔ static ○
         self.refresh_status()

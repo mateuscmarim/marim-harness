@@ -87,7 +87,7 @@ async def test_status_bar_includes_live_run_tokens_while_streaming(tmp_path: Pat
         await pilot.pause()
         app.harness.session.usage.input_tokens = 100  # committed from prior turns
         app.status.set_busy(True)
-        app._live_run_tokens = 50  # in-flight this turn
+        app.stream.live_run_tokens = 50  # in-flight this turn
         app.status.refresh_status()
         await pilot.pause()
         text = str(app.query_one("#status-bar").render())
@@ -116,8 +116,8 @@ async def test_on_events_tracks_live_run_tokens_from_ctx_usage(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._on_events(ctx, gen())
-        assert app._live_run_tokens == 1234
+        await app.stream.on_events(ctx, gen())
+        assert app.stream.live_run_tokens == 1234
 
 
 @pytest.mark.anyio
@@ -127,9 +127,9 @@ async def test_live_run_tokens_reset_when_turn_ends(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._live_run_tokens = 500
+        app.stream.live_run_tokens = 500
         app.status.set_busy(False)
-        assert app._live_run_tokens == 0
+        assert app.stream.live_run_tokens == 0
 
 
 @pytest.mark.anyio
@@ -141,8 +141,8 @@ async def test_flush_refreshes_status_while_busy(tmp_path: Path):
         await pilot.pause()
         app.status.set_busy(True)  # paints the initial split
         app.harness.session.usage.input_tokens = 200
-        app._live_run_tokens = 99
-        app._flush_streams()  # the per-frame tick picks up the live delta
+        app.stream.live_run_tokens = 99
+        app.stream.flush_streams()  # the per-frame tick picks up the live delta
         await pilot.pause()
         text = str(app.query_one("#status-bar").render())
         assert "200↑" in text  # committed split
@@ -172,14 +172,14 @@ async def test_flush_only_touches_buffered_messages(tmp_path: Path):
         clean.flush = lambda: flushed.append("clean")  # type: ignore[assignment]
         dirty.flush = lambda: flushed.append("dirty")  # type: ignore[assignment]
 
-        app._append_stream(dirty, "hello")  # buffers a delta and marks it dirty
-        app._flush_streams()
+        app.stream.append_stream(dirty, "hello")  # buffers a delta and marks it dirty
+        app.stream.flush_streams()
 
         assert flushed == ["dirty"]  # the clean, untouched message is skipped
         # The dirty set drains each tick, so a second flush with no new deltas is
         # a no-op (nothing re-flushed).
         flushed.clear()
-        app._flush_streams()
+        app.stream.flush_streams()
         assert flushed == []
 
 
@@ -785,10 +785,10 @@ async def test_on_events_mounts_and_finishes_tool_widget(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._on_events(None, gen())
+        await app.stream.on_events(None, gen())
         await pilot.pause()
 
-        widget = app._tool_widgets.get("call-1")
+        widget = app.stream.tool_widgets.get("call-1")
         assert isinstance(widget, ToolCallWidget)
         log = app.query_one("#log")
         assert widget in log.walk_children()
@@ -831,10 +831,10 @@ async def test_spawn_agent_mounts_subagent_widget(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._on_events(None, gen())
+        await app.stream.on_events(None, gen())
         await pilot.pause()
 
-        widget = app._tool_widgets.get("spawn-1")
+        widget = app.stream.tool_widgets.get("spawn-1")
         assert isinstance(widget, SubAgentWidget)
         assert widget.agent_type == "explore"
         assert "find the config loader" in widget.agent_task
@@ -877,17 +877,17 @@ async def test_subagent_event_routes_stream_into_widget(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._on_events(None, spawn_gen())
+        await app.stream.on_events(None, spawn_gen())
         await pilot.pause()
 
-        parent = app._tool_widgets["s1"]
+        parent = app.stream.tool_widgets["s1"]
         assert isinstance(parent, SubAgentWidget)
 
         # The sub-agent emits text, then a nested read_file call + result.
-        await app._on_subagent_event(
+        await app.stream.on_subagent_event(
             "s1", PartStartEvent(index=0, part=TextPart(content="checking files"))
         )
-        await app._on_subagent_event(
+        await app.stream.on_subagent_event(
             "s1",
             FunctionToolCallEvent(
                 part=ToolCallPart(
@@ -897,7 +897,7 @@ async def test_subagent_event_routes_stream_into_widget(tmp_path: Path):
                 )
             ),
         )
-        await app._on_subagent_event(
+        await app.stream.on_subagent_event(
             "s1",
             FunctionToolResultEvent(
                 part=ToolReturnPart(
@@ -925,7 +925,7 @@ async def test_subagent_event_without_widget_is_noop(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._on_subagent_event(
+        await app.stream.on_subagent_event(
             "ghost", PartStartEvent(index=0, part=TextPart(content="orphan"))
         )
         await pilot.pause()
@@ -961,16 +961,16 @@ async def test_subagent_event_usage_populates_title_total_and_body_split(tmp_pat
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._on_events(None, spawn_gen())
+        await app.stream.on_events(None, spawn_gen())
         await pilot.pause()
-        parent = app._tool_widgets["s1"]
+        parent = app.stream.tool_widgets["s1"]
         assert isinstance(parent, SubAgentWidget)
 
         usage = RunUsage(
             input_tokens=56000, output_tokens=2000,
             cache_read_tokens=50000, cache_write_tokens=5000,
         )
-        await app._on_subagent_event(
+        await app.stream.on_subagent_event(
             "s1",
             PartStartEvent(index=0, part=TextPart(content="checking")),
             usage,
@@ -1391,9 +1391,9 @@ async def test_background_spawn_renders_as_tool_widget(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._on_events(None, gen())
+        await app.stream.on_events(None, gen())
         await pilot.pause()
-        widget = app._tool_widgets.get("spawn-bg")
+        widget = app.stream.tool_widgets.get("spawn-bg")
         assert isinstance(widget, ToolCallWidget)
         assert not isinstance(widget, SubAgentWidget)
         assert widget.status == "done"
@@ -1440,9 +1440,9 @@ async def test_single_subagent_stays_expanded(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._on_events(None, gen())
+        await app.stream.on_events(None, gen())
         await pilot.pause()
-        w = app._tool_widgets["s1"]
+        w = app.stream.tool_widgets["s1"]
         assert isinstance(w, SubAgentWidget)
         assert w.collapsed is False
 
@@ -1461,10 +1461,10 @@ async def test_parallel_subagents_collapse(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._on_events(None, gen())
+        await app.stream.on_events(None, gen())
         await pilot.pause()
         for sid in ("s1", "s2", "s3"):
-            w = app._tool_widgets[sid]
+            w = app.stream.tool_widgets[sid]
             assert isinstance(w, SubAgentWidget)
             assert w.collapsed is True
 
@@ -1483,7 +1483,7 @@ async def test_subagent_event_updates_activity_title(tmp_path: Path):
         async def spawn():
             yield _spawn_call("s1", "look")
 
-        await app._on_events(None, spawn())
+        await app.stream.on_events(None, spawn())
         await pilot.pause()
         # A nested tool call inside the sub-agent updates the parent's title.
         tool_call = FunctionToolCallEvent(
@@ -1491,9 +1491,9 @@ async def test_subagent_event_updates_activity_title(tmp_path: Path):
                 tool_name="grep", args={"pattern": "x"}, tool_call_id="t1"
             )
         )
-        await app._on_subagent_event("s1", tool_call)
+        await app.stream.on_subagent_event("s1", tool_call)
         await pilot.pause()
-        parent = app._tool_widgets["s1"]
+        parent = app.stream.tool_widgets["s1"]
         assert "grep" in str(parent.title)
 
 
@@ -1512,7 +1512,7 @@ async def test_subagent_event_updates_token_usage_in_title(tmp_path: Path):
         async def spawn():
             yield _spawn_call("s1", "look")
 
-        await app._on_events(None, spawn())
+        await app.stream.on_events(None, spawn())
         await pilot.pause()
         tool_call = FunctionToolCallEvent(
             part=ToolCallPart(
@@ -1520,11 +1520,11 @@ async def test_subagent_event_updates_token_usage_in_title(tmp_path: Path):
             )
         )
         # The handler forwards the run's live usage; the title shows the total.
-        await app._on_subagent_event(
+        await app.stream.on_subagent_event(
             "s1", tool_call, RunUsage(input_tokens=1500, output_tokens=500)
         )
         await pilot.pause()
-        parent = app._tool_widgets["s1"]
+        parent = app.stream.tool_widgets["s1"]
         assert "2k" in str(parent.title)
         assert "tok" in str(parent.title)
 
@@ -1548,16 +1548,16 @@ async def test_lone_nested_tool_call_is_not_wrapped_in_a_group(tmp_path: Path):
         async def spawn():
             yield _spawn_call("s1", "look")
 
-        await app._on_events(None, spawn())
+        await app.stream.on_events(None, spawn())
         await pilot.pause()
-        await app._on_subagent_event(
+        await app.stream.on_subagent_event(
             "s1",
             FunctionToolCallEvent(
                 part=ToolCallPart(tool_name="grep", args={}, tool_call_id="t1")
             ),
         )
         await pilot.pause()
-        parent = app._tool_widgets["s1"]
+        parent = app.stream.tool_widgets["s1"]
         assert isinstance(parent, SubAgentWidget)
         assert len(parent.query(ToolGroupWidget)) == 0
         assert len(parent.query(ToolCallWidget)) == 1
@@ -1583,13 +1583,13 @@ async def test_nested_tool_burst_groups_under_a_subagent(tmp_path: Path):
         async def spawn():
             yield _spawn_call("s1", "look")
 
-        await app._on_events(None, spawn())
+        await app.stream.on_events(None, spawn())
         await pilot.pause()
-        await app._on_subagent_event("s1", nested("t1"))
-        await app._on_subagent_event("s1", nested("t2"))
-        await app._on_subagent_event("s1", nested("t3"))
+        await app.stream.on_subagent_event("s1", nested("t1"))
+        await app.stream.on_subagent_event("s1", nested("t2"))
+        await app.stream.on_subagent_event("s1", nested("t3"))
         await pilot.pause()
-        parent = app._tool_widgets["s1"]
+        parent = app.stream.tool_widgets["s1"]
         groups = parent.query(ToolGroupWidget)
         assert len(groups) == 1
         assert len(groups.first().query(ToolCallWidget)) == 3
@@ -1612,8 +1612,8 @@ async def test_streaming_text_is_debounced_until_flush(tmp_path: Path):
             yield PartStartEvent(index=0, part=TextPart(content="# Hi"))
             yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta=" there"))
 
-        await app._on_events(None, stream())
-        msg = app._current_assistant
+        await app.stream.on_events(None, stream())
+        msg = app.stream.current_assistant
         # The full text is buffered into the widget...
         assert msg.text == "# Hi there"
         # ...and a delta marks it dirty without rendering (the per-delta debounce).
@@ -1621,7 +1621,7 @@ async def test_streaming_text_is_debounced_until_flush(tmp_path: Path):
         msg.append("!")
         assert msg._pending is True
         # The shared flush renders it and clears the pending flag.
-        app._flush_streams()
+        app.stream.flush_streams()
         assert msg._pending is False
 
 
@@ -1638,16 +1638,16 @@ async def test_flush_streams_renders_nested_subagent_text(tmp_path: Path):
         async def spawn():
             yield _spawn_call("s1", "look")
 
-        await app._on_events(None, spawn())
+        await app.stream.on_events(None, spawn())
         await pilot.pause()
-        await app._on_subagent_event(
+        await app.stream.on_subagent_event(
             "s1", PartStartEvent(index=0, part=TextPart(content="nested"))
         )
-        msg = app._sub_assistants["s1"]
+        msg = app.stream.sub_assistants["s1"]
         # Synchronous append → assert → flush so the interval timer can't interleave.
         msg.append("!")
         assert msg._pending is True
-        app._flush_streams()
+        app.stream.flush_streams()
         assert msg._pending is False
 
 
@@ -1688,7 +1688,7 @@ async def test_stream_does_not_yank_when_scrolled_up(tmp_path: Path):
         async def gen():
             yield PartStartEvent(index=0, part=TextPart(content="new streamed text"))
 
-        await app._on_events(None, gen())
+        await app.stream.on_events(None, gen())
         await pilot.pause()
         assert log.scroll_offset.y == 0
 
@@ -1740,7 +1740,7 @@ async def test_consecutive_tool_calls_group_into_one_widget(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._on_events(None, gen())
+        await app.stream.on_events(None, gen())
         await pilot.pause()
         groups = app.query(ToolGroupWidget)
         assert len(groups) == 1
@@ -1759,7 +1759,7 @@ async def test_lone_tool_call_is_not_wrapped_in_a_group(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._on_events(None, gen())
+        await app.stream.on_events(None, gen())
         await pilot.pause()
         assert len(app.query(ToolGroupWidget)) == 0
         assert len(app.query(ToolCallWidget)) == 1
@@ -1779,7 +1779,7 @@ async def test_text_between_tool_calls_breaks_the_group(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._on_events(None, gen())
+        await app.stream.on_events(None, gen())
         await pilot.pause()
         assert len(app.query(ToolGroupWidget)) == 0
         assert len(app.query(ToolCallWidget)) == 2
@@ -1805,9 +1805,9 @@ async def test_tool_result_still_resolves_widget_inside_a_group(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._on_events(None, gen())
+        await app.stream.on_events(None, gen())
         await pilot.pause()
-        w = app._tool_widgets["c1"]
+        w = app.stream.tool_widgets["c1"]
         assert isinstance(w, ToolCallWidget)
         assert w.status == "done"
         assert w.result_text == "file body"
@@ -2082,13 +2082,13 @@ async def test_ctrl_o_toggles_reveal_all_outputs(tmp_path: Path):
         )
         await log.mount(w)
         await pilot.pause()
-        assert w.reveal is False and app._show_all_output is False
+        assert w.reveal is False and app.stream.show_all_output is False
         app.action_toggle_outputs()
         await pilot.pause()
-        assert app._show_all_output is True and w.reveal is True
+        assert app.stream.show_all_output is True and w.reveal is True
         app.action_toggle_outputs()
         await pilot.pause()
-        assert app._show_all_output is False and w.reveal is False
+        assert app.stream.show_all_output is False and w.reveal is False
 
 
 @pytest.mark.anyio
