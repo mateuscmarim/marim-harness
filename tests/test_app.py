@@ -40,7 +40,7 @@ async def test_status_bar_shows_token_split(tmp_path: Path):
         assert "0↑" in str(bar.render())  # starts at zero
         app.harness.session.usage.input_tokens = 12
         app.harness.session.usage.output_tokens = 8
-        app._refresh_status()
+        app.status.refresh_status()
         await pilot.pause()
         text = str(bar.render())
         assert "12↑" in text  # uncached input
@@ -57,7 +57,7 @@ async def test_status_bar_shows_estimated_cost_when_model_priced(tmp_path: Path)
         app.harness.model_id = "claude-sonnet-4-6"
         app.harness.session.usage.input_tokens = 50000
         app.harness.session.usage.output_tokens = 2000
-        app._refresh_status()
+        app.status.refresh_status()
         await pilot.pause()
         assert "$" in str(app.query_one("#status-bar").render())
 
@@ -70,7 +70,7 @@ async def test_status_bar_omits_cost_for_unpriced_model(tmp_path: Path):
         await pilot.pause()
         app.harness.model_id = "some-local-unpriced-model"
         app.harness.session.usage.input_tokens = 5000
-        app._refresh_status()
+        app.status.refresh_status()
         await pilot.pause()
         text = str(app.query_one("#status-bar").render())
         assert "$" not in text
@@ -86,9 +86,9 @@ async def test_status_bar_includes_live_run_tokens_while_streaming(tmp_path: Pat
     async with app.run_test() as pilot:
         await pilot.pause()
         app.harness.session.usage.input_tokens = 100  # committed from prior turns
-        app._set_busy(True)
+        app.status.set_busy(True)
         app._live_run_tokens = 50  # in-flight this turn
-        app._refresh_status()
+        app.status.refresh_status()
         await pilot.pause()
         text = str(app.query_one("#status-bar").render())
         assert "100↑" in text  # committed split
@@ -128,7 +128,7 @@ async def test_live_run_tokens_reset_when_turn_ends(tmp_path: Path):
     async with app.run_test() as pilot:
         await pilot.pause()
         app._live_run_tokens = 500
-        app._set_busy(False)
+        app.status.set_busy(False)
         assert app._live_run_tokens == 0
 
 
@@ -139,7 +139,7 @@ async def test_flush_refreshes_status_while_busy(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._set_busy(True)  # paints the initial split
+        app.status.set_busy(True)  # paints the initial split
         app.harness.session.usage.input_tokens = 200
         app._live_run_tokens = 99
         app._flush_streams()  # the per-frame tick picks up the live delta
@@ -184,7 +184,7 @@ async def test_flush_only_touches_buffered_messages(tmp_path: Path):
 
 
 def test_human_tokens_formatting():
-    from marim_harness.interfaces.tui.app import _human_tokens
+    from marim_harness.interfaces.tui.widgets import human_tokens as _human_tokens
 
     assert _human_tokens(0) == "0"
     assert _human_tokens(950) == "950"
@@ -206,7 +206,7 @@ async def test_status_bar_shows_context_usage(tmp_path: Path):
         app.harness.session.history = [
             ModelRequest(parts=[UserPromptPart(content="x" * 2000)])
         ]
-        app._refresh_status()
+        app.status.refresh_status()
         await pilot.pause()
         assert "50%" in str(bar.render())
 
@@ -223,7 +223,7 @@ async def test_title_survives_markup_like_session_name(tmp_path: Path, monkeypat
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._refresh_title()
+        app.status.refresh_title()
         await pilot.pause()
         # The literal name (including its brackets) is in the title, intact.
         assert "[edit(old_string=" in app.title
@@ -413,15 +413,15 @@ async def test_cancel_turn_aborts_and_shows_message(tmp_path: Path):
             await pilot.pause()
             if started.is_set():
                 break
-        assert app._busy is True
+        assert app.status.busy is True
 
         app.action_cancel_turn()
         for _ in range(50):
             await pilot.pause()
-            if not app._busy:
+            if not app.status.busy:
                 break
 
-        assert app._busy is False
+        assert app.status.busy is False
         assert app.is_running is True
         errors = list(app.query(ErrorMessage))
         assert any("cancel" in str(e.render()).lower() for e in errors)
@@ -447,10 +447,10 @@ async def test_status_bar_shows_busy_indicator(tmp_path: Path):
         await pilot.pause()
         bar = app.query_one("#status-bar")
         assert "working" not in str(bar.render()).lower()
-        app._set_busy(True)
+        app.status.set_busy(True)
         await pilot.pause()
         assert "working" in str(bar.render()).lower()
-        app._set_busy(False)
+        app.status.set_busy(False)
         await pilot.pause()
         assert "working" not in str(bar.render()).lower()
 
@@ -468,8 +468,8 @@ async def test_set_busy_survives_missing_status_bar(tmp_path: Path):
         app.query_one("#status-bar", Static).remove()
         await pilot.pause()
         # No status bar in the DOM; updating status must be a quiet no-op.
-        app._set_busy(False)
-        app._refresh_status()
+        app.status.set_busy(False)
+        app.status.refresh_status()
         assert app.is_running is True
 
 
@@ -1927,7 +1927,7 @@ async def test_ask_user_callback_shows_modal_and_returns_answer(tmp_path: Path):
 
 
 def test_format_duration_units():
-    from marim_harness.interfaces.tui.app import _format_duration
+    from marim_harness.interfaces.tui.status import format_duration as _format_duration
 
     assert _format_duration(5) == "5s"
     assert _format_duration(5, precise=True) == "5.0s"
@@ -1951,9 +1951,9 @@ async def test_status_shows_live_turn_timer_when_busy(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._busy = True
-        app._turn_start = time.monotonic() - 5  # 5s into a turn
-        app._refresh_status()
+        app.status.busy = True
+        app.status.turn_start = time.monotonic() - 5  # 5s into a turn
+        app.status.refresh_status()
         await pilot.pause()
         text = str(app.query_one("#status-bar").render())
         assert "working" in text and "5s" in text
@@ -2004,9 +2004,9 @@ async def test_title_shows_idle_and_working_indicator(tmp_path: Path, monkeypatc
     async with app.run_test() as pilot:
         await pilot.pause()
         assert app.title == "○ my-session"
-        app._busy = True
-        app._spin = 0  # first spinner frame (⠋)
-        app._refresh_title()
+        app.status.busy = True
+        app.status.spin = 0  # first spinner frame (⠋)
+        app.status.refresh_title()
         assert app.title == "⠋ my-session"
         # workspace path stays in the sub_title
         assert str(tmp_path) in app.sub_title
@@ -2038,7 +2038,7 @@ async def test_session_name_in_title_not_status_bar(tmp_path: Path, monkeypatch)
 
 
 def test_osc_title_sequence_format():
-    from marim_harness.interfaces.tui.app import _osc_title
+    from marim_harness.interfaces.tui.status import osc_title as _osc_title
 
     # OSC 0 sets both the terminal tab and window title: ESC ] 0 ; <text> BEL
     assert _osc_title("● my-session") == "\033]0;● my-session\007"
@@ -2057,9 +2057,9 @@ async def test_refresh_title_writes_osc_to_terminal(tmp_path: Path, monkeypatch)
         real_write = app._driver.write
         app._driver.write = lambda data: calls.append(data)
         try:
-            app._busy = True
-            app._spin = 0  # first spinner frame (⠋)
-            app._refresh_title()
+            app.status.busy = True
+            app.status.spin = 0  # first spinner frame (⠋)
+            app.status.refresh_title()
         finally:
             app._driver.write = real_write
         blob = "".join(calls)
@@ -2093,7 +2093,7 @@ async def test_ctrl_o_toggles_reveal_all_outputs(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_busy_title_uses_spinner_frame(tmp_path: Path, monkeypatch):
-    from marim_harness.interfaces.tui.app import _SPINNER
+    from marim_harness.interfaces.tui.status import _SPINNER
 
     monkeypatch.setattr(
         type(_app(tmp_path).harness.session),
@@ -2102,16 +2102,16 @@ async def test_busy_title_uses_spinner_frame(tmp_path: Path, monkeypatch):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._busy = True
+        app.status.busy = True
         for frame_idx, glyph in enumerate(_SPINNER):
-            app._spin = frame_idx
-            app._refresh_title()
+            app.status.spin = frame_idx
+            app.status.refresh_title()
             assert app.title == f"{glyph} my-session"
 
 
 @pytest.mark.anyio
 async def test_tick_spinner_advances_only_when_busy(tmp_path: Path, monkeypatch):
-    from marim_harness.interfaces.tui.app import _SPINNER
+    from marim_harness.interfaces.tui.status import _SPINNER
 
     monkeypatch.setattr(
         type(_app(tmp_path).harness.session),
@@ -2121,14 +2121,14 @@ async def test_tick_spinner_advances_only_when_busy(tmp_path: Path, monkeypatch)
     async with app.run_test() as pilot:
         await pilot.pause()
         # Idle: the tick is a no-op and the title stays the static ○.
-        app._busy = False
-        app._spin = 0
-        app._tick_spinner()
-        assert app._spin == 0
+        app.status.busy = False
+        app.status.spin = 0
+        app.status.tick_spinner()
+        assert app.status.spin == 0
         assert app.title == "○ my-session"
         # Busy: the tick advances the frame and re-renders the title.
-        app._busy = True
-        app._spin = 0
-        app._tick_spinner()
-        assert app._spin == 1
+        app.status.busy = True
+        app.status.spin = 0
+        app.status.tick_spinner()
+        assert app.status.spin == 1
         assert app.title == f"{_SPINNER[1]} my-session"

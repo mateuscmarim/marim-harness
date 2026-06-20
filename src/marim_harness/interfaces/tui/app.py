@@ -13,13 +13,11 @@ from pydantic_ai.messages import (
 from pydantic_ai.tools import DeferredToolApprovalResult
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
-from textual.content import Content
 from textual.css.query import NoMatches
 from textual.widget import Widget
 from textual.widgets import Footer, Header, Static
 
 from ...agent import Harness, strip_turn_context
-from ...compaction import estimate_tokens
 from ...history import PromptHistory
 from ...prefs import load_theme, save_theme
 from ...usage import resolve_cost
@@ -28,6 +26,13 @@ from .ask_user import AskUserModal
 from .commands import dispatch
 from .model_picker import ModelPickerModal
 from .settings import SettingsModal
+from .status import (
+    _CLOCK_TICK_INTERVAL,
+    _SPINNER_TICK_INTERVAL,
+    StatusPresenter,
+    format_duration,
+    osc_title,
+)
 from .themes import MARIM_THEMES
 from .widgets import (
     AssistantMessage,
@@ -44,7 +49,6 @@ from .widgets import (
 )
 from .widgets import format_cost as _format_cost
 from .widgets import format_token_split as _format_token_split
-from .widgets import human_tokens as _human_tokens
 
 _BANNER = (
     " ███╗   ███╗ █████╗ ██████╗ ██╗███╗   ███╗\n"
@@ -59,35 +63,6 @@ _BANNER = (
 # How often (seconds) buffered streaming text is rendered. ~12 flushes/sec reads
 # as smooth while collapsing many per-token markdown re-parses into one.
 _STREAM_FLUSH_INTERVAL = 0.08
-
-# How often (seconds) the status bar refreshes while idle, so the session timer
-# advances without a turn running. The streaming tick covers refreshes mid-turn.
-_CLOCK_TICK_INTERVAL = 1.0
-
-# Working-indicator animation: the classic braille spinner, cycled while a turn
-# runs (idle shows a static ○). All frames are single-width braille so the title
-# never shifts as it animates. Frames advance on _SPINNER_TICK_INTERVAL.
-_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-_SPINNER_TICK_INTERVAL = 0.1
-
-
-def _osc_title(text: str) -> str:
-    """The OSC 0 escape sequence that sets the terminal's tab AND window title.
-    Textual only feeds App.title to the in-app Header, so we emit this ourselves
-    to reach the actual terminal tab."""
-    return f"\033]0;{text}\007"
-
-
-def _format_duration(seconds: float, *, precise: bool = False) -> str:
-    """Human-readable elapsed time. ``precise`` (for the per-turn stamp) keeps a
-    decimal under a minute (``12.4s``); otherwise whole units (``12s``, ``3m``,
-    ``1h 5m``)."""
-    if seconds < 60:
-        return f"{seconds:.1f}s" if precise else f"{int(seconds)}s"
-    minutes = int(seconds // 60)
-    if minutes < 60:
-        return f"{minutes}m"
-    return f"{minutes // 60}h {minutes % 60}m"
 
 _WELCOME = (
     "Type a message below to start, or `/help` for commands.\n\n"
@@ -224,6 +199,7 @@ class HarnessApp(App):
     def __init__(self, harness: Harness, history: PromptHistory | None = None) -> None:
         super().__init__()
         self.harness = harness
+        self.status = StatusPresenter(self)
         # Recallable prompt history. Defaults to in-memory; the CLI passes a
         # persistent one so Up/Down recall prompts across restarts.
         self._history = history if history is not None else PromptHistory()
@@ -257,13 +233,7 @@ class HarnessApp(App):
         # tick O(active streams), not O(every message ever shown).
         self._dirty_streams: set[AssistantMessage] = set()
         self._vision_caps: dict[str, bool | None] = {}
-        self._busy = False
         self._turn_worker = None
-        # Wall-clock timers (monotonic). _session_start is re-stamped at mount;
-        # _turn_start marks the active turn for the live "working… Ns" timer.
-        self._session_start = time.monotonic()
-        self._turn_start = time.monotonic()
-        self._spin = 0  # working-indicator animation frame index
         self._show_all_output = False  # Ctrl+O reveal-all toggle
         # Autonomous wake-on-completion (interactive TUI only). When a background
         # job finishes while the turn worker is idle, fire a digest-only turn so
@@ -285,7 +255,7 @@ class HarnessApp(App):
         yield VerticalScroll(id="log")
         yield JobPanel()
         yield TaskPanel()
-        yield Static(self._status_text(), id="status-bar")
+        yield Static(self.status.status_text(), id="status-bar")
         yield PromptInput(history=self._history)
         yield Footer()
 
@@ -294,7 +264,7 @@ class HarnessApp(App):
             self.register_theme(theme)
         self.theme = load_theme()
         self.sub_title = str(self.harness.deps.workspace_root)
-        self._refresh_title()
+        self.status.refresh_title()
         log = self.query_one("#log", VerticalScroll)
         await log.mount(Static(_BANNER, id="banner", markup=False))
         intro = AssistantMessage()
@@ -329,10 +299,10 @@ class HarnessApp(App):
         self.set_interval(_STREAM_FLUSH_INTERVAL, self._flush_streams)
         # Anchor the session timer at mount and tick the status bar while idle so
         # the session duration advances even with no turn running.
-        self._session_start = time.monotonic()
-        self.set_interval(_CLOCK_TICK_INTERVAL, self._refresh_status)
+        self.status.session_start = time.monotonic()
+        self.set_interval(_CLOCK_TICK_INTERVAL, self.status.refresh_status)
         # Animate the working indicator while a turn runs (no-op when idle).
-        self.set_interval(_SPINNER_TICK_INTERVAL, self._tick_spinner)
+        self.set_interval(_SPINNER_TICK_INTERVAL, self.status.tick_spinner)
         # Land focus on the prompt so the user can type immediately.
         self.query_one(PromptInput).focus()
         await self._connect_mcp(log)
@@ -361,7 +331,7 @@ class HarnessApp(App):
         # after exit. Best-effort: the driver may already be tearing down.
         if self._driver is not None:
             try:
-                self._driver.write(_osc_title("marim-harness"))
+                self._driver.write(osc_title("marim-harness"))
                 self._driver.flush()
             except Exception:
                 pass
@@ -416,79 +386,6 @@ class HarnessApp(App):
                         widget = tool_widgets.get(part.tool_call_id)
                         if widget is not None:
                             widget.finish(str(part.content))
-
-    def _status_text(self) -> Content:
-        cfg = getattr(self.harness, "model_label", "model")
-        used = estimate_tokens(self.harness.session.history)
-        max_ctx = getattr(self.harness.session, "max_context_tokens", 0) or 0
-        pct = round(used / max_ctx * 100) if max_ctx else 0
-        ctx_text = f"ctx {_human_tokens(used)}/{_human_tokens(max_ctx)} ({pct}%)"
-        ctx_style = "red" if pct >= 90 else "yellow" if pct >= 75 else ""
-        # The committed in/cached/out split, then the current run's in-flight
-        # tokens as a live +N delta (they aren't split until the turn commits),
-        # then spend — billed when the provider reports it, else estimated.
-        tokens_text = _format_token_split(self.harness.session.usage)
-        if self._live_run_tokens:
-            tokens_text += f" +{_human_tokens(self._live_run_tokens)}"
-        cost, _ = resolve_cost(self.harness.session.usage, self.harness.model_id)
-        if cost is not None:
-            tokens_text += f" · {_format_cost(cost)}"
-        mode = self.harness.deps.mode.value
-        # The session name now lives in the terminal title (see _refresh_title);
-        # the status-bar head is just the permission mode.
-        session_text = f"session {_format_duration(time.monotonic() - self._session_start)}"
-        fields = [
-            Content(mode),
-            Content(cfg),
-            Content.assemble((ctx_text, ctx_style)) if ctx_style else Content(ctx_text),
-            Content(tokens_text),
-            Content(session_text),
-        ]
-        if self._busy:
-            elapsed = _format_duration(time.monotonic() - self._turn_start)
-            fields.append(Content(f"working… {elapsed}"))
-        return Content.from_markup(" [dim]·[/] ").join(fields)
-
-    def _refresh_status(self) -> None:
-        try:
-            bar = self.query_one("#status-bar", Static)
-        except NoMatches:
-            # The status bar is gone — the app is tearing down (e.g. /exit fired
-            # mid-turn) and a worker's finally block is still firing. Nothing to
-            # update; quietly skip.
-            return
-        bar.update(self._status_text())
-
-    def _refresh_title(self) -> None:
-        """Set the in-app Header (via App.title) AND the real terminal tab/window
-        title (via an OSC sequence Textual doesn't emit on its own) to an
-        idle/working mark + the session name. The title is a plain string, not
-        markup-parsed, so a model-generated name needs no escaping."""
-        mark = _SPINNER[self._spin] if self._busy else "○"
-        name = self.harness.session.session_name or "marim-harness"
-        self.title = f"{mark} {name}"  # in-app Header
-        if self._driver is not None:  # the actual terminal tab
-            self._driver.write(_osc_title(f"{mark} {name}"))
-            self._driver.flush()
-
-    def _tick_spinner(self) -> None:
-        """Advance the working-indicator animation while a turn runs. No-op when
-        idle, so the title/tab aren't rewritten and the static ○ stays put."""
-        if not self._busy:
-            return
-        self._spin = (self._spin + 1) % len(_SPINNER)
-        self._refresh_title()
-
-    def _set_busy(self, busy: bool) -> None:
-        self._busy = busy
-        if busy:
-            self._spin = 0  # start the working animation at the first frame
-        else:
-            # The finished run is now folded into session usage by run_turn; drop
-            # the in-flight tally so it isn't added on top a second time.
-            self._live_run_tokens = 0
-        self._refresh_title()  # spinner ↔ static ○
-        self._refresh_status()
 
     def _render_tasks(self) -> None:
         """Repaint the task panel from the harness's current checklist."""
@@ -556,7 +453,7 @@ class HarnessApp(App):
 
     def action_cycle_mode(self) -> None:
         self.harness.deps.mode = self.harness.deps.mode.cycle()
-        self._refresh_status()
+        self.status.refresh_status()
 
     def action_toggle_outputs(self) -> None:
         """Ctrl+O: reveal every tool output in full (expand groups, uncap edit
@@ -574,7 +471,7 @@ class HarnessApp(App):
         save_theme(theme)
 
     def action_cancel_turn(self) -> None:
-        if self._busy and self._turn_worker is not None:
+        if self.status.busy and self._turn_worker is not None:
             self._turn_worker.cancel()
 
     def _on_compact_start(self) -> None:
@@ -596,15 +493,15 @@ class HarnessApp(App):
         log.mount(
             NoticeMessage(f"compacted history: {before} → {after} messages")
         )
-        self._refresh_status()  # context gauge shrinks immediately
+        self.status.refresh_status()  # context gauge shrinks immediately
 
     def _on_rename(self, old: str, new: str) -> None:
         """Note an automatic session title in the log. Called synchronously from
         run_turn; mount without awaiting."""
         log = self.query_one("#log", VerticalScroll)
         log.mount(NoticeMessage(f"session renamed: {new}"))
-        self._refresh_title()  # the new name shows in the terminal title
-        self._refresh_status()
+        self.status.refresh_title()  # the new name shows in the terminal title
+        self.status.refresh_status()
 
     async def post_system(self, markdown: str) -> None:
         """Render a system/command message into the log (markdown)."""
@@ -629,8 +526,8 @@ class HarnessApp(App):
             await self._replay_history(log)
         self._flush_streams()  # render the rebuilt log before first paint
         log.anchor()  # re-pin to the bottom for the freshly loaded session
-        self._refresh_title()  # reflect the switched-to session's name
-        self._refresh_status()
+        self.status.refresh_title()  # reflect the switched-to session's name
+        self.status.refresh_status()
         self._render_tasks()
         self._render_jobs()  # jobs are process-scoped, not per-session
 
@@ -707,7 +604,7 @@ class HarnessApp(App):
         if not chosen:
             return
         self.harness.set_model(chosen)
-        self._refresh_status()
+        self.status.refresh_status()
         log = self.query_one("#log", VerticalScroll)
         log.mount(NoticeMessage(f"model: {self.harness.model_label}"))
         log.scroll_end(animate=False)
@@ -731,8 +628,8 @@ class HarnessApp(App):
             m.flush()
         # Piggyback on the same per-frame tick to repaint the status bar while a
         # turn is running, so the live token counter advances as the run streams.
-        if self._busy:
-            self._refresh_status()
+        if self.status.busy:
+            self.status.refresh_status()
 
     def _image_block_reason(self, attachments) -> str | None:
         """A warning to show instead of submitting, or None to proceed. Only a
@@ -789,8 +686,8 @@ class HarnessApp(App):
     async def _run_turn(
         self, text: str, attachments: list[tuple[bytes, str]] | None = None
     ) -> None:
-        self._turn_start = time.monotonic()
-        self._set_busy(True)
+        self.status.turn_start = time.monotonic()
+        self.status.set_busy(True)
         log = self.query_one("#log", VerticalScroll)
         try:
             await self.harness.run_turn(
@@ -798,7 +695,7 @@ class HarnessApp(App):
             )
             # Stamp the just-finished turn's duration under its reply (success
             # only; cancelled/errored turns surface an ErrorMessage instead).
-            elapsed = _format_duration(time.monotonic() - self._turn_start, precise=True)
+            elapsed = format_duration(time.monotonic() - self.status.turn_start, precise=True)
             await log.mount(TurnMeta(elapsed))
             self._notify("Turn complete", f"Finished in {elapsed}", "turn_complete")
         except CancelledError:
@@ -811,7 +708,7 @@ class HarnessApp(App):
             self._notify("Turn error", f"{type(exc).__name__}: {exc}", "error")
         finally:
             self._turn_worker = None
-            self._set_busy(False)
+            self.status.set_busy(False)
             self._maybe_wake()  # a job that finished mid-turn drains now
 
     async def _add_tool_to_run(

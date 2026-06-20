@@ -97,8 +97,8 @@ async def _cmd_name(app: HarnessApp, arg: str) -> None:
             "conversation first so it can be auto-titled."
         )
         return
-    app._refresh_title()  # the new name shows in the terminal title
-    app._refresh_status()
+    app.status.refresh_title()  # the new name shows in the terminal title
+    app.status.refresh_status()
     await app.post_system(f"Renamed session to `{new}`.")
 
 
@@ -124,7 +124,7 @@ async def _cmd_mode(app: HarnessApp, arg: str) -> None:
         except ValueError:
             await app.post_system(f"Unknown mode: `{arg}`. Use ask, auto, or plan.")
             return
-    app._refresh_status()
+    app.status.refresh_status()
     await app.post_system(f"Mode: **{app.harness.deps.mode.value}**")
 
 
@@ -132,7 +132,7 @@ async def _cmd_model(app: HarnessApp, arg: str) -> None:
     arg = arg.strip()
     if arg:
         app.harness.set_model(arg)
-        app._refresh_status()
+        app.status.refresh_status()
         await app.post_system(f"Model: `{app.harness.model_label}`")
         return
     await app.open_model_picker()
