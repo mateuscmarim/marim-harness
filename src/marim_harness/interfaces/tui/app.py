@@ -2,22 +2,20 @@ import time
 from asyncio import CancelledError
 
 from pydantic_ai import ToolDenied
-from pydantic_ai.messages import (
-    TextPart,
-)
 from pydantic_ai.tools import DeferredToolApprovalResult
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.css.query import NoMatches
 from textual.widgets import Footer, Header, Static
 
-from ...agent import Harness, strip_turn_context
+from ...agent import Harness
 from ...history import PromptHistory
 from ...prefs import load_theme, save_theme
 from .approval import ApprovalModal
 from .ask_user import AskUserModal
 from .commands import dispatch
 from .model_picker import ModelPickerModal
+from .session_view import SessionView
 from .settings import SettingsModal
 from .status import (
     _CLOCK_TICK_INTERVAL,
@@ -35,8 +33,6 @@ from .widgets import (
     NoticeMessage,
     PromptInput,
     TaskPanel,
-    ToolCallWidget,
-    ToolGroupWidget,
     TurnMeta,
     UserMessage,
 )
@@ -77,6 +73,7 @@ class HarnessApp(App):
         self.harness = harness
         self.status = StatusPresenter(self)
         self.stream = StreamRenderer(self)
+        self.session = SessionView(self)
         # Recallable prompt history. Defaults to in-memory; the CLI passes a
         # persistent one so Up/Down recall prompts across restarts.
         self._history = history if history is not None else PromptHistory()
@@ -87,7 +84,7 @@ class HarnessApp(App):
         self.harness.deps.on_subagent_event = self.stream.on_subagent_event
         self.harness.session.on_compact = self._on_compact
         self.harness.session.on_compact_start = self._on_compact_start
-        self.harness.session.on_rename = self._on_rename
+        self.harness.session.on_rename = self.session.on_rename
         self._compacting_notice: NoticeMessage | None = None
         self._vision_caps: dict[str, bool | None] = {}
         self._turn_worker = None
@@ -127,7 +124,7 @@ class HarnessApp(App):
                 intro,
                 f"**Resumed session** — {n} messages, {tokens} tokens restored.",
             )
-            await self._replay_history(log)
+            await self.session.replay_history(log)
         else:
             self.stream.append_stream(intro, _WELCOME)
         self.stream.flush_streams()  # render the static intro/replay before first paint
@@ -189,53 +186,6 @@ class HarnessApp(App):
         await self.harness.deps.jobs.cancel_all()
         await self.harness.session_end("exit")
         await self.harness.aclose()
-
-    async def _replay_history(self, log: VerticalScroll) -> None:
-        """Re-render a restored conversation into the log so a resumed session
-        looks like where you left off."""
-        from pydantic_ai.messages import (
-            ModelRequest,
-            ModelResponse,
-            ToolCallPart,
-            ToolReturnPart,
-            UserPromptPart,
-        )
-
-        tool_widgets: dict[str, ToolCallWidget] = {}
-        # The current run of consecutive tool calls during replay, mirroring the
-        # live path so a resumed session groups bursts the same way: a lone call
-        # stays bare, a burst folds into a group.
-        group: ToolGroupWidget | None = None
-        solo: ToolCallWidget | None = None
-        for message in self.harness.session.history:
-            if isinstance(message, (ModelRequest, ModelResponse)):
-                for part in message.parts:
-                    if isinstance(part, UserPromptPart):
-                        group = None
-                        solo = None
-                        content = part.content
-                        text = content if isinstance(content, str) else str(content)
-                        # Drop any turn-context envelope (job digests, hook
-                        # output, error notes) so the log shows only what the
-                        # user typed — as the live path already does.
-                        await log.mount(UserMessage(strip_turn_context(text)))
-                    elif isinstance(part, TextPart):
-                        if part.content:
-                            group = None
-                            solo = None
-                            msg = AssistantMessage()
-                            await log.mount(msg)
-                            self.stream.append_stream(msg, part.content)
-                    elif isinstance(part, ToolCallPart):
-                        widget = ToolCallWidget(part.tool_name, part.args_as_dict())
-                        tool_widgets[part.tool_call_id] = widget
-                        group, solo = await self.stream.add_tool_to_run(
-                            widget, log, group, solo
-                        )
-                    elif isinstance(part, ToolReturnPart):
-                        widget = tool_widgets.get(part.tool_call_id)
-                        if widget is not None:
-                            widget.finish(str(part.content))
 
     def _render_tasks(self) -> None:
         """Repaint the task panel from the harness's current checklist."""
@@ -341,14 +291,6 @@ class HarnessApp(App):
         )
         self.status.refresh_status()  # context gauge shrinks immediately
 
-    def _on_rename(self, old: str, new: str) -> None:
-        """Note an automatic session title in the log. Called synchronously from
-        run_turn; mount without awaiting."""
-        log = self.query_one("#log", VerticalScroll)
-        log.mount(NoticeMessage(f"session renamed: {new}"))
-        self.status.refresh_title()  # the new name shows in the terminal title
-        self.status.refresh_status()
-
     async def post_system(self, markdown: str) -> None:
         """Render a system/command message into the log (markdown)."""
         log = self.query_one("#log", VerticalScroll)
@@ -357,46 +299,17 @@ class HarnessApp(App):
         self.stream.append_stream(msg, markdown)
         self.stream.flush_streams()  # one-shot system text: render it now, no tick wait
 
-    async def _render_session(self, note: str) -> None:
-        """Rebuild the log for a fresh view of the active session: banner, an
-        intro note, then a replay of any restored history."""
-        self.stream.reset()
-        log = self.query_one("#log", VerticalScroll)
-        await log.remove_children()
-        await log.mount(Static(_BANNER, id="banner", markup=False))
-        intro = AssistantMessage()
-        await log.mount(intro)
-        self.stream.append_stream(intro, note)
-        if self.harness.session.history:
-            await self._replay_history(log)
-        self.stream.flush_streams()  # render the rebuilt log before first paint
-        log.anchor()  # re-pin to the bottom for the freshly loaded session
-        self.status.refresh_title()  # reflect the switched-to session's name
-        self.status.refresh_status()
-        self._render_tasks()
-        self._render_jobs()  # jobs are process-scoped, not per-session
-
     async def reset_conversation(self) -> None:
         """Wipe the conversation and re-show the welcome screen (the /clear cmd)."""
-        self.harness.reset()
-        await self.harness.session_start("clear")
-        await self._render_session(_WELCOME)
+        await self.session.reset_conversation()
 
     async def start_new_session(self, name: str | None = None) -> None:
         """Begin a fresh named session, leaving existing ones on disk."""
-        self.harness.new_session(name)
-        await self.harness.session_start("startup")
-        label = self.harness.session.session_name or "new session"
-        await self._render_session(f"**New session** — `{label}`.")
+        await self.session.start_new_session(name)
 
     async def switch_to_session_id(self, session_id: str) -> None:
         """Load an existing session and show where it left off."""
-        n = self.harness.switch_session(session_id)
-        await self.harness.session_start("resume")
-        label = self.harness.session.session_name or session_id
-        await self._render_session(
-            f"**Switched to** `{label}` — {n} messages restored."
-        )
+        await self.session.switch_to_session_id(session_id)
 
     def open_settings(self) -> None:
         """Open the settings modal: runtime settings apply live; env-backed
