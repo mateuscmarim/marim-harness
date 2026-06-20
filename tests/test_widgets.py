@@ -163,7 +163,8 @@ def test_strip_line_numbers_leaves_plain_text_alone():
 
 @pytest.mark.anyio
 async def test_read_file_result_is_syntax_highlighted():
-    """A read_file tool result should render through rich Syntax, not raw."""
+    """A read_file result should render syntax-highlighted (a styled Text), not raw,
+    with the line-number prefixes stripped."""
 
     class H(App):
         def compose(self) -> ComposeResult:
@@ -174,10 +175,12 @@ async def test_read_file_result_is_syntax_highlighted():
         w = app.query_one(ToolCallWidget)
         w.finish("1\tdef greet():\n2\t    return 1\n")
         await pilot.pause()
-        from rich.syntax import Syntax
+        from rich.text import Text
 
-        # The body should hold a Syntax renderable for source files.
-        assert isinstance(w._result_renderable(), Syntax)
+        result = w._result_renderable()
+        assert isinstance(result, Text)  # highlighted into a Text, not a raw str
+        assert result.spans  # actually carries syntax-highlight styling
+        assert "def greet" in result.plain  # content kept, line numbers stripped
 
 
 @pytest.mark.anyio
@@ -892,6 +895,25 @@ def test_edit_file_diff_caps_until_revealed():
     assert "more lines (ctrl+o)" in _plain(w._render_body())  # capped by default
     w.reveal = True  # what set_reveal flips (the mounted path is covered in test_app)
     assert "more lines" not in _plain(w._render_body())  # uncapped when revealed
+
+
+def test_read_file_highlight_has_no_baked_background():
+    # read_file content is syntax-highlighted; like the diff, it must not carry the
+    # baked "default" background (which renders as a stray dark box) — it should
+    # inherit the widget background.
+    import io
+
+    from rich.console import Console
+
+    w = ToolCallWidget("read_file", {"path": "a.py"})
+    w.finish("1\tdef f(x):\n2\t    return x + 1\n")
+    con = Console(width=60, color_system="truecolor", file=io.StringIO())
+    lines = con.render_lines(w._render_body(), con.options.update_width(60))
+    bgs = [s.style.bgcolor for line in lines for s in line
+           if s.style and s.style.bgcolor is not None]
+    assert bgs == [], f"highlighted code should have no background, got {bgs}"
+    text = "\n".join("".join(s.text for s in line) for line in lines)
+    assert "def f" in text  # still rendered (and highlighted)
 
 
 def test_write_file_widget_highlights_content():
