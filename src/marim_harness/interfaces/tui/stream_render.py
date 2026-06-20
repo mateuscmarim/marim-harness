@@ -194,17 +194,32 @@ class StreamRenderer:
     def flush_streams(self) -> None:
         """Render every AssistantMessage that buffered deltas since the last tick —
         top-level and nested sub-agent streams alike. Coalescing the markdown parses
-        here is the streaming debounce; the log's scroll anchor keeps the freshly
-        grown content pinned to the bottom. Draining the dirty set (rather than
-        walking the whole message tree) keeps the tick proportional to the number
-        of live streams."""
+        here is the streaming debounce; once the content overflows the log is
+        anchored so it tail-follows. Draining the dirty set (rather than walking the
+        whole message tree) keeps the tick proportional to the number of live
+        streams."""
         dirty, self.dirty_streams = self.dirty_streams, set()
         for m in dirty:
             m.flush()
+        self._anchor_on_overflow()
         # Piggyback on the same per-frame tick to repaint the status bar while a
         # turn is running, so the live token counter advances as the run streams.
         if self.app.status.busy:
             self.app.status.refresh_status()
+
+    def _anchor_on_overflow(self) -> None:
+        """Anchor the log the moment its content first overflows the viewport, so
+        new content tail-follows and the intro header scrolls away with it. Until
+        then the log stays top-aligned (header pinned at the top). Anchoring once is
+        enough — Textual releases on a user scroll-up and re-engages at the bottom."""
+        from textual.containers import VerticalScroll
+
+        try:
+            log = self.app.query_one("#log", VerticalScroll)
+        except Exception:
+            return
+        if not log.is_anchored and log.max_scroll_y > 0:
+            log.anchor()
 
     async def add_tool_to_run(
         self,

@@ -1706,14 +1706,24 @@ async def test_flush_streams_renders_nested_subagent_text(tmp_path: Path):
 
 
 @pytest.mark.anyio
-async def test_log_is_anchored_to_bottom(tmp_path: Path):
-    """The log uses Textual's scroll anchor so streaming content stays pinned to
-    the bottom (and re-pins to the true bottom during layout)."""
+async def test_fresh_log_top_aligned_then_anchors_on_overflow(tmp_path: Path):
+    """A fresh session starts top-aligned — the intro header pinned at the top, not
+    bottom-anchored — and only anchors once content overflows the viewport, so the
+    header then scrolls away with the messages."""
+    from marim_harness.interfaces.tui.widgets import UserMessage
+
     app = _app(tmp_path)
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         log = app.query_one("#log")
-        assert log.is_anchored is True
+        assert log.is_anchored is False  # header pinned at the top
+        assert log.scroll_offset.y == 0
+        # Overflow the viewport; the flush tick anchors on overflow.
+        for i in range(40):
+            await log.mount(UserMessage(f"line {i}"))
+        app.stream.flush_streams()
+        await pilot.pause()
+        assert log.is_anchored is True  # now tail-follows the newest content
 
 
 @pytest.mark.anyio

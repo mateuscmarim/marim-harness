@@ -117,13 +117,17 @@ class SessionView:
         intro note, then a replay of any restored history."""
         self.app.stream.reset()
         log = self.app.query_one("#log", VerticalScroll)
+        log.anchor(False)  # drop any anchor inherited from the previous session
         await log.remove_children()
         intro = await self.mount_header(log)
         self.app.stream.append_stream(intro, note)
         if self.app.harness.session.history:
             await self.replay_history(log)
         self.app.stream.flush_streams()  # render the rebuilt log before first paint
-        log.anchor()  # re-pin to the bottom for the freshly loaded session
+        # A restored session opens at the bottom; a fresh/cleared one stays top-
+        # aligned (header pinned) until a turn's output overflows the viewport.
+        if self.app.harness.session.history:
+            log.anchor()
         self.app.status.refresh_title()  # reflect the switched-to session's name
         self.app.status.refresh_status()
         self.app._render_tasks()
