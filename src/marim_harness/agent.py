@@ -508,7 +508,7 @@ class Harness:
                 # last clean state if the approval round is interrupted.
                 if self.deps.mode is Mode.ask and result.output.approvals:
                     names = ", ".join(
-                        getattr(c, "tool_name", "") for c in result.output.approvals
+                        getattr(c, "tool_name", None) or "(unknown)" for c in result.output.approvals
                     )
                     await self.hooks.notification(
                         "approval_needed", "Approval needed", names
