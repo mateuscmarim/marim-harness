@@ -137,8 +137,8 @@ class TurnHooks:
                     hook_events.POST_TOOL_USE,
                     self._payload(
                         hook_events.POST_TOOL_USE,
-                        tool_name=getattr(event.part, "tool_name", ""),
+                        tool_name=getattr(part, "tool_name", ""),
                         tool_input=tool_input,
-                        tool_response=str(getattr(event.part, "content", "")),
+                        tool_response=str(getattr(part, "content", "")),
                     ),
                 )
