@@ -188,7 +188,7 @@ async def _cmd_skill(app: HarnessApp, arg: str) -> None:
         lines = ["**Skills**", ""]
         for s in skills:
             tag = " _(manual-only)_" if s.disable_model_invocation else ""
-            lines.append(f"- `{s.name}` — {s.description}{tag}")
+            lines.append(f"- `{s.qualified_name}` — {s.description}{tag}")
         lines += ["", "Run one with `/skill <name> [extra context]`."]
         await app.post_system("\n".join(lines))
         return
