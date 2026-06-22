@@ -10,6 +10,7 @@ if TYPE_CHECKING:
 
 from .config import config_dir
 from .deps import Deps, HarnessAgent
+from .plugins import plugin_instruction_texts
 from .tasks import render_tasks
 from .workspace import (
     agents_index_text,
@@ -89,6 +90,17 @@ def register_instructions(
         if not text:
             return ""
         return f"Project-specific instructions from AGENTS.md:\n\n{text}"
+
+    @agent.instructions
+    def _plugin_instructions(ctx: RunContext[Deps]) -> str:
+        texts = plugin_instruction_texts(ctx.deps.workspace_root)
+        if not texts:
+            return ""
+        blocks = [f"## From plugin '{name}'\n\n{text}" for name, text in texts]
+        return (
+            "Instructions contributed by installed plugins (treat like "
+            "project instructions):\n\n" + "\n\n".join(blocks)
+        )
 
     @agent.instructions
     def _memory_indexes(ctx: RunContext[Deps]) -> str:
