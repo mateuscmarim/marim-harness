@@ -18,6 +18,9 @@ coverage.xml
 .marim/fetch/
 .marim/output/
 
+# Over-budget sub-agent reports spilled to disk by the output cap. Local scratch.
+.marim/subagent-output/
+
 # Git worktrees created by --worktree / the /worktree command.
 .worktrees/
 .claude/worktrees/
