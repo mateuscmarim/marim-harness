@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "Stop": [
+      {"type": "command", "command": "${MARIM_PLUGIN_ROOT}/bin/notify.sh"}
+    ]
+  }
+}

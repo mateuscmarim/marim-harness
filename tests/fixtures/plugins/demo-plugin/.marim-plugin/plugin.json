@@ -1,0 +1,7 @@
+{
+  "name": "demo-plugin",
+  "version": "1.0.0",
+  "description": "A demo plugin bundling a skill, an agent, a hook, and an MCP server.",
+  "author": {"name": "marim"},
+  "license": "MIT"
+}
