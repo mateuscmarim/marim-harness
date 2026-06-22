@@ -239,3 +239,33 @@ async def test_normal_text_does_not_trigger_slash():
         await pilot.press("h", "e", "l", "p")
         await pilot.pause()
         assert app.slash_events == []
+
+
+@pytest.mark.anyio
+async def test_escape_dismisses_slash_autocomplete():
+    """Pressing Escape while in slash mode posts SlashDismissed."""
+    class H(App):
+        def __init__(self):
+            super().__init__()
+            self.events: list[str] = []
+
+        def compose(self) -> ComposeResult:
+            yield PromptInput()
+
+        def on_prompt_input_slash_changed(self, _):
+            self.events.append("changed")
+
+        def on_prompt_input_slash_dismissed(self, _):
+            self.events.append("dismissed")
+
+    app = H()
+    async with app.run_test() as pilot:
+        pi = app.query_one(PromptInput)
+        pi.focus()
+        await pilot.pause()
+        await pilot.press("slash")
+        await pilot.pause()
+        assert "changed" in app.events
+        await pilot.press("escape")
+        await pilot.pause()
+        assert "dismissed" in app.events

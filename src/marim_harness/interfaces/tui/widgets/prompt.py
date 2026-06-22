@@ -58,6 +58,12 @@ class PromptInput(TextArea):
         self._slash_active: bool = False
 
     async def _on_key(self, event: events.Key) -> None:
+        if event.key == "escape" and self._slash_active:
+            self._slash_active = False
+            self.post_message(self.SlashDismissed())
+            event.prevent_default()
+            event.stop()
+            return
         if event.key == "enter":
             event.prevent_default()
             event.stop()

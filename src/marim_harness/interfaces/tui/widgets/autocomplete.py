@@ -85,8 +85,3 @@ class CommandAutocomplete(Static):
         self.visible = False
         self.post_message(self.Dismissed())
 
-    def _on_key(self, event) -> None:
-        if event.key == "escape":
-            event.prevent_default()
-            event.stop()
-            self.dismiss()
