@@ -94,6 +94,16 @@ class TurnHooks:
             message=message,
         )
 
+    async def task_completed(self, task_subject: str, task_id=None,
+                             task_description: str = "") -> None:
+        """TaskCompleted: a checklist item transitioned to done. Observe-only."""
+        await self._dispatch(
+            hook_events.TASK_COMPLETED,
+            task_id=task_id,
+            task_subject=task_subject,
+            task_description=task_description,
+        )
+
     async def post_tool_use_failure(self, tool_name: str, tool_input: dict,
                                     error: str) -> None:
         """PostToolUseFailure: a tool call errored or was retried. Observe-only."""

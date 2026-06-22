@@ -483,3 +483,21 @@ async def test_tool_success_fires_post_tool_use_not_failure(tmp_path):
     hits = _read_hits(out)
     assert len(hits) == 1
     assert hits[0]["hook_event_name"] == "PostToolUse"
+
+
+@pytest.mark.anyio
+async def test_task_completed_dispatch_payload(tmp_path):
+    out = tmp_path / "hits.jsonl"
+    cmd = _capture_script(tmp_path, "tc.sh", out)
+    deps = Deps(
+        workspace_root=tmp_path, mode=Mode.auto,
+        hooks=HookRunner(
+            {hook_events.TASK_COMPLETED: [{"hooks": [{"type": "command", "command": cmd}]}]}
+        ),
+    )
+    harness = _make_harness(_edit_then_done_model(), deps)
+    await harness.session_start("startup")
+    await harness.hooks.task_completed(task_subject="ship it")
+    hits = _read_hits(out)
+    assert hits[0]["hook_event_name"] == "TaskCompleted"
+    assert hits[0]["task_subject"] == "ship it"
