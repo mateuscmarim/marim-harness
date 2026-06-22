@@ -81,7 +81,7 @@ async def test_run_forwards_model_to_build(tmp_path: Path):
     h = _make_harness(_text_model(), deps)
     seen: dict = {}
 
-    def fake_build(type, max_output_chars=None, model=None):
+    def fake_build(type, max_output_chars=None, model=None, workspace_root=None):
         seen["model"] = model
         return None, "stop here"
 
@@ -97,7 +97,7 @@ async def test_spawn_agent_tool_forwards_model(tmp_path: Path):
     captured: dict = {}
 
     async def fake_run(type, task, stream_id, mcp_names=None,
-                       max_output_chars=None, model=None):
+                       max_output_chars=None, model=None, isolation=None):
         captured["model"] = model
         return "REPORT"
 

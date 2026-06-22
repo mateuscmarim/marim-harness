@@ -19,21 +19,22 @@ from .permissions import Mode
 from .tasks import TaskList
 
 ApprovalFn = Callable[[object], Awaitable[DeferredToolApprovalResult | bool]]
-# (type, task, stream_id, mcp_names, max_output_chars, model) -> the sub-agent's
-# final report. Wired by the Harness.
+# (type, task, stream_id, mcp_names, max_output_chars, model, isolation) -> the
+# sub-agent's final report. Wired by the Harness.
 SubAgentRunner = Callable[
-    [str, str, str, Optional[list[str]], Optional[int], Optional[str]],
+    [str, str, str, Optional[list[str]], Optional[int], Optional[str],
+     Optional[str]],
     Awaitable[str],
 ]
 # (stream_id, event, usage) -> None. Forwards a sub-agent's run events to the UI
 # so it can stream them nested under the spawn, tagged with the run's live usage
 # (a RunUsage, or None) so the UI can show the token total, cache split, and cost.
 SubAgentEventCb = Callable[[str, object, object], Awaitable[None]]
-# (type, task, mcp_names, max_output_chars, model) -> the sub-agent's final
-# report. Like SubAgentRunner but with no streaming — used to run a sub-agent as
-# a detached background job.
+# (type, task, mcp_names, max_output_chars, model, isolation) -> the sub-agent's
+# final report. Like SubAgentRunner but with no streaming — used to run a
+# sub-agent as a detached background job.
 BackgroundAgentRunner = Callable[
-    [str, str, Optional[list[str]], Optional[int], Optional[str]],
+    [str, str, Optional[list[str]], Optional[int], Optional[str], Optional[str]],
     Awaitable[str],
 ]
 

@@ -1,0 +1,159 @@
+"""Worktree isolation for spawns: an isolated sub-agent runs in its own git
+worktree so parallel mutating spawns can't clobber each other or the main tree;
+its changes are committed to a branch and reported back, and the worktree is
+cleaned up."""
+
+import subprocess
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from pydantic_ai.messages import ModelResponse, TextPart
+from pydantic_ai.models.function import FunctionModel
+from pydantic_ai.usage import RunUsage
+
+from marim_harness.deps import Deps
+from marim_harness.permissions import Mode
+from marim_harness.tools import fs
+from tests.conftest import _last_instructions, _make_harness, _text_model
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> Path:
+    """A real git repo with one commit, on branch main."""
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    (tmp_path / "README.md").write_text("hi\n")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=tmp_path, check=True)
+    return tmp_path
+
+
+def _capture_deps(h):
+    """Stub build so the spawned agent records the deps it ran with."""
+    cap: dict = {}
+
+    class _StubAgent:
+        async def run(self, task, **kwargs):
+            cap["workspace_root"] = kwargs["deps"].workspace_root
+            return SimpleNamespace(output="ok", usage=RunUsage())
+
+    h.subagents.build = lambda type, max_output_chars=None, model=None, \
+        workspace_root=None: (_StubAgent(), None)
+    return cap
+
+
+@pytest.mark.anyio
+async def test_isolated_spawn_runs_in_a_worktree(repo: Path):
+    deps = Deps(workspace_root=repo, mode=Mode.auto)
+    h = _make_harness(_text_model(), deps)
+    cap = _capture_deps(h)
+
+    await h.subagents.run("general", "do it", "tc1", isolation="worktree")
+    ran_in = cap["workspace_root"]
+    assert ran_in != repo
+    assert ".worktrees" in str(ran_in)
+
+
+@pytest.mark.anyio
+async def test_non_isolated_spawn_runs_in_main_workspace(repo: Path):
+    deps = Deps(workspace_root=repo, mode=Mode.auto)
+    h = _make_harness(_text_model(), deps)
+    cap = _capture_deps(h)
+
+    await h.subagents.run("general", "do it", "tc1")
+    assert cap["workspace_root"] == repo
+    assert not (repo / ".worktrees").exists()
+
+
+@pytest.mark.anyio
+async def test_isolated_spawn_commits_changes_and_reports_branch(repo: Path):
+    """A sub-agent that writes a file in its worktree gets that change committed
+    to a branch; the report names the branch and the worktree is torn down."""
+    deps = Deps(workspace_root=repo, mode=Mode.auto)
+    h = _make_harness(_text_model(), deps)
+
+    class _WritingAgent:
+        async def run(self, task, **kwargs):
+            root = kwargs["deps"].workspace_root
+            fs.write_file(root, "new.txt", "from sub-agent\n")
+            return SimpleNamespace(output="wrote new.txt", usage=RunUsage())
+
+    h.subagents.build = lambda type, max_output_chars=None, model=None, \
+        workspace_root=None: (_WritingAgent(), None)
+
+    out = await h.subagents.run("general", "add a file", "tc1", isolation="worktree")
+    assert "wrote new.txt" in out
+    assert "subagent/tc1" in out          # branch named in the report
+    assert "new.txt" in out               # diffstat included
+    # The worktree is cleaned up, but the branch carries the committed change.
+    assert not (repo / ".worktrees" / "subagent" / "tc1").exists()
+    show = subprocess.run(
+        ["git", "show", "--stat", "subagent/tc1"], cwd=repo,
+        capture_output=True, text=True,
+    )
+    assert show.returncode == 0
+    assert "new.txt" in show.stdout
+
+
+@pytest.mark.anyio
+async def test_isolation_requires_a_git_repo(tmp_path: Path):
+    """Outside a git repo, an isolated spawn fails fast with a clear message and
+    never runs the sub-agent."""
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(_text_model(), deps)
+
+    def _no_build(*a, **k):
+        raise AssertionError("sub-agent must not be built without a worktree")
+
+    h.subagents.build = _no_build
+    out = await h.subagents.run("general", "do it", "tc1", isolation="worktree")
+    assert "git" in out.lower()
+
+
+@pytest.mark.anyio
+async def test_isolated_spawn_instructions_point_at_worktree(repo: Path):
+    """The sub-agent's instructions describe the worktree path it works in, not
+    the main root — so its relative-path reasoning matches where its tools act."""
+    captured: dict = {}
+
+    def fn(messages, info):
+        captured["instructions"] = _last_instructions(messages)
+        return ModelResponse(parts=[TextPart(content="done")])
+
+    deps = Deps(workspace_root=repo, mode=Mode.auto)
+    h = _make_harness(FunctionModel(fn), deps)
+
+    await h.subagents.run("general", "do it", "tc1", isolation="worktree")
+    assert ".worktrees" in captured["instructions"]
+
+
+@pytest.mark.anyio
+async def test_spawn_agent_tool_forwards_isolation(repo: Path):
+    """The spawn_agent tool passes isolation down to the foreground runner."""
+    from pydantic_ai.messages import ToolCallPart
+
+    captured: dict = {}
+
+    async def fake_run(type, task, stream_id, mcp_names=None,
+                       max_output_chars=None, model=None, isolation=None):
+        captured["isolation"] = isolation
+        return "REPORT"
+
+    def main(messages, info):
+        for m in messages:
+            for p in getattr(m, "parts", []):
+                if type(p).__name__ == "ToolReturnPart" and \
+                        getattr(p, "tool_name", "") == "spawn_agent":
+                    return ModelResponse(parts=[TextPart(content="done")])
+        return ModelResponse(parts=[ToolCallPart(
+            tool_name="spawn_agent",
+            args={"type": "general", "task": "x", "isolation": "worktree"},
+        )])
+
+    deps = Deps(workspace_root=repo, mode=Mode.auto)
+    h = _make_harness(FunctionModel(main), deps)
+    h.deps.run_subagent = fake_run
+    await h.run_turn("go")
+    assert captured["isolation"] == "worktree"

@@ -313,6 +313,7 @@ async def spawn_agent(
     constraints: str | None = None,
     context: str | None = None,
     model: str | None = None,
+    isolation: str | None = None,
 ) -> str:
     """Delegate a sub-task to an isolated sub-agent that runs on the same model
     and reports back. `type` is a built-in — `explore` (read-only investigation;
@@ -355,7 +356,14 @@ async def spawn_agent(
 
     `model` optionally runs this spawn on a different model than yours — pass a
     cheaper model for read-only fan-out, or a stronger one for a hard sub-task.
-    Omit it to inherit your current model (the usual case)."""
+    Omit it to inherit your current model (the usual case).
+
+    `isolation="worktree"` runs a mutating spawn in its own git worktree, so
+    several spawns editing files at once can't clobber each other or your working
+    tree. Its changes are committed to a branch (named in the report) and the
+    worktree is removed — merge or review the branch afterward. The worktree
+    branches from the last commit, so it won't see uncommitted changes in your
+    tree. Only needed when spawns write in parallel; omit for read-only work."""
     mcp_names = _coerce_mcp(mcp)
     task = compose_subagent_task(
         task, returns=returns, constraints=constraints, context=context
@@ -367,14 +375,15 @@ async def spawn_agent(
         job_id = ctx.deps.jobs.register(
             "agent", label,
             ctx.deps.run_background_agent(
-                type, task, mcp_names, max_output_chars, model
+                type, task, mcp_names, max_output_chars, model, isolation
             ),
         )
         return f"Started {job_id} (agent) — {label[:60]}"
     if ctx.deps.run_subagent is None:
         return "Sub-agents are not available in this context."
     return await ctx.deps.run_subagent(
-        type, task, ctx.tool_call_id or "", mcp_names, max_output_chars, model
+        type, task, ctx.tool_call_id or "", mcp_names, max_output_chars, model,
+        isolation,
     )
 
 
