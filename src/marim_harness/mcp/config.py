@@ -74,10 +74,13 @@ def _read_servers(path: Path) -> dict:
 
 
 def load_mcp_config(workspace_root: Path) -> dict:
-    """Merge the global and project MCP server specs into one name->spec mapping.
-    Project entries override global ones with the same name. Missing files yield
-    an empty mapping."""
-    merged = dict(_read_servers(global_mcp_config_path()))
+    """Merge MCP server specs into one name->spec mapping. Precedence, lowest
+    first: enabled+trusted plugin servers (namespaced ``<plugin>_<server>``),
+    then global, then project — so a user's own server wins on name."""
+    from ..plugins import plugin_mcp_specs
+
+    merged = dict(plugin_mcp_specs(workspace_root))
+    merged.update(_read_servers(global_mcp_config_path()))
     merged.update(_read_servers(project_mcp_config_path(workspace_root)))
     return merged
 
