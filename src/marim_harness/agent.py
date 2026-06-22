@@ -230,6 +230,10 @@ class HarnessConfig:
     # match ModelConfig: wake on, cap 3.
     autonomous_wake: bool = True
     wake_depth_cap: int = 3
+    # Backstop on a single sub-agent run: the most model requests it may make
+    # before pydantic-ai aborts it. A runaway sub-agent (stuck calling tools and
+    # never concluding) is bounded rather than blocking the spawning turn forever.
+    subagent_request_limit: int = 50
     # Desktop-notification config. Disabled by default; the TUI and headless
     # runner build a Notifier from this and fire at key event points.
     notifications: NotificationConfig = field(default_factory=NotificationConfig.disabled)
@@ -300,6 +304,11 @@ class Harness:
             self.provider, self.mcp, self.deps, self.hooks, self.session,
             get_model=lambda: self.current_model,
             model_settings=_DEFAULT_MODEL_SETTINGS,
+            request_limit=cfg.subagent_request_limit,
+            build_model=(
+                (lambda mid: self.model_source.build(mid))
+                if self.model_source is not None else None
+            ),
         )
         self.deps.run_subagent = self.subagents.run
         self.deps.run_background_agent = self.subagents.run_background

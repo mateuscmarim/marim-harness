@@ -134,6 +134,31 @@ def create_or_reuse_worktree(repo_root: Path, branch: str) -> Path:
     return target
 
 
+# Identity used for sub-agent commits, passed inline so a commit succeeds even
+# when neither the worktree nor the global git config sets user.name/user.email.
+_SUBAGENT_IDENTITY = (
+    "-c", "user.name=marim sub-agent",
+    "-c", "user.email=subagent@marim.local",
+)
+
+
+def commit_worktree(worktree_path: Path, message: str) -> str | None:
+    """Stage and commit every change in ``worktree_path`` on its current branch.
+
+    Returns a short diffstat summary of what was committed, or ``None`` when the
+    worktree was clean (nothing to commit). The commit carries a fixed sub-agent
+    identity so it lands regardless of the user's git config. Raises
+    ``WorktreeError`` on any git failure."""
+    _check(_git(worktree_path, "add", "-A"))
+    # Nothing staged ⇒ the sub-agent changed no files; leave the branch untouched.
+    if _git(worktree_path, "diff", "--cached", "--quiet").returncode == 0:
+        return None
+    _check(_git(worktree_path, *_SUBAGENT_IDENTITY, "commit", "-q", "-m", message))
+    return _check(
+        _git(worktree_path, "show", "--stat", "--format=", "HEAD")
+    ).stdout.strip()
+
+
 def remove_worktree(repo_root: Path, branch: str) -> None:
     """Remove the worktree checked out on `branch`. Refuses if the worktree is
     dirty or is the current one (git's own rules). Never deletes the branch.

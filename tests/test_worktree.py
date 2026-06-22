@@ -126,3 +126,32 @@ def test_repo_root_from_inside_linked_worktree(repo: Path):
     inside a linked worktree — not the linked worktree's own path."""
     linked = wt.create_or_reuse_worktree(repo, "feat/x")
     assert wt.repo_root(linked) == repo.resolve()
+
+
+def test_commit_worktree_commits_changes_and_returns_summary(repo: Path):
+    path = wt.create_or_reuse_worktree(repo, "feat/iso")
+    (path / "new.txt").write_text("change\n")
+    summary = wt.commit_worktree(path, "sub-agent did a thing")
+    assert summary is not None
+    assert "new.txt" in summary
+    # The change is committed on the branch and the worktree is now clean.
+    status = subprocess.run(["git", "status", "--porcelain"], cwd=path,
+                            capture_output=True, text=True).stdout
+    assert status.strip() == ""
+
+
+def test_commit_worktree_returns_none_when_no_changes(repo: Path):
+    path = wt.create_or_reuse_worktree(repo, "feat/empty")
+    assert wt.commit_worktree(path, "nothing") is None
+
+
+def test_commit_worktree_works_without_user_git_identity(repo: Path):
+    """The commit uses a fixed sub-agent identity, so it succeeds even when the
+    worktree has no user.name/user.email configured."""
+    path = wt.create_or_reuse_worktree(repo, "feat/noident")
+    subprocess.run(["git", "config", "--unset", "user.email"], cwd=path)
+    subprocess.run(["git", "config", "--unset", "user.name"], cwd=path)
+    # Also clear any inherited global identity for this invocation.
+    (path / "f.txt").write_text("x\n")
+    summary = wt.commit_worktree(path, "no identity configured")
+    assert summary is not None

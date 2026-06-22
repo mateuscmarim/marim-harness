@@ -48,7 +48,9 @@ def _capture_subagent(h, report="report"):
             cap["toolsets"] = kwargs.get("toolsets")
             return SimpleNamespace(output=report, usage=RunUsage())
 
-    h.subagents.build = lambda type, max_output_chars=None: (_StubAgent(), None)
+    h.subagents.build = lambda type, max_output_chars=None, model=None, workspace_root=None: (
+        _StubAgent(), None
+    )
     return cap
 
 
@@ -212,6 +214,44 @@ async def test_run_background_subagent_returns_output(tmp_path: Path):
     h = _make_harness(TestModel(call_tools=[], custom_output_text="BG REPORT"), deps)
     out = await h.subagents.run_background("explore", "scan the repo")
     assert out == "BG REPORT"
+
+
+@pytest.mark.anyio
+async def test_run_background_output_cap_spills_full_and_returns_pointer(tmp_path: Path):
+    """A background spawn's report is hard-capped too: over budget it spills to a
+    file and the stored result is a within-budget head + pointer, so a giant
+    background report can't flood context when it's later pulled."""
+    long = "CONCLUSION first. " + "filler. " * 500
+
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content=long)])
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    harness = _make_harness(FunctionModel(fn), deps)
+    result = await harness.subagents.run_background("explore", "go", None, 200)
+
+    assert len(result) <= 200
+    assert result.startswith("CONCLUSION first.")
+    spill_dir = tmp_path / ".marim" / "subagent-output"
+    files = list(spill_dir.glob("*.md"))
+    assert len(files) == 1 and files[0].read_text() == long
+    assert ".marim/subagent-output/" in result
+
+
+@pytest.mark.anyio
+async def test_run_background_no_cap_returns_full_output(tmp_path: Path):
+    """Without a cap, a background report passes through unchanged and nothing
+    spills."""
+    long = "y" * 5000
+
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content=long)])
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    harness = _make_harness(FunctionModel(fn), deps)
+    result = await harness.subagents.run_background("explore", "go")
+    assert result == long
+    assert not (tmp_path / ".marim" / "subagent-output").exists()
 
 
 @pytest.mark.anyio
@@ -416,7 +456,9 @@ async def test_run_background_isolates_task_list(tmp_path: Path):
     # Give the parent a non-empty checklist so a leak would be visible.
     deps.tasks.replace([{"text": "user task", "status": "in_progress"}])
     h = _make_harness(_text_model(), deps)
-    h.subagents.build = lambda type, max_output_chars=None: (_StubAgent(), None)
+    h.subagents.build = lambda type, max_output_chars=None, model=None, workspace_root=None: (
+        _StubAgent(), None
+    )
 
     await h.subagents.run_background("explore", "scan")
     bg_deps = cap["deps"]

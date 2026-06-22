@@ -9,6 +9,10 @@ __pycache__/
 .mypy_cache/
 .VSCodeCounter/
 
+# Coverage artifacts from the test runner
+.coverage
+coverage.xml
+
 # Offloaded fetch_url bodies — large pages written to disk so they don't flood
 # context. Local scratch, never committed.
 .marim/fetch/

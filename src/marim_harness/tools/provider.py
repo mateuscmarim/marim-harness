@@ -312,6 +312,8 @@ async def spawn_agent(
     returns: str | None = None,
     constraints: str | None = None,
     context: str | None = None,
+    model: str | None = None,
+    isolation: str | None = None,
 ) -> str:
     """Delegate a sub-task to an isolated sub-agent that runs on the same model
     and reports back. `type` is a built-in — `explore` (read-only investigation;
@@ -335,12 +337,11 @@ async def spawn_agent(
     `max_output_chars` caps the report this spawn returns into your context — set
     it when you're fanning out and want bounded inflow. It's a budget the
     sub-agent distills toward (it's told to lead with the conclusion and
-    summarize to fit), not a blind truncation. For a foreground spawn it's also
-    enforced losslessly: a report over budget is written to a workspace file and
-    replaced with a within-budget head + a pointer to that file, so nothing is
-    lost — you can read the file if you need the detail. Leave it unset for an
-    unbounded report. (For a background spawn it applies as a soft instruction
-    only.)
+    summarize to fit), not a blind truncation. It's also enforced losslessly, for
+    both foreground and background spawns: a report over budget is written to a
+    workspace file and replaced with a within-budget head + a pointer to that
+    file, so nothing is lost — you can read the file if you need the detail. Leave
+    it unset for an unbounded report.
 
     `returns`, `constraints`, and `context` are optional structured fields folded
     into the sub-agent's prompt — all freeform text, all additive (omit any and
@@ -350,7 +351,18 @@ async def spawn_agent(
     for); `constraints` are boundaries on how to work (a soft nudge — real tool
     reach is still set by `type`/`mcp`, not prose); `context` is the orchestration-
     level background it can't see (why this task, what's already known). The plain
-    `task` stays the one required ask."""
+    `task` stays the one required ask.
+
+    `model` optionally runs this spawn on a different model than yours — pass a
+    cheaper model for read-only fan-out, or a stronger one for a hard sub-task.
+    Omit it to inherit your current model (the usual case).
+
+    `isolation="worktree"` runs a mutating spawn in its own git worktree, so
+    several spawns editing files at once can't clobber each other or your working
+    tree. Its changes are committed to a branch (named in the report) and the
+    worktree is removed — merge or review the branch afterward. The worktree
+    branches from the last commit, so it won't see uncommitted changes in your
+    tree. Only needed when spawns write in parallel; omit for read-only work."""
     mcp_names = _coerce_mcp(mcp)
     task = compose_subagent_task(
         task, returns=returns, constraints=constraints, context=context
@@ -361,13 +373,16 @@ async def spawn_agent(
         label = f"{type}: {task}"
         job_id = ctx.deps.jobs.register(
             "agent", label,
-            ctx.deps.run_background_agent(type, task, mcp_names, max_output_chars),
+            ctx.deps.run_background_agent(
+                type, task, mcp_names, max_output_chars, model, isolation
+            ),
         )
         return f"Started {job_id} (agent) — {label[:60]}"
     if ctx.deps.run_subagent is None:
         return "Sub-agents are not available in this context."
     return await ctx.deps.run_subagent(
-        type, task, ctx.tool_call_id or "", mcp_names, max_output_chars
+        type, task, ctx.tool_call_id or "", mcp_names, max_output_chars, model,
+        isolation,
     )
 
 
