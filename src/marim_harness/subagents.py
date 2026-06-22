@@ -70,7 +70,9 @@ class SubagentRunner:
         listing what's available."""
         defn = find_agent(self.deps.workspace_root, type)
         if defn is None:
-            names = ", ".join(a.name for a in discover_agents(self.deps.workspace_root))
+            names = ", ".join(
+                a.qualified_name for a in discover_agents(self.deps.workspace_root)
+            )
             return None, f"No sub-agent type {type!r}. Available: {names}."
         allow_gated = self.deps.mode is Mode.auto
         sub = Agent(

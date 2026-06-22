@@ -52,13 +52,19 @@ _GENERAL_PROMPT = (
 class AgentDef:
     """One sub-agent role: its identity, the system prompt that shapes it, and
     the tool names it may use (before the mode-based gating in effective_tools).
-    ``source`` is ``built-in`` or the discovery root the file came from."""
+    ``source`` is ``built-in`` or the discovery root the file came from.
+    ``plugin`` is the owning plugin's name when the agent came from a plugin."""
 
     name: str
     description: str
     prompt: str
     tools: frozenset[str]
     source: str
+    plugin: str | None = None
+
+    @property
+    def qualified_name(self) -> str:
+        return f"{self.plugin}:{self.name}" if self.plugin else self.name
 
 
 def _builtins() -> dict[str, AgentDef]:
@@ -105,7 +111,7 @@ def _parse_tools(raw) -> frozenset[str]:
     return allowed or READ_TOOLS
 
 
-def _parse_agent(source: str, path: Path) -> AgentDef | None:
+def _parse_agent(source: str, path: Path, plugin: str | None = None) -> AgentDef | None:
     """Build an AgentDef from a ``<name>.md`` file, or None if invalid. The file
     stem is the authoritative identity; frontmatter must carry a non-empty
     description and, if it names the agent, must match the stem."""
@@ -137,36 +143,45 @@ def _parse_agent(source: str, path: Path) -> AgentDef | None:
         prompt=match.group(2).strip(),
         tools=_parse_tools(data.get("tools")),
         source=source,
+        plugin=plugin,
     )
 
 
 def discover_agents(workspace_root) -> list[AgentDef]:
-    """All effective sub-agents for a workspace: custom definitions (deduped by
-    name, highest-precedence root winning) layered over the built-ins, which fill
-    any name a custom file didn't claim. Sorted by name for stable display."""
+    """All effective sub-agents: custom definitions (user roots first, then
+    plugin roots as ``plugin:name``) layered over the built-ins, deduped by
+    qualified name with the highest-precedence root winning. Sorted by
+    qualified name for stable display."""
+    from ..plugins import plugin_agent_roots
+
     seen: dict[str, AgentDef] = {}
     for source, root in agent_roots(workspace_root):
-        try:
-            files = sorted(
-                p for p in root.iterdir() if p.is_file() and p.suffix == ".md"
-            )
-        except OSError:
-            continue
-        for path in files:
-            if path.stem in seen:
-                continue  # a higher-precedence root already claimed this name
-            agent = _parse_agent(source, path)
-            if agent is not None:
-                seen[agent.name] = agent
+        _collect_agents(seen, source, root, plugin=None)
+    for plugin_name, root in plugin_agent_roots(workspace_root):
+        _collect_agents(seen, f"plugin:{plugin_name}", root, plugin=plugin_name)
     for name, agent in _builtins().items():
         seen.setdefault(name, agent)
-    return sorted(seen.values(), key=lambda a: a.name)
+    return sorted(seen.values(), key=lambda a: a.qualified_name)
+
+
+def _collect_agents(seen: dict, source: str, root: Path, *, plugin: str | None) -> None:
+    try:
+        files = sorted(p for p in root.iterdir() if p.is_file() and p.suffix == ".md")
+    except OSError:
+        return
+    for path in files:
+        agent = _parse_agent(source, path, plugin=plugin)
+        if agent is None:
+            continue
+        if agent.qualified_name in seen:
+            continue  # a higher-precedence root already claimed this name
+        seen[agent.qualified_name] = agent
 
 
 def find_agent(workspace_root, name: str) -> AgentDef | None:
-    """The effective sub-agent with ``name``, or None."""
+    """The effective sub-agent whose qualified name is ``name``, or None."""
     for agent in discover_agents(workspace_root):
-        if agent.name == name:
+        if agent.qualified_name == name:
             return agent
     return None
 
@@ -261,4 +276,4 @@ def cap_subagent_output(
 def agents_index_text(defs: list[AgentDef]) -> str:
     """The injected index of spawnable sub-agents: one ``- name — description``
     line each. Never empty — the built-ins are always present."""
-    return "\n".join(f"- {a.name} — {a.description}" for a in defs)
+    return "\n".join(f"- {a.qualified_name} — {a.description}" for a in defs)
