@@ -1,3 +1,5 @@
+import json as _json_capture
+import stat as _stat_capture
 from pathlib import Path
 
 import pytest
@@ -6,6 +8,24 @@ from pydantic_ai.models.function import FunctionModel
 
 from marim_harness.agent import Harness
 from marim_harness.tools.provider import BuiltinToolProvider
+
+
+def _capture_script(tmp_path, name: str, outfile) -> str:
+    """A hook script that appends its stdin (one JSON payload) + a newline to
+    *outfile*, so a test can read back every payload the event fired with."""
+    p = tmp_path / name
+    p.write_text(
+        '#!/usr/bin/env bash\ncat >> "%s"\nprintf "\\n" >> "%s"\n' % (outfile, outfile),
+        encoding="utf-8",
+    )
+    p.chmod(p.stat().st_mode | _stat_capture.S_IEXEC | _stat_capture.S_IRWXU)
+    return str(p)
+
+
+def _read_hits(outfile) -> list:
+    """Parse the payloads a _capture_script recorded (one JSON object per line)."""
+    text = Path(outfile).read_text(encoding="utf-8") if Path(outfile).exists() else ""
+    return [_json_capture.loads(ln) for ln in text.splitlines() if ln.strip()]
 
 
 @pytest.fixture

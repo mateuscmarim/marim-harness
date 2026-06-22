@@ -2,14 +2,14 @@ import stat
 from pathlib import Path
 
 import pytest
-from pydantic_ai.messages import ModelResponse, TextPart
+from pydantic_ai.messages import FunctionToolResultEvent, ModelResponse, RetryPromptPart, TextPart, ToolReturnPart
 from pydantic_ai.models.function import FunctionModel
 
 from marim_harness.deps import Deps
 from marim_harness.hooks import events as hook_events
 from marim_harness.hooks.runner import HookRunner
 from marim_harness.permissions import Mode
-from tests.conftest import _edit_then_done_model, _make_harness, _make_subagent_def
+from tests.conftest import _capture_script, _edit_then_done_model, _make_harness, _make_subagent_def, _read_hits
 
 
 @pytest.mark.anyio
@@ -376,3 +376,49 @@ async def test_background_subagent_start_and_stop_fire(tmp_path):
     lines = log.read_text().splitlines()
     assert "SubagentStart" in lines
     assert "SubagentStop" in lines
+
+
+@pytest.mark.anyio
+async def test_tool_failure_fires_post_tool_use_failure(tmp_path):
+    out = tmp_path / "hits.jsonl"
+    cmd = _capture_script(tmp_path, "fail.sh", out)
+    deps = Deps(
+        workspace_root=tmp_path, mode=Mode.auto,
+        hooks=HookRunner(
+            {hook_events.POST_TOOL_USE_FAILURE: [{"hooks": [{"type": "command", "command": cmd}]}]}
+        ),
+    )
+    harness = _make_harness(_edit_then_done_model(), deps)
+    await harness.session_start("startup")
+    ev = FunctionToolResultEvent(
+        part=RetryPromptPart(content="boom", tool_name="edit_file", tool_call_id="tc1")
+    )
+    await harness.hooks.tool_event(ev, {"tc1": {"path": "a.txt"}})
+    hits = _read_hits(out)
+    assert len(hits) == 1
+    assert hits[0]["hook_event_name"] == "PostToolUseFailure"
+    assert hits[0]["tool_name"] == "edit_file"
+    assert hits[0]["tool_input"] == {"path": "a.txt"}
+    assert "boom" in hits[0]["error"]
+
+
+@pytest.mark.anyio
+async def test_tool_success_fires_post_tool_use_not_failure(tmp_path):
+    out = tmp_path / "hits.jsonl"
+    cmd = _capture_script(tmp_path, "ok.sh", out)
+    deps = Deps(
+        workspace_root=tmp_path, mode=Mode.auto,
+        hooks=HookRunner({
+            hook_events.POST_TOOL_USE: [{"hooks": [{"type": "command", "command": cmd}]}],
+            hook_events.POST_TOOL_USE_FAILURE: [{"hooks": [{"type": "command", "command": cmd}]}],
+        }),
+    )
+    harness = _make_harness(_edit_then_done_model(), deps)
+    await harness.session_start("startup")
+    ev = FunctionToolResultEvent(
+        part=ToolReturnPart(tool_name="read_file", content="ok", tool_call_id="tc2")
+    )
+    await harness.hooks.tool_event(ev, {"tc2": {"path": "a.txt"}})
+    hits = _read_hits(out)
+    assert len(hits) == 1
+    assert hits[0]["hook_event_name"] == "PostToolUse"
