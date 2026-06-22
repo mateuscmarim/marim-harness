@@ -37,7 +37,8 @@ _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)\Z", re.DOTALL)
 class Skill:
     """One discovered skill: its identity, where it lives, and its metadata.
     ``root`` is the skill's own (absolute) directory; ``source`` names the
-    discovery root it came from (e.g. ``project`` or ``global``)."""
+    discovery root it came from (e.g. ``project`` or ``global``). ``plugin`` is
+    the owning plugin's name when the skill came from a plugin, else None."""
 
     name: str
     description: str
@@ -46,6 +47,13 @@ class Skill:
     disable_model_invocation: bool = False
     allowed_tools: str = ""  # parsed but not enforced in v1
     metadata: dict = field(default_factory=dict)
+    plugin: str | None = None
+
+    @property
+    def qualified_name(self) -> str:
+        """The name used for display and lookup: ``plugin:name`` for plugin
+        skills, the bare name otherwise."""
+        return f"{self.plugin}:{self.name}" if self.plugin else self.name
 
 
 def skill_roots(workspace_root) -> list[tuple[str, Path]]:
@@ -61,7 +69,7 @@ def _valid_name(name: str) -> bool:
     return bool(name) and len(name) <= 64 and _NAME_RE.match(name) is not None
 
 
-def _parse_skill(source: str, directory: Path) -> Skill | None:
+def _parse_skill(source: str, directory: Path, plugin: str | None = None) -> Skill | None:
     """Build a Skill from a directory, or None if it isn't a valid skill. The
     directory name is the authoritative identity; frontmatter must carry a
     non-empty description and, if it names the skill, must match the directory."""
@@ -97,31 +105,43 @@ def _parse_skill(source: str, directory: Path) -> Skill | None:
         disable_model_invocation=bool(data.get("disable-model-invocation", False)),
         allowed_tools=str(data.get("allowed-tools", "") or ""),
         metadata=metadata if isinstance(metadata, dict) else {},
+        plugin=plugin,
     )
 
 
 def discover_skills(workspace_root) -> list[Skill]:
-    """All effective skills for a workspace, deduped by name with the first root
-    in precedence order winning, sorted by name for stable display."""
+    """All effective skills for a workspace, deduped by qualified name with the
+    first root in precedence order winning, sorted for stable display. User
+    roots (bare names) come first, then plugin roots (``plugin:name``), so a
+    user's own skill always beats a plugin's same-named one."""
+    from ..plugins import plugin_skill_roots
+
     seen: dict[str, Skill] = {}
     for source, root in skill_roots(workspace_root):
-        try:
-            entries = sorted(p for p in root.iterdir() if p.is_dir())
-        except OSError:
+        _collect_skills(seen, source, root, plugin=None)
+    for plugin_name, root in plugin_skill_roots(workspace_root):
+        _collect_skills(seen, f"plugin:{plugin_name}", root, plugin=plugin_name)
+    return sorted(seen.values(), key=lambda s: s.qualified_name)
+
+
+def _collect_skills(seen: dict, source: str, root: Path, *, plugin: str | None) -> None:
+    try:
+        entries = sorted(p for p in root.iterdir() if p.is_dir())
+    except OSError:
+        return
+    for directory in entries:
+        skill = _parse_skill(source, directory, plugin=plugin)
+        if skill is None:
             continue
-        for directory in entries:
-            if directory.name in seen:
-                continue  # a higher-precedence root already claimed this name
-            skill = _parse_skill(source, directory)
-            if skill is not None:
-                seen[skill.name] = skill
-    return sorted(seen.values(), key=lambda s: s.name)
+        if skill.qualified_name in seen:
+            continue  # a higher-precedence root already claimed this name
+        seen[skill.qualified_name] = skill
 
 
 def find_skill(workspace_root, name: str) -> Skill | None:
-    """The effective skill with ``name``, or None."""
+    """The effective skill whose qualified name is ``name``, or None."""
     for skill in discover_skills(workspace_root):
-        if skill.name == name:
+        if skill.qualified_name == name:
             return skill
     return None
 
@@ -157,7 +177,7 @@ def skills_index_text(skills: list[Skill]) -> str:
     model-invocable skill. Skills marked ``disable-model-invocation`` are left
     out so the agent won't auto-activate them. Empty string when none qualify."""
     lines = [
-        f"- {s.name} — {s.description}"
+        f"- {s.qualified_name} — {s.description}"
         for s in skills
         if not s.disable_model_invocation
     ]
