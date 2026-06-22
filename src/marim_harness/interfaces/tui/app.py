@@ -9,6 +9,7 @@ from textual.css.query import NoMatches
 from textual.widgets import Footer, Header, Static
 
 from ...agent import Harness
+from ...errors import format_provider_error
 from ...history import PromptHistory
 from ...prefs import load_theme, save_theme
 from ...usage import resolve_cost
@@ -515,8 +516,9 @@ class HarnessApp(App):
             log.mount(ErrorMessage("turn cancelled"))
             raise
         except Exception as exc:  # keep the session alive on any turn failure
-            await log.mount(ErrorMessage(f"{type(exc).__name__}: {exc}"))
-            self._notify("Turn error", f"{type(exc).__name__}: {exc}", "error")
+            detail = format_provider_error(exc) or f"{type(exc).__name__}: {exc}"
+            await log.mount(ErrorMessage(detail))
+            self._notify("Turn error", detail, "error")
         finally:
             self._turn_worker = None
             self.status.set_busy(False)

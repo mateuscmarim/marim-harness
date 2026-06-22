@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
 
@@ -17,6 +18,7 @@ from .compaction import (
     make_titler,
 )
 from .deps import Deps
+from .errors import dump_provider_error, provider_error_status
 from .hooks.dispatch import TurnHooks
 from .instructions import register_instructions
 from .lsp.manager import LspManager
@@ -26,6 +28,8 @@ from .permissions import resolve_approvals
 from .session import SessionController, SessionManager, SessionStore
 from .subagents import SubagentRunner
 from .tools.provider import ToolProvider
+
+logger = logging.getLogger(__name__)
 
 # Force parallel tool calling on for both the main agent and spawned sub-agents.
 # It's a base ModelSettings key that each model reads with .get(): providers that
@@ -170,6 +174,19 @@ def _actionable_error_note(exc: BaseException) -> Optional[str]:
                 f"{head} The request was rejected (HTTP {exc.status_code}). "
                 "Adjust your approach — e.g. shorten the input or fix the "
                 "request — before continuing."
+            )
+        return None
+    # A raw provider error (openai.APIError) that pydantic-ai didn't wrap as a
+    # ModelHTTPError — common with OpenRouter's "Provider returned error". Apply
+    # the same client-vs-transient split using the status the SDK or the body
+    # carries; a 5xx/unknown is infra and gets no (misleading) note.
+    provider_status = provider_error_status(exc)
+    if provider_status is not None:
+        if 400 <= provider_status < 500 and provider_status != 429:
+            return (
+                f"{head} The provider rejected the request "
+                f"(HTTP {provider_status}: {_short(exc)}). Adjust your approach "
+                "— e.g. shorten the input or fix the request — before continuing."
             )
         return None
     if isinstance(exc, UsageLimitExceeded):
@@ -495,6 +512,13 @@ class Harness:
                     # Stash an actionable note (None for infra/render/cancel) to
                     # prepend to the next turn's prompt.
                     self._pending_error_note = _actionable_error_note(exc)
+                    # Spill the full provider payload to disk so the real upstream
+                    # error survives the terse on-screen view. Best-effort: a dump
+                    # failure must never mask the original error.
+                    try:
+                        dump_provider_error(self.deps.workspace_root, exc)
+                    except Exception:
+                        logger.debug("failed to dump provider error", exc_info=True)
                     raise
             self.session.history = result.all_messages()
             self.session.usage += result.usage

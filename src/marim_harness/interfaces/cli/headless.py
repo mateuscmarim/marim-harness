@@ -16,6 +16,7 @@ from pydantic_ai.messages import (
 )
 
 from ...agent import Harness
+from ...errors import format_provider_error
 from ...usage import usage_summary
 
 
@@ -109,8 +110,9 @@ async def run_headless(
         await harness.session_start("resume" if harness.session.history else "startup")
         output = await harness.run_turn(prompt, event_stream_handler=handler)
     except Exception as exc:  # keep the failure surface small and scriptable
-        print(f"{type(exc).__name__}: {exc}", file=err)
-        _notify(harness, "Turn error", f"{type(exc).__name__}: {exc}", "error")
+        detail = format_provider_error(exc) or f"{type(exc).__name__}: {exc}"
+        print(detail, file=err)
+        _notify(harness, "Turn error", detail, "error")
         return 1
     finally:
         await harness.session_end("exit")
