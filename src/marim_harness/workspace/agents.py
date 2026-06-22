@@ -147,21 +147,76 @@ def _parse_agent(source: str, path: Path, plugin: str | None = None) -> AgentDef
     )
 
 
+def _all_roots(workspace_root) -> list[tuple[str, Path, str | None]]:
+    """The discovery roots in precedence order as ``(source, root, plugin)``:
+    user roots (project, then global), then plugin roots."""
+    from ..plugins import plugin_agent_roots
+
+    roots: list[tuple[str, Path, str | None]] = [
+        (source, root, None) for source, root in agent_roots(workspace_root)
+    ]
+    roots += [
+        (f"plugin:{name}", root, name)
+        for name, root in plugin_agent_roots(workspace_root)
+    ]
+    return roots
+
+
+# Cache of discovery results keyed by workspace root. Each entry holds the
+# filesystem signature it was computed from; a discovery is reused only while
+# that signature still matches, so an added/removed/edited agent file is picked
+# up on the next call without re-reading and re-parsing every file each turn.
+_DISCOVERY_CACHE: dict[str, tuple[tuple, list[AgentDef]]] = {}
+
+
+def _discovery_signature(roots: list[tuple[str, Path, str | None]]) -> tuple:
+    """A cheap fingerprint of every candidate ``*.md`` across the roots: each
+    file's name, mtime, and size. Changes whenever a file is added, removed, or
+    edited — stat-only, so it skips the expensive read+YAML parse on a cache hit."""
+    sig: list = []
+    for source, root, _plugin in roots:
+        try:
+            paths = sorted(
+                p for p in root.iterdir() if p.is_file() and p.suffix == ".md"
+            )
+        except OSError:
+            sig.append((source, str(root), None))
+            continue
+        files = []
+        for p in paths:
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            files.append((p.name, st.st_mtime_ns, st.st_size))
+        sig.append((source, str(root), tuple(files)))
+    return tuple(sig)
+
+
 def discover_agents(workspace_root) -> list[AgentDef]:
     """All effective sub-agents: custom definitions (user roots first, then
     plugin roots as ``plugin:name``) layered over the built-ins, deduped by
     qualified name with the highest-precedence root winning. Sorted by
-    qualified name for stable display."""
-    from ..plugins import plugin_agent_roots
+    qualified name for stable display.
+
+    Cached per workspace root and reused while the agent files on disk are
+    unchanged (by name/mtime/size), so repeated calls within a turn — and across
+    turns that didn't touch an agent file — don't re-walk and re-parse them."""
+    roots = _all_roots(workspace_root)
+    sig = _discovery_signature(roots)
+    key = str(workspace_root)
+    cached = _DISCOVERY_CACHE.get(key)
+    if cached is not None and cached[0] == sig:
+        return cached[1]
 
     seen: dict[str, AgentDef] = {}
-    for source, root in agent_roots(workspace_root):
-        _collect_agents(seen, source, root, plugin=None)
-    for plugin_name, root in plugin_agent_roots(workspace_root):
-        _collect_agents(seen, f"plugin:{plugin_name}", root, plugin=plugin_name)
+    for source, root, plugin in roots:
+        _collect_agents(seen, source, root, plugin=plugin)
     for name, agent in _builtins().items():
         seen.setdefault(name, agent)
-    return sorted(seen.values(), key=lambda a: a.qualified_name)
+    result = sorted(seen.values(), key=lambda a: a.qualified_name)
+    _DISCOVERY_CACHE[key] = (sig, result)
+    return result
 
 
 def _collect_agents(seen: dict, source: str, root: Path, *, plugin: str | None) -> None:
