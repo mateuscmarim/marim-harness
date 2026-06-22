@@ -1,4 +1,20 @@
 from marim_harness.workspace import ModelEntry, filter_entries, model_supports_images, parse_models
+from marim_harness.workspace.catalog import parse_google_models
+
+
+def test_parse_google_models_skips_row_with_non_list_methods():
+    """A row whose supportedGenerationMethods is present-but-null (or any
+    non-list) must be skipped, not raise — otherwise the outer fetch's
+    except-Exception discards the entire catalog over one malformed row."""
+    payload = {
+        "models": [
+            {"name": "models/gemini-pro", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/broken", "supportedGenerationMethods": None},
+            {"name": "models/also-broken", "supportedGenerationMethods": "generateContent"},
+        ]
+    }
+    entries = parse_google_models(payload)
+    assert [e.id for e in entries] == ["gemini-pro"]
 
 _SAMPLE = {
     "data": [

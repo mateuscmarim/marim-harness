@@ -17,6 +17,30 @@ logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT = 30
 
 
+def _coerce_timeout(value) -> float:
+    """A hook ``timeout`` comes straight from untrusted JSON. Coerce it to a
+    positive float, falling back to the default for anything non-numeric or
+    non-positive — a bad value (e.g. ``"abc"`` or ``null``) must not reach
+    ``asyncio.wait_for`` and raise ``TypeError`` (which would drop the hook and
+    leak its already-spawned subprocess)."""
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return float(_DEFAULT_TIMEOUT)
+    return seconds if seconds > 0 else float(_DEFAULT_TIMEOUT)
+
+
+def _kill(proc) -> None:
+    """SIGKILL the hook's whole process group; fall back to killing the leader."""
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+
+
 def base_payload(
     event: str, *, session_id: str, cwd: str, transcript_path: str, **extra
 ) -> dict:
@@ -78,18 +102,14 @@ async def _run_one(command: str, payload: dict, timeout) -> Optional[str]:
         return None
     data = json.dumps(payload).encode()
     try:
-        stdout, _ = await asyncio.wait_for(proc.communicate(input=data), timeout=timeout)
-    except asyncio.TimeoutError:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
+        stdout, _ = await asyncio.wait_for(
+            proc.communicate(input=data), timeout=_coerce_timeout(timeout)
+        )
+    except (asyncio.TimeoutError, OSError, ValueError):
+        # Timeout or any communicate failure: reap the child so a spawned hook
+        # process can never leak.
+        _kill(proc)
         await proc.wait()
-        return None
-    except (OSError, ValueError):
         return None
     if proc.returncode != 0:
         return None

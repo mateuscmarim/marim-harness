@@ -86,6 +86,23 @@ def test_remove_worktree_keeps_branch(repo: Path):
     assert rc == 0  # branch survives
 
 
+def test_remove_resolves_reused_external_worktree(repo: Path, tmp_path: Path):
+    """create_or_reuse returns ANY worktree already on the branch — including one
+    outside .worktrees/. remove must target that real path, not assume the
+    canonical .worktrees/<branch> location (which would error on a missing dir)."""
+    external = tmp_path.with_name(tmp_path.name + "_ext")
+    subprocess.run(
+        ["git", "worktree", "add", str(external), "-b", "feat/ext"],
+        cwd=repo, check=True, capture_output=True,
+    )
+    # git won't allow a second checkout of the branch, so create reuses it.
+    path = wt.create_or_reuse_worktree(repo, "feat/ext")
+    assert path.resolve() == external.resolve()
+    # remove must find and remove that real path.
+    wt.remove_worktree(repo, "feat/ext")
+    assert not external.exists()
+
+
 def test_remove_refuses_dirty_worktree(repo: Path):
     path = wt.create_or_reuse_worktree(repo, "feat/x")
     (path / "dirty.txt").write_text("uncommitted\n")

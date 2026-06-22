@@ -1,8 +1,11 @@
+import logging
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Optional
 
 from .config import persist_server_enabled
+
+logger = logging.getLogger(__name__)
 
 
 class McpManager:
@@ -80,7 +83,6 @@ class McpManager:
     async def connect(self) -> dict:
         if self._connected or not self.mcp_servers:
             return self.mcp_status
-        self._connected = True
         connected: list[str] = []
         failed: list[tuple[str, str]] = []
         for server in self.mcp_servers:
@@ -92,19 +94,32 @@ class McpManager:
                 connected.append(name)
             else:
                 failed.append((name, err))
+        # Mark connected only after the loop completes. If a cancellation or
+        # BaseException interrupts mid-connect, the flag stays False so a later
+        # connect() retries (and reaps the servers already in the stack via
+        # aclose) instead of early-returning into a half-connected state.
+        self._connected = True
         self.mcp_status["connected"] = connected
         self.mcp_status["failed"] = failed
         return self.mcp_status
 
     async def aclose(self) -> None:
-        if self._mcp_stack is not None:
-            await self._mcp_stack.aclose()
+        # Reset state regardless of whether teardown succeeds: a server whose
+        # __aexit__ raises (dead transport / already-gone child) must not leave
+        # the stack non-None and _connected stuck True, which would make a later
+        # reconnect early-return and leak the stdio subprocesses.
+        try:
+            if self._mcp_stack is not None:
+                await self._mcp_stack.aclose()
+        except Exception as exc:
+            logger.debug("error during MCP shutdown: %s", exc)
+        finally:
             self._mcp_stack = None
-        self._live_servers = []
-        self._connected = False
-        # Nothing is connected once closed; reset the status so a later
-        # reconnect/enable starts from a clean slate (and can't double-list).
-        self.mcp_status = {"connected": [], "failed": []}
+            self._live_servers = []
+            self._connected = False
+            # Nothing is connected once closed; reset the status so a later
+            # reconnect/enable starts from a clean slate (and can't double-list).
+            self.mcp_status = {"connected": [], "failed": []}
 
     def disable_server(self, name: str, workspace_root: Path) -> None:
         self.disabled.add(name)

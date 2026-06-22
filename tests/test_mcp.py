@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ from marim_harness.mcp import (
     make_approval_hook,
     persist_server_enabled,
 )
+from marim_harness.mcp.manager import McpManager
 from marim_harness.permissions import Mode
 
 # --- config loading & merging ---------------------------------------------
@@ -216,6 +218,55 @@ async def test_stdio_server_routes_stderr_off_terminal(monkeypatch):
     errlog = captured["errlog"]
     assert errlog is not sys.stderr  # not the terminal
     assert hasattr(errlog, "write")  # a real writable stream
+
+
+# --- McpManager lifecycle --------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_aclose_resets_state_even_if_teardown_raises():
+    """If a server's __aexit__ throws during shutdown (a dead/broken transport),
+    aclose must still reset state and not leak the stack — otherwise a later
+    reconnect early-returns and the subprocesses are never reaped."""
+
+    class Bad:
+        id = "bad"
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            raise RuntimeError("dead transport")
+
+    mgr = McpManager([Bad()], set())
+    await mgr.connect()
+    assert mgr._connected is True
+
+    await mgr.aclose()  # must not raise despite the failing teardown
+    assert mgr._connected is False
+    assert mgr._mcp_stack is None
+    assert mgr._live_servers == []
+    assert mgr.mcp_status == {"connected": [], "failed": []}
+
+
+@pytest.mark.anyio
+async def test_connect_not_marked_connected_when_interrupted():
+    """A cancellation mid-connect must leave _connected False so a later connect
+    retries — setting the flag before the work strands the manager."""
+
+    class Boom:
+        id = "boom"
+
+        async def __aenter__(self):
+            raise asyncio.CancelledError()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    mgr = McpManager([Boom()], set())
+    with pytest.raises(asyncio.CancelledError):
+        await mgr.connect()
+    assert mgr._connected is False
 
 
 # --- approval hook ---------------------------------------------------------

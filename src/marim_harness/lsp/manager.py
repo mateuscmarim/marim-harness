@@ -144,7 +144,7 @@ class LspManager:
             return f"No {label} found."
         out: list[str] = []
         for loc in items[:_MAX_RESULTS]:
-            uri = loc.get("uri") or loc.get("absolutePath") or ""
+            uri = str(loc.get("uri") or loc.get("absolutePath") or "")
             start = loc.get("range", {}).get("start", {})
             rel = (
                 _uri_to_rel(self.root, uri) if uri.startswith("file:") else (uri or "<unknown>")

@@ -94,6 +94,25 @@ def test_set_updates_existing_key_in_place(monkeypatch, tmp_path):
     assert content.count("MARIM_MODEL=") == 1
 
 
+def test_set_value_with_special_chars_round_trips(monkeypatch, tmp_path):
+    """A value containing whitespace or '#' must survive write→reload. Written
+    unquoted, dotenv strips everything from the '#' on (and trailing space), so
+    the value read back would not match what was set."""
+    from dotenv import dotenv_values
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    _clear_marim_env(monkeypatch)
+    value = "http://proxy/v1 # staging"
+    assert config_cmd.main(["set", "MARIM_BASE_URL", value]) == 0
+    env_file = tmp_path / "marim" / ".env"
+    assert dotenv_values(env_file)["MARIM_BASE_URL"] == value
+    # a sibling plain value is still preserved on a later write
+    assert config_cmd.main(["set", "MARIM_MODEL", "openai/gpt-5.2"]) == 0
+    vals = dotenv_values(env_file)
+    assert vals["MARIM_BASE_URL"] == value
+    assert vals["MARIM_MODEL"] == "openai/gpt-5.2"
+
+
 def test_set_accepts_proactive_memory_key(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     _clear_marim_env(monkeypatch)

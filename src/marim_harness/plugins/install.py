@@ -65,11 +65,19 @@ def _run_git(args: list[str], cwd: Path | None = None) -> str:
 
 def _clone_git(source: str, dest: Path, ref: str | None) -> dict:
     """Clone ``source`` into ``dest`` and return a source record with the resolved SHA."""
-    args = ["clone", "--depth", "1"]
     if ref:
-        args += ["--branch", ref]
-    args += [source, str(dest)]
-    _run_git(args)
+        # Try ``ref`` as a branch/tag first (cheap shallow clone). A commit SHA
+        # is not a valid ``--branch`` argument, so on failure fall back to a full
+        # clone + checkout, which resolves any ref including a SHA.
+        try:
+            _run_git(["clone", "--depth", "1", "--branch", ref, source, str(dest)])
+        except InstallError:
+            if dest.exists():
+                shutil.rmtree(dest)
+            _run_git(["clone", source, str(dest)])
+            _run_git(["checkout", "--detach", ref], cwd=dest)
+    else:
+        _run_git(["clone", "--depth", "1", source, str(dest)])
     sha = _run_git(["rev-parse", "HEAD"], cwd=dest)
     record: dict = {"type": "git", "url": source, "sha": sha}
     if ref:
@@ -128,11 +136,20 @@ def install_plugin(
         manifest = _validated_manifest(staging)
         name = name_override or manifest.name
         summary = plugin_bundle_summary(manifest)
-        trusted = True if not has_executable(summary) else bool(trust)
+        is_linked = bool(link and not use_git)
+        if is_linked:
+            # A linked plugin points at a live, mutable source dir, so the
+            # executable surface read at discovery time can differ from what is
+            # inspected here. Never auto-trust it: hooks/MCP added to the source
+            # after install would otherwise run trusted with no prompt. Trust
+            # must be granted explicitly for a linked install.
+            trusted = bool(trust)
+        else:
+            trusted = True if not has_executable(summary) else bool(trust)
 
         dest = target_root / name
         # For git, always copy (link only applies to local sources).
-        _materialize(staging, dest, link=link and not use_git)
+        _materialize(staging, dest, link=is_linked)
 
     record = InstalledPlugin(
         name=name,
@@ -140,7 +157,7 @@ def install_plugin(
         source=source_record,
         enabled=True,
         trusted=trusted,
-        linked=bool(link and not use_git),
+        linked=is_linked,
         installed_at=now,
     )
     state = load_state(target_root)

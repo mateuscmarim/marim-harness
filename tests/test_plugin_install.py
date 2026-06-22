@@ -90,6 +90,51 @@ def test_install_link_symlinks(tmp_path, monkeypatch):
     assert (gdir / "demo").is_symlink()
 
 
+def test_linked_plugin_without_executables_is_not_auto_trusted(tmp_path, monkeypatch):
+    """A linked plugin points at a live, mutable source dir whose executable
+    surface (hooks/MCP) can be added after install and would then run trusted
+    with no prompt. So linked installs must never be auto-trusted on the basis of
+    having no executable parts at install time."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    src = tmp_path / "src"
+    _make_source(src, "linkbenign")  # no hooks/MCP
+    rec = install_plugin(
+        str(src), scope="global", workspace_root=ws, trust=False, link=True, now="T"
+    )
+    assert rec.linked is True
+    assert rec.trusted is False  # linked => never auto-trusted
+
+
+def test_linked_plugin_trusted_only_when_explicit(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    src = tmp_path / "src"
+    _make_source(src, "linkbenign2")
+    rec = install_plugin(
+        str(src), scope="global", workspace_root=ws, trust=True, link=True, now="T"
+    )
+    assert rec.trusted is True
+
+
+def test_clone_git_handles_commit_sha_ref(tmp_path):
+    """A commit SHA is not a valid `git clone --branch` argument; _clone_git must
+    fall back so a SHA-pinned source clones instead of erroring."""
+    from marim_harness.plugins.install import _clone_git
+
+    repo = _make_git_repo(tmp_path / "repo", "shademo")
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    dest = tmp_path / "clone"
+    record = _clone_git(str(repo), dest, ref=sha)
+    assert record["sha"] == sha
+    assert record["ref"] == sha
+    assert (dest / ".marim-plugin" / "plugin.json").is_file()
+
+
 def test_enable_disable_trust_and_remove(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
     ws = tmp_path / "ws"

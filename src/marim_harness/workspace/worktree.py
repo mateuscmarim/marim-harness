@@ -135,9 +135,18 @@ def create_or_reuse_worktree(repo_root: Path, branch: str) -> Path:
 
 
 def remove_worktree(repo_root: Path, branch: str) -> None:
-    """`git worktree remove <repo_root>/.worktrees/<branch>`. Refuses if the
-    worktree is dirty or is the current one (git's own rules). Never deletes the
-    branch. Raises WorktreeError on failure."""
+    """Remove the worktree checked out on `branch`. Refuses if the worktree is
+    dirty or is the current one (git's own rules). Never deletes the branch.
+    Raises WorktreeError on failure.
+
+    Resolves the worktree's real path by branch (symmetric with
+    ``create_or_reuse_worktree``, which reuses any existing worktree for the
+    branch) rather than assuming the canonical ``.worktrees/<branch>`` location —
+    a reused worktree may live elsewhere, and a fixed path would error."""
     _validate_branch(branch)
     target = repo_root / WORKTREES_DIRNAME / branch
+    for info in list_worktrees(repo_root):
+        if info.branch == branch:
+            target = info.path
+            break
     _check(_git(repo_root, "worktree", "remove", str(target)))

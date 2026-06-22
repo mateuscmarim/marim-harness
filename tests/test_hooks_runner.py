@@ -116,6 +116,20 @@ async def test_timeout_is_killed_and_swallowed(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_invalid_timeout_falls_back_to_default(tmp_path):
+    """A non-numeric timeout from config must not raise TypeError into wait_for
+    (which would drop the hook and leak its already-spawned subprocess) — it
+    falls back to the default and the hook still runs."""
+    cmd = _script(tmp_path, "h.sh", "echo OK\n")
+    entry = {"hooks": [{"type": "command", "command": cmd, "timeout": "abc"}]}
+    runner = HookRunner({events.USER_PROMPT_SUBMIT: [entry]})
+    ctx = await runner.dispatch(
+        events.USER_PROMPT_SUBMIT, _payload(events.USER_PROMPT_SUBMIT, prompt="hi")
+    )
+    assert ctx == "OK"
+
+
+@pytest.mark.anyio
 async def test_unconfigured_event_returns_none():
     runner = HookRunner({})
     assert await runner.dispatch(events.STOP, _payload(events.STOP)) is None

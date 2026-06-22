@@ -65,14 +65,27 @@ def _cmd_show(args, *, out, err) -> int:
     return 0
 
 
+def _format_value(value: str) -> str:
+    """Render a value for a dotenv line, quoting only when a bare value would not
+    survive reload. dotenv strips an unquoted value at the first ``#`` (inline
+    comment) and trims surrounding whitespace, so a value containing whitespace,
+    ``#``, or quote chars must be double-quoted (with ``\\`` and ``"`` escaped).
+    Simple values (model ids, booleans, keys) stay unquoted as before."""
+    if any(c in value for c in ' \t#"\'\n\r'):
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    return value
+
+
 def _persist(key: str, value: str) -> None:
     """Write ``KEY=VALUE`` to the global config file, updating the line in place
-    if the key already exists and preserving all other lines."""
+    if the key already exists and preserving all other lines. Writes atomically
+    (temp file + ``replace``) so a crash mid-write can't truncate the config."""
     path = global_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    line = f"{key}={value}"
-    existing = path.read_text().splitlines() if path.exists() else []
+    line = f"{key}={_format_value(value)}"
+    existing = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
 
     replaced = False
     new_lines = []
@@ -88,7 +101,9 @@ def _persist(key: str, value: str) -> None:
     if not replaced:
         new_lines.append(line)
 
-    path.write_text("\n".join(new_lines) + "\n")
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    tmp.replace(path)
 
 
 def _cmd_set(args, *, out, err) -> int:

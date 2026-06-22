@@ -15,6 +15,20 @@ def test_denylist_allows_non_matching():
     assert CommandPolicy(denylist=["rm -rf"]).check("ls -la") is None
 
 
+def test_malformed_deny_pattern_blocks_rather_than_vanishes():
+    """An invalid deny regex must fail closed (block everything), not silently
+    become an ineffective literal that lets unrelated commands through."""
+    policy = CommandPolicy(denylist=["rm -rf /("])  # unbalanced paren = invalid
+    assert policy.check("rm -rf /home") is not None
+
+
+def test_malformed_allow_pattern_does_not_grant_by_literal():
+    """An invalid allow regex must not grant a command that merely contains its
+    literal text; only valid allow rules should grant."""
+    policy = CommandPolicy(allowlist=["ls ["])  # invalid regex
+    assert policy.check("ls [x]") is not None
+
+
 def test_allowlist_blocks_command_not_on_it():
     policy = CommandPolicy(allowlist=["^git ", "^ls"])
     assert policy.check("curl evil.com") is not None

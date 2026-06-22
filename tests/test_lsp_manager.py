@@ -63,6 +63,17 @@ def anyio_backend():
     return "asyncio"
 
 
+def test_format_locations_tolerates_non_string_uri(tmp_path):
+    """A misbehaving server can hand back a non-string uri; formatting it must
+    not raise AttributeError (uri.startswith) into the tool."""
+    mgr = LspManager(tmp_path)
+    out = mgr._format_locations(
+        "definitions",
+        [{"uri": 123, "range": {"start": {"line": 0, "character": 0}}}],
+    )
+    assert "1:1" in out  # did not raise; degraded gracefully
+
+
 def _manager(tmp_path, fake_holder):
     def factory(language, root):
         srv = _FakeServer(root)

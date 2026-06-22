@@ -24,13 +24,20 @@ def split_patterns(text: str) -> list[str]:
     return [part.strip() for part in re.split(r"[,\n]", text) if part.strip()]
 
 
-def _compile(pattern: str) -> "re.Pattern[str]":
-    """Compile a pattern, falling back to a literal match if it isn't valid
-    regex — a malformed deny rule should still block, not silently vanish."""
+# Fallbacks for a pattern that isn't valid regex. A malformed rule must fail
+# *closed*, never silently turn into an ineffective literal: a broken deny rule
+# blocks everything (better a loud over-block than false protection), and a
+# broken allow rule grants nothing.
+_MATCH_ALL = re.compile("")        # matches any command, including ""
+_MATCH_NONE = re.compile("(?!)")   # never matches
+
+
+def _compile(pattern: str, *, on_error: "re.Pattern[str]") -> "re.Pattern[str]":
+    """Compile a pattern, falling back to ``on_error`` if it isn't valid regex."""
     try:
         return re.compile(pattern)
     except re.error:
-        return re.compile(re.escape(pattern))
+        return on_error
 
 
 class CommandPolicy:
@@ -44,8 +51,8 @@ class CommandPolicy:
     ) -> None:
         self._deny_src = list(denylist or [])
         self._allow_src = list(allowlist or [])
-        self._deny = [_compile(p) for p in self._deny_src]
-        self._allow = [_compile(p) for p in self._allow_src]
+        self._deny = [_compile(p, on_error=_MATCH_ALL) for p in self._deny_src]
+        self._allow = [_compile(p, on_error=_MATCH_NONE) for p in self._allow_src]
 
     @classmethod
     def parse(cls, deny: str = "", allow: str = "") -> "CommandPolicy":

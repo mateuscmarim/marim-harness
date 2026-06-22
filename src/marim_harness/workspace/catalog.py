@@ -71,8 +71,8 @@ def parse_google_models(payload: dict) -> list[ModelEntry]:
         raw_name = row.get("name", "")
         if not isinstance(raw_name, str) or not raw_name:
             continue
-        methods = row.get("supportedGenerationMethods", [])
-        if "generateContent" not in methods:
+        methods = row.get("supportedGenerationMethods")
+        if not isinstance(methods, list) or "generateContent" not in methods:
             continue
         model_id = raw_name.removeprefix("models/")
         display = row.get("displayName") or model_id
