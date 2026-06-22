@@ -12,6 +12,13 @@ from marim_harness.permissions import Mode
 from tests.conftest import _edit_then_done_model, _make_harness, _make_subagent_def
 
 
+@pytest.mark.anyio
+async def test_harness_wires_turn_hooks_onto_deps(tmp_path):
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    harness = _make_harness(_edit_then_done_model(), deps)
+    assert deps.turn_hooks is harness.hooks
+
+
 def _hook_script(tmp_path: Path, name: str, body: str) -> str:
     p = tmp_path / name
     p.write_text("#!/usr/bin/env bash\n" + body, encoding="utf-8")

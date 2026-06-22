@@ -274,6 +274,8 @@ class Harness:
             cfg.summarizer, cfg.titler,
         )
         self.hooks = TurnHooks(self.deps, self.session)
+        # Let tools fire lifecycle hooks via ctx.deps with a full payload.
+        self.deps.turn_hooks = self.hooks
         # The spawn_agent tool reaches the runner through Deps, the same way
         # other tools reach shared state. The runner reads the current model via
         # the closure, so a runtime /model switch is tracked without rewiring.

@@ -8,6 +8,7 @@ from pydantic_ai.tools import DeferredToolApprovalResult
 from .command_policy import CommandPolicy
 
 if TYPE_CHECKING:
+    from .hooks.dispatch import TurnHooks
     from .hooks.runner import HookRunner
     from .lsp.manager import LspManager
     from .notifications import Notifier
@@ -72,6 +73,10 @@ class Deps:
     # and headless runner fire it at key event points (turn complete, error,
     # approval needed, ask user, background job finished).
     notifier: "Optional[Notifier]" = None
+    # The session-bound hook dispatcher, set by the Harness so tools (ask_user,
+    # update_tasks) can fire lifecycle hooks with a full payload. None until the
+    # Harness wires it, or when no hooks are configured.
+    turn_hooks: "Optional[TurnHooks]" = None
 
 
 # The main agent's concrete generic type: deps are ``Deps`` and a turn yields
