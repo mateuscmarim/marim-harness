@@ -23,6 +23,7 @@ from .messages import (
     UserMessage,
 )
 from .panels import JobPanel, TaskPanel
+from .autocomplete import CommandAutocomplete
 from .prompt import PromptInput
 from .subagent import SubAgentWidget
 from .tools import ToolCallWidget, ToolGroupWidget
@@ -59,4 +60,5 @@ __all__ = [
     "TaskPanel",
     # input
     "PromptInput",
+    "CommandAutocomplete",
 ]

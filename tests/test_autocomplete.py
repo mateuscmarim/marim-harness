@@ -161,3 +161,81 @@ async def test_select_posts_command_selected():
         )
         await pilot.pause()
         assert app.selected == ["help"]
+
+
+# --- PromptInput slash-detection tests ---
+
+
+@pytest.mark.anyio
+async def test_slash_triggers_slash_changed():
+    class H(App):
+        def __init__(self):
+            super().__init__()
+            self.events: list[str] = []
+
+        def compose(self) -> ComposeResult:
+            yield PromptInput()
+
+        def on_prompt_input_slash_changed(self, event):
+            self.events.append(("changed", event.value))
+
+    app = H()
+    async with app.run_test() as pilot:
+        pi = app.query_one(PromptInput)
+        pi.focus()
+        await pilot.pause()
+        await pilot.press("slash")
+        await pilot.pause()
+        assert any(e[0] == "changed" for e in app.events)
+
+
+@pytest.mark.anyio
+async def test_deleting_slash_triggers_dismissed():
+    class H(App):
+        def __init__(self):
+            super().__init__()
+            self.events: list[str] = []
+
+        def compose(self) -> ComposeResult:
+            yield PromptInput()
+
+        def on_prompt_input_slash_changed(self, event):
+            self.events.append("changed")
+
+        def on_prompt_input_slash_dismissed(self, _):
+            self.events.append("dismissed")
+
+    app = H()
+    async with app.run_test() as pilot:
+        pi = app.query_one(PromptInput)
+        pi.focus()
+        await pilot.pause()
+        await pilot.press("slash")
+        await pilot.pause()
+        assert "changed" in app.events
+        await pilot.press("backspace")
+        await pilot.pause()
+        assert "dismissed" in app.events
+
+
+@pytest.mark.anyio
+async def test_normal_text_does_not_trigger_slash():
+    class H(App):
+        def __init__(self):
+            super().__init__()
+            self.slash_events: list[str] = []
+
+        def compose(self) -> ComposeResult:
+            yield PromptInput()
+
+        def on_prompt_input_slash_changed(self, _):
+            self.slash_events.append("changed")
+
+    app = H()
+    async with app.run_test() as pilot:
+        pi = app.query_one(PromptInput)
+        pi.focus()
+        await pilot.pause()
+        await pilot.press("h", "e", "l", "p")
+        await pilot.pause()
+        assert app.slash_events == []

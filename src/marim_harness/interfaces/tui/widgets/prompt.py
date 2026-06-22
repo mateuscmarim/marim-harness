@@ -33,6 +33,17 @@ class PromptInput(TextArea):
             self.attachments = attachments or []
             super().__init__()
 
+    class SlashChanged(Message):
+        """Posted when the first line starts with ``/``."""
+        def __init__(self, value: str) -> None:
+            self.value = value
+            super().__init__()
+
+    class SlashDismissed(Message):
+        """Posted when text stops starting with ``/``."""
+        def __init__(self) -> None:
+            super().__init__()
+
     def __init__(self, history=None) -> None:
         from ....history import PromptHistory
 
@@ -44,6 +55,7 @@ class PromptInput(TextArea):
         self._draft = ""
         super().__init__(soft_wrap=True, show_line_numbers=False)
         self.attachments: list[tuple[Path, str]] = []
+        self._slash_active: bool = False
 
     async def _on_key(self, event: events.Key) -> None:
         if event.key == "enter":
@@ -229,3 +241,11 @@ class PromptInput(TextArea):
 
     def on_text_area_changed(self, event: "TextArea.Changed") -> None:
         self._resize()
+        # Slash-command autocomplete: track when the first line starts with /.
+        first_line = self.text.split("\n", 1)[0]
+        if first_line.startswith("/"):
+            self._slash_active = True
+            self.post_message(self.SlashChanged(self.text))
+        elif self._slash_active:
+            self._slash_active = False
+            self.post_message(self.SlashDismissed())
