@@ -89,3 +89,30 @@ def test_validate(tmp_path, monkeypatch):
     bad = tmp_path / "bad"
     bad.mkdir()
     assert _run(["validate", str(bad)])[0] != 0
+
+
+def test_install_inert_does_not_prompt(tmp_path, monkeypatch):
+    """Verify that inert (no hooks/MCP) plugins do not prompt for trust."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.chdir(tmp_path)
+    src = tmp_path / "src"
+    _make_source(src, "demo")
+
+    def _must_not_prompt(_p):
+        raise AssertionError("inert plugin must not prompt for trust")
+
+    code, out, err = _run(["install", str(src)], input_fn=_must_not_prompt)
+    assert code == 0, err
+
+
+def test_install_executable_accept_trust(tmp_path, monkeypatch):
+    """Verify that accepting the trust prompt marks an executable plugin as trusted."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.chdir(tmp_path)
+    src = tmp_path / "src"
+    _make_source(src, "exec", with_hooks=True)
+    code, out, err = _run(["install", str(src)], input_fn=lambda _p: "yes")
+    assert code == 0, err
+    code, out, err = _run(["list", "--json"])
+    rec = {p["name"]: p for p in json.loads(out)}["exec"]
+    assert rec["trusted"] is True
