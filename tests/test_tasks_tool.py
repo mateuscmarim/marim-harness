@@ -80,3 +80,52 @@ def test_update_tasks_is_not_approval_gated(tmp_path):
     with agent.override(model=model):
         agent.run_sync("go", deps=deps)
     assert "1 tasks" in captured["ret"]
+
+
+class _TaskSpy:
+    def __init__(self):
+        self.subjects = []
+
+    async def task_completed(self, task_subject, task_id=None, task_description=""):
+        self.subjects.append(task_subject)
+
+
+def test_update_tasks_fires_task_completed_for_newly_done(tmp_path):
+    deps = Deps(workspace_root=tmp_path)
+    spy = _TaskSpy()
+    deps.turn_hooks = spy
+    agent = _agent()
+    model, _ = _call_tool(
+        "update_tasks",
+        {"tasks": [{"text": "a", "status": "done"},
+                   {"text": "b", "status": "in_progress"},
+                   {"text": "c"}]},
+    )
+    with agent.override(model=model):
+        agent.run_sync("go", deps=deps)
+    assert spy.subjects == ["a"]
+
+
+def test_update_tasks_does_not_refire_already_done(tmp_path):
+    deps = Deps(workspace_root=tmp_path)
+    deps.tasks.replace([{"text": "a", "status": "done"}])
+    spy = _TaskSpy()
+    deps.turn_hooks = spy
+    agent = _agent()
+    model, _ = _call_tool(
+        "update_tasks",
+        {"tasks": [{"text": "a", "status": "done"},
+                   {"text": "b", "status": "done"}]},
+    )
+    with agent.override(model=model):
+        agent.run_sync("go", deps=deps)
+    assert spy.subjects == ["b"]
+
+
+def test_update_tasks_no_hooks_is_safe(tmp_path):
+    deps = Deps(workspace_root=tmp_path)  # turn_hooks defaults None
+    agent = _agent()
+    model, _ = _call_tool("update_tasks", {"tasks": [{"text": "x", "status": "done"}]})
+    with agent.override(model=model):
+        agent.run_sync("go", deps=deps)
+    assert [t.text for t in deps.tasks.items] == ["x"]

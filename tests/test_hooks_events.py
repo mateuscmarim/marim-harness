@@ -17,3 +17,15 @@ def test_only_session_start_and_user_prompt_inject():
     assert events.INJECTING_EVENTS == frozenset(
         {events.SESSION_START, events.USER_PROMPT_SUBMIT}
     )
+
+
+def test_new_event_constants_match_claude_strings():
+    assert events.POST_TOOL_USE_FAILURE == "PostToolUseFailure"
+    assert events.NOTIFICATION == "Notification"
+    assert events.TASK_COMPLETED == "TaskCompleted"
+
+
+def test_new_events_are_not_injecting():
+    assert events.POST_TOOL_USE_FAILURE not in events.INJECTING_EVENTS
+    assert events.NOTIFICATION not in events.INJECTING_EVENTS
+    assert events.TASK_COMPLETED not in events.INJECTING_EVENTS

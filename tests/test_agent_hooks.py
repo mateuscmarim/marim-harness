@@ -2,14 +2,33 @@ import stat
 from pathlib import Path
 
 import pytest
-from pydantic_ai.messages import ModelResponse, TextPart
+from pydantic_ai.messages import (
+    FunctionToolResultEvent,
+    ModelResponse,
+    RetryPromptPart,
+    TextPart,
+    ToolReturnPart,
+)
 from pydantic_ai.models.function import FunctionModel
 
 from marim_harness.deps import Deps
 from marim_harness.hooks import events as hook_events
 from marim_harness.hooks.runner import HookRunner
 from marim_harness.permissions import Mode
-from tests.conftest import _edit_then_done_model, _make_harness, _make_subagent_def
+from tests.conftest import (
+    _capture_script,
+    _edit_then_done_model,
+    _make_harness,
+    _make_subagent_def,
+    _read_hits,
+)
+
+
+@pytest.mark.anyio
+async def test_harness_wires_turn_hooks_onto_deps(tmp_path):
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    harness = _make_harness(_edit_then_done_model(), deps)
+    assert deps.turn_hooks is harness.hooks
 
 
 def _hook_script(tmp_path: Path, name: str, body: str) -> str:
@@ -369,3 +388,128 @@ async def test_background_subagent_start_and_stop_fire(tmp_path):
     lines = log.read_text().splitlines()
     assert "SubagentStart" in lines
     assert "SubagentStop" in lines
+
+
+@pytest.mark.anyio
+async def test_tool_failure_fires_post_tool_use_failure(tmp_path):
+    out = tmp_path / "hits.jsonl"
+    cmd = _capture_script(tmp_path, "fail.sh", out)
+    deps = Deps(
+        workspace_root=tmp_path, mode=Mode.auto,
+        hooks=HookRunner(
+            {hook_events.POST_TOOL_USE_FAILURE: [{"hooks": [{"type": "command", "command": cmd}]}]}
+        ),
+    )
+    harness = _make_harness(_edit_then_done_model(), deps)
+    await harness.session_start("startup")
+    ev = FunctionToolResultEvent(
+        part=RetryPromptPart(content="boom", tool_name="edit_file", tool_call_id="tc1")
+    )
+    await harness.hooks.tool_event(ev, {"tc1": {"path": "a.txt"}})
+    hits = _read_hits(out)
+    assert len(hits) == 1
+    assert hits[0]["hook_event_name"] == "PostToolUseFailure"
+    assert hits[0]["tool_name"] == "edit_file"
+    assert hits[0]["tool_input"] == {"path": "a.txt"}
+    assert "boom" in hits[0]["error"]
+
+
+@pytest.mark.anyio
+async def test_notification_dispatch_payload(tmp_path):
+    out = tmp_path / "hits.jsonl"
+    cmd = _capture_script(tmp_path, "n.sh", out)
+    deps = Deps(
+        workspace_root=tmp_path, mode=Mode.auto,
+        hooks=HookRunner(
+            {hook_events.NOTIFICATION: [{"hooks": [{"type": "command", "command": cmd}]}]}
+        ),
+    )
+    harness = _make_harness(_edit_then_done_model(), deps)
+    await harness.session_start("startup")
+    await harness.hooks.notification("ask_user", "Question from agent", "pick one")
+    hits = _read_hits(out)
+    assert hits[0]["hook_event_name"] == "Notification"
+    assert hits[0]["notification_type"] == "ask_user"
+    assert hits[0]["title"] == "Question from agent"
+    assert hits[0]["message"] == "pick one"
+
+
+@pytest.mark.anyio
+async def test_approval_round_fires_notification_in_ask_mode(tmp_path):
+    out = tmp_path / "hits.jsonl"
+    cmd = _capture_script(tmp_path, "appr.sh", out)
+    deps = Deps(
+        workspace_root=tmp_path, mode=Mode.ask,
+        hooks=HookRunner(
+            {hook_events.NOTIFICATION: [{"hooks": [{"type": "command", "command": cmd}]}]}
+        ),
+    )
+
+    async def _approve(call):
+        return True
+
+    deps.request_approval = _approve
+    harness = _make_harness(_edit_then_done_model(), deps)
+    await harness.session_start("startup")
+    await harness.run_turn("edit it")
+    hits = [h for h in _read_hits(out) if h["hook_event_name"] == "Notification"]
+    assert any(h["notification_type"] == "approval_needed" for h in hits)
+    assert any("edit_file" in h["message"] for h in hits)
+
+
+@pytest.mark.anyio
+async def test_auto_mode_does_not_fire_approval_notification(tmp_path):
+    out = tmp_path / "hits.jsonl"
+    cmd = _capture_script(tmp_path, "noappr.sh", out)
+    deps = Deps(
+        workspace_root=tmp_path, mode=Mode.auto,
+        hooks=HookRunner(
+            {hook_events.NOTIFICATION: [{"hooks": [{"type": "command", "command": cmd}]}]}
+        ),
+    )
+    harness = _make_harness(_edit_then_done_model(), deps)
+    await harness.session_start("startup")
+    await harness.run_turn("edit it")
+    hits = [h for h in _read_hits(out)
+            if h.get("notification_type") == "approval_needed"]
+    assert hits == []
+
+
+@pytest.mark.anyio
+async def test_tool_success_fires_post_tool_use_not_failure(tmp_path):
+    out = tmp_path / "hits.jsonl"
+    cmd = _capture_script(tmp_path, "ok.sh", out)
+    deps = Deps(
+        workspace_root=tmp_path, mode=Mode.auto,
+        hooks=HookRunner({
+            hook_events.POST_TOOL_USE: [{"hooks": [{"type": "command", "command": cmd}]}],
+            hook_events.POST_TOOL_USE_FAILURE: [{"hooks": [{"type": "command", "command": cmd}]}],
+        }),
+    )
+    harness = _make_harness(_edit_then_done_model(), deps)
+    await harness.session_start("startup")
+    ev = FunctionToolResultEvent(
+        part=ToolReturnPart(tool_name="read_file", content="ok", tool_call_id="tc2")
+    )
+    await harness.hooks.tool_event(ev, {"tc2": {"path": "a.txt"}})
+    hits = _read_hits(out)
+    assert len(hits) == 1
+    assert hits[0]["hook_event_name"] == "PostToolUse"
+
+
+@pytest.mark.anyio
+async def test_task_completed_dispatch_payload(tmp_path):
+    out = tmp_path / "hits.jsonl"
+    cmd = _capture_script(tmp_path, "tc.sh", out)
+    deps = Deps(
+        workspace_root=tmp_path, mode=Mode.auto,
+        hooks=HookRunner(
+            {hook_events.TASK_COMPLETED: [{"hooks": [{"type": "command", "command": cmd}]}]}
+        ),
+    )
+    harness = _make_harness(_edit_then_done_model(), deps)
+    await harness.session_start("startup")
+    await harness.hooks.task_completed(task_subject="ship it")
+    hits = _read_hits(out)
+    assert hits[0]["hook_event_name"] == "TaskCompleted"
+    assert hits[0]["task_subject"] == "ship it"

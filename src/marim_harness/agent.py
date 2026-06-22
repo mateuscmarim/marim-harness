@@ -24,7 +24,7 @@ from .instructions import register_instructions
 from .lsp.manager import LspManager
 from .mcp import McpManager
 from .notifications import NotificationConfig
-from .permissions import resolve_approvals
+from .permissions import Mode, resolve_approvals
 from .session import SessionController, SessionManager, SessionStore
 from .subagents import SubagentRunner
 from .tools.provider import ToolProvider
@@ -291,6 +291,8 @@ class Harness:
             cfg.summarizer, cfg.titler,
         )
         self.hooks = TurnHooks(self.deps, self.session)
+        # Let tools fire lifecycle hooks via ctx.deps with a full payload.
+        self.deps.turn_hooks = self.hooks
         # The spawn_agent tool reaches the runner through Deps, the same way
         # other tools reach shared state. The runner reads the current model via
         # the closure, so a runtime /model switch is tracked without rewiring.
@@ -528,6 +530,14 @@ class Harness:
                 # failure during approval would otherwise leave the session
                 # ending in a dangling tool_use — unresumable. Roll back to the
                 # last clean state if the approval round is interrupted.
+                if self.deps.mode is Mode.ask and result.output.approvals:
+                    names = ", ".join(
+                        getattr(c, "tool_name", None) or "(unknown)"
+                        for c in result.output.approvals
+                    )
+                    await self.hooks.notification(
+                        "approval_needed", "Approval needed", names
+                    )
                 try:
                     deferred_results = await resolve_approvals(
                         result.output, self.deps.mode, self.deps.request_approval

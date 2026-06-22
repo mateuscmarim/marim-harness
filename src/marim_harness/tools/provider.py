@@ -207,14 +207,20 @@ def read_skill_file(ctx: RunContext[Deps], name: str, path: str) -> str:
     return read_bundled_file(skill, path)
 
 
-def update_tasks(ctx: RunContext[Deps], tasks: list[Task]) -> str:
+async def update_tasks(ctx: RunContext[Deps], tasks: list[Task]) -> str:
     """Maintain your checklist for the current multi-step task. Pass the
     FULL list every time — it replaces the previous one. Each item is
     {text, status} where status is pending, in_progress, or done. Keep
     exactly one item in_progress, and mark items done as you finish them.
     Use this for non-trivial work spanning several steps so progress is
     visible; skip it for single-step requests. No approval is needed."""
+    before = {t.text: t.status for t in ctx.deps.tasks.items}
     ctx.deps.tasks.replace(tasks)
+    th = getattr(ctx.deps, "turn_hooks", None)
+    if th is not None:
+        for t in ctx.deps.tasks.items:
+            if t.status == "done" and before.get(t.text) != "done":
+                await th.task_completed(task_subject=t.text)
     return summarize(ctx.deps.tasks.items)
 
 
@@ -240,6 +246,11 @@ async def ask_user(ctx: RunContext[Deps], questions: list[Question]) -> str:
         return _ASK_USER_EMPTY
     if ctx.deps.ask_user is None:
         return _ASK_USER_NO_UI
+    th = getattr(ctx.deps, "turn_hooks", None)
+    if th is not None:
+        await th.notification(
+            "ask_user", "Question from agent", coerced[0].question
+        )
     answers = await ctx.deps.ask_user(coerced)
     if not answers:
         return _ASK_USER_CANCELLED

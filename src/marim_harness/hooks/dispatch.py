@@ -11,7 +11,11 @@ which return whatever context the hook injected (``None`` when no hook ran).
 import logging
 from typing import Optional
 
-from pydantic_ai.messages import FunctionToolCallEvent, FunctionToolResultEvent
+from pydantic_ai.messages import (
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    RetryPromptPart,
+)
 
 from . import events as hook_events
 from .runner import base_payload
@@ -79,6 +83,37 @@ class TurnHooks:
             result=result,
         )
 
+    async def notification(self, notification_type: str, title: str,
+                           message: str) -> None:
+        """Notification: the agent needs the user's attention (approval / a
+        question). Observe-only."""
+        await self._dispatch(
+            hook_events.NOTIFICATION,
+            notification_type=notification_type,
+            title=title,
+            message=message,
+        )
+
+    async def task_completed(self, task_subject: str, task_id=None,
+                             task_description: str = "") -> None:
+        """TaskCompleted: a checklist item transitioned to done. Observe-only."""
+        await self._dispatch(
+            hook_events.TASK_COMPLETED,
+            task_id=task_id,
+            task_subject=task_subject,
+            task_description=task_description,
+        )
+
+    async def post_tool_use_failure(self, tool_name: str, tool_input: dict,
+                                    error: str) -> None:
+        """PostToolUseFailure: a tool call errored or was retried. Observe-only."""
+        await self._dispatch(
+            hook_events.POST_TOOL_USE_FAILURE,
+            tool_name=tool_name,
+            tool_input=tool_input,
+            error=error,
+        )
+
     async def tool_event(self, event, call_inputs: Optional[dict] = None) -> None:
         """Map a streamed tool event to a Pre/PostToolUse hook (observe-only).
 
@@ -109,12 +144,22 @@ class TurnHooks:
             # Look up the stashed input by tool_call_id; fall back gracefully.
             tool_input = ({} if call_inputs is None
                           else call_inputs.get(event.tool_call_id, {}))
-            await self.deps.hooks.dispatch(
-                hook_events.POST_TOOL_USE,
-                self._payload(
-                    hook_events.POST_TOOL_USE,
-                    tool_name=getattr(event.part, "tool_name", ""),
+            part = event.part
+            if isinstance(part, RetryPromptPart):
+                # A failed/retried call: fire PostToolUseFailure instead of
+                # PostToolUse so the two are distinct (matches Claude Code).
+                await self.post_tool_use_failure(
+                    tool_name=getattr(part, "tool_name", "") or "",
                     tool_input=tool_input,
-                    tool_response=str(getattr(event.part, "content", "")),
-                ),
-            )
+                    error=part.model_response(),
+                )
+            else:
+                await self.deps.hooks.dispatch(
+                    hook_events.POST_TOOL_USE,
+                    self._payload(
+                        hook_events.POST_TOOL_USE,
+                        tool_name=getattr(part, "tool_name", ""),
+                        tool_input=tool_input,
+                        tool_response=str(getattr(part, "content", "")),
+                    ),
+                )
