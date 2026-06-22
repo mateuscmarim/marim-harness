@@ -396,6 +396,47 @@ async def _cmd_jobs(app: "HarnessApp", arg: str) -> None:
         )
 
 
+async def _cmd_plugin(app: HarnessApp, arg: str) -> None:
+    from ...plugins import discover_plugins, set_enabled
+
+    ws = app.harness.deps.workspace_root
+    sub, _, rest = arg.partition(" ")
+    sub = sub.strip().lower()
+    name = rest.strip()
+
+    if sub in ("", "list"):
+        plugins = discover_plugins(ws)
+        if not plugins:
+            await app.post_system(
+                "No plugins installed. Install with `marim plugin install <path|git-url>`."
+            )
+            return
+        lines = ["**Plugins**", ""]
+        for p in plugins:
+            state = "enabled" if p.record.enabled else "disabled"
+            state += ", trusted" if p.record.trusted else ", untrusted"
+            lines.append(f"- `{p.name}` [{p.scope}, {state}] — {p.manifest.description}")
+        await app.post_system("\n".join(lines))
+        return
+
+    if sub in ("enable", "disable"):
+        if not name:
+            await app.post_system(f"Usage: `/plugin {sub} <name>`")
+            return
+        target = next((p for p in discover_plugins(ws) if p.name == name), None)
+        if target is None:
+            await app.post_system(f"Plugin not found: `{name}`")
+            return
+        set_enabled(name, scope=target.scope, workspace_root=ws, enabled=(sub == "enable"))
+        await app.post_system(
+            f"`{name}` {sub}d. Hooks/MCP changes take effect on next launch; "
+            "skills and sub-agents refresh next turn."
+        )
+        return
+
+    await app.post_system("Usage: `/plugin [list | enable <name> | disable <name>]`")
+
+
 async def _cmd_settings(app: HarnessApp, arg: str) -> None:
     app.open_settings()
 
@@ -427,6 +468,11 @@ COMMANDS: list[Command] = [
         "jobs",
         "background jobs: /jobs [list | output <id> | cancel <id> | wake [on|off]]",
         _cmd_jobs,
+    ),
+    Command(
+        "plugin",
+        "list or toggle plugins: /plugin [list | enable <name> | disable <name>]",
+        _cmd_plugin,
     ),
     Command("settings", "open the settings screen", _cmd_settings, aliases=("config",)),
     Command("exit", "quit the harness", _cmd_exit, aliases=("quit",)),
