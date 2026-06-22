@@ -312,6 +312,7 @@ async def spawn_agent(
     returns: str | None = None,
     constraints: str | None = None,
     context: str | None = None,
+    model: str | None = None,
 ) -> str:
     """Delegate a sub-task to an isolated sub-agent that runs on the same model
     and reports back. `type` is a built-in — `explore` (read-only investigation;
@@ -350,7 +351,11 @@ async def spawn_agent(
     for); `constraints` are boundaries on how to work (a soft nudge — real tool
     reach is still set by `type`/`mcp`, not prose); `context` is the orchestration-
     level background it can't see (why this task, what's already known). The plain
-    `task` stays the one required ask."""
+    `task` stays the one required ask.
+
+    `model` optionally runs this spawn on a different model than yours — pass a
+    cheaper model for read-only fan-out, or a stronger one for a hard sub-task.
+    Omit it to inherit your current model (the usual case)."""
     mcp_names = _coerce_mcp(mcp)
     task = compose_subagent_task(
         task, returns=returns, constraints=constraints, context=context
@@ -361,13 +366,15 @@ async def spawn_agent(
         label = f"{type}: {task}"
         job_id = ctx.deps.jobs.register(
             "agent", label,
-            ctx.deps.run_background_agent(type, task, mcp_names, max_output_chars),
+            ctx.deps.run_background_agent(
+                type, task, mcp_names, max_output_chars, model
+            ),
         )
         return f"Started {job_id} (agent) — {label[:60]}"
     if ctx.deps.run_subagent is None:
         return "Sub-agents are not available in this context."
     return await ctx.deps.run_subagent(
-        type, task, ctx.tool_call_id or "", mcp_names, max_output_chars
+        type, task, ctx.tool_call_id or "", mcp_names, max_output_chars, model
     )
 
 

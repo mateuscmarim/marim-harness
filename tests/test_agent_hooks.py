@@ -313,9 +313,13 @@ async def test_subagent_start_and_stop_fire(tmp_path):
         hook_events.SUBAGENT_STOP: [{"hooks": [{"type": "command", "command": cmd}]}],
     })
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto, hooks=runner)
-    # A model the sub-agent will run: just reply 'sub-done'.
+    # A streaming-capable model the sub-agent will run: just reply 'sub-done'.
+    # Hooks make the sub-agent run stream (so its tool calls hit the engine), so
+    # a non-streaming FunctionModel can't back it — same discipline as the main
+    # agent's hooked turns (see test_stop_fires_at_turn_end).
+    from pydantic_ai.models.test import TestModel
     harness = _make_harness(
-        FunctionModel(lambda m, i: ModelResponse(parts=[TextPart(content="sub-done")])), deps
+        TestModel(call_tools=[], custom_output_text="sub-done"), deps
     )
     out = await harness.subagents.run("helper", "do a thing", "stream-1")
     assert "sub-done" in out
@@ -379,9 +383,11 @@ async def test_background_subagent_start_and_stop_fire(tmp_path):
         hook_events.SUBAGENT_STOP: [{"hooks": [{"type": "command", "command": cmd}]}],
     })
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto, hooks=runner)
-    # A model the sub-agent will run: just reply 'bg-done'.
+    # A streaming-capable model the sub-agent will run: just reply 'bg-done'.
+    # (See the foreground test above — hooks force the sub-agent run to stream.)
+    from pydantic_ai.models.test import TestModel
     harness = _make_harness(
-        FunctionModel(lambda m, i: ModelResponse(parts=[TextPart(content="bg-done")])), deps
+        TestModel(call_tools=[], custom_output_text="bg-done"), deps
     )
     out = await harness.subagents.run_background("helper", "do a thing")
     assert "bg-done" in out

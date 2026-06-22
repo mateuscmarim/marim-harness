@@ -13,6 +13,7 @@ from dataclasses import replace
 from typing import Optional
 
 from pydantic_ai import Agent
+from pydantic_ai.usage import UsageLimits
 
 from .deps import Deps, SubAgent
 from .hooks.dispatch import TurnHooks
@@ -34,7 +35,8 @@ class SubagentRunner:
     up without rewiring."""
 
     def __init__(self, provider, mcp, deps, hooks: TurnHooks, session,
-                 get_model, model_settings=None):
+                 get_model, model_settings=None, request_limit: int = 50,
+                 build_model=None):
         self.provider = provider
         self.mcp = mcp
         self.deps = deps
@@ -42,41 +44,71 @@ class SubagentRunner:
         self.session = session
         self._get_model = get_model
         self._model_settings = model_settings
+        self._request_limit = request_limit
+        # Resolves a per-spawn model id to a model object on the current provider.
+        # None when the harness has no model source (e.g. a fixed-model embed), in
+        # which case a spawn that asks for an override is told it can't be honored.
+        self._build_model = build_model
 
-    def handler(self, stream_id: str):
-        """An event_stream_handler for a sub-agent run that forwards each event to
-        the UI, tagged with ``stream_id`` so it can stream nested under the spawn.
-        None when no UI is listening (headless) — the run just doesn't stream."""
+    def handler(self, stream_id: str | None):
+        """An event_stream_handler for a sub-agent run. For each streamed event it
+        fires the Pre/PostToolUse hooks (so a sub-agent's autonomous tool calls run
+        under the same hooks engine as the main agent's — guardrails apply to
+        delegated work too), and — when a UI is listening and this is a foreground
+        spawn (``stream_id`` set) — forwards the event to the UI tagged with
+        ``stream_id`` so it streams nested under the spawn. Returns None only when
+        there's nothing to do: no hooks configured and no UI listener (e.g. a
+        headless background run with hooks off)."""
         cb = self.deps.on_subagent_event
-        if cb is None:
+        hooks_on = self.deps.hooks is not None
+        forward = cb is not None and stream_id is not None
+        if not hooks_on and not forward:
             return None
+        # Per-run correlation map (tool_call_id → input) so a PostToolUse event
+        # carries the args from its matching PreToolUse, as the main turn does.
+        call_inputs: dict = {}
 
         async def handler(ctx, events) -> None:
             async for event in events:
+                if hooks_on:
+                    await self.hooks.tool_event(event, call_inputs)
                 # Forward the whole usage (not just a token total) so the UI can
                 # render the cache split and cost, not only the running count.
-                await cb(stream_id, event, getattr(ctx, "usage", None))
+                if forward:
+                    await cb(stream_id, event, getattr(ctx, "usage", None))
 
         return handler
 
     def build(
-        self, type: str, max_output_chars: int | None = None
+        self, type: str, max_output_chars: int | None = None,
+        model: str | None = None,
     ) -> "tuple[Optional[SubAgent], Optional[str]]":
-        """Build an isolated sub-agent of ``type`` on the current model, with its
-        reach decided up front: gated tools only in auto mode, so a run never
-        needs an approval round. ``max_output_chars``, when the spawner set one,
-        is folded into the sub-agent's instructions as a soft output budget.
-        Returns ``(agent, None)`` or, for an unknown type, ``(None, message)``
-        listing what's available."""
+        """Build an isolated sub-agent of ``type``, with its reach decided up
+        front: gated tools only in auto mode, so a run never needs an approval
+        round. Runs on the harness's current model unless ``model`` overrides it
+        (e.g. a cheap model for read-only fan-out); an override needs a model
+        source, else it's reported as unhonorable. ``max_output_chars``, when the
+        spawner set one, is folded into the sub-agent's instructions as a soft
+        output budget. Returns ``(agent, None)`` or, for an unknown type or an
+        unresolvable model, ``(None, message)``."""
         defn = find_agent(self.deps.workspace_root, type)
         if defn is None:
             names = ", ".join(
                 a.qualified_name for a in discover_agents(self.deps.workspace_root)
             )
             return None, f"No sub-agent type {type!r}. Available: {names}."
+        if model is None:
+            model_obj = self._get_model()
+        elif self._build_model is None:
+            return None, (
+                f"Can't run sub-agent on model {model!r}: no model source is "
+                "available to resolve an override here."
+            )
+        else:
+            model_obj = self._build_model(model)
         allow_gated = self.deps.mode is Mode.auto
         sub = Agent(
-            self._get_model(),
+            model_obj,
             deps_type=Deps,
             instructions=subagent_instructions(
                 defn, self.deps.workspace_root, max_output_chars
@@ -100,6 +132,7 @@ class SubagentRunner:
     async def run(
         self, type: str, task: str, stream_id: str,
         mcp_names: list[str] | None = None, max_output_chars: int | None = None,
+        model: str | None = None,
     ) -> str:
         """Spawn one isolated sub-agent of ``type``, run it to completion on
         ``task``, and return its final report — streaming its events to the UI
@@ -110,18 +143,28 @@ class SubagentRunner:
         agent's. ``max_output_chars`` is an optional soft output budget the
         spawner sets: the sub-agent is told to distill toward it, and any report
         over budget is spilled to a file and replaced with a within-budget
-        pointer so the inflow stays bounded."""
-        sub, err = self.build(type, max_output_chars)
+        pointer so the inflow stays bounded. ``model`` optionally overrides the
+        model this spawn runs on."""
+        sub, err = self.build(type, max_output_chars, model)
         if err is not None:
             return err
         if sub is None:
             return f"Failed to build sub-agent {type!r}."
         granted, unknown = self.mcp.granted_servers(mcp_names)
         await self.hooks.subagent_start(type, task)
-        result = await sub.run(
-            task, deps=self.deps, toolsets=granted,
-            event_stream_handler=self.handler(stream_id),
-        )
+        try:
+            result = await sub.run(
+                task, deps=self.deps, toolsets=granted,
+                event_stream_handler=self.handler(stream_id),
+                usage_limits=UsageLimits(request_limit=self._request_limit),
+            )
+        except Exception as exc:  # noqa: BLE001
+            # A foreground spawn runs inside the turn's tool execution; letting its
+            # crash propagate would fail the whole turn and take down any sibling
+            # spawns fanning out alongside it. Contain it: report the failure as
+            # this spawn's result so the orchestrator can route around it.
+            await self.hooks.subagent_stop(type, task, f"error: {exc}")
+            return f"Sub-agent {type!r} failed: {exc.__class__.__name__}: {exc}"
         await self.hooks.subagent_stop(type, task, result.output)
         # A foreground spawn runs inside the current turn, so its spend is folded
         # into the session total here and persisted by run_turn's _persist.
@@ -131,7 +174,7 @@ class SubagentRunner:
 
     async def run_background(
         self, type: str, task: str, mcp_names: list[str] | None = None,
-        max_output_chars: int | None = None,
+        max_output_chars: int | None = None, model: str | None = None,
     ) -> str:
         """Run a sub-agent as a detached background job: same isolation, mode-based
         reach, and MCP grant as a foreground spawn, but with no event streaming —
@@ -139,8 +182,9 @@ class SubagentRunner:
         Any unknown-server note rides along on that report. ``max_output_chars``
         applies only as a soft instruction here (the report is pulled later via
         the jobs API, which has no spill hook), so a background report is not
-        hard-capped the way a foreground one is."""
-        sub, err = self.build(type, max_output_chars)
+        hard-capped the way a foreground one is. ``model`` optionally overrides
+        the model this spawn runs on."""
+        sub, err = self.build(type, max_output_chars, model)
         if err is not None:
             return err
         if sub is None:
@@ -152,7 +196,15 @@ class SubagentRunner:
         # mutates — or persists as — the user's session checklist. Every other
         # Deps field (jobs, workspace, hooks, lsp, …) stays shared.
         bg_deps = replace(self.deps, tasks=TaskList())
-        result = await sub.run(task, deps=bg_deps, toolsets=granted)
+        # No UI streaming for a background run, but still pass a handler so its
+        # tool calls fire Pre/PostToolUse hooks (handler returns None when hooks
+        # are off, so this is free otherwise). A crash here is intentionally NOT
+        # contained: it propagates to the job registry, which marks the job failed.
+        result = await sub.run(
+            task, deps=bg_deps, toolsets=granted,
+            event_stream_handler=self.handler(None),
+            usage_limits=UsageLimits(request_limit=self._request_limit),
+        )
         await self.hooks.subagent_stop(type, task, result.output)
         # A background spawn finishes off-turn, so no run_turn will fold in its
         # spend — count it here and persist right away so the saved session
