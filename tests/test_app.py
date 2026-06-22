@@ -1776,6 +1776,18 @@ async def test_flush_skips_streams_in_collapsed_widgets(tmp_path: Path):
         assert msg._pending is False
 
 
+async def _pump_until(pilot, predicate, tries: int = 80) -> bool:
+    """Pump the event loop until ``predicate()`` holds (or ``tries`` is reached),
+    returning whether it held. A single ``pilot.pause()`` is one message-loop
+    cycle, which under full-suite load isn't always enough for Textual to finish a
+    reflow/scroll — polling makes layout-dependent assertions deterministic."""
+    for _ in range(tries):
+        if predicate():
+            return True
+        await pilot.pause()
+    return predicate()
+
+
 @pytest.mark.anyio
 async def test_stream_does_not_yank_when_scrolled_up(tmp_path: Path):
     """When the user has scrolled up to read, a streaming event must not snap the
@@ -1791,10 +1803,11 @@ async def test_stream_does_not_yank_when_scrolled_up(tmp_path: Path):
             m = AssistantMessage()
             await log.mount(m)
             m.append("line of text")
-        await pilot.pause()
+        # Wait for the reflow to actually overflow before scrolling — under load a
+        # single pause isn't enough for 40 fresh widgets to lay out.
+        assert await _pump_until(pilot, lambda: log.max_scroll_y > 0)
         log.scroll_to(y=0, animate=False)  # releases the anchor
-        await pilot.pause()
-        assert log.scroll_offset.y == 0
+        assert await _pump_until(pilot, lambda: log.scroll_offset.y == 0)
 
         # A streaming text event arrives — we are scrolled up, so stay put.
         from pydantic_ai.messages import PartStartEvent, TextPart
@@ -1803,7 +1816,13 @@ async def test_stream_does_not_yank_when_scrolled_up(tmp_path: Path):
             yield PartStartEvent(index=0, part=TextPart(content="new streamed text"))
 
         await app.stream.on_events(None, gen())
-        await pilot.pause()
+        # Drive the render+anchor decision synchronously rather than waiting on the
+        # interval flush tick — its timing under load is what made this test flaky.
+        # flush_streams() is exactly what the tick calls, so this stays faithful.
+        app.stream.flush_streams()
+        # Let any (incorrect) re-anchor settle, then confirm we stayed put. A yank
+        # would move off 0 and never return, so this still catches a real regression.
+        await _pump_until(pilot, lambda: log.scroll_offset.y != 0, tries=5)
         assert log.scroll_offset.y == 0
 
 
