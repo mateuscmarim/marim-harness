@@ -20,6 +20,16 @@ from .discovery import (
     plugin_mcp_specs,
     plugin_skill_roots,
 )
+from .install import (
+    InstallError,
+    install_plugin,
+    is_git_source,
+    remove_plugin,
+    scope_dir,
+    set_enabled,
+    set_trusted,
+    update_plugin,
+)
 from .manifest import (
     MANIFEST_DIR,
     MANIFEST_FILE,
@@ -48,6 +58,14 @@ __all__ = [
     "substitute_root",
     "try_load_manifest",
     "valid_plugin_name",
+    "InstallError",
+    "install_plugin",
+    "is_git_source",
+    "remove_plugin",
+    "scope_dir",
+    "set_enabled",
+    "set_trusted",
+    "update_plugin",
     "InstalledPlugin",
     "global_plugins_dir",
     "load_state",
