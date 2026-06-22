@@ -79,6 +79,8 @@ class PluginManifest:
         rel = value if isinstance(value, str) and value.strip() else default
         root = self.root.resolve()
         target = (root / rel).resolve()
+        if target == root:
+            raise ManifestError(f"component path must not be the plugin root: {rel!r}")
         if root != target and root not in target.parents:
             raise ManifestError(f"path escapes plugin root: {rel!r}")
         return target
@@ -92,13 +94,13 @@ class PluginManifest:
     def instructions_path(self) -> Path:
         return self._resolve(None, "AGENTS.md")
 
-    def hooks_source(self) -> Path | dict | None:
+    def hooks_source(self) -> Path | dict:
         v = self.raw.get("hooks")
         if isinstance(v, dict):
             return v
         return self._resolve(v, "hooks/hooks.json")
 
-    def mcp_source(self) -> Path | dict | None:
+    def mcp_source(self) -> Path | dict:
         v = self.raw.get("mcpServers")
         if isinstance(v, dict):
             return v

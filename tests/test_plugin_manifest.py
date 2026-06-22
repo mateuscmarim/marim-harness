@@ -89,6 +89,12 @@ def test_path_traversal_rejected(tmp_path):
         load_manifest(tmp_path)
 
 
+def test_component_path_equal_to_root_rejected(tmp_path):
+    _write_manifest(tmp_path, {"name": "p", "skills": "."})
+    with pytest.raises(ManifestError):
+        load_manifest(tmp_path)
+
+
 def test_try_load_returns_none_on_bad(tmp_path):
     assert try_load_manifest(tmp_path) is None
     _write_manifest(tmp_path, {"name": "ok"})
