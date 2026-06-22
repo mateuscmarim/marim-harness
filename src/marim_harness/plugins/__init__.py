@@ -19,6 +19,14 @@ from .manifest import (
     try_load_manifest,
     valid_plugin_name,
 )
+from .state import (
+    InstalledPlugin,
+    global_plugins_dir,
+    load_state,
+    project_plugins_dir,
+    save_state,
+    state_path,
+)
 
 __all__ = [
     "MANIFEST_DIR",
@@ -29,4 +37,10 @@ __all__ = [
     "substitute_root",
     "try_load_manifest",
     "valid_plugin_name",
+    "InstalledPlugin",
+    "global_plugins_dir",
+    "load_state",
+    "project_plugins_dir",
+    "save_state",
+    "state_path",
 ]
