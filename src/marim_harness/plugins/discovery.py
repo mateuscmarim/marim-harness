@@ -55,22 +55,14 @@ def discover_plugins(workspace_root) -> list[ResolvedPlugin]:
     manifest fails to load are skipped with a warning."""
     seen: dict[str, ResolvedPlugin] = {}
     for scope, plugins_dir in _scope_dirs(workspace_root):
-        state = load_state(plugins_dir)
-        try:
-            candidates = [d for d in plugins_dir.iterdir() if d.is_dir()]
-        except OSError:
-            candidates = []
-        for plugin_dir in candidates:
-            name = plugin_dir.name
+        for name, record in load_state(plugins_dir).items():
             if name in seen:
                 continue
-            manifest = try_load_manifest(plugin_dir)
+            root = plugins_dir / name
+            manifest = try_load_manifest(root)
             if manifest is None:
                 continue
-            record = state.get(name) or InstalledPlugin(
-                name=name, version=None, source={"type": "local"}
-            )
-            seen[name] = ResolvedPlugin(name, scope, plugin_dir, record, manifest)
+            seen[name] = ResolvedPlugin(name, scope, root, record, manifest)
     return sorted(seen.values(), key=lambda p: p.name)
 
 

@@ -12,7 +12,7 @@ from marim_harness.plugins.discovery import (
     plugin_skill_roots,
 )
 from marim_harness.plugins.manifest import load_manifest
-from marim_harness.plugins.state import InstalledPlugin, save_state
+from marim_harness.plugins.state import InstalledPlugin, load_state, save_state
 
 
 def _make_plugin(plugins_dir: Path, name: str, *, manifest: dict, files: dict):
@@ -29,7 +29,8 @@ def _make_plugin(plugins_dir: Path, name: str, *, manifest: dict, files: dict):
 
 
 def _install(plugins_dir: Path, name: str, **kw):
-    state = {name: InstalledPlugin(name=name, version=None, source={"type": "local"}, **kw)}
+    state = load_state(plugins_dir)
+    state[name] = InstalledPlugin(name=name, version=None, source={"type": "local"}, **kw)
     save_state(plugins_dir, state)
 
 
