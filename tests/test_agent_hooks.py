@@ -2,14 +2,26 @@ import stat
 from pathlib import Path
 
 import pytest
-from pydantic_ai.messages import FunctionToolResultEvent, ModelResponse, RetryPromptPart, TextPart, ToolReturnPart
+from pydantic_ai.messages import (
+    FunctionToolResultEvent,
+    ModelResponse,
+    RetryPromptPart,
+    TextPart,
+    ToolReturnPart,
+)
 from pydantic_ai.models.function import FunctionModel
 
 from marim_harness.deps import Deps
 from marim_harness.hooks import events as hook_events
 from marim_harness.hooks.runner import HookRunner
 from marim_harness.permissions import Mode
-from tests.conftest import _capture_script, _edit_then_done_model, _make_harness, _make_subagent_def, _read_hits
+from tests.conftest import (
+    _capture_script,
+    _edit_then_done_model,
+    _make_harness,
+    _make_subagent_def,
+    _read_hits,
+)
 
 
 @pytest.mark.anyio
