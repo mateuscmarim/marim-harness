@@ -29,6 +29,7 @@ from .stream_render import StreamRenderer
 from .themes import MARIM_THEMES
 from .widgets import (
     AssistantMessage,
+    CommandAutocomplete,
     ErrorMessage,
     JobPanel,
     NoticeMessage,
@@ -101,6 +102,7 @@ class HarnessApp(App):
         # Consecutive autonomous turns since the last user turn; reset on any
         # user-initiated turn. Bounds wake→spawn→wake chains.
         self._auto_turn_depth = 0
+        self._autocomplete: CommandAutocomplete | None = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -108,6 +110,7 @@ class HarnessApp(App):
         yield JobPanel()
         yield TaskPanel()
         yield Static(self.status.status_text(), id="status-bar")
+        yield CommandAutocomplete(id="cmd-autocomplete")
         yield PromptInput(history=self._history)
         yield Footer()
 
@@ -436,7 +439,40 @@ class HarnessApp(App):
         self._notify("Question from agent", prompt, "ask_user")
         return await self.push_screen_wait(AskUserModal(questions))
 
+    # --- Slash-command autocomplete ---
+
+    def _show_autocomplete(self, query: str) -> None:
+        if self._autocomplete is None:
+            self._autocomplete = self.query_one("#cmd-autocomplete", CommandAutocomplete)
+        self._autocomplete.filter(query)
+
+    def _hide_autocomplete(self) -> None:
+        if self._autocomplete is not None:
+            self._autocomplete.visible = False
+
+    def on_prompt_input_slash_changed(
+        self, event: PromptInput.SlashChanged
+    ) -> None:
+        first_line = event.value.split("\n", 1)[0]
+        query = first_line[1:]  # strip the leading /
+        self._show_autocomplete(query)
+
+    def on_prompt_input_slash_dismissed(
+        self, _event: PromptInput.SlashDismissed
+    ) -> None:
+        self._hide_autocomplete()
+
+    def on_command_autocomplete_command_selected(
+        self, event: CommandAutocomplete.CommandSelected
+    ) -> None:
+        prompt = self.query_one(PromptInput)
+        prompt.text = f"/{event.command_name} "
+        prompt.move_cursor(prompt.document.end)
+        self._hide_autocomplete()
+        prompt.focus()
+
     async def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
+        self._hide_autocomplete()
         text = event.value.strip()
         if not text:
             return

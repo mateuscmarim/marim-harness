@@ -28,8 +28,8 @@ class CommandAutocomplete(Static):
         def __init__(self) -> None:
             super().__init__()
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
         self._options: list[tuple[str, str, str]] = []  # (name, display, canonical)
         self.can_focus = False
 

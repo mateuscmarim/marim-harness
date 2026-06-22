@@ -52,3 +52,27 @@ ToolGroupWidget { margin: 0 0 1 0; }
 /* A focused collapsible title is cued with bold accent text rather than a filled
    band, which otherwise reads like a stuck selection. */
 CollapsibleTitle:focus { background: transparent; color: $accent; text-style: bold; }
+
+/* Slash-command autocomplete dropdown.  Docked to the screen bottom (same
+   edge as the Footer), offset upward so it sits directly above the prompt.
+   The offset value: -(footer=1 + prompt-border-top=1 + prompt-min-height=3
+   + prompt-border-bottom=1) = -6.  Uses layer:overlay so it floats above
+   sibling content without pushing the layout. */
+#cmd-autocomplete {
+    display: none;
+    layer: overlay;
+    dock: bottom;
+    width: 60;
+    max-height: 8;
+    offset: 0 -6;
+    background: $panel;
+    border: round $accent;
+}
+#cmd-autocomplete.visible {
+    display: block;
+}
+#cmd-options {
+    height: auto;
+    max-height: 6;
+    background: $panel;
+}
