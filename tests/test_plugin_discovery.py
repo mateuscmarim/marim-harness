@@ -121,3 +121,11 @@ def test_bundle_summary_and_has_executable(tmp_path):
     assert summary["hooks"] == 1
     assert has_executable(summary) is True
     assert has_executable({"skills": 2, "agents": 1, "hooks": 0, "mcpServers": 0}) is False
+
+
+def test_registered_plugin_with_missing_dir_is_skipped(tmp_path, monkeypatch):
+    ws = _ws(tmp_path, monkeypatch)
+    gdir = tmp_path / "cfg" / "marim" / "plugins"
+    _install(gdir, "ghost", enabled=True)  # registry entry, but no plugin dir created
+    found = discover_plugins(ws)
+    assert all(p.name != "ghost" for p in found)

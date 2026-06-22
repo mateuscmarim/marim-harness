@@ -61,6 +61,10 @@ def discover_plugins(workspace_root) -> list[ResolvedPlugin]:
             root = plugins_dir / name
             manifest = try_load_manifest(root)
             if manifest is None:
+                logger.warning(
+                    "plugin %r in registry (%s) has no loadable manifest at %s; skipping",
+                    name, scope, root,
+                )
                 continue
             seen[name] = ResolvedPlugin(name, scope, root, record, manifest)
     return sorted(seen.values(), key=lambda p: p.name)
