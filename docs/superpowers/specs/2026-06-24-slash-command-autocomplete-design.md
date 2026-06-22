@@ -130,19 +130,23 @@ CommandAutocomplete {
     dock: bottom;
     width: 60;
     max-height: 8;
-    offset: 0 -<prompt_height_plus_margin>;  /* positioned above prompt */
+    /* offset-y = -(Footer height + PromptInput current height + border) */
+    /* The exact value is computed at runtime via a watcher on PromptInput's
+       height, or statically estimated as -8 (footer=1 + prompt=5 + border=2).
+       Refined during implementation. */
+    offset: 0 -8;
     background: $panel;
     border: round $accent;
 }
 ```
 
-The exact positioning mechanism (dock + offset, absolute positioning, or container wrapping) will be refined during implementation. The goal is to anchor the dropdown directly above the PromptInput, aligned to its left edge.
+The dropdown is `dock: bottom` on the Screen (same edge as the Footer), then offset upward to sit directly above the PromptInput. The offset accounts for the Footer's 1 row + PromptInput's height (default 5 rows + 2 border rows = 7, rounded to 8 for margin). If PromptInput's height changes (auto-grow), the offset can be updated dynamically by watching the widget's size — but the static default covers the common case.
 
 ## Edge Cases
 
 1. **Empty query (`/` only):** Show all commands — same as `/help` listing but inline.
 2. **Alias match:** Typing `/?` shows `help` (since `?` is an alias). The inserted text is `/help ` (canonical name, not the alias the user typed).
-3. **Multi-line prompt:** Slash detection only checks the first line. If the user types `/model\nsome context`, the autocomplete still appears for `/model` and selecting it replaces the first line.
+3. **Multi-line prompt:** Slash detection only checks the first line. If the user types `/model\nsome context`, the autocomplete still appears for `/model`. On selection, the **entire** prompt text is replaced with `/<command> ` (since slash commands are single-line; any trailing multi-line content is discarded).
 4. **No matches:** Widget hides. User continues typing and the command is handled by the existing unknown-command error path on submit.
 5. **Rapid typing:** `on_text_area_changed` fires on every keystroke. `filter()` is O(n) over ~18 commands — no performance concern.
 6. **Backspace to empty:** Deleting back to just `/` re-shows the full list. Deleting the `/` itself dismisses.
