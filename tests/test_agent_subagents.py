@@ -217,6 +217,44 @@ async def test_run_background_subagent_returns_output(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_run_background_output_cap_spills_full_and_returns_pointer(tmp_path: Path):
+    """A background spawn's report is hard-capped too: over budget it spills to a
+    file and the stored result is a within-budget head + pointer, so a giant
+    background report can't flood context when it's later pulled."""
+    long = "CONCLUSION first. " + "filler. " * 500
+
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content=long)])
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    harness = _make_harness(FunctionModel(fn), deps)
+    result = await harness.subagents.run_background("explore", "go", None, 200)
+
+    assert len(result) <= 200
+    assert result.startswith("CONCLUSION first.")
+    spill_dir = tmp_path / ".marim" / "subagent-output"
+    files = list(spill_dir.glob("*.md"))
+    assert len(files) == 1 and files[0].read_text() == long
+    assert ".marim/subagent-output/" in result
+
+
+@pytest.mark.anyio
+async def test_run_background_no_cap_returns_full_output(tmp_path: Path):
+    """Without a cap, a background report passes through unchanged and nothing
+    spills."""
+    long = "y" * 5000
+
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content=long)])
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    harness = _make_harness(FunctionModel(fn), deps)
+    result = await harness.subagents.run_background("explore", "go")
+    assert result == long
+    assert not (tmp_path / ".marim" / "subagent-output").exists()
+
+
+@pytest.mark.anyio
 async def test_run_background_subagent_counts_and_persists_usage(tmp_path: Path):
     """A background spawn finishes off-turn, so its spend is folded into the
     session total AND persisted right away — not left for the next turn."""

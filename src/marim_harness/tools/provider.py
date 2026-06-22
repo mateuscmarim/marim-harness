@@ -337,12 +337,11 @@ async def spawn_agent(
     `max_output_chars` caps the report this spawn returns into your context — set
     it when you're fanning out and want bounded inflow. It's a budget the
     sub-agent distills toward (it's told to lead with the conclusion and
-    summarize to fit), not a blind truncation. For a foreground spawn it's also
-    enforced losslessly: a report over budget is written to a workspace file and
-    replaced with a within-budget head + a pointer to that file, so nothing is
-    lost — you can read the file if you need the detail. Leave it unset for an
-    unbounded report. (For a background spawn it applies as a soft instruction
-    only.)
+    summarize to fit), not a blind truncation. It's also enforced losslessly, for
+    both foreground and background spawns: a report over budget is written to a
+    workspace file and replaced with a within-budget head + a pointer to that
+    file, so nothing is lost — you can read the file if you need the detail. Leave
+    it unset for an unbounded report.
 
     `returns`, `constraints`, and `context` are optional structured fields folded
     into the sub-agent's prompt — all freeform text, all additive (omit any and

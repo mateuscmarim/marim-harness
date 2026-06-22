@@ -72,6 +72,9 @@ class SubagentRunner:
         # Monotonic counter for naming isolation branches when a spawn has no
         # stream id (e.g. a background run), so concurrent ones never collide.
         self._iso_seq = 0
+        # Monotonic counter for naming a background spawn's output-spill file —
+        # a background run has no stream id to key the spill on.
+        self._bg_seq = 0
 
     def _open_worktree(self, stream_id: str):
         """Create an isolated git worktree for a spawn off the repo's HEAD.
@@ -274,9 +277,10 @@ class SubagentRunner:
         Any unknown-server note rides along on that report. ``max_output_chars``
         applies only as a soft instruction here (the report is pulled later via
         the jobs API, which has no spill hook), so a background report is not
-        hard-capped the way a foreground one is. ``model`` optionally overrides
-        the model this spawn runs on. ``isolation="worktree"`` runs it in its own
-        git worktree, committing its changes to a branch named in the report."""
+        hard-capped, with the over-budget remainder spilled to a workspace file
+        the same way a foreground one is. ``model`` optionally overrides the model
+        this spawn runs on. ``isolation="worktree"`` runs it in its own git
+        worktree, committing its changes to a branch named in the report."""
         iso = None
         if isolation == "worktree":
             iso, err = self._open_worktree("")
@@ -322,5 +326,7 @@ class SubagentRunner:
         # reflects it even if the process exits before the next turn.
         self.session.usage += result.usage
         self.session.persist()
+        self._bg_seq += 1
+        capped = self._cap_output(result.output, max_output_chars, f"bg-{self._bg_seq}")
         iso_note = self._close_worktree(iso) if iso else ""
-        return self.mcp.grant_note(unknown) + result.output + iso_note
+        return self.mcp.grant_note(unknown) + capped + iso_note
