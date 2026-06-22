@@ -59,7 +59,6 @@ CollapsibleTitle:focus { background: transparent; color: $accent; text-style: bo
    + prompt-border-bottom=1) = -6.  Uses layer:overlay so it floats above
    sibling content without pushing the layout. */
 #cmd-autocomplete {
-    display: none;
     layer: overlay;
     dock: bottom;
     width: 60;
@@ -67,9 +66,6 @@ CollapsibleTitle:focus { background: transparent; color: $accent; text-style: bo
     offset: 0 -6;
     background: $panel;
     border: round $accent;
-}
-#cmd-autocomplete.visible {
-    display: block;
 }
 #cmd-options {
     height: auto;
