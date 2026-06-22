@@ -32,6 +32,7 @@ from .workspace.worktree import (
     WorktreeError,
     commit_worktree,
     create_or_reuse_worktree,
+    delete_branch,
     remove_worktree,
     repo_root,
 )
@@ -105,22 +106,35 @@ class SubagentRunner:
         except WorktreeError as exc:
             return (f"\n\n[isolated run on branch {branch}: commit failed ({exc}); "
                     f"worktree left at {iso['path']}]")
-        try:
-            remove_worktree(iso["repo"], branch)
-        except WorktreeError:
-            pass  # a stuck worktree is untidy, not fatal — the branch still holds
         if summary is None:
-            return f"\n\n[isolated run made no file changes; branch {branch}]"
+            # Nothing was produced: drop the worktree (force, since gitignored
+            # leftovers may remain) and the empty branch, so spawns that change
+            # nothing don't leave a trail of dead branches behind.
+            self._teardown_worktree(iso, force=True, drop_branch=True)
+            return "\n\n[isolated run made no file changes]"
+        self._teardown_worktree(iso)  # keep the branch — it's the deliverable
         return (f"\n\n[isolated run committed to branch {branch}:\n{summary}\n"
                 f"merge with `git merge {branch}` or review `git diff {branch}`]")
 
     def _discard_worktree(self, iso: dict) -> None:
-        """Best-effort teardown for a worktree whose spawn errored before it could
-        report — remove it if git allows (a dirty worktree is simply left)."""
+        """Teardown for a worktree whose spawn errored before it could report:
+        force-remove it (the partial work is dirty and unwanted) and drop the
+        branch, so a crashed isolated spawn leaves nothing behind."""
+        self._teardown_worktree(iso, force=True, drop_branch=True)
+
+    def _teardown_worktree(self, iso: dict, *, force: bool = False,
+                           drop_branch: bool = False) -> None:
+        """Best-effort removal of a spawn's worktree (and optionally its branch).
+        Cleanup failures are swallowed — a stuck worktree is untidy, not fatal."""
         try:
-            remove_worktree(iso["repo"], iso["branch"])
+            remove_worktree(iso["repo"], iso["branch"], force=force)
         except WorktreeError:
             pass
+        if drop_branch:
+            try:
+                delete_branch(iso["repo"], iso["branch"])
+            except WorktreeError:
+                pass
 
     def handler(self, stream_id: str | None):
         """An event_stream_handler for a sub-agent run. For each streamed event it

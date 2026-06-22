@@ -157,3 +157,44 @@ async def test_spawn_agent_tool_forwards_isolation(repo: Path):
     h.deps.run_subagent = fake_run
     await h.run_turn("go")
     assert captured["isolation"] == "worktree"
+
+
+def _branch_exists(repo: Path, branch: str) -> bool:
+    out = subprocess.run(["git", "branch", "--list", branch], cwd=repo,
+                         capture_output=True, text=True).stdout
+    return out.strip() != ""
+
+
+@pytest.mark.anyio
+async def test_isolated_spawn_no_changes_drops_branch(repo: Path):
+    """An isolated spawn that changes no files leaves nothing behind — its empty
+    branch is deleted and the worktree removed, so spawns don't accrete branches."""
+    deps = Deps(workspace_root=repo, mode=Mode.auto)
+    h = _make_harness(_text_model(), deps)
+    _capture_deps(h)  # stub agent writes nothing
+
+    out = await h.subagents.run("general", "noop", "tc1", isolation="worktree")
+    assert "no file changes" in out
+    assert not _branch_exists(repo, "subagent/tc1")
+    assert not (repo / ".worktrees" / "subagent" / "tc1").exists()
+
+
+@pytest.mark.anyio
+async def test_isolated_spawn_crash_cleans_up_worktree_and_branch(repo: Path):
+    """A crashed isolated spawn discards its partial work: the (dirty) worktree is
+    force-removed and the branch deleted, while the crash stays contained."""
+    deps = Deps(workspace_root=repo, mode=Mode.auto)
+    h = _make_harness(_text_model(), deps)
+
+    class _CrashAgent:
+        async def run(self, task, **kwargs):
+            fs.write_file(kwargs["deps"].workspace_root, "partial.txt", "half\n")
+            raise RuntimeError("boom mid-run")
+
+    h.subagents.build = lambda type, max_output_chars=None, model=None, \
+        workspace_root=None: (_CrashAgent(), None)
+
+    out = await h.subagents.run("general", "do it", "tc1", isolation="worktree")
+    assert "boom" in out  # contained, not raised
+    assert not _branch_exists(repo, "subagent/tc1")
+    assert not (repo / ".worktrees" / "subagent" / "tc1").exists()

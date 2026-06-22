@@ -155,3 +155,23 @@ def test_commit_worktree_works_without_user_git_identity(repo: Path):
     (path / "f.txt").write_text("x\n")
     summary = wt.commit_worktree(path, "no identity configured")
     assert summary is not None
+
+
+def test_remove_worktree_force_removes_dirty(repo: Path):
+    """A dirty worktree (uncommitted changes) can't be removed normally, but
+    force=True tears it down anyway — used for a crashed isolated spawn."""
+    path = wt.create_or_reuse_worktree(repo, "feat/dirty")
+    (path / "scratch.txt").write_text("uncommitted\n")
+    with pytest.raises(wt.WorktreeError):
+        wt.remove_worktree(repo, "feat/dirty")          # refuses while dirty
+    wt.remove_worktree(repo, "feat/dirty", force=True)   # force succeeds
+    assert not path.exists()
+
+
+def test_delete_branch_removes_branch(repo: Path):
+    wt.create_or_reuse_worktree(repo, "feat/gone")
+    wt.remove_worktree(repo, "feat/gone")  # branch can't be deleted while checked out
+    wt.delete_branch(repo, "feat/gone")
+    listed = subprocess.run(["git", "branch", "--list", "feat/gone"], cwd=repo,
+                            capture_output=True, text=True).stdout
+    assert listed.strip() == ""
