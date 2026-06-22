@@ -403,6 +403,67 @@ async def test_tool_failure_fires_post_tool_use_failure(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_notification_dispatch_payload(tmp_path):
+    out = tmp_path / "hits.jsonl"
+    cmd = _capture_script(tmp_path, "n.sh", out)
+    deps = Deps(
+        workspace_root=tmp_path, mode=Mode.auto,
+        hooks=HookRunner(
+            {hook_events.NOTIFICATION: [{"hooks": [{"type": "command", "command": cmd}]}]}
+        ),
+    )
+    harness = _make_harness(_edit_then_done_model(), deps)
+    await harness.session_start("startup")
+    await harness.hooks.notification("ask_user", "Question from agent", "pick one")
+    hits = _read_hits(out)
+    assert hits[0]["hook_event_name"] == "Notification"
+    assert hits[0]["notification_type"] == "ask_user"
+    assert hits[0]["title"] == "Question from agent"
+    assert hits[0]["message"] == "pick one"
+
+
+@pytest.mark.anyio
+async def test_approval_round_fires_notification_in_ask_mode(tmp_path):
+    out = tmp_path / "hits.jsonl"
+    cmd = _capture_script(tmp_path, "appr.sh", out)
+    deps = Deps(
+        workspace_root=tmp_path, mode=Mode.ask,
+        hooks=HookRunner(
+            {hook_events.NOTIFICATION: [{"hooks": [{"type": "command", "command": cmd}]}]}
+        ),
+    )
+
+    async def _approve(call):
+        return True
+
+    deps.request_approval = _approve
+    harness = _make_harness(_edit_then_done_model(), deps)
+    await harness.session_start("startup")
+    await harness.run_turn("edit it")
+    hits = [h for h in _read_hits(out) if h["hook_event_name"] == "Notification"]
+    assert any(h["notification_type"] == "approval_needed" for h in hits)
+    assert any("edit_file" in h["message"] for h in hits)
+
+
+@pytest.mark.anyio
+async def test_auto_mode_does_not_fire_approval_notification(tmp_path):
+    out = tmp_path / "hits.jsonl"
+    cmd = _capture_script(tmp_path, "noappr.sh", out)
+    deps = Deps(
+        workspace_root=tmp_path, mode=Mode.auto,
+        hooks=HookRunner(
+            {hook_events.NOTIFICATION: [{"hooks": [{"type": "command", "command": cmd}]}]}
+        ),
+    )
+    harness = _make_harness(_edit_then_done_model(), deps)
+    await harness.session_start("startup")
+    await harness.run_turn("edit it")
+    hits = [h for h in _read_hits(out)
+            if h.get("notification_type") == "approval_needed"]
+    assert hits == []
+
+
+@pytest.mark.anyio
 async def test_tool_success_fires_post_tool_use_not_failure(tmp_path):
     out = tmp_path / "hits.jsonl"
     cmd = _capture_script(tmp_path, "ok.sh", out)

@@ -22,7 +22,7 @@ from .instructions import register_instructions
 from .lsp.manager import LspManager
 from .mcp import McpManager
 from .notifications import NotificationConfig
-from .permissions import resolve_approvals
+from .permissions import Mode, resolve_approvals
 from .session import SessionController, SessionManager, SessionStore
 from .subagents import SubagentRunner
 from .tools.provider import ToolProvider
@@ -506,6 +506,13 @@ class Harness:
                 # failure during approval would otherwise leave the session
                 # ending in a dangling tool_use — unresumable. Roll back to the
                 # last clean state if the approval round is interrupted.
+                if self.deps.mode is Mode.ask and result.output.approvals:
+                    names = ", ".join(
+                        getattr(c, "tool_name", "") for c in result.output.approvals
+                    )
+                    await self.hooks.notification(
+                        "approval_needed", "Approval needed", names
+                    )
                 try:
                     deferred_results = await resolve_approvals(
                         result.output, self.deps.mode, self.deps.request_approval

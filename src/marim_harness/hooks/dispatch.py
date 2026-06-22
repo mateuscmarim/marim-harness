@@ -83,6 +83,17 @@ class TurnHooks:
             result=result,
         )
 
+    async def notification(self, notification_type: str, title: str,
+                           message: str) -> None:
+        """Notification: the agent needs the user's attention (approval / a
+        question). Observe-only."""
+        await self._dispatch(
+            hook_events.NOTIFICATION,
+            notification_type=notification_type,
+            title=title,
+            message=message,
+        )
+
     async def post_tool_use_failure(self, tool_name: str, tool_input: dict,
                                     error: str) -> None:
         """PostToolUseFailure: a tool call errored or was retried. Observe-only."""

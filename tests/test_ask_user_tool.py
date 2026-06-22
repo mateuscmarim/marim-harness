@@ -93,6 +93,35 @@ def test_ask_user_empty_questions_returns_error(tmp_path):
     assert "at least one question" in captured["ret"]
 
 
+def test_ask_user_fires_notification(tmp_path):
+    from marim_harness.deps import Deps
+
+    class _Spy:
+        def __init__(self):
+            self.calls = []
+
+        async def notification(self, notification_type, title, message):
+            self.calls.append((notification_type, title, message))
+
+    spy = _Spy()
+
+    async def _answer(questions):
+        return {questions[0].header or "q": "yes"}
+
+    deps = Deps(workspace_root=tmp_path, ask_user=_answer)
+    deps.turn_hooks = spy
+    agent = _agent()
+    model, _ = _call_tool(
+        "ask_user",
+        {"questions": [{"question": "Proceed?", "header": "go",
+                        "options": [{"label": "yes"}, {"label": "no"}]}]},
+    )
+    with agent.override(model=model):
+        agent.run_sync("go", deps=deps)
+    assert spy.calls and spy.calls[0][0] == "ask_user"
+    assert "Proceed?" in spy.calls[0][2]
+
+
 def test_ask_user_registered_on_main_not_subagent(tmp_path):
     from marim_harness.tools.provider import _SUBAGENT_FNS
 

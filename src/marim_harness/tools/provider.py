@@ -240,6 +240,11 @@ async def ask_user(ctx: RunContext[Deps], questions: list[Question]) -> str:
         return _ASK_USER_EMPTY
     if ctx.deps.ask_user is None:
         return _ASK_USER_NO_UI
+    th = getattr(ctx.deps, "turn_hooks", None)
+    if th is not None:
+        await th.notification(
+            "ask_user", "Question from agent", coerced[0].question
+        )
     answers = await ctx.deps.ask_user(coerced)
     if not answers:
         return _ASK_USER_CANCELLED
