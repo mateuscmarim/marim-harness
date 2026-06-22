@@ -234,3 +234,49 @@ def test_subagent_instructions_includes_prompt_and_workspace():
     text = subagent_instructions(defn, Path("/work/space"))
     assert "Investigate carefully." in text
     assert "/work/space" in text
+
+
+def test_discover_agents_caches_and_skips_reparse(isolated_home, monkeypatch):
+    """A second discovery with nothing changed on disk is served from cache — the
+    expensive YAML read+parse doesn't run again."""
+    from marim_harness.workspace import agents as agents_mod
+
+    ws = isolated_home / "ws"
+    _make_agent(ws / ".marim" / "agents", "probe")
+
+    calls = {"n": 0}
+    real = agents_mod._parse_agent
+
+    def counting(*a, **k):
+        calls["n"] += 1
+        return real(*a, **k)
+
+    monkeypatch.setattr(agents_mod, "_parse_agent", counting)
+    discover_agents(ws)
+    first = calls["n"]
+    assert first >= 1
+    discover_agents(ws)
+    assert calls["n"] == first  # no re-parse on the second call
+
+
+def test_discover_agents_reflects_added_file(isolated_home):
+    """Adding an agent file invalidates the cache — the new agent shows up."""
+    ws = isolated_home / "ws"
+    root = ws / ".marim" / "agents"
+    _make_agent(root, "first")
+    assert "second" not in {a.name for a in discover_agents(ws)}
+    _make_agent(root, "second")
+    assert "second" in {a.name for a in discover_agents(ws)}
+
+
+def test_discover_agents_reflects_edited_file(isolated_home):
+    """Editing an agent file's contents invalidates the cache — the change is
+    reflected, not served stale from a prior discovery."""
+    ws = isolated_home / "ws"
+    root = ws / ".marim" / "agents"
+    _make_agent(root, "probe", description="The first description, fairly long.")
+    d1 = next(a for a in discover_agents(ws) if a.name == "probe").description
+    assert "first" in d1
+    _make_agent(root, "probe", description="Second.")
+    d2 = next(a for a in discover_agents(ws) if a.name == "probe").description
+    assert "Second" in d2

@@ -159,9 +159,10 @@ def commit_worktree(worktree_path: Path, message: str) -> str | None:
     ).stdout.strip()
 
 
-def remove_worktree(repo_root: Path, branch: str) -> None:
+def remove_worktree(repo_root: Path, branch: str, *, force: bool = False) -> None:
     """Remove the worktree checked out on `branch`. Refuses if the worktree is
-    dirty or is the current one (git's own rules). Never deletes the branch.
+    dirty or is the current one (git's own rules) unless ``force`` is set — used
+    to tear down a crashed isolated spawn's worktree. Never deletes the branch.
     Raises WorktreeError on failure.
 
     Resolves the worktree's real path by branch (symmetric with
@@ -174,4 +175,17 @@ def remove_worktree(repo_root: Path, branch: str) -> None:
         if info.branch == branch:
             target = info.path
             break
-    _check(_git(repo_root, "worktree", "remove", str(target)))
+    args = ["worktree", "remove"]
+    if force:
+        args.append("--force")
+    args.append(str(target))
+    _check(_git(repo_root, *args))
+
+
+def delete_branch(repo_root: Path, branch: str) -> None:
+    """Force-delete `branch` (``git branch -D``). Used to drop an isolation branch
+    that never advanced past HEAD or whose work was abandoned, so they don't pile
+    up. Raises WorktreeError if the branch is missing or still checked out (remove
+    its worktree first)."""
+    _validate_branch(branch)
+    _check(_git(repo_root, "branch", "-D", branch))
