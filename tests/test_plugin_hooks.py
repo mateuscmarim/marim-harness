@@ -50,3 +50,30 @@ def test_untrusted_plugin_hooks_excluded(tmp_path, monkeypatch):
     _install_plugin_with_hooks(gdir, "p", trusted=False)
     cfg = load_hooks_config(ws, trust_project=False)
     assert cfg == {}
+
+
+def test_global_and_plugin_hooks_concatenated(tmp_path, monkeypatch):
+    """A global Stop hook and a trusted plugin Stop hook must BOTH appear.
+
+    They are concatenated into one list; the plugin entry must not overwrite
+    the global entry.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    # Write a global hooks.json with its own Stop command
+    global_hooks_dir = tmp_path / "cfg" / "marim"
+    global_hooks_dir.mkdir(parents=True, exist_ok=True)
+    (global_hooks_dir / "hooks.json").write_text(
+        json.dumps(
+            {"hooks": {"Stop": [{"type": "command", "command": "echo global"}]}}
+        ),
+        encoding="utf-8",
+    )
+    # Install a trusted plugin that also contributes a Stop hook
+    gdir = tmp_path / "cfg" / "marim" / "plugins"
+    _install_plugin_with_hooks(gdir, "p", trusted=True)
+    cfg = load_hooks_config(ws, trust_project=False)
+    stop_commands = [entry["command"] for entry in cfg.get("Stop", [])]
+    assert "echo global" in stop_commands
+    assert "echo hi" in stop_commands

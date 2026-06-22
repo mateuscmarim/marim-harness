@@ -29,6 +29,10 @@ servers execute code, so they load only for plugins you trust. Installing a
 plugin with hooks/MCP prompts for trust; pass `--trust` to grant it
 non-interactively (e.g. in CI). Trust is recorded per plugin.
 
+> **Note:** Toggling a plugin-provided MCP server via the MCP UI (e.g. `/mcp
+> disable <name>`) is session-only and not persisted; use `marim plugin disable
+> <name>` (or `/plugin disable <name>`) to persist the change across launches.
+
 ## Naming
 
 Plugin skills and sub-agents are namespaced `plugin-name:item-name`, so they

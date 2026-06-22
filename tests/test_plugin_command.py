@@ -57,3 +57,25 @@ def test_plugin_disable_then_enable(tmp_path, monkeypatch):
     asyncio.run(_cmd_plugin(app, "enable demo"))
     assert load_state(gdir)["demo"].enabled is True
     assert any("next launch" in m.lower() for m in app.messages)
+
+
+def test_plugin_unknown_subcommand_posts_usage(tmp_path, monkeypatch):
+    """An unknown subcommand must post a usage message, not crash."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    app = _FakeApp(ws)
+    asyncio.run(_cmd_plugin(app, "somethingbogus"))
+    assert app.messages, "expected at least one message"
+    assert any("Usage" in m or "usage" in m for m in app.messages)
+
+
+def test_plugin_list_no_plugins_installed(tmp_path, monkeypatch):
+    """``/plugin list`` with no plugins installed must post the expected message."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    app = _FakeApp(ws)
+    asyncio.run(_cmd_plugin(app, "list"))
+    assert app.messages, "expected at least one message"
+    assert any("No plugins installed" in m for m in app.messages)

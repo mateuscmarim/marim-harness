@@ -47,3 +47,36 @@ def test_untrusted_plugin_mcp_excluded(tmp_path, monkeypatch):
     gdir = tmp_path / "cfg" / "marim" / "plugins"
     _install_plugin_with_mcp(gdir, "p", trusted=False)
     assert load_mcp_config(ws) == {}
+
+
+def test_disabled_trusted_plugin_mcp_excluded(tmp_path, monkeypatch):
+    """A TRUSTED but DISABLED plugin must contribute zero MCP servers.
+
+    Being trusted is not sufficient; the plugin must also be enabled.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    gdir = tmp_path / "cfg" / "marim" / "plugins"
+    pdir = gdir / "p"
+    (pdir / ".marim-plugin").mkdir(parents=True, exist_ok=True)
+    (pdir / ".marim-plugin" / "plugin.json").write_text(
+        json.dumps({"name": "p"}), encoding="utf-8"
+    )
+    (pdir / "mcp.json").write_text(
+        json.dumps({"mcpServers": {"web": {"url": "https://plugin"}}}),
+        encoding="utf-8",
+    )
+    save_state(
+        gdir,
+        {
+            "p": InstalledPlugin(
+                name="p",
+                version=None,
+                source={"type": "local"},
+                enabled=False,
+                trusted=True,
+            )
+        },
+    )
+    assert load_mcp_config(ws) == {}
