@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 
 from .discovery import has_executable, plugin_bundle_summary
-from .manifest import ManifestError, load_manifest
+from .manifest import ManifestError, PluginManifest, load_manifest
 from .state import (
     InstalledPlugin,
     global_plugins_dir,
@@ -77,7 +77,7 @@ def _clone_git(source: str, dest: Path, ref: str | None) -> dict:
     return record
 
 
-def _validated_manifest(plugin_dir: Path):
+def _validated_manifest(plugin_dir: Path) -> PluginManifest:
     try:
         return load_manifest(plugin_dir)
     except ManifestError as exc:
@@ -115,10 +115,10 @@ def install_plugin(
 
     with tempfile.TemporaryDirectory() as tmp:
         if use_git:
-            staging = Path(tmp) / "clone"
-            source_record = _clone_git(source, staging, ref=None)
             if link:
                 raise InstallError("--link is only valid for local sources")
+            staging = Path(tmp) / "clone"
+            source_record = _clone_git(source, staging, ref=None)
         else:
             staging = Path(source)
             if not staging.is_dir():

@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ from marim_harness.plugins import (
     remove_plugin,
     set_enabled,
     set_trusted,
+    update_plugin,
 )
 
 
@@ -113,8 +115,6 @@ def test_install_from_local_git_repo(tmp_path, monkeypatch):
     # Build a real local git repo containing a plugin.
     repo = tmp_path / "repo"
     _make_source(repo, "gitdemo")
-    import subprocess
-
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
     subprocess.run(
@@ -129,3 +129,139 @@ def test_install_from_local_git_repo(tmp_path, monkeypatch):
     assert rec.name == "gitdemo"
     assert rec.source["type"] == "git"
     assert rec.source.get("sha")
+
+
+# ---------------------------------------------------------------------------
+# Helper — build a minimal local git repo with a plugin and return its path.
+# ---------------------------------------------------------------------------
+
+
+def _make_git_repo(root: Path, name: str, version: str = "1.0.0") -> Path:
+    """Create a git-tracked plugin directory at *root* and return *root*."""
+    _make_source(root, name)
+    # Write the desired version into plugin.json (overwrite what _make_source wrote).
+    manifest_path = root / ".marim-plugin" / "plugin.json"
+    manifest_path.write_text(
+        json.dumps({"name": name, "version": version}), encoding="utf-8"
+    )
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"],
+        cwd=root,
+        check=True,
+    )
+    return root
+
+
+def test_update_plugin_happy_path_git(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    repo = _make_git_repo(tmp_path / "repo", "myplugin", version="1.0.0")
+
+    install_plugin(
+        str(repo),
+        scope="global",
+        workspace_root=ws,
+        trust=False,
+        now="T1",
+        _force_git=True,
+    )
+
+    # Bump version in the repo and commit.
+    manifest_path = repo / ".marim-plugin" / "plugin.json"
+    manifest_path.write_text(
+        json.dumps({"name": "myplugin", "version": "2.0.0"}), encoding="utf-8"
+    )
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "bump"],
+        cwd=repo,
+        check=True,
+    )
+
+    rec2 = update_plugin("myplugin", scope="global", workspace_root=ws, now="T2")
+    assert rec2.version == "2.0.0"
+    assert rec2.source["type"] == "git"
+    assert rec2.source.get("sha")
+    gdir = tmp_path / "cfg" / "marim" / "plugins"
+    installed_manifest = (
+        gdir / "myplugin" / ".marim-plugin" / "plugin.json"
+    )
+    assert json.loads(installed_manifest.read_text())["version"] == "2.0.0"
+
+
+def test_update_plugin_rejects_local_source(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    src = tmp_path / "src"
+    _make_source(src, "localplugin")
+    install_plugin(
+        str(src), scope="global", workspace_root=ws, trust=False, now="T"
+    )
+    with pytest.raises(InstallError):
+        update_plugin("localplugin", scope="global", workspace_root=ws, now="T")
+
+
+def test_update_plugin_rejects_not_installed(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    with pytest.raises(InstallError):
+        update_plugin("nope", scope="global", workspace_root=ws, now="T")
+
+
+def test_remove_symlinked_plugin_keeps_source(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    src = tmp_path / "src"
+    _make_source(src, "linked")
+    install_plugin(
+        str(src),
+        scope="global",
+        workspace_root=ws,
+        trust=False,
+        link=True,
+        now="T",
+    )
+    gdir = tmp_path / "cfg" / "marim" / "plugins"
+    dest = gdir / "linked"
+    assert dest.is_symlink(), "expected a symlink after linked install"
+
+    remove_plugin("linked", scope="global", workspace_root=ws)
+
+    assert not dest.exists() and not dest.is_symlink(), "symlink should be gone"
+    assert (src / ".marim-plugin" / "plugin.json").is_file(), "source must be intact"
+    assert "linked" not in load_state(gdir), "state entry should be removed"
+
+
+def test_git_with_link_raises(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    repo = _make_git_repo(tmp_path / "repo", "gitlink")
+    with pytest.raises(InstallError):
+        install_plugin(
+            str(repo),
+            scope="global",
+            workspace_root=ws,
+            trust=False,
+            link=True,
+            now="T",
+            _force_git=True,
+        )
+
+
+def test_unknown_scope_raises(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    src = tmp_path / "src"
+    _make_source(src, "demo")
+    with pytest.raises(InstallError):
+        install_plugin(
+            str(src), scope="bogus", workspace_root=ws, trust=False, now="T"
+        )
