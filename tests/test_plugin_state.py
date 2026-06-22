@@ -1,4 +1,4 @@
-from marim_harness.plugins.state import (
+from marim_harness.plugins import (
     InstalledPlugin,
     global_plugins_dir,
     load_state,
