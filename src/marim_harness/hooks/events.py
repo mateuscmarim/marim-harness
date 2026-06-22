@@ -11,6 +11,9 @@ SUBAGENT_START = "SubagentStart"
 SUBAGENT_STOP = "SubagentStop"
 STOP = "Stop"
 SESSION_END = "SessionEnd"
+POST_TOOL_USE_FAILURE = "PostToolUseFailure"
+NOTIFICATION = "Notification"
+TASK_COMPLETED = "TaskCompleted"
 
 # Only these two events may inject context back into the turn (additionalContext).
 INJECTING_EVENTS = frozenset({SESSION_START, USER_PROMPT_SUBMIT})
