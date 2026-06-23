@@ -6,7 +6,7 @@ from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 
-from marim_harness.deps import Deps
+from marim_harness.deps import Deps, HarnessServices
 from marim_harness.tools.provider import BuiltinToolProvider
 
 # Management tools and the background flag are main-agent only.
@@ -98,7 +98,8 @@ async def test_spawn_agent_background_registers_job(tmp_path):
                       model=None, isolation=None) -> str:
         return f"report for {type}"
 
-    deps = Deps(workspace_root=tmp_path, run_background_agent=fake_bg)
+    deps = Deps(workspace_root=tmp_path,
+                services=HarnessServices(run_background_agent=fake_bg))
     agent = _main_agent()
     model, captured = _call_once(
         "spawn_agent", {"type": "explore", "task": "look around", "background": True}

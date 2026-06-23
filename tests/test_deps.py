@@ -16,13 +16,28 @@ def test_mode_is_mutable(tmp_path: Path):
     assert deps.mode is Mode.auto
 
 
-def test_deps_lsp_defaults_to_none():
+def test_deps_has_services_container_defaulting_to_none():
+    from marim_harness.deps import HarnessServices
+
     d = Deps(workspace_root=Path("."))
-    assert d.lsp is None
+    assert isinstance(d.services, HarnessServices)
+    assert d.services.lsp is None
+    assert d.services.turn_hooks is None
+    assert d.services.run_subagent is None
+    assert d.services.run_background_agent is None
 
 
-def test_deps_lsp_can_be_set():
-    d = Deps(workspace_root=Path("."))
+def test_each_deps_gets_its_own_services_container():
+    a = Deps(workspace_root=Path("."))
+    b = Deps(workspace_root=Path("."))
+    assert a.services is not b.services
+
+
+def test_lsp_handle_lives_on_services():
+    from marim_harness.deps import HarnessServices
+
     sentinel = object()
-    d.lsp = sentinel
-    assert d.lsp is sentinel
+    d = Deps(workspace_root=Path("."), services=HarnessServices(lsp=sentinel))
+    assert d.services.lsp is sentinel
+    # The flat field is gone — accessing it is an attribute error.
+    assert not hasattr(d, "lsp")

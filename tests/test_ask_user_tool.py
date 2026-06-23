@@ -109,7 +109,7 @@ def test_ask_user_fires_notification(tmp_path):
         return {questions[0].header or "q": "yes"}
 
     deps = Deps(workspace_root=tmp_path, ask_user=_answer)
-    deps.turn_hooks = spy
+    deps.services.turn_hooks = spy
     agent = _agent()
     model, _ = _call_tool(
         "ask_user",

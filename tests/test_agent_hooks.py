@@ -28,7 +28,7 @@ from tests.conftest import (
 async def test_harness_wires_turn_hooks_onto_deps(tmp_path):
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     harness = _make_harness(_edit_then_done_model(), deps)
-    assert deps.turn_hooks is harness.hooks
+    assert deps.services.turn_hooks is harness.hooks
 
 
 def _hook_script(tmp_path: Path, name: str, body: str) -> str:

@@ -186,7 +186,7 @@ async def test_spawn_agent_forwards_mcp_foreground(tmp_path):
         return "ok"
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
-    deps.run_subagent = fake_runner
+    deps.services.run_subagent = fake_runner
     ctx = SimpleNamespace(deps=deps, tool_call_id="tc1")
 
     out = await spawn_agent(ctx, "explore", "read docs", mcp=["mddocs"], max_output_chars=500)
@@ -214,7 +214,7 @@ async def test_spawn_agent_composes_structured_task(tmp_path):
         return "ok"
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
-    deps.run_subagent = fake_runner
+    deps.services.run_subagent = fake_runner
     ctx = SimpleNamespace(deps=deps, tool_call_id="tc1")
 
     await spawn_agent(
@@ -245,7 +245,7 @@ async def test_spawn_agent_without_structured_fields_passes_task_verbatim(tmp_pa
         return "ok"
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
-    deps.run_subagent = fake_runner
+    deps.services.run_subagent = fake_runner
     ctx = SimpleNamespace(deps=deps, tool_call_id="tc1")
 
     await spawn_agent(ctx, "explore", "just do this")
@@ -269,7 +269,7 @@ async def test_spawn_agent_forwards_mcp_background(tmp_path):
         return _coro()
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
-    deps.run_background_agent = fake_bg
+    deps.services.run_background_agent = fake_bg
     # Close the coroutine in the stub to prevent "coroutine was never awaited" warning.
     deps.jobs = SimpleNamespace(register=lambda kind, label, coro: (coro.close(), "job-1")[1])
     ctx = SimpleNamespace(deps=deps, tool_call_id="tc2")
@@ -296,7 +296,7 @@ async def test_spawn_agent_default_mcp_is_none(tmp_path):
         return "ok"
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
-    deps.run_subagent = fake_runner
+    deps.services.run_subagent = fake_runner
     ctx = SimpleNamespace(deps=deps, tool_call_id="tc3")
 
     await spawn_agent(ctx, "explore", "investigate")
@@ -345,7 +345,7 @@ async def test_spawn_agent_coerces_stringified_mcp(tmp_path):
         return "ok"
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
-    deps.run_subagent = fake_runner
+    deps.services.run_subagent = fake_runner
     ctx = SimpleNamespace(deps=deps, tool_call_id="tc4")
 
     await spawn_agent(ctx, "general", "investigate", mcp='["mddocs"]')
@@ -371,7 +371,7 @@ async def test_spawn_agent_coerces_comma_separated_mcp_background(tmp_path):
         return _coro()
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
-    deps.run_background_agent = fake_bg
+    deps.services.run_background_agent = fake_bg
     deps.jobs = SimpleNamespace(
         register=lambda kind, label, coro: (coro.close(), "job-1")[1]
     )
@@ -428,7 +428,7 @@ async def test_diagnostics_failure_is_logged_at_debug(caplog, tmp_path):
     deps = Deps(workspace_root=tmp_path)
     fake_lsp = MagicMock()
     fake_lsp.diagnostics = MagicMock(side_effect=RuntimeError("boom"))
-    deps.lsp = fake_lsp
+    deps.services.lsp = fake_lsp
 
     ctx = SimpleNamespace(deps=deps)
     with caplog.at_level(logging.DEBUG, logger="marim_harness.tools.provider"):

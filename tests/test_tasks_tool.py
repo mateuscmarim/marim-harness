@@ -93,7 +93,7 @@ class _TaskSpy:
 def test_update_tasks_fires_task_completed_for_newly_done(tmp_path):
     deps = Deps(workspace_root=tmp_path)
     spy = _TaskSpy()
-    deps.turn_hooks = spy
+    deps.services.turn_hooks = spy
     agent = _agent()
     model, _ = _call_tool(
         "update_tasks",
@@ -110,7 +110,7 @@ def test_update_tasks_does_not_refire_already_done(tmp_path):
     deps = Deps(workspace_root=tmp_path)
     deps.tasks.replace([{"text": "a", "status": "done"}])
     spy = _TaskSpy()
-    deps.turn_hooks = spy
+    deps.services.turn_hooks = spy
     agent = _agent()
     model, _ = _call_tool(
         "update_tasks",

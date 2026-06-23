@@ -306,7 +306,7 @@ async def test_run_background_subagent_respects_mode(tmp_path: Path):
 def test_background_agent_runner_wired(tmp_path: Path):
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(_text_model(), deps)
-    assert deps.run_background_agent == h.subagents.run_background
+    assert deps.services.run_background_agent == h.subagents.run_background
 
 
 @pytest.mark.anyio

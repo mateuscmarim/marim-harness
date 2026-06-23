@@ -45,6 +45,30 @@ AskUserFn = Callable[[list[Question]], Awaitable[Optional[dict]]]
 
 
 @dataclass
+class HarnessServices:
+    """Collaborator handles wired by the Harness after construction.
+
+    These four form a reference cycle with ``Deps``: ``TurnHooks`` and the
+    sub-agent runners hold the ``deps`` object, while tools reach them back
+    through ``ctx.deps.services``. The cycle makes one late binding
+    unavoidable — the Harness builds these, then assigns the populated
+    container onto ``deps.services`` in a single step (see ``agent.py``).
+    Every field is optional: headless runs and tests leave them ``None`` and
+    each tool guards with an ``is None`` check.
+    """
+
+    # Session-scoped LSP server pool. None when LSP is disabled.
+    lsp: Optional["LspManager"] = None
+    # Session-bound hook dispatcher, so tools (ask_user, update_tasks) can fire
+    # lifecycle hooks with a full payload. None when no hooks are configured.
+    turn_hooks: Optional["TurnHooks"] = None
+    # Lets the spawn_agent tool launch a sub-agent and stream its events.
+    run_subagent: Optional[SubAgentRunner] = None
+    # Lets spawn_agent(background=True) run a sub-agent as a detached job.
+    run_background_agent: Optional[BackgroundAgentRunner] = None
+
+
+@dataclass
 class Deps:
     workspace_root: Path
     mode: Mode = Mode.ask
@@ -61,25 +85,17 @@ class Deps:
     # Allow/deny policy for shell commands, enforced inside the bash tool in
     # every mode. The default (empty) policy permits everything.
     command_policy: CommandPolicy = field(default_factory=CommandPolicy)
+    # Collaborator handles wired by the Harness after construction. Its own
+    # container so the late-bound services are separated from caller inputs.
+    services: HarnessServices = field(default_factory=HarnessServices)
     # Optional Claude-Code-compatible hook engine. None when no hooks.json is
     # configured (every fire-point becomes a cheap ``is None`` no-op).
     hooks: Optional["HookRunner"] = None
-    # Optional session-scoped LSP server pool. None when no LSP is wired (every
-    # LSP tool becomes a cheap ``is None`` guard returning an unavailable note).
-    lsp: Optional["LspManager"] = None
-    # Lets the spawn_agent tool launch a sub-agent and stream its events.
-    run_subagent: Optional[SubAgentRunner] = None
     on_subagent_event: Optional[SubAgentEventCb] = None
-    # Lets spawn_agent(background=True) run a sub-agent as a detached job.
-    run_background_agent: Optional[BackgroundAgentRunner] = None
     # Optional desktop notifier. None when notifications are disabled; the TUI
     # and headless runner fire it at key event points (turn complete, error,
     # approval needed, ask user, background job finished).
     notifier: "Optional[Notifier]" = None
-    # The session-bound hook dispatcher, set by the Harness so tools (ask_user,
-    # update_tasks) can fire lifecycle hooks with a full payload. None until the
-    # Harness wires it, or when no hooks are configured.
-    turn_hooks: "Optional[TurnHooks]" = None
 
 
 # The main agent's concrete generic type: deps are ``Deps`` and a turn yields
