@@ -89,7 +89,8 @@ def _extract_context(out: str) -> Optional[str]:
 
 async def _run_one(command: str, payload: dict, timeout) -> Optional[str]:
     """Run one hook command, feeding ``payload`` as JSON on stdin. Returns stripped
-    stdout on a clean exit-0 run, else ``None``. Swallows every failure."""
+    stdout on a clean exit-0 run, else ``None``. Swallows every failure — logged
+    at DEBUG so an operator can diagnose misconfig or a misbehaving hook."""
     try:
         proc = await asyncio.create_subprocess_shell(
             command,
@@ -98,20 +99,23 @@ async def _run_one(command: str, payload: dict, timeout) -> Optional[str]:
             stderr=asyncio.subprocess.DEVNULL,
             start_new_session=True,
         )
-    except OSError:
+    except OSError as exc:
+        logger.debug("hook command %r failed to spawn: %s", command, exc)
         return None
     data = json.dumps(payload).encode()
     try:
         stdout, _ = await asyncio.wait_for(
             proc.communicate(input=data), timeout=_coerce_timeout(timeout)
         )
-    except (asyncio.TimeoutError, OSError, ValueError):
+    except (asyncio.TimeoutError, OSError, ValueError) as exc:
         # Timeout or any communicate failure: reap the child so a spawned hook
         # process can never leak.
+        logger.debug("hook command %r failed/timed out: %s", command, exc)
         _kill(proc)
         await proc.wait()
         return None
     if proc.returncode != 0:
+        logger.debug("hook command %r exited %s", command, proc.returncode)
         return None
     return stdout.decode(errors="replace").strip() or None
 

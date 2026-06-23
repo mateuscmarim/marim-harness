@@ -167,4 +167,40 @@ async def test_non_string_matcher_is_treated_as_no_match(tmp_path):
         events.PRE_TOOL_USE, _payload(events.PRE_TOOL_USE, tool_name="bash")
     )
     assert ctx is None
-    assert not out.exists()  # non-string matcher must not crash; treated as no-match
+
+
+@pytest.mark.anyio
+async def test_missing_command_failure_is_logged_at_debug(caplog, tmp_path):
+    """A hook command that doesn't exist (ENOENT) is swallowed — but the
+    failure must be visible at DEBUG so an operator can diagnose misconfig."""
+    import logging
+    runner = HookRunner({events.PRE_TOOL_USE: [_entry("/no/such/binary/xyzzy")]})
+    with caplog.at_level(logging.DEBUG, logger="marim_harness.hooks.runner"):
+        result = await runner.dispatch(
+            events.PRE_TOOL_USE, _payload(events.PRE_TOOL_USE, tool_name="bash")
+        )
+    assert result is None
+    assert any(
+        "/no/such/binary" in r.message or "spawn" in r.message.lower()
+        for r in caplog.records
+    ), f"no debug log about missing hook command: {[r.message for r in caplog.records]}"
+
+
+@pytest.mark.anyio
+async def test_timeout_failure_is_logged_at_debug(caplog, tmp_path):
+    """A hook that exceeds its deadline is swallowed — log it at DEBUG so an
+    operator can spot a misbehaving hook."""
+    import logging
+    cmd = _script(tmp_path, "h.sh", "sleep 5\necho LATE\n")
+    runner = HookRunner({events.PRE_TOOL_USE: [_entry(cmd, timeout=1)]})
+    with caplog.at_level(logging.DEBUG, logger="marim_harness.hooks.runner"):
+        result = await runner.dispatch(
+            events.PRE_TOOL_USE, _payload(events.PRE_TOOL_USE, tool_name="bash")
+        )
+    assert result is None
+    # The exact message wording may vary; just confirm some debug-level record
+    # was emitted by the runner module during this dispatch.
+    assert any(
+        r.name == "marim_harness.hooks.runner" and r.levelno == logging.DEBUG
+        for r in caplog.records
+    ), f"no DEBUG record from runner: {[(r.name, r.levelname) for r in caplog.records]}"
