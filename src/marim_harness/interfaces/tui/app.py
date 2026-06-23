@@ -83,14 +83,16 @@ class HarnessApp(App):
         # Recallable prompt history. Defaults to in-memory; the CLI passes a
         # persistent one so Up/Down recall prompts across restarts.
         self._history = history if history is not None else PromptHistory()
-        self.harness.deps.request_approval = self._request_approval
-        self.harness.deps.ask_user = self._ask_user
-        self.harness.deps.tasks.on_change = self._on_tasks_changed
-        self.harness.deps.jobs.on_change = self._on_jobs_changed
-        self.harness.deps.on_subagent_event = self.stream.on_subagent_event
-        self.harness.session.on_compact = self._on_compact
-        self.harness.session.on_compact_start = self._on_compact_start
-        self.harness.session.on_rename = self.session.on_rename
+        self.harness.bind_ui(
+            request_approval=self._request_approval,
+            ask_user=self._ask_user,
+            on_subagent_event=self.stream.on_subagent_event,
+            on_tasks_changed=self._on_tasks_changed,
+            on_jobs_changed=self._on_jobs_changed,
+            on_compact=self._on_compact,
+            on_compact_start=self._on_compact_start,
+            on_rename=self.session.on_rename,
+        )
         self._compacting_notice: NoticeMessage | None = None
         self._vision_caps: dict[str, bool | None] = {}
         self._turn_worker = None
