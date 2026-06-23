@@ -22,6 +22,7 @@ from .workspace import (
 )
 
 _PROJECT_INSTRUCTIONS_FILE = "AGENTS.md"
+_PROJECT_FALLBACK_FILES = ("AGENTS.md", "CLAUDE.md")
 
 _PROACTIVE_MEMORY_POLICY = (
     "Proactive memory is ON. Beyond explicit requests, save durable facts that "
@@ -42,17 +43,29 @@ _ON_REQUEST_MEMORY_POLICY = (
 
 
 def load_project_instructions(
-    workspace_root, filename: str = _PROJECT_INSTRUCTIONS_FILE
+    workspace_root, filename: str | None = None
 ) -> Optional[str]:
-    """Read project-specific agent instructions from ``filename`` in the
-    workspace root. Returns the stripped text, or ``None`` if the file is
-    absent, empty, or unreadable — a broken file must never break a turn."""
-    path = Path(workspace_root) / filename
-    try:
-        text = path.read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeDecodeError):
-        return None
-    return text or None
+    """Read project-specific agent instructions from the workspace root.
+
+    When *filename* is given, try only that file.  Otherwise iterate the
+    fallback list (``AGENTS.md``, ``CLAUDE.md``) and return the first
+    non-empty result.  Returns ``None`` if no file is found or all are
+    empty/unreadable — a broken file must never break a turn.
+    """
+    if filename is not None:
+        candidates = [filename]
+    else:
+        candidates = _PROJECT_FALLBACK_FILES
+
+    for name in candidates:
+        path = Path(workspace_root) / name
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if text:
+            return text
+    return None
 
 
 def global_instructions_path() -> Path:
