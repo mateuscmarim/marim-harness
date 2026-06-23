@@ -71,3 +71,41 @@ class GitSnapshotter:
         except subprocess.CalledProcessError as exc:
             logger.debug("checkpoint capture failed: %s", exc.stderr or exc)
             return None
+
+    def _tree_files(self, repo: Path, commit: str) -> set[str]:
+        out = self._run(repo, "ls-tree", "-r", "--name-only", commit)
+        return set(out.splitlines()) if out else set()
+
+    def _present_files(self, repo: Path) -> set[str]:
+        tracked = self._run(repo, "ls-files")
+        untracked = self._run(repo, "ls-files", "--others", "--exclude-standard")
+        files = set()
+        for blob in (tracked, untracked):
+            if blob:
+                files.update(blob.splitlines())
+        return files
+
+    def restore(self, commit: str) -> None:
+        repo = self._repo()
+        if repo is None:
+            return
+        try:
+            # 1. Safety net: snapshot the current state so the rewind is undoable.
+            self.capture("refs/marim/checkpoints/_pre_restore", "pre-restore safety snapshot")
+            # 2. Remove files that exist now but not in the target snapshot
+            #    (created after the checkpoint). Scoped to the diff — never a
+            #    blanket clean.
+            target = self._tree_files(repo, commit)
+            for rel in self._present_files(repo) - target:
+                try:
+                    (repo / rel).unlink()
+                except OSError:
+                    pass
+            # 3. Restore tracked + untracked content via a throwaway index, so
+            #    the user's real index/HEAD are untouched.
+            with _temp_index() as idx:
+                env = {**os.environ, "GIT_INDEX_FILE": idx}
+                self._run(repo, "read-tree", commit, env=env)
+                self._run(repo, "checkout-index", "-a", "-f", env=env)
+        except subprocess.CalledProcessError as exc:
+            logger.debug("checkpoint restore failed: %s", exc.stderr or exc)
