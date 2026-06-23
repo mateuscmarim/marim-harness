@@ -34,6 +34,33 @@ def test_unreadable_file_returns_none(tmp_path: Path):
     assert load_project_instructions(tmp_path) is None
 
 
+def test_claude_md_fallback(tmp_path: Path):
+    """CLAUDE.md is used when AGENTS.md is absent."""
+    (tmp_path / "CLAUDE.md").write_text("Claude rules.\n")
+    assert load_project_instructions(tmp_path) == "Claude rules."
+
+
+def test_agents_md_takes_priority_over_claude_md(tmp_path: Path):
+    """AGENTS.md wins when both files exist."""
+    (tmp_path / "AGENTS.md").write_text("Agents rules.\n")
+    (tmp_path / "CLAUDE.md").write_text("Claude rules.\n")
+    assert load_project_instructions(tmp_path) == "Agents rules."
+
+
+def test_explicit_filename_ignores_fallback(tmp_path: Path):
+    """Passing filename= bypasses the fallback list entirely."""
+    (tmp_path / "AGENTS.md").write_text("ignored\n")
+    (tmp_path / "CLAUDE.md").write_text("also ignored\n")
+    (tmp_path / ".marim.md").write_text("explicit rules")
+    assert load_project_instructions(tmp_path, filename=".marim.md") == "explicit rules"
+
+
+def test_empty_claude_md_returns_none(tmp_path: Path):
+    """An empty CLAUDE.md is treated the same as a missing file."""
+    (tmp_path / "CLAUDE.md").write_text("   \n\t\n")
+    assert load_project_instructions(tmp_path) is None
+
+
 # --- global (user-level) instructions --------------------------------------
 
 
