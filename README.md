@@ -62,7 +62,9 @@ snapshot of the working tree. Rewind with:
 Rewinding truncates the conversation to that point and, in a git workspace,
 restores tracked and untracked files to their snapshot — files created after the
 checkpoint are removed. The pre-rewind state is itself saved to
-`refs/marim/checkpoints/_pre_restore`, so a rewind is recoverable.
+`refs/marim/checkpoints/_pre_restore`, so the most recent rewind is
+recoverable (this is a single slot — only the last rewind's pre-restore
+state is retained).
 
 Boundaries:
 - Snapshots honor `.gitignore`: ignored files (build output, `.env`, …) are not

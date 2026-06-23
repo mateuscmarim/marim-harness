@@ -134,3 +134,27 @@ def test_delete_rejects_ref_outside_marim_namespace(tmp_path: Path):
     import pytest
     with pytest.raises(ValueError):
         GitSnapshotter(repo).delete("refs/heads/main")
+
+
+def test_capture_restore_act_on_linked_worktree(tmp_path: Path):
+    """Regression: GitSnapshotter(wt) must capture/restore the LINKED worktree,
+    not the main worktree toplevel returned by repo_root()."""
+    main = _init_repo(tmp_path)
+    wt = tmp_path / "wt"
+    _git(main, "worktree", "add", "-q", str(wt), "-b", "feat")
+    # Record main's state before any worktree edits.
+    main_before = (main / "a.txt").read_text()
+    # Edit a.txt only in the linked worktree.
+    (wt / "a.txt").write_text("wt-before\n")
+    snap = GitSnapshotter(wt)
+    commit = snap.capture("refs/marim/checkpoints/s/0", "cp")
+    assert commit, "capture should return a commit sha"
+    # The snapshot must contain the WORKTREE's content, not the main checkout's.
+    assert _git(wt, "show", f"{commit}:a.txt") == "wt-before"
+    # Now advance the linked worktree past the checkpoint.
+    (wt / "a.txt").write_text("wt-after\n")
+    snap.restore(commit)
+    # The linked worktree must be reverted to the captured state.
+    assert (wt / "a.txt").read_text() == "wt-before\n"
+    # The main worktree must be completely untouched.
+    assert (main / "a.txt").read_text() == main_before

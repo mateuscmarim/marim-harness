@@ -43,42 +43,49 @@ class GitSnapshotter:
         self.workspace_root = Path(workspace_root)
 
     def _repo(self) -> Optional[Path]:
+        """Return the main-worktree root (used only as an is-a-repo guard),
+        or None when workspace_root is not inside a git repository."""
         return repo_root(self.workspace_root)
 
-    def _run(self, repo: Path, *args: str, env: Optional[dict[str, str]] = None) -> str:
+    def _run(self, *args: str, env: Optional[dict[str, str]] = None) -> str:
+        """Run a git command with cwd=workspace_root (the actual working tree).
+
+        For linked worktrees this is the linked worktree directory, NOT the
+        main-worktree toplevel returned by repo_root().  Refs (refs/marim/*)
+        are shared across all worktrees, so update-ref/read-tree/etc. still
+        resolve correctly from here."""
         return subprocess.run(
-            ["git", *args], cwd=repo, env=env,
+            ["git", *args], cwd=self.workspace_root, env=env,
             capture_output=True, text=True, check=True,
         ).stdout.strip()
 
     def capture(self, ref: str, message: str) -> Optional[str]:
         if not ref.startswith("refs/marim/"):
             raise ValueError(f"refusing to write ref outside refs/marim/: {ref!r}")
-        repo = self._repo()
-        if repo is None:
+        if self._repo() is None:
             return None
         try:
             with _temp_index() as idx:
                 env = {**os.environ, "GIT_INDEX_FILE": idx}
                 # Stage the whole working tree (tracked + untracked, honoring
                 # .gitignore) into the throwaway index, then snapshot it.
-                self._run(repo, "add", "-A", env=env)
-                tree = self._run(repo, "write-tree", env=env)
-                commit = self._run(repo, "commit-tree", tree, "-m", message, env=env)
+                self._run("add", "-A", env=env)
+                tree = self._run("write-tree", env=env)
+                commit = self._run("commit-tree", tree, "-m", message, env=env)
             # Keep the commit reachable so GC won't drop it.
-            self._run(repo, "update-ref", ref, commit)
+            self._run("update-ref", ref, commit)
             return commit
         except subprocess.CalledProcessError as exc:
             logger.debug("checkpoint capture failed: %s", exc.stderr or exc)
             return None
 
-    def _tree_files(self, repo: Path, commit: str) -> set[str]:
-        out = self._run(repo, "ls-tree", "-r", "--name-only", commit)
+    def _tree_files(self, commit: str) -> set[str]:
+        out = self._run("ls-tree", "-r", "--name-only", commit)
         return set(out.splitlines()) if out else set()
 
-    def _present_files(self, repo: Path) -> set[str]:
-        tracked = self._run(repo, "ls-files")
-        untracked = self._run(repo, "ls-files", "--others", "--exclude-standard")
+    def _present_files(self) -> set[str]:
+        tracked = self._run("ls-files")
+        untracked = self._run("ls-files", "--others", "--exclude-standard")
         files = set()
         for blob in (tracked, untracked):
             if blob:
@@ -88,18 +95,16 @@ class GitSnapshotter:
     def delete(self, ref: str) -> None:
         if not ref.startswith("refs/marim/"):
             raise ValueError(f"refusing to delete ref outside refs/marim/: {ref!r}")
-        repo = self._repo()
-        if repo is None:
+        if self._repo() is None:
             return
         # Best-effort: deleting an already-absent ref is fine.
         subprocess.run(
-            ["git", "update-ref", "-d", ref], cwd=repo,
+            ["git", "update-ref", "-d", ref], cwd=self.workspace_root,
             capture_output=True, text=True,
         )
 
     def restore(self, commit: str) -> None:
-        repo = self._repo()
-        if repo is None:
+        if self._repo() is None:
             return
         try:
             # 1. Safety net: snapshot the current state so the rewind is undoable.
@@ -112,20 +117,20 @@ class GitSnapshotter:
             # 2. Remove files that exist now but not in the target snapshot
             #    (created after the checkpoint). Scoped to the diff — never a
             #    blanket clean.
-            target = self._tree_files(repo, commit)
+            target = self._tree_files(commit)
             # Remove files created after the checkpoint (present now, absent in the
             # target tree). Scoped to the diff — never a blanket clean. Git-ignored
             # files are excluded by _present_files and intentionally left untouched.
-            for rel in self._present_files(repo) - target:
+            for rel in self._present_files() - target:
                 try:
-                    (repo / rel).unlink()
+                    (self.workspace_root / rel).unlink()
                 except OSError:
                     pass
             # 3. Restore tracked + untracked content via a throwaway index, so
             #    the user's real index/HEAD are untouched.
             with _temp_index() as idx:
                 env = {**os.environ, "GIT_INDEX_FILE": idx}
-                self._run(repo, "read-tree", commit, env=env)
-                self._run(repo, "checkout-index", "-a", "-f", env=env)
+                self._run("read-tree", commit, env=env)
+                self._run("checkout-index", "-a", "-f", env=env)
         except subprocess.CalledProcessError as exc:
             logger.debug("checkpoint restore failed: %s", exc.stderr or exc)
