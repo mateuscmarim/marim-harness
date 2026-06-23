@@ -206,11 +206,13 @@ class HarnessApp(App):
     async def on_unmount(self) -> None:
         """Jobs are process-scoped — kill any still running when the app exits so
         no detached shell or agent run is left behind, and close MCP connections."""
-        # Persist session duration before tearing down.
+        # Persist session duration before tearing down. Fold this run's active
+        # time into the total and force the save: the final segment must land
+        # even when history is unchanged (an idle exit would otherwise skip the
+        # cache-gated persist and lose it).
         session = self.harness.session
-        elapsed = (time.monotonic() - session._segment_start) if session._segment_start else 0.0
-        session.duration_seconds += elapsed
-        session.persist()
+        session.finalize_active_time()
+        session.persist(force=True)
         # Show a brief session summary in the terminal after exit.
         total = session.duration_seconds
         usage = session.usage

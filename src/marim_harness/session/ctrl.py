@@ -124,6 +124,19 @@ class SessionController:
         if self._segment_start == 0.0:
             self._segment_start = time.monotonic()
 
+    def finalize_active_time(self) -> None:
+        """Fold the open active-time segment into ``duration_seconds`` and stop
+        the clock. Called once at shutdown so the running total is complete.
+
+        Closing the segment (``_segment_start = 0``) is what makes this correct:
+        a following ``persist`` then adds nothing (its own ``elapsed`` is 0), so
+        the final segment is counted exactly once — not dropped by a
+        cache-skipped ``persist`` (the increment would be lost), nor double-added
+        by ``persist`` recomputing ``elapsed`` from a still-open segment."""
+        if self._segment_start:
+            self.duration_seconds += time.monotonic() - self._segment_start
+            self._segment_start = 0.0
+
     def reset(self) -> None:
         self.history = []
         self.usage = RunUsage()
