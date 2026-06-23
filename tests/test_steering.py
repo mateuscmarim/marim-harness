@@ -191,10 +191,12 @@ async def test_stranded_steer_kept_on_paused_finish(tmp_path):
 def _recording_streaming_harness(tmp_path, calls):
     from collections.abc import AsyncIterator
 
-    from pydantic_ai.models.function import (
-        AgentInfo, DeltaToolCall, FunctionModel,
-    )
     from pydantic_ai.messages import ModelMessage
+    from pydantic_ai.models.function import (
+        AgentInfo,
+        DeltaToolCall,
+        FunctionModel,
+    )
 
     from marim_harness.agent import Harness
     from marim_harness.tools.provider import BuiltinToolProvider
@@ -247,3 +249,27 @@ async def test_steer_reaches_a_later_model_request(tmp_path):
     assert out == "done"
     flat = [str(c) for c in calls]
     assert any("STEER NOW" in c for c in flat), f"steer not injected: {calls}"
+
+
+@pytest.mark.anyio
+async def test_ctrl_g_posts_steer_message(tmp_path):
+    from textual.app import App, ComposeResult
+
+    posted = []
+
+    class _App(App):
+        def compose(self) -> ComposeResult:
+            yield PromptInput()
+
+        def on_prompt_input_steer(self, event: PromptInput.Steer) -> None:
+            posted.append(event.value)
+
+    app = _App()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        pi = app.query_one(PromptInput)
+        pi.focus()
+        pi.text = "steer via ctrl-g"
+        await pilot.press("ctrl+g")
+        await pilot.pause()
+    assert posted == ["steer via ctrl-g"]

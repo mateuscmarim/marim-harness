@@ -64,6 +64,7 @@ _WELCOME = (
     "- `enter` sends · `shift+enter` (or `ctrl+j`) inserts a newline\n"
     "- `ctrl+t` cycles the approval mode (ask → auto → plan)\n"
     "- `esc` cancels the running turn\n"
+    "- `ctrl+g` (or `alt+enter`) steers the running turn\n"
     "- `/exit` (or `/quit`, `ctrl+c`) quits"
 )
 
