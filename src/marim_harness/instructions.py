@@ -101,7 +101,7 @@ def register_instructions(
         text = load_project_instructions(ctx.deps.workspace_root)
         if not text:
             return ""
-        return f"Project-specific instructions from AGENTS.md:\n\n{text}"
+        return f"Project-specific instructions:\n\n{text}"
 
     @agent.instructions
     def _plugin_instructions(ctx: RunContext[Deps]) -> str:
