@@ -3,6 +3,7 @@ session's background jobs. Each hides itself when empty so it takes no space."""
 
 from textual.content import Content
 from textual.containers import VerticalScroll
+from textual.message import Message
 from textual.widgets import Static
 
 
@@ -39,17 +40,38 @@ class TaskPanel(VerticalScroll):
 
 class JobPanel(VerticalScroll):
     """The session's live background jobs, pinned above the status bar. Hidden
-    whenever there are no jobs. Title is sticky above the scrollable body."""
+    whenever there are no jobs. Title is sticky and toggles collapse on click."""
+
+    class ToggleCollapse(Message):
+        """Posted when the header is clicked to toggle collapse."""
 
     def __init__(self) -> None:
         super().__init__(id="job-panel")
         self.display = False
+        self._collapsed = False
+        self._count = 0
         self._header = Static(id="job-header")
         self._body = Static(id="job-body")
 
     def compose(self):
         yield self._header
         yield self._body
+
+    def on_click(self, event) -> None:
+        """Toggle collapse when the header area is clicked."""
+        # Only toggle if click is in the header region (top 1 line)
+        if event.offset.y <= 1:
+            self._collapsed = not self._collapsed
+            self._body.display = not self._collapsed
+            self._update_header()
+
+    def _update_header(self) -> None:
+        glyph = "▸" if self._collapsed else "▾"
+        self._header.update(
+            Content.from_markup(
+                f"[b $accent]{glyph} Jobs[/] [dim]({self._count})[/]"
+            )
+        )
 
     def show_jobs(self, jobs: list) -> None:
         """Render the current jobs, or hide the panel when there are none."""
@@ -61,8 +83,6 @@ class JobPanel(VerticalScroll):
             self._body.update("")
             return
         self.display = True
-        count = len(jobs)
-        self._header.update(
-            Content.from_markup(f"[b $accent]Jobs[/] [dim]({count})[/]")
-        )
+        self._count = len(jobs)
+        self._update_header()
         self._body.update(Content(render_jobs(jobs)))
