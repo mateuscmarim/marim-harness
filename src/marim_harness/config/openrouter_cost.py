@@ -46,32 +46,42 @@ def _with_cost(response, mapped):
 
 
 def build_openrouter_model(model_id: str, api_key: Optional[str]):
-    """An OpenRouter chat model that records the provider's billed cost.
+    """An OpenRouter chat model with prompt caching enabled that records the
+    provider's billed cost.
+
+    Built on pydantic-ai's official ``OpenRouterModel`` so cache-token mapping
+    and OpenRouter usage parsing come natively; the only thing it adds is
+    re-injecting the billed ``usage.cost`` (a float the base usage mapper drops)
+    into ``RunUsage.details`` as integer micro-USD, where ``usage.py`` reads it.
 
     Imported lazily (it pulls in provider packages) so config-only code paths
     stay dependency-free."""
-    from pydantic_ai.models.openai import (
-        OpenAIChatModel,
-        OpenAIChatModelSettings,
-        OpenAIStreamedResponse,
+    from pydantic_ai.models.openrouter import (
+        OpenRouterModel,
+        OpenRouterModelSettings,
+        OpenRouterStreamedResponse,
     )
     from pydantic_ai.providers.openrouter import OpenRouterProvider
 
-    class _CostStreamedResponse(OpenAIStreamedResponse):
+    class _CostStreamedResponse(OpenRouterStreamedResponse):
+        # Subclass the OpenRouter streamed response (not the plain OpenAI one)
+        # so super()._map_usage still maps cache_read/cache_write tokens.
         def _map_usage(self, response):
             return _with_cost(response, super()._map_usage(response))
 
-    class _CostOpenRouterModel(OpenAIChatModel):
+    class _CostOpenRouterModel(OpenRouterModel):
         # Non-streaming path (e.g. the summarizer/titler agents).
         def _map_usage(self, response):
             return _with_cost(response, super()._map_usage(response))
 
         # Streaming path (every interactive/headless turn): swap the live
-        # streamed-response instance to the cost-capturing subclass.
+        # streamed-response instance to the cost-capturing subclass. Both
+        # classes share OpenRouterStreamedResponse's layout, so the swap keeps
+        # native cache-token mapping intact.
         @asynccontextmanager
         async def request_stream(self, *args, **kwargs):
             async with super().request_stream(*args, **kwargs) as stream:
-                if isinstance(stream, OpenAIStreamedResponse):
+                if isinstance(stream, OpenRouterStreamedResponse):
                     try:
                         stream.__class__ = _CostStreamedResponse
                     except TypeError:  # layout mismatch on some pydantic-ai build
@@ -79,5 +89,10 @@ def build_openrouter_model(model_id: str, api_key: Optional[str]):
                 yield stream
 
     provider = OpenRouterProvider(api_key=api_key)
-    settings = OpenAIChatModelSettings(extra_body={"usage": {"include": True}})
+    settings = OpenRouterModelSettings(
+        openrouter_usage={"include": True},
+        openrouter_cache_instructions="5m",
+        openrouter_cache_tool_definitions="5m",
+        openrouter_cache_messages="5m",
+    )
     return _CostOpenRouterModel(model_id, provider=provider, settings=settings)
