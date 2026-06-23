@@ -29,6 +29,7 @@ from .status import (
 )
 from .stream_render import StreamRenderer
 from .themes import MARIM_THEMES
+from .wake import WakeController
 from .widgets import (
     AssistantMessage,
     CommandAutocomplete,
@@ -113,10 +114,9 @@ class HarnessApp(App):
         # the agent reacts without waiting for the user. Seeded from config;
         # toggled at runtime by `/jobs wake on|off`.
         self.autonomous_wake = harness.autonomous_wake
-        self._wake_depth_cap = harness.wake_depth_cap
-        # Consecutive autonomous turns since the last user turn; reset on any
-        # user-initiated turn. Bounds wake→spawn→wake chains.
-        self._auto_turn_depth = 0
+        # Bounds the wake→spawn→wake chain and owns the should-wake decision; the
+        # App keeps the public autonomous_wake toggle and the wake's side effects.
+        self._wake = WakeController(harness.wake_depth_cap)
         # Ids of finished (done/failed) jobs already desktop-notified, so each
         # completion pings exactly once, independent of the autonomous-wake path.
         self._notified_jobs: set[str] = set()
@@ -299,15 +299,13 @@ class HarnessApp(App):
         only peeks, so a queued digest survives until a turn actually runs."""
         if not self.is_running:
             return  # firing during teardown would race the unmount
-        if not self.autonomous_wake:
+        if not self._wake.should_wake(
+            enabled=self.autonomous_wake,
+            turn_busy=self._turn_worker is not None,
+            has_finished_pending=self.harness.deps.jobs.has_finished_pending(),
+        ):
             return
-        if self._turn_worker is not None:
-            return  # a turn is running; the digest drains on the next turn
-        if self._auto_turn_depth >= self._wake_depth_cap:
-            return  # loop guard: wait for the user
-        if not self.harness.deps.jobs.has_finished_pending():
-            return  # nothing finished -> no empty turn
-        self._auto_turn_depth += 1
+        self._wake.record_auto_turn()
         # Mounted synchronously (we may be in a sync on_change callback), mirroring
         # _on_compact / _on_rename.
         log = self.query_one("#log", VerticalScroll)
@@ -335,7 +333,7 @@ class HarnessApp(App):
         """Mount the user message and spawn the exclusive turn worker. Shared by
         a fresh submit and a drained queue item. Resets the autonomous-wake
         chain and spawns the worker."""
-        self._auto_turn_depth = 0
+        self._wake.reset()
         log = self.query_one("#log", VerticalScroll)
         await log.mount(UserMessage(text))
         self.stream.current_assistant = None
