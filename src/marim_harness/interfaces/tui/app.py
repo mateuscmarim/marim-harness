@@ -359,8 +359,12 @@ class HarnessApp(App):
     async def _after_turn(self) -> None:
         """Called from _run_turn's finally. Drain the next queued item on a
         clean, unpaused turn; otherwise fall through to the background-job wake."""
+        # A steer that landed in the finishing gap (never flushed onto a live
+        # run) falls back to the front of the queue so it runs next — kept even
+        # on a paused (cancel/error) finish, matching how the queue itself is
+        # preserved on pause; the drain below stays gated so it waits for resume.
         leftover = self.harness.take_buffered_steers()
-        if not self._queue_paused and leftover:
+        if leftover:
             for text, atts in reversed(leftover):
                 self._queue_seq += 1
                 self._queue.insert(0, QueuedMessage(text, atts, str(self._queue_seq)))
