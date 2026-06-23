@@ -31,6 +31,7 @@ from .session.checkpoints import CheckpointManager
 from .subagents import SubagentRunner
 from .tasks import render_tasks
 from .tools.provider import ToolProvider
+from .workspace.snapshot import GitSnapshotter
 
 logger = logging.getLogger(__name__)
 
@@ -297,9 +298,11 @@ class Harness:
             cfg.max_context_tokens, cfg.keep_last_messages,
             cfg.summarizer, cfg.titler,
         )
-        # Per-session checkpoints. Phase A uses the default NullSnapshotter
-        # (conversation-only rewind); Phase B injects a GitSnapshotter here.
-        self.checkpoints = CheckpointManager(self.session)
+        # Per-session checkpoints. Wire the real GitSnapshotter so rewind
+        # restores working-tree files end-to-end.
+        self.checkpoints = CheckpointManager(
+            self.session, GitSnapshotter(deps.workspace_root)
+        )
         self.hooks = TurnHooks(self.deps, self.session)
         # Let tools fire lifecycle hooks via ctx.deps with a full payload.
         self.deps.turn_hooks = self.hooks

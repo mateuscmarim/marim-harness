@@ -115,3 +115,22 @@ def test_restore_does_not_touch_index_or_head(tmp_path: Path):
     snap.restore(commit)
     assert _git(repo, "rev-parse", "HEAD") == head_before        # HEAD unmoved
     assert _git(repo, "diff", "--cached", "--name-only") == ""    # real index untouched
+
+
+def test_delete_removes_ref(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    snap = GitSnapshotter(repo)
+    snap.capture("refs/marim/checkpoints/s/0", "cp 0")
+    snap.delete("refs/marim/checkpoints/s/0")
+    result = subprocess.run(
+        ["git", "rev-parse", "refs/marim/checkpoints/s/0"],
+        cwd=repo, capture_output=True, text=True,
+    )
+    assert result.returncode != 0  # ref is gone
+
+
+def test_delete_rejects_ref_outside_marim_namespace(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    import pytest
+    with pytest.raises(ValueError):
+        GitSnapshotter(repo).delete("refs/heads/main")

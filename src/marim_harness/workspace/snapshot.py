@@ -85,6 +85,18 @@ class GitSnapshotter:
                 files.update(blob.splitlines())
         return files
 
+    def delete(self, ref: str) -> None:
+        if not ref.startswith("refs/marim/"):
+            raise ValueError(f"refusing to delete ref outside refs/marim/: {ref!r}")
+        repo = self._repo()
+        if repo is None:
+            return
+        # Best-effort: deleting an already-absent ref is fine.
+        subprocess.run(
+            ["git", "update-ref", "-d", ref], cwd=repo,
+            capture_output=True, text=True,
+        )
+
     def restore(self, commit: str) -> None:
         repo = self._repo()
         if repo is None:
