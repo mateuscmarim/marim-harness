@@ -360,3 +360,36 @@ def test_build_collaborators_respects_lsp_disabled(tmp_path):
     )
     assert collab.lsp is None
     assert deps.services.lsp is None
+
+
+def test_bind_ui_wires_all_callbacks(tmp_path):
+    h = _minimal_harness(tmp_path)
+
+    def request_approval(_): ...
+    def ask_user(_): ...
+    async def on_subagent_event(sid, event, usage=None): ...
+    def on_tasks_changed(): ...
+    def on_jobs_changed(): ...
+    def on_compact(before, after): ...
+    def on_compact_start(): ...
+    def on_rename(old, new): ...
+
+    h.bind_ui(
+        request_approval=request_approval,
+        ask_user=ask_user,
+        on_subagent_event=on_subagent_event,
+        on_tasks_changed=on_tasks_changed,
+        on_jobs_changed=on_jobs_changed,
+        on_compact=on_compact,
+        on_compact_start=on_compact_start,
+        on_rename=on_rename,
+    )
+
+    assert h.deps.request_approval is request_approval
+    assert h.deps.ask_user is ask_user
+    assert h.deps.on_subagent_event is on_subagent_event
+    assert h.deps.tasks.on_change is on_tasks_changed
+    assert h.deps.jobs.on_change is on_jobs_changed
+    assert h.session.on_compact is on_compact
+    assert h.session.on_compact_start is on_compact_start
+    assert h.session.on_rename is on_rename

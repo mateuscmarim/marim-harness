@@ -393,6 +393,35 @@ class Harness:
         self.hooks = collab.hooks
         self.subagents = collab.subagents
 
+    def bind_ui(
+        self,
+        *,
+        request_approval: Optional[Callable[..., Any]] = None,
+        ask_user: Optional[Callable[..., Any]] = None,
+        on_subagent_event: Optional[Callable[..., Any]] = None,
+        on_tasks_changed: Optional[Callable[..., Any]] = None,
+        on_jobs_changed: Optional[Callable[..., Any]] = None,
+        on_compact: Optional[Callable[..., Any]] = None,
+        on_compact_start: Optional[Callable[..., Any]] = None,
+        on_rename: Optional[Callable[..., Any]] = None,
+    ) -> None:
+        """Wire the interactive UI's callbacks into the harness in one place.
+
+        The TUI app calls this once at construction instead of reaching into
+        ``harness.deps`` / ``harness.deps.tasks`` / ``harness.deps.jobs`` /
+        ``harness.session`` field by field. Headless never calls it: the
+        callbacks stay ``None`` and every reader guards with an ``is None``
+        check.
+        """
+        self.deps.request_approval = request_approval
+        self.deps.ask_user = ask_user
+        self.deps.on_subagent_event = on_subagent_event
+        self.deps.tasks.on_change = on_tasks_changed
+        self.deps.jobs.on_change = on_jobs_changed
+        self.session.on_compact = on_compact
+        self.session.on_compact_start = on_compact_start
+        self.session.on_rename = on_rename
+
     # --- session lifecycle (operations carrying harness-level logic; plain
     # state and persistence live on ``self.session`` and are reached directly) ---
 
