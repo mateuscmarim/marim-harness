@@ -445,8 +445,8 @@ class Harness:
     def _build_hooked_handler(self, base_handler):
         """Return a hook-intercepting event stream handler that fires Pre/PostToolUse
         for each streamed tool event, then forwards to ``base_handler`` (or drains
-        if it is None). Returns None when no hooks are configured so callers can
-        skip wrapper overhead entirely."""
+        if it is None). Returns `base_handler` unchanged when no hooks are configured.
+        Returns a new async handler that intercepts tool events when hooks are present."""
         if self.deps.hooks is None:
             return base_handler
         # Scoped to this single turn: maps tool_call_id → tool_input so the
