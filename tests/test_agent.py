@@ -311,3 +311,52 @@ async def test_switch_session_restores_its_model(tmp_path: Path):
     h.switch_session(alpha_id)
     assert h.model_id == "openai/gpt-5.2"
     assert h.model_label == "fake/openai/gpt-5.2"
+
+
+def test_build_collaborators_wires_full_graph(tmp_path):
+    from pydantic_ai.models.function import FunctionModel
+
+    from marim_harness.agent import build_collaborators, Collaborators, HarnessConfig
+    from marim_harness.deps import Deps
+    from marim_harness.tools.provider import BuiltinToolProvider
+
+    deps = Deps(workspace_root=tmp_path)
+    provider = BuiltinToolProvider()
+    model = FunctionModel(lambda messages, info: None)
+
+    collab = build_collaborators(
+        model, provider, deps, "instructions", HarnessConfig(lsp_enabled=True),
+        get_model=lambda: model,
+    )
+
+    # Container is fully populated.
+    assert isinstance(collab, Collaborators)
+    assert collab.agent is not None
+    assert collab.mcp is not None
+    assert collab.lsp is not None              # lsp_enabled=True
+    assert collab.session is not None
+    assert collab.checkpoints is not None
+    assert collab.hooks is not None
+    assert collab.subagents is not None
+    # The deps<->services late binding ran as part of wiring.
+    assert deps.services.lsp is collab.lsp
+    assert deps.services.turn_hooks is collab.hooks
+    assert deps.services.run_subagent == collab.subagents.run
+    assert deps.services.run_background_agent == collab.subagents.run_background
+
+
+def test_build_collaborators_respects_lsp_disabled(tmp_path):
+    from pydantic_ai.models.function import FunctionModel
+
+    from marim_harness.agent import build_collaborators, HarnessConfig
+    from marim_harness.deps import Deps
+    from marim_harness.tools.provider import BuiltinToolProvider
+
+    deps = Deps(workspace_root=tmp_path)
+    model = FunctionModel(lambda messages, info: None)
+    collab = build_collaborators(
+        model, BuiltinToolProvider(), deps, "i", HarnessConfig(lsp_enabled=False),
+        get_model=lambda: model,
+    )
+    assert collab.lsp is None
+    assert deps.services.lsp is None
