@@ -374,7 +374,6 @@ class HarnessApp(App):
         else:
             self._maybe_wake()
 
-
     def _render_queue(self) -> None:
         """Repaint the queue panel from the current queue."""
         if not self.is_running:
