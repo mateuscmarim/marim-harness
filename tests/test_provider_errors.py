@@ -17,13 +17,13 @@ from pydantic_ai.models.function import FunctionModel
 
 from marim_harness.agent import Harness, _actionable_error_note
 from marim_harness.deps import Deps
-from marim_harness.permissions import Mode
-from marim_harness.tools.provider import BuiltinToolProvider
 from marim_harness.errors import (
     dump_provider_error,
     format_provider_error,
     provider_error_payload,
 )
+from marim_harness.permissions import Mode
+from marim_harness.tools.provider import BuiltinToolProvider
 
 
 def _api_error(body):
@@ -106,7 +106,9 @@ def test_dump_returns_none_for_plain_exception(tmp_path):
 
 def test_actionable_note_for_provider_client_error():
     # A 4xx (non-429) provider rejection is the model's to fix — it gets a note.
-    note = _actionable_error_note(_api_error({"error": {"message": "invalid request", "code": 400}}))
+    note = _actionable_error_note(
+        _api_error({"error": {"message": "invalid request", "code": 400}})
+    )
     assert note is not None
     assert "400" in note
 

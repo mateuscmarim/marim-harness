@@ -99,7 +99,6 @@ def test_plugin_trust_flip_includes_hooks(tmp_path, monkeypatch):
     )
 
     # Grant trust on disk, re-read, hooks must now appear.
-    state_path = gdir / "state.json"
     state = load_state(gdir)
     state["p"] = state["p"].__class__(**{**state["p"].__dict__, "trusted": True})
     save_state(gdir, state)

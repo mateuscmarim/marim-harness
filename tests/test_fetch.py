@@ -1,5 +1,6 @@
 """Tests for the fetch_url tool (URL → Markdown)."""
 
+import socket
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -397,9 +398,6 @@ async def test_fetch_offload_path_is_workspace_relative(tmp_path):
 # ---------------------------------------------------------------------------
 # Tests — SSRF: refuse private/loopback/link-local addresses
 # ---------------------------------------------------------------------------
-
-
-import socket
 
 
 @pytest.mark.anyio

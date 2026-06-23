@@ -55,6 +55,7 @@ async def test_headless_command_policy_denylist_blocks_bash(tmp_path: Path, monk
     future refactors that route bash through a different layer and bypass the
     gate."""
     from types import SimpleNamespace
+
     from marim_harness.command_policy import CommandPolicy
     from marim_harness.tools.provider import bash
 

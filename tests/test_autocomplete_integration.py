@@ -9,8 +9,8 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import OptionList
 
-from marim_harness.interfaces.tui.widgets.autocomplete import CommandAutocomplete
 from marim_harness.interfaces.tui.widgets import PromptInput
+from marim_harness.interfaces.tui.widgets.autocomplete import CommandAutocomplete
 
 
 class _AcIntegrationApp(App):

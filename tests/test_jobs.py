@@ -149,8 +149,8 @@ async def test_cancel_all_stops_every_running_job():
 @pytest.mark.anyio
 async def test_finished_digest_lists_completed_then_clears():
     reg = JobRegistry()
-    a = reg.register("bash", "build", _sleep_then("ok", 0.01))
-    b = reg.register("agent", "explore: map", _sleep_then("r", 0.01))
+    reg.register("bash", "build", _sleep_then("ok", 0.01))
+    reg.register("agent", "explore: map", _sleep_then("r", 0.01))
     await asyncio.sleep(0.05)  # let both finish without consuming via wait()
     digest = reg.take_finished_digest()
     assert "job-1 (bash) done" in digest
@@ -178,7 +178,7 @@ async def test_finished_digest_includes_result_tail():
         + "\n".join(f"noise{i}" for i in range(300))
         + "\n=== 717 passed in 12.3s ==="
     )
-    j = reg.register("bash", "tests", _sleep_then(result, 0.01))
+    reg.register("bash", "tests", _sleep_then(result, 0.01))
     await asyncio.sleep(0.1)  # let it finish without consuming the digest
     digest = reg.take_finished_digest()
     assert "job-1 (bash) done" in digest
@@ -191,7 +191,7 @@ async def test_finished_digest_caps_result_tail():
     doesn't dump the whole buffer into the next turn's prompt."""
     reg = JobRegistry()
     result = "x" * 5000 + "VERDICT-END"
-    j = reg.register("bash", "big", _sleep_then(result, 0.01))
+    reg.register("bash", "big", _sleep_then(result, 0.01))
     await asyncio.sleep(0.1)  # let it finish without consuming the digest
     digest = reg.take_finished_digest()
     assert "VERDICT-END" in digest  # tail kept
@@ -207,7 +207,7 @@ async def test_finished_digest_includes_cancelled_and_failed():
     async def boom():
         raise ValueError("nope")
 
-    bad = reg.register("agent", "broken", boom())
+    reg.register("agent", "broken", boom())
     await asyncio.sleep(0.1)  # let it finish without consuming the digest
     digest = reg.take_finished_digest()
     assert "job-1 (bash) cancelled" in digest
@@ -247,7 +247,7 @@ async def test_has_finished_pending_reflects_set_without_consuming():
     reg = JobRegistry()
     # Nothing finished yet.
     assert reg.has_finished_pending() is False
-    job_id = reg.register("agent", "a", _sleep_then("R", 0.01))
+    reg.register("agent", "a", _sleep_then("R", 0.01))
     assert reg.has_finished_pending() is False  # still running
     await asyncio.sleep(0.1)  # let it finish without consuming via wait()
     # Finished -> pending, and checking it does NOT drain the digest.

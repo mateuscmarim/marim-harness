@@ -179,7 +179,9 @@ async def test_spawn_agent_forwards_mcp_foreground(tmp_path):
 
     calls = {}
 
-    async def fake_runner(type, task, tool_call_id, mcp_names, max_output_chars=None, model=None, isolation=None):
+    async def fake_runner(
+        type, task, tool_call_id, mcp_names, max_output_chars=None, model=None, isolation=None
+    ):
         calls["args"] = (type, task, tool_call_id, mcp_names, max_output_chars)
         return "ok"
 
@@ -205,7 +207,9 @@ async def test_spawn_agent_composes_structured_task(tmp_path):
 
     calls = {}
 
-    async def fake_runner(type, task, tool_call_id, mcp_names, max_output_chars=None, model=None, isolation=None):
+    async def fake_runner(
+        type, task, tool_call_id, mcp_names, max_output_chars=None, model=None, isolation=None
+    ):
         calls["task"] = task
         return "ok"
 
@@ -234,7 +238,9 @@ async def test_spawn_agent_without_structured_fields_passes_task_verbatim(tmp_pa
 
     calls = {}
 
-    async def fake_runner(type, task, tool_call_id, mcp_names, max_output_chars=None, model=None, isolation=None):
+    async def fake_runner(
+        type, task, tool_call_id, mcp_names, max_output_chars=None, model=None, isolation=None
+    ):
         calls["task"] = task
         return "ok"
 
@@ -283,7 +289,9 @@ async def test_spawn_agent_default_mcp_is_none(tmp_path):
 
     calls = {}
 
-    async def fake_runner(type, task, tool_call_id, mcp_names, max_output_chars=None, model=None, isolation=None):
+    async def fake_runner(
+        type, task, tool_call_id, mcp_names, max_output_chars=None, model=None, isolation=None
+    ):
         calls["mcp_names"] = mcp_names
         return "ok"
 
@@ -330,7 +338,9 @@ async def test_spawn_agent_coerces_stringified_mcp(tmp_path):
 
     calls = {}
 
-    async def fake_runner(type, task, tool_call_id, mcp_names, max_output_chars=None, model=None, isolation=None):
+    async def fake_runner(
+        type, task, tool_call_id, mcp_names, max_output_chars=None, model=None, isolation=None
+    ):
         calls["mcp_names"] = mcp_names
         return "ok"
 
@@ -410,9 +420,10 @@ async def test_diagnostics_failure_is_logged_at_debug(caplog, tmp_path):
     swallowed by _with_diagnostics must be visible at DEBUG so an operator
     can spot a misconfigured or crashed LSP."""
     import logging
-    from unittest.mock import MagicMock
-    from marim_harness.tools.provider import _with_diagnostics
     from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from marim_harness.tools.provider import _with_diagnostics
 
     deps = Deps(workspace_root=tmp_path)
     fake_lsp = MagicMock()

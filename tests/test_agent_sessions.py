@@ -494,6 +494,7 @@ async def test_cancel_does_not_block_on_slow_persist(tmp_path: Path):
     handler must time out and re-raise the CancelledError without waiting for
     the disk write to finish — the session is best-effort by design."""
     import time
+
     from marim_harness.agent import Harness
     from marim_harness.session import SessionManager
 
