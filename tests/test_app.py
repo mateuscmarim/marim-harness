@@ -1789,6 +1789,9 @@ async def test_flush_does_not_anchor_during_rebuild(tmp_path: Path):
         for i in range(40):  # overflow ⇒ max_scroll_y > 0
             await log.mount(UserMessage(f"line {i}"))
         await pilot.pause()
+        # Mirror the real rebuild entry (render_session): reset() drops the overflow
+        # latch and the inherited anchor is cleared before the rebuild proceeds.
+        app.stream.reset()
         log.anchor(False)
         app.stream.rebuilding = True
         app.stream.flush_streams()  # the mid-rebuild interval tick
@@ -1847,15 +1850,22 @@ async def test_stream_does_not_yank_when_scrolled_up(tmp_path: Path):
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         log = app.query_one("#log")
-        # Overflow the viewport.
+        # Overflow the viewport, then let the first-overflow flush engage the anchor
+        # so the log is now tail-following — the state a user scrolls up *from*.
         for _ in range(40):
             m = AssistantMessage()
             await log.mount(m)
             m.append("line of text")
-        # Wait for the reflow to actually overflow before scrolling — under load a
+        # Wait for the reflow to actually overflow before flushing — under load a
         # single pause isn't enough for 40 fresh widgets to lay out.
         assert await _pump_until(pilot, lambda: log.max_scroll_y > 0)
-        log.scroll_to(y=0, animate=False)  # releases the anchor
+        app.stream.flush_streams()  # engages the on-overflow anchor (latched once)
+        assert await _pump_until(pilot, lambda: log.is_anchored)
+        # The user scrolls up to read. A real scroll-up releases Textual's anchor;
+        # a programmatic ``scroll_to`` alone doesn't in the test harness, so drop the
+        # anchor explicitly to model the interaction (anchor released, viewport up).
+        log.anchor(False)
+        log.scroll_to(y=0, animate=False)
         assert await _pump_until(pilot, lambda: log.scroll_offset.y == 0)
 
         # A streaming text event arrives — we are scrolled up, so stay put.
@@ -1869,10 +1879,12 @@ async def test_stream_does_not_yank_when_scrolled_up(tmp_path: Path):
         # interval flush tick — its timing under load is what made this test flaky.
         # flush_streams() is exactly what the tick calls, so this stays faithful.
         app.stream.flush_streams()
-        # Let any (incorrect) re-anchor settle, then confirm we stayed put. A yank
-        # would move off 0 and never return, so this still catches a real regression.
+        # Confirm we stayed put. Under the bug, the latch-less re-anchor (here and on
+        # every interval tick) snaps the viewport to the bottom and never lets it sit
+        # up the log — so a yank moves off 0 and stays off.
         await _pump_until(pilot, lambda: log.scroll_offset.y != 0, tries=5)
-        assert log.scroll_offset.y == 0
+        assert log.scroll_offset.y == 0  # did not yank back to the bottom
+        assert log.is_anchored is False  # and did not silently re-engage the anchor
 
 
 @pytest.mark.anyio

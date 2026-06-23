@@ -5,6 +5,7 @@ tool/sub-agent/message/panel widgets, and the prompt input — but re-exported h
 so callers keep importing ``from .widgets import X`` unchanged.
 """
 
+from .autocomplete import CommandAutocomplete
 from .diff import (
     EditDiff,
     _reverse_edits,
@@ -24,7 +25,6 @@ from .messages import (
     UserMessage,
 )
 from .panels import JobPanel, TaskPanel
-from .autocomplete import CommandAutocomplete
 from .prompt import PromptInput
 from .subagent import SubAgentWidget
 from .tools import ToolCallWidget, ToolGroupWidget

@@ -143,7 +143,12 @@ class SessionView:
             self.app.stream.rebuilding = False
         # A restored session opens at the bottom; a fresh/cleared one stays top-
         # aligned (header pinned) until a turn's output overflows the viewport.
-        log.anchor(bool(self.app.harness.session.history))
+        restored = bool(self.app.harness.session.history)
+        log.anchor(restored)
+        # Seed the overflow latch to match: a restored view is already anchored, so
+        # a later flush must not re-anchor; a fresh/cleared one anchors on its first
+        # overflow.
+        self.app.stream._anchored_on_overflow = restored
         self.app.status.refresh_title()  # reflect the switched-to session's name
         self.app.status.refresh_status()
         self.app._render_tasks()

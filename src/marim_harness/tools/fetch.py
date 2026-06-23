@@ -68,7 +68,7 @@ def _resolve_safely(host: str) -> list[str]:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror as exc:
         raise ValueError(f"can't resolve {host!r}: {exc}") from exc
-    addrs: set[str] = {i[4][0] for i in infos}
+    addrs: set[str] = {str(i[4][0]) for i in infos}
     for raw in addrs:
         bare = raw.split("%", 1)[0]
         try:

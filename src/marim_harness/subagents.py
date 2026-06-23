@@ -169,7 +169,7 @@ class SubagentRunner:
                     await self.hooks.tool_event(event, call_inputs)
                 # Forward the whole usage (not just a token total) so the UI can
                 # render the cache split and cost, not only the running count.
-                if forward:
+                if cb is not None and stream_id is not None:
                     await cb(stream_id, event, getattr(ctx, "usage", None))
 
         return handler

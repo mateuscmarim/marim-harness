@@ -142,6 +142,9 @@ class HarnessApp(App):
         # once a turn's output overflows the viewport (see _anchor_on_overflow).
         if self.harness.session.history:
             log.anchor()
+            # Already anchored at the bottom — latch so a later flush won't re-anchor
+            # and yank the user back down after they scroll up.
+            self.stream._anchored_on_overflow = True
         self._render_tasks()  # reflect any checklist restored with the session
         self._render_jobs()  # process-scoped jobs survive session switches
         # Seed vision capabilities in the background so the text-only-model

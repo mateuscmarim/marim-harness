@@ -200,9 +200,17 @@ class StreamRenderer:
         # rebuild the log's max_scroll_y is briefly stale (old content removed, new
         # not laid out), so an interval flush tick must not anchor off it.
         self.rebuilding = False
+        # Latch: True once we've anchored the log on its first overflow. After that
+        # we never force the anchor again — Textual releases it on a user scroll-up
+        # and re-engages at the bottom on its own. Seeded by the view that
+        # establishes the anchor state (mount / render_session).
+        self._anchored_on_overflow = False
 
     def reset(self) -> None:
         """Clear per-session stream state when the log is rebuilt (new/switch/clear)."""
+        # The rebuilt view re-establishes its own anchor state, so drop the latch;
+        # render_session re-seeds it to match the anchor it sets.
+        self._anchored_on_overflow = False
         self.current_assistant = None
         self.current_thinking = None
         self.tool_widgets.clear()
@@ -259,20 +267,24 @@ class StreamRenderer:
     def _anchor_on_overflow(self) -> None:
         """Anchor the log the moment its content first overflows the viewport, so
         new content tail-follows and the intro header scrolls away with it. Until
-        then the log stays top-aligned (header pinned at the top). Anchoring once is
-        enough — Textual releases on a user scroll-up and re-engages at the bottom."""
+        then the log stays top-aligned (header pinned at the top). We anchor exactly
+        once (latched): afterwards Textual releases on a user scroll-up and
+        re-engages at the bottom on its own. Gating on a transient ``is_anchored``
+        instead would re-anchor — yanking the viewport down — on every flush tick
+        while the user is scrolled up reading."""
         from textual.containers import VerticalScroll
 
         # Never anchor off a stale max_scroll_y mid-rebuild — render_session sets the
         # final anchor state itself once the new content is laid out.
-        if self.rebuilding:
+        if self.rebuilding or self._anchored_on_overflow:
             return
         try:
             log = self.app.query_one("#log", VerticalScroll)
         except Exception:
             return
-        if not log.is_anchored and log.max_scroll_y > 0:
+        if log.max_scroll_y > 0:
             log.anchor()
+            self._anchored_on_overflow = True
 
     async def add_tool_to_run(
         self,

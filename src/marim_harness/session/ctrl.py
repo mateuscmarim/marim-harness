@@ -45,7 +45,8 @@ class SessionController:
         # ``history`` is a property; the underlying list lives in ``_history``.
         # The setter bumps ``history_version`` so the persist cache can detect
         # no-op writes — set both fields before the first assignment below.
-        self.history: list[ModelMessage] = []
+        # No annotation here: it would redeclare the property and shadow it.
+        self.history = []
         self.usage: RunUsage = RunUsage()
         self.duration_seconds: float = 0.0
         self._segment_start: float = 0.0
@@ -66,15 +67,15 @@ class SessionController:
     # the property funnel routes through) invalidates the cache too. Sites
     # that prefer an explicit method can call ``set_history`` instead.
     @property
-    def history(self) -> list:
+    def history(self) -> list[ModelMessage]:
         return self._history
 
     @history.setter
-    def history(self, value: list) -> None:
+    def history(self, value: list[ModelMessage]) -> None:
         self._history = value
         self.history_version += 1
 
-    def set_history(self, history: list) -> None:
+    def set_history(self, history: list[ModelMessage]) -> None:
         """Replace ``self.history`` and bump the version. Equivalent to
         ``self.history = history`` but reads as a method call at the call
         site; the property setter enforces cache invalidation either way."""

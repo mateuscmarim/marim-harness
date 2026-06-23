@@ -308,7 +308,10 @@ class Harness:
             model_settings=_DEFAULT_MODEL_SETTINGS,
             request_limit=cfg.subagent_request_limit,
             build_model=(
-                (lambda mid: self.model_source.build(mid))
+                # Bind the narrowed (non-None) source as a default so the
+                # deferred closure keeps it typed; ``self.model_source`` alone
+                # wouldn't narrow inside a lambda called later.
+                (lambda mid, _src=self.model_source: _src.build(mid))
                 if self.model_source is not None else None
             ),
         )
