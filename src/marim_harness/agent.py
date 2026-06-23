@@ -243,6 +243,26 @@ class HarnessConfig:
     notifications: NotificationConfig = field(default_factory=NotificationConfig.disabled)
 
 
+def build_services(
+    deps: Deps,
+    *,
+    lsp: Optional[LspManager],
+    turn_hooks: TurnHooks,
+    subagents: SubagentRunner,
+) -> HarnessServices:
+    """Assemble the Harness-wired collaborator container and install it on
+    ``deps``. Centralises the one late binding the deps<->services cycle
+    requires (see HarnessServices)."""
+    services = HarnessServices(
+        lsp=lsp,
+        turn_hooks=turn_hooks,
+        run_subagent=subagents.run,
+        run_background_agent=subagents.run_background,
+    )
+    deps.services = services
+    return services
+
+
 class Harness:
     """Owns the Pydantic AI agent and drives one user turn to completion,
     resolving deferred tool approvals by the current mode."""
@@ -321,13 +341,13 @@ class Harness:
         )
         # One cohesive late binding for the collaborator cycle: TurnHooks and
         # the sub-agent runners hold this deps object, and tools reach them
-        # back through ctx.deps.services. Assigned here as a finished container
-        # rather than four scattered self.deps.X = ... pokes.
-        self.deps.services = HarnessServices(
+        # back through ctx.deps.services. Assigned via build_services which
+        # names and isolates the binding in one testable place.
+        build_services(
+            self.deps,
             lsp=self.lsp,
             turn_hooks=self.hooks,
-            run_subagent=self.subagents.run,
-            run_background_agent=self.subagents.run_background,
+            subagents=self.subagents,
         )
 
     # --- session lifecycle (operations carrying harness-level logic; plain

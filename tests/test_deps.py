@@ -41,3 +41,31 @@ def test_lsp_handle_lives_on_services():
     assert d.services.lsp is sentinel
     # The flat field is gone — accessing it is an attribute error.
     assert not hasattr(d, "lsp")
+
+
+def test_build_services_populates_and_assigns(tmp_path):
+    from marim_harness.agent import build_services
+    from marim_harness.deps import Deps, HarnessServices
+
+    deps = Deps(workspace_root=tmp_path)
+    lsp = object()
+    turn_hooks = object()
+
+    class _Subs:
+        async def run(self, *a, **k): ...
+        async def run_background(self, *a, **k): ...
+
+    subs = _Subs()
+    services = build_services(deps, lsp=lsp, turn_hooks=turn_hooks, subagents=subs)
+
+    assert isinstance(services, HarnessServices)
+    assert services.lsp is lsp
+    assert services.turn_hooks is turn_hooks
+    # Use == not `is`: bound-method objects are created fresh on each attribute
+    # access, so identity checks across separate accesses always fail. == compares
+    # __func__ + __self__, which is exactly the "same method on same instance" check
+    # the brief intends.
+    assert services.run_subagent == subs.run
+    assert services.run_background_agent == subs.run_background
+    # The container is also installed on deps (the late binding).
+    assert deps.services is services
