@@ -3,7 +3,7 @@ session's background jobs. Each hides itself when empty so it takes no space."""
 
 from textual.content import Content
 from textual.containers import VerticalScroll
-from textual.widgets import Collapsible, Static
+from textual.widgets import Static
 
 
 class TaskPanel(VerticalScroll):
@@ -39,21 +39,17 @@ class TaskPanel(VerticalScroll):
 
 class JobPanel(VerticalScroll):
     """The session's live background jobs, pinned above the status bar. Hidden
-    whenever there are no jobs. Collapsible and expanded by default."""
+    whenever there are no jobs. Title is sticky above the scrollable body."""
 
     def __init__(self) -> None:
         super().__init__(id="job-panel")
         self.display = False
+        self._header = Static(id="job-header")
         self._body = Static(id="job-body")
-        self._collapsible = Collapsible(
-            self._body,
-            title=Content.from_markup("[b $accent]Jobs[/]"),
-            id="job-collapsible",
-            collapsed=False,
-        )
 
     def compose(self):
-        yield self._collapsible
+        yield self._header
+        yield self._body
 
     def show_jobs(self, jobs: list) -> None:
         """Render the current jobs, or hide the panel when there are none."""
@@ -61,11 +57,12 @@ class JobPanel(VerticalScroll):
 
         if not jobs:
             self.display = False
+            self._header.update("")
             self._body.update("")
             return
         self.display = True
         count = len(jobs)
-        self._collapsible.title = (
+        self._header.update(
             Content.from_markup(f"[b $accent]Jobs[/] [dim]({count})[/]")
         )
         self._body.update(Content(render_jobs(jobs)))
