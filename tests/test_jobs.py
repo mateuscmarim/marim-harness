@@ -325,6 +325,20 @@ async def test_output_on_running_job_does_not_consume():
     assert reg.has_finished_pending() is True
 
 
+@pytest.mark.anyio
+async def test_cancel_consumes_wake_digest():
+    """Cancelling a job marks it wake-consumed: the agent initiated the cancel,
+    so it must not trigger a redundant autonomous wake. The digest still records
+    the cancellation for the model's next turn."""
+    reg = JobRegistry()
+    job_id = reg.register("agent", "slow", _sleep_then("never", 5))
+    result = await reg.cancel(job_id)
+    assert "cancelled" in result
+    assert reg.has_finished_pending() is False  # wake-consumed
+    digest = reg.take_finished_digest()
+    assert "job-1 (agent) cancelled" in digest  # still surfaced to the model
+
+
 def _sleep_then(value, seconds):
     async def coro():
         await asyncio.sleep(seconds)

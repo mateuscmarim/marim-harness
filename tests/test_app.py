@@ -2315,3 +2315,28 @@ async def test_tick_spinner_advances_only_when_busy(tmp_path: Path, monkeypatch)
         app.status.tick_spinner()
         assert app.status.spin == 1
         assert app.title == f"{_SPINNER[1]} my-session"
+
+
+@pytest.mark.anyio
+async def test_finished_job_notifies_even_when_wake_disabled(tmp_path: Path):
+    """A completed background job pings the desktop notifier once, even with
+    autonomous wake off — notification is decoupled from the wake path."""
+    sent = []
+
+    class _Notifier:
+        def send(self, title, body, event_type):
+            sent.append((title, body, event_type))
+
+    async def _done():
+        return "result"
+
+    app = _app(tmp_path)
+    app.harness.deps.notifier = _Notifier()
+    app.autonomous_wake = False  # wake off — notification must still fire
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.harness.deps.jobs.register("agent", "x", _done())
+        fired = await _pump_until(pilot, lambda: any(e[2] == "job_done" for e in sent))
+        assert fired
+        # Exactly one ping for the single completion.
+        assert sum(1 for e in sent if e[2] == "job_done") == 1

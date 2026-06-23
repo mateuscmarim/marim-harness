@@ -184,6 +184,10 @@ class JobRegistry:
         job = self._jobs.get(job_id)
         if job is None:
             return f"No job {job_id!r}."
+        # The agent (or shutdown) is acting on this job, so mark it wake-consumed:
+        # an agent-initiated cancel must not fire a redundant autonomous wake.
+        # The digest still records the outcome for the model's next turn.
+        self._wake_consumed.add(job_id)
         if job.status != "running":
             return f"job {job_id} already {job.status}"
         if job.kill is not None:

@@ -103,6 +103,9 @@ class HarnessApp(App):
         # Consecutive autonomous turns since the last user turn; reset on any
         # user-initiated turn. Bounds wake→spawn→wake chains.
         self._auto_turn_depth = 0
+        # Ids of finished (done/failed) jobs already desktop-notified, so each
+        # completion pings exactly once, independent of the autonomous-wake path.
+        self._notified_jobs: set[str] = set()
         self._autocomplete: CommandAutocomplete | None = None
 
     def compose(self) -> ComposeResult:
@@ -242,6 +245,7 @@ class HarnessApp(App):
         finish. Each job runs as a task on the app's event loop, so the callback
         fires there and direct widget mutation is safe."""
         self._render_jobs()
+        self._notify_finished_jobs()
         self._maybe_wake()
 
     def _notify(self, title: str, body: str, event_type: str) -> None:
@@ -251,6 +255,21 @@ class HarnessApp(App):
         notifier = self.harness.deps.notifier
         if notifier is not None:
             notifier.send(title, body, event_type)
+
+    def _notify_finished_jobs(self) -> None:
+        """Desktop-notify once per genuinely completed (done/failed) background
+        job. Decoupled from the autonomous-wake path so a completion still pings
+        when wake is off, a turn is busy, or the depth cap is hit. Cancelled jobs
+        are skipped — they're either agent-initiated or shutdown teardown, so a
+        ping would be noise (and this keeps ``cancel_all`` on exit silent)."""
+        for job in self.harness.deps.jobs.list():
+            if job.status in ("done", "failed") and job.id not in self._notified_jobs:
+                self._notified_jobs.add(job.id)
+                self._notify(
+                    "Background job finished",
+                    f"{job.id} ({job.kind}) {job.status}",
+                    "job_done",
+                )
 
     def _maybe_wake(self) -> None:
         """Fire one digest-only autonomous turn iff a background job has finished
@@ -274,7 +293,6 @@ class HarnessApp(App):
         # _on_compact / _on_rename.
         log = self.query_one("#log", VerticalScroll)
         log.mount(NoticeMessage("⏰ Resumed — background job(s) finished"))
-        self._notify("Background job finished", "A background job completed", "job_done")
         self._turn_worker = self.run_worker(self._run_turn(""), exclusive=True)
 
     def action_cycle_mode(self) -> None:
