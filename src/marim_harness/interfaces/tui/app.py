@@ -328,8 +328,7 @@ class HarnessApp(App):
     ) -> None:
         """Mount the user message and spawn the exclusive turn worker. Shared by
         a fresh submit and a drained queue item. Resets the autonomous-wake
-        chain and clears any queue pause (a user-driven turn resumes draining)."""
-        self._queue_paused = False
+        chain and spawns the worker."""
         self._auto_turn_depth = 0
         log = self.query_one("#log", VerticalScroll)
         await log.mount(UserMessage(text))
@@ -591,6 +590,7 @@ class HarnessApp(App):
         if self._turn_worker is not None:
             self._enqueue(text, event.attachments)
             return
+        self._queue_paused = False
         await self._start_turn(text, event.attachments)
 
     async def _run_turn(

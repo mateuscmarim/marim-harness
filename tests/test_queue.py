@@ -80,7 +80,6 @@ async def test_idle_submit_runs_immediately(tmp_path):
         assert app._turn_worker is not None  # a worker was spawned
 
 
-import asyncio
 from asyncio import CancelledError
 
 from marim_harness.interfaces.tui.queue import QueuedMessage
