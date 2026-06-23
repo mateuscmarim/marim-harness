@@ -442,54 +442,42 @@ class Harness:
             prompt = wrap_turn_context(injected, typed)
         return prompt
 
-    async def run_turn(self, prompt: str, event_stream_handler=None,
-                       attachments: Optional[list[tuple[bytes, str]]] = None) -> str:
-        """Run the agent until it produces a final text answer, looping through
-        any approval rounds. Returns the final text output."""
-        await self._maybe_compact()
-        user_prompt: str | list[str | BinaryContent] | None = await self._assemble_prompt(prompt)
-        if attachments and user_prompt is not None:
-            user_prompt = [user_prompt, *(BinaryContent(data=d, media_type=m)
-                                          for d, m in attachments)]
-        deferred_results = None
-        # Offer only the live servers that aren't disabled — a server muted at
-        # runtime stays connected but its tools are withheld from the model.
-        toolsets = self.mcp.live_toolsets()
-        # When hooks are configured, intercept each streamed tool event to fire
-        # Pre/PostToolUse, then forward to the original handler (or drain if none).
-        if self.deps.hooks is not None:
-            _base_handler = event_stream_handler
-            # Scoped to this single turn: maps tool_call_id → tool_input so the
-            # PostToolUse branch can include the call's args in its payload.
-            _call_inputs: dict = {}
+    def _build_hooked_handler(self, base_handler):
+        """Return a hook-intercepting event stream handler that fires Pre/PostToolUse
+        for each streamed tool event, then forwards to ``base_handler`` (or drains
+        if it is None). Returns None when no hooks are configured so callers can
+        skip wrapper overhead entirely."""
+        if self.deps.hooks is None:
+            return base_handler
+        # Scoped to this single turn: maps tool_call_id → tool_input so the
+        # PostToolUse branch can include the call's args in its payload.
+        _call_inputs: dict = {}
 
-            async def _hooked_handler(stream_ctx, events):
-                async def _relay():
-                    async for event in events:
-                        await self.hooks.tool_event(event, _call_inputs)
-                        yield event
+        async def _hooked_handler(stream_ctx, events):
+            async def _relay():
+                async for event in events:
+                    await self.hooks.tool_event(event, _call_inputs)
+                    yield event
 
-                if _base_handler is not None:
-                    await _base_handler(stream_ctx, _relay())
-                else:
-                    async for _ in _relay():
-                        pass
+            if base_handler is not None:
+                await base_handler(stream_ctx, _relay())
+            else:
+                async for _ in _relay():
+                    pass
 
-            event_stream_handler = _hooked_handler
-        # Self-heal a session left mid-exchange by an earlier aborted turn: a
-        # persisted ToolCallPart with no matching return makes every provider
-        # reject the next request ("unprocessed tool calls"), wedging the
-        # session. Repair it before running so the session resumes instead.
-        repaired = _repair_unanswered_tool_calls(self.session.history)
-        if repaired is not self.session.history:
-            self.session.history = repaired
-            self.session.persist()
-        # The last persisted, resumable history — guaranteed free of unanswered
-        # tool calls. Captured once here and refreshed only after a clean
-        # persist; the deferred-approval round below deliberately holds a dirty
-        # history in self.session.history, so this must NOT be recomputed from it
-        # per iteration (that poisoned the rollback baseline across rounds).
-        resumable = list(self.session.history)
+        return _hooked_handler
+
+    async def _run_with_approval(
+        self,
+        user_prompt,
+        deferred_results,
+        toolsets,
+        event_stream_handler,
+        resumable: list,
+    ) -> str:
+        """Drive the agent.run loop, handling DeferredToolRequests approval rounds,
+        persisting on success, and rolling back to ``resumable`` on interrupt.
+        Returns the final text output."""
         while True:
             # capture_run_messages exposes the messages exchanged even when the
             # run aborts (a render error in the event handler, an API failure,
@@ -569,3 +557,37 @@ class Harness:
             await self.hooks.stop()
             await self._maybe_autoname()
             return output
+
+    async def run_turn(self, prompt: str, event_stream_handler=None,
+                       attachments: Optional[list[tuple[bytes, str]]] = None) -> str:
+        """Run the agent until it produces a final text answer, looping through
+        any approval rounds. Returns the final text output."""
+        await self._maybe_compact()
+        user_prompt: str | list[str | BinaryContent] | None = await self._assemble_prompt(prompt)
+        if attachments and user_prompt is not None:
+            user_prompt = [user_prompt, *(BinaryContent(data=d, media_type=m)
+                                          for d, m in attachments)]
+        # Offer only the live servers that aren't disabled — a server muted at
+        # runtime stays connected but its tools are withheld from the model.
+        toolsets = self.mcp.live_toolsets()
+        # When hooks are configured, intercept each streamed tool event to fire
+        # Pre/PostToolUse, then forward to the original handler (or drain if none).
+        event_stream_handler = self._build_hooked_handler(event_stream_handler)
+        # Self-heal a session left mid-exchange by an earlier aborted turn: a
+        # persisted ToolCallPart with no matching return makes every provider
+        # reject the next request ("unprocessed tool calls"), wedging the
+        # session. Repair it before running so the session resumes instead.
+        repaired = _repair_unanswered_tool_calls(self.session.history)
+        if repaired is not self.session.history:
+            self.session.history = repaired
+            self.session.persist()
+        # The last persisted, resumable history — guaranteed free of unanswered
+        # tool calls. Captured once here and refreshed only after a clean
+        # persist; the deferred-approval round below deliberately holds a dirty
+        # history in self.session.history, so this must NOT be recomputed from it
+        # per iteration (that poisoned the rollback baseline across rounds).
+        resumable = list(self.session.history)
+        return await self._run_with_approval(
+            user_prompt, deferred_results=None, toolsets=toolsets,
+            event_stream_handler=event_stream_handler, resumable=resumable,
+        )
