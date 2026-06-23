@@ -33,20 +33,26 @@ def test_read_cost_non_numeric_is_none():
     assert read_cost_micro_usd(_response(cost="free")) is None
 
 
-def test_build_openrouter_model_requests_usage_accounting():
-    # The built model must ask OpenRouter to include billed usage on every call.
+def test_build_openrouter_model_enables_caching_and_usage():
+    # The built model must enable OpenRouter usage accounting and place
+    # cache_control breakpoints on instructions, tool defs, and messages.
     model = build_openrouter_model("anthropic/claude-sonnet-4-6", api_key="sk-test")
-    assert model.settings is not None
-    assert model.settings.get("extra_body") == {"usage": {"include": True}}
+    s = model.settings
+    assert s is not None
+    assert s.get("openrouter_usage") == {"include": True}
+    assert s.get("openrouter_cache_instructions") == "5m"
+    assert s.get("openrouter_cache_tool_definitions") == "5m"
+    assert s.get("openrouter_cache_messages") == "5m"
 
 
-def test_build_openrouter_model_overrides_usage_mapping():
-    # The model and its streamed responses must override _map_usage so the
-    # captured cost is re-injected (the base class drops the float).
+def test_build_openrouter_model_subclasses_openrouter_and_reinjects_cost():
+    # It must subclass the official OpenRouterModel (so native cache-token
+    # mapping is preserved) and override _map_usage to re-inject billed cost.
+    from pydantic_ai.models.openrouter import OpenRouterModel
+
     model = build_openrouter_model("anthropic/claude-sonnet-4-6", api_key="sk-test")
-    from pydantic_ai.models.openai import OpenAIChatModel
-
-    assert type(model)._map_usage is not OpenAIChatModel._map_usage
+    assert isinstance(model, OpenRouterModel)
+    assert type(model)._map_usage is not OpenRouterModel._map_usage
 
 
 def test_minimax_model_uses_native_thinking_tags():
