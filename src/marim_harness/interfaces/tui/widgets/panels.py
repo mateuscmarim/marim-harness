@@ -50,11 +50,13 @@ class LivePanel(VerticalScroll):
     LivePanel .live-panel-body { height: auto; }
     """
 
-    def __init__(self, *, name: str, title: str, renderer: Callable[[list], str]) -> None:
+    def __init__(self, *, name: str, title: str, renderer: Callable[[list], str],
+                 markup: bool = False) -> None:
         super().__init__(id=f"{name}-panel")
         self.display = False
         self._title = title
         self._renderer = renderer
+        self._markup = markup
         self._collapsed = False
         self._count = 0
         self._header = PanelHeader(id=f"{name}-header", classes="live-panel-header")
@@ -95,7 +97,8 @@ class LivePanel(VerticalScroll):
         self.display = True
         self._count = len(items)
         self._update_header()
-        self._body.update(Content(self._renderer(items)))
+        text = self._renderer(items)
+        self._body.update(Content.from_markup(text) if self._markup else Content(text))
 
 
 class TaskPanel(LivePanel):
@@ -120,3 +123,17 @@ class JobPanel(LivePanel):
 
     def show_jobs(self, jobs: list) -> None:
         self._render_items(jobs)
+
+
+class QueuePanel(LivePanel):
+    """Messages queued to run after the current turn."""
+
+    def __init__(self) -> None:
+        from ..queue import render_queue
+
+        super().__init__(name="queue", title="Queued", renderer=render_queue,
+                         markup=True)
+
+    def show_queue(self, items: list, paused: bool = False) -> None:
+        self._title = "Queued — paused" if paused else "Queued"
+        self._render_items(items)
