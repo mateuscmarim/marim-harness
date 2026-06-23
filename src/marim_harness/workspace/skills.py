@@ -21,7 +21,8 @@ from pathlib import Path
 import yaml
 
 from ..config import config_dir
-from ._frontmatter import FRONTMATTER_RE, valid_name
+from ..identifiers import valid_name
+from ._frontmatter import FRONTMATTER_RE
 from .fs import WorkspaceError, resolve_in_workspace
 
 logger = logging.getLogger(__name__)

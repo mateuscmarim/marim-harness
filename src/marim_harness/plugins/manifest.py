@@ -7,29 +7,24 @@ logs — used at discovery time so a broken plugin never breaks a turn.
 
 import json
 import logging
-import re
 from dataclasses import dataclass
 from pathlib import Path
+
+from ..identifiers import valid_name
 
 logger = logging.getLogger(__name__)
 
 MANIFEST_DIR = ".marim-plugin"
 MANIFEST_FILE = "plugin.json"
 
-# Same identifier rule as skills/agents.
-_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-
-
 class ManifestError(Exception):
     """A manifest is missing, unreadable, or invalid."""
 
 
 def valid_plugin_name(name) -> bool:
-    return (
-        isinstance(name, str)
-        and 0 < len(name) <= 64
-        and _NAME_RE.match(name) is not None
-    )
+    # The isinstance guard matters: a manifest name comes from untrusted JSON and
+    # may be a non-str (which valid_name's len() would choke on).
+    return isinstance(name, str) and valid_name(name)
 
 
 @dataclass(frozen=True)

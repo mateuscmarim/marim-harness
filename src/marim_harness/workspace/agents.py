@@ -21,8 +21,9 @@ from pathlib import Path
 import yaml
 
 from ..config import config_dir
+from ..identifiers import valid_name
 from ..tools.names import GATED_TOOLS, NET_TOOLS, READ_TOOLS, SUBAGENT_TOOLS
-from ._frontmatter import FRONTMATTER_RE, valid_name
+from ._frontmatter import FRONTMATTER_RE
 
 # What the built-in ``explore`` role may reach: local reads plus network egress
 # (web lookups are genuinely useful mid-investigation), but nothing that mutates.
