@@ -1,12 +1,15 @@
-"""Capture OpenRouter's exact billed cost into the run usage.
+"""Build the cache-enabled OpenRouter model and capture its billed cost.
 
-OpenRouter returns the billed ``usage.cost`` (a float, in dollars) when the
-request body carries ``{"usage": {"include": true}}``. pydantic-ai's OpenAI
-usage mapper, however, keeps only *integer*-valued usage fields, so the float
-cost is silently dropped. This module subclasses the chat model and its streamed
-response to re-inject the cost as integer micro-USD under
-``RunUsage.details[COST_DETAIL_KEY]`` (where genai-based code expects it), and
-sets the default request body so accounting is always on.
+The model is pydantic-ai's official ``OpenRouterModel`` configured via
+``OpenRouterModelSettings`` to enable prompt caching (``cache_control`` on
+instructions, tool definitions, and the rolling message tail) and usage
+accounting (``openrouter_usage={"include": True}``). OpenRouter then reports the
+billed ``usage.cost`` (a float, in dollars), but pydantic-ai's usage mapper keeps
+only *integer*-valued fields and drops the float. So this module subclasses the
+model and its ``OpenRouterStreamedResponse`` to re-inject the cost as integer
+micro-USD under ``RunUsage.details[COST_DETAIL_KEY]`` (where genai-based code
+expects it); each subclass calls ``super()._map_usage`` first, preserving the
+native cache-token mapping.
 
 Because it reaches into pydantic-ai internals, every hook fails soft: a missing
 or non-numeric cost simply yields no detail, and callers fall back to the
