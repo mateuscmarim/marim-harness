@@ -229,6 +229,90 @@ class SubagentRunner:
             fs.write_file(self.deps.workspace_root, rel, spill)
         return text
 
+    async def _execute_spawn(
+        self, type: str, task: str, mcp_names: list[str] | None,
+        max_output_chars: int | None, model: str | None, isolation: str | None,
+        *, background: bool, stream_id: str,
+    ) -> str:
+        """Common lifecycle for foreground and background spawns.
+
+        Handles: worktree open → build → MCP grant → hooks start → run →
+        hooks stop → usage → cap output → worktree close.
+
+        ``background=False`` (foreground): exceptions are contained and returned
+        as an error string; usage is folded into the session but NOT persisted
+        (the caller's ``run_turn`` persists it). ``stream_id`` names the spill
+        file and is passed to the event handler.
+
+        ``background=True``: exceptions propagate to the job registry; usage is
+        persisted immediately; deps get an isolated ``TaskList()``; the spill
+        file is named after the ``_bg_seq`` counter.
+        """
+        iso = None
+        if isolation == "worktree":
+            iso, err = self._open_worktree(stream_id)
+            if err is not None:
+                return err
+        work_root = iso["path"] if iso else None
+        sub, err = self.build(type, max_output_chars, model, work_root)
+        if err is not None:
+            if iso:
+                self._discard_worktree(iso)
+            return err
+        if sub is None:
+            if iso:
+                self._discard_worktree(iso)
+            return f"Failed to build sub-agent {type!r}."
+        granted, unknown = self.mcp.granted_servers(mcp_names)
+        if background:
+            # A background sub-agent runs detached and concurrently with the
+            # user's turn. Give it its own empty TaskList so its multi-step work
+            # never mutates — or persists as — the user's session checklist; an
+            # isolated run also redirects its file ops into the worktree. Every
+            # other Deps field (jobs, hooks, lsp, …) stays shared.
+            run_deps = replace(self.deps, tasks=TaskList())
+            if iso:
+                run_deps = replace(run_deps, workspace_root=iso["path"])
+        else:
+            run_deps = replace(self.deps, workspace_root=work_root) if iso else self.deps
+        await self.hooks.subagent_start(type, task)
+        # Foreground: pass stream_id so events are forwarded to the UI.
+        # Background: pass None so the handler only fires hooks (no UI stream).
+        handler = self.handler(None if background else stream_id)
+        try:
+            result = await sub.run(
+                task, deps=run_deps, toolsets=granted,
+                event_stream_handler=handler,
+                usage_limits=UsageLimits(request_limit=self._request_limit),
+            )
+        except Exception as exc:  # noqa: BLE001
+            if iso:
+                self._discard_worktree(iso)
+            if background:
+                # A background crash is intentionally NOT contained: it
+                # propagates to the job registry, which marks the job failed.
+                raise
+            # A foreground spawn runs inside the turn's tool execution; letting
+            # its crash propagate would fail the whole turn and take down any
+            # sibling spawns fanning out alongside it. Contain it.
+            await self.hooks.subagent_stop(type, task, f"error: {exc}")
+            return f"Sub-agent {type!r} failed: {exc.__class__.__name__}: {exc}"
+        await self.hooks.subagent_stop(type, task, result.output)
+        self.session.usage += result.usage
+        if background:
+            # A background spawn finishes off-turn, so no run_turn will fold in
+            # its spend — persist right away so the saved session reflects it
+            # even if the process exits before the next turn.
+            self.session.persist()
+            self._bg_seq += 1
+            spill_ref = f"bg-{self._bg_seq}"
+        else:
+            # A foreground spawn's spend is persisted by run_turn's _persist.
+            spill_ref = stream_id
+        capped = self._cap_output(result.output, max_output_chars, spill_ref)
+        iso_note = self._close_worktree(iso) if iso else ""
+        return self.mcp.grant_note(unknown) + capped + iso_note
+
     async def run(
         self, type: str, task: str, stream_id: str,
         mcp_names: list[str] | None = None, max_output_chars: int | None = None,
@@ -248,46 +332,10 @@ class SubagentRunner:
         own git worktree (branched from HEAD) so parallel mutating spawns can't
         clobber each other or the main tree; its changes are committed to a
         branch named in the report and the worktree is torn down."""
-        iso = None
-        if isolation == "worktree":
-            iso, err = self._open_worktree(stream_id)
-            if err is not None:
-                return err
-        work_root = iso["path"] if iso else None
-        sub, err = self.build(type, max_output_chars, model, work_root)
-        if err is not None:
-            if iso:
-                self._discard_worktree(iso)
-            return err
-        if sub is None:
-            if iso:
-                self._discard_worktree(iso)
-            return f"Failed to build sub-agent {type!r}."
-        granted, unknown = self.mcp.granted_servers(mcp_names)
-        run_deps = replace(self.deps, workspace_root=work_root) if iso else self.deps
-        await self.hooks.subagent_start(type, task)
-        try:
-            result = await sub.run(
-                task, deps=run_deps, toolsets=granted,
-                event_stream_handler=self.handler(stream_id),
-                usage_limits=UsageLimits(request_limit=self._request_limit),
-            )
-        except Exception as exc:  # noqa: BLE001
-            # A foreground spawn runs inside the turn's tool execution; letting its
-            # crash propagate would fail the whole turn and take down any sibling
-            # spawns fanning out alongside it. Contain it: report the failure as
-            # this spawn's result so the orchestrator can route around it.
-            if iso:
-                self._discard_worktree(iso)
-            await self.hooks.subagent_stop(type, task, f"error: {exc}")
-            return f"Sub-agent {type!r} failed: {exc.__class__.__name__}: {exc}"
-        await self.hooks.subagent_stop(type, task, result.output)
-        # A foreground spawn runs inside the current turn, so its spend is folded
-        # into the session total here and persisted by run_turn's _persist.
-        self.session.usage += result.usage
-        capped = self._cap_output(result.output, max_output_chars, stream_id)
-        iso_note = self._close_worktree(iso) if iso else ""
-        return self.mcp.grant_note(unknown) + capped + iso_note
+        return await self._execute_spawn(
+            type, task, mcp_names, max_output_chars, model, isolation,
+            background=False, stream_id=stream_id,
+        )
 
     async def run_background(
         self, type: str, task: str, mcp_names: list[str] | None = None,
@@ -304,52 +352,7 @@ class SubagentRunner:
         the same way a foreground one is. ``model`` optionally overrides the model
         this spawn runs on. ``isolation="worktree"`` runs it in its own git
         worktree, committing its changes to a branch named in the report."""
-        iso = None
-        if isolation == "worktree":
-            iso, err = self._open_worktree("")
-            if err is not None:
-                return err
-        work_root = iso["path"] if iso else None
-        sub, err = self.build(type, max_output_chars, model, work_root)
-        if err is not None:
-            if iso:
-                self._discard_worktree(iso)
-            return err
-        if sub is None:
-            if iso:
-                self._discard_worktree(iso)
-            return f"Failed to build sub-agent {type!r}."
-        granted, unknown = self.mcp.granted_servers(mcp_names)
-        await self.hooks.subagent_start(type, task)
-        # A background sub-agent runs detached and concurrently with the user's
-        # turn. Give it its own empty TaskList so its multi-step work never
-        # mutates — or persists as — the user's session checklist; an isolated run
-        # also redirects its file ops into the worktree. Every other Deps field
-        # (jobs, hooks, lsp, …) stays shared.
-        bg_deps = replace(self.deps, tasks=TaskList())
-        if iso:
-            bg_deps = replace(bg_deps, workspace_root=iso["path"])
-        # No UI streaming for a background run, but still pass a handler so its
-        # tool calls fire Pre/PostToolUse hooks (handler returns None when hooks
-        # are off, so this is free otherwise). A crash here is intentionally NOT
-        # contained: it propagates to the job registry, which marks the job failed.
-        try:
-            result = await sub.run(
-                task, deps=bg_deps, toolsets=granted,
-                event_stream_handler=self.handler(None),
-                usage_limits=UsageLimits(request_limit=self._request_limit),
-            )
-        except Exception:
-            if iso:
-                self._discard_worktree(iso)
-            raise
-        await self.hooks.subagent_stop(type, task, result.output)
-        # A background spawn finishes off-turn, so no run_turn will fold in its
-        # spend — count it here and persist right away so the saved session
-        # reflects it even if the process exits before the next turn.
-        self.session.usage += result.usage
-        self.session.persist()
-        self._bg_seq += 1
-        capped = self._cap_output(result.output, max_output_chars, f"bg-{self._bg_seq}")
-        iso_note = self._close_worktree(iso) if iso else ""
-        return self.mcp.grant_note(unknown) + capped + iso_note
+        return await self._execute_spawn(
+            type, task, mcp_names, max_output_chars, model, isolation,
+            background=True, stream_id="",
+        )

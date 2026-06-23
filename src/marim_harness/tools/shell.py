@@ -9,7 +9,7 @@ _DEFAULT_TIMEOUT = 30
 _DEFAULT_MAX_OUTPUT = 20_000
 
 
-def _truncate(text: str, max_output: int) -> str:
+def _truncate_middle(text: str, max_output: int) -> str:
     """Cap ``text`` to ``max_output`` chars, dropping the MIDDLE rather than the
     tail. The head carries a command's opening (setup, first errors); the tail
     carries its verdict (a test summary, a final traceback) — and for tests and
@@ -84,7 +84,7 @@ class BashProcess:
 
     def output(self) -> str:
         """The combined output captured so far, truncated (head+tail) to the cap."""
-        return _truncate("".join(self._buffer), self._max_output)
+        return _truncate_middle("".join(self._buffer), self._max_output)
 
     def kill(self) -> None:
         """Kill the process group (best-effort; already-dead is fine)."""
