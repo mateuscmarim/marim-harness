@@ -176,7 +176,7 @@ def _minimal_harness(tmp_path: Path):
 def test_harness_wires_lsp_manager(tmp_path):
     h = _minimal_harness(tmp_path)
     assert isinstance(h.lsp, LspManager)
-    assert h.deps.lsp is h.lsp
+    assert h.deps.services.lsp is h.lsp
 
 
 @pytest.mark.anyio

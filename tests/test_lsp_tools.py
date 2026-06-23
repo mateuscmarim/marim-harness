@@ -1,7 +1,7 @@
 # tests/test_lsp_tools.py
 import pytest
 
-from marim_harness.deps import Deps
+from marim_harness.deps import Deps, HarnessServices
 from marim_harness.tools import names, provider
 
 
@@ -43,7 +43,7 @@ class _Ctx:
 @pytest.mark.anyio
 async def test_goto_definition_tool_delegates(tmp_path):
     lsp = _FakeLsp()
-    ctx = _Ctx(Deps(workspace_root=tmp_path, lsp=lsp))
+    ctx = _Ctx(Deps(workspace_root=tmp_path, services=HarnessServices(lsp=lsp)))
     out = await provider.goto_definition(ctx, "m.py", 10, 5)
     assert out == "target.py:10:5"
     assert lsp.calls == [("def", "m.py", 10, 5)]
@@ -51,14 +51,14 @@ async def test_goto_definition_tool_delegates(tmp_path):
 
 @pytest.mark.anyio
 async def test_tools_report_unavailable_without_lsp(tmp_path):
-    ctx = _Ctx(Deps(workspace_root=tmp_path, lsp=None))
+    ctx = _Ctx(Deps(workspace_root=tmp_path, services=HarnessServices(lsp=None)))
     out = await provider.find_references(ctx, "m.py", 1, 1)
     assert "not available" in out.lower()
 
 
 @pytest.mark.anyio
 async def test_diagnostics_tool_delegates(tmp_path):
-    ctx = _Ctx(Deps(workspace_root=tmp_path, lsp=_FakeLsp()))
+    ctx = _Ctx(Deps(workspace_root=tmp_path, services=HarnessServices(lsp=_FakeLsp())))
     out = await provider.diagnostics(ctx, "m.py")
     assert "no diagnostics" in out
 
@@ -102,7 +102,7 @@ async def test_edit_appends_diagnostics(tmp_path):
     f = tmp_path / "m.py"
     f.write_text("x = 1\n")
     lsp = _DiagLsp("m.py:1:1: error: bad")
-    ctx = _Ctx(Deps(workspace_root=tmp_path, lsp=lsp))
+    ctx = _Ctx(Deps(workspace_root=tmp_path, services=HarnessServices(lsp=lsp)))
     from marim_harness.tools import fs
     out = await provider.edit_file(ctx, "m.py", [fs.Edit(old_string="x = 1", new_string="y = 2")])
     assert "edited m.py" in out
@@ -113,7 +113,7 @@ async def test_edit_appends_diagnostics(tmp_path):
 @pytest.mark.anyio
 async def test_write_appends_diagnostics(tmp_path):
     lsp = _DiagLsp("n.py:2:3: warning: meh")
-    ctx = _Ctx(Deps(workspace_root=tmp_path, lsp=lsp))
+    ctx = _Ctx(Deps(workspace_root=tmp_path, services=HarnessServices(lsp=lsp)))
     out = await provider.write_file(ctx, "n.py", "z = 3\n")
     assert "wrote n.py" in out
     assert "n.py:2:3: warning: meh" in out
@@ -124,7 +124,7 @@ async def test_edit_no_diagnostics_block_when_clean(tmp_path):
     f = tmp_path / "m.py"
     f.write_text("x = 1\n")
     lsp = _DiagLsp("m.py: no diagnostics")
-    ctx = _Ctx(Deps(workspace_root=tmp_path, lsp=lsp))
+    ctx = _Ctx(Deps(workspace_root=tmp_path, services=HarnessServices(lsp=lsp)))
     from marim_harness.tools import fs
     out = await provider.edit_file(ctx, "m.py", [fs.Edit(old_string="x = 1", new_string="y = 2")])
     # A clean file adds no noise.
@@ -134,7 +134,7 @@ async def test_edit_no_diagnostics_block_when_clean(tmp_path):
 
 @pytest.mark.anyio
 async def test_write_without_lsp_is_unchanged(tmp_path):
-    ctx = _Ctx(Deps(workspace_root=tmp_path, lsp=None))
+    ctx = _Ctx(Deps(workspace_root=tmp_path, services=HarnessServices(lsp=None)))
     out = await provider.write_file(ctx, "n.py", "z = 3\n")
     assert out == "wrote n.py (6 bytes)"
 
@@ -146,7 +146,7 @@ async def test_diagnostics_exception_returns_unchanged_result(tmp_path):
         async def diagnostics(self, path, *, settle=1.5):
             raise RuntimeError("boom")
 
-    ctx = _Ctx(Deps(workspace_root=tmp_path, lsp=_FailingLsp()))
+    ctx = _Ctx(Deps(workspace_root=tmp_path, services=HarnessServices(lsp=_FailingLsp())))
     out = await provider.write_file(ctx, "n.py", "z = 3\n")
     # No diagnostics block; result unchanged
     assert out == "wrote n.py (6 bytes)"
@@ -158,7 +158,7 @@ async def test_real_diagnostic_not_suppressed_by_path_containing_disabled(tmp_pa
     """Path/message containing 'disabled' must not suppress real diagnostics."""
     # Real diagnostic line for a path containing "disabled"
     lsp = _DiagLsp("feature_disabled.py:3:1: error: undefined name")
-    ctx = _Ctx(Deps(workspace_root=tmp_path, lsp=lsp))
+    ctx = _Ctx(Deps(workspace_root=tmp_path, services=HarnessServices(lsp=lsp)))
     out = await provider.write_file(ctx, "feature_disabled.py", "bad code\n")
     # The real diagnostic must be appended
     assert "diagnostics:" in out
@@ -169,7 +169,7 @@ async def test_real_diagnostic_not_suppressed_by_path_containing_disabled(tmp_pa
 async def test_clean_report_suppresses_diagnostics_block(tmp_path):
     """A 'no diagnostics' clean report must not append a diagnostics block."""
     lsp = _DiagLsp("n.py: no diagnostics")
-    ctx = _Ctx(Deps(workspace_root=tmp_path, lsp=lsp))
+    ctx = _Ctx(Deps(workspace_root=tmp_path, services=HarnessServices(lsp=lsp)))
     out = await provider.write_file(ctx, "n.py", "z = 3\n")
     # No diagnostics block appended
     assert "diagnostics:" not in out

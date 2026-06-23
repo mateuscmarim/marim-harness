@@ -154,7 +154,7 @@ async def test_spawn_agent_tool_forwards_isolation(repo: Path):
 
     deps = Deps(workspace_root=repo, mode=Mode.auto)
     h = _make_harness(FunctionModel(main), deps)
-    h.deps.run_subagent = fake_run
+    h.deps.services.run_subagent = fake_run
     await h.run_turn("go")
     assert captured["isolation"] == "worktree"
 

@@ -103,7 +103,7 @@ async def test_spawn_agent_tool_forwards_model(tmp_path: Path):
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(_spawn_with_model_model(), deps)
-    h.deps.run_subagent = fake_run
+    h.deps.services.run_subagent = fake_run
     out = await h.run_turn("investigate")
     assert "REPORT" in out
     assert captured["model"] == "cheap"

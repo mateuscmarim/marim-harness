@@ -471,7 +471,7 @@ def test_lsp_manager_built_by_default(tmp_path: Path):
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     harness = _make_harness(_edit_then_done_model(), deps)
     assert isinstance(harness.lsp, LspManager)
-    assert deps.lsp is harness.lsp
+    assert deps.services.lsp is harness.lsp
 
 
 def test_lsp_disabled_builds_no_manager(tmp_path: Path):
@@ -485,7 +485,7 @@ def test_lsp_disabled_builds_no_manager(tmp_path: Path):
         config=HarnessConfig(lsp_enabled=False),
     )
     assert harness.lsp is None
-    assert deps.lsp is None
+    assert deps.services.lsp is None
 
 
 @pytest.mark.anyio

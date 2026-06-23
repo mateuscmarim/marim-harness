@@ -18,7 +18,7 @@ from .compaction import (
     make_summarizer,
     make_titler,
 )
-from .deps import Deps
+from .deps import Deps, HarnessServices
 from .errors import dump_provider_error, provider_error_status
 from .hooks.dispatch import TurnHooks
 from .instructions import register_instructions
@@ -226,7 +226,7 @@ class HarnessConfig:
     proactive_memory: bool = False
     mcp_servers: list[object] = field(default_factory=list)
     mcp_disabled: Optional[set] = None
-    # LSP master switch. False ⇒ no LspManager is built (deps.lsp stays None), so
+    # LSP master switch. False ⇒ no LspManager is built (deps.services.lsp stays None), so
     # diagnostics-on-edit no-ops. Navigation-tool registration is gated separately
     # on the provider (see build_harness), keyed on lsp_enabled and lsp_tools_enabled.
     lsp_enabled: bool = True
@@ -241,6 +241,26 @@ class HarnessConfig:
     # Desktop-notification config. Disabled by default; the TUI and headless
     # runner build a Notifier from this and fire at key event points.
     notifications: NotificationConfig = field(default_factory=NotificationConfig.disabled)
+
+
+def build_services(
+    deps: Deps,
+    *,
+    lsp: Optional[LspManager],
+    turn_hooks: TurnHooks,
+    subagents: SubagentRunner,
+) -> HarnessServices:
+    """Assemble the Harness-wired collaborator container and install it on
+    ``deps``. Centralises the one late binding the deps<->services cycle
+    requires (see HarnessServices)."""
+    services = HarnessServices(
+        lsp=lsp,
+        turn_hooks=turn_hooks,
+        run_subagent=subagents.run,
+        run_background_agent=subagents.run_background,
+    )
+    deps.services = services
+    return services
 
 
 class Harness:
@@ -276,7 +296,6 @@ class Harness:
         # Session-scoped LSP server pool, reachable by the navigation/diagnostics
         # tools through deps. Subagents share this deps object, so they get LSP too.
         self.lsp = LspManager(deps.workspace_root) if cfg.lsp_enabled else None
-        self.deps.lsp = self.lsp
         self.model_label = cfg.model_label
         # The model object used for each turn (swappable at runtime), the source
         # that builds new ones, and the id of the active model.
@@ -304,8 +323,6 @@ class Harness:
             self.session, GitSnapshotter(deps.workspace_root)
         )
         self.hooks = TurnHooks(self.deps, self.session)
-        # Let tools fire lifecycle hooks via ctx.deps with a full payload.
-        self.deps.turn_hooks = self.hooks
         # The spawn_agent tool reaches the runner through Deps, the same way
         # other tools reach shared state. The runner reads the current model via
         # the closure, so a runtime /model switch is tracked without rewiring.
@@ -322,8 +339,16 @@ class Harness:
                 if self.model_source is not None else None
             ),
         )
-        self.deps.run_subagent = self.subagents.run
-        self.deps.run_background_agent = self.subagents.run_background
+        # One cohesive late binding for the collaborator cycle: TurnHooks and
+        # the sub-agent runners hold this deps object, and tools reach them
+        # back through ctx.deps.services. Assigned via build_services which
+        # names and isolates the binding in one testable place.
+        build_services(
+            self.deps,
+            lsp=self.lsp,
+            turn_hooks=self.hooks,
+            subagents=self.subagents,
+        )
 
     # --- session lifecycle (operations carrying harness-level logic; plain
     # state and persistence live on ``self.session`` and are reached directly) ---

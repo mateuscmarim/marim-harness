@@ -86,53 +86,53 @@ async def goto_definition(ctx: RunContext[Deps], path: str, line: int, col: int)
     """Jump to where the symbol at `path:line:col` is defined, returning the
     target location(s) as `path:line:col`. Coordinates are 1-based — read them
     off `read_file`/`grep` output. Prefer this over grepping for a definition."""
-    if ctx.deps.lsp is None:
+    if ctx.deps.services.lsp is None:
         return _LSP_UNAVAILABLE
-    return await ctx.deps.lsp.goto_definition(path, line, col)
+    return await ctx.deps.services.lsp.goto_definition(path, line, col)
 
 
 async def find_references(ctx: RunContext[Deps], path: str, line: int, col: int) -> str:
     """List every use of the symbol at `path:line:col` across the project, as
     `path:line:col` lines. Coordinates are 1-based. Use before renaming or
     removing a symbol to see its blast radius."""
-    if ctx.deps.lsp is None:
+    if ctx.deps.services.lsp is None:
         return _LSP_UNAVAILABLE
-    return await ctx.deps.lsp.find_references(path, line, col)
+    return await ctx.deps.services.lsp.find_references(path, line, col)
 
 
 async def hover(ctx: RunContext[Deps], path: str, line: int, col: int) -> str:
     """Show the type/signature and docs for the symbol at `path:line:col`
     (1-based), as the language server's hover text. Use to learn a value's type
     without opening its definition."""
-    if ctx.deps.lsp is None:
+    if ctx.deps.services.lsp is None:
         return _LSP_UNAVAILABLE
-    return await ctx.deps.lsp.hover(path, line, col)
+    return await ctx.deps.services.lsp.hover(path, line, col)
 
 
 async def document_symbols(ctx: RunContext[Deps], path: str) -> str:
     """Outline one file: its classes, functions, and methods with line numbers.
     A fast way to understand a file's shape before reading it in full."""
-    if ctx.deps.lsp is None:
+    if ctx.deps.services.lsp is None:
         return _LSP_UNAVAILABLE
-    return await ctx.deps.lsp.document_symbols(path)
+    return await ctx.deps.services.lsp.document_symbols(path)
 
 
 async def workspace_symbols(ctx: RunContext[Deps], query: str) -> str:
     """Find a symbol by name across the whole project, returning matches as
     `name  path:line`. Use to locate a class/function when you know its name but
     not its file."""
-    if ctx.deps.lsp is None:
+    if ctx.deps.services.lsp is None:
         return _LSP_UNAVAILABLE
-    return await ctx.deps.lsp.workspace_symbols(query)
+    return await ctx.deps.services.lsp.workspace_symbols(query)
 
 
 async def diagnostics(ctx: RunContext[Deps], path: str) -> str:
     """Report the language server's errors and warnings for `path`, as
     `path:line:col: severity: message`. Edits already append fresh diagnostics
     automatically; call this to re-check a file on demand."""
-    if ctx.deps.lsp is None:
+    if ctx.deps.services.lsp is None:
         return _LSP_UNAVAILABLE
-    return await ctx.deps.lsp.diagnostics(path)
+    return await ctx.deps.services.lsp.diagnostics(path)
 
 
 def remember(
@@ -217,7 +217,7 @@ async def update_tasks(ctx: RunContext[Deps], tasks: list[Task]) -> str:
     visible; skip it for single-step requests. No approval is needed."""
     before = {t.text: t.status for t in ctx.deps.tasks.items}
     ctx.deps.tasks.replace(tasks)
-    th = getattr(ctx.deps, "turn_hooks", None)
+    th = ctx.deps.services.turn_hooks
     if th is not None:
         for t in ctx.deps.tasks.items:
             if t.status == "done" and before.get(t.text) != "done":
@@ -247,7 +247,7 @@ async def ask_user(ctx: RunContext[Deps], questions: list[Question]) -> str:
         return _ASK_USER_EMPTY
     if ctx.deps.ask_user is None:
         return _ASK_USER_NO_UI
-    th = getattr(ctx.deps, "turn_hooks", None)
+    th = ctx.deps.services.turn_hooks
     if th is not None:
         await th.notification(
             "ask_user", "Question from agent", coerced[0].question
@@ -369,19 +369,19 @@ async def spawn_agent(
         task, returns=returns, constraints=constraints, context=context
     )
     if background:
-        if ctx.deps.run_background_agent is None:
+        if ctx.deps.services.run_background_agent is None:
             return "Background sub-agents are not available in this context."
         label = f"{type}: {task}"
         job_id = ctx.deps.jobs.register(
             "agent", label,
-            ctx.deps.run_background_agent(
+            ctx.deps.services.run_background_agent(
                 type, task, mcp_names, max_output_chars, model, isolation
             ),
         )
         return f"Started {job_id} (agent) — {label[:60]}"
-    if ctx.deps.run_subagent is None:
+    if ctx.deps.services.run_subagent is None:
         return "Sub-agents are not available in this context."
-    return await ctx.deps.run_subagent(
+    return await ctx.deps.services.run_subagent(
         type, task, ctx.tool_call_id or "", mcp_names, max_output_chars, model,
         isolation,
     )
@@ -404,10 +404,10 @@ async def _with_diagnostics(ctx: RunContext[Deps], path: str, result: str) -> st
     and is logged at DEBUG so a broken LSP setup isn't indistinguishable from a
     clean file."""
     logger = logging.getLogger(__name__)
-    if ctx.deps.lsp is None:
+    if ctx.deps.services.lsp is None:
         return result
     try:
-        report = await ctx.deps.lsp.diagnostics(path, settle=0.8)
+        report = await ctx.deps.services.lsp.diagnostics(path, settle=0.8)
     except Exception as exc:  # noqa: BLE001 — diagnostics must never fail an edit
         logger.debug("diagnostics fetch failed for %s: %s", path, exc)
         return result
@@ -546,7 +546,7 @@ class BuiltinToolProvider:
         """``register_lsp_tools`` gates the six LSP navigation tools for both the
         main agent and sub-agents. The harness derives it from the LSP config
         (``lsp_enabled and lsp_tools_enabled``); diagnostics-on-edit is wired
-        separately through ``deps.lsp`` and is unaffected by this flag.
+        separately through ``deps.services.lsp`` and is unaffected by this flag.
 
         ``combined_job_tool`` (prototype) swaps the four job tools
         (jobs/job_output/wait_for_job/cancel_job) for a single ``job(action, …)``
