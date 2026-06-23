@@ -204,3 +204,28 @@ async def test_edit_queued_unknown_id_is_noop(tmp_path):
         app._queue = [QueuedMessage("a", None, "1")]
         await app.action_edit_queued("nope")
         assert [m.id for m in app._queue] == ["1"]
+
+
+@pytest.mark.anyio
+async def test_remove_queued_action_string_routes(tmp_path):
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._queue = [QueuedMessage("a", None, "1"), QueuedMessage("b", None, "2")]
+        # Equivalent to clicking the [@click=app.remove_queued('1')] link.
+        await app.run_action("remove_queued('1')")
+        await pilot.pause()
+        assert [m.id for m in app._queue] == ["2"]
+
+
+@pytest.mark.anyio
+async def test_edit_queued_action_string_routes(tmp_path):
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._queue = [QueuedMessage("draft me", None, "1")]
+        # Equivalent to clicking the [@click=app.edit_queued('1')] link.
+        await app.run_action("edit_queued('1')")
+        await pilot.pause()
+        assert app._queue == []
+        assert app.query_one(PromptInput).text == "draft me"
