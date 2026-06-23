@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 from typing import Iterable, Literal, Optional, Protocol
 
@@ -399,12 +400,16 @@ async def _with_diagnostics(ctx: RunContext[Deps], path: str, result: str) -> st
 
     No-op when no LSP is wired, when the language isn't served, or when the file
     is clean — so a successful edit only grows output when there's something the
-    model should fix. Never raises: any failure leaves ``result`` untouched."""
+    model should fix. Never raises: any failure leaves ``result`` untouched,
+    and is logged at DEBUG so a broken LSP setup isn't indistinguishable from a
+    clean file."""
+    logger = logging.getLogger(__name__)
     if ctx.deps.lsp is None:
         return result
     try:
         report = await ctx.deps.lsp.diagnostics(path, settle=0.8)
-    except Exception:  # noqa: BLE001 — diagnostics must never fail an edit
+    except Exception as exc:  # noqa: BLE001 — diagnostics must never fail an edit
+        logger.debug("diagnostics fetch failed for %s: %s", path, exc)
         return result
     if not report or not _DIAGNOSTIC_LINE.search(report):
         return result

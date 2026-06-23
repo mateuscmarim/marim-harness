@@ -40,6 +40,11 @@ class SessionController:
         self.keep_last_messages = keep_last_messages
         self.summarizer = summarizer
         self.titler = titler
+        self.history_version: int = 0
+        self._last_persisted_version: int = -1
+        # ``history`` is a property; the underlying list lives in ``_history``.
+        # The setter bumps ``history_version`` so the persist cache can detect
+        # no-op writes — set both fields before the first assignment below.
         self.history: list[ModelMessage] = []
         self.usage: RunUsage = RunUsage()
         self.duration_seconds: float = 0.0
@@ -56,23 +61,50 @@ class SessionController:
     def total_tokens(self) -> int:
         return self.usage.total_tokens
 
+    # Attribute setter that bumps the version on every history replacement —
+    # the persist cache relies on this, so direct ``self.history = x`` (which
+    # the property funnel routes through) invalidates the cache too. Sites
+    # that prefer an explicit method can call ``set_history`` instead.
+    @property
+    def history(self) -> list:
+        return self._history
+
+    @history.setter
+    def history(self, value: list) -> None:
+        self._history = value
+        self.history_version += 1
+
+    def set_history(self, history: list) -> None:
+        """Replace ``self.history`` and bump the version. Equivalent to
+        ``self.history = history`` but reads as a method call at the call
+        site; the property setter enforces cache invalidation either way."""
+        self.history = history
+
     def sessions(self) -> list[SessionInfo]:
         if self.manager is None:
             return []
         return self.manager.list()
 
-    def persist(self) -> None:
+    def persist(self, *, force: bool = False) -> None:
         if self.store is not None:
+            # Skip the (encode -> decode -> write) round-trip when the history
+            # version hasn't changed since the last persist — the on-disk file
+            # is already current. Usage-only changes are rare in practice and
+            # not worth a dedicated cache key. ``force`` is for metadata-only
+            # mutations (rename, auto_named flip) that don't touch ``history``.
+            if not force and self.history_version == self._last_persisted_version:
+                return
             elapsed = (time.monotonic() - self._segment_start) if self._segment_start else 0.0
             self.store.save(
                 self.history, self.usage, self.deps.tasks.to_payload(),
                 duration_seconds=self.duration_seconds + elapsed,
             )
+            self._last_persisted_version = self.history_version
 
     def set_model(self, model_id: str) -> None:
         if self.store is not None:
             self.store.model = model_id
-            self.persist()
+            self.persist(force=True)
 
     def resume(self) -> int:
         if self.store is None:
@@ -174,7 +206,9 @@ class SessionController:
             return
         self.store.name = title
         self.store.auto_named = False
-        self.persist()
+        # Metadata-only change — history didn't move, so the version didn't
+        # bump. Force the persist so the rename survives a restart.
+        self.persist(force=True)
         if self.on_rename is not None:
             self.on_rename(old, title)
 
@@ -195,5 +229,5 @@ class SessionController:
             return None
         self.store.name = new
         self.store.auto_named = False
-        self.persist()
+        self.persist(force=True)
         return new

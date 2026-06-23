@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
@@ -350,6 +351,24 @@ class Harness:
     async def _maybe_autoname(self) -> None:
         await self.session.maybe_autoname()
 
+    async def _flush_resumable(self, captured, resumable) -> None:
+        """Best-effort: repair any tool call the abort left unanswered and
+        persist. Tolerates a slow disk with a short deadline so Ctrl-C remains
+        snappy. Never raises — a flush failure must never mask the original
+        exception. The caller is responsible for re-raising whatever triggered
+        the flush."""
+        try:
+            recovered = _repair_unanswered_tool_calls(
+                list(captured) if captured else resumable
+            )
+            self.session.history = recovered
+            await asyncio.wait_for(
+                asyncio.to_thread(self.session.persist),
+                timeout=0.25,
+            )
+        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+            logger.debug("resumable flush failed or timed out", exc_info=True)
+
     def set_model(self, model_id: str, *, persist: bool = True) -> None:
         """Switch the active model at runtime. Rebuilds the per-turn model and
         any configured aux agents (summarizer/titler) on the new model, updates
@@ -514,12 +533,11 @@ class Harness:
                     # any completed work aren't lost, repairing any tool call the
                     # abort left unanswered (the captured messages may stop right
                     # after one) so the session stays resumable. Fall back to the
-                    # last clean history if the run produced nothing.
-                    recovered = _repair_unanswered_tool_calls(
-                        list(captured) if captured else resumable
-                    )
-                    self.session.history = recovered
-                    self.session.persist()
+                    # last clean history if the run produced nothing. The flush
+                    # runs with a tight deadline so a slow disk (or Ctrl-C during
+                    # a hung write) doesn't block the re-raise — the session is
+                    # best-effort by design.
+                    await self._flush_resumable(captured, resumable)
                     # Stash an actionable note (None for infra/render/cancel) to
                     # prepend to the next turn's prompt.
                     self._pending_error_note = _actionable_error_note(exc)

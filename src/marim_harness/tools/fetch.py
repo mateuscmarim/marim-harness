@@ -14,9 +14,12 @@ capped at ``_MAX_BYTES``; a response that *declares* a size over
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import logging
+import socket
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 import httpx
 from markdownify import markdownify as md  # type: ignore[import-untyped]
@@ -41,6 +44,42 @@ _INLINE_CHAR_LIMIT = 50_000
 # Where offloaded fetch bodies live, relative to the workspace root. Gitignored.
 _FETCH_DIR = (".marim", "fetch")
 _ALLOWED_SCHEMES = frozenset({"http", "https"})
+
+_BLOCKED_NETS = [
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
+]
+
+
+def _resolve_safely(host: str) -> list[str]:
+    """Resolve ``host`` and refuse if any address falls in a blocked range.
+    Returns the resolved address list on success; raises ``ValueError`` with a
+    clear message on DNS failure or any blocked address.
+    """
+    if not host:
+        raise ValueError("empty host")
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror as exc:
+        raise ValueError(f"can't resolve {host!r}: {exc}") from exc
+    addrs: set[str] = {i[4][0] for i in infos}
+    for raw in addrs:
+        bare = raw.split("%", 1)[0]
+        try:
+            ip = ipaddress.ip_address(bare)
+        except ValueError:
+            continue
+        if any(ip in net for net in _BLOCKED_NETS):
+            raise ValueError(
+                f"refusing to fetch {ip} (private/loopback/link-local address)"
+            )
+    return sorted(addrs)
 
 # Common markers for boilerplate we want to strip from the output.
 _BOILERPLATE_SELECTORS = (
@@ -138,6 +177,21 @@ async def fetch_url(
     except ValueError as exc:
         return str(exc)
 
+    host = urlparse(url).hostname
+    if not host:
+        return "Fetch failed: URL has no host"
+    try:
+        _resolve_safely(host)
+    except ValueError as exc:
+        return str(exc)
+
+    async def _check_redirect(request):
+        h = urlparse(str(request.url)).hostname or ""
+        try:
+            _resolve_safely(h)
+        except ValueError as exc:
+            raise httpx.RequestError(str(exc), request=request) from exc
+
     truncated = False
     try:
         async with httpx.AsyncClient(
@@ -145,6 +199,7 @@ async def fetch_url(
             follow_redirects=True,
             max_redirects=5,
             headers={"User-Agent": _UA},
+            event_hooks={"request": [_check_redirect]},
         ) as client:
             async with client.stream("GET", url) as resp:
                 resp.raise_for_status()

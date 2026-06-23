@@ -398,3 +398,28 @@ async def test_bash_allows_permitted_command(tmp_path: Path):
     ctx = SimpleNamespace(deps=deps)
     out = await provider.bash(ctx, "echo hello")
     assert "hello" in out
+
+
+@pytest.mark.anyio
+async def test_diagnostics_failure_is_logged_at_debug(caplog, tmp_path):
+    """A broken LSP setup must not look like a clean file. The exception
+    swallowed by _with_diagnostics must be visible at DEBUG so an operator
+    can spot a misconfigured or crashed LSP."""
+    import logging
+    from unittest.mock import MagicMock
+    from marim_harness.tools.provider import _with_diagnostics
+    from types import SimpleNamespace
+
+    deps = Deps(workspace_root=tmp_path)
+    fake_lsp = MagicMock()
+    fake_lsp.diagnostics = MagicMock(side_effect=RuntimeError("boom"))
+    deps.lsp = fake_lsp
+
+    ctx = SimpleNamespace(deps=deps)
+    with caplog.at_level(logging.DEBUG, logger="marim_harness.tools.provider"):
+        result = await _with_diagnostics(ctx, "x.py", "wrote")
+    assert result == "wrote"  # never raises; result is preserved
+    assert any(
+        r.name == "marim_harness.tools.provider" and r.levelno == logging.DEBUG
+        for r in caplog.records
+    ), f"no DEBUG record from provider: {[(r.name, r.levelname) for r in caplog.records]}"
