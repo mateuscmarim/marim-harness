@@ -48,6 +48,46 @@ async def test_text_format_prints_final_output(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_headless_command_policy_denylist_blocks_bash(tmp_path: Path, monkeypatch):
+    """Regression guard: headless mode wires command_policy through to the bash
+    tool. A denylisted command is refused with a clear message, even though the
+    same command would succeed if the policy were absent. This protects against
+    future refactors that route bash through a different layer and bypass the
+    gate."""
+    from types import SimpleNamespace
+    from marim_harness.command_policy import CommandPolicy
+    from marim_harness.tools.provider import bash
+
+    monkeypatch.setenv("MARIM_COMMAND_DENYLIST", "dangerous")
+    harness = _harness(tmp_path)
+    # Mirror what bootstrap.py does — the env var is loaded into config, then
+    # wrapped in CommandPolicy and attached to deps.
+    harness.deps.command_policy = CommandPolicy(denylist=["dangerous"])
+    ctx = SimpleNamespace(deps=harness.deps)
+
+    # A bare call to the bash tool with the denylisted command must be blocked.
+    out = await bash(ctx, "dangerous --whatever")
+    assert "Blocked by command policy" in out
+    assert "dangerous" in out
+
+    # A benign command must still pass.
+    out2 = await bash(ctx, "echo hello")
+    assert "hello" in out2
+
+
+def test_command_policy_parse_round_trips_env_value():
+    """The env-var parsing helper used by bootstrap must round-trip the
+    comma-separated value the operator sets in MARIM_COMMAND_DENYLIST."""
+    from marim_harness.command_policy import CommandPolicy, split_patterns
+
+    parsed = CommandPolicy.parse(deny="rm -rf, dd if=, mkfs")
+    patterns = split_patterns("rm -rf, dd if=, mkfs")
+    assert len(parsed._deny) == len(patterns) == 3
+    assert parsed.check("rm -rf /") is not None
+    assert parsed.check("ls -la") is None
+
+
+@pytest.mark.anyio
 async def test_json_format_emits_structured_object(tmp_path: Path):
     from marim_harness.interfaces.cli.headless import run_headless
 
