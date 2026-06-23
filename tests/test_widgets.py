@@ -305,6 +305,63 @@ async def test_task_and_job_panels_survive_markup_like_text():
         assert "[/]" in str(app.query_one("#job-body").render())
 
 
+def _panel_item(kind):
+    """A duck-typed task or job item the panel renderers accept."""
+    if kind == "task":
+        class _Task:
+            status = "pending"
+            text = "build the thing"
+        return _Task()
+
+    class _Job:
+        id = "job-1"
+        kind = "agent"
+        status = "running"
+        label = "build the thing"
+    return _Job()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("kind", ["task", "job"])
+async def test_live_panel_keeps_title_visible_and_toggles_when_collapsed(kind):
+    """Collapsing a panel must keep its sticky title on screen (so the user
+    still sees "Tasks"/"Jobs") and leave a clickable target to expand again.
+    The docked header contributes nothing to the panel's auto-height, so without
+    a floor the whole panel shrank to zero rows on collapse — title gone, nothing
+    left to click. The fix lives in the shared LivePanel, so both panels are
+    guarded here."""
+    from marim_harness.interfaces.tui.widgets import JobPanel, TaskPanel
+    from marim_harness.interfaces.tui.widgets.panels import PanelHeader
+
+    panel_cls = TaskPanel if kind == "task" else JobPanel
+    items = [_panel_item(kind) for _ in range(5)]
+
+    class H(App):
+        def compose(self) -> ComposeResult:
+            yield panel_cls()
+
+    app = H()
+    async with app.run_test(size=(80, 24)) as pilot:
+        panel = app.query_one(panel_cls)
+        panel._render_items(items)
+        await pilot.pause()
+        assert panel.size.height > 1  # expanded shows header + body
+
+        panel.on_panel_header_clicked(PanelHeader.Clicked())
+        await pilot.pause()
+        # Collapsed: body hidden, but the title row must survive on screen so
+        # the user still sees the title and has something to click to expand.
+        assert panel._body.display is False
+        assert panel.size.height >= 1, "collapsed panel vanished — title gone, nothing to click"
+        visible = app.screen._compositor.visible_widgets
+        assert panel._header in visible, "collapsed title row not rendered"
+
+        panel.on_panel_header_clicked(PanelHeader.Clicked())
+        await pilot.pause()
+        assert panel._body.display is True
+        assert panel.size.height > 1  # expands back
+
+
 class _PromptHost(App):
     def __init__(self) -> None:
         super().__init__()

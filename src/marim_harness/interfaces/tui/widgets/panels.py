@@ -1,5 +1,9 @@
 """Live panels pinned above the status bar: the agent's task checklist and the
-session's background jobs. Each hides itself when empty so it takes no space."""
+session's background jobs. Both share one widget — :class:`LivePanel` — which
+hides itself when empty (so it takes no space unused) and collapses to its
+title row on click."""
+
+from collections.abc import Callable
 
 from textual import events
 from textual.containers import VerticalScroll
@@ -26,48 +30,35 @@ class PanelHeader(Static, can_focus=True):
         self.post_message(self.Clicked())
 
 
-class TaskPanel(VerticalScroll):
-    """The agent's live checklist, pinned above the status bar. Hidden whenever
-    the list is empty so it takes no space when unused."""
+class LivePanel(VerticalScroll):
+    """A live, collapsible panel pinned above the status bar: a sticky title
+    above a scrollable body. Hidden whenever it has no items, so it takes no
+    space when unused; click the title to collapse the body to a single line.
 
-    def __init__(self) -> None:
-        super().__init__(id="task-panel")
+    Subclasses supply a ``name`` (drives the ``{name}-panel/-header/-body``
+    ids), a ``title``, and a ``renderer`` that turns the item list into text."""
+
+    DEFAULT_CSS = """
+    LivePanel {
+        height: auto; max-height: 8; background: $panel; color: $text;
+        padding: 0 1; border-top: tall $background;
+    }
+    LivePanel .live-panel-header {
+        height: 1; dock: top; padding: 0;
+        color: $accent; text-style: bold; content-align: left middle;
+    }
+    LivePanel .live-panel-body { height: auto; }
+    """
+
+    def __init__(self, *, name: str, title: str, renderer: Callable[[list], str]) -> None:
+        super().__init__(id=f"{name}-panel")
         self.display = False
-        self._header = Static(id="task-header")
-        self._body = Static(id="task-body")
-
-    def compose(self):
-        yield self._header
-        yield self._body
-
-    def show_tasks(self, items: list) -> None:
-        """Render the current checklist, or hide the panel when there are none."""
-        from ....tasks import render_tasks
-
-        if not items:
-            self.display = False
-            self._header.update("")
-            self._body.update("")
-            return
-        self.display = True
-        count = len(items)
-        self._header.update(
-            Content.from_markup(f"[b $accent]Tasks[/] [dim]({count})[/]")
-        )
-        self._body.update(Content(render_tasks(items)))
-
-
-class JobPanel(VerticalScroll):
-    """The session's live background jobs, pinned above the status bar. Hidden
-    whenever there are no jobs. Title is sticky and toggles collapse on click."""
-
-    def __init__(self) -> None:
-        super().__init__(id="job-panel")
-        self.display = False
+        self._title = title
+        self._renderer = renderer
         self._collapsed = False
         self._count = 0
-        self._header = PanelHeader(id="job-header")
-        self._body = Static(id="job-body")
+        self._header = PanelHeader(id=f"{name}-header", classes="live-panel-header")
+        self._body = Static(id=f"{name}-body", classes="live-panel-body")
 
     def compose(self):
         yield self._header
@@ -77,26 +68,55 @@ class JobPanel(VerticalScroll):
         """Toggle collapse when the header is clicked."""
         self._collapsed = not self._collapsed
         self._body.display = not self._collapsed
+        # The header is docked, so it never counts toward the panel's
+        # auto-height. With the body hidden there are no non-docked children
+        # left, so auto-height resolves to zero and the whole panel — title and
+        # its click target included — vanishes. While collapsed, pin an
+        # explicit height big enough for the title: one row for the title plus
+        # one for the `border-top: tall` separator (box-sizing is border-box).
+        self.styles.height = 2 if self._collapsed else "auto"
         self._update_header()
 
     def _update_header(self) -> None:
-        glyph = "\u25b8" if self._collapsed else "\u25be"
+        glyph = "▸" if self._collapsed else "▾"
         self._header.update(
             Content.from_markup(
-                f"[b $accent]{glyph} Jobs[/] [dim]({self._count})[/]"
+                f"[b $accent]{glyph} {self._title}[/] [dim]({self._count})[/]"
             )
         )
 
-    def show_jobs(self, jobs: list) -> None:
-        """Render the current jobs, or hide the panel when there are none."""
-        from ....jobs import render_jobs
-
-        if not jobs:
+    def _render_items(self, items: list) -> None:
+        """Render the current items, or hide the panel when there are none."""
+        if not items:
             self.display = False
             self._header.update("")
             self._body.update("")
             return
         self.display = True
-        self._count = len(jobs)
+        self._count = len(items)
         self._update_header()
-        self._body.update(Content(render_jobs(jobs)))
+        self._body.update(Content(self._renderer(items)))
+
+
+class TaskPanel(LivePanel):
+    """The agent's live checklist."""
+
+    def __init__(self) -> None:
+        from ....tasks import render_tasks
+
+        super().__init__(name="task", title="Tasks", renderer=render_tasks)
+
+    def show_tasks(self, items: list) -> None:
+        self._render_items(items)
+
+
+class JobPanel(LivePanel):
+    """The session's live background jobs."""
+
+    def __init__(self) -> None:
+        from ....jobs import render_jobs
+
+        super().__init__(name="job", title="Jobs", renderer=render_jobs)
+
+    def show_jobs(self, jobs: list) -> None:
+        self._render_items(jobs)
