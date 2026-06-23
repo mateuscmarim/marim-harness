@@ -13,6 +13,8 @@ from pydantic_ai.messages import (
     PartStartEvent,
     TextPart,
     TextPartDelta,
+    ThinkingPart,
+    ThinkingPartDelta,
 )
 
 from ...agent import Harness
@@ -63,6 +65,10 @@ def _event_obj(event) -> Optional[dict]:
         return {"type": "text", "text": event.part.content or ""}
     if isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
         return {"type": "text", "text": event.delta.content_delta or ""}
+    if isinstance(event, PartStartEvent) and isinstance(event.part, ThinkingPart):
+        return {"type": "thinking", "text": event.part.content or ""}
+    if isinstance(event, PartDeltaEvent) and isinstance(event.delta, ThinkingPartDelta):
+        return {"type": "thinking", "text": event.delta.content_delta or ""}
     if isinstance(event, FunctionToolCallEvent):
         return {
             "type": "tool_call",

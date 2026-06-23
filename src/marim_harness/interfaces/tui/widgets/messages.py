@@ -47,6 +47,20 @@ class SummaryWidget(Collapsible):
         )
 
 
+class ThinkingWidget(Collapsible):
+    """A model's chain-of-thought, shown as a distinct collapsed block so it's
+    available on demand without cluttering the reply. The body is a streaming
+    AssistantMessage (Markdown); because it lives inside a collapsed Collapsible,
+    the flush tick defers its (re)render until the user expands it — the same
+    deferral the folded sub-agent bodies rely on."""
+
+    def __init__(self) -> None:
+        self.body = AssistantMessage()
+        super().__init__(
+            self.body, title=Content("✦ thinking"), collapsed=True  # pyright: ignore[reportArgumentType]
+        )
+
+
 class TurnMeta(Static):
     """A dim per-turn footer stamped under a reply — e.g. how long the turn took."""
 

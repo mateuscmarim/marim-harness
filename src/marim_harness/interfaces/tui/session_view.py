@@ -13,6 +13,7 @@ from .widgets import (
     AssistantMessage,
     NoticeMessage,
     SummaryWidget,
+    ThinkingWidget,
     ToolCallWidget,
     ToolGroupWidget,
     UserMessage,
@@ -33,6 +34,7 @@ class SessionView:
             ModelRequest,
             ModelResponse,
             TextPart,
+            ThinkingPart,
             ToolCallPart,
             ToolReturnPart,
             UserPromptPart,
@@ -77,6 +79,13 @@ class SessionView:
                             msg = AssistantMessage()
                             await log.mount(msg)
                             self.app.stream.append_stream(msg, part.content)
+                    elif isinstance(part, ThinkingPart):
+                        if part.content:
+                            group = None
+                            solo = None
+                            widget = ThinkingWidget()
+                            await log.mount(widget)
+                            self.app.stream.append_stream(widget.body, part.content)
                     elif isinstance(part, ToolCallPart):
                         widget = ToolCallWidget(part.tool_name, part.args_as_dict())
                         tool_widgets[part.tool_call_id] = widget

@@ -19,6 +19,7 @@ from .messages import (
     ErrorMessage,
     NoticeMessage,
     SummaryWidget,
+    ThinkingWidget,
     TurnMeta,
     UserMessage,
 )
@@ -53,6 +54,7 @@ __all__ = [
     "ErrorMessage",
     "NoticeMessage",
     "SummaryWidget",
+    "ThinkingWidget",
     "TurnMeta",
     "UserMessage",
     # panels

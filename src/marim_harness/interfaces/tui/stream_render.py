@@ -11,6 +11,8 @@ from pydantic_ai.messages import (
     PartStartEvent,
     TextPart,
     TextPartDelta,
+    ThinkingPart,
+    ThinkingPartDelta,
 )
 from textual.containers import VerticalScroll
 from textual.widget import Widget
@@ -20,6 +22,7 @@ from ...usage import resolve_cost
 from .widgets import (
     AssistantMessage,
     SubAgentWidget,
+    ThinkingWidget,
     ToolCallWidget,
     ToolGroupWidget,
 )
@@ -65,6 +68,13 @@ class _StreamSink:
     def set_assistant(self, msg) -> None:
         raise NotImplementedError
 
+    def get_thinking(self):
+        """The ThinkingWidget currently receiving thinking deltas, or None."""
+        raise NotImplementedError
+
+    def set_thinking(self, widget) -> None:
+        raise NotImplementedError
+
     def on_text(self) -> None:
         """Called when the stream starts a text part (title status, sub only)."""
 
@@ -102,6 +112,12 @@ class _TopLevelSink(_StreamSink):
 
     def set_assistant(self, msg) -> None:
         self._r.current_assistant = msg
+
+    def get_thinking(self):
+        return self._r.current_thinking
+
+    def set_thinking(self, widget) -> None:
+        self._r.current_thinking = widget
 
     async def intercept_tool(self, event, args: dict) -> bool:
         # A background spawn returns a job id immediately and doesn't stream its
@@ -148,6 +164,12 @@ class _SubAgentSink(_StreamSink):
     def set_assistant(self, msg) -> None:
         self._r.sub_assistants[self._sid] = msg
 
+    def get_thinking(self):
+        return self._r.sub_thinkings.get(self._sid)
+
+    def set_thinking(self, widget) -> None:
+        self._r.sub_thinkings[self._sid] = widget
+
     def on_text(self) -> None:
         self._parent.note_text()
 
@@ -163,12 +185,14 @@ class StreamRenderer:
     def __init__(self, app) -> None:
         self.app = app
         self.current_assistant: AssistantMessage | None = None
+        self.current_thinking: ThinkingWidget | None = None
         self.tool_widgets: dict[str, ToolCallWidget | SubAgentWidget] = {}
         self.tool_group: ToolGroupWidget | None = None
         self.solo_tool: ToolCallWidget | None = None
         self.sub_tool_groups: dict[str, ToolGroupWidget | None] = {}
         self.sub_solo_tools: dict[str, ToolCallWidget | None] = {}
         self.sub_assistants: dict[str, AssistantMessage] = {}
+        self.sub_thinkings: dict[str, ThinkingWidget] = {}
         self.dirty_streams: set[AssistantMessage] = set()
         self.live_run_tokens = 0
         self.show_all_output = False  # Ctrl+O reveal-all toggle
@@ -180,12 +204,14 @@ class StreamRenderer:
     def reset(self) -> None:
         """Clear per-session stream state when the log is rebuilt (new/switch/clear)."""
         self.current_assistant = None
+        self.current_thinking = None
         self.tool_widgets.clear()
         self.tool_group = None
         self.solo_tool = None
         self.sub_tool_groups.clear()
         self.sub_solo_tools.clear()
         self.sub_assistants.clear()
+        self.sub_thinkings.clear()
         self.dirty_streams.clear()
 
     def reset_live_tokens(self) -> None:
@@ -347,6 +373,23 @@ class StreamRenderer:
             msg = sink.get_assistant()
             if msg is not None:
                 self.append_stream(msg, event.delta.content_delta or "")
+        elif isinstance(event, PartStartEvent) and isinstance(
+            event.part, ThinkingPart
+        ):
+            # Reasoning streams as its own collapsed block, standalone like
+            # assistant text (so it breaks any open tool run rather than nesting).
+            sink.set_run(None, None)
+            widget = ThinkingWidget()
+            sink.set_thinking(widget)
+            await sink.container.mount(widget)
+            if event.part.content:
+                self.append_stream(widget.body, event.part.content)
+        elif isinstance(event, PartDeltaEvent) and isinstance(
+            event.delta, ThinkingPartDelta
+        ):
+            widget = sink.get_thinking()
+            if widget is not None:
+                self.append_stream(widget.body, event.delta.content_delta or "")
         elif isinstance(event, FunctionToolCallEvent):
             # A gated tool re-emits its call event on the post-approval execution
             # pass; reuse the widget already mounted for this id rather than

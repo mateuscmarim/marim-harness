@@ -184,6 +184,55 @@ async def test_flush_only_touches_buffered_messages(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_thinking_stream_renders_collapsed_widget(tmp_path: Path):
+    """A streamed ThinkingPart mounts a collapsed ThinkingWidget and its deltas
+    land in the widget body — reasoning is kept but folded, never inline text."""
+    import types
+
+    from pydantic_ai.messages import (
+        PartDeltaEvent,
+        PartStartEvent,
+        ThinkingPart,
+        ThinkingPartDelta,
+    )
+
+    from marim_harness.interfaces.tui.widgets import AssistantMessage, ThinkingWidget
+
+    ctx = types.SimpleNamespace(usage=types.SimpleNamespace(total_tokens=0))
+
+    async def gen():
+        yield PartStartEvent(index=0, part=ThinkingPart(content="step one"))
+        yield PartDeltaEvent(index=0, delta=ThinkingPartDelta(content_delta=" step two"))
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.stream.on_events(ctx, gen())
+        await pilot.pause()
+
+        thinking = list(app.query(ThinkingWidget))
+        assert len(thinking) == 1
+        assert thinking[0].collapsed  # folded by default
+        assert thinking[0].body.text == "step one step two"
+
+        def within_thinking(widget) -> bool:
+            node = widget.parent
+            while node is not None:
+                if isinstance(node, ThinkingWidget):
+                    return True
+                node = node.parent
+            return False
+
+        # The reasoning is NOT rendered as ordinary assistant text — every
+        # AssistantMessage carrying it lives inside the ThinkingWidget.
+        assert all(
+            within_thinking(w)
+            for w in app.query(AssistantMessage)
+            if "step one" in w.text
+        )
+
+
+@pytest.mark.anyio
 async def test_replay_renders_compaction_summary_as_widget(tmp_path: Path):
     """A restored summary message renders as a distinct SummaryWidget, while a
     normal prompt still renders as a UserMessage."""
