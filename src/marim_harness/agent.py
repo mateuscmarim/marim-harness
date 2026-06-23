@@ -443,10 +443,9 @@ class Harness:
         return prompt
 
     def _build_hooked_handler(self, base_handler):
-        """Return a hook-intercepting event stream handler that fires Pre/PostToolUse
-        for each streamed tool event, then forwards to ``base_handler`` (or drains
-        if it is None). Returns `base_handler` unchanged when no hooks are configured.
-        Returns a new async handler that intercepts tool events when hooks are present."""
+        """Return ``base_handler`` unchanged when no hooks are configured, or
+        wrap it in a handler that intercepts tool events to fire Pre/PostToolUse
+        hooks."""
         if self.deps.hooks is None:
             return base_handler
         # Scoped to this single turn: maps tool_call_id → tool_input so the
@@ -473,7 +472,7 @@ class Harness:
         deferred_results,
         toolsets,
         event_stream_handler,
-        resumable: list,
+        resumable: list[ModelMessage],
     ) -> str:
         """Drive the agent.run loop, handling DeferredToolRequests approval rounds,
         persisting on success, and rolling back to ``resumable`` on interrupt.
