@@ -23,7 +23,6 @@ PromptInput { height: 5; max-height: 12; border: round $accent; padding: 0 1; }
     height: 8; background: $panel; color: $text;
     padding: 0 1; border-top: tall $background;
 }
-#job-header { height: 1; }
 #job-body { height: 1fr; }
 
 .user-msg { color: $accent; text-style: bold; margin-top: 1; }
