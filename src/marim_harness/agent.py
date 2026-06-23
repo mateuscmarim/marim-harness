@@ -20,7 +20,7 @@ from .compaction import (
     make_titler,
 )
 from .deps import Deps, HarnessAgent, HarnessServices
-from .errors import dump_provider_error, provider_error_status
+from .errors import dump_provider_error
 from .hooks.dispatch import TurnHooks
 from .instructions import register_instructions
 from .lsp.manager import LspManager
@@ -30,8 +30,15 @@ from .permissions import Mode, resolve_approvals
 from .session import SessionController, SessionManager, SessionStore
 from .session.checkpoints import CheckpointManager
 from .subagents import SubagentRunner
-from .tasks import render_tasks
 from .tools.provider import ToolProvider
+from .turn_context import (
+    actionable_error_note as _actionable_error_note,
+)
+from .turn_context import (
+    render_checklist_block,
+    strip_turn_context,  # noqa: F401  — re-exported for session_view + tests
+    wrap_turn_context,
+)
 from .workspace.snapshot import GitSnapshotter
 
 logger = logging.getLogger(__name__)
@@ -42,34 +49,6 @@ logger = logging.getLogger(__name__)
 # OpenAI/Groq/xAI pass it through), and providers that don't simply never read
 # the key — so this is "on where available" without breaking anything else.
 _DEFAULT_MODEL_SETTINGS = ModelSettings(parallel_tool_calls=True)
-
-# Envelope wrapped around any context injected into a turn's prompt — job
-# digests, error notes, and SessionStart/UserPromptSubmit hook output. It is
-# prepended to what the user typed, so the typed text stays the suffix. The
-# envelope gives that boundary a stable marker so a resumed session can show
-# only what the user typed (matching the live TUI, which mounts the typed text
-# before injection happens). Plain turns carry no envelope and are unchanged.
-_TURN_CONTEXT_OPEN = "<turn-context>"
-_TURN_CONTEXT_CLOSE = "</turn-context>"
-_TURN_CONTEXT_SEP = f"{_TURN_CONTEXT_CLOSE}\n\n"
-
-
-def wrap_turn_context(injected: str, typed: str) -> str:
-    """Wrap ``injected`` context in the turn-context envelope and append the
-    user's ``typed`` prompt after it. Inverse of :func:`strip_turn_context`."""
-    return f"{_TURN_CONTEXT_OPEN}\n{injected}\n{_TURN_CONTEXT_SEP}{typed}"
-
-
-def strip_turn_context(content: str) -> str:
-    """Return only the user-typed portion of a persisted prompt, dropping any
-    leading turn-context envelope that :meth:`Harness.run_turn` prepended. A
-    prompt with no envelope is returned unchanged."""
-    if not content.startswith(_TURN_CONTEXT_OPEN):
-        return content
-    idx = content.find(_TURN_CONTEXT_SEP)
-    if idx == -1:
-        return content
-    return content[idx + len(_TURN_CONTEXT_SEP):]
 
 
 def _has_unanswered_tool_calls(history: list[ModelMessage]) -> bool:
@@ -147,61 +126,6 @@ def _repair_unanswered_tool_calls(history: list[ModelMessage]) -> list[ModelMess
         answered.update(part.tool_call_id for part in missing)
         changed = True
     return repaired if changed else history
-
-
-def _short(exc: BaseException, limit: int = 200) -> str:
-    """A whitespace-collapsed, length-capped rendering of an exception — never a
-    traceback, just the one-line gist that's safe to hand back to the model."""
-    text = " ".join(str(exc).split())
-    return text[: limit - 1] + "…" if len(text) > limit else text
-
-
-def _actionable_error_note(exc: BaseException) -> str | None:
-    """A terse, sanitized note about a failed turn that the *model* can act on,
-    or None when the failure is not the model's to fix. We surface only the
-    errors where adjusting the next turn could plausibly help — a malformed or
-    oversized request, a usage limit, the model failing to produce a usable
-    response — and stay silent on harness/render bugs, cancellations, and
-    transient infra (rate limits, 5xx), where a note would only mislead."""
-    from pydantic_ai.exceptions import (
-        ModelHTTPError,
-        UnexpectedModelBehavior,
-        UsageLimitExceeded,
-    )
-
-    head = "Note: your previous turn did not complete."
-    if isinstance(exc, ModelHTTPError):
-        # Client errors (context too long, malformed request) are the model's to
-        # fix; rate limits (429) and server errors (5xx) are transient infra that
-        # retrying — not re-prompting — should handle.
-        if 400 <= exc.status_code < 500 and exc.status_code != 429:
-            return (
-                f"{head} The request was rejected (HTTP {exc.status_code}). "
-                "Adjust your approach — e.g. shorten the input or fix the "
-                "request — before continuing."
-            )
-        return None
-    # A raw provider error (openai.APIError) that pydantic-ai didn't wrap as a
-    # ModelHTTPError — common with OpenRouter's "Provider returned error". Apply
-    # the same client-vs-transient split using the status the SDK or the body
-    # carries; a 5xx/unknown is infra and gets no (misleading) note.
-    provider_status = provider_error_status(exc)
-    if provider_status is not None:
-        if 400 <= provider_status < 500 and provider_status != 429:
-            return (
-                f"{head} The provider rejected the request "
-                f"(HTTP {provider_status}: {_short(exc)}). Adjust your approach "
-                "— e.g. shorten the input or fix the request — before continuing."
-            )
-        return None
-    if isinstance(exc, UsageLimitExceeded):
-        return (
-            f"{head} A usage limit was reached ({_short(exc)}). Be more "
-            "economical with tool calls and continue."
-        )
-    if isinstance(exc, UnexpectedModelBehavior):
-        return f"{head} {_short(exc)}. Adjust your approach and continue."
-    return None
 
 
 @dataclass
@@ -556,17 +480,11 @@ class Harness:
         so a resumed session can recover just the typed text. The one-shot notes
         and the digest are consumed here."""
         prompt = typed
-        # Current task checklist as turn-state (not consumed): it lives here in
-        # the per-turn envelope rather than the system prompt so the cached
-        # system/tool prefix stays stable across turns.
-        items = self.deps.tasks.items
-        if items:
-            checklist = (
-                "Your current task checklist (✔ done · ▸ in progress · ○ "
-                "pending):\n\n" + render_tasks(items) + "\n\nKeep it current "
-                "with the update_tasks tool: pass the full list, keep one item "
-                "in progress, and mark items done as you complete them."
-            )
+        # Current task checklist as turn-state (not consumed) — see
+        # render_checklist_block for why it rides in the per-turn envelope rather
+        # than the (cache-stable) system prompt.
+        checklist = render_checklist_block(self.deps.tasks.items)
+        if checklist:
             prompt = f"{checklist}\n\n{prompt}"
         digest = self.deps.jobs.take_finished_digest()
         if digest:
