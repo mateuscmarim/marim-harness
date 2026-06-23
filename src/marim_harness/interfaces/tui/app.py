@@ -17,6 +17,7 @@ from .approval import ApprovalModal
 from .ask_user import AskUserModal
 from .commands import dispatch
 from .model_picker import ModelPickerModal
+from .queue import QueuedMessage
 from .session_view import SessionView
 from .settings import SettingsModal
 from .status import (
@@ -35,6 +36,7 @@ from .widgets import (
     JobPanel,
     NoticeMessage,
     PromptInput,
+    QueuePanel,
     SummaryWidget,
     TaskPanel,
     TurnMeta,
@@ -72,6 +74,8 @@ class HarnessApp(App):
         ("ctrl+t", "cycle_mode", "Cycle mode"),
         ("ctrl+o", "toggle_outputs", "Show all output"),
         ("escape", "cancel_turn", "Cancel turn"),
+        ("ctrl+r", "run_queued", "Run queued"),
+        ("ctrl+c", "quit", "Quit"),
     ]
 
     def __init__(self, harness: Harness, history: PromptHistory | None = None) -> None:
@@ -96,6 +100,13 @@ class HarnessApp(App):
         self._compacting_notice: NoticeMessage | None = None
         self._vision_caps: dict[str, bool | None] = {}
         self._turn_worker = None
+        self._queue: list[QueuedMessage] = []
+        self._queue_paused = False
+        self._queue_seq = 0
+        # Confirm-once quit latch: set True by the first quit attempt that warns
+        # about pending queued messages. One-way for the process — once the user
+        # has been warned, later quits proceed without re-warning.
+        self._quit_armed = False
         # Autonomous wake-on-completion (interactive TUI only). When a background
         # job finishes while the turn worker is idle, fire a digest-only turn so
         # the agent reacts without waiting for the user. Seeded from config;
@@ -115,6 +126,7 @@ class HarnessApp(App):
         yield VerticalScroll(id="log")
         yield JobPanel()
         yield TaskPanel()
+        yield QueuePanel()
         yield Static(self.status.status_text(), id="status-bar")
         yield CommandAutocomplete(id="cmd-autocomplete")
         yield PromptInput(history=self._history)
@@ -149,6 +161,7 @@ class HarnessApp(App):
             self.stream._anchored_on_overflow = True
         self._render_tasks()  # reflect any checklist restored with the session
         self._render_jobs()  # process-scoped jobs survive session switches
+        self._render_queue()
         # Seed vision capabilities in the background so the text-only-model
         # warning can fire even before the user opens the model picker.
         source = self.harness.model_source
@@ -315,9 +328,101 @@ class HarnessApp(App):
         which save_theme ignores."""
         save_theme(theme)
 
+    async def _start_turn(
+        self, text: str, attachments: list[tuple[bytes, str]] | None = None
+    ) -> None:
+        """Mount the user message and spawn the exclusive turn worker. Shared by
+        a fresh submit and a drained queue item. Resets the autonomous-wake
+        chain and spawns the worker."""
+        self._auto_turn_depth = 0
+        log = self.query_one("#log", VerticalScroll)
+        await log.mount(UserMessage(text))
+        self.stream.current_assistant = None
+        self._turn_worker = self.run_worker(
+            self._run_turn(text, attachments), exclusive=True
+        )
+
+    def _enqueue(
+        self, text: str, attachments: list[tuple[bytes, str]] | None = None
+    ) -> None:
+        """Buffer a submission to run after the current turn."""
+        self._queue_seq += 1
+        self._queue.append(QueuedMessage(text, attachments, str(self._queue_seq)))
+        self._render_queue()
+
+    async def _drain_next(self) -> None:
+        """Pop and start the next queued message."""
+        item = self._queue.pop(0)
+        self._render_queue()
+        await self._start_turn(item.text, item.attachments)
+
+    async def _after_turn(self) -> None:
+        """Called from _run_turn's finally. Drain the next queued item on a
+        clean, unpaused turn; otherwise fall through to the background-job wake."""
+        if not self._queue_paused and self._queue:
+            await self._drain_next()
+        else:
+            self._maybe_wake()
+
+    def _render_queue(self) -> None:
+        """Repaint the queue panel from the current queue."""
+        if not self.is_running:
+            return
+        try:
+            panel = self.query_one(QueuePanel)
+        except NoMatches:
+            return  # tearing down; nothing to paint
+        panel.show_queue(self._queue, paused=self._queue_paused)
+
+    async def action_run_queued(self) -> None:
+        """Resume a paused queue: clear the pause and start the next item."""
+        if self._queue and self._turn_worker is None:
+            self._queue_paused = False
+            await self._drain_next()
+
+    def action_remove_queued(self, id: str) -> None:
+        """Drop a pending queued message before it runs."""
+        self._queue = [m for m in self._queue if m.id != id]
+        self._render_queue()
+
+    async def action_edit_queued(self, id: str) -> None:
+        """Pop a queued message out of the queue and load its text into the
+        prompt input for editing. Attachments are not restored — editing is
+        text-only; re-add attachments before resubmitting if needed."""
+        item = next((m for m in self._queue if m.id == id), None)
+        if item is None:
+            return
+        self._queue = [m for m in self._queue if m.id != id]
+        self._render_queue()
+        prompt = self.query_one(PromptInput)
+        prompt.text = item.text
+        prompt.move_cursor(prompt.document.end)
+        prompt.focus()
+
     def action_cancel_turn(self) -> None:
         if self.status.busy and self._turn_worker is not None:
             self._turn_worker.cancel()
+
+    def _maybe_warn_pending_quit(self) -> bool:
+        """Confirm-once guard for quitting with messages still queued. Returns
+        True if the quit should be cancelled (a warning was just shown); False
+        to let the quit proceed. The queue is process-scoped and dropped on exit,
+        so warn the user before discarding pending work."""
+        if self._queue and not self._quit_armed:
+            self._quit_armed = True
+            self.query_one("#log", VerticalScroll).mount(
+                NoticeMessage(
+                    f"{len(self._queue)} queued message(s) will be discarded. "
+                    "Quit again to confirm."
+                )
+            )
+            return True
+        return False
+
+    async def action_quit(self) -> None:
+        if self._maybe_warn_pending_quit():
+            return
+        await super().action_quit()
 
     def _on_compact_start(self) -> None:
         """Show a live note while compaction runs — the summarizer call can take a
@@ -527,13 +632,11 @@ class HarnessApp(App):
             log = self.query_one("#log", VerticalScroll)
             await log.mount(NoticeMessage(reason))
             return
-        log = self.query_one("#log", VerticalScroll)
-        await log.mount(UserMessage(text))
-        self.stream.current_assistant = None
-        self._auto_turn_depth = 0  # a user turn breaks any autonomous-wake chain
-        self._turn_worker = self.run_worker(
-            self._run_turn(text, event.attachments), exclusive=True
-        )
+        if self._turn_worker is not None:
+            self._enqueue(text, event.attachments)
+            return
+        self._queue_paused = False
+        await self._start_turn(text, event.attachments)
 
     async def _run_turn(
         self, text: str, attachments: list[tuple[bytes, str]] | None = None
@@ -553,13 +656,15 @@ class HarnessApp(App):
         except CancelledError:
             # User pressed escape; mount synchronously (we are unwinding) and
             # let the worker finish as cancelled.
+            self._queue_paused = True
             log.mount(ErrorMessage("turn cancelled"))
             raise
         except Exception as exc:  # keep the session alive on any turn failure
+            self._queue_paused = True
             detail = format_provider_error(exc) or f"{type(exc).__name__}: {exc}"
             await log.mount(ErrorMessage(detail))
             self._notify("Turn error", detail, "error")
         finally:
             self._turn_worker = None
             self.status.set_busy(False)
-            self._maybe_wake()  # a job that finished mid-turn drains now
+            await self._after_turn()  # drain next queued item, or wake on jobs
