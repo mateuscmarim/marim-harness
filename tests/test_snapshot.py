@@ -104,3 +104,14 @@ def test_restore_is_noop_outside_git(tmp_path: Path):
     plain = tmp_path / "plain"
     plain.mkdir()
     GitSnapshotter(plain).restore("deadbeef")  # must not raise
+
+
+def test_restore_does_not_touch_index_or_head(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    snap = GitSnapshotter(repo)
+    commit = snap.capture("refs/marim/checkpoints/s/0", "cp 0")
+    (repo / "a.txt").write_text("changed\n")
+    head_before = _git(repo, "rev-parse", "HEAD")
+    snap.restore(commit)
+    assert _git(repo, "rev-parse", "HEAD") == head_before        # HEAD unmoved
+    assert _git(repo, "diff", "--cached", "--name-only") == ""    # real index untouched

@@ -91,11 +91,19 @@ class GitSnapshotter:
             return
         try:
             # 1. Safety net: snapshot the current state so the rewind is undoable.
-            self.capture("refs/marim/checkpoints/_pre_restore", "pre-restore safety snapshot")
+            pre = self.capture("refs/marim/checkpoints/_pre_restore", "pre-restore safety snapshot")
+            if pre is None:
+                logger.warning(
+                    "restore: pre-restore safety snapshot failed; "
+                    "proceeding without a recovery point"
+                )
             # 2. Remove files that exist now but not in the target snapshot
             #    (created after the checkpoint). Scoped to the diff — never a
             #    blanket clean.
             target = self._tree_files(repo, commit)
+            # Remove files created after the checkpoint (present now, absent in the
+            # target tree). Scoped to the diff — never a blanket clean. Git-ignored
+            # files are excluded by _present_files and intentionally left untouched.
             for rel in self._present_files(repo) - target:
                 try:
                     (repo / rel).unlink()
