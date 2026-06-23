@@ -24,6 +24,8 @@ headless mode for one-shot prompts and scripting.
   events; external commands observe or inject context without blocking the agent.
 - **Background jobs & sub-agents** — fire-and-forget shell/agent work whose
   results are pulled back into the conversation.
+- **Checkpoints & rewind** — restore the conversation and files to any prior
+  turn; snapshots honor `.gitignore` and work gracefully outside git.
 
 ## Install
 
@@ -45,6 +47,29 @@ marim -p "summarize src/marim_harness/agent.py"
 echo "what does run_turn do?" | marim
 marim -p "list the tools" --output-format json --mode plan
 ```
+
+### Checkpoints & rewind
+
+The harness captures a **checkpoint** at the start of every turn — a record of
+the conversation length and, when the workspace is a git repository, a shadow
+snapshot of the working tree. Rewind with:
+
+```
+/rewind            # list checkpoints for this session
+/rewind 3          # restore the conversation and files to before turn #3
+```
+
+Rewinding truncates the conversation to that point and, in a git workspace,
+restores tracked and untracked files to their snapshot — files created after the
+checkpoint are removed. The pre-rewind state is itself saved to
+`refs/marim/checkpoints/_pre_restore`, so a rewind is recoverable.
+
+Boundaries:
+- Snapshots honor `.gitignore`: ignored files (build output, `.env`, …) are not
+  captured or restored.
+- Outside a git repository, rewind restores the **conversation only**.
+- Your branch, staged index, and HEAD are never modified — only working-tree
+  files, and only on restore.
 
 ### Management subcommands
 
