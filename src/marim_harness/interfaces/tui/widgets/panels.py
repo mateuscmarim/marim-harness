@@ -1,9 +1,29 @@
 """Live panels pinned above the status bar: the agent's task checklist and the
 session's background jobs. Each hides itself when empty so it takes no space."""
 
+from textual import events
 from textual.containers import VerticalScroll
 from textual.content import Content
+from textual.message import Message
 from textual.widgets import Static
+
+
+class PanelHeader(Static, can_focus=True):
+    """Clickable header for collapsible panels. Follows CollapsibleTitle
+    pattern: can_focus + pointer cursor + event.stop() so VerticalScroll
+    doesn't consume the click for scrolling."""
+
+    DEFAULT_CSS = """
+    PanelHeader { pointer: pointer; }
+    PanelHeader:hover { background: $panel; }
+    """
+
+    class Clicked(Message):
+        """Posted when the header is clicked."""
+
+    async def _on_click(self, event: events.Click) -> None:
+        event.stop()
+        self.post_message(self.Clicked())
 
 
 class TaskPanel(VerticalScroll):
@@ -46,19 +66,18 @@ class JobPanel(VerticalScroll):
         self.display = False
         self._collapsed = False
         self._count = 0
-        self._header = Static(id="job-header")
+        self._header = PanelHeader(id="job-header")
         self._body = Static(id="job-body")
 
     def compose(self):
         yield self._header
         yield self._body
 
-    def on_click(self, event) -> None:
-        """Toggle collapse when the header area is clicked."""
-        if self._header.region.contains_point(event.offset):
-            self._collapsed = not self._collapsed
-            self._body.display = not self._collapsed
-            self._update_header()
+    def on_panel_header_clicked(self, event: PanelHeader.Clicked) -> None:
+        """Toggle collapse when the header is clicked."""
+        self._collapsed = not self._collapsed
+        self._body.display = not self._collapsed
+        self._update_header()
 
     def _update_header(self) -> None:
         glyph = "\u25b8" if self._collapsed else "\u25be"
