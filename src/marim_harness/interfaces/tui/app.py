@@ -17,6 +17,7 @@ from .approval import ApprovalModal
 from .ask_user import AskUserModal
 from .commands import dispatch
 from .model_picker import ModelPickerModal
+from .queue import QueuedMessage
 from .session_view import SessionView
 from .settings import SettingsModal
 from .status import (
@@ -28,7 +29,6 @@ from .status import (
 )
 from .stream_render import StreamRenderer
 from .themes import MARIM_THEMES
-from .queue import QueuedMessage
 from .widgets import (
     AssistantMessage,
     CommandAutocomplete,

@@ -18,7 +18,7 @@ class QueuedMessage:
     id: str
 
 
-def render_queue(items: list) -> str:
+def render_queue(items: list[QueuedMessage]) -> str:
     """Render the pending items as a numbered Textual-markup string with
     per-item edit/remove action links. User text is escaped so brackets in a
     prompt are not parsed as markup; the ids are numeric and safe inline."""
