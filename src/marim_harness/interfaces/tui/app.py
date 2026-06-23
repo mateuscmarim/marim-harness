@@ -103,6 +103,9 @@ class HarnessApp(App):
         self._queue: list[QueuedMessage] = []
         self._queue_paused = False
         self._queue_seq = 0
+        # Confirm-once quit latch: set True by the first quit attempt that warns
+        # about pending queued messages. One-way for the process — once the user
+        # has been warned, later quits proceed without re-warning.
         self._quit_armed = False
         # Autonomous wake-on-completion (interactive TUI only). When a background
         # job finishes while the turn worker is idle, fire a digest-only turn so
