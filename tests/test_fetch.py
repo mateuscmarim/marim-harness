@@ -107,7 +107,7 @@ async def test_fetch_json_pretty_printed():
     resp.json = lambda: data  # synchronous — httpx.Response.json() is sync
 
     with _patch_client(resp):
-        result = await fetch_url("https://api.example.com/data")
+        result = await fetch_url("https://198.51.100.1/data")
 
     assert '"key": "value"' in result
     assert '"nested"' in result
@@ -124,7 +124,7 @@ async def test_fetch_json_with_charset():
     resp.json = lambda: data  # synchronous
 
     with _patch_client(resp):
-        result = await fetch_url("https://api.example.com/data")
+        result = await fetch_url("https://198.51.100.1/data")
 
     assert '"hello": "world"' in result
 
@@ -208,7 +208,7 @@ async def test_fetch_connection_error():
     client.__aexit__ = AsyncMock(return_value=False)
 
     with patch("marim_harness.tools.fetch.httpx.AsyncClient", return_value=client):
-        result = await fetch_url("https://unreachable.example.com")
+        result = await fetch_url("https://198.51.100.1/")
 
     assert "Fetch failed:" in result
     assert "Connection refused" in result
@@ -392,3 +392,52 @@ async def test_fetch_offload_path_is_workspace_relative(tmp_path):
     rel = files[0].relative_to(tmp_path).as_posix()
     assert rel in result
     assert str(tmp_path) not in result  # no absolute path leaks
+
+
+# ---------------------------------------------------------------------------
+# Tests — SSRF: refuse private/loopback/link-local addresses
+# ---------------------------------------------------------------------------
+
+
+import socket
+
+
+@pytest.mark.anyio
+async def test_fetch_refuses_loopback_ipv4(monkeypatch):
+    """fetch_url must refuse to fetch 127.0.0.1 — local services are not a target."""
+    monkeypatch.setattr(socket, "getaddrinfo",
+                        lambda host, *_: [(socket.AF_INET, socket.SOCK_STREAM,
+                                          0, "", (host, 0))])
+    result = await fetch_url("http://127.0.0.1/admin")
+    assert "127.0.0.1" in result or "private" in result.lower() or "loopback" in result.lower()
+    assert "Fetched" not in result
+
+
+@pytest.mark.anyio
+async def test_fetch_refuses_private_rfc1918(monkeypatch):
+    """RFC1918 ranges (10/8, 172.16/12, 192.168/16) are blocked too."""
+    monkeypatch.setattr(socket, "getaddrinfo",
+                        lambda host, *_: [(socket.AF_INET, socket.SOCK_STREAM,
+                                          0, "", (host, 0))])
+    result = await fetch_url("http://10.0.0.5/internal")
+    assert "Fetched" not in result
+
+
+@pytest.mark.anyio
+async def test_fetch_refuses_link_local_metadata(monkeypatch):
+    """AWS/GCP instance metadata lives at 169.254.169.254 — must be blocked."""
+    monkeypatch.setattr(socket, "getaddrinfo",
+                        lambda host, *_: [(socket.AF_INET, socket.SOCK_STREAM,
+                                          0, "", (host, 0))])
+    result = await fetch_url("http://169.254.169.254/latest/meta-data/")
+    assert "Fetched" not in result
+
+
+@pytest.mark.anyio
+async def test_fetch_refuses_ipv6_loopback(monkeypatch):
+    """[::1] must be blocked just like 127.0.0.1."""
+    monkeypatch.setattr(socket, "getaddrinfo",
+                        lambda host, *_: [(socket.AF_INET6, socket.SOCK_STREAM,
+                                          0, "", (host, 0, 0, 0))])
+    result = await fetch_url("http://[::1]/admin")
+    assert "Fetched" not in result
