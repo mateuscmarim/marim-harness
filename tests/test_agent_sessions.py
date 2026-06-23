@@ -486,3 +486,39 @@ def test_lsp_disabled_builds_no_manager(tmp_path: Path):
     )
     assert harness.lsp is None
     assert deps.lsp is None
+
+
+@pytest.mark.anyio
+async def test_cancel_does_not_block_on_slow_persist(tmp_path: Path):
+    """Ctrl-C must propagate quickly. If the persist is slow (or hangs), the
+    handler must time out and re-raise the CancelledError without waiting for
+    the disk write to finish — the session is best-effort by design."""
+    import time
+    from marim_harness.agent import Harness
+    from marim_harness.session import SessionManager
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    store = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data").create()
+
+    harness = Harness(
+        model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
+        instructions="x", store=store,
+    )
+
+    # Replace persist() with a sleeper to expose the absence of a deadline.
+    def slow_persist():
+        time.sleep(5.0)
+    harness.session.persist = slow_persist
+
+    # Force the cancel path by raising CancelledError out of agent.run.
+    async def cancelling_agent_run(*args, **kwargs):
+        raise asyncio.CancelledError()
+
+    harness.agent.run = cancelling_agent_run
+
+    started = time.monotonic()
+    with pytest.raises(asyncio.CancelledError):
+        await harness.run_turn("hi")
+    elapsed = time.monotonic() - started
+    # Deadline is ~250ms; allow generous headroom but reject the 5s sleep.
+    assert elapsed < 2.0, f"cancel took {elapsed:.2f}s — deadline not enforced"
