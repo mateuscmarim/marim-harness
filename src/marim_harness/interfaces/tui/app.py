@@ -75,6 +75,7 @@ class HarnessApp(App):
         ("ctrl+o", "toggle_outputs", "Show all output"),
         ("escape", "cancel_turn", "Cancel turn"),
         ("ctrl+r", "run_queued", "Run queued"),
+        ("ctrl+c", "quit", "Quit"),
     ]
 
     def __init__(self, harness: Harness, history: PromptHistory | None = None) -> None:
@@ -102,6 +103,7 @@ class HarnessApp(App):
         self._queue: list[QueuedMessage] = []
         self._queue_paused = False
         self._queue_seq = 0
+        self._quit_armed = False
         # Autonomous wake-on-completion (interactive TUI only). When a background
         # job finishes while the turn worker is idle, fire a digest-only turn so
         # the agent reacts without waiting for the user. Seeded from config;
@@ -397,6 +399,27 @@ class HarnessApp(App):
     def action_cancel_turn(self) -> None:
         if self.status.busy and self._turn_worker is not None:
             self._turn_worker.cancel()
+
+    def _maybe_warn_pending_quit(self) -> bool:
+        """Confirm-once guard for quitting with messages still queued. Returns
+        True if the quit should be cancelled (a warning was just shown); False
+        to let the quit proceed. The queue is process-scoped and dropped on exit,
+        so warn the user before discarding pending work."""
+        if self._queue and not self._quit_armed:
+            self._quit_armed = True
+            self.query_one("#log", VerticalScroll).mount(
+                NoticeMessage(
+                    f"{len(self._queue)} queued message(s) will be discarded. "
+                    "Quit again to confirm."
+                )
+            )
+            return True
+        return False
+
+    async def action_quit(self) -> None:
+        if self._maybe_warn_pending_quit():
+            return
+        await super().action_quit()
 
     def _on_compact_start(self) -> None:
         """Show a live note while compaction runs — the summarizer call can take a

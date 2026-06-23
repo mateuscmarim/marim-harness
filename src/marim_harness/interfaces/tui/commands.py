@@ -464,6 +464,8 @@ async def _cmd_settings(app: HarnessApp, arg: str) -> None:
 
 
 async def _cmd_exit(app: HarnessApp, arg: str) -> None:
+    if app._maybe_warn_pending_quit():
+        return
     app.exit()
 
 

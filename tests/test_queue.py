@@ -229,3 +229,40 @@ async def test_edit_queued_action_string_routes(tmp_path):
         await pilot.pause()
         assert app._queue == []
         assert app.query_one(PromptInput).text == "draft me"
+
+
+# --- Confirm-once quit guard (Task 3) ---
+
+
+@pytest.mark.anyio
+async def test_quit_with_queued_warns_once_then_allows(tmp_path):
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._queue = [QueuedMessage("a", None, "1")]
+        assert app._maybe_warn_pending_quit() is True   # first: warned, cancel quit
+        assert app._quit_armed is True
+        assert app._maybe_warn_pending_quit() is False  # second: proceed
+
+
+@pytest.mark.anyio
+async def test_quit_with_empty_queue_is_immediate(tmp_path):
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app._maybe_warn_pending_quit() is False
+
+
+@pytest.mark.anyio
+async def test_ctrl_c_with_queued_warns_and_does_not_exit(tmp_path):
+    """Pressing ctrl+c while the queue is non-empty should arm the guard and
+    keep the app alive (i.e. _quit_armed becomes True and the app is still
+    running after the keypress)."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._queue = [QueuedMessage("a", None, "1")]
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert app._quit_armed is True
+        assert app.is_running
