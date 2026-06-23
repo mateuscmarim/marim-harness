@@ -27,6 +27,7 @@ from .notifications import NotificationConfig
 from .permissions import Mode, resolve_approvals
 from .session import SessionController, SessionManager, SessionStore
 from .subagents import SubagentRunner
+from .tasks import render_tasks
 from .tools.provider import ToolProvider
 
 logger = logging.getLogger(__name__)
@@ -418,6 +419,18 @@ class Harness:
         so a resumed session can recover just the typed text. The one-shot notes
         and the digest are consumed here."""
         prompt = typed
+        # Current task checklist as turn-state (not consumed): it lives here in
+        # the per-turn envelope rather than the system prompt so the cached
+        # system/tool prefix stays stable across turns.
+        items = self.deps.tasks.items
+        if items:
+            checklist = (
+                "Your current task checklist (✔ done · ▸ in progress · ○ "
+                "pending):\n\n" + render_tasks(items) + "\n\nKeep it current "
+                "with the update_tasks tool: pass the full list, keep one item "
+                "in progress, and mark items done as you complete them."
+            )
+            prompt = f"{checklist}\n\n{prompt}"
         digest = self.deps.jobs.take_finished_digest()
         if digest:
             prompt = f"{digest}\n\n{prompt}"

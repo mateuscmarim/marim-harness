@@ -11,7 +11,6 @@ if TYPE_CHECKING:
 from .config import config_dir
 from .deps import Deps, HarnessAgent
 from .plugins import plugin_instruction_texts
-from .tasks import render_tasks
 from .workspace import (
     agents_index_text,
     discover_agents,
@@ -145,18 +144,6 @@ def register_instructions(
     @agent.instructions
     def _mcp_index(ctx: RunContext[Deps]) -> str:
         return mcp_manager.mcp_index_text()
-
-    @agent.instructions
-    def _task_state(ctx: RunContext[Deps]) -> str:
-        items = ctx.deps.tasks.items
-        if not items:
-            return ""
-        return (
-            "Your current task checklist (✔ done · ▸ in progress · ○ "
-            "pending):\n\n" + render_tasks(items) + "\n\nKeep it current with "
-            "the update_tasks tool: pass the full list, keep one item in "
-            "progress, and mark items done as you complete them."
-        )
 
     @agent.instructions
     def _memory_policy(ctx: RunContext[Deps]) -> str:
