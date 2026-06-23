@@ -11,6 +11,19 @@ from marim_harness.tools.provider import BuiltinToolProvider
 from tests.conftest import _last_instructions
 
 
+def _last_user_prompt(messages) -> str:
+    """The text of the most recent user-prompt part across the request list."""
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    text = ""
+    for message in messages:
+        if isinstance(message, ModelRequest):
+            for part in message.parts:
+                if isinstance(part, UserPromptPart) and isinstance(part.content, str):
+                    text = part.content
+    return text
+
+
 @pytest.mark.anyio
 async def test_project_instructions_injected_and_dynamic(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -157,11 +170,12 @@ async def test_skill_index_injected_and_dynamic(tmp_path: Path, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_task_state_injected_and_dynamic(tmp_path: Path):
+async def test_task_checklist_rides_in_turn_context_not_instructions(tmp_path: Path):
     captured: dict = {}
 
     def fn(messages, info):
         captured["instructions"] = _last_instructions(messages)
+        captured["prompt"] = _last_user_prompt(messages)
         return ModelResponse(parts=[TextPart(content="ok")])
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
@@ -170,17 +184,20 @@ async def test_task_state_injected_and_dynamic(tmp_path: Path):
         instructions="BASE PROMPT",
     )
 
-    # No tasks yet -> no checklist section in the prompt.
+    # No tasks yet -> no checklist anywhere.
     await harness.run_turn("hi")
     assert "checklist" not in captured["instructions"].lower()
+    assert "checklist" not in captured["prompt"].lower()
 
-    # Setting tasks makes the very next turn see them (dynamic).
+    # Setting tasks makes the next turn surface them in the user prompt
+    # (turn-context), and keeps them OUT of the cached system instructions.
     deps.tasks.replace([
         {"text": "read the code", "status": "done"},
         {"text": "write the test", "status": "in_progress"},
     ])
     await harness.run_turn("hi again")
-    instr = captured["instructions"]
-    assert "read the code" in instr
-    assert "write the test" in instr
-    assert "BASE PROMPT" in instr
+    assert "write the test" in captured["prompt"]
+    assert "read the code" in captured["prompt"]
+    assert "write the test" not in captured["instructions"]
+    # Base system prompt is unaffected.
+    assert "BASE PROMPT" in captured["instructions"]
