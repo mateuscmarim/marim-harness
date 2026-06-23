@@ -217,14 +217,18 @@ def _is_binary(path: Path) -> bool:
 def _walk_files(base: Path) -> Iterator[Path]:
     """Yield files under ``base``, pruning noise dirs (.git, node_modules, …) so a
     search never descends into them. ``os.walk`` does not follow symlinked dirs by
-    default, so the walk cannot wander outside the tree."""
+    default, so the walk cannot wander outside the tree.  Unreadable directories
+    (PermissionError) are skipped — the walk continues with the rest of the tree."""
     if base.is_file():
         yield base
         return
-    for dirpath, dirnames, filenames in os.walk(base):
-        dirnames[:] = [d for d in dirnames if d not in _NOISE_DIRS]
-        for name in filenames:
-            yield Path(dirpath) / name
+    try:
+        for dirpath, dirnames, filenames in os.walk(base):
+            dirnames[:] = [d for d in dirnames if d not in _NOISE_DIRS]
+            for name in filenames:
+                yield Path(dirpath) / name
+    except PermissionError:
+        pass
 
 
 def grep(root: Path, pattern: str, path: Optional[str] = None) -> str:

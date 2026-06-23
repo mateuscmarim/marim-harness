@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -362,3 +363,48 @@ def test_grep_finds_deeply_nested_match(tmp_path: Path):
     (deep / "d.txt").write_text("first\nneedle on line two")
     out = fs.grep(tmp_path, "needle")
     assert "a/b/c/d.txt:2:needle on line two" in out
+
+
+def test_grep_skips_unreadable_directories(tmp_path: Path, monkeypatch):
+    """A directory the process can't read (PermissionError from os.walk)
+    must not crash grep — it's skipped and other files are still found."""
+    (tmp_path / "good.txt").write_text("needle here")
+    bad_dir = tmp_path / "noperm"
+    bad_dir.mkdir()
+    (bad_dir / "secret.txt").write_text("secret needle")
+    # Simulate os.walk raising PermissionError on the bad dir (we run as root
+    # so real chmod can't trigger this).  The original os.walk yields (dir,dirs,files)
+    # tuples; we intercept and raise for the noperm path.
+    _real_walk = os.walk
+
+    def _patched_walk(top, *a, **kw):
+        for dirpath, dirnames, filenames in _real_walk(top, *a, **kw):
+            if dirpath == str(bad_dir):
+                raise PermissionError(f"permission denied: {dirpath}")
+            yield dirpath, dirnames, filenames
+
+    monkeypatch.setattr(fs.os, "walk", _patched_walk)
+    out = fs.grep(tmp_path, "needle")
+    assert "good.txt:1:needle here" in out
+    assert "secret.txt" not in out
+
+
+def test_tree_skips_unreadable_directories(tmp_path: Path, monkeypatch):
+    """A directory the process can't read must not crash tree."""
+    (tmp_path / "visible.txt").write_text("")
+    bad_dir = tmp_path / "noperm"
+    bad_dir.mkdir()
+    (bad_dir / "hidden.txt").write_text("")
+    # _walk_tree uses directory.iterdir(), not os.walk.  Make iterdir raise
+    # PermissionError on the bad dir to exercise the error path.
+    real_iterdir = Path.iterdir
+
+    def _patched_iterdir(self):
+        if self == bad_dir:
+            raise PermissionError(f"permission denied: {self}")
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", _patched_iterdir)
+    out = fs.tree(tmp_path, ".", depth=2)
+    assert "visible.txt" in out
+    assert "hidden.txt" not in out

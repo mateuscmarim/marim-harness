@@ -40,9 +40,25 @@ async def run_bash(
         stderr=asyncio.subprocess.STDOUT,
         start_new_session=True,
     )
-    try:
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
+    # Read stdout line-by-line instead of using proc.communicate() so we can
+    # retain whatever was read before a timeout kills the process.  communicate()
+    # closes its internal reader on cancellation, discarding buffered output.
+    chunks: list[bytes] = []
+    timed_out = False
+    if proc.stdout is not None:
+        try:
+            while True:
+                line = await asyncio.wait_for(proc.stdout.readline(), timeout=timeout)
+                if not line:
+                    break  # EOF — process exited
+                chunks.append(line)
+        except asyncio.TimeoutError:
+            timed_out = True
+    else:
+        # No pipe (shouldn't happen with stdout=PIPE, but guard gracefully).
+        await asyncio.sleep(timeout)
+        timed_out = True
+    if timed_out:
         # Kill the whole process group (best-effort) so children die too.
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
@@ -51,17 +67,24 @@ async def run_bash(
                 proc.kill()
             except ProcessLookupError:
                 pass
-        await proc.wait()
-        return f"(timed out after {timeout}s)"
-    text = stdout.decode(errors="replace")
-    if len(text) > MAX_OUTPUT_BYTES:
-        text = text[:MAX_OUTPUT_BYTES]
-        capped = True
-    else:
-        capped = False
+        # Drain anything the dying process flushed to the pipe before the kill
+        # propagated.  A short deadline keeps the timeout path fast.
+        if proc.stdout is not None:
+            try:
+                while True:
+                    line = await asyncio.wait_for(proc.stdout.readline(), timeout=1)
+                    if not line:
+                        break
+                    chunks.append(line)
+            except (asyncio.TimeoutError, OSError):
+                pass
+    await proc.wait()
+    text = b"".join(chunks).decode(errors="replace")
     body = f"exit {proc.returncode}\n{text}"
+    if timed_out:
+        body += f"(timed out after {timeout}s)"
     return offload_if_large(body, kind="bash", key=command,
-                            workspace_root=root, capped=capped)
+                            workspace_root=root, capped=False)
 
 
 class BashProcess:

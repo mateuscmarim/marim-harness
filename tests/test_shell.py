@@ -55,6 +55,21 @@ async def test_bash_times_out(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_bash_timeout_preserves_output_before_timeout(tmp_path: Path):
+    """Output written before a timeout must not be discarded. The process
+    produces visible output, then hangs — the kill should drain what's in
+    the pipe so the user sees what happened before the hang."""
+    out = await shell.run_bash(
+        tmp_path,
+        "echo STEP1; echo STEP2; sleep 30",
+        timeout=1,
+    )
+    assert "timed out" in out
+    assert "STEP1" in out, "output produced before timeout was discarded"
+    assert "STEP2" in out, "output produced before timeout was discarded"
+
+
+@pytest.mark.anyio
 async def test_bash_timeout_reaps_child_processes(tmp_path: Path):
     # The command spawns a long-lived child and records its PID, then hangs so
     # run_bash times out. A timeout must tear down the whole process group, not
