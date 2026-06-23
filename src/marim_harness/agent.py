@@ -379,6 +379,12 @@ class Harness:
         # One-shot context returned by a SessionStart hook, prepended to the next
         # turn's prompt and consumed there (mirrors _pending_error_note).
         self._pending_hook_context: Optional[str] = None
+        # Live RunContext of the in-flight turn, captured by the event-stream
+        # handler wrapper; None between turns. A steer enqueues onto it.
+        self._active_run_ctx = None
+        # Steers typed when no run is live yet (ask-mode between-round gap):
+        # (text, attachments) buffered, flushed when a ctx is next captured.
+        self._steer_buffer: list[tuple[str, Optional[list[tuple[bytes, str]]]]] = []
         # Build the collaborator graph in one named, testable place. get_model
         # closes over self so a runtime /model switch (set_model) is tracked.
         collab = build_collaborators(
@@ -585,20 +591,52 @@ class Harness:
             prompt = wrap_turn_context(injected, typed)
         return prompt
 
+    def steer(self, text: str,
+              attachments: Optional[list[tuple[bytes, str]]] = None) -> None:
+        """Inject a user message into the running turn. Reaches the model at the
+        next request boundary (pydantic-ai drains 'asap' content before it).
+        Buffers if no run is live yet; the buffer flushes when a ctx is captured."""
+        self._steer_buffer.append((text, attachments))
+        self._flush_steers()
+
+    def _flush_steers(self) -> None:
+        if self._active_run_ctx is None or not self._steer_buffer:
+            return
+        for text, atts in self._steer_buffer:
+            self._active_run_ctx.enqueue(
+                text,
+                *(BinaryContent(data=d, media_type=m) for d, m in (atts or [])),
+                priority="asap",
+            )
+        self._steer_buffer = []
+
+    def take_buffered_steers(
+        self,
+    ) -> list[tuple[str, Optional[list[tuple[bytes, str]]]]]:
+        """Return and clear any steers that were never flushed (the
+        finishing-gap race). The caller decides what to do with them."""
+        buffered, self._steer_buffer = self._steer_buffer, []
+        return buffered
+
     def _build_hooked_handler(self, base_handler):
-        """Return ``base_handler`` unchanged when no hooks are configured, or
-        wrap it in a handler that intercepts tool events to fire Pre/PostToolUse
-        hooks."""
-        if self.deps.hooks is None:
-            return base_handler
-        # Scoped to this single turn: maps tool_call_id → tool_input so the
-        # PostToolUse branch can include the call's args in its payload.
+        """Wrap the event-stream handler to (1) capture the live RunContext for
+        steering and (2) fire Pre/PostToolUse hooks on tool events. Returns
+        ``None`` when there's neither a base handler nor hooks, so headless runs
+        don't stream just to capture a ctx nobody steers."""
+        if base_handler is None and self.deps.hooks is None:
+            return None
         _call_inputs: dict = {}
 
-        async def _hooked_handler(stream_ctx, events):
+        async def _wrapped(stream_ctx, events):
+            # Capture the live RunContext so steer() can enqueue onto it. Set on
+            # every streamed node, so it stays current within the run.
+            self._active_run_ctx = stream_ctx
+            self._flush_steers()  # deliver any steers buffered before this ctx
+
             async def _relay():
                 async for event in events:
-                    await self.hooks.tool_event(event, _call_inputs)
+                    if self.deps.hooks is not None:
+                        await self.hooks.tool_event(event, _call_inputs)
                     yield event
 
             if base_handler is not None:
@@ -607,7 +645,7 @@ class Harness:
                 async for _ in _relay():
                     pass
 
-        return _hooked_handler
+        return _wrapped
 
     async def _run_with_approval(
         self,
@@ -730,7 +768,10 @@ class Harness:
         # history in self.session.history, so this must NOT be recomputed from it
         # per iteration (that poisoned the rollback baseline across rounds).
         resumable = list(self.session.history)
-        return await self._run_with_approval(
-            user_prompt, deferred_results=None, toolsets=toolsets,
-            event_stream_handler=event_stream_handler, resumable=resumable,
-        )
+        try:
+            return await self._run_with_approval(
+                user_prompt, deferred_results=None, toolsets=toolsets,
+                event_stream_handler=event_stream_handler, resumable=resumable,
+            )
+        finally:
+            self._active_run_ctx = None
