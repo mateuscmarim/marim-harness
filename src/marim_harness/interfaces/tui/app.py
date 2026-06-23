@@ -359,6 +359,16 @@ class HarnessApp(App):
     async def _after_turn(self) -> None:
         """Called from _run_turn's finally. Drain the next queued item on a
         clean, unpaused turn; otherwise fall through to the background-job wake."""
+        # A steer that landed in the finishing gap (never flushed onto a live
+        # run) falls back to the front of the queue so it runs next — kept even
+        # on a paused (cancel/error) finish, matching how the queue itself is
+        # preserved on pause; the drain below stays gated so it waits for resume.
+        leftover = self.harness.take_buffered_steers()
+        if leftover:
+            for text, atts in reversed(leftover):
+                self._queue_seq += 1
+                self._queue.insert(0, QueuedMessage(text, atts, str(self._queue_seq)))
+            self._render_queue()
         if not self._queue_paused and self._queue:
             await self._drain_next()
         else:
@@ -616,6 +626,24 @@ class HarnessApp(App):
         prompt.move_cursor(prompt.document.end)
         self._hide_autocomplete()
         prompt.focus()
+
+    async def on_prompt_input_steer(self, event: PromptInput.Steer) -> None:
+        text = event.value.strip()
+        if not text and not event.attachments:
+            return  # nothing to steer
+        if self._turn_worker is None:
+            # No turn running — just run it normally.
+            await self._start_turn(text, event.attachments)
+            return
+        reason = self._image_block_reason(event.attachments)
+        if reason is not None:
+            log = self.query_one("#log", VerticalScroll)
+            await log.mount(NoticeMessage(reason))
+            return
+        self.harness.steer(text, event.attachments)
+        tag = f"  📎 {len(event.attachments)}" if event.attachments else ""
+        log = self.query_one("#log", VerticalScroll)
+        await log.mount(NoticeMessage(f"↪ steering: {text}{tag}"))
 
     async def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
         self._hide_autocomplete()

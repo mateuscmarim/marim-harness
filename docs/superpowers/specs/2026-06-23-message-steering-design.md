@@ -44,7 +44,7 @@ This supersedes an earlier draft of this design that planned to rewrite `_run_wi
 `steer()` enqueues on the live `run_ctx` (or buffers, then flushes when the next round captures a ctx). pydantic-ai drains `'asap'` content before the next model request → the model sees the steer at the next request boundary. Lossless: an in-flight tool finishes; nothing is cancelled or re-run. Multiple `Alt+Enter`s enqueue multiple messages, drained in order.
 
 ### Stranded-steer fallback (finishing-gap race)
-If `steer()` is called in the tiny window where the turn is finishing (busy signal still set, but the run ends before the buffer flushes), the leftover buffered steer(s) are pushed to the **front of the message queue** on turn completion, so they run as the very next turn. No input is lost; reuses the queue drain. (The harness exposes the leftover buffer; the TUI's turn-completion path prepends them to its queue.)
+If `steer()` is called in the tiny window where the turn is finishing (busy signal still set, but the run ends before the buffer flushes), the leftover buffered steer(s) are kept at the **front of the message queue** on ANY finish — clean or paused (cancel/error) — so no input is ever lost. They run as the very next turn: immediately on a clean finish, or on resume after a paused (cancel/error) finish.
 
 ### Interactions
 Steering never touches the message queue directly (Enter still queues/runs; Esc still cancels). After a steered turn completes, the queue drains normally. Steering composes with the queue only via the stranded-steer fallback above.
