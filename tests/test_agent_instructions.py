@@ -59,6 +59,43 @@ async def test_project_instructions_injected_and_dynamic(
 
 
 @pytest.mark.anyio
+async def test_claude_md_fallback_injected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """CLAUDE.md content reaches the agent when AGENTS.md is absent."""
+    captured: dict = {}
+
+    def fn(messages, info):
+        captured["instructions"] = _last_instructions(messages)
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    harness = Harness(
+        model=FunctionModel(fn), provider=BuiltinToolProvider(), deps=deps,
+        instructions="BASE PROMPT",
+    )
+
+    # No AGENTS.md, no CLAUDE.md -> only base prompt.
+    await harness.run_turn("hi")
+    assert "BASE PROMPT" in captured["instructions"]
+    assert "CLAUDE.md" not in captured["instructions"]
+
+    # CLAUDE.md present, still no AGENTS.md -> CLAUDE.md content appears.
+    (tmp_path / "CLAUDE.md").write_text("Always use type hints.")
+    await harness.run_turn("hi again")
+    assert "Always use type hints." in captured["instructions"]
+    assert "BASE PROMPT" in captured["instructions"]
+    instr = captured["instructions"]
+    assert instr.index("BASE PROMPT") < instr.index("Always use type hints.")
+
+    # Adding AGENTS.md takes priority over CLAUDE.md.
+    (tmp_path / "AGENTS.md").write_text("Use tabs, not spaces.")
+    await harness.run_turn("third")
+    instr = captured["instructions"]
+    assert "Use tabs, not spaces." in instr
+    assert "Always use type hints." not in instr
+
+
+@pytest.mark.anyio
 async def test_global_instructions_injected_and_dynamic(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
