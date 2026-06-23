@@ -207,6 +207,7 @@ class SubagentRunner:
             model_settings=self._model_settings,
         )
         self.provider.register_subagent(sub, effective_tools(defn, allow_gated=allow_gated))
+        assert sub is not None, "build must return (sub, err) with exactly one non-None"
         return sub, None
 
     def _cap_output(self, output: str, max_output_chars: int | None, ref: str) -> str:
@@ -246,14 +247,10 @@ class SubagentRunner:
                 return err
         work_root = iso["path"] if iso else None
         sub, err = self.build(type, max_output_chars, model, work_root)
-        if err is not None:
-            if iso:
-                self._discard_worktree(iso)
-            return err
         if sub is None:
             if iso:
                 self._discard_worktree(iso)
-            return f"Failed to build sub-agent {type!r}."
+            return err or f"Failed to build sub-agent {type!r}."
         granted, unknown = self.mcp.granted_servers(mcp_names)
         run_deps = replace(self.deps, workspace_root=work_root) if iso else self.deps
         await self.hooks.subagent_start(type, task)
@@ -302,14 +299,10 @@ class SubagentRunner:
                 return err
         work_root = iso["path"] if iso else None
         sub, err = self.build(type, max_output_chars, model, work_root)
-        if err is not None:
-            if iso:
-                self._discard_worktree(iso)
-            return err
         if sub is None:
             if iso:
                 self._discard_worktree(iso)
-            return f"Failed to build sub-agent {type!r}."
+            return err or f"Failed to build sub-agent {type!r}."
         granted, unknown = self.mcp.granted_servers(mcp_names)
         await self.hooks.subagent_start(type, task)
         # A background sub-agent runs detached and concurrently with the user's

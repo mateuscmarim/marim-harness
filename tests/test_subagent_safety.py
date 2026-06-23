@@ -112,3 +112,21 @@ async def test_subagent_request_limit_bounds_runaway(tmp_path: Path):
     out = await h.subagents.run("explore", "loop forever", "sid")
     assert isinstance(out, str)
     assert "limit" in out.lower() or "exceed" in out.lower()
+
+
+@pytest.mark.anyio
+async def test_build_returns_exactly_one_of_sub_or_err(tmp_path: Path):
+    """SubagentRunner.build must return (sub, None) XOR (None, err) — never
+    (None, None) and never (sub, err). The XOR contract is what the runners'
+    cleanup logic relies on; a future change that violates it would silently
+    leave worktrees orphaned."""
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = _make_harness(_text_model(), deps)
+
+    # Unknown type → (None, err)
+    sub, err = h.subagents.build("nonexistent-type")
+    assert sub is None and err is not None
+
+    # Valid built-in (explore) → (sub, None)
+    sub, err = h.subagents.build("explore")
+    assert sub is not None and err is None
