@@ -166,3 +166,41 @@ async def test_run_queued_action_resumes(tmp_path):
         await app.action_run_queued()
         assert app._queue_paused is False
         assert started == ["a"]
+
+
+def test_render_queue_embeds_click_actions():
+    items = [QueuedMessage("draft one", None, "7")]
+    out = render_queue(items)
+    assert "@click=app.edit_queued('7')" in out
+    assert "@click=app.remove_queued('7')" in out
+
+
+@pytest.mark.anyio
+async def test_remove_queued_drops_item(tmp_path):
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._queue = [QueuedMessage("a", None, "1"), QueuedMessage("b", None, "2")]
+        app.action_remove_queued("1")
+        assert [m.id for m in app._queue] == ["2"]
+
+
+@pytest.mark.anyio
+async def test_edit_queued_pops_text_into_input(tmp_path):
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._queue = [QueuedMessage("draft me", None, "1")]
+        await app.action_edit_queued("1")
+        assert app._queue == []  # removed from the queue
+        assert app.query_one(PromptInput).text == "draft me"
+
+
+@pytest.mark.anyio
+async def test_edit_queued_unknown_id_is_noop(tmp_path):
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._queue = [QueuedMessage("a", None, "1")]
+        await app.action_edit_queued("nope")
+        assert [m.id for m in app._queue] == ["1"]

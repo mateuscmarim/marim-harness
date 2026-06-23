@@ -375,6 +375,25 @@ class HarnessApp(App):
             self._queue_paused = False
             await self._drain_next()
 
+    def action_remove_queued(self, id: str) -> None:
+        """Drop a pending queued message before it runs."""
+        self._queue = [m for m in self._queue if m.id != id]
+        self._render_queue()
+
+    async def action_edit_queued(self, id: str) -> None:
+        """Pop a queued message out of the queue and load its text into the
+        prompt input for editing. Attachments are not restored — editing is
+        text-only; re-add attachments before resubmitting if needed."""
+        item = next((m for m in self._queue if m.id == id), None)
+        if item is None:
+            return
+        self._queue = [m for m in self._queue if m.id != id]
+        self._render_queue()
+        prompt = self.query_one(PromptInput)
+        prompt.text = item.text
+        prompt.move_cursor(prompt.document.end)
+        prompt.focus()
+
     def action_cancel_turn(self) -> None:
         if self.status.busy and self._turn_worker is not None:
             self._turn_worker.cancel()

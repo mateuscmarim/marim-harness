@@ -19,11 +19,16 @@ class QueuedMessage:
 
 
 def render_queue(items: list) -> str:
-    """Render the pending items as a numbered Textual-markup string. User text
-    is escaped so brackets in a prompt are not parsed as markup."""
+    """Render the pending items as a numbered Textual-markup string with
+    per-item edit/remove action links. User text is escaped so brackets in a
+    prompt are not parsed as markup; the ids are numeric and safe inline."""
     lines = []
     for i, m in enumerate(items, 1):
         n = len(m.attachments or [])
         tag = f" 📎{n}" if n else ""
-        lines.append(f"{i}. {escape(m.text)}{tag}")
+        lines.append(
+            f"{i}. {escape(m.text)}{tag}  "
+            f"[@click=app.edit_queued('{m.id}')]edit[/] "
+            f"[@click=app.remove_queued('{m.id}')]✕[/]"
+        )
     return "\n".join(lines)
