@@ -74,7 +74,7 @@ class PromptInput(TextArea):
             event.prevent_default()
             event.stop()
             return
-        if event.key == "alt+enter":
+        if event.key in ("alt+enter", "ctrl+g"):
             event.prevent_default()
             event.stop()
             atts = [(p.read_bytes(), m) for p, m in self.attachments]
