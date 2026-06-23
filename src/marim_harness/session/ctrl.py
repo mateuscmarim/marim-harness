@@ -2,6 +2,7 @@ import logging
 import time
 from typing import Callable, Optional
 
+from pydantic_ai.messages import ModelMessage
 from pydantic_ai.usage import RunUsage
 
 from ..compaction import (
@@ -39,7 +40,7 @@ class SessionController:
         self.keep_last_messages = keep_last_messages
         self.summarizer = summarizer
         self.titler = titler
-        self.history: list = []
+        self.history: list[ModelMessage] = []
         self.usage: RunUsage = RunUsage()
         self.duration_seconds: float = 0.0
         self._segment_start: float = 0.0

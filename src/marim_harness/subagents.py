@@ -11,10 +11,16 @@ immediately. The harness wires ``run``/``run_background`` onto ``Deps`` so the
 
 import re
 from dataclasses import replace
-from typing import Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from pydantic_ai import Agent
+from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import UsageLimits
+
+if TYPE_CHECKING:
+    from .mcp.manager import McpManager
+    from .session.ctrl import SessionController
+    from .tools.provider import ToolProvider
 
 from .deps import Deps, SubAgent
 from .hooks.dispatch import TurnHooks
@@ -55,9 +61,12 @@ class SubagentRunner:
     through ``get_model`` each spawn, so a runtime ``/model`` switch is picked
     up without rewiring."""
 
-    def __init__(self, provider, mcp, deps, hooks: TurnHooks, session,
-                 get_model, model_settings=None, request_limit: int = 50,
-                 build_model=None):
+    def __init__(self, provider: "ToolProvider", mcp: "McpManager", deps: Deps,
+                 hooks: TurnHooks, session: "SessionController",
+                 get_model: Callable[[], Any],
+                 model_settings: Optional[ModelSettings] = None,
+                 request_limit: int = 50,
+                 build_model: Optional[Callable[[str], Any]] = None) -> None:
         self.provider = provider
         self.mcp = mcp
         self.deps = deps

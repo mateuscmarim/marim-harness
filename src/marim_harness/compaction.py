@@ -13,11 +13,12 @@ Two strategies share the same head/tail split:
 """
 
 import logging
-from typing import Any, Awaitable, Callable, Optional
+from typing import Awaitable, Callable, Optional
 
 from pydantic_ai import Agent
 from pydantic_ai.messages import (
     BinaryContent,
+    ModelMessage,
     ModelRequest,
     TextPart,
     ThinkingPart,
@@ -35,7 +36,7 @@ _CHARS_PER_TOKEN = 4
 # ~500k). This nominal value keeps the context gauge and compaction planning sane.
 _IMAGE_TOKEN_ESTIMATE = 1500
 
-Summarizer = Callable[[list[Any]], Awaitable[str]]
+Summarizer = Callable[[list[ModelMessage]], Awaitable[str]]
 
 
 def estimate_tokens(history: list) -> int:
@@ -208,7 +209,7 @@ async def compact_history_with_summary(
     return history[:1] + history[start:], True
 
 
-Titler = Callable[[list[Any]], Awaitable[str]]
+Titler = Callable[[list[ModelMessage]], Awaitable[str]]
 
 _SUMMARY_INSTRUCTIONS = (
     "You compress a coding-session transcript into a dense summary so the agent "

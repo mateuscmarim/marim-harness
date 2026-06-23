@@ -11,9 +11,9 @@ logger = logging.getLogger(__name__)
 class McpManager:
     """Owns MCP server lifecycle: connections, enable/disable, grant resolution."""
 
-    def __init__(self, servers: list, disabled: set[str]) -> None:
-        self.mcp_servers: list = list(servers)
-        self._live_servers: list = []
+    def __init__(self, servers: list[object], disabled: set[str]) -> None:
+        self.mcp_servers: list[object] = list(servers)
+        self._live_servers: list[object] = []
         self._mcp_stack: Optional[AsyncExitStack] = None
         self._connected: bool = False
         self.disabled: set[str] = set(disabled)

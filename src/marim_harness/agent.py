@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
 
 from pydantic_ai import Agent, DeferredToolRequests, capture_run_messages
-from pydantic_ai.messages import BinaryContent
+from pydantic_ai.messages import BinaryContent, ModelMessage
 from pydantic_ai.settings import ModelSettings
 
 if TYPE_CHECKING:
@@ -67,7 +67,7 @@ def strip_turn_context(content: str) -> str:
     return content[idx + len(_TURN_CONTEXT_SEP):]
 
 
-def _has_unanswered_tool_calls(history: list) -> bool:
+def _has_unanswered_tool_calls(history: list[ModelMessage]) -> bool:
     """True when some ToolCallPart in ``history`` has no matching ToolReturnPart.
     Such a history ends an exchange mid-flight, and every provider rejects an
     unanswered tool_use on the next request — so persisting one makes the
@@ -91,7 +91,7 @@ _INTERRUPTED_TOOL_NOTE = (
 )
 
 
-def _repair_unanswered_tool_calls(history: list) -> list:
+def _repair_unanswered_tool_calls(history: list[ModelMessage]) -> list[ModelMessage]:
     """Return a history in which every ToolCallPart has a matching ToolReturnPart,
     synthesizing an interrupted-tool return for any that lack one. An aborted
     turn (API failure, usage limit, cancel) can leave a ToolCallPart with no
@@ -220,7 +220,7 @@ class HarnessConfig:
     model_source: "Optional[ModelSource]" = None
     model_id: Optional[str] = None
     proactive_memory: bool = False
-    mcp_servers: list = field(default_factory=list)
+    mcp_servers: list[object] = field(default_factory=list)
     mcp_disabled: Optional[set] = None
     # LSP master switch. False ⇒ no LspManager is built (deps.lsp stays None), so
     # diagnostics-on-edit no-ops. Navigation-tool registration is gated separately
