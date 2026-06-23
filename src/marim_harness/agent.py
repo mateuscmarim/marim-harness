@@ -226,7 +226,7 @@ class HarnessConfig:
     proactive_memory: bool = False
     mcp_servers: list[object] = field(default_factory=list)
     mcp_disabled: Optional[set] = None
-    # LSP master switch. False ⇒ no LspManager is built (deps.lsp stays None), so
+    # LSP master switch. False ⇒ no LspManager is built (deps.services.lsp stays None), so
     # diagnostics-on-edit no-ops. Navigation-tool registration is gated separately
     # on the provider (see build_harness), keyed on lsp_enabled and lsp_tools_enabled.
     lsp_enabled: bool = True

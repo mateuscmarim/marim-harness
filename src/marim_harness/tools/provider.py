@@ -546,7 +546,7 @@ class BuiltinToolProvider:
         """``register_lsp_tools`` gates the six LSP navigation tools for both the
         main agent and sub-agents. The harness derives it from the LSP config
         (``lsp_enabled and lsp_tools_enabled``); diagnostics-on-edit is wired
-        separately through ``deps.lsp`` and is unaffected by this flag.
+        separately through ``deps.services.lsp`` and is unaffected by this flag.
 
         ``combined_job_tool`` (prototype) swaps the four job tools
         (jobs/job_output/wait_for_job/cancel_job) for a single ``job(action, …)``
