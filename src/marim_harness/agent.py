@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from pydantic_ai import Agent, DeferredToolRequests, capture_run_messages
 from pydantic_ai.messages import BinaryContent, ModelMessage
@@ -263,6 +263,90 @@ def build_services(
     return services
 
 
+@dataclass(frozen=True)
+class Collaborators:
+    """The wired collaborator graph for one Harness. Built by
+    ``build_collaborators`` so the construction order and the deps<->services
+    cycle live in one named, testable place rather than inline in
+    ``Harness.__init__``."""
+
+    agent: Agent
+    mcp: McpManager
+    lsp: Optional[LspManager]
+    session: SessionController
+    checkpoints: CheckpointManager
+    hooks: TurnHooks
+    subagents: SubagentRunner
+
+
+def build_collaborators(
+    model,
+    provider: ToolProvider,
+    deps: Deps,
+    instructions: str,
+    cfg: HarnessConfig,
+    *,
+    get_model: Callable[[], Any],
+) -> Collaborators:
+    """Build and wire the full collaborator graph for a Harness, in dependency
+    order, and install the deps<->services binding via ``build_services``.
+
+    ``get_model`` is supplied by the caller (closing over the live
+    ``Harness.current_model``) so a runtime ``/model`` switch is tracked
+    without rewiring the sub-agent runner.
+    """
+    agent = Agent(
+        model,
+        deps_type=Deps,
+        instructions=instructions,
+        output_type=[str, DeferredToolRequests],
+        # One extra retry past pydantic-ai's default of 1: weaker models
+        # often need a second attempt to correct a malformed tool argument
+        # before the turn fails with UnexpectedModelBehavior.
+        retries=2,
+        model_settings=_DEFAULT_MODEL_SETTINGS,
+    )
+    provider.register(agent)
+    mcp = McpManager(cfg.mcp_servers or [], set(cfg.mcp_disabled or []))
+    register_instructions(agent, mcp, cfg.proactive_memory)
+    # Session-scoped LSP server pool, reachable by the navigation/diagnostics
+    # tools through deps. Subagents share this deps object, so they get LSP too.
+    lsp = LspManager(deps.workspace_root) if cfg.lsp_enabled else None
+    session = SessionController(
+        cfg.store, cfg.manager, deps,
+        cfg.max_context_tokens, cfg.keep_last_messages,
+        cfg.summarizer, cfg.titler,
+    )
+    # Per-session checkpoints. Wire the real GitSnapshotter so rewind
+    # restores working-tree files end-to-end.
+    checkpoints = CheckpointManager(session, GitSnapshotter(deps.workspace_root))
+    hooks = TurnHooks(deps, session)
+    # The spawn_agent tool reaches the runner through Deps, the same way
+    # other tools reach shared state. The runner reads the current model via
+    # the closure, so a runtime /model switch is tracked without rewiring.
+    subagents = SubagentRunner(
+        provider, mcp, deps, hooks, session,
+        get_model=get_model,
+        model_settings=_DEFAULT_MODEL_SETTINGS,
+        request_limit=cfg.subagent_request_limit,
+        build_model=(
+            # Bind the narrowed (non-None) source as a default so the
+            # deferred closure keeps it typed; ``cfg.model_source`` alone
+            # wouldn't narrow inside a lambda called later.
+            (lambda mid, _src=cfg.model_source: _src.build(mid))
+            if cfg.model_source is not None else None
+        ),
+    )
+    # One cohesive late binding for the collaborator cycle: TurnHooks and the
+    # sub-agent runners hold this deps object, and tools reach them back
+    # through ctx.deps.services.
+    build_services(deps, lsp=lsp, turn_hooks=hooks, subagents=subagents)
+    return Collaborators(
+        agent=agent, mcp=mcp, lsp=lsp, session=session,
+        checkpoints=checkpoints, hooks=hooks, subagents=subagents,
+    )
+
+
 class Harness:
     """Owns the Pydantic AI agent and drives one user turn to completion,
     resolving deferred tool approvals by the current mode."""
@@ -277,25 +361,8 @@ class Harness:
         accepted via ``**kwargs`` and merged over the config defaults.
         """
         cfg = config or HarnessConfig(**kwargs)
-        self.agent = Agent(
-            model,
-            deps_type=Deps,
-            instructions=instructions,
-            output_type=[str, DeferredToolRequests],
-            # One extra retry past pydantic-ai's default of 1: weaker models
-            # often need a second attempt to correct a malformed tool argument
-            # before the turn fails with UnexpectedModelBehavior.
-            retries=2,
-            model_settings=_DEFAULT_MODEL_SETTINGS,
-        )
-        self.provider = provider
-        provider.register(self.agent)
-        self.mcp = McpManager(cfg.mcp_servers or [], set(cfg.mcp_disabled or []))
-        register_instructions(self.agent, self.mcp, cfg.proactive_memory)
         self.deps = deps
-        # Session-scoped LSP server pool, reachable by the navigation/diagnostics
-        # tools through deps. Subagents share this deps object, so they get LSP too.
-        self.lsp = LspManager(deps.workspace_root) if cfg.lsp_enabled else None
+        self.provider = provider
         self.model_label = cfg.model_label
         # The model object used for each turn (swappable at runtime), the source
         # that builds new ones, and the id of the active model.
@@ -312,43 +379,19 @@ class Harness:
         # One-shot context returned by a SessionStart hook, prepended to the next
         # turn's prompt and consumed there (mirrors _pending_error_note).
         self._pending_hook_context: Optional[str] = None
-        self.session = SessionController(
-            cfg.store, cfg.manager, deps,
-            cfg.max_context_tokens, cfg.keep_last_messages,
-            cfg.summarizer, cfg.titler,
-        )
-        # Per-session checkpoints. Wire the real GitSnapshotter so rewind
-        # restores working-tree files end-to-end.
-        self.checkpoints = CheckpointManager(
-            self.session, GitSnapshotter(deps.workspace_root)
-        )
-        self.hooks = TurnHooks(self.deps, self.session)
-        # The spawn_agent tool reaches the runner through Deps, the same way
-        # other tools reach shared state. The runner reads the current model via
-        # the closure, so a runtime /model switch is tracked without rewiring.
-        self.subagents = SubagentRunner(
-            self.provider, self.mcp, self.deps, self.hooks, self.session,
+        # Build the collaborator graph in one named, testable place. get_model
+        # closes over self so a runtime /model switch (set_model) is tracked.
+        collab = build_collaborators(
+            model, provider, deps, instructions, cfg,
             get_model=lambda: self.current_model,
-            model_settings=_DEFAULT_MODEL_SETTINGS,
-            request_limit=cfg.subagent_request_limit,
-            build_model=(
-                # Bind the narrowed (non-None) source as a default so the
-                # deferred closure keeps it typed; ``self.model_source`` alone
-                # wouldn't narrow inside a lambda called later.
-                (lambda mid, _src=self.model_source: _src.build(mid))
-                if self.model_source is not None else None
-            ),
         )
-        # One cohesive late binding for the collaborator cycle: TurnHooks and
-        # the sub-agent runners hold this deps object, and tools reach them
-        # back through ctx.deps.services. Assigned via build_services which
-        # names and isolates the binding in one testable place.
-        build_services(
-            self.deps,
-            lsp=self.lsp,
-            turn_hooks=self.hooks,
-            subagents=self.subagents,
-        )
+        self.agent = collab.agent
+        self.mcp = collab.mcp
+        self.lsp = collab.lsp
+        self.session = collab.session
+        self.checkpoints = collab.checkpoints
+        self.hooks = collab.hooks
+        self.subagents = collab.subagents
 
     # --- session lifecycle (operations carrying harness-level logic; plain
     # state and persistence live on ``self.session`` and are reached directly) ---
