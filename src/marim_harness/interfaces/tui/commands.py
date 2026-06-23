@@ -117,6 +117,9 @@ async def _cmd_switch(app: HarnessApp, arg: str) -> None:
 
 async def _cmd_rewind(app: HarnessApp, arg: str) -> None:
     arg = arg.strip()
+    if arg.lower() == "undo":
+        await app.undo_rewind()
+        return
     cps = app.harness.checkpoints.list()
     if not arg:
         if not cps:
@@ -128,7 +131,9 @@ async def _cmd_rewind(app: HarnessApp, arg: str) -> None:
         for c in cps:
             preview = c.prompt_preview or "(no prompt)"
             lines.append(f"- `{c.index}` — {preview}")
-        lines.append("\nRewind with `/rewind <number>`.")
+        lines.append(
+            "\nRewind with `/rewind <number>`, or `/rewind undo` to reverse the last rewind."
+        )
         await app.post_system("\n".join(lines))
         return
     if not arg.isdigit():
@@ -474,7 +479,7 @@ COMMANDS: list[Command] = [
     Command("sessions", "list saved sessions", _cmd_sessions, aliases=("ls",)),
     Command("new", "start a new session: /new [name]", _cmd_new),
     Command("switch", "switch sessions: /switch <number|name>", _cmd_switch),
-    Command("rewind", "rewind to an earlier turn: /rewind [number]", _cmd_rewind),
+    Command("rewind", "rewind to an earlier turn: /rewind [number|undo]", _cmd_rewind),
     Command("name", "name this session: /name [title] (auto-titles if blank)", _cmd_name),
     Command("mode", "set approval mode: /mode [ask|auto|plan]", _cmd_mode),
     Command("model", "switch model: /model [id] (opens a picker if blank)", _cmd_model),

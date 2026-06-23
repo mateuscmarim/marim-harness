@@ -514,8 +514,27 @@ class HarnessApp(App):
         note = f"rewound to checkpoint #{index}"
         if result.restored_files:
             note += " (files restored)"
+        elif result.restore_failed:
+            note += (
+                " — ⚠ file restore failed; the working tree may be partial "
+                "(`/rewind undo` to recover the pre-rewind state)"
+            )
         await self.session.render_session(note)
         self.status.refresh_status()
+
+    async def undo_rewind(self) -> None:
+        """Undo the last rewind by restoring the pre-rewind working tree. Recovers
+        file state only — the conversation stays where the rewind left it, since
+        that history was already truncated and persisted. Refused mid-turn."""
+        if self.status.busy:
+            await self.post_system(
+                "Can't undo a rewind while a turn is running. Press Esc first."
+            )
+            return
+        if self.harness.checkpoints.undo_rewind():
+            await self.post_system("Restored files to their pre-rewind state.")
+        else:
+            await self.post_system("Nothing to undo — no rewind in this session.")
 
     def open_settings(self) -> None:
         """Open the settings modal: runtime settings apply live; env-backed

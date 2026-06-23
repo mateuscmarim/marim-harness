@@ -102,32 +102,30 @@ class GitSnapshotter:
             capture_output=True, text=True,
         )
 
-    def restore(self, commit: str) -> None:
+    def restore(self, commit: str) -> bool:
+        """Restore the working tree to ``commit``. Returns True on success, False
+        when there is no repo or git fails — so the caller never reports a partial
+        or failed rewind as if it succeeded. Capturing a pre-restore safety
+        snapshot is the caller's job (CheckpointManager), which owns the
+        session-namespaced ref and the undo path."""
         if self._repo() is None:
-            return
+            return False
         try:
-            # 1. Safety net: snapshot the current state so the rewind is undoable.
-            pre = self.capture("refs/marim/checkpoints/_pre_restore", "pre-restore safety snapshot")
-            if pre is None:
-                logger.warning(
-                    "restore: pre-restore safety snapshot failed; "
-                    "proceeding without a recovery point"
-                )
-            # 2. Remove files that exist now but not in the target snapshot
+            # 1. Remove files that exist now but not in the target snapshot
             #    (created after the checkpoint). Scoped to the diff — never a
-            #    blanket clean.
+            #    blanket clean. Git-ignored files are excluded by _present_files
+            #    and intentionally left untouched.
             target = self._tree_files(commit)
-            # Remove files created after the checkpoint (present now, absent in the
-            # target tree). Scoped to the diff — never a blanket clean. Git-ignored
-            # files are excluded by _present_files and intentionally left untouched.
             for rel in self._present_files() - target:
                 with contextlib.suppress(OSError):
                     (self.workspace_root / rel).unlink()
-            # 3. Restore tracked + untracked content via a throwaway index, so
+            # 2. Restore tracked + untracked content via a throwaway index, so
             #    the user's real index/HEAD are untouched.
             with _temp_index() as idx:
                 env = {**os.environ, "GIT_INDEX_FILE": idx}
                 self._run("read-tree", commit, env=env)
                 self._run("checkout-index", "-a", "-f", env=env)
+            return True
         except subprocess.CalledProcessError as exc:
             logger.debug("checkpoint restore failed: %s", exc.stderr or exc)
+            return False

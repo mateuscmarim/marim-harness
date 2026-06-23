@@ -88,22 +88,26 @@ def test_restore_removes_file_created_after_checkpoint(tmp_path: Path):
     assert not (repo / "after.txt").exists()
 
 
-def test_restore_writes_pre_restore_safety_snapshot(tmp_path: Path):
+def test_restore_returns_true_on_success(tmp_path: Path):
     repo = _init_repo(tmp_path)
     snap = GitSnapshotter(repo)
     commit = snap.capture("refs/marim/checkpoints/s/0", "cp 0")
-    (repo / "a.txt").write_text("DANGER\n")
-    snap.restore(commit)
-    # The pre-restore state is recoverable from the safety ref.
-    pre = _git(repo, "rev-parse", "refs/marim/checkpoints/_pre_restore")
-    blob = _git(repo, "show", f"{pre}:a.txt")
-    assert blob == "DANGER"
+    assert commit
+    (repo / "a.txt").write_text("MODIFIED\n")
+    assert snap.restore(commit) is True
 
 
-def test_restore_is_noop_outside_git(tmp_path: Path):
+def test_restore_returns_false_outside_git(tmp_path: Path):
     plain = tmp_path / "plain"
     plain.mkdir()
-    GitSnapshotter(plain).restore("deadbeef")  # must not raise
+    assert GitSnapshotter(plain).restore("deadbeef") is False  # must not raise
+
+
+def test_restore_returns_false_on_bad_commit(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    # A nonexistent commit makes read-tree fail; restore must report failure, not
+    # silently return as if it succeeded.
+    assert GitSnapshotter(repo).restore("0" * 40) is False
 
 
 def test_restore_does_not_touch_index_or_head(tmp_path: Path):

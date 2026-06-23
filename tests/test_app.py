@@ -900,6 +900,98 @@ async def test_on_events_mounts_and_finishes_tool_widget(tmp_path: Path):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    "outcome, expected",
+    [("denied", "denied"), ("failed", "failed"), ("success", "done")],
+)
+async def test_on_events_reflects_tool_outcome_in_status(
+    tmp_path: Path, outcome: str, expected: str
+):
+    """A denied/failed tool result must render its real status, not a green ✓.
+    Regression: finish() defaulted status='done' regardless of the part outcome."""
+    from pydantic_ai.messages import (
+        FunctionToolCallEvent,
+        FunctionToolResultEvent,
+        ToolCallPart,
+        ToolReturnPart,
+    )
+
+    from marim_harness.interfaces.tui.widgets import ToolCallWidget
+
+    call = FunctionToolCallEvent(
+        part=ToolCallPart(
+            tool_name="write_file",
+            args={"path": "a.txt", "content": "x"},
+            tool_call_id="call-1",
+        )
+    )
+    result = FunctionToolResultEvent(
+        part=ToolReturnPart(
+            tool_name="write_file",
+            content="denied by user",
+            tool_call_id="call-1",
+            outcome=outcome,  # pyright: ignore[reportArgumentType]
+        )
+    )
+
+    async def gen():
+        yield call
+        yield result
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.stream.on_events(None, gen())
+        await pilot.pause()
+        widget = app.stream.tool_widgets.get("call-1")
+        assert isinstance(widget, ToolCallWidget)
+        assert widget.status == expected
+
+
+@pytest.mark.anyio
+async def test_resume_reflects_denied_tool_outcome(tmp_path: Path):
+    """The replay-from-history path must also render a denied tool as denied."""
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ModelResponse,
+        ToolCallPart,
+        ToolReturnPart,
+        UserPromptPart,
+    )
+
+    from marim_harness.interfaces.tui.widgets import ToolCallWidget
+
+    app = _app(tmp_path)
+    app.harness.session.history = [
+        ModelRequest(parts=[UserPromptPart(content="write a.txt")]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="write_file",
+                    args={"path": "a.txt", "content": "x"},
+                    tool_call_id="t1",
+                ),
+            ]
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="write_file",
+                    content="denied by user",
+                    tool_call_id="t1",
+                    outcome="denied",
+                )
+            ]
+        ),
+    ]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        tools = list(app.query(ToolCallWidget))
+        assert len(tools) == 1
+        assert tools[0].status == "denied"
+
+
+@pytest.mark.anyio
 async def test_spawn_agent_mounts_subagent_widget(tmp_path: Path):
     """A spawn_agent tool call gets a SubAgentWidget (not a generic ToolCallWidget),
     keyed by its tool_call_id, and is finished by the result event."""
@@ -2371,6 +2463,71 @@ async def test_rewind_command_truncates_and_rerenders(tmp_path: Path):
         await app.rewind_to_checkpoint(0)
         assert app.harness.session.history == []
         assert [c.index for c in mgr.list()] == [0]
+
+
+class _RewindSnap:
+    """A snapshotter whose restore success is configurable, for app-level tests."""
+
+    def __init__(self, *, restore_ok: bool) -> None:
+        self.restore_ok = restore_ok
+        self.restored: list[str] = []
+
+    def capture(self, ref: str, message: str) -> str:
+        return f"commit:{ref}"
+
+    def restore(self, commit: str) -> bool:
+        self.restored.append(commit)
+        return self.restore_ok
+
+    def delete(self, ref: str) -> None:
+        pass
+
+
+@pytest.mark.anyio
+async def test_rewind_note_reports_restore_failure(tmp_path: Path):
+    """A failed file restore must be surfaced, not silently reported as a clean
+    rewind (the old behavior always claimed success)."""
+    from marim_harness.interfaces.tui.widgets import AssistantMessage
+
+    app = _app(tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        mgr = app.harness.checkpoints
+        mgr.snapshotter = _RewindSnap(restore_ok=False)
+        mgr.snapshot("t1")  # checkpoint gets a commit, so restore is attempted
+        app.harness.session.set_history(["u1", "a1"])
+        await app.rewind_to_checkpoint(0)
+        notes = " ".join(w.text for w in app.query(AssistantMessage)).lower()
+        assert "fail" in notes
+        assert "files restored" not in notes
+
+
+@pytest.mark.anyio
+async def test_undo_rewind_restores_pre_rewind_files(tmp_path: Path):
+    app = _app(tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        mgr = app.harness.checkpoints
+        snap = _RewindSnap(restore_ok=True)
+        mgr.snapshotter = snap
+        mgr.snapshot("t1")
+        app.harness.session.set_history(["u1", "a1"])
+        await app.rewind_to_checkpoint(0)
+        snap.restored.clear()
+        await app.undo_rewind()
+        assert any("_pre_restore" in c for c in snap.restored)
+
+
+@pytest.mark.anyio
+async def test_undo_rewind_without_prior_rewind_notes_nothing_to_undo(tmp_path: Path):
+    from marim_harness.interfaces.tui.widgets import AssistantMessage
+
+    app = _app(tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        await app.undo_rewind()
+        notes = " ".join(w.text for w in app.query(AssistantMessage)).lower()
+        assert "nothing to undo" in notes
 
 
 @pytest.mark.anyio

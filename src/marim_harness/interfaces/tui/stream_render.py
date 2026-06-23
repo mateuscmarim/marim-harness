@@ -30,6 +30,23 @@ from .widgets import format_cost as _format_cost
 from .widgets import format_token_split as _format_token_split
 
 
+def status_from_part(part) -> str:
+    """Map a tool-result part to a ToolCallWidget status. A ``ToolReturnPart``
+    carries an ``outcome`` of 'success'/'failed'/'denied' (pydantic-ai sets
+    'denied' when an approval round rejects the call); a ``RetryPromptPart`` has
+    no outcome and represents a validation/ModelRetry failure. Without this the
+    widget defaulted every result to 'done', so a denied write_file rendered a
+    green ✓ instead of the ✕ the widget was built to show."""
+    outcome = getattr(part, "outcome", None)
+    if outcome == "denied":
+        return "denied"
+    if outcome == "failed":
+        return "failed"
+    if getattr(part, "part_kind", None) == "retry-prompt":
+        return "failed"
+    return "done"
+
+
 def _hidden_in_collapsed(widget: Widget) -> bool:
     """True when ``widget`` sits inside a collapsed Collapsible (e.g. a folded
     sub-agent body) and so isn't visible — re-rendering it would be wasted work."""
@@ -424,5 +441,8 @@ class StreamRenderer:
         elif isinstance(event, FunctionToolResultEvent):
             widget = self.tool_widgets.get(event.tool_call_id)
             if widget is not None:
-                widget.finish(str(getattr(event.part, "content", "")))
+                widget.finish(
+                    str(getattr(event.part, "content", "")),
+                    status=status_from_part(event.part),
+                )
             sink.on_result(event)

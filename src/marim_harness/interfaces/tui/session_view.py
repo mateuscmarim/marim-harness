@@ -9,6 +9,7 @@ from textual.widgets import Static
 
 from ...agent import strip_turn_context
 from ...compaction import summary_text
+from .stream_render import status_from_part
 from .widgets import (
     AssistantMessage,
     NoticeMessage,
@@ -95,7 +96,9 @@ class SessionView:
                     elif isinstance(part, ToolReturnPart):
                         widget = tool_widgets.get(part.tool_call_id)
                         if widget is not None:
-                            widget.finish(str(part.content))
+                            widget.finish(
+                                str(part.content), status=status_from_part(part)
+                            )
 
     async def mount_header(self, log: VerticalScroll) -> AssistantMessage:
         """Mount the two-column intro header — the MARIM banner on the left, the

@@ -49,7 +49,7 @@ class Snapshotter(Protocol):
     implementation makes conversation-only rewind work with no git."""
 
     def capture(self, ref: str, message: str) -> str | None: ...
-    def restore(self, commit: str) -> None: ...
+    def restore(self, commit: str) -> bool: ...
     def delete(self, ref: str) -> None: ...
 
 
@@ -59,8 +59,8 @@ class NullSnapshotter:
     def capture(self, ref: str, message: str) -> str | None:
         return None
 
-    def restore(self, commit: str) -> None:
-        pass
+    def restore(self, commit: str) -> bool:
+        return False  # nothing to restore; never reached (capture returns None)
 
     def delete(self, ref: str) -> None:
         pass
@@ -78,7 +78,11 @@ def _now() -> str:
 @dataclass
 class RewindResult:
     history_len: int
-    restored_files: bool
+    restored_files: bool         # files were actually restored from the snapshot
+    restore_failed: bool = False  # a file restore was attempted but git failed
+    # The pre-rewind working tree, captured so the rewind is undoable; None when
+    # the checkpoint had no file state (conversation-only) or capture failed.
+    pre_restore_commit: str | None = None
 
 
 class CheckpointManager:
@@ -96,6 +100,9 @@ class CheckpointManager:
         self.snapshotter: Snapshotter = snapshotter or NullSnapshotter()
         self.limit = limit
         self._checkpoints: list[Checkpoint] = []
+        # Commit of the most recent pre-rewind safety snapshot, so undo_rewind can
+        # restore the working tree to its state just before the last rewind.
+        self._pre_restore_commit: str | None = None
         self.reload()
 
     # --- persistence -----------------------------------------------------
@@ -144,6 +151,12 @@ class CheckpointManager:
     def _ref(self, index: int) -> str:
         return f"{_REF_PREFIX}/{self._session_id()}/{index}"
 
+    def _pre_restore_ref(self) -> str:
+        """Per-session ref for the pre-rewind safety snapshot. Namespacing by
+        session id keeps a rewind in one session from clobbering another's
+        recovery point (the bug behind the old shared ``_pre_restore`` ref)."""
+        return f"{_REF_PREFIX}/{self._session_id()}/_pre_restore"
+
     def snapshot(self, prompt_preview: str) -> None:
         """Capture a checkpoint of the current state before a turn runs."""
         index = (self._checkpoints[-1].index + 1) if self._checkpoints else 0
@@ -184,12 +197,36 @@ class CheckpointManager:
         self.session.set_history(self.session.history[: cp.history_len])
         self.session.persist(force=True)
         restored = False
+        restore_failed = False
+        pre: str | None = None
         if cp.commit is not None:
-            self.snapshotter.restore(cp.commit)
-            restored = True
+            # Safety net: snapshot the current working tree (under a per-session
+            # ref) so the rewind is undoable, then restore. restore() reports
+            # success, so a failed git restore is never dressed up as a clean one.
+            pre = self.snapshotter.capture(
+                self._pre_restore_ref(), "pre-restore safety snapshot"
+            )
+            self._pre_restore_commit = pre
+            restored = self.snapshotter.restore(cp.commit)
+            restore_failed = not restored
         self._checkpoints = [c for c in self._checkpoints if c.index <= index]
         self._save()
-        return RewindResult(history_len=cp.history_len, restored_files=restored)
+        return RewindResult(
+            history_len=cp.history_len,
+            restored_files=restored,
+            restore_failed=restore_failed,
+            pre_restore_commit=pre,
+        )
+
+    def undo_rewind(self) -> bool:
+        """Restore the working tree to the safety snapshot taken by the last
+        rewind, recovering files a rewind replaced. Returns True if files were
+        restored, False when there is nothing to undo (no rewind this session, or
+        a conversation-only rewind). The conversation half is not restored — the
+        history was already truncated and persisted; this recovers file state."""
+        if self._pre_restore_commit is None:
+            return False
+        return self.snapshotter.restore(self._pre_restore_commit)
 
     def clear(self) -> None:
         """Drop all checkpoints (called on session reset/clear) and their refs."""

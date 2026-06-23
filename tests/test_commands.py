@@ -23,11 +23,21 @@ class _FakeApp:
         self._turn_worker = None
         self.stream = SimpleNamespace(current_assistant="sentinel")
         self.harness = SimpleNamespace(
-            deps=SimpleNamespace(workspace_root=workspace_root)
+            deps=SimpleNamespace(workspace_root=workspace_root),
+            checkpoints=SimpleNamespace(list=lambda: []),
         )
+
+        self.undone = False
+        self.rewound: list[int] = []
 
     async def post_system(self, msg: str) -> None:
         self.posted.append(msg)
+
+    async def undo_rewind(self) -> None:
+        self.undone = True
+
+    async def rewind_to_checkpoint(self, index: int) -> None:
+        self.rewound.append(index)
 
     def _run_turn(self, text: str):
         self.turn_prompts.append(text)
@@ -66,6 +76,22 @@ def test_resolve_ref_misses():
     assert resolve_ref(infos, "0") is None
     assert resolve_ref(infos, "nope") is None
     assert resolve_ref(infos, "") is None
+
+
+@pytest.mark.anyio
+async def test_rewind_undo_routes_to_undo_rewind():
+    app = _FakeApp()
+    await dispatch(app, "/rewind undo")
+    assert app.undone is True
+    assert app.rewound == []  # 'undo' is not treated as a checkpoint number
+
+
+@pytest.mark.anyio
+async def test_rewind_number_still_routes_to_checkpoint():
+    app = _FakeApp()
+    await dispatch(app, "/rewind 2")
+    assert app.rewound == [2]
+    assert app.undone is False
 
 
 def test_every_command_has_summary_and_handler():
