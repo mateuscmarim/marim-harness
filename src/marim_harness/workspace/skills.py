@@ -15,22 +15,18 @@ never fatal.
 """
 
 import logging
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
 
 from ..config import config_dir
+from ._frontmatter import FRONTMATTER_RE, valid_name
 from .fs import WorkspaceError, resolve_in_workspace
 
 logger = logging.getLogger(__name__)
 
 _SKILL_FILE = "SKILL.md"
-# Per the spec: 1-64 chars, lowercase alphanumerics and single hyphens, no
-# leading/trailing/consecutive hyphens.
-_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)\Z", re.DOTALL)
 
 
 @dataclass(frozen=True)
@@ -65,23 +61,19 @@ def skill_roots(workspace_root) -> list[tuple[str, Path]]:
     ]
 
 
-def _valid_name(name: str) -> bool:
-    return bool(name) and len(name) <= 64 and _NAME_RE.match(name) is not None
-
-
 def _parse_skill(source: str, directory: Path, plugin: str | None = None) -> Skill | None:
     """Build a Skill from a directory, or None if it isn't a valid skill. The
     directory name is the authoritative identity; frontmatter must carry a
     non-empty description and, if it names the skill, must match the directory."""
     name = directory.name
-    if not _valid_name(name):
+    if not valid_name(name):
         return None
     skill_md = directory / _SKILL_FILE
     try:
         text = skill_md.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
-    match = _FRONTMATTER_RE.match(text)
+    match = FRONTMATTER_RE.match(text)
     if match is None:
         return None
     try:

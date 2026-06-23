@@ -176,10 +176,9 @@ class HarnessApp(App):
         # Anchor the session timer at mount and tick the status bar while idle so
         # the session duration advances even with no turn running.
         self.status.session_start = time.monotonic()
-        # Ensure the controller's segment timer is running even on fresh sessions
-        # (resume() sets it for resumed sessions, but fresh starts skip resume).
-        if self.harness.session._segment_start == 0.0:
-            self.harness.session._segment_start = time.monotonic()
+        # Start the active-time clock on a fresh session (resume()/new_session
+        # already do it for resumed/new ones).
+        self.harness.session.ensure_segment_started()
         self.set_interval(_CLOCK_TICK_INTERVAL, self.status.refresh_status)
         # Animate the working indicator while a turn runs (no-op when idle).
         self.set_interval(_SPINNER_TICK_INTERVAL, self.status.tick_spinner)
@@ -340,6 +339,14 @@ class HarnessApp(App):
         self._turn_worker = self.run_worker(
             self._run_turn(text, attachments), exclusive=True
         )
+
+    def start_system_turn(self, prompt: str) -> None:
+        """Spawn a turn for a system-initiated prompt — a slash command like
+        /remember or /run that injects its own prompt. Unlike _start_turn it
+        mounts no user message and leaves the autonomous-wake chain untouched;
+        it just resets the stream and runs the exclusive worker."""
+        self.stream.current_assistant = None
+        self._turn_worker = self.run_worker(self._run_turn(prompt), exclusive=True)
 
     def _enqueue(
         self, text: str, attachments: list[tuple[bytes, str]] | None = None

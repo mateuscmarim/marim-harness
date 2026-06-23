@@ -15,7 +15,6 @@ Nothing here raises into a turn: a malformed definition (no frontmatter, bad
 YAML, missing description, name/file mismatch, illegal name) is skipped.
 """
 
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,15 +22,11 @@ import yaml
 
 from ..config import config_dir
 from ..tools.names import GATED_TOOLS, NET_TOOLS, READ_TOOLS, SUBAGENT_TOOLS
+from ._frontmatter import FRONTMATTER_RE, valid_name
 
 # What the built-in ``explore`` role may reach: local reads plus network egress
 # (web lookups are genuinely useful mid-investigation), but nothing that mutates.
 _EXPLORE_TOOLS = READ_TOOLS | NET_TOOLS
-
-# Same identifier rules as skills: 1-64 chars, lowercase alphanumerics, single
-# hyphens, no leading/trailing/consecutive hyphens.
-_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)\Z", re.DOTALL)
 
 _EXPLORE_PROMPT = (
     "You are an exploration sub-agent. Investigate the workspace to answer the "
@@ -91,10 +86,6 @@ def agent_roots(workspace_root) -> list[tuple[str, Path]]:
     ]
 
 
-def _valid_name(name: str) -> bool:
-    return bool(name) and len(name) <= 64 and _NAME_RE.match(name) is not None
-
-
 def _parse_tools(raw) -> frozenset[str]:
     """Read a ``tools:`` frontmatter value (comma string or YAML list) into the
     known sub-agent tools. Unknown names are dropped; an empty/absent value
@@ -116,13 +107,13 @@ def _parse_agent(source: str, path: Path, plugin: str | None = None) -> AgentDef
     stem is the authoritative identity; frontmatter must carry a non-empty
     description and, if it names the agent, must match the stem."""
     name = path.stem
-    if not _valid_name(name):
+    if not valid_name(name):
         return None
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
-    match = _FRONTMATTER_RE.match(text)
+    match = FRONTMATTER_RE.match(text)
     if match is None:
         return None
     try:

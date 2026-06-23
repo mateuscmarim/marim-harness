@@ -88,8 +88,11 @@ def register_instructions(
         text = load_global_instructions()
         if not text:
             return ""
+        path = global_instructions_path()
+        home = Path.home()
+        shown = f"~/{path.relative_to(home)}" if path.is_relative_to(home) else str(path)
         return (
-            "Global instructions from ~/.config/marim/AGENTS.md "
+            f"Global instructions from {shown} "
             f"(apply to every project):\n\n{text}"
         )
 

@@ -36,6 +36,10 @@ class _FakeApp:
     def run_worker(self, coro, exclusive=False):
         return ("worker", coro)
 
+    def start_system_turn(self, prompt: str) -> None:
+        self.stream.current_assistant = None
+        self._turn_worker = self.run_worker(self._run_turn(prompt), exclusive=True)
+
 
 def _infos() -> list:
     return [

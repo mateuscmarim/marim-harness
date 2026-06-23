@@ -116,6 +116,14 @@ class SessionController:
         self._segment_start = time.monotonic()
         return len(self.history)
 
+    def ensure_segment_started(self) -> None:
+        """Start the active-time segment clock if it isn't already running.
+        ``resume``/``new_session`` set it, but a fresh, never-resumed session
+        leaves it at 0.0; the interactive app calls this on mount so idle time
+        accrues from the first paint rather than the first turn."""
+        if self._segment_start == 0.0:
+            self._segment_start = time.monotonic()
+
     def reset(self) -> None:
         self.history = []
         self.usage = RunUsage()

@@ -194,8 +194,7 @@ async def _cmd_remember(app: HarnessApp, arg: str) -> None:
         "Pick an appropriate scope (project vs global), type, and a concise title "
         f"and one-line description.\n\nFact: {arg}"
     )
-    app.stream.current_assistant = None
-    app._turn_worker = app.run_worker(app._run_turn(prompt), exclusive=True)
+    app.start_system_turn(prompt)
 
 
 async def _cmd_skill(app: HarnessApp, arg: str) -> None:
@@ -223,8 +222,7 @@ async def _cmd_skill(app: HarnessApp, arg: str) -> None:
     )
     if extra:
         prompt += f"\n\nAdditional context for this run: {extra}"
-    app.stream.current_assistant = None
-    app._turn_worker = app.run_worker(app._run_turn(prompt), exclusive=True)
+    app.start_system_turn(prompt)
 
 
 _MCP_USAGE = "Usage: `/mcp`, `/mcp enable <name|all>`, `/mcp disable <name|all>`."
