@@ -27,6 +27,7 @@ from .mcp import McpManager
 from .notifications import NotificationConfig
 from .permissions import Mode, resolve_approvals
 from .session import SessionController, SessionManager, SessionStore
+from .session.checkpoints import CheckpointManager
 from .subagents import SubagentRunner
 from .tasks import render_tasks
 from .tools.provider import ToolProvider
@@ -296,6 +297,9 @@ class Harness:
             cfg.max_context_tokens, cfg.keep_last_messages,
             cfg.summarizer, cfg.titler,
         )
+        # Per-session checkpoints. Phase A uses the default NullSnapshotter
+        # (conversation-only rewind); Phase B injects a GitSnapshotter here.
+        self.checkpoints = CheckpointManager(self.session)
         self.hooks = TurnHooks(self.deps, self.session)
         # Let tools fire lifecycle hooks via ctx.deps with a full payload.
         self.deps.turn_hooks = self.hooks
@@ -323,14 +327,17 @@ class Harness:
 
     def resume(self) -> int:
         count = self.session.resume()
+        self.checkpoints.reload()
         self._apply_saved_model()
         return count
 
     def reset(self) -> None:
         self.session.reset()
+        self.checkpoints.clear()
 
     def new_session(self, name: Optional[str] = None) -> None:
         self.session.new_session(name)
+        self.checkpoints.reload()
         # Apply the model inherited by SessionManager.create() when it
         # differs from the harness's current model.
         if (
@@ -342,6 +349,7 @@ class Harness:
 
     def switch_session(self, session_id: str) -> int:
         count = self.session.switch_session(session_id)
+        self.checkpoints.reload()
         self._apply_saved_model()
         return count
 
@@ -596,6 +604,8 @@ class Harness:
         """Run the agent until it produces a final text answer, looping through
         any approval rounds. Returns the final text output."""
         await self._maybe_compact()
+        # Capture a rewind point for this turn before any work runs.
+        self.checkpoints.snapshot(prompt)
         user_prompt: str | list[str | BinaryContent] | None = await self._assemble_prompt(prompt)
         if attachments and user_prompt is not None:
             user_prompt = [user_prompt, *(BinaryContent(data=d, media_type=m)
