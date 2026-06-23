@@ -77,3 +77,31 @@ def test_global_and_plugin_hooks_concatenated(tmp_path, monkeypatch):
     stop_commands = [entry["command"] for entry in cfg.get("Stop", [])]
     assert "echo global" in stop_commands
     assert "echo hi" in stop_commands
+
+
+def test_plugin_trust_flip_includes_hooks(tmp_path, monkeypatch):
+    """A plugin installed without trust must NOT have its hooks merged. After
+    the user grants trust (the on-disk state file is updated), the next config
+    load must include the hooks. Guards against a future refactor that caches
+    the trust flag at install time and forgets to re-read it on every load."""
+    from marim_harness.plugins.state import load_state
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    gdir = tmp_path / "cfg" / "marim" / "plugins"
+    _install_plugin_with_hooks(gdir, "p", trusted=False)
+
+    # Before trust — hooks excluded.
+    cfg = load_hooks_config(ws, trust_project=False)
+    assert "Stop" not in cfg or all(
+        e.get("command") != "echo hi" for e in cfg["Stop"]
+    )
+
+    # Grant trust on disk, re-read, hooks must now appear.
+    state_path = gdir / "state.json"
+    state = load_state(gdir)
+    state["p"] = state["p"].__class__(**{**state["p"].__dict__, "trusted": True})
+    save_state(gdir, state)
+    cfg = load_hooks_config(ws, trust_project=False)
+    assert any(e.get("command") == "echo hi" for e in cfg.get("Stop", []))
