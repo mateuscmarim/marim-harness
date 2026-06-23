@@ -2352,3 +2352,34 @@ async def test_finished_job_notifies_even_when_wake_disabled(tmp_path: Path):
         assert fired
         # Exactly one ping for the single completion.
         assert sum(1 for e in sent if e[2] == "job_done") == 1
+
+
+@pytest.mark.anyio
+async def test_rewind_command_truncates_and_rerenders(tmp_path: Path):
+    app = _app(tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        # Seed two checkpoints by hand against the live manager.
+        mgr = app.harness.checkpoints
+        mgr.snapshot("turn one")                       # index 0, history_len 0
+        app.harness.session.set_history(["u1", "a1"])
+        mgr.snapshot("turn two")                       # index 1, history_len 2
+        app.harness.session.set_history(["u1", "a1", "u2", "a2"])
+
+        await app.rewind_to_checkpoint(0)
+        assert app.harness.session.history == []
+        assert [c.index for c in mgr.list()] == [0]
+
+
+@pytest.mark.anyio
+async def test_rewind_command_refuses_while_busy(tmp_path: Path):
+    app = _app(tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        app.harness.checkpoints.snapshot("t1")
+        app.harness.session.set_history(["u1", "a1"])
+        app.status.set_busy(True)
+        await app.rewind_to_checkpoint(0)
+        # Busy → refused, history untouched.
+        assert app.harness.session.history == ["u1", "a1"]
+        app.status.set_busy(False)

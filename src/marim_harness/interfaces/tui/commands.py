@@ -114,6 +114,28 @@ async def _cmd_switch(app: HarnessApp, arg: str) -> None:
     await app.switch_to_session_id(info.id)
 
 
+async def _cmd_rewind(app: HarnessApp, arg: str) -> None:
+    arg = arg.strip()
+    cps = app.harness.checkpoints.list()
+    if not arg:
+        if not cps:
+            await app.post_system(
+                "No checkpoints yet — they're captured at the start of each turn."
+            )
+            return
+        lines = ["Checkpoints (newest last):"]
+        for c in cps:
+            preview = c.prompt_preview or "(no prompt)"
+            lines.append(f"- `{c.index}` — {preview}")
+        lines.append("\nRewind with `/rewind <number>`.")
+        await app.post_system("\n".join(lines))
+        return
+    if not arg.isdigit():
+        await app.post_system("Usage: `/rewind [number]`. Run `/rewind` to list checkpoints.")
+        return
+    await app.rewind_to_checkpoint(int(arg))
+
+
 async def _cmd_mode(app: HarnessApp, arg: str) -> None:
     arg = arg.strip().lower()
     if not arg:
@@ -451,6 +473,7 @@ COMMANDS: list[Command] = [
     Command("sessions", "list saved sessions", _cmd_sessions, aliases=("ls",)),
     Command("new", "start a new session: /new [name]", _cmd_new),
     Command("switch", "switch sessions: /switch <number|name>", _cmd_switch),
+    Command("rewind", "rewind to an earlier turn: /rewind [number]", _cmd_rewind),
     Command("name", "name this session: /name [title] (auto-titles if blank)", _cmd_name),
     Command("mode", "set approval mode: /mode [ask|auto|plan]", _cmd_mode),
     Command("model", "switch model: /model [id] (opens a picker if blank)", _cmd_model),

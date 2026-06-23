@@ -375,6 +375,23 @@ class HarnessApp(App):
         """Load an existing session and show where it left off."""
         await self.session.switch_to_session_id(session_id)
 
+    async def rewind_to_checkpoint(self, index: int) -> None:
+        """Rewind the session to checkpoint ``index`` and rebuild the log.
+        Refused mid-turn — rewinding under a running turn would race history."""
+        if self.status.busy:
+            await self.post_system("Can't rewind while a turn is running. Press Esc first.")
+            return
+        try:
+            result = self.harness.checkpoints.rewind(index)
+        except KeyError:
+            await self.post_system(f"No checkpoint #{index}. Try `/rewind` to list them.")
+            return
+        note = f"rewound to checkpoint #{index}"
+        if result.restored_files:
+            note += " (files restored)"
+        await self.session.render_session(note)
+        self.status.refresh_status()
+
     def open_settings(self) -> None:
         """Open the settings modal: runtime settings apply live; env-backed
         settings save to the global .env on demand."""
