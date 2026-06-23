@@ -45,13 +45,15 @@ class GitSnapshotter:
     def _repo(self) -> Optional[Path]:
         return repo_root(self.workspace_root)
 
-    def _run(self, repo: Path, *args: str, env: Optional[dict] = None) -> str:
+    def _run(self, repo: Path, *args: str, env: Optional[dict[str, str]] = None) -> str:
         return subprocess.run(
             ["git", *args], cwd=repo, env=env,
             capture_output=True, text=True, check=True,
         ).stdout.strip()
 
     def capture(self, ref: str, message: str) -> Optional[str]:
+        if not ref.startswith("refs/marim/"):
+            raise ValueError(f"refusing to write ref outside refs/marim/: {ref!r}")
         repo = self._repo()
         if repo is None:
             return None

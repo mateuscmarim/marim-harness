@@ -45,9 +45,17 @@ def test_capture_does_not_touch_user_branch_or_index(tmp_path: Path):
     assert _git(repo, "rev-parse", "HEAD") == head_before          # HEAD unmoved
     assert _git(repo, "status", "--porcelain")                     # change still unstaged/dirty
     assert "changed" in (repo / "a.txt").read_text()               # working tree untouched
+    assert _git(repo, "diff", "--cached", "--name-only") == ""   # real index untouched
 
 
 def test_capture_returns_none_outside_git(tmp_path: Path):
     plain = tmp_path / "plain"
     plain.mkdir()
     assert GitSnapshotter(plain).capture("refs/marim/checkpoints/s/0", "cp") is None
+
+
+def test_capture_rejects_ref_outside_marim_namespace(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    import pytest
+    with pytest.raises(ValueError):
+        GitSnapshotter(repo).capture("refs/heads/main", "cp")
