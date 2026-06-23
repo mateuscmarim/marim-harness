@@ -33,6 +33,16 @@ class PromptInput(TextArea):
             self.attachments = attachments or []
             super().__init__()
 
+    class Steer(Message):
+        """Posted when the user presses Alt+Enter; carries the box's full text
+        and any attached images, to inject into the running turn."""
+
+        def __init__(self, value: str,
+                     attachments: list[tuple[bytes, str]] | None = None) -> None:
+            self.value = value
+            self.attachments = attachments or []
+            super().__init__()
+
     class SlashChanged(Message):
         """Posted when the first line starts with ``/``."""
         def __init__(self, value: str) -> None:
@@ -63,6 +73,14 @@ class PromptInput(TextArea):
             self.post_message(self.SlashDismissed())
             event.prevent_default()
             event.stop()
+            return
+        if event.key == "alt+enter":
+            event.prevent_default()
+            event.stop()
+            atts = [(p.read_bytes(), m) for p, m in self.attachments]
+            self.post_message(self.Steer(self.text, atts))
+            self.attachments = []
+            self._reset_nav()
             return
         if event.key == "enter":
             event.prevent_default()
