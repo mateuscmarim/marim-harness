@@ -9,7 +9,6 @@ slug OpenRouter uses for model ids.
 """
 
 from dataclasses import dataclass
-from typing import Optional
 
 from pydantic_ai.usage import RunUsage
 
@@ -57,14 +56,14 @@ def split_tokens(usage: RunUsage) -> TokenSplit:
     return TokenSplit(uncached, cache_read, cache_write, usage.output_tokens)
 
 
-def exact_cost(usage: RunUsage) -> Optional[float]:
+def exact_cost(usage: RunUsage) -> float | None:
     """The billed cost in USD if the provider reported one (captured into
     ``details[COST_DETAIL_KEY]`` as integer micro-USD), else ``None``."""
     micro = usage.details.get(COST_DETAIL_KEY)
     return micro / 1_000_000 if micro is not None else None
 
 
-def resolve_cost(usage: RunUsage, model_ref: Optional[str]) -> tuple[Optional[float], bool]:
+def resolve_cost(usage: RunUsage, model_ref: str | None) -> tuple[float | None, bool]:
     """The best available cost as ``(usd, is_exact)``. Prefers the provider's
     billed amount (``is_exact=True``) and falls back to the genai-prices estimate
     (``is_exact=False``); ``(None, False)`` when neither is available."""
@@ -74,7 +73,7 @@ def resolve_cost(usage: RunUsage, model_ref: Optional[str]) -> tuple[Optional[fl
     return estimate_cost(usage, model_ref), False
 
 
-def usage_summary(usage: RunUsage, model_ref: Optional[str]) -> dict:
+def usage_summary(usage: RunUsage, model_ref: str | None) -> dict:
     """A JSON-friendly usage breakdown: the raw input/output/total counts, the
     uncached-in / cache-read / cache-write split, and the best ``cost_usd``
     (billed when available, else estimated; ``None`` when the model isn't
@@ -94,7 +93,7 @@ def usage_summary(usage: RunUsage, model_ref: Optional[str]) -> dict:
     }
 
 
-def estimate_cost(usage: RunUsage, model_ref: Optional[str]) -> Optional[float]:
+def estimate_cost(usage: RunUsage, model_ref: str | None) -> float | None:
     """Estimate the USD cost of ``usage`` for ``model_ref`` using bundled
     ``genai-prices`` data, or ``None`` if the model isn't priced (unknown id,
     missing data). Cache reads/writes are priced at their own rates, not the
@@ -107,7 +106,7 @@ def estimate_cost(usage: RunUsage, model_ref: Optional[str]) -> Optional[float]:
     generally bills at provider rates. Never raises."""
     if not model_ref:
         return None
-    provider_id: Optional[str] = None
+    provider_id: str | None = None
     ref = model_ref
     if "/" in ref:
         provider_id, ref = ref.split("/", 1)

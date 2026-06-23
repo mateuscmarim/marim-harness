@@ -8,8 +8,9 @@ being sent to the model.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Awaitable, Callable
+from typing import TYPE_CHECKING
 
 from ...permissions import Mode
 from ...workspace import discover_skills
@@ -49,7 +50,7 @@ async def _cmd_clear(app: HarnessApp, arg: str) -> None:
     await app.reset_conversation()
 
 
-def resolve_ref(infos: "list[SessionInfo]", ref: str) -> "SessionInfo | None":
+def resolve_ref(infos: list[SessionInfo], ref: str) -> SessionInfo | None:
     """Find a session by 1-based list position, exact id, or exact name
     (case-insensitive). Returns the matching SessionInfo or None."""
     ref = ref.strip()
@@ -382,7 +383,7 @@ async def _cmd_worktree(app: HarnessApp, arg: str) -> None:
         )
 
 
-async def _cmd_jobs(app: "HarnessApp", arg: str) -> None:
+async def _cmd_jobs(app: HarnessApp, arg: str) -> None:
     from ...jobs import render_jobs
 
     jobs = app.harness.deps.jobs

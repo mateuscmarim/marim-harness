@@ -80,7 +80,7 @@ def test_builtin_explore_has_local_reads_and_net_but_no_mutators(isolated_home):
     assert explore is not None
     # Local reads + network egress (web lookups), but nothing that mutates.
     assert explore.tools == READ_TOOLS | NET_TOOLS
-    assert NET_TOOLS <= explore.tools
+    assert explore.tools >= NET_TOOLS
     assert not (explore.tools & GATED_TOOLS)
     assert explore.source == "built-in"
 

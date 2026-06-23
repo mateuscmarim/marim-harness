@@ -10,7 +10,6 @@ in every permission mode (auto and ask alike) and to sub-agents too — not just
 at the approval prompt, which auto mode skips entirely."""
 
 import re
-from typing import Optional
 
 
 def split_patterns(text: str) -> list[str]:
@@ -46,8 +45,8 @@ class CommandPolicy:
 
     def __init__(
         self,
-        denylist: Optional[list[str]] = None,
-        allowlist: Optional[list[str]] = None,
+        denylist: list[str] | None = None,
+        allowlist: list[str] | None = None,
     ) -> None:
         self._deny_src = list(denylist or [])
         self._allow_src = list(allowlist or [])
@@ -59,9 +58,9 @@ class CommandPolicy:
         """Build a policy from raw config strings (comma- or newline-separated)."""
         return cls(denylist=split_patterns(deny), allowlist=split_patterns(allow))
 
-    def check(self, command: str) -> Optional[str]:
+    def check(self, command: str) -> str | None:
         """Return a denial reason if ``command`` is blocked, else ``None``."""
-        for src, rx in zip(self._deny_src, self._deny):
+        for src, rx in zip(self._deny_src, self._deny, strict=True):
             if rx.search(command):
                 return f"command matches denylist pattern {src!r}"
         if self._allow and not any(rx.search(command) for rx in self._allow):

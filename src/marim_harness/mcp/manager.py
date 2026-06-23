@@ -1,7 +1,6 @@
 import logging
 from contextlib import AsyncExitStack
 from pathlib import Path
-from typing import Optional
 
 from .config import persist_server_enabled
 
@@ -14,7 +13,7 @@ class McpManager:
     def __init__(self, servers: list[object], disabled: set[str]) -> None:
         self.mcp_servers: list[object] = list(servers)
         self._live_servers: list[object] = []
-        self._mcp_stack: Optional[AsyncExitStack] = None
+        self._mcp_stack: AsyncExitStack | None = None
         self._connected: bool = False
         self.disabled: set[str] = set(disabled)
         self.mcp_status: dict = {"connected": [], "failed": []}
@@ -70,7 +69,7 @@ class McpManager:
         avail = ", ".join(enabled) if enabled else "none"
         return f"(note: ignored unknown MCP server(s) {bad}; enabled: {avail})\n\n"
 
-    async def _connect_one(self, server) -> Optional[str]:
+    async def _connect_one(self, server) -> str | None:
         if self._mcp_stack is None:
             self._mcp_stack = AsyncExitStack()
         try:
@@ -125,7 +124,7 @@ class McpManager:
         self.disabled.add(name)
         persist_server_enabled(workspace_root, name, False)
 
-    async def enable_server(self, name: str, workspace_root: Path) -> Optional[str]:
+    async def enable_server(self, name: str, workspace_root: Path) -> str | None:
         self.disabled.discard(name)
         persist_server_enabled(workspace_root, name, True)
         if any(self.server_name(s) == name for s in self._live_servers):

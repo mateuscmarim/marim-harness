@@ -10,13 +10,14 @@ state except working-tree files on restore."""
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import subprocess
 import tempfile
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Optional
 
 from .worktree import repo_root
 
@@ -32,22 +33,20 @@ def _temp_index() -> Iterator[str]:
     try:
         yield name
     finally:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(name)
-        except OSError:
-            pass
 
 
 class GitSnapshotter:
     def __init__(self, workspace_root: Path) -> None:
         self.workspace_root = Path(workspace_root)
 
-    def _repo(self) -> Optional[Path]:
+    def _repo(self) -> Path | None:
         """Return the main-worktree root (used only as an is-a-repo guard),
         or None when workspace_root is not inside a git repository."""
         return repo_root(self.workspace_root)
 
-    def _run(self, *args: str, env: Optional[dict[str, str]] = None) -> str:
+    def _run(self, *args: str, env: dict[str, str] | None = None) -> str:
         """Run a git command with cwd=workspace_root (the actual working tree).
 
         For linked worktrees this is the linked worktree directory, NOT the
@@ -59,7 +58,7 @@ class GitSnapshotter:
             capture_output=True, text=True, check=True,
         ).stdout.strip()
 
-    def capture(self, ref: str, message: str) -> Optional[str]:
+    def capture(self, ref: str, message: str) -> str | None:
         if not ref.startswith("refs/marim/"):
             raise ValueError(f"refusing to write ref outside refs/marim/: {ref!r}")
         if self._repo() is None:
@@ -122,10 +121,8 @@ class GitSnapshotter:
             # target tree). Scoped to the diff — never a blanket clean. Git-ignored
             # files are excluded by _present_files and intentionally left untouched.
             for rel in self._present_files() - target:
-                try:
+                with contextlib.suppress(OSError):
                     (self.workspace_root / rel).unlink()
-                except OSError:
-                    pass
             # 3. Restore tracked + untracked content via a throwaway index, so
             #    the user's real index/HEAD are untouched.
             with _temp_index() as idx:

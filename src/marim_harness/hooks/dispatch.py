@@ -9,7 +9,6 @@ which return whatever context the hook injected (``None`` when no hook ran).
 """
 
 import logging
-from typing import Optional
 
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
@@ -44,14 +43,14 @@ class TurnHooks:
             **extra,
         )
 
-    async def _dispatch(self, event: str, **extra) -> Optional[str]:
+    async def _dispatch(self, event: str, **extra) -> str | None:
         """Fire ``event`` if hooks are configured, returning any injected
         context. A no-op (returns ``None``) when no hooks are wired."""
         if self.deps.hooks is None:
             return None
         return await self.deps.hooks.dispatch(event, self._payload(event, **extra))
 
-    async def session_start(self, source: str) -> Optional[str]:
+    async def session_start(self, source: str) -> str | None:
         """SessionStart (``source`` is ``startup``/``resume``/``clear``); returns
         any context the hook wants prepended to the next turn's prompt."""
         return await self._dispatch(hook_events.SESSION_START, source=source)
@@ -60,7 +59,7 @@ class TurnHooks:
         """SessionEnd on teardown. Observe-only."""
         await self._dispatch(hook_events.SESSION_END, reason=reason)
 
-    async def user_prompt_submit(self, prompt: str) -> Optional[str]:
+    async def user_prompt_submit(self, prompt: str) -> str | None:
         """UserPromptSubmit; returns any context to prepend to this turn."""
         return await self._dispatch(hook_events.USER_PROMPT_SUBMIT, prompt=prompt)
 
@@ -114,7 +113,7 @@ class TurnHooks:
             error=error,
         )
 
-    async def tool_event(self, event, call_inputs: Optional[dict] = None) -> None:
+    async def tool_event(self, event, call_inputs: dict | None = None) -> None:
         """Map a streamed tool event to a Pre/PostToolUse hook (observe-only).
 
         ``call_inputs`` is a per-turn dict (tool_call_id → tool_input) used to

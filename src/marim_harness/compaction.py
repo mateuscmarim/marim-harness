@@ -13,7 +13,7 @@ Two strategies share the same head/tail split:
 """
 
 import logging
-from typing import Awaitable, Callable, Optional
+from collections.abc import Awaitable, Callable
 
 from pydantic_ai import Agent
 from pydantic_ai.messages import (
@@ -76,7 +76,7 @@ def _is_user_turn(message) -> bool:
 
 def _plan_tail_start(
     history: list, max_tokens: int, keep_last_messages: int
-) -> Optional[int]:
+) -> int | None:
     """Index where the kept tail should begin, or None if no compaction is needed.
 
     The tail always starts at a user-turn boundary so tool returns stay paired.
@@ -164,7 +164,7 @@ def _clip(value, limit: int) -> str:
 SUMMARY_PREFIX = "[Summary of earlier conversation, condensed to save context]"
 
 
-def summary_text(content) -> Optional[str]:
+def summary_text(content) -> str | None:
     """Return the summary body if ``content`` is a compaction summary message
     (a ``str`` starting with :data:`SUMMARY_PREFIX` followed by a non-empty body),
     else ``None``. The single source of truth for detecting/parsing a summary."""
@@ -197,7 +197,7 @@ async def compact_history_with_summary(
         return history, False
 
     middle = history[1:start]
-    summary: Optional[str]
+    summary: str | None
     try:
         summary = await summarizer(middle)
     except Exception as exc:

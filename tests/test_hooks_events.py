@@ -14,9 +14,9 @@ def test_event_constants_match_claude_code_names():
 
 
 def test_only_session_start_and_user_prompt_inject():
-    assert events.INJECTING_EVENTS == frozenset(
+    assert frozenset(
         {events.SESSION_START, events.USER_PROMPT_SUBMIT}
-    )
+    ) == events.INJECTING_EVENTS
 
 
 def test_new_event_constants_match_claude_strings():

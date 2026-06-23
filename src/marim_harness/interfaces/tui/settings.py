@@ -9,7 +9,7 @@ Harness construction and cannot be safely re-registered mid-session."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -79,7 +79,7 @@ class SettingsModal(ModalScreen[None]):
     BINDINGS = [("escape", "cancel", "Cancel")]
 
     def __init__(
-        self, *, harness: "Harness", current_theme: str, env_cfg: ModelConfig
+        self, *, harness: Harness, current_theme: str, env_cfg: ModelConfig
     ) -> None:
         super().__init__()
         self.harness = harness
@@ -229,7 +229,7 @@ class SettingsModal(ModalScreen[None]):
             self._on_model_chosen,
         )
 
-    def _on_model_chosen(self, chosen: Optional[str]) -> None:
+    def _on_model_chosen(self, chosen: str | None) -> None:
         if not chosen:
             return
         self.harness.set_model(chosen)

@@ -137,7 +137,7 @@ def install_plugin(
         name = name_override or manifest.name
         summary = plugin_bundle_summary(manifest)
         is_linked = bool(link and not use_git)
-        if is_linked:
+        if is_linked:  # noqa: SIM108 — a flattened nested ternary would hurt readability
             # A linked plugin points at a live, mutable source dir, so the
             # executable surface read at discovery time can differ from what is
             # inspected here. Never auto-trust it: hooks/MCP added to the source

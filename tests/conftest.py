@@ -15,7 +15,7 @@ def _capture_script(tmp_path, name: str, outfile) -> str:
     *outfile*, so a test can read back every payload the event fired with."""
     p = tmp_path / name
     p.write_text(
-        '#!/usr/bin/env bash\ncat >> "%s"\nprintf "\\n" >> "%s"\n' % (outfile, outfile),
+        f'#!/usr/bin/env bash\ncat >> "{outfile}"\nprintf "\\n" >> "{outfile}"\n',
         encoding="utf-8",
     )
     p.chmod(p.stat().st_mode | _stat_capture.S_IEXEC | _stat_capture.S_IRWXU)

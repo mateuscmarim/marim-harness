@@ -5,14 +5,13 @@ load_config() in the same process reflects the save."""
 
 import os
 from pathlib import Path
-from typing import Optional
 
 from dotenv import set_key
 
 from .env import global_config_path
 
 
-def save_env_settings(values: dict[str, str], path: Optional[Path] = None) -> Path:
+def save_env_settings(values: dict[str, str], path: Path | None = None) -> Path:
     """Write each ``key=value`` in ``values`` into the global .env (or ``path``),
     creating the file and its parent directory if needed. Values are written
     unquoted. Returns the path written."""

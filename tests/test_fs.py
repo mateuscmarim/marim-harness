@@ -44,7 +44,7 @@ def test_read_file_offset_and_limit_window(tmp_path: Path):
 
 def test_read_file_default_cap_truncates(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(fs, "_DEFAULT_READ_LIMIT", 3)
-    (tmp_path / "a.txt").write_text("\n".join("l%d" % i for i in range(1, 6)))
+    (tmp_path / "a.txt").write_text("\n".join(f"l{i}" for i in range(1, 6)))
     out = fs.read_file(tmp_path, "a.txt")  # no explicit limit -> capped at 3
     body = out.split("\n\n[")[0]
     assert body == "1\tl1\n2\tl2\n3\tl3"

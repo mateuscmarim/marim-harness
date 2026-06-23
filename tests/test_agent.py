@@ -316,7 +316,7 @@ async def test_switch_session_restores_its_model(tmp_path: Path):
 def test_build_collaborators_wires_full_graph(tmp_path):
     from pydantic_ai.models.function import FunctionModel
 
-    from marim_harness.agent import build_collaborators, Collaborators, HarnessConfig
+    from marim_harness.agent import Collaborators, HarnessConfig, build_collaborators
     from marim_harness.deps import Deps
     from marim_harness.tools.provider import BuiltinToolProvider
 
@@ -348,7 +348,7 @@ def test_build_collaborators_wires_full_graph(tmp_path):
 def test_build_collaborators_respects_lsp_disabled(tmp_path):
     from pydantic_ai.models.function import FunctionModel
 
-    from marim_harness.agent import build_collaborators, HarnessConfig
+    from marim_harness.agent import HarnessConfig, build_collaborators
     from marim_harness.deps import Deps
     from marim_harness.tools.provider import BuiltinToolProvider
 

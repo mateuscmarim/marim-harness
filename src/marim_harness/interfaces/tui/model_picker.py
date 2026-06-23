@@ -7,7 +7,7 @@ the modal opens immediately with free-text enabled and a "loading…" line, then
 populates the list when the fetch returns — a slow or failing provider never
 blocks the UI, and you can still type an id while it loads."""
 
-from typing import Awaitable, Callable, Optional
+from collections.abc import Awaitable, Callable
 
 from textual.app import ComposeResult
 from textual.containers import Vertical
@@ -18,7 +18,7 @@ from textual.widgets.option_list import Option
 from ...workspace import ModelEntry, filter_entries
 
 
-class ModelPickerModal(ModalScreen[Optional[str]]):
+class ModelPickerModal(ModalScreen[str | None]):
     """Dismisses with the chosen model id, or None if cancelled."""
 
     CSS = """
@@ -52,10 +52,10 @@ class ModelPickerModal(ModalScreen[Optional[str]]):
 
     def __init__(
         self,
-        entries: Optional[list[ModelEntry]] = None,
+        entries: list[ModelEntry] | None = None,
         allow_free_text: bool = False,
-        current: Optional[str] = None,
-        fetch: Optional[Callable[[], Awaitable[list[ModelEntry]]]] = None,
+        current: str | None = None,
+        fetch: Callable[[], Awaitable[list[ModelEntry]]] | None = None,
         is_local: bool = False,
     ) -> None:
         super().__init__()
@@ -122,7 +122,7 @@ class ModelPickerModal(ModalScreen[Optional[str]]):
         if entries:
             options.highlighted = 0
 
-    def _highlighted_id(self) -> Optional[str]:
+    def _highlighted_id(self) -> str | None:
         options = self.query_one("#model-options", OptionList)
         if options.option_count and options.highlighted is not None:
             return options.get_option_at_index(options.highlighted).id

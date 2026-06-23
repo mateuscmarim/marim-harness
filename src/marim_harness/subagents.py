@@ -9,9 +9,11 @@ immediately. The harness wires ``run``/``run_background`` onto ``Deps`` so the
 ``spawn_agent`` tool reaches them the same way other tools reach shared state.
 """
 
+import contextlib
 import re
+from collections.abc import Callable
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import Agent
 from pydantic_ai.settings import ModelSettings
@@ -64,9 +66,9 @@ class SubagentRunner:
     def __init__(self, provider: "ToolProvider", mcp: "McpManager", deps: Deps,
                  hooks: TurnHooks, session: "SessionController",
                  get_model: Callable[[], Any],
-                 model_settings: Optional[ModelSettings] = None,
+                 model_settings: ModelSettings | None = None,
                  request_limit: int = 50,
-                 build_model: Optional[Callable[[str], Any]] = None) -> None:
+                 build_model: Callable[[str], Any] | None = None) -> None:
         self.provider = provider
         self.mcp = mcp
         self.deps = deps
@@ -135,15 +137,11 @@ class SubagentRunner:
                            drop_branch: bool = False) -> None:
         """Best-effort removal of a spawn's worktree (and optionally its branch).
         Cleanup failures are swallowed — a stuck worktree is untidy, not fatal."""
-        try:
+        with contextlib.suppress(WorktreeError):
             remove_worktree(iso["repo"], iso["branch"], force=force)
-        except WorktreeError:
-            pass
         if drop_branch:
-            try:
+            with contextlib.suppress(WorktreeError):
                 delete_branch(iso["repo"], iso["branch"])
-            except WorktreeError:
-                pass
 
     def handler(self, stream_id: str | None):
         """An event_stream_handler for a sub-agent run. For each streamed event it
@@ -177,7 +175,7 @@ class SubagentRunner:
     def build(
         self, type: str, max_output_chars: int | None = None,
         model: str | None = None, workspace_root=None,
-    ) -> "tuple[Optional[SubAgent], Optional[str]]":
+    ) -> "tuple[SubAgent | None, str | None]":
         """Build an isolated sub-agent of ``type``, with its reach decided up
         front: gated tools only in auto mode, so a run never needs an approval
         round. Runs on the harness's current model unless ``model`` overrides it

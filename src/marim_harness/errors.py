@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
 
 
 def _find_api_error(exc: BaseException):
@@ -25,7 +24,7 @@ def _find_api_error(exc: BaseException):
     except Exception:  # openai not importable for some reason — nothing to do
         return None
     seen: set[int] = set()
-    cur: Optional[BaseException] = exc
+    cur: BaseException | None = exc
     while cur is not None and id(cur) not in seen:
         seen.add(id(cur))
         if isinstance(cur, APIError):
@@ -34,7 +33,7 @@ def _find_api_error(exc: BaseException):
     return None
 
 
-def _error_dict(api) -> Optional[dict]:
+def _error_dict(api) -> dict | None:
     """The ``error`` sub-dict OpenRouter nests in the parsed body, or None."""
     body = getattr(api, "body", None)
     err = body.get("error") if isinstance(body, dict) else None
@@ -45,7 +44,7 @@ def _truncate(text: str, limit: int) -> str:
     return text[: limit - 1] + "…" if len(text) > limit else text
 
 
-def provider_error_status(exc: BaseException) -> Optional[int]:
+def provider_error_status(exc: BaseException) -> int | None:
     """The HTTP-ish status of a provider error — the SDK's ``status_code`` if
     present, else the ``code`` OpenRouter puts in the body. None when neither is
     a recognizable integer (or the exception isn't a provider error)."""
@@ -65,7 +64,7 @@ def provider_error_status(exc: BaseException) -> Optional[int]:
     return None
 
 
-def format_provider_error(exc: BaseException) -> Optional[str]:
+def format_provider_error(exc: BaseException) -> str | None:
     """A one-line, screen-safe rendering of a provider error that pulls in the
     upstream message, code, provider name, and raw detail. None when ``exc``
     isn't a provider error with a structured body — the caller then keeps its own
@@ -92,7 +91,7 @@ def format_provider_error(exc: BaseException) -> Optional[str]:
     return " · ".join(bits)
 
 
-def provider_error_payload(exc: BaseException) -> Optional[dict]:
+def provider_error_payload(exc: BaseException) -> dict | None:
     """The full, untruncated provider error as a JSON-serializable dict for
     logging — type, message, and the raw parsed body. None when ``exc`` isn't a
     provider error."""
@@ -107,7 +106,7 @@ def provider_error_payload(exc: BaseException) -> Optional[dict]:
     }
 
 
-def dump_provider_error(workspace_root: Path, exc: BaseException) -> Optional[Path]:
+def dump_provider_error(workspace_root: Path, exc: BaseException) -> Path | None:
     """Write the full provider error payload to ``.marim/last-provider-error.json``
     so the complete upstream detail survives the truncated on-screen view.
     Returns the path written, or None when ``exc`` isn't a provider error."""

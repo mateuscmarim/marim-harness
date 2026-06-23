@@ -23,7 +23,7 @@ def test_register_includes_lsp_tools_by_default():
 
     agent = Agent(TestModel(), deps_type=Deps)
     BuiltinToolProvider().register(agent)
-    assert LSP_TOOLS <= _tool_names(agent)
+    assert _tool_names(agent) >= LSP_TOOLS
 
 
 def test_register_omits_lsp_tools_when_disabled():
@@ -103,7 +103,7 @@ def test_register_uses_four_job_tools_by_default():
     agent = Agent(TestModel(), deps_type=Deps)
     BuiltinToolProvider().register(agent)
     names = _tool_names(agent)
-    assert _JOB_FOUR <= names
+    assert names >= _JOB_FOUR
     assert "job" not in names
 
 

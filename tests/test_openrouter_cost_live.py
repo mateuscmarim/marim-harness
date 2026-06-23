@@ -11,10 +11,13 @@ import os
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    not os.getenv("OPENROUTER_API_KEY"),
-    reason="OPENROUTER_API_KEY not exported; live OpenRouter test skipped",
-)
+pytestmark = [
+    pytest.mark.live,
+    pytest.mark.skipif(
+        not os.getenv("OPENROUTER_API_KEY"),
+        reason="OPENROUTER_API_KEY not exported; live OpenRouter test skipped",
+    ),
+]
 
 
 @pytest.mark.anyio

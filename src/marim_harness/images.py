@@ -13,7 +13,6 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +35,7 @@ def media_ext(media_type: str) -> str:
     return "bin"
 
 
-def _run(cmd: list[str]) -> Optional[bytes]:
+def _run(cmd: list[str]) -> bytes | None:
     """Run a clipboard helper, returning stdout bytes or None on any failure."""
     try:
         proc = subprocess.run(cmd, capture_output=True, timeout=5)
@@ -48,7 +47,7 @@ def _run(cmd: list[str]) -> Optional[bytes]:
     return proc.stdout
 
 
-def _read_wayland() -> Optional[tuple[bytes, str]]:
+def _read_wayland() -> tuple[bytes, str] | None:
     if not shutil.which("wl-paste"):
         return None
     types = _run(["wl-paste", "--list-types"])
@@ -66,7 +65,7 @@ def _read_wayland() -> Optional[tuple[bytes, str]]:
     return data, target
 
 
-def _read_x11() -> Optional[tuple[bytes, str]]:
+def _read_x11() -> tuple[bytes, str] | None:
     if not shutil.which("xclip"):
         return None
     targets = _run(["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"])
@@ -83,7 +82,7 @@ def _read_x11() -> Optional[tuple[bytes, str]]:
     return data, target
 
 
-def _read_macos() -> Optional[tuple[bytes, str]]:
+def _read_macos() -> tuple[bytes, str] | None:
     if not shutil.which("pngpaste"):
         return None
     data = _run(["pngpaste", "-"])
@@ -92,7 +91,7 @@ def _read_macos() -> Optional[tuple[bytes, str]]:
     return data, "image/png"
 
 
-def _read_windows() -> Optional[tuple[bytes, str]]:
+def _read_windows() -> tuple[bytes, str] | None:
     if not shutil.which("powershell"):
         return None
     script = (
@@ -108,7 +107,7 @@ def _read_windows() -> Optional[tuple[bytes, str]]:
     return data, "image/png"
 
 
-def read_clipboard_image() -> Optional[tuple[bytes, str]]:
+def read_clipboard_image() -> tuple[bytes, str] | None:
     """The image currently on the OS clipboard as (bytes, media_type), or None
     when there is none or no platform helper is available."""
     if os.environ.get("WAYLAND_DISPLAY"):
@@ -162,13 +161,13 @@ _EXT_TO_MEDIA = {
 }
 
 
-def media_type_for_path(path: Path) -> Optional[str]:
+def media_type_for_path(path: Path) -> str | None:
     """Return the media type for a path based on its extension, or None if not
     a known image extension."""
     return _EXT_TO_MEDIA.get(path.suffix.lower().lstrip("."))
 
 
-def detect_image_path(text: str) -> Optional[Path]:
+def detect_image_path(text: str) -> Path | None:
     """A bare path to an existing image file, or None. The whole text (minus
     surrounding whitespace/quotes) must be the path — a path embedded in a
     sentence is deliberately ignored to avoid false positives."""

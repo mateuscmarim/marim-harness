@@ -103,11 +103,10 @@ class PromptInput(TextArea):
             event.prevent_default()
             event.stop()
             return
-        if event.key == "ctrl+v":
-            if self._on_paste_image():
-                event.prevent_default()
-                event.stop()
-                return
+        if event.key == "ctrl+v" and self._on_paste_image():
+            event.prevent_default()
+            event.stop()
+            return
         if event.key in ("backspace", "delete") and self._delete_markers(event.key):
             event.prevent_default()
             event.stop()

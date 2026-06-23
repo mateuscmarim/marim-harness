@@ -4,7 +4,6 @@ and filter that list."""
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +18,7 @@ class ModelEntry:
 
     id: str
     name: str
-    supports_images: Optional[bool] = None
+    supports_images: bool | None = None
 
 
 def parse_models(payload: dict) -> list[ModelEntry]:
@@ -38,7 +37,7 @@ def parse_models(payload: dict) -> list[ModelEntry]:
         name = row.get("name")
         display = name if isinstance(name, str) and name else model_id
         arch = row.get("architecture")
-        supports_images: Optional[bool] = None
+        supports_images: bool | None = None
         if isinstance(arch, dict):
             mods = arch.get("input_modalities")
             if isinstance(mods, list):
@@ -82,7 +81,7 @@ def parse_google_models(payload: dict) -> list[ModelEntry]:
 
 
 async def fetch_google_models(
-    api_key: Optional[str] = None, timeout: float = 10.0
+    api_key: str | None = None, timeout: float = 10.0
 ) -> list[ModelEntry]:
     """Fetch the Gemini model catalog. Returns ``[]`` on any failure."""
     import httpx
@@ -99,7 +98,7 @@ async def fetch_google_models(
 
 
 async def fetch_openrouter_models(
-    api_key: Optional[str] = None, timeout: float = 10.0
+    api_key: str | None = None, timeout: float = 10.0
 ) -> list[ModelEntry]:
     """Fetch the OpenRouter catalog. Returns ``[]`` on any failure so callers can
     degrade to free-text entry. httpx is imported lazily to keep import light."""
@@ -116,7 +115,7 @@ async def fetch_openrouter_models(
         return []
 
 
-def model_supports_images(entries: list[ModelEntry], model_id: str) -> Optional[bool]:
+def model_supports_images(entries: list[ModelEntry], model_id: str) -> bool | None:
     """Whether ``model_id`` accepts image input per the catalog; None if the id
     is not present (capability unknown)."""
     for entry in entries:

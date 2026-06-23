@@ -3,12 +3,12 @@ read for injected context on injection events. Reuses the process-group SIGKILL
 timeout discipline from ``tools/shell.py``. Never raises."""
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import re
 import signal
-from typing import Optional
 
 from .events import INJECTING_EVENTS, POST_TOOL_USE, PRE_TOOL_USE
 
@@ -35,10 +35,8 @@ def _kill(proc) -> None:
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
-        try:
+        with contextlib.suppress(ProcessLookupError):
             proc.kill()
-        except ProcessLookupError:
-            pass
 
 
 def base_payload(
@@ -70,7 +68,7 @@ def _matches(matcher, event: str, tool_name: str) -> bool:
         return False
 
 
-def _extract_context(out: str) -> Optional[str]:
+def _extract_context(out: str) -> str | None:
     """Pull ``additionalContext`` from a hook's stdout: either CC's structured
     JSON or, when not JSON, the plain text verbatim."""
     try:
@@ -87,7 +85,7 @@ def _extract_context(out: str) -> Optional[str]:
     return out
 
 
-async def _run_one(command: str, payload: dict, timeout) -> Optional[str]:
+async def _run_one(command: str, payload: dict, timeout) -> str | None:
     """Run one hook command, feeding ``payload`` as JSON on stdin. Returns stripped
     stdout on a clean exit-0 run, else ``None``. Swallows every failure — logged
     at DEBUG so an operator can diagnose misconfig or a misbehaving hook."""
@@ -126,7 +124,7 @@ class HookRunner:
     def __init__(self, config: dict) -> None:
         self._config = config or {}
 
-    async def dispatch(self, event: str, payload: dict) -> Optional[str]:
+    async def dispatch(self, event: str, payload: dict) -> str | None:
         """Run every hook configured for ``event`` whose matcher passes. Returns
         injected context for injection events, else ``None``. Never raises."""
         entries = self._config.get(event)

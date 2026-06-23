@@ -8,7 +8,6 @@ both import these types.
 
 import json
 from dataclasses import dataclass, field
-from typing import Optional
 
 # Most questions the modal will present in one prompt — a bad call can't open an
 # unbounded modal, and it mirrors AskUserQuestion's 1–4 range.
@@ -24,7 +23,7 @@ class Choice:
     dim beneath the label in the picker."""
 
     label: str
-    description: Optional[str] = None
+    description: str | None = None
 
 
 @dataclass
@@ -39,7 +38,7 @@ class Question:
     multi: bool = False
 
 
-def _clean_choice(choice: Choice) -> Optional[Choice]:
+def _clean_choice(choice: Choice) -> Choice | None:
     """Drop a choice with a blank label; trim a blank description to None."""
     label = (choice.label or "").strip()
     if not label:
@@ -53,7 +52,7 @@ def _fallback_header(question: str) -> str:
     return " ".join(question.split())[:_HEADER_FALLBACK_CHARS]
 
 
-def _clean_question(q: Question) -> Optional[Question]:
+def _clean_question(q: Question) -> Question | None:
     """Normalize one question, or None to drop it. Drops blank-label choices and
     then the whole question if it has no text or no surviving options; fills a
     blank header from the question text."""

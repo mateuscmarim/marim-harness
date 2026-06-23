@@ -6,7 +6,6 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 from pydantic_ai.messages import ModelMessagesTypeAdapter
 from pydantic_ai.usage import RunUsage
@@ -53,7 +52,7 @@ class SessionInfo:
     updated: str
     message_count: int
     tokens: int
-    duration_seconds: Optional[float] = None
+    duration_seconds: float | None = None
 
 
 class SessionStore:
@@ -62,7 +61,7 @@ class SessionStore:
     path, id, and name."""
 
     def __init__(self, path, workspace_root, session_id: str, name: str,
-                 auto_named: bool = False, model: Optional[str] = None) -> None:
+                 auto_named: bool = False, model: str | None = None) -> None:
         self.path = Path(path)
         self.workspace_root = Path(workspace_root).resolve()
         self.session_id = session_id
@@ -73,8 +72,8 @@ class SessionStore:
         self.model = model
 
     def save(self, history: list, usage: RunUsage,
-             tasks: Optional[list] = None,
-             duration_seconds: Optional[float] = None) -> None:
+             tasks: list | None = None,
+             duration_seconds: float | None = None) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "id": self.session_id,
@@ -105,7 +104,7 @@ class SessionStore:
         tmp.write_text(json.dumps(payload))
         tmp.replace(self.path)  # atomic swap so a crash mid-write can't corrupt
 
-    def load(self) -> tuple[list, RunUsage, list, Optional[float]]:
+    def load(self) -> tuple[list, RunUsage, list, float | None]:
         """Return ``(messages, usage, tasks, duration_seconds)``. Files written
         before task/duration tracking simply have no key and load as defaults."""
         if not self.path.exists():
@@ -137,7 +136,7 @@ class SessionManager:
     """Owns the named sessions for one workspace: lists them, opens an existing
     one, and creates new ones with unique ids."""
 
-    def __init__(self, workspace_root, base_dir: Optional[Path] = None) -> None:
+    def __init__(self, workspace_root, base_dir: Path | None = None) -> None:
         self.workspace_root = Path(workspace_root).resolve()
         base = Path(base_dir) if base_dir is not None else _default_base_dir()
         self.dir = _workspace_dir(base, self.workspace_root)
@@ -172,7 +171,7 @@ class SessionManager:
         infos.sort(key=lambda info: info.updated, reverse=True)
         return infos
 
-    def store(self, session_id: str, name: Optional[str] = None) -> SessionStore:
+    def store(self, session_id: str, name: str | None = None) -> SessionStore:
         """Open the store for an existing (or known) session id. Recovers the
         display name and auto-named flag from the saved file when present."""
         path = self._path(session_id)
@@ -192,7 +191,7 @@ class SessionManager:
             auto_named=auto_named, model=model,
         )
 
-    def create(self, name: Optional[str] = None) -> SessionStore:
+    def create(self, name: str | None = None) -> SessionStore:
         """Start a new session. The id is a slug of ``name`` (or a timestamp);
         the display name is ``name`` verbatim (or that timestamp slug). An
         unnamed session is flagged auto_named so it can be titled later.
@@ -222,11 +221,11 @@ class SessionManager:
             suffix += 1
         return candidate
 
-    def latest(self) -> Optional[SessionInfo]:
+    def latest(self) -> SessionInfo | None:
         infos = self.list()
         return infos[0] if infos else None
 
-    def latest_model(self) -> Optional[str]:
+    def latest_model(self) -> str | None:
         """Return the model id of the most recent session, or *None*."""
         latest = self.latest()
         if latest is None:

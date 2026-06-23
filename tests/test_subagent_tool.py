@@ -127,7 +127,7 @@ def test_register_subagent_full_set(tmp_path):
     BuiltinToolProvider().register_subagent(agent, SUBAGENT_TOOLS)
     names = _tool_names(agent, Deps(workspace_root=tmp_path))
     assert names == set(SUBAGENT_TOOLS)
-    assert GATED_TOOLS <= names
+    assert names >= GATED_TOOLS
 
 
 def test_register_subagent_ignores_unknown_and_spawn(tmp_path):

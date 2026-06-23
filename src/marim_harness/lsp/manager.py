@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from contextlib import AsyncExitStack
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 from urllib.parse import unquote, urlparse
 
 from . import registry
@@ -58,7 +59,7 @@ class LspManager:
         root: Path,
         *,
         disabled: frozenset[str] = frozenset(),
-        server_factory: Optional[Callable[[str, Path], Any]] = None,
+        server_factory: Callable[[str, Path], Any] | None = None,
         request_timeout: float = 15.0,
         start_timeout: float = 60.0,
     ) -> None:
@@ -74,7 +75,7 @@ class LspManager:
 
     # --- lifecycle -----------------------------------------------------------
 
-    async def _start_language(self, language: str) -> Optional[str]:
+    async def _start_language(self, language: str) -> str | None:
         """Acquire the lock, double-check, start and register the server for
         ``language``. Returns None on success or a short error string on failure.
         Callers must have already verified the language is eligible (not disabled,
@@ -99,7 +100,7 @@ class LspManager:
 
     async def _server_for(
         self, path: str
-    ) -> tuple[Optional[Any], Optional[str], Optional[str]]:
+    ) -> tuple[Any | None, str | None, str | None]:
         """Return (server, language, error_message). On any problem the server is
         None and error_message is a string to hand back to the model."""
         language = registry.language_for(path)
@@ -128,7 +129,7 @@ class LspManager:
 
     # --- helpers -------------------------------------------------------------
 
-    async def _call(self, coro, what: str) -> tuple[Optional[Any], Optional[str]]:
+    async def _call(self, coro, what: str) -> tuple[Any | None, str | None]:
         """Await ``coro`` under the request timeout. Returns (result, error)."""
         try:
             return await asyncio.wait_for(coro, timeout=self._request_timeout), None

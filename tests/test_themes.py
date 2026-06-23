@@ -13,7 +13,7 @@ def test_four_themes_defined():
 
 
 def test_names_match_themes():
-    assert THEME_NAMES == tuple(t.name for t in MARIM_THEMES)
+    assert tuple(t.name for t in MARIM_THEMES) == THEME_NAMES
     assert set(THEME_NAMES) == {
         "marim-teal",
         "marim-amber",

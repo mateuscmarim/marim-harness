@@ -74,9 +74,8 @@ def _tool_returns_are_paired(history: list) -> bool:
         for part in msg.parts:
             if isinstance(part, ToolCallPart):
                 seen_calls.add(part.tool_call_id)
-            elif isinstance(part, ToolReturnPart):
-                if part.tool_call_id not in seen_calls:
-                    return False
+            elif isinstance(part, ToolReturnPart) and part.tool_call_id not in seen_calls:
+                return False
     return True
 
 

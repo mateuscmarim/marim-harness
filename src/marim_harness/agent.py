@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import Agent, DeferredToolRequests, capture_run_messages
 from pydantic_ai.messages import BinaryContent, ModelMessage
@@ -18,7 +19,7 @@ from .compaction import (
     make_summarizer,
     make_titler,
 )
-from .deps import Deps, HarnessServices
+from .deps import Deps, HarnessAgent, HarnessServices
 from .errors import dump_provider_error, provider_error_status
 from .hooks.dispatch import TurnHooks
 from .instructions import register_instructions
@@ -155,7 +156,7 @@ def _short(exc: BaseException, limit: int = 200) -> str:
     return text[: limit - 1] + "…" if len(text) > limit else text
 
 
-def _actionable_error_note(exc: BaseException) -> Optional[str]:
+def _actionable_error_note(exc: BaseException) -> str | None:
     """A terse, sanitized note about a failed turn that the *model* can act on,
     or None when the failure is not the model's to fix. We surface only the
     errors where adjusting the next turn could plausibly help — a malformed or
@@ -215,17 +216,17 @@ class HarnessConfig:
     """
 
     model_label: str = "model"
-    store: Optional[SessionStore] = None
-    manager: Optional[SessionManager] = None
+    store: SessionStore | None = None
+    manager: SessionManager | None = None
     max_context_tokens: int = 100_000
     keep_last_messages: int = 20
-    summarizer: Optional[Summarizer] = None
-    titler: Optional[Titler] = None
-    model_source: "Optional[ModelSource]" = None
-    model_id: Optional[str] = None
+    summarizer: Summarizer | None = None
+    titler: Titler | None = None
+    model_source: ModelSource | None = None
+    model_id: str | None = None
     proactive_memory: bool = False
     mcp_servers: list[object] = field(default_factory=list)
-    mcp_disabled: Optional[set] = None
+    mcp_disabled: set | None = None
     # LSP master switch. False ⇒ no LspManager is built (deps.services.lsp stays None), so
     # diagnostics-on-edit no-ops. Navigation-tool registration is gated separately
     # on the provider (see build_harness), keyed on lsp_enabled and lsp_tools_enabled.
@@ -246,7 +247,7 @@ class HarnessConfig:
 def build_services(
     deps: Deps,
     *,
-    lsp: Optional[LspManager],
+    lsp: LspManager | None,
     turn_hooks: TurnHooks,
     subagents: SubagentRunner,
 ) -> HarnessServices:
@@ -270,9 +271,9 @@ class Collaborators:
     cycle live in one named, testable place rather than inline in
     ``Harness.__init__``."""
 
-    agent: Agent
+    agent: HarnessAgent
     mcp: McpManager
-    lsp: Optional[LspManager]
+    lsp: LspManager | None
     session: SessionController
     checkpoints: CheckpointManager
     hooks: TurnHooks
@@ -352,7 +353,7 @@ class Harness:
     resolving deferred tool approvals by the current mode."""
 
     def __init__(self, model, provider: ToolProvider, deps: Deps, instructions: str,
-                 *, config: Optional[HarnessConfig] = None, **kwargs):
+                 *, config: HarnessConfig | None = None, **kwargs):
         """Create a Harness.
 
         ``config`` bundles the optional knobs (session store, model identity,
@@ -375,16 +376,16 @@ class Harness:
         # A one-shot note about the last actionable failure, prepended to the
         # next turn's prompt so the model knows it didn't complete (see
         # _actionable_error_note). None when there's nothing to surface.
-        self._pending_error_note: Optional[str] = None
+        self._pending_error_note: str | None = None
         # One-shot context returned by a SessionStart hook, prepended to the next
         # turn's prompt and consumed there (mirrors _pending_error_note).
-        self._pending_hook_context: Optional[str] = None
+        self._pending_hook_context: str | None = None
         # Live RunContext of the in-flight turn, captured by the event-stream
         # handler wrapper; None between turns. A steer enqueues onto it.
         self._active_run_ctx = None
         # Steers typed when no run is live yet (ask-mode between-round gap):
         # (text, attachments) buffered, flushed when a ctx is next captured.
-        self._steer_buffer: list[tuple[str, Optional[list[tuple[bytes, str]]]]] = []
+        self._steer_buffer: list[tuple[str, list[tuple[bytes, str]] | None]] = []
         # Build the collaborator graph in one named, testable place. get_model
         # closes over self so a runtime /model switch (set_model) is tracked.
         collab = build_collaborators(
@@ -402,14 +403,14 @@ class Harness:
     def bind_ui(
         self,
         *,
-        request_approval: Optional[Callable[..., Any]] = None,
-        ask_user: Optional[Callable[..., Any]] = None,
-        on_subagent_event: Optional[Callable[..., Any]] = None,
-        on_tasks_changed: Optional[Callable[..., Any]] = None,
-        on_jobs_changed: Optional[Callable[..., Any]] = None,
-        on_compact: Optional[Callable[..., Any]] = None,
-        on_compact_start: Optional[Callable[..., Any]] = None,
-        on_rename: Optional[Callable[..., Any]] = None,
+        request_approval: Callable[..., Any] | None = None,
+        ask_user: Callable[..., Any] | None = None,
+        on_subagent_event: Callable[..., Any] | None = None,
+        on_tasks_changed: Callable[..., Any] | None = None,
+        on_jobs_changed: Callable[..., Any] | None = None,
+        on_compact: Callable[..., Any] | None = None,
+        on_compact_start: Callable[..., Any] | None = None,
+        on_rename: Callable[..., Any] | None = None,
     ) -> None:
         """Wire the interactive UI's callbacks into the harness in one place.
 
@@ -441,7 +442,7 @@ class Harness:
         self.session.reset()
         self.checkpoints.clear()
 
-    def new_session(self, name: Optional[str] = None) -> None:
+    def new_session(self, name: str | None = None) -> None:
         self.session.new_session(name)
         self.checkpoints.reload()
         # Apply the model inherited by SessionManager.create() when it
@@ -459,7 +460,7 @@ class Harness:
         self._apply_saved_model()
         return count
 
-    async def rename_session(self, name: Optional[str] = None) -> Optional[str]:
+    async def rename_session(self, name: str | None = None) -> str | None:
         return await self.session.rename(name)
 
     async def _maybe_compact(self) -> None:
@@ -530,7 +531,7 @@ class Harness:
     async def disable_server(self, name: str) -> None:
         self.mcp.disable_server(name, self.deps.workspace_root)
 
-    async def enable_server(self, name: str) -> Optional[str]:
+    async def enable_server(self, name: str) -> str | None:
         return await self.mcp.enable_server(name, self.deps.workspace_root)
 
     # --- hooks (observe-only except session_start, which injects context into
@@ -592,7 +593,7 @@ class Harness:
         return prompt
 
     def steer(self, text: str,
-              attachments: Optional[list[tuple[bytes, str]]] = None) -> None:
+              attachments: list[tuple[bytes, str]] | None = None) -> None:
         """Inject a user message into the running turn. Reaches the model at the
         next request boundary (pydantic-ai drains 'asap' content before it).
         Buffers if no run is live yet; the buffer flushes when a ctx is captured."""
@@ -612,7 +613,7 @@ class Harness:
 
     def take_buffered_steers(
         self,
-    ) -> list[tuple[str, Optional[list[tuple[bytes, str]]]]]:
+    ) -> list[tuple[str, list[tuple[bytes, str]] | None]]:
         """Return and clear any steers that were never flushed (the
         finishing-gap race). The caller decides what to do with them."""
         buffered, self._steer_buffer = self._steer_buffer, []
@@ -738,7 +739,7 @@ class Harness:
             return output
 
     async def run_turn(self, prompt: str, event_stream_handler=None,
-                       attachments: Optional[list[tuple[bytes, str]]] = None) -> str:
+                       attachments: list[tuple[bytes, str]] | None = None) -> str:
         """Run the agent until it produces a final text answer, looping through
         any approval rounds. Returns the final text output."""
         await self._maybe_compact()

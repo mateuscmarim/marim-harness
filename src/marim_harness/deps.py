@@ -1,6 +1,7 @@
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Awaitable, Callable, Optional
+from typing import TYPE_CHECKING, Optional
 
 from pydantic_ai import Agent, DeferredToolRequests
 from pydantic_ai.tools import DeferredToolApprovalResult
@@ -22,8 +23,8 @@ ApprovalFn = Callable[[object], Awaitable[DeferredToolApprovalResult | bool]]
 # (type, task, stream_id, mcp_names, max_output_chars, model, isolation) -> the
 # sub-agent's final report. Wired by the Harness.
 SubAgentRunner = Callable[
-    [str, str, str, Optional[list[str]], Optional[int], Optional[str],
-     Optional[str]],
+    [str, str, str, list[str] | None, int | None, str | None,
+     str | None],
     Awaitable[str],
 ]
 # (stream_id, event, usage) -> None. Forwards a sub-agent's run events to the UI
@@ -34,14 +35,14 @@ SubAgentEventCb = Callable[[str, object, object], Awaitable[None]]
 # final report. Like SubAgentRunner but with no streaming — used to run a
 # sub-agent as a detached background job.
 BackgroundAgentRunner = Callable[
-    [str, str, Optional[list[str]], Optional[int], Optional[str], Optional[str]],
+    [str, str, list[str] | None, int | None, str | None, str | None],
     Awaitable[str],
 ]
 
 # (questions) -> {header: answer}, where answer is a str (single-select) or a
 # list[str] (multi-select); None when the user cancelled. Wired by the TUI; None
 # when there's no interactive UI (headless), so the tool degrades gracefully.
-AskUserFn = Callable[[list[Question]], Awaitable[Optional[dict]]]
+AskUserFn = Callable[[list[Question]], Awaitable[dict | None]]
 
 
 @dataclass
@@ -63,19 +64,19 @@ class HarnessServices:
     # lifecycle hooks with a full payload. None when no hooks are configured.
     turn_hooks: Optional["TurnHooks"] = None
     # Lets the spawn_agent tool launch a sub-agent and stream its events.
-    run_subagent: Optional[SubAgentRunner] = None
+    run_subagent: SubAgentRunner | None = None
     # Lets spawn_agent(background=True) run a sub-agent as a detached job.
-    run_background_agent: Optional[BackgroundAgentRunner] = None
+    run_background_agent: BackgroundAgentRunner | None = None
 
 
 @dataclass
 class Deps:
     workspace_root: Path
     mode: Mode = Mode.ask
-    request_approval: Optional[ApprovalFn] = None
+    request_approval: ApprovalFn | None = None
     # Lets the ask_user tool put a structured question to the user mid-turn. None
     # when headless (the tool then returns a graceful note).
-    ask_user: Optional[AskUserFn] = None
+    ask_user: AskUserFn | None = None
     # The session's live checklist. Tools mutate it via ctx.deps; the Harness
     # persists it and the TUI renders it. Every Deps gets its own.
     tasks: TaskList = field(default_factory=TaskList)
@@ -91,11 +92,11 @@ class Deps:
     # Optional Claude-Code-compatible hook engine. None when no hooks.json is
     # configured (every fire-point becomes a cheap ``is None`` no-op).
     hooks: Optional["HookRunner"] = None
-    on_subagent_event: Optional[SubAgentEventCb] = None
+    on_subagent_event: SubAgentEventCb | None = None
     # Optional desktop notifier. None when notifications are disabled; the TUI
     # and headless runner fire it at key event points (turn complete, error,
     # approval needed, ask user, background job finished).
-    notifier: "Optional[Notifier]" = None
+    notifier: "Notifier | None" = None
 
 
 # The main agent's concrete generic type: deps are ``Deps`` and a turn yields

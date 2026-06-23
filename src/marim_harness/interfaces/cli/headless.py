@@ -4,7 +4,6 @@ JSON object, and newline-delimited JSON streaming."""
 
 import json
 import sys
-from typing import Optional
 
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
@@ -58,7 +57,7 @@ def _result_obj(harness: Harness, output: str) -> dict:
     }
 
 
-def _event_obj(event) -> Optional[dict]:
+def _event_obj(event) -> dict | None:
     """Map a Pydantic AI streaming event to a JSON-serializable line, or None to
     skip events we don't surface."""
     if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):

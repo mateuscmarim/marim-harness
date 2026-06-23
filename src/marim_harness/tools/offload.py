@@ -8,7 +8,6 @@ agent can page with ``read_file``/``grep``. Mirrors ``fetch``'s offload pattern.
 
 import hashlib
 from pathlib import Path
-from typing import Optional
 
 _INLINE_CHAR_LIMIT = 50_000      # at/below this, return inline (~12k tokens)
 # Measured in characters (~bytes for ASCII); producers stop collecting here and callers may offload.
@@ -19,7 +18,7 @@ _OUTPUT_DIR = (".marim", "output")
 
 def _write_handle(content: str, *, kind: str, key: str,
                   workspace_root: Path, capped: bool) -> str:
-    digest = hashlib.sha256(f"{kind}\0{key}".encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha256(f"{kind}\0{key}".encode()).hexdigest()[:16]
     rel = Path(*_OUTPUT_DIR, f"{kind}-{digest}.txt")
     dest = workspace_root / rel
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -52,7 +51,7 @@ def write_preview_file(content: str, *, rel: Path, workspace_root: Path) -> tupl
 
 
 def offload_if_large(content: str, *, kind: str, key: str,
-                     workspace_root: Optional[Path], capped: bool = False) -> str:
+                     workspace_root: Path | None, capped: bool = False) -> str:
     """Return ``content`` inline when small; otherwise offload to a file and
     return a handle + preview. With no workspace (or on write failure), clip to
     the inline limit instead, so a large result can never flood context."""

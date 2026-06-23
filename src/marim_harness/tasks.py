@@ -9,8 +9,9 @@ the session file, and the TUI refreshes a live panel through the ``on_change``
 callback. Nothing here does I/O; persistence and rendering live with their owners.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Literal, Optional, cast
+from typing import Literal, cast
 
 Status = Literal["pending", "in_progress", "done"]
 _VALID: frozenset[str] = frozenset({"pending", "in_progress", "done"})
@@ -26,7 +27,7 @@ class Task:
     status: Status = "pending"
 
 
-def _coerce(item) -> Optional[Task]:
+def _coerce(item) -> Task | None:
     """Turn a tool-supplied Task, a stored dict, or any text/status-bearing object
     into a valid Task — or None to drop it. Blank text is dropped; an unknown
     status is clamped to ``pending`` so bad input never breaks a turn."""
@@ -53,7 +54,7 @@ class TaskList:
     """The session's live checklist. Mutated in place across session switches so
     the TUI's reference and ``on_change`` wiring survive."""
 
-    def __init__(self, on_change: Optional[Callable[[], None]] = None) -> None:
+    def __init__(self, on_change: Callable[[], None] | None = None) -> None:
         self.items: list[Task] = []
         # Fired only on the live mid-turn path (replace). Lifecycle resets
         # (clear/load) are followed by a full re-render from the caller, so they

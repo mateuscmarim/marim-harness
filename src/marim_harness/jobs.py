@@ -17,9 +17,11 @@ and are cancelled on exit. The agent reaches results by *pulling*
 """
 
 import asyncio
+import contextlib
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable, Literal, Optional
+from typing import Literal
 
 logger = logging.getLogger(__name__)
 
@@ -44,17 +46,17 @@ class Job:
     kind: str  # "bash" | "agent"
     label: str
     status: Status = "running"
-    result: Optional[str] = None
-    task: Optional[asyncio.Task] = field(default=None, repr=False)
-    kill: Optional[Callable[[], None]] = field(default=None, repr=False)
-    output_fn: Optional[Callable[[], str]] = field(default=None, repr=False)
+    result: str | None = None
+    task: asyncio.Task | None = field(default=None, repr=False)
+    kill: Callable[[], None] | None = field(default=None, repr=False)
+    output_fn: Callable[[], str] | None = field(default=None, repr=False)
 
 
 class JobRegistry:
     """The session's live background jobs. Mutated in place so the TUI's reference
     and ``on_change`` wiring survive across session switches."""
 
-    def __init__(self, on_change: Optional[Callable[[], None]] = None) -> None:
+    def __init__(self, on_change: Callable[[], None] | None = None) -> None:
         self._jobs: dict[str, Job] = {}
         self._counter = 0
         self.on_change = on_change
@@ -71,7 +73,7 @@ class JobRegistry:
         if self.on_change is not None:
             self.on_change()
 
-    def _settle(self, job: Job, status: Status, result: Optional[str] = None) -> None:
+    def _settle(self, job: Job, status: Status, result: str | None = None) -> None:
         """Move a running job to its terminal ``status`` exactly once: record it
         for the next-turn digest and repaint. A no-op if already terminal, so the
         wrapper's cancel path and an explicit ``cancel()`` can't double-count."""
@@ -93,8 +95,8 @@ class JobRegistry:
         label: str,
         coro: Awaitable[str],
         *,
-        kill: Optional[Callable[[], None]] = None,
-        output_fn: Optional[Callable[[], str]] = None,
+        kill: Callable[[], None] | None = None,
+        output_fn: Callable[[], str] | None = None,
     ) -> str:
         """Schedule ``coro`` as a background job and return its id. The coroutine's
         return value becomes the job's result; an exception marks it failed; being
@@ -125,7 +127,7 @@ class JobRegistry:
         self._notify()
         return job.id
 
-    def get(self, job_id: str) -> Optional[Job]:
+    def get(self, job_id: str) -> Job | None:
         return self._jobs.get(job_id)
 
     def list(self) -> list[Job]:
@@ -194,10 +196,8 @@ class JobRegistry:
             job.kill()
         if job.task is not None:
             job.task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await job.task
-            except (asyncio.CancelledError, Exception):
-                pass
         # A task cancelled before it began running never hits the wrapper's
         # except, so settle here; _settle is a no-op if it already landed.
         self._settle(job, "cancelled")

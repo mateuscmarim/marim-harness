@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from pydantic_ai import RunContext
 
@@ -44,7 +44,7 @@ _ON_REQUEST_MEMORY_POLICY = (
 
 def load_project_instructions(
     workspace_root, filename: str | None = None
-) -> Optional[str]:
+) -> str | None:
     """Read project-specific agent instructions from the workspace root.
 
     When *filename* is given, try only that file.  Otherwise iterate the
@@ -52,10 +52,7 @@ def load_project_instructions(
     non-empty result.  Returns ``None`` if no file is found or all are
     empty/unreadable — a broken file must never break a turn.
     """
-    if filename is not None:
-        candidates = [filename]
-    else:
-        candidates = _PROJECT_FALLBACK_FILES
+    candidates = [filename] if filename is not None else _PROJECT_FALLBACK_FILES
 
     for name in candidates:
         path = Path(workspace_root) / name
@@ -74,7 +71,7 @@ def global_instructions_path() -> Path:
     return config_dir() / _PROJECT_INSTRUCTIONS_FILE
 
 
-def load_global_instructions() -> Optional[str]:
+def load_global_instructions() -> str | None:
     """Read user-level standing instructions from ``~/.config/marim/AGENTS.md``.
     These apply across every project (unlike the per-project ``AGENTS.md``).
     Same fail-safe semantics as :func:`load_project_instructions`."""

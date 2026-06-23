@@ -21,8 +21,7 @@ or non-numeric cost simply yields no detail, and callers fall back to the
 genai-prices estimate.
 """
 
-from contextlib import asynccontextmanager
-from typing import Optional
+from contextlib import asynccontextmanager, suppress
 
 from ..usage import COST_DETAIL_KEY
 
@@ -60,7 +59,7 @@ def scrub_orphan_thinking_tags(text: str, carry: str) -> tuple[str, str]:
     return (s[:-hold], s[-hold:]) if hold else (s, "")
 
 
-def read_cost_micro_usd(response) -> Optional[int]:
+def read_cost_micro_usd(response) -> int | None:
     """The billed cost on a chat completion / chunk as integer micro-USD, or
     ``None`` if absent or non-numeric. Reads ``usage.cost`` (the typed field)
     and falls back to pydantic's ``model_extra`` when the SDK didn't model it."""
@@ -86,7 +85,7 @@ def _with_cost(response, mapped):
     return mapped
 
 
-def build_openrouter_model(model_id: str, api_key: Optional[str]):
+def build_openrouter_model(model_id: str, api_key: str | None):
     """An OpenRouter chat model with prompt caching enabled that records the
     provider's billed cost.
 
@@ -162,10 +161,8 @@ def build_openrouter_model(model_id: str, api_key: Optional[str]):
         async def request_stream(self, *args, **kwargs):
             async with super().request_stream(*args, **kwargs) as stream:
                 if isinstance(stream, OpenRouterStreamedResponse):
-                    try:
+                    with suppress(TypeError):  # layout mismatch on some pydantic-ai build
                         stream.__class__ = _CostStreamedResponse
-                    except TypeError:  # layout mismatch on some pydantic-ai build
-                        pass
                 yield stream
 
     provider = OpenRouterProvider(api_key=api_key)

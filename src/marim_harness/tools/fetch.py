@@ -18,7 +18,6 @@ import ipaddress
 import logging
 import socket
 from pathlib import Path
-from typing import Optional
 from urllib.parse import urlparse
 
 import httpx
@@ -153,9 +152,9 @@ def _offload(body: str, url: str, workspace_root: Path) -> str:
 async def fetch_url(
     url: str,
     *,
-    prompt: Optional[str] = None,
+    prompt: str | None = None,
     timeout: int = _TIMEOUT,
-    workspace_root: Optional[Path] = None,
+    workspace_root: Path | None = None,
 ) -> str:
     """Fetch *url* and return its body as Markdown.
 
@@ -200,29 +199,28 @@ async def fetch_url(
             max_redirects=5,
             headers={"User-Agent": _UA},
             event_hooks={"request": [_check_redirect]},
-        ) as client:
-            async with client.stream("GET", url) as resp:
-                resp.raise_for_status()
-                # --- size guard: refuse declared-huge bodies before reading ---
-                declared = resp.headers.get("content-length")
-                if declared and declared.isdigit() and int(declared) > _MAX_DOWNLOAD:
-                    return (
-                        f"Fetch aborted: server reports {int(declared):,} bytes, "
-                        f"over the {_MAX_DOWNLOAD:,}-byte limit. Try a more specific "
-                        f"URL or endpoint."
-                    )
-                content_type = resp.headers.get("content-type", "")
-                encoding = resp.encoding
-                # --- stream the body, stopping at the read cap ---
-                chunks: list[bytes] = []
-                total = 0
-                async for chunk in resp.aiter_bytes():
-                    chunks.append(chunk)
-                    total += len(chunk)
-                    if total > _MAX_BYTES:
-                        truncated = True
-                        break
-                raw = b"".join(chunks)[:_MAX_BYTES]
+        ) as client, client.stream("GET", url) as resp:
+            resp.raise_for_status()
+            # --- size guard: refuse declared-huge bodies before reading ---
+            declared = resp.headers.get("content-length")
+            if declared and declared.isdigit() and int(declared) > _MAX_DOWNLOAD:
+                return (
+                    f"Fetch aborted: server reports {int(declared):,} bytes, "
+                    f"over the {_MAX_DOWNLOAD:,}-byte limit. Try a more specific "
+                    f"URL or endpoint."
+                )
+            content_type = resp.headers.get("content-type", "")
+            encoding = resp.encoding
+            # --- stream the body, stopping at the read cap ---
+            chunks: list[bytes] = []
+            total = 0
+            async for chunk in resp.aiter_bytes():
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > _MAX_BYTES:
+                    truncated = True
+                    break
+            raw = b"".join(chunks)[:_MAX_BYTES]
     except httpx.HTTPStatusError as exc:
         return f"Fetch failed: HTTP {exc.response.status_code} — {exc.response.reason_phrase}"
     except httpx.RequestError as exc:

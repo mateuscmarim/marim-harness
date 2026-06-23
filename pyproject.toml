@@ -34,17 +34,26 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 addopts = "-q --cov=marim_harness --cov-report=term-missing --cov-report=xml"
 testpaths = ["tests"]
+markers = [
+    # Opt-in tests that hit a real provider over the network and spend money.
+    # They self-skip unless the relevant API key is exported (never from .env),
+    # so the default suite and CI never touch the network. Run deliberately with
+    # `uv run pytest -m live` (with the key exported).
+    "live: exercises a real LLM provider; needs an API key, costs money",
+]
 
 [tool.ruff]
 line-length = 100
 src = ["src"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I"]
+# E/F/I: pycodestyle, pyflakes, import sorting. UP: pyupgrade (modernize for the
+# 3.10 floor). B: flake8-bugbear (real bug patterns). SIM: flake8-simplify.
+select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.pyright]
 include = ["src"]
 pythonVersion = "3.10"
-typeCheckingMode = "basic"
+typeCheckingMode = "standard"
 venvPath = "."
 venv = ".venv"

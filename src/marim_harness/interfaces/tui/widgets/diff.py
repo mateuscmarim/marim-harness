@@ -96,7 +96,7 @@ def compute_diff_rows(old_text: str, new_text: str, context: int = 3):
             rows.append(_DiffRow("gap", None, None, "⋮"))
         for tag, i1, i2, j1, j2 in group:
             if tag == "equal":
-                for i, j in zip(range(i1, i2), range(j1, j2)):
+                for i, j in zip(range(i1, i2), range(j1, j2), strict=True):
                     rows.append(_DiffRow("context", i + 1, j + 1, old_lines[i]))
             else:
                 for i in range(i1, i2):

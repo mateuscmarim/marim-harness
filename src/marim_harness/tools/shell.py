@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import os
 import signal
 from pathlib import Path
@@ -63,10 +64,8 @@ async def run_bash(
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 proc.kill()
-            except ProcessLookupError:
-                pass
         # Drain anything the dying process flushed to the pipe before the kill
         # propagated.  A short deadline keeps the timeout path fast.
         if proc.stdout is not None:
@@ -114,10 +113,8 @@ class BashProcess:
         try:
             os.killpg(os.getpgid(self._proc.pid), signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 self._proc.kill()
-            except ProcessLookupError:
-                pass
 
     async def wait(self) -> str:
         """Read the process's output to EOF into the buffer, then return the

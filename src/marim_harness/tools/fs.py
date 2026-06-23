@@ -1,7 +1,7 @@
 import os
 import re
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator, Optional
 
 from pydantic import BaseModel
 from pydantic_ai import ModelRetry
@@ -32,7 +32,7 @@ def _safe(root: Path, path: str) -> Path:
 
 
 def read_file(
-    root: Path, path: str, offset: int = 1, limit: Optional[int] = None
+    root: Path, path: str, offset: int = 1, limit: int | None = None
 ) -> str:
     """Read a text file relative to the workspace root, returning numbered lines.
 
@@ -157,9 +157,12 @@ def _walk_tree(directory: Path, depth: int, level: int, lines: list[str],
             line = f"{indent}{entry.name}/"
             lines.append(line)
             size[0] += len(line) + 1
-            if entry.name not in _NOISE_DIRS and level + 1 < depth:
-                if _walk_tree(entry, depth, level + 1, lines, size):
-                    return True
+            if (
+                entry.name not in _NOISE_DIRS
+                and level + 1 < depth
+                and _walk_tree(entry, depth, level + 1, lines, size)
+            ):
+                return True
         else:
             line = f"{indent}{entry.name}"
             lines.append(line)
@@ -231,7 +234,7 @@ def _walk_files(base: Path) -> Iterator[Path]:
         pass
 
 
-def grep(root: Path, pattern: str, path: Optional[str] = None) -> str:
+def grep(root: Path, pattern: str, path: str | None = None) -> str:
     """Search file contents for a regex, returning `relpath:line:text` hits.
     Skips noise dirs (.git, node_modules, .venv, …) and binary files; large
     result sets are offloaded to a file (handle + preview) instead of flooding the

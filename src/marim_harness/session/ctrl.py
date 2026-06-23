@@ -1,6 +1,6 @@
 import logging
 import time
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.usage import RunUsage
@@ -25,13 +25,13 @@ class SessionController:
 
     def __init__(
         self,
-        store: Optional[SessionStore],
-        manager: Optional[SessionManager],
+        store: SessionStore | None,
+        manager: SessionManager | None,
         deps: Deps,
         max_context_tokens: int,
         keep_last_messages: int,
-        summarizer: Optional[Summarizer] = None,
-        titler: Optional[Titler] = None,
+        summarizer: Summarizer | None = None,
+        titler: Titler | None = None,
     ) -> None:
         self.store = store
         self.manager = manager
@@ -50,12 +50,12 @@ class SessionController:
         self.usage: RunUsage = RunUsage()
         self.duration_seconds: float = 0.0
         self._segment_start: float = 0.0
-        self.on_compact: Optional[Callable[[int, int], None]] = None
-        self.on_compact_start: Optional[Callable[[], None]] = None
-        self.on_rename: Optional[Callable[[str, str], None]] = None
+        self.on_compact: Callable[[int, int], None] | None = None
+        self.on_compact_start: Callable[[], None] | None = None
+        self.on_rename: Callable[[str, str], None] | None = None
 
     @property
-    def session_name(self) -> Optional[str]:
+    def session_name(self) -> str | None:
         return self.store.name if self.store is not None else None
 
     @property
@@ -125,7 +125,7 @@ class SessionController:
         if self.store is not None:
             self.store.clear()
 
-    def new_session(self, name: Optional[str] = None, model_id: Optional[str] = None) -> None:
+    def new_session(self, name: str | None = None, model_id: str | None = None) -> None:
         if self.manager is None:
             self.reset()
             return
@@ -213,7 +213,7 @@ class SessionController:
         if self.on_rename is not None:
             self.on_rename(old, title)
 
-    async def rename(self, name: Optional[str] = None) -> Optional[str]:
+    async def rename(self, name: str | None = None) -> str | None:
         if self.store is None:
             return None
         if name:

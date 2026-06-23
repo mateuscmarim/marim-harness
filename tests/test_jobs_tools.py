@@ -46,7 +46,7 @@ def _main_agent() -> Agent:
 
 def test_management_tools_on_main_agent(tmp_path):
     names = _tool_names(_main_agent(), Deps(workspace_root=tmp_path))
-    assert _MANAGEMENT_TOOLS <= names
+    assert names >= _MANAGEMENT_TOOLS
 
 
 def test_management_tools_absent_on_subagent(tmp_path):

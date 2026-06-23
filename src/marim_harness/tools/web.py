@@ -1,6 +1,5 @@
 """Web search tool backed by a self-hosted SearXNG instance."""
 
-from typing import Optional
 
 import httpx
 
@@ -12,7 +11,7 @@ async def web_search(
     query: str,
     *,
     base_url: str = _DEFAULT_BASE_URL,
-    categories: Optional[str] = None,
+    categories: str | None = None,
     max_results: int = 10,
 ) -> str:
     """Search the web via a SearXNG instance and return formatted results.

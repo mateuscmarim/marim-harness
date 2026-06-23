@@ -13,14 +13,14 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Protocol
+from typing import Protocol
 
 
 @dataclass
 class Checkpoint:
     index: int            # monotonic ordinal, unique within a session
     history_len: int      # len(history) captured before this turn ran
-    commit: Optional[str] # shadow commit sha (restore target), or None
+    commit: str | None # shadow commit sha (restore target), or None
     created: str          # ISO-8601 UTC timestamp
     prompt_preview: str   # first ~80 chars of the turn's user prompt
 
@@ -34,7 +34,7 @@ class Checkpoint:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "Checkpoint":
+    def from_dict(cls, d: dict) -> Checkpoint:
         return cls(
             index=int(d["index"]),
             history_len=int(d["history_len"]),
@@ -48,7 +48,7 @@ class Snapshotter(Protocol):
     """Captures/restores the working tree behind a checkpoint. The Null
     implementation makes conversation-only rewind work with no git."""
 
-    def capture(self, ref: str, message: str) -> Optional[str]: ...
+    def capture(self, ref: str, message: str) -> str | None: ...
     def restore(self, commit: str) -> None: ...
     def delete(self, ref: str) -> None: ...
 
@@ -56,7 +56,7 @@ class Snapshotter(Protocol):
 class NullSnapshotter:
     """No-op snapshotter: checkpoints carry no file state."""
 
-    def capture(self, ref: str, message: str) -> Optional[str]:
+    def capture(self, ref: str, message: str) -> str | None:
         return None
 
     def restore(self, commit: str) -> None:
@@ -90,7 +90,7 @@ class CheckpointManager:
     ``Snapshotter`` (Null by default → conversation-only rewind)."""
 
     def __init__(
-        self, session, snapshotter: Optional[Snapshotter] = None, *, limit: int = 50
+        self, session, snapshotter: Snapshotter | None = None, *, limit: int = 50
     ) -> None:
         self.session = session
         self.snapshotter: Snapshotter = snapshotter or NullSnapshotter()
@@ -100,7 +100,7 @@ class CheckpointManager:
 
     # --- persistence -----------------------------------------------------
 
-    def _sidecar_path(self) -> Optional[Path]:
+    def _sidecar_path(self) -> Path | None:
         store = getattr(self.session, "store", None)
         if store is None:
             return None

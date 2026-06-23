@@ -132,7 +132,7 @@ async def test_run_turn_dumps_provider_error_and_stashes_note(tmp_path):
         deps=Deps(workspace_root=tmp_path, mode=Mode.auto),
         instructions="You are a coding agent.",
     )
-    with pytest.raises(BaseException):
+    with pytest.raises(APIError):
         await harness.run_turn("hi")
 
     dump = tmp_path / ".marim" / "last-provider-error.json"

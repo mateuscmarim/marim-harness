@@ -9,7 +9,6 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +25,7 @@ class PromptHistory:
     on first write); with ``path=None`` it stays purely in memory. Only the last
     ``max_entries`` are kept, both in memory and on disk."""
 
-    def __init__(self, path: Optional[Path] = None, max_entries: int = 1000) -> None:
+    def __init__(self, path: Path | None = None, max_entries: int = 1000) -> None:
         self.path = Path(path) if path is not None else None
         self.max_entries = max_entries
         self.entries: list[str] = self._load()

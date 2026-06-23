@@ -4,7 +4,6 @@ None if cancelled). Single-select uses an OptionList; multi-select a
 SelectionList with a Confirm button; a free-text Input is always visible so
 "Other" is offered on every question."""
 
-from typing import Optional
 
 from rich.text import Text
 from textual.app import ComposeResult
@@ -24,7 +23,7 @@ def _option_prompt(choice: Choice) -> Text:
     return text
 
 
-class AskUserModal(ModalScreen[Optional[dict]]):
+class AskUserModal(ModalScreen[dict | None]):
     """Dismisses with ``{header: str | list[str]}`` for every question, or None
     if the user pressed Escape."""
 

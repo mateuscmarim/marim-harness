@@ -1,4 +1,13 @@
+from asyncio import CancelledError
+from pathlib import Path
+
+import pytest
+
+from marim_harness.deps import Deps
+from marim_harness.interfaces.tui.app import HarnessApp
 from marim_harness.interfaces.tui.queue import QueuedMessage, render_queue
+from marim_harness.interfaces.tui.widgets.prompt import PromptInput
+from marim_harness.permissions import Mode
 
 
 def test_queued_message_holds_text_attachments_id():
@@ -27,16 +36,6 @@ def test_render_queue_escapes_markup_in_user_text():
     items = [QueuedMessage("do [this]", None, "1")]
     out = render_queue(items)
     assert "\\[this]" in out  # escaped open bracket
-
-
-from pathlib import Path
-
-import pytest
-
-from marim_harness.deps import Deps
-from marim_harness.interfaces.tui.app import HarnessApp
-from marim_harness.interfaces.tui.widgets.prompt import PromptInput
-from marim_harness.permissions import Mode
 
 
 @pytest.fixture
@@ -78,11 +77,6 @@ async def test_idle_submit_runs_immediately(tmp_path):
         await app.on_prompt_input_submitted(PromptInput.Submitted("hello", []))
         assert app._queue == []
         assert app._turn_worker is not None  # a worker was spawned
-
-
-from asyncio import CancelledError
-
-from marim_harness.interfaces.tui.queue import QueuedMessage
 
 
 @pytest.mark.anyio

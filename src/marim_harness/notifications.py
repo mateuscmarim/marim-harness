@@ -66,7 +66,7 @@ class NotificationConfig:
     coalesce_seconds: float = 2.0
 
     @classmethod
-    def disabled(cls) -> "NotificationConfig":
+    def disabled(cls) -> NotificationConfig:
         return cls(enabled=False, events=set())
 
 

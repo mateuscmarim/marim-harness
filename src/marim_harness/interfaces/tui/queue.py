@@ -2,7 +2,6 @@
 held to run as their own turns after the current one. In-memory, process-scoped."""
 
 from dataclasses import dataclass
-from typing import Optional
 
 from textual.markup import escape
 
@@ -14,7 +13,7 @@ class QueuedMessage:
     used to target the item from the panel's controls."""
 
     text: str
-    attachments: Optional[list[tuple[bytes, str]]]
+    attachments: list[tuple[bytes, str]] | None
     id: str
 
 

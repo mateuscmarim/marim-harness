@@ -1,7 +1,8 @@
 import json
 import logging
 import re
-from typing import Iterable, Literal, Optional, Protocol
+from collections.abc import Iterable
+from typing import Literal, Protocol
 
 from pydantic_ai import RunContext
 
@@ -35,7 +36,7 @@ _ASK_USER_CANCELLED = "User dismissed the prompt without answering."
 async def fetch_url(
     ctx: RunContext[Deps],
     url: str,
-    prompt: Optional[str] = None,
+    prompt: str | None = None,
 ) -> str:
     """Fetch and read content from a specific URL to augment context with live web
     content. Returns the page body as clean Markdown. Accepts a URL (http/https)
@@ -52,7 +53,7 @@ async def fetch_url(
 
 
 def read_file(
-    ctx: RunContext[Deps], path: str, offset: int = 1, limit: Optional[int] = None
+    ctx: RunContext[Deps], path: str, offset: int = 1, limit: int | None = None
 ) -> str:
     """Read a text file. `path` is relative to the workspace root.
 
@@ -74,7 +75,7 @@ def tree(ctx: RunContext[Deps], path: str = ".", depth: int = 2) -> str:
     return fs.tree(ctx.deps.workspace_root, path, depth)
 
 
-def grep(ctx: RunContext[Deps], pattern: str, path: Optional[str] = None) -> str:
+def grep(ctx: RunContext[Deps], pattern: str, path: str | None = None) -> str:
     """Search file contents for a regex. Optionally scope to `path`."""
     return fs.grep(ctx.deps.workspace_root, pattern, path)
 
@@ -261,7 +262,7 @@ async def ask_user(ctx: RunContext[Deps], questions: list[Question]) -> str:
 async def web_search(
     ctx: RunContext[Deps],
     query: str,
-    categories: Optional[str] = None,
+    categories: str | None = None,
     max_results: int = 10,
 ) -> str:
     """Search the web via a self-hosted SearXNG instance and return formatted results.
@@ -272,7 +273,7 @@ async def web_search(
     return await web.web_search(query, categories=categories, max_results=max_results)
 
 
-def _coerce_mcp(mcp: "list[str] | str | None") -> Optional[list[str]]:
+def _coerce_mcp(mcp: "list[str] | str | None") -> list[str] | None:
     """Normalize the `mcp` grant into a list of server names, or None.
 
     Weaker models often serialize the array argument as a JSON string

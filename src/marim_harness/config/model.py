@@ -1,6 +1,5 @@
 import os
 from dataclasses import dataclass, field, replace
-from typing import Optional
 
 from ..command_policy import split_patterns
 from ..notifications import DEFAULT_EVENTS, parse_events
@@ -15,8 +14,8 @@ _DEFAULT_GOOGLE_MODEL = "gemini-2.5-flash"
 class ModelConfig:
     provider: str  # "openrouter" | "local" | "google"
     model: str
-    base_url: Optional[str] = None
-    api_key: Optional[str] = None
+    base_url: str | None = None
+    api_key: str | None = None
     max_context_tokens: int = 100_000
     proactive_memory: bool = False
     # When true, project-local .marim/hooks.json hooks are honored; otherwise
