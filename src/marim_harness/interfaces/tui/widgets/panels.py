@@ -2,16 +2,23 @@
 session's background jobs. Each hides itself when empty so it takes no space."""
 
 from textual.content import Content
+from textual.containers import VerticalScroll
 from textual.widgets import Static
 
 
-class TaskPanel(Static):
+class TaskPanel(VerticalScroll):
     """The agent's live checklist, pinned above the status bar. Hidden whenever
     the list is empty so it takes no space when unused."""
 
     def __init__(self) -> None:
         super().__init__(id="task-panel")
         self.display = False
+        self._header = Static(id="task-header")
+        self._body = Static(id="task-body")
+
+    def compose(self):
+        yield self._header
+        yield self._body
 
     def show_tasks(self, items: list) -> None:
         """Render the current checklist, or hide the panel when there are none."""
@@ -19,22 +26,30 @@ class TaskPanel(Static):
 
         if not items:
             self.display = False
-            self.update("")
+            self._header.update("")
+            self._body.update("")
             return
         self.display = True
-        # The header is intentional markup; the task body is untrusted and may
-        # contain bracket sequences that escape() can't neutralise, so render it
-        # as a literal Content appended to the parsed header.
-        self.update(Content.from_markup("[b $accent]Tasks[/]\n") + Content(render_tasks(items)))
+        count = len(items)
+        self._header.update(
+            Content.from_markup(f"[b $accent]Tasks[/] [dim]({count})[/]")
+        )
+        self._body.update(Content(render_tasks(items)))
 
 
-class JobPanel(Static):
-    """The session's live background jobs, pinned above the status bar (a sibling
-    of the task panel). Hidden whenever there are no jobs."""
+class JobPanel(VerticalScroll):
+    """The session's live background jobs, pinned above the status bar. Hidden
+    whenever there are no jobs."""
 
     def __init__(self) -> None:
         super().__init__(id="job-panel")
         self.display = False
+        self._header = Static(id="job-header")
+        self._body = Static(id="job-body")
+
+    def compose(self):
+        yield self._header
+        yield self._body
 
     def show_jobs(self, jobs: list) -> None:
         """Render the current jobs, or hide the panel when there are none."""
@@ -42,10 +57,12 @@ class JobPanel(Static):
 
         if not jobs:
             self.display = False
-            self.update("")
+            self._header.update("")
+            self._body.update("")
             return
         self.display = True
-        # The header is intentional markup; the job labels are untrusted and may
-        # contain bracket sequences that escape() can't neutralise, so render them
-        # as a literal Content appended to the parsed header.
-        self.update(Content.from_markup("[b $accent]Jobs[/]\n") + Content(render_jobs(jobs)))
+        count = len(jobs)
+        self._header.update(
+            Content.from_markup(f"[b $accent]Jobs[/] [dim]({count})[/]")
+        )
+        self._body.update(Content(render_jobs(jobs)))

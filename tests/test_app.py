@@ -626,7 +626,7 @@ async def test_task_panel_hidden_until_tasks_then_live_updates(tmp_path: Path):
         ])
         await pilot.pause()
         assert panel.display is True
-        text = str(panel.render())
+        text = str(app.query_one("#task-body").render())
         assert "read the code" in text and "write the test" in text
         assert "✔" in text and "▸" in text
 
@@ -647,7 +647,7 @@ async def test_task_panel_reflects_restored_tasks_on_mount(tmp_path: Path):
         await pilot.pause()
         panel = app.query_one(TaskPanel)
         assert panel.display is True
-        assert "resumed item" in str(panel.render())
+        assert "resumed item" in str(app.query_one("#task-body").render())
 
 
 @pytest.mark.anyio
@@ -1429,12 +1429,12 @@ async def test_job_panel_hidden_until_jobs_then_live_updates(tmp_path: Path):
         job_id = app.harness.deps.jobs.register("bash", "sleep 5", slow())
         await pilot.pause()
         assert panel.display is True
-        assert "sleep 5" in str(panel.render())
+        assert "sleep 5" in str(app.query_one("#job-body").render())
 
         # Cancelling it repaints with the terminal status, panel stays visible.
         await app.harness.deps.jobs.cancel(job_id)
         await pilot.pause()
-        assert "(cancelled)" in str(panel.render())
+        assert "(cancelled)" in str(app.query_one("#job-body").render())
 
 
 @pytest.mark.anyio
@@ -1455,7 +1455,7 @@ async def test_job_panel_reflects_jobs_on_mount(tmp_path: Path):
         await pilot.pause()
         panel = app.query_one(JobPanel)
         assert panel.display is True
-        assert "explore: look" in str(panel.render())
+        assert "explore: look" in str(app.query_one("#job-body").render())
         await app.harness.deps.jobs.cancel_all()
 
 

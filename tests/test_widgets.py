@@ -301,8 +301,8 @@ async def test_task_and_job_panels_survive_markup_like_text():
         app.query_one(TaskPanel).show_tasks([_Task()])
         app.query_one(JobPanel).show_jobs([_Job()])
         await pilot.pause()
-        assert "[/]" in str(app.query_one(TaskPanel).render())
-        assert "[/]" in str(app.query_one(JobPanel).render())
+        assert "[/]" in str(app.query_one("#task-body").render())
+        assert "[/]" in str(app.query_one("#job-body").render())
 
 
 class _PromptHost(App):
