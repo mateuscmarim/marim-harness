@@ -132,9 +132,15 @@ class JobRegistry:
         """Every job, in launch order."""
         return list(self._jobs.values())
 
-    def output(self, job_id: str) -> str:
+    def output(self, job_id: str, *, mark_seen: bool = False) -> str:
         """The job's output: the final result once finished, or the live buffer
-        (bash) / a running marker while it's still going."""
+        (bash) / a running marker while it's still going.
+
+        When ``mark_seen`` is set and the job has already finished, its id is
+        marked wake-consumed so the autonomous wake scheduler won't fire a
+        redundant turn — the caller (an agent tool) now has the result, exactly
+        as :meth:`wait` does. Passive readers (the TUI jobs command) leave it
+        unset so a job the agent hasn't reacted to still wakes a turn."""
         job = self._jobs.get(job_id)
         if job is None:
             return f"No job {job_id!r}."
@@ -142,6 +148,8 @@ class JobRegistry:
             if job.output_fn is not None:
                 return job.output_fn() or "(running, no output yet)"
             return "(still running)"
+        if mark_seen:
+            self._wake_consumed.add(job_id)
         return job.result or ""
 
     async def wait(self, job_id: str, timeout: float = 60) -> str:

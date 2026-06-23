@@ -125,8 +125,9 @@ def _job_ctx(tmp_path):
             calls["list"] = True
             return []
 
-        def output(self, id):
+        def output(self, id, *, mark_seen=False):
             calls["output"] = id
+            calls["output_mark_seen"] = mark_seen
             return f"out:{id}"
 
         async def wait(self, id, timeout):
@@ -150,6 +151,9 @@ async def test_job_dispatches_each_action(tmp_path):
     assert await job(ctx, "list") == "No background jobs."
     assert calls["list"] is True
     assert await job(ctx, "output", id="j1") == "out:j1"
+    # The agent reading output marks the job wake-consumed (suppresses a
+    # redundant autonomous wake — the agent already has the result).
+    assert calls["output_mark_seen"] is True
     assert await job(ctx, "wait", id="j2", timeout=5) == "waited:j2:5"
     assert calls["wait"] == ("j2", 5)
     assert await job(ctx, "cancel", id="j3") == "cancelled:j3"

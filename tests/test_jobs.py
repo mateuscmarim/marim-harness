@@ -289,6 +289,42 @@ async def test_wait_already_finished_consumes_digest():
     assert "job-1 (bash) done" in digest  # digest preserved
 
 
+@pytest.mark.anyio
+async def test_output_marks_finished_job_consumed():
+    """Reading a finished job's output with mark_seen=True marks it
+    wake-consumed (like wait), so the wake scheduler won't fire a redundant
+    turn — the agent already has the result. The digest is preserved."""
+    reg = JobRegistry()
+    job_id = reg.register("agent", "review", _sleep_then("all tests pass", 0.01))
+    await asyncio.sleep(0.1)  # let it finish
+    assert reg.has_finished_pending() is True
+    assert reg.output(job_id, mark_seen=True) == "all tests pass"
+    assert reg.has_finished_pending() is False  # wake-consumed
+    assert "job-1 (agent) done" in reg.take_finished_digest()
+
+
+@pytest.mark.anyio
+async def test_output_without_mark_seen_leaves_wake_pending():
+    """A passive read (the TUI /jobs command) must not mark the job consumed:
+    the agent still hasn't reacted, so its wake should still fire."""
+    reg = JobRegistry()
+    job_id = reg.register("agent", "review", _sleep_then("done", 0.01))
+    await asyncio.sleep(0.1)  # let it finish
+    assert reg.output(job_id) == "done"  # default: mark_seen=False
+    assert reg.has_finished_pending() is True  # wake still pending
+
+
+@pytest.mark.anyio
+async def test_output_on_running_job_does_not_consume():
+    """mark_seen only consumes terminal jobs. Reading a still-running job's
+    live output leaves the wake to fire when it finishes."""
+    reg = JobRegistry()
+    job_id = reg.register("agent", "slow", _sleep_then("R", 0.2))
+    reg.output(job_id, mark_seen=True)  # still running -> nothing to consume
+    await asyncio.sleep(0.3)  # now it finishes (unseen result)
+    assert reg.has_finished_pending() is True
+
+
 def _sleep_then(value, seconds):
     async def coro():
         await asyncio.sleep(seconds)

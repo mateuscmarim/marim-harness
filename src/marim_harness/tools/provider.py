@@ -464,7 +464,7 @@ def job_output(ctx: RunContext[Deps], id: str) -> str:
     """Read a background job's output by id without blocking: the final result if
     it's finished, the live output so far for a running bash job, or a running
     marker otherwise. To block until a job finishes, use wait_for_job instead."""
-    return ctx.deps.jobs.output(id)
+    return ctx.deps.jobs.output(id, mark_seen=True)
 
 
 async def wait_for_job(ctx: RunContext[Deps], id: str, timeout: float = 60) -> str:
@@ -500,7 +500,7 @@ async def job(
     if not id:
         return f"job: action {action!r} needs an id (use action=\"list\" to find it)."
     if action == "output":
-        return ctx.deps.jobs.output(id)
+        return ctx.deps.jobs.output(id, mark_seen=True)
     if action == "wait":
         return await ctx.deps.jobs.wait(id, timeout)
     return await ctx.deps.jobs.cancel(id)  # action == "cancel"
