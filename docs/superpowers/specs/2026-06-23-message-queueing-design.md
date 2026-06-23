@@ -57,7 +57,7 @@ On cancel (`CancelledError`) or any turn error, set `self._queue_paused = True` 
 - **Empty/whitespace queued text:** the existing submit guard rejects empty input before enqueue, so empty items never enter the queue.
 - **Edit while paused:** allowed. Pop to input, edit; re-submit re-queues if busy, or runs immediately via `_start_turn` if idle.
 - **Queue emptied by removals mid-turn:** drain finds an empty queue and falls through to `_maybe_wake()` — no special case.
-- **App teardown / session switch / `/clear` with a non-empty queue:** the queue is **in-memory and process-scoped** (like `jobs`) and is **dropped** — not persisted across sessions. A one-line notice is shown if quitting with pending items, but it does not block.
+- **App teardown / session switch / `/clear` with a non-empty queue:** the queue is **in-memory and process-scoped** (like `jobs`) and is **dropped** — not persisted across sessions. Quitting with pending items (via `ctrl+c`, `/exit`, or `/quit`) is **confirm-once**: the first quit attempt mounts a one-line notice ("N queued message(s) will be discarded. Quit again to confirm.") and cancels the quit; a second quit proceeds. (Refines the earlier "non-blocking" wording — a notice that flashes as the app exits is invisible, so the first quit is intercepted to make the warning meaningful.)
 - **Autonomous-wake depth cap:** a queued drain is user-initiated work and does **not** increment `_auto_turn_depth`; only wake-spawned turns do.
 - **Attachments:** carried through `QueuedMessage.attachments` into `run_turn` unchanged.
 
