@@ -416,6 +416,45 @@ async def test_on_compact_start_not_fired_without_compaction(tmp_path):
     assert fired == []
 
 
+@pytest.mark.anyio
+async def test_compaction_persists_the_compacted_history(tmp_path):
+    """A compaction that fires must be persisted, so a process death between turns
+    doesn't lose it (and the on-disk file matches the in-memory history)."""
+    mgr = _manager(tmp_path)
+    store = mgr.create("compact me")
+    deps = Deps(workspace_root=tmp_path)
+    ctrl = SessionController(
+        store, mgr, deps, max_context_tokens=1, keep_last_messages=1
+    )
+    ctrl.history = [
+        ModelRequest(parts=[UserPromptPart(content="x" * 5000)]),
+        ModelRequest(parts=[UserPromptPart(content="y" * 5000)]),
+        ModelRequest(parts=[UserPromptPart(content="z" * 5000)]),
+    ]
+    await ctrl.maybe_compact()
+    compacted_len = len(ctrl.history)
+    assert compacted_len < 3  # the compaction actually fired
+    # A fresh load from disk must reflect the compacted history, not the full one.
+    reloaded, _, _, _ = mgr.store(store.session_id).load()
+    assert len(reloaded) == compacted_len
+
+
+@pytest.mark.anyio
+async def test_no_compaction_does_not_force_a_write(tmp_path):
+    """When nothing compacts, maybe_compact must not bump persistence work."""
+    mgr = _manager(tmp_path)
+    store = mgr.create("untouched")
+    deps = Deps(workspace_root=tmp_path)
+    ctrl = SessionController(
+        store, mgr, deps, max_context_tokens=100_000, keep_last_messages=20
+    )
+    ctrl.history = [ModelRequest(parts=[UserPromptPart(content="small")])]
+    ctrl.persist()  # establish the on-disk baseline
+    before = store.path.read_text()
+    await ctrl.maybe_compact()
+    assert store.path.read_text() == before  # nothing rewritten
+
+
 def test_session_save_load_round_trips_image(tmp_path, monkeypatch):
     monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path / "imgs"))
     mgr = SessionManager(tmp_path / "ws", base_dir=tmp_path / "sessions")

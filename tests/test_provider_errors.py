@@ -13,13 +13,20 @@ import json
 import httpx
 import pytest
 from openai import APIError
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    UserPromptPart,
+)
 from pydantic_ai.models.function import FunctionModel
 
-from marim_harness.agent import Harness, _actionable_error_note
+from marim_harness.agent import Harness, HarnessConfig, _actionable_error_note
 from marim_harness.deps import Deps
 from marim_harness.errors import (
     dump_provider_error,
     format_provider_error,
+    is_context_overflow_error,
     provider_error_payload,
 )
 from marim_harness.permissions import Mode
@@ -116,6 +123,94 @@ def test_actionable_note_for_provider_client_error():
 def test_no_actionable_note_for_provider_5xx():
     # A 5xx is transient infra; re-prompting would only mislead the model.
     assert _actionable_error_note(_api_error(_OPENROUTER_502)) is None
+
+
+def test_is_context_overflow_detects_openai_code():
+    err = _api_error(
+        {"error": {"code": "context_length_exceeded", "message": "too long"}}
+    )
+    assert is_context_overflow_error(err) is True
+
+
+def test_is_context_overflow_detects_message_phrase():
+    err = _api_error(
+        {"error": {"message": "This model's maximum context length is 8192 tokens"}}
+    )
+    assert is_context_overflow_error(err) is True
+
+
+def test_is_context_overflow_false_for_other_provider_and_plain_errors():
+    assert is_context_overflow_error(_api_error(_OPENROUTER_502)) is False
+    assert is_context_overflow_error(ValueError("boom")) is False
+
+
+@pytest.mark.anyio
+async def test_run_turn_force_compacts_and_retries_on_context_overflow(tmp_path):
+    """The char/4 estimate can undershoot the real window. When the provider
+    rejects the request for length, force a compaction and retry once instead of
+    failing the turn."""
+    calls = {"n": 0}
+
+    def fn(messages, info):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _api_error(
+                {"error": {"code": "context_length_exceeded",
+                           "message": "maximum context length exceeded"}}
+            )
+        return ModelResponse(parts=[TextPart(content="ok after compaction")])
+
+    harness = Harness(
+        model=FunctionModel(fn),
+        provider=BuiltinToolProvider(),
+        deps=Deps(workspace_root=tmp_path, mode=Mode.auto),
+        instructions="x",
+        config=HarnessConfig(keep_last_messages=1),
+    )
+    # A multi-turn history so a forced compaction has a middle to drop.
+    harness.session.history = [
+        ModelRequest(parts=[UserPromptPart(content="u1")]),
+        ModelResponse(parts=[TextPart(content="a1")]),
+        ModelRequest(parts=[UserPromptPart(content="u2")]),
+        ModelResponse(parts=[TextPart(content="a2")]),
+        ModelRequest(parts=[UserPromptPart(content="u3")]),
+        ModelResponse(parts=[TextPart(content="a3")]),
+    ]
+    out = await harness.run_turn("now do it")
+    assert out == "ok after compaction"
+    assert calls["n"] == 2  # failed once on overflow, retried once after compaction
+
+
+@pytest.mark.anyio
+async def test_run_turn_overflow_retries_only_once(tmp_path):
+    """If the request still overflows after a forced compaction, the turn raises
+    rather than looping forever."""
+    calls = {"n": 0}
+
+    def fn(messages, info):
+        calls["n"] += 1
+        raise _api_error(
+            {"error": {"code": "context_length_exceeded", "message": "too long"}}
+        )
+
+    harness = Harness(
+        model=FunctionModel(fn),
+        provider=BuiltinToolProvider(),
+        deps=Deps(workspace_root=tmp_path, mode=Mode.auto),
+        instructions="x",
+        config=HarnessConfig(keep_last_messages=1),
+    )
+    harness.session.history = [
+        ModelRequest(parts=[UserPromptPart(content="u1")]),
+        ModelResponse(parts=[TextPart(content="a1")]),
+        ModelRequest(parts=[UserPromptPart(content="u2")]),
+        ModelResponse(parts=[TextPart(content="a2")]),
+        ModelRequest(parts=[UserPromptPart(content="u3")]),
+        ModelResponse(parts=[TextPart(content="a3")]),
+    ]
+    with pytest.raises(APIError):
+        await harness.run_turn("now do it")
+    assert calls["n"] == 2  # original attempt + exactly one retry
 
 
 @pytest.mark.anyio

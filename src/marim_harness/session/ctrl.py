@@ -169,12 +169,15 @@ class SessionController:
         self._segment_start = time.monotonic()
         return len(self.history)
 
-    async def maybe_compact(self) -> None:
+    async def maybe_compact(self, *, force: bool = False) -> bool:
+        """Compact the history when over budget (or unconditionally when ``force``,
+        used after a provider context-overflow error where the token estimate
+        undershot). Returns True if it actually shrank the history."""
         before = len(self.history)
         # This predicate mirrors compact_history's own decision exactly, so the
         # PreCompact hook and the on_compact_start indicator fire iff a compaction
-        # will actually happen.
-        going = will_compact(
+        # will actually happen. A forced compaction is always "going".
+        going = force or will_compact(
             self.history, self.max_context_tokens, self.keep_last_messages
         )
         # Fire PreCompact *before* the compaction work, while the transcript is
@@ -199,16 +202,24 @@ class SessionController:
         if self.summarizer is not None:
             new_history, did = await compact_history_with_summary(
                 self.history, self.max_context_tokens, self.summarizer,
-                self.keep_last_messages,
+                self.keep_last_messages, force=force,
             )
         else:
             new_history, did = compact_history(
                 self.history, self.max_context_tokens, self.keep_last_messages,
+                force=force,
             )
         if did:
             self.history = new_history
+            # Persist the compacted history now. The post-turn compaction runs
+            # after the turn's own persist, so without this the smaller history
+            # lives only in memory until the next turn — a process death between
+            # turns would lose it and leave the rollback baseline diverged from
+            # disk. The setter bumped the version, so a plain persist() writes.
+            self.persist()
             if self.on_compact is not None:
                 self.on_compact(before, len(self.history))
+        return did
 
     async def maybe_autoname(self) -> None:
         if (

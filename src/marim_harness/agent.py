@@ -20,7 +20,7 @@ from .compaction import (
     make_titler,
 )
 from .deps import Deps, HarnessAgent, HarnessServices
-from .errors import dump_provider_error
+from .errors import dump_provider_error, is_context_overflow_error
 from .hooks.dispatch import TurnHooks
 from .instructions import register_instructions
 from .lsp.manager import LspManager
@@ -281,10 +281,19 @@ class Harness:
         """Create a Harness.
 
         ``config`` bundles the optional knobs (session store, model identity,
-        MCP servers, etc.).  For backward compatibility, individual keyword
+        MCP servers, etc.). For backward compatibility, individual keyword
         arguments (``model_label``, ``store``, ``model_id``, …) are still
-        accepted via ``**kwargs`` and merged over the config defaults.
+        accepted via ``**kwargs`` as a shorthand for building that config.
+
+        Pass *either* ``config=`` *or* legacy kwargs, not both: there is no
+        merge (the kwargs would be silently dropped), so mixing them raises
+        ``TypeError`` rather than quietly ignoring half the call.
         """
+        if config is not None and kwargs:
+            raise TypeError(
+                "Harness() takes either config= or legacy keyword arguments, "
+                f"not both (got config= plus {sorted(kwargs)})"
+            )
         cfg = config or HarnessConfig(**kwargs)
         self.deps = deps
         self.provider = provider
@@ -577,6 +586,11 @@ class Harness:
         """Drive the agent.run loop, handling DeferredToolRequests approval rounds,
         persisting on success, and rolling back to ``resumable`` on interrupt.
         Returns the final text output."""
+        # The token estimate gating compaction is a coarse char/4 heuristic, so it
+        # can undershoot the real window and let a too-large request reach the
+        # provider. If the provider rejects it for length, force a compaction and
+        # retry the run once (this flag latches so we never loop on it).
+        overflow_retried = False
         while True:
             # capture_run_messages exposes the messages exchanged even when the
             # run aborts (a render error in the event handler, an API failure,
@@ -597,6 +611,20 @@ class Harness:
                         toolsets=toolsets,
                     )
                 except BaseException as exc:
+                    # Context-overflow recovery: the request exceeded the real
+                    # window despite our estimate. Force a compaction and retry the
+                    # run once. Only when the compaction actually shrank the history
+                    # (else a retry would just fail identically). The compacted
+                    # history is persisted by maybe_compact, so it also becomes the
+                    # rollback baseline for the retry.
+                    if (
+                        not overflow_retried
+                        and is_context_overflow_error(exc)
+                        and await self.session.maybe_compact(force=True)
+                    ):
+                        overflow_retried = True
+                        resumable = list(self.session.history)
+                        continue
                     # Persist what survives the failure so the user's prompt and
                     # any completed work aren't lost, repairing any tool call the
                     # abort left unanswered (the captured messages may stop right

@@ -7,7 +7,15 @@ patterns. Deny takes precedence over allow. An empty policy allows everything.
 
 The policy is enforced inside the ``bash`` tool itself, so it applies uniformly
 in every permission mode (auto and ask alike) and to sub-agents too — not just
-at the approval prompt, which auto mode skips entirely."""
+at the approval prompt, which auto mode skips entirely.
+
+NOT A SANDBOX. This is defense-in-depth, not a security boundary. Matching is a
+``re.search`` over the raw command string, while ``bash`` runs the command
+through a real shell (full interpretation: quoting, ``$(...)``, ``eval``, env
+expansion, pipes). A motivated caller can trivially evade a pattern — ``rm  -rf``
+with extra spaces, ``r''m``, ``$(echo rm) -rf``, a base64-decode pipe, and so on.
+Use it to catch honest mistakes and nudge the model, not to contain a hostile
+command; for real isolation run the harness in a sandbox/VM/container."""
 
 import re
 

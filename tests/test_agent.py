@@ -206,6 +206,41 @@ def _named_model(model_id: str) -> FunctionModel:
     return FunctionModel(fn)
 
 
+def test_harness_rejects_config_mixed_with_legacy_kwargs(tmp_path: Path):
+    """Passing both config= and legacy kwargs silently dropped the kwargs (the
+    `config or HarnessConfig(**kwargs)` short-circuit). Reject it loudly instead
+    of pretending to 'merge' them as the old docstring claimed."""
+    from marim_harness.agent import HarnessConfig
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    with pytest.raises(TypeError):
+        Harness(
+            _named_model("m"), BuiltinToolProvider(), deps, "i",
+            config=HarnessConfig(model_label="from-config"),
+            model_label="from-kwargs",  # would be silently ignored before
+        )
+
+
+def test_harness_accepts_config_alone(tmp_path: Path):
+    from marim_harness.agent import HarnessConfig
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = Harness(
+        _named_model("m"), BuiltinToolProvider(), deps, "i",
+        config=HarnessConfig(model_label="from-config"),
+    )
+    assert h.model_label == "from-config"
+
+
+def test_harness_accepts_legacy_kwargs_alone(tmp_path: Path):
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    h = Harness(
+        _named_model("m"), BuiltinToolProvider(), deps, "i",
+        model_label="from-kwargs",
+    )
+    assert h.model_label == "from-kwargs"
+
+
 class _FakeSource:
     """Stand-in for config.ModelSource: builds id-tagged models, no network."""
 

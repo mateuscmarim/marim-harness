@@ -64,6 +64,41 @@ def provider_error_status(exc: BaseException) -> int | None:
     return None
 
 
+# Phrases providers use when the request exceeds the model's context window.
+# Different upstreams word it differently, so match on a small phrase set in
+# addition to OpenAI's explicit ``context_length_exceeded`` error code.
+_OVERFLOW_MARKERS = (
+    "context_length_exceeded",
+    "context length",
+    "maximum context",
+    "context window",
+    "too many tokens",
+    "reduce the length",
+    "prompt is too long",
+    "input is too long",
+)
+
+
+def is_context_overflow_error(exc: BaseException) -> bool:
+    """True when ``exc`` is a provider rejection for exceeding the context window.
+
+    The harness's token estimate is a coarse char/4 heuristic, so it can undershoot
+    the real window and let a too-large request through; the caller uses this to
+    force a compaction and retry instead of failing the turn."""
+    api = _find_api_error(exc)
+    if api is None:
+        return False
+    err = _error_dict(api) or {}
+    if err.get("code") == "context_length_exceeded":
+        return True
+    haystack = [str(api), str(err.get("message") or "")]
+    meta = err.get("metadata")
+    if isinstance(meta, dict):
+        haystack.append(str(meta.get("raw") or ""))
+    blob = " ".join(haystack).lower()
+    return any(marker in blob for marker in _OVERFLOW_MARKERS)
+
+
 def format_provider_error(exc: BaseException) -> str | None:
     """A one-line, screen-safe rendering of a provider error that pulls in the
     upstream message, code, provider name, and raw detail. None when ``exc``

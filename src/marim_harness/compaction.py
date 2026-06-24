@@ -75,13 +75,16 @@ def _is_user_turn(message) -> bool:
 
 
 def _plan_tail_start(
-    history: list, max_tokens: int, keep_last_messages: int
+    history: list, max_tokens: int, keep_last_messages: int, *, force: bool = False
 ) -> int | None:
     """Index where the kept tail should begin, or None if no compaction is needed.
 
     The tail always starts at a user-turn boundary so tool returns stay paired.
-    """
-    if estimate_tokens(history) <= max_tokens:
+    ``force`` skips the token-estimate gate (used after a provider context-overflow
+    error, where the estimate is known to have undershot the real window) and
+    compacts down to the tail regardless — but still returns None when there is
+    nothing meaningful to drop."""
+    if not force and estimate_tokens(history) <= max_tokens:
         return None
 
     user_turns = [i for i, m in enumerate(history) if _is_user_turn(m) and i > 0]
@@ -113,9 +116,11 @@ def compact_history(
     history: list,
     max_tokens: int,
     keep_last_messages: int = 20,
+    *,
+    force: bool = False,
 ) -> tuple[list, bool]:
     """Return (history, did_compact) by dropping the middle when over budget."""
-    start = _plan_tail_start(history, max_tokens, keep_last_messages)
+    start = _plan_tail_start(history, max_tokens, keep_last_messages, force=force)
     if start is None:
         return history, False
     return history[:1] + history[start:], True
@@ -185,6 +190,8 @@ async def compact_history_with_summary(
     max_tokens: int,
     summarizer: Summarizer,
     keep_last_messages: int = 20,
+    *,
+    force: bool = False,
 ) -> tuple[list, bool]:
     """Like ``compact_history`` but replace the dropped middle with a summary.
 
@@ -192,7 +199,7 @@ async def compact_history_with_summary(
     empty string, falls back to plain truncation so a flaky summary model can
     never break a turn.
     """
-    start = _plan_tail_start(history, max_tokens, keep_last_messages)
+    start = _plan_tail_start(history, max_tokens, keep_last_messages, force=force)
     if start is None:
         return history, False
 
