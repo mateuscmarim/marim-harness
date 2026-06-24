@@ -13,6 +13,7 @@ import json
 import httpx
 import pytest
 from openai import APIError
+from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
@@ -27,6 +28,7 @@ from marim_harness.errors import (
     dump_provider_error,
     format_provider_error,
     is_context_overflow_error,
+    is_transient_model_error,
     provider_error_payload,
 )
 from marim_harness.permissions import Mode
@@ -47,6 +49,66 @@ _OPENROUTER_502 = {
         "metadata": {"provider_name": "Xiaomi", "raw": "upstream timeout"},
     }
 }
+
+
+# --- is_transient_model_error -------------------------------------------------
+
+
+def _http_error(status: int, body=None) -> ModelHTTPError:
+    return ModelHTTPError(status_code=status, model_name="xiaomi/mimo-v2.5", body=body)
+
+
+@pytest.mark.parametrize("status", [408, 409, 429, 500, 502, 503, 504])
+def test_gateway_and_rate_limit_statuses_are_transient(status):
+    assert is_transient_model_error(_http_error(status)) is True
+
+
+def test_504_idle_timeout_is_transient():
+    # The exact shape from the failing review fan-out: a 504 the runner should
+    # retry rather than burn the whole sub-agent run on.
+    exc = _http_error(504, body="Upstream idle timeout exceeded")
+    assert is_transient_model_error(exc) is True
+
+
+@pytest.mark.parametrize("status", [401, 403, 404])
+def test_auth_and_not_found_are_not_transient(status):
+    assert is_transient_model_error(_http_error(status)) is False
+
+
+def test_genuine_400_bad_request_is_not_transient():
+    body = {"message": "invalid request: unsupported parameter 'foo'", "code": 400}
+    assert is_transient_model_error(_http_error(400, body)) is False
+
+
+def test_openrouter_400_wrapping_an_upstream_5xx_is_transient():
+    # OpenRouter passes an upstream failure through as a generic 400; the real
+    # status rides in metadata.raw as a JSON string.
+    body = {
+        "message": "Provider returned error",
+        "code": 400,
+        "metadata": {"raw": '{"error":{"code":503,"message":"overloaded"}}'},
+    }
+    assert is_transient_model_error(_http_error(400, body)) is True
+
+
+def test_openrouter_400_with_transient_phrase_is_transient():
+    body = {
+        "message": "Provider returned error",
+        "code": 400,
+        "metadata": {"raw": "upstream request timed out, please try again"},
+    }
+    assert is_transient_model_error(_http_error(400, body)) is True
+
+
+def test_non_http_exception_is_not_transient():
+    assert is_transient_model_error(ValueError("boom")) is False
+
+
+def test_transient_error_wrapped_in_a_cause_chain_is_detected():
+    inner = _http_error(503)
+    outer = RuntimeError("sub-agent failed")
+    outer.__cause__ = inner
+    assert is_transient_model_error(outer) is True
 
 
 def test_format_extracts_message_code_provider_and_raw():

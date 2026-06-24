@@ -423,6 +423,14 @@ class StreamRenderer:
             parent.set_usage(usage.total_tokens, cost_text, _format_token_split(usage))
         await self.dispatch_stream_event(event, _SubAgentSink(self, parent, stream_id))
 
+    async def on_subagent_notice(self, stream_id: str, message: str) -> None:
+        """Show an out-of-band status line (e.g. a transient-error retry) on the
+        SubAgentWidget that owns ``stream_id``. A no-op if the card is gone. Fired on
+        the app's event loop, so direct widget mutation is safe."""
+        parent = self.tool_widgets.get(stream_id)
+        if isinstance(parent, SubAgentWidget):
+            parent.note_retry(message)
+
     async def dispatch_stream_event(self, event, sink: _StreamSink) -> None:
         """Route one streamed event to the right widget via ``sink``, which knows
         where to mount and how to read/write this stream's run-state. The top-level

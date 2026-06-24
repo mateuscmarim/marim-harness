@@ -612,6 +612,21 @@ class _SubHarness(App):
         yield SubAgentWidget("explore", "map the code")
 
 
+@pytest.mark.anyio
+async def test_subagent_note_retry_shows_on_the_activity_line():
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+
+    app = _SubHarness()
+    async with app.run_test() as pilot:
+        w = app.query_one(SubAgentWidget)
+        await pilot.pause()
+        w.note_retry("transient error — retrying 1/2…")
+        await pilot.pause()
+        line = str(w._activity.visual)
+        assert "retrying 1/2" in line
+        assert w.status == "pending"  # the run is still going, not failed
+
+
 def test_failure_reason_strips_prefix_and_clips():
     from marim_harness.interfaces.tui.widgets.subagent import failure_reason
 

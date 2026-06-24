@@ -9,7 +9,9 @@ immediately. The harness wires ``run``/``run_background`` onto ``Deps`` so the
 ``spawn_agent`` tool reaches them the same way other tools reach shared state.
 """
 
+import asyncio
 import contextlib
+import logging
 import re
 from collections.abc import Callable
 from dataclasses import replace
@@ -25,6 +27,7 @@ if TYPE_CHECKING:
     from .tools.provider import ToolProvider
 
 from .deps import Deps, SubAgent
+from .errors import is_transient_model_error
 from .hooks.dispatch import TurnHooks
 from .permissions import Mode
 from .tasks import TaskList
@@ -44,6 +47,8 @@ from .workspace.worktree import (
     remove_worktree,
     repo_root,
 )
+
+logger = logging.getLogger(__name__)
 
 # Characters allowed in the slug taken from a stream id when naming an isolation
 # branch; everything else collapses to a hyphen.
@@ -68,6 +73,7 @@ class SubagentRunner:
                  get_model: Callable[[], Any],
                  model_settings: ModelSettings | None = None,
                  request_limit: int = 50,
+                 retry_attempts: int = 2,
                  build_model: Callable[[str], Any] | None = None) -> None:
         self.provider = provider
         self.mcp = mcp
@@ -77,6 +83,11 @@ class SubagentRunner:
         self._get_model = get_model
         self._model_settings = model_settings
         self._request_limit = request_limit
+        # How many times a sub-agent run is re-issued after a *transient* model
+        # error (gateway/server hiccup, request timeout, rate limit) before the
+        # failure is allowed to surface. A permanent error (malformed request,
+        # auth) is never retried — see is_transient_model_error.
+        self._retry_attempts = retry_attempts
         # Resolves a per-spawn model id to a model object on the current provider.
         # None when the harness has no model source (e.g. a fixed-model embed), in
         # which case a spawn that asks for an override is told it can't be honored.
@@ -227,6 +238,61 @@ class SubagentRunner:
             fs.write_file(self.deps.workspace_root, rel, spill)
         return text
 
+    # Backoff before a transient-error retry: exponential from a small base, capped,
+    # so a brief upstream blip is ridden out without stalling the spawn for long.
+    _RETRY_BASE_DELAY = 0.5
+    _RETRY_MAX_DELAY = 8.0
+
+    async def _retry_backoff(self, attempt: int) -> None:
+        """Sleep before the ``attempt``-th retry (1-based): exponential backoff,
+        capped. Split out so tests can stub it without real time passing."""
+        delay = min(self._RETRY_BASE_DELAY * 2 ** (attempt - 1), self._RETRY_MAX_DELAY)
+        await asyncio.sleep(delay)
+
+    async def _run_to_completion(self, sub, task, run_deps, granted, handler,
+                                 stream_id: str | None = None):
+        """Run a built sub-agent to its final result, retrying *transient* model
+        errors (gateway/server hiccups, timeouts, rate limits) with backoff. A
+        permanent error, or exhausting the retry budget, re-raises for the caller's
+        contain/propagate path. The retried call is the model request only — a fresh
+        run on the same isolated deps — so read-only spawns retry cleanly; a mutating
+        isolated spawn may carry over partial files from the failed attempt, which is
+        acceptable since its worktree is a throwaway branch.
+
+        A foreground spawn (``stream_id`` set) gets an out-of-band UI notice on each
+        retry so the user sees the card recover rather than silently stall."""
+        attempt = 0
+        while True:
+            try:
+                return await sub.run(
+                    task, deps=run_deps, toolsets=granted,
+                    event_stream_handler=handler,
+                    usage_limits=UsageLimits(request_limit=self._request_limit),
+                )
+            except Exception as exc:  # noqa: BLE001
+                if attempt >= self._retry_attempts or not is_transient_model_error(exc):
+                    raise
+                attempt += 1
+                logger.info(
+                    "sub-agent hit a transient error (%s); retry %d/%d after backoff",
+                    exc.__class__.__name__, attempt, self._retry_attempts,
+                )
+                await self._notice_retry(stream_id, exc, attempt)
+                await self._retry_backoff(attempt)
+
+    async def _notice_retry(self, stream_id: str | None, exc: Exception,
+                            attempt: int) -> None:
+        """Surface a transient-error retry on a foreground spawn's card. A no-op for
+        a background spawn (no card) or when no UI is listening."""
+        cb = self.deps.on_subagent_notice
+        if cb is None or not stream_id:
+            return
+        await cb(
+            stream_id,
+            f"transient error ({exc.__class__.__name__}) — "
+            f"retrying {attempt}/{self._retry_attempts}…",
+        )
+
     async def _execute_spawn(
         self, type: str, task: str, mcp_names: list[str] | None,
         max_output_chars: int | None, model: str | None, isolation: str | None,
@@ -274,10 +340,9 @@ class SubagentRunner:
         # Background: pass None so the handler only fires hooks (no UI stream).
         handler = self.handler(None if background else stream_id)
         try:
-            result = await sub.run(
-                task, deps=run_deps, toolsets=granted,
-                event_stream_handler=handler,
-                usage_limits=UsageLimits(request_limit=self._request_limit),
+            result = await self._run_to_completion(
+                sub, task, run_deps, granted, handler,
+                None if background else stream_id,
             )
         except Exception as exc:  # noqa: BLE001
             if iso:

@@ -260,6 +260,13 @@ class SubAgentWidget(Vertical):
         self.activity = line
         self._paint_activity()
 
+    def note_retry(self, message: str) -> None:
+        """Show a transient-error retry on the ↳ line (e.g. after a 504 gateway
+        timeout) so a recovering spawn reads as working, not stalled. The next tool
+        call or text event overwrites it once the retried run gets going again."""
+        self.activity = f"⟳ {message}"
+        self._paint_activity()
+
     def note_text(self) -> None:
         """The sub-agent is generating text. The card's progress line tracks tool
         tally + duration, so there's nothing to repaint here — kept for the renderer

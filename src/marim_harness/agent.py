@@ -168,6 +168,10 @@ class HarnessConfig:
     # before pydantic-ai aborts it. A runaway sub-agent (stuck calling tools and
     # never concluding) is bounded rather than blocking the spawning turn forever.
     subagent_request_limit: int = 50
+    # How many times a sub-agent run is retried after a transient model error
+    # (gateway/server hiccup, request timeout, rate limit) before the failure
+    # surfaces. Permanent errors (malformed request, auth) are never retried.
+    subagent_retry_attempts: int = 2
     # Desktop-notification config. Disabled by default; the TUI and headless
     # runner build a Notifier from this and fire at key event points.
     notifications: NotificationConfig = field(default_factory=NotificationConfig.disabled)
@@ -265,6 +269,7 @@ def build_collaborators(
         get_model=get_model,
         model_settings=_DEFAULT_MODEL_SETTINGS,
         request_limit=cfg.subagent_request_limit,
+        retry_attempts=cfg.subagent_retry_attempts,
         build_model=(
             # Bind the narrowed (non-None) source as a default so the
             # deferred closure keeps it typed; ``cfg.model_source`` alone
@@ -350,6 +355,7 @@ class Harness:
         request_approval: Callable[..., Any] | None = None,
         ask_user: Callable[..., Any] | None = None,
         on_subagent_event: Callable[..., Any] | None = None,
+        on_subagent_notice: Callable[..., Any] | None = None,
         on_tasks_changed: Callable[..., Any] | None = None,
         on_jobs_changed: Callable[..., Any] | None = None,
         on_compact: Callable[..., Any] | None = None,
@@ -369,6 +375,7 @@ class Harness:
         self.deps.request_approval = request_approval
         self.deps.ask_user = ask_user
         self.deps.on_subagent_event = on_subagent_event
+        self.deps.on_subagent_notice = on_subagent_notice
         self.deps.tasks.on_change = on_tasks_changed
         self.deps.jobs.on_change = on_jobs_changed
         self.session.on_compact = on_compact

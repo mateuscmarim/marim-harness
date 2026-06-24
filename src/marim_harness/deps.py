@@ -31,6 +31,10 @@ SubAgentRunner = Callable[
 # so it can stream them nested under the spawn, tagged with the run's live usage
 # (a RunUsage, or None) so the UI can show the token total, cache split, and cost.
 SubAgentEventCb = Callable[[str, object, object], Awaitable[None]]
+# (stream_id, message) -> None. A short out-of-band status line for a foreground
+# spawn's card (e.g. "transient error — retrying 1/2…"), distinct from the run's
+# own streamed events. None when there's no UI listening.
+SubAgentNoticeCb = Callable[[str, str], Awaitable[None]]
 # (type, task, mcp_names, max_output_chars, model, isolation) -> the sub-agent's
 # final report. Like SubAgentRunner but with no streaming — used to run a
 # sub-agent as a detached background job.
@@ -93,6 +97,7 @@ class Deps:
     # configured (every fire-point becomes a cheap ``is None`` no-op).
     hooks: Optional["HookRunner"] = None
     on_subagent_event: SubAgentEventCb | None = None
+    on_subagent_notice: SubAgentNoticeCb | None = None
     # Optional desktop notifier. None when notifications are disabled; the TUI
     # and headless runner fire it at key event points (turn complete, error,
     # approval needed, ask user, background job finished).

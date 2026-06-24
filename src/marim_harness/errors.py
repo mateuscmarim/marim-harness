@@ -81,6 +81,116 @@ _OVERFLOW_MARKERS = (
 )
 
 
+# HTTP statuses worth retrying: gateway/server hiccups, request timeouts,
+# conflicts, and rate limits. Re-issuing the identical request commonly succeeds.
+_TRANSIENT_STATUS = frozenset({408, 409, 429, 500, 502, 503, 504})
+
+# Phrases an upstream uses for a transient condition even when OpenRouter has
+# wrapped it in a generic 400 "Provider returned error" — the real cause then
+# rides in the body's message / metadata.raw passthrough.
+_TRANSIENT_MARKERS = (
+    "timeout",
+    "timed out",
+    "overloaded",
+    "rate limit",
+    "rate-limit",
+    "temporarily",
+    "try again",
+    "unavailable",
+    "502",
+    "503",
+    "504",
+)
+
+
+def _find_model_http_error(exc: BaseException):
+    """The first pydantic-ai ``ModelHTTPError`` in ``exc``'s cause/context chain,
+    or None. A sub-agent's model error reaches the runner wrapped by the agent
+    layer, so we look past the outermost exception (mirrors ``_find_api_error``)."""
+    try:
+        from pydantic_ai.exceptions import ModelHTTPError
+    except Exception:  # pydantic_ai not importable — nothing to classify
+        return None
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, ModelHTTPError):
+            return cur
+        cur = cur.__cause__ or cur.__context__
+    return None
+
+
+def _status_codes_in(obj) -> list[int]:
+    """Every ``code``/``status``/``status_code`` integer nested anywhere in ``obj``
+    (a parsed upstream error body). Used to see past OpenRouter's generic 400 to the
+    real upstream status it forwarded."""
+    codes: list[int] = []
+
+    def walk(node) -> None:
+        if isinstance(node, dict):
+            for key, val in node.items():
+                if (
+                    key in ("code", "status", "status_code")
+                    and isinstance(val, int)
+                    and not isinstance(val, bool)
+                ):
+                    codes.append(val)
+                else:
+                    walk(val)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(obj)
+    return codes
+
+
+def _body_signals_transient(body) -> bool:
+    """Whether an OpenRouter 400/422 body hides a transient upstream cause: a nested
+    5xx/timeout/429 status in the forwarded ``metadata.raw``, or a transient phrase
+    in the message / raw text. A genuinely malformed request matches neither."""
+    raw = None
+    if isinstance(body, dict):
+        meta = body.get("metadata")
+        if isinstance(meta, dict):
+            raw = meta.get("raw")
+    # metadata.raw is forwarded verbatim from the upstream — often a JSON string.
+    candidate = raw
+    if isinstance(raw, str):
+        try:
+            candidate = json.loads(raw)
+        except (ValueError, TypeError):
+            candidate = None
+    if any(code in _TRANSIENT_STATUS for code in _status_codes_in(candidate)):
+        return True
+    message = body.get("message") if isinstance(body, dict) else None
+    haystack = " ".join([str(message or ""), str(raw or "")]).lower()
+    return any(marker in haystack for marker in _TRANSIENT_MARKERS)
+
+
+def is_transient_model_error(exc: BaseException) -> bool:
+    """True when ``exc`` is a model/provider error worth retrying — a gateway or
+    server hiccup, a request timeout, or a rate limit — rather than a permanent
+    client error (malformed request, auth, not-found).
+
+    Reads the status off a pydantic-ai ``ModelHTTPError``. OpenRouter overloads 400
+    as a passthrough for upstream provider failures, so a 400/422 is inspected: a
+    nested transient upstream status or a transient phrase in its body counts as
+    transient; an otherwise-genuine bad request does not. A non-HTTP exception (no
+    ``ModelHTTPError`` in the chain) is treated as permanent — better to fail fast
+    than hammer on something we can't positively identify as a transient blip."""
+    api = _find_model_http_error(exc)
+    if api is None:
+        return False
+    status = getattr(api, "status_code", None)
+    if status in _TRANSIENT_STATUS:
+        return True
+    if status in (400, 422):
+        return _body_signals_transient(getattr(api, "body", None))
+    return False
+
+
 def is_context_overflow_error(exc: BaseException) -> bool:
     """True when ``exc`` is a provider rejection for exceeding the context window.
 

@@ -96,6 +96,7 @@ class HarnessApp(App):
             request_approval=self._request_approval,
             ask_user=self._ask_user,
             on_subagent_event=self.stream.on_subagent_event,
+            on_subagent_notice=self.stream.on_subagent_notice,
             on_tasks_changed=self._on_tasks_changed,
             on_jobs_changed=self._on_jobs_changed,
             on_compact=self._on_compact,
