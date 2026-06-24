@@ -286,6 +286,7 @@ class HarnessApp(App):
         """Live callback from the job registry — repaint as jobs launch and
         finish. Each job runs as a task on the app's event loop, so the callback
         fires there and direct widget mutation is safe."""
+        self.stream.fill_finished_detached_cards(self.harness.deps.jobs)
         self._render_jobs()
         self._notify_finished_jobs()
         self._maybe_wake()

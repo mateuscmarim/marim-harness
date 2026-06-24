@@ -3256,3 +3256,55 @@ async def test_on_compact_shrink_shows_message(tmp_path: Path):
         assert app._compacting_notice is None
         texts = [str(w.render()) for w in app.query(NoticeMessage)]
         assert any("compacted history: 10 → 4" in t for t in texts)
+
+
+@pytest.mark.anyio
+async def test_detached_card_fills_automatically_when_job_settles(tmp_path: Path):
+    """Settling the job fires on_jobs_changed, which fills the card with no manual
+    call — the live end-to-end path."""
+    import asyncio
+
+    from pydantic_ai.messages import (
+        FunctionToolCallEvent,
+        FunctionToolResultEvent,
+        ToolCallPart,
+        ToolReturnPart,
+    )
+
+    from marim_harness.tools.provider import _detach_handoff
+
+    app = _app(tmp_path)
+    reg = app.harness.deps.jobs
+    gate = asyncio.Event()
+
+    async def _work():
+        await gate.wait()
+        return "AUTO REPORT"
+
+    jid = reg.register("agent", "explore: x", _work())
+
+    call = FunctionToolCallEvent(part=ToolCallPart(
+        tool_name="spawn_agent", args={"type": "explore", "task": "x"},
+        tool_call_id="s1"))
+    result = FunctionToolResultEvent(part=ToolReturnPart(
+        tool_name="spawn_agent", content=_detach_handoff(jid), tool_call_id="s1"))
+
+    async def gen():
+        yield call
+        yield result
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.stream.on_events(None, gen())
+        await pilot.pause()
+        card = app.stream.tool_widgets.get("s1")
+        assert card.status == "pending"
+
+        gate.set()                          # job finishes → on_change → fill (no manual call)
+        for _ in range(400):
+            if reg.get(jid).status != "running":
+                break
+            await asyncio.sleep(0)
+        await pilot.pause()
+        assert card.status == "done"
+        assert card.report == "AUTO REPORT"
