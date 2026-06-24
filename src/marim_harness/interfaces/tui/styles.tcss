@@ -19,6 +19,10 @@ PromptInput { height: 5; max-height: 12; border: round $accent; padding: 0 1; }
 .notice-msg { color: $text-muted; text-style: italic; margin: 1 0; }
 .turn-meta { color: $text-muted; text-style: dim; margin: 0 0 1 0; }
 
+/* Reasoning shown inline behind an accent rail, italic + muted so it reads as
+   an aside to the reply. The "Thinking:" label carries its own colour inline. */
+.thinking { margin: 1 0 1 0; padding: 0 0 0 1; border-left: tall $accent; color: $text-muted; text-style: italic; }
+
 /* Two-column intro header (Claude-style): the accent block-ASCII banner on the
    left, the welcome/resume text on the right behind a vertical accent divider,
    the whole row seated above a thin accent rule that splits it from the chat. */

@@ -184,9 +184,10 @@ async def test_flush_only_touches_buffered_messages(tmp_path: Path):
 
 
 @pytest.mark.anyio
-async def test_thinking_stream_renders_collapsed_widget(tmp_path: Path):
-    """A streamed ThinkingPart mounts a collapsed ThinkingWidget and its deltas
-    land in the widget body — reasoning is kept but folded, never inline text."""
+async def test_thinking_stream_renders_inline_widget(tmp_path: Path):
+    """A streamed ThinkingPart mounts an inline ThinkingWidget and its deltas
+    accumulate in the widget's text — reasoning is shown as its own styled block,
+    never as ordinary assistant text."""
     import types
 
     from pydantic_ai.messages import (
@@ -212,24 +213,12 @@ async def test_thinking_stream_renders_collapsed_widget(tmp_path: Path):
 
         thinking = list(app.query(ThinkingWidget))
         assert len(thinking) == 1
-        assert thinking[0].collapsed  # folded by default
-        assert thinking[0].body.text == "step one step two"
+        # The streaming interface writes through ``body`` (which is the widget).
+        assert thinking[0].body is thinking[0]
+        assert thinking[0].text == "step one step two"
 
-        def within_thinking(widget) -> bool:
-            node = widget.parent
-            while node is not None:
-                if isinstance(node, ThinkingWidget):
-                    return True
-                node = node.parent
-            return False
-
-        # The reasoning is NOT rendered as ordinary assistant text — every
-        # AssistantMessage carrying it lives inside the ThinkingWidget.
-        assert all(
-            within_thinking(w)
-            for w in app.query(AssistantMessage)
-            if "step one" in w.text
-        )
+        # The reasoning is NOT rendered as ordinary assistant text.
+        assert all("step one" not in w.text for w in app.query(AssistantMessage))
 
 
 @pytest.mark.anyio

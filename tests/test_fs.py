@@ -59,6 +59,40 @@ def test_read_file_explicit_limit_overrides_default_cap(tmp_path: Path, monkeypa
     assert out == "1\ta\n2\tb\n3\tc\n4\td"  # whole file, no footer
 
 
+def test_read_file_clips_overlong_lines(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(fs, "_MAX_LINE_CHARS", 10)
+    (tmp_path / "a.txt").write_text("x" * 25 + "\nshort")
+    out = fs.read_file(tmp_path, "a.txt")
+    # The wide line is clipped to the cap with a remainder note; the footer flags it.
+    assert "1\t" + "x" * 10 + "… (+15 more chars on this line)" in out
+    assert "2\tshort" in out
+    assert "long lines clipped to 10 chars]" in out
+
+
+def test_read_file_stops_at_char_budget(tmp_path: Path, monkeypatch):
+    # Budget fits ~2 rows of "N\tdataXXXX" (~10 chars each), so the window ends
+    # early even though the line limit would allow all five.
+    monkeypatch.setattr(fs, "_MAX_READ_CHARS", 24)
+    (tmp_path / "a.txt").write_text("\n".join("data" + str(i) for i in range(1, 6)))
+    out = fs.read_file(tmp_path, "a.txt")
+    body = out.split("\n\n[")[0]
+    last = int(out.split(" of 5]")[0].split("-")[-1])
+    assert 1 <= last < 5  # stopped before the end
+    assert body.count("\n") + 1 == last  # body holds exactly `last` rows
+    assert f"showing lines 1-{last} of 5]" in out
+
+
+def test_read_file_always_returns_at_least_one_line(tmp_path: Path, monkeypatch):
+    # Even with a budget smaller than a single row, one (clipped) row comes back.
+    monkeypatch.setattr(fs, "_MAX_READ_CHARS", 1)
+    monkeypatch.setattr(fs, "_MAX_LINE_CHARS", 5)
+    (tmp_path / "a.txt").write_text("x" * 50 + "\nsecond")
+    out = fs.read_file(tmp_path, "a.txt")
+    assert out.startswith("1\t" + "x" * 5 + "…")
+    assert "2\t" not in out  # the second line was budgeted out
+    assert "showing lines 1-1 of 2" in out
+
+
 def test_read_file_offset_past_eof_raises(tmp_path: Path):
     (tmp_path / "a.txt").write_text("a\nb")
     with pytest.raises(ModelRetry):

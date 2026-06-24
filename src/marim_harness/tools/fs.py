@@ -12,7 +12,19 @@ from .offload import MAX_OUTPUT_CHARS, offload_if_large
 # When no explicit ``limit`` is given, a read is capped at this many lines so a
 # blind read of a huge file can't flood the context. Pass ``offset``/``limit``
 # to page through the rest. An explicit ``limit`` overrides this cap.
-_DEFAULT_READ_LIMIT = 2000
+_DEFAULT_READ_LIMIT = 500
+
+# The line cap bounds *how many* lines come back, but not their width — a minified
+# bundle, single-line JSON, or wide CSV could still flood context within the line
+# limit. Two byte-level guards bound the result regardless of file shape:
+#   * each line is clipped to _MAX_LINE_CHARS (kills the few-enormous-lines case);
+#   * the whole read stops once _MAX_READ_CHARS is reached (the many-wide-lines
+#     case), ending the window early with a footer so the model pages on.
+# Unlike the line cap, these apply even when an explicit ``limit`` is given: the
+# limit says how many lines you want, the byte budget says how much can be
+# returned. At least one line always comes back so a read never returns empty.
+_MAX_LINE_CHARS = 2_000
+_MAX_READ_CHARS = 100_000
 
 # Directories that are almost always noise: tree lists them without expanding;
 # grep skips them entirely (the dominant cost of searching a large repo is
@@ -38,8 +50,10 @@ def read_file(
 
     ``offset`` is the 1-based line to start at; ``limit`` caps how many lines are
     returned. With no ``limit``, the read is capped at ``_DEFAULT_READ_LIMIT``
-    lines so a huge file can't flood the context. When the returned window isn't
-    the whole file, a ``[showing lines X-Y of N]`` footer is appended so the
+    lines so a huge file can't flood the context. Wide content is bounded too:
+    over-long lines are clipped to ``_MAX_LINE_CHARS`` and the read stops once it
+    has emitted ``_MAX_READ_CHARS`` worth of text. When the returned window isn't
+    the whole file (or a line was clipped), a ``[…]`` footer says so, so the
     reader knows to page on with ``offset``/``limit``."""
     if offset < 1:
         raise ModelRetry("offset must be >= 1 (1-based line number).")
@@ -57,12 +71,38 @@ def read_file(
     start = offset - 1
     span = limit if limit is not None else _DEFAULT_READ_LIMIT
     end = min(start + span, total)
-    body = "\n".join(
-        f"{i}\t{line}" for i, line in enumerate(lines[start:end], offset)
-    )
-    if start == 0 and end == total:
-        return body  # whole file — unchanged output
-    return f"{body}\n\n[showing lines {offset}-{end} of {total}]"
+
+    rendered: list[str] = []
+    used = 0
+    clipped = False
+    i = start
+    while i < end:
+        line = lines[i]
+        if len(line) > _MAX_LINE_CHARS:
+            extra = len(line) - _MAX_LINE_CHARS
+            line = f"{line[:_MAX_LINE_CHARS]}… (+{extra} more chars on this line)"
+            clipped = True
+        row = f"{i + 1}\t{line}"
+        # Stop before the char budget is exceeded, but always emit at least one
+        # row so a read never comes back empty (a single wide line still returns,
+        # clipped to _MAX_LINE_CHARS).
+        if rendered and used + len(row) + 1 > _MAX_READ_CHARS:
+            break
+        rendered.append(row)
+        used += len(row) + 1
+        i += 1
+
+    last = start + len(rendered)  # 1-based number of the last line included
+    body = "\n".join(rendered)
+    windowed = not (start == 0 and last == total)
+    notes: list[str] = []
+    if windowed:
+        notes.append(f"showing lines {offset}-{last} of {total}")
+    if clipped:
+        notes.append(f"long lines clipped to {_MAX_LINE_CHARS} chars")
+    if not notes:
+        return body  # whole file, nothing clipped — unchanged output
+    return f"{body}\n\n[{'; '.join(notes)}]"
 
 
 def write_file(root: Path, path: str, content: str) -> str:

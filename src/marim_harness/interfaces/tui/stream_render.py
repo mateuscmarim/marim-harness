@@ -210,7 +210,9 @@ class StreamRenderer:
         self.sub_solo_tools: dict[str, ToolCallWidget | None] = {}
         self.sub_assistants: dict[str, AssistantMessage] = {}
         self.sub_thinkings: dict[str, ThinkingWidget] = {}
-        self.dirty_streams: set[AssistantMessage] = set()
+        # Either an AssistantMessage (reply/sub-agent body) or a ThinkingWidget —
+        # both expose the append/flush streaming interface the tick drains.
+        self.dirty_streams: set[AssistantMessage | ThinkingWidget] = set()
         self.live_run_tokens = 0
         self.show_all_output = False  # Ctrl+O reveal-all toggle
         # True while a session view is being rebuilt (clear/switch/new). During the
@@ -251,7 +253,7 @@ class StreamRenderer:
         for widget in self.app.query(ToolCallWidget):
             widget.set_reveal(self.show_all_output)
 
-    def append_stream(self, widget: AssistantMessage, delta: str) -> None:
+    def append_stream(self, widget: AssistantMessage | ThinkingWidget, delta: str) -> None:
         """Buffer a streamed delta into ``widget`` and mark it for the next flush
         tick. Funnelling every append through here is what lets the tick render
         only the streams that actually changed."""

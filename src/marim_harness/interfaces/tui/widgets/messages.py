@@ -47,18 +47,42 @@ class SummaryWidget(Collapsible):
         )
 
 
-class ThinkingWidget(Collapsible):
-    """A model's chain-of-thought, shown as a distinct collapsed block so it's
-    available on demand without cluttering the reply. The body is a streaming
-    AssistantMessage (Markdown); because it lives inside a collapsed Collapsible,
-    the flush tick defers its (re)render until the user expands it — the same
-    deferral the folded sub-agent bodies rely on."""
+class ThinkingWidget(Static):
+    """A model's chain-of-thought, shown inline behind an accent rail with an
+    italic ``Thinking:`` label — distinct from the reply but read at a glance, no
+    expand needed. Reasoning is rendered as plain styled text (not Markdown): it's
+    conversational prose where markdown structure rarely matters, and a single
+    flowing Static lets the label sit inline with the first words and wrap with
+    them. ``self.body = self`` keeps the streaming interface the renderer drives
+    (``append``/``flush`` on ``widget.body``) pointed at this widget.
+
+    Content is built via ``Content`` (not markup parsing) so untrusted reasoning
+    text can't raise a MarkupError — only the fixed label is markup-parsed."""
 
     def __init__(self) -> None:
-        self.body = AssistantMessage()
-        super().__init__(
-            self.body, title=Content("✦ thinking"), collapsed=True  # pyright: ignore[reportArgumentType]
-        )
+        self.text = ""
+        self._pending = False
+        self.body = self
+        super().__init__(classes="thinking")
+
+    def append(self, delta: str) -> None:
+        self.text += delta
+        self._pending = True
+
+    def flush(self) -> bool:
+        """Render the buffered reasoning if it changed. Returns whether it
+        rendered so the flush tick can skip idle streams."""
+        if not self._pending:
+            return False
+        self.update(self._render())
+        self._pending = False
+        return True
+
+    def _render(self) -> Content:
+        # The label carries its own themed colour via markup; the reasoning text
+        # is appended as a literal Content (no markup parse) and inherits the
+        # italic/muted styling the .tcss puts on the widget.
+        return Content.from_markup("[$text-accent]Thinking:[/] ") + Content(self.text)
 
 
 class TurnMeta(Static):
