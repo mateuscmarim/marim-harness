@@ -58,6 +58,17 @@ def test_parser_rejects_ask_mode():
         default_cmd._build_parser().parse_args(["--mode", "ask"])
 
 
+def test_version_flag_prints_and_exits(capsys):
+    """--version is argparse's version action: it prints `marim <version>` and
+    exits 0 before any heavy import or workspace resolution."""
+    with pytest.raises(SystemExit) as ei:
+        default_cmd._build_parser().parse_args(["--version"])
+    assert ei.value.code == 0
+    out = capsys.readouterr().out
+    assert out.startswith("marim ")
+    assert default_cmd._version() in out
+
+
 def test_router_dispatches_management(monkeypatch):
     # Dispatch now imports the matched subcommand module lazily and calls its
     # main(argv[1:]); patch the real sessions.main rather than a _MANAGEMENT dict.

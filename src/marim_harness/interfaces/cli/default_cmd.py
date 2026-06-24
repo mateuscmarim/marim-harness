@@ -10,8 +10,22 @@ from pathlib import Path
 from ...history import PromptHistory, default_history_path
 
 
+def _version() -> str:
+    """The installed package version, or a placeholder when running from a source
+    tree that was never installed (no dist metadata)."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("marim-harness")
+    except PackageNotFoundError:
+        return "unknown"
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="marim")
+    p.add_argument(
+        "--version", action="version", version=f"%(prog)s {_version()}",
+    )
     p.add_argument(
         "workspace", nargs="?", default=None,
         help="workspace directory (defaults to the current directory)",

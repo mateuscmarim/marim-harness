@@ -111,6 +111,35 @@ def test_load_missing_returns_empty(tmp_path: Path):
     assert tasks == []
 
 
+def test_load_corrupt_json_raises_clear_error(tmp_path: Path):
+    """A corrupt session file (e.g. a pre-atomic-write crash) must fail loudly and
+    namedly on load, not silently return an empty history that looks like the
+    conversation vanished. list() still skips it (tested separately)."""
+    from marim_harness.session.store import SessionLoadError
+
+    mgr = _manager(tmp_path)
+    store = mgr.create()
+    store.save(_history(), RunUsage(), [])
+    store.path.write_text("{ this is not valid json")
+    with pytest.raises(SessionLoadError) as ei:
+        store.load()
+    assert str(store.path) in str(ei.value)  # the message points at the file
+
+
+def test_list_skips_corrupt_while_load_raises(tmp_path: Path):
+    """The asymmetry is intentional: a corrupt sibling shouldn't break the picker,
+    but resuming that specific session should not silently start empty."""
+    from marim_harness.session.store import SessionLoadError
+
+    mgr = _manager(tmp_path)
+    store = mgr.create()
+    store.save(_history(), RunUsage(), [])
+    store.path.write_text("garbage")
+    assert mgr.list() == []  # picker skips it
+    with pytest.raises(SessionLoadError):
+        store.load()
+
+
 def test_tasks_round_trip(tmp_path: Path):
     mgr = _manager(tmp_path)
     store = mgr.create("With Tasks")

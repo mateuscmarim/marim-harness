@@ -16,6 +16,16 @@ from ..images import externalize_images, rehydrate_images
 logger = logging.getLogger(__name__)
 
 
+class SessionLoadError(Exception):
+    """A saved session file exists but can't be read (corrupt JSON, unreadable).
+
+    Raised by :meth:`SessionStore.load` instead of leaking a raw
+    ``JSONDecodeError``/``OSError`` traceback. ``list()`` deliberately *skips*
+    such files (a corrupt sibling shouldn't break the picker), but a resume/switch
+    targeting a specific session must fail loudly and namedly — silently loading an
+    empty history would look like the conversation was lost."""
+
+
 def _default_base_dir() -> Path:
     base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
     return Path(base) / "marim-harness" / "sessions"
@@ -108,7 +118,16 @@ class SessionStore:
         before task/duration tracking simply have no key and load as defaults."""
         if not self.path.exists():
             return [], RunUsage(), [], None
-        data = json.loads(self.path.read_text())
+        try:
+            data = json.loads(self.path.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            # Don't return defaults here: unlike list() (which skips a corrupt
+            # sibling), a caller asked to load *this* session, and a silent empty
+            # would masquerade as data loss. Fail with a path the user can act on.
+            raise SessionLoadError(
+                f"can't read session {self.path}: {exc}. Move the file aside or "
+                f"start a fresh session."
+            ) from exc
         raw_messages = rehydrate_images(data.get("messages", []), self.session_id)
         messages = ModelMessagesTypeAdapter.validate_python(raw_messages)
         tok = data.get("tokens", {})

@@ -112,6 +112,26 @@ def test_write_file_creates_parents(tmp_path: Path):
     assert (tmp_path / "sub/a.txt").read_text() == "hello"
 
 
+def test_write_file_no_temp_left_behind(tmp_path: Path):
+    """The atomic write must leave only the target, not its mkstemp scratch file."""
+    fs.write_file(tmp_path, "a.txt", "hello")
+    assert [p.name for p in tmp_path.iterdir()] == ["a.txt"]
+
+
+def test_edit_file_preserves_executable_bit(tmp_path: Path):
+    """edit_file writes atomically via a temp-file swap; it must NOT clobber the
+    target's permission bits (an os.replace of a 0600 temp would strip +x from a
+    script). Regression guard for the atomic-write switch."""
+    import stat
+
+    script = tmp_path / "run.sh"
+    script.write_text("echo old\n")
+    script.chmod(0o755)
+    fs.edit_file(tmp_path, "run.sh", [_edit("old", "new")])
+    assert script.read_text() == "echo new\n"
+    assert stat.S_IMODE(script.stat().st_mode) == 0o755
+
+
 def _edit(old, new, replace_all=False) -> fs.Edit:
     return fs.Edit(old_string=old, new_string=new, replace_all=replace_all)
 

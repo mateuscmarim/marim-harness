@@ -1,11 +1,13 @@
 import os
 import re
+import stat
 from collections.abc import Iterator
 from pathlib import Path
 
 from pydantic import BaseModel
 from pydantic_ai import ModelRetry
 
+from ..atomic_io import atomic_write_text
 from ..workspace.fs import WorkspaceError, resolve_in_workspace
 from .offload import MAX_OUTPUT_CHARS, offload_if_large
 
@@ -105,12 +107,38 @@ def read_file(
     return f"{body}\n\n[{'; '.join(notes)}]"
 
 
+def _atomic_write_preserving_mode(p: Path, content: str) -> None:
+    """Write ``content`` to ``p`` atomically, keeping the file's permission bits.
+
+    ``atomic_write_text`` writes a ``mkstemp`` temp file (mode 0600) and
+    ``os.replace``s it over the target — durable and crash-safe, but it would
+    otherwise *clobber* an existing file's mode (e.g. strip ``+x`` off a script)
+    and leave a newly created file owner-only. So restore the original mode on an
+    overwrite, and fall back to the umask default for a new file. The brief window
+    where the mode isn't yet restored is acceptable: the *content* swap is atomic,
+    which is the property that matters."""
+    try:
+        original = stat.S_IMODE(p.stat().st_mode)
+    except FileNotFoundError:
+        original = None
+    atomic_write_text(p, content)
+    if original is not None:
+        os.chmod(p, original)
+    else:
+        umask = os.umask(0)
+        os.umask(umask)
+        os.chmod(p, 0o666 & ~umask)
+
+
 def write_file(root: Path, path: str, content: str) -> str:
     """Create or overwrite a file relative to the workspace root."""
     p = _safe(root, path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    n = p.write_text(content)  # returns the number of characters written
-    return f"wrote {path} ({len(content.encode('utf-8'))} bytes, {n} chars)"
+    # Atomic, like the session/checkpoint persistence layer: a crash mid-write
+    # leaves the old file intact rather than a truncated one, and a parallel
+    # sub-agent writing the same path can't interleave a half-written result.
+    _atomic_write_preserving_mode(p, content)
+    return f"wrote {path} ({len(content.encode('utf-8'))} bytes, {len(content)} chars)"
 
 
 class Edit(BaseModel):
@@ -157,7 +185,7 @@ def edit_file(root: Path, path: str, edits: list[Edit]) -> str:
         raise ModelRetry(f"can't edit {path}: not a UTF-8 text file.") from None
     for i, edit in enumerate(edits, 1):
         text = _apply_edit(text, edit, path, i)
-    p.write_text(text)
+    _atomic_write_preserving_mode(p, text)  # all-or-nothing on disk too — see write_file
     n = len(edits)
     return f"edited {path} ({n} edit{'s' if n != 1 else ''})"
 

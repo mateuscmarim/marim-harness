@@ -1,3 +1,5 @@
+import logging
+
 from marim_harness.command_policy import CommandPolicy
 
 
@@ -27,6 +29,16 @@ def test_malformed_allow_pattern_does_not_grant_by_literal():
     literal text; only valid allow rules should grant."""
     policy = CommandPolicy(allowlist=["ls ["])  # invalid regex
     assert policy.check("ls [x]") is not None
+
+
+def test_malformed_pattern_logs_a_warning(caplog):
+    """Fail-closed is correct but must not be silent: a malformed rule is an
+    operator config bug, and the resulting over-/under-block is baffling without a
+    log line naming the bad pattern."""
+    with caplog.at_level(logging.WARNING, logger="marim_harness.command_policy"):
+        CommandPolicy(denylist=["rm -rf /("])
+    assert any("rm -rf /(" in r.message for r in caplog.records)
+    assert any("blocks all commands" in r.message for r in caplog.records)
 
 
 def test_allowlist_blocks_command_not_on_it():

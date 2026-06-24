@@ -321,8 +321,7 @@ class HarnessApp(App):
         self._wake.record_auto_turn()
         # Mounted synchronously (we may be in a sync on_change callback), mirroring
         # _on_compact / _on_rename.
-        log = self.query_one("#log", VerticalScroll)
-        log.mount(NoticeMessage("⏰ Resumed — background job(s) finished"))
+        self._append_log(NoticeMessage("⏰ Resumed — background job(s) finished"))
         self._turn_worker = self.run_worker(self._run_turn(""), exclusive=True)
 
     @property
@@ -739,9 +738,18 @@ class HarnessApp(App):
             return
         self.harness.set_model(chosen)
         self.status.refresh_status()
+        self._append_log(NoticeMessage(f"model: {self.harness.model_label}"))
+
+    def _append_log(self, widget) -> None:
+        """Mount a notice/error into the log, keeping the viewport pinned to the
+        bottom only if it was already there. A user who scrolled up to read history
+        isn't yanked back down, but a user following live still sees new messages
+        (errors, steering echoes) scroll into view instead of landing off-screen."""
         log = self.query_one("#log", VerticalScroll)
-        log.mount(NoticeMessage(f"model: {self.harness.model_label}"))
-        log.scroll_end(animate=False)
+        at_bottom = log.scroll_offset.y >= log.max_scroll_y
+        log.mount(widget)
+        if at_bottom:
+            log.scroll_end(animate=False)
 
     def _image_block_reason(self, attachments) -> str | None:
         """A warning to show instead of submitting, or None to proceed. Only a
@@ -815,13 +823,11 @@ class HarnessApp(App):
             return
         reason = self._image_block_reason(event.attachments)
         if reason is not None:
-            log = self.query_one("#log", VerticalScroll)
-            await log.mount(NoticeMessage(reason))
+            self._append_log(NoticeMessage(reason))
             return
         self.harness.steer(text, event.attachments)
         tag = f"  📎 {len(event.attachments)}" if event.attachments else ""
-        log = self.query_one("#log", VerticalScroll)
-        await log.mount(NoticeMessage(f"↪ steering: {text}{tag}"))
+        self._append_log(NoticeMessage(f"↪ steering: {text}{tag}"))
 
     async def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
         self._hide_autocomplete()
@@ -835,8 +841,7 @@ class HarnessApp(App):
             return
         reason = self._image_block_reason(event.attachments)
         if reason is not None:
-            log = self.query_one("#log", VerticalScroll)
-            await log.mount(NoticeMessage(reason))
+            self._append_log(NoticeMessage(reason))
             return
         if self._turn_worker is not None:
             self._enqueue(text, event.attachments)
@@ -863,12 +868,12 @@ class HarnessApp(App):
             # User pressed escape; mount synchronously (we are unwinding) and
             # let the worker finish as cancelled.
             self._queue_paused = True
-            log.mount(ErrorMessage("turn cancelled"))
+            self._append_log(ErrorMessage("turn cancelled"))
             raise
         except Exception as exc:  # keep the session alive on any turn failure
             self._queue_paused = True
             detail = format_provider_error(exc) or f"{type(exc).__name__}: {exc}"
-            await log.mount(ErrorMessage(detail))
+            self._append_log(ErrorMessage(detail))
             self._notify("Turn error", detail, "error")
         finally:
             self._turn_worker = None

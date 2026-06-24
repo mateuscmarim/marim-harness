@@ -17,7 +17,10 @@ with extra spaces, ``r''m``, ``$(echo rm) -rf``, a base64-decode pipe, and so on
 Use it to catch honest mistakes and nudge the model, not to contain a hostile
 command; for real isolation run the harness in a sandbox/VM/container."""
 
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 
 
 def split_patterns(text: str) -> list[str]:
@@ -43,7 +46,12 @@ def _compile(pattern: str, *, on_error: "re.Pattern[str]") -> "re.Pattern[str]":
     """Compile a pattern, falling back to ``on_error`` if it isn't valid regex."""
     try:
         return re.compile(pattern)
-    except re.error:
+    except re.error as exc:
+        # Fail closed (see module note) but never silently: a malformed rule is a
+        # config bug the operator needs to see, and the over-/under-block it causes
+        # would otherwise be baffling.
+        effect = "blocks all commands" if on_error is _MATCH_ALL else "grants nothing"
+        logger.warning("invalid command-policy regex %r (%s); rule now %s", pattern, exc, effect)
         return on_error
 
 

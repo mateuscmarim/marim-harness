@@ -551,6 +551,11 @@ class Harness:
         # a resumed session can recover just the typed text. The injected blocks
         # are the prefix; `typed` is the unchanged suffix, sliced back out here.
         if prompt != typed:
+            # Every prepend above follows `f"{block}\n\n{prompt}"`, so `typed` is
+            # always an intact suffix and the injected prefix is recoverable by
+            # length. Guard the invariant: if a future prepend ever breaks it, the
+            # silent alternative is shipping a corrupted prompt to the model.
+            assert prompt.endswith(typed), "turn-context injection must keep `typed` as a suffix"
             injected = prompt[: len(prompt) - len(typed)].rstrip("\n")
             prompt = wrap_turn_context(injected, typed)
         return prompt
