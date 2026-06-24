@@ -13,7 +13,22 @@ _INLINE_CHAR_LIMIT = 25_000      # at/below this, return inline (~6k tokens)
 # Measured in characters (~bytes for ASCII); producers stop collecting here and callers may offload.
 MAX_OUTPUT_CHARS = 5_000_000
 _PREVIEW_LINES = 40
+# The preview glimpses the head of an offloaded result. Bounding it by line count
+# alone isn't enough: one minified-JSON / single-line blob is a single "line" of
+# megabytes, so a line-only preview would re-flood exactly what offloading exists
+# to prevent. Cap the preview's total width too — the full content is in the file
+# regardless, so the preview only has to orient the reader.
+_PREVIEW_CHARS = 2_000
 _OUTPUT_DIR = (".marim", "output")
+
+
+def _make_preview(lines: list[str]) -> str:
+    """First few lines of an offloaded result, bounded in both count and width so
+    the preview itself can't flood context (the full body lives in the file)."""
+    preview = "\n".join(lines[:_PREVIEW_LINES])
+    if len(preview) > _PREVIEW_CHARS:
+        preview = preview[:_PREVIEW_CHARS] + "…"
+    return preview
 
 
 def _write_handle(content: str, *, kind: str, key: str,
@@ -24,7 +39,7 @@ def _write_handle(content: str, *, kind: str, key: str,
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(content, encoding="utf-8")
     lines = content.splitlines()
-    preview = "\n".join(lines[:_PREVIEW_LINES])
+    preview = _make_preview(lines)
     cap_note = (
         f"⚠️ Output hit the {MAX_OUTPUT_CHARS:,}-char ceiling; the file holds what "
         "was collected.\n" if capped else ""
@@ -46,7 +61,7 @@ def write_preview_file(content: str, *, rel: Path, workspace_root: Path) -> tupl
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(content, encoding="utf-8")
     lines = content.splitlines()
-    preview = "\n".join(lines[:_PREVIEW_LINES])
+    preview = _make_preview(lines)
     return rel.as_posix(), preview, len(lines)
 
 

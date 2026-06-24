@@ -30,6 +30,64 @@ from pathlib import Path
 
 from ..config import config_dir
 from ..permissions import Mode
+from ..tools.offload import _INLINE_CHAR_LIMIT, offload_if_large
+
+
+def _bound_tool_result(result, *, label: str, name: str, args: dict | None,
+                       workspace_root: Path | None):
+    """Bound an MCP tool result so a huge server response can't flood context.
+
+    MCP results are an open union (``str | BinaryContent | dict | list | …``).
+    Unlike the builtin tools — which build their output under our own byte budget
+    — this payload is produced by a third-party server we don't control, so it's
+    the one tool surface with no inherent size bound. We clamp the two real flood
+    vectors and leave everything else untouched:
+
+      * a plain ``str`` (the common case — a text content block) is routed through
+        the shared :func:`offload_if_large`, so a large body is written to a file
+        and replaced by a handle + preview the model can page;
+      * structured content (``dict``) or a ``list`` of parts is sized by its JSON
+        serialization and offloaded *whole* when it exceeds the inline limit. Big
+        structured blobs are exactly the ones we don't want inline, and the model
+        still gets a file handle to read.
+
+    A bare ``BinaryContent`` (image/audio) is passed through verbatim — it isn't a
+    text flood and the model needs the bytes. (A *mixed* list of binary + large
+    text is rare; it falls into the JSON branch and offloads as text, so the
+    binary part is lost — acceptable for that corner.) Anything we can't cheaply
+    serialize is left as-is rather than risk corrupting it.
+
+    The offload ``key`` includes ``args`` so two large results from the same tool
+    with different arguments land in different files — keying on the tool name
+    alone would clobber one handle with the other (the builtins key on inputs for
+    the same reason: bash→command, grep→pattern)."""
+    # Distinct file per (tool, args) so concurrent/sequential large results don't
+    # clobber each other's offload handle.
+    try:
+        arg_key = json.dumps(args or {}, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        arg_key = repr(args)
+    key = f"{label}/{name}\0{arg_key}"
+    if isinstance(result, str):
+        return offload_if_large(
+            result, kind="mcp", key=key, workspace_root=workspace_root
+        )
+    # Don't touch binary payloads — they aren't a text flood and must reach the
+    # model intact. Import lazily so this module stays cheap to import.
+    from pydantic_ai.messages import BinaryContent
+
+    if isinstance(result, BinaryContent):
+        return result
+    if isinstance(result, (dict, list)):
+        try:
+            serialized = json.dumps(result, default=str)
+        except (TypeError, ValueError):
+            return result  # can't measure safely — leave the structure intact
+        if len(serialized) > _INLINE_CHAR_LIMIT:
+            return offload_if_large(
+                serialized, kind="mcp", key=key, workspace_root=workspace_root,
+            )
+    return result
 
 
 def mcp_stderr_log_path() -> Path:
@@ -153,18 +211,27 @@ def make_approval_hook(label: str, trusted: bool):
     async def hook(ctx, call_tool, name, args):
         deps = ctx.deps
         display = f"{label}_{name}"
+        # Read the workspace root at call time, like mode/request_approval below,
+        # so a large result can be offloaded under the project rather than inline.
+        root = getattr(deps, "workspace_root", None)
         mode = getattr(deps, "mode", None)
         if mode is Mode.plan:
             return f"Denied: {display} is blocked in read-only plan mode."
         if mode is Mode.auto or trusted:
-            return await call_tool(name, args)
+            result = await call_tool(name, args)
+            return _bound_tool_result(
+                result, label=label, name=name, args=args, workspace_root=root
+            )
         # ask mode against an untrusted server: prompt the user.
         approve = getattr(deps, "request_approval", None)
         if approve is None:
             return f"Denied: {display} needs approval but none is available here."
         decision = await approve(_McpApprovalCall(display, args or {}))
         if decision is True:
-            return await call_tool(name, args)
+            result = await call_tool(name, args)
+            return _bound_tool_result(
+                result, label=label, name=name, args=args, workspace_root=root
+            )
         return f"Denied: the user rejected {display}."
 
     return hook

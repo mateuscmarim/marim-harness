@@ -195,3 +195,32 @@ async def test_request_timeout_degrades(tmp_path):
     out = await mgr.goto_definition("m.py", 1, 1)
     assert "timed out" in out.lower()
     await mgr.aclose()
+
+
+def test_clamp_hover_caps_wide_blobs():
+    from marim_harness.lsp.manager import _MAX_HOVER_CHARS, _clamp_hover
+
+    short = "def foo() -> int"
+    assert _clamp_hover(short) == short  # under the cap: unchanged
+
+    wide = "x" * (_MAX_HOVER_CHARS + 500)
+    out = _clamp_hover(wide)
+    assert len(out) < len(wide)
+    assert out.startswith("x" * 100)  # head preserved
+    assert "500 more chars truncated" in out
+
+
+@pytest.mark.anyio
+async def test_hover_clamps_huge_docstring(tmp_path):
+    from marim_harness.lsp.manager import _MAX_HOVER_CHARS
+
+    class _Huge(_FakeServer):
+        async def request_hover(self, relpath, line, col):
+            return {"contents": {"value": "S" * (_MAX_HOVER_CHARS + 9000)}}
+
+    (tmp_path / "m.py").write_text("x = 1\n")
+    mgr = LspManager(tmp_path, server_factory=lambda lang, root: _Huge(tmp_path))
+    hov = await mgr.hover("m.py", 1, 1)
+    assert len(hov) <= _MAX_HOVER_CHARS + 100  # cap + short footer
+    assert "truncated" in hov
+    await mgr.aclose()

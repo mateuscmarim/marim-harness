@@ -25,6 +25,13 @@ logger = logging.getLogger(__name__)
 
 _MAX_RESULTS = 50
 
+# The list-returning LSP tools bound their result *count* with _MAX_RESULTS, but
+# hover returns a single blob whose width is unbounded — a long docstring or a
+# deeply-generic type signature can be many KB. Clamp it so one hover can't flood
+# context; the head carries the signature + first lines of docs, which is the part
+# that matters.
+_MAX_HOVER_CHARS = 4_000
+
 
 def _default_factory(language: str, root: Path):
     """Build a real multilspy async LanguageServer for ``language`` at ``root``.
@@ -191,7 +198,7 @@ class LspManager:
         )
         if err:
             return err
-        return _hover_text(res) or "No hover information."
+        return _clamp_hover(_hover_text(res)) or "No hover information."
 
     async def document_symbols(self, path: str) -> str:
         server, _lang, err = await self._server_for(path)
@@ -258,6 +265,15 @@ class LspManager:
         if err:
             return err
         return format_diagnostics(path, collector.latest(uri))
+
+
+def _clamp_hover(text: str) -> str:
+    """Cap hover text to ``_MAX_HOVER_CHARS``, keeping the head (signature + start
+    of the docs) and noting how much was dropped."""
+    if len(text) <= _MAX_HOVER_CHARS:
+        return text
+    dropped = len(text) - _MAX_HOVER_CHARS
+    return f"{text[:_MAX_HOVER_CHARS]}\n… ({dropped} more chars truncated)"
 
 
 def _hover_text(res) -> str:

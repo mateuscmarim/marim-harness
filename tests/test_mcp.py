@@ -371,3 +371,92 @@ async def test_hook_ask_untrusted_no_callback_denies(tmp_path: Path):
     result = await hook(_ctx(Mode.ask, None), await _runner(calls), "write", {})
     assert calls == []
     assert "approval" in result.lower() or "denied" in result.lower()
+
+
+# --- result bounding (context-flood protection) ----------------------------
+
+
+def test_bound_tool_result_offloads_large_string(tmp_path: Path):
+    from marim_harness.mcp.config import _bound_tool_result
+
+    big = "x" * 60_000
+    out = _bound_tool_result(big, label="files", name="read", args={"p": "x"},
+                             workspace_root=tmp_path)
+    assert isinstance(out, str)
+    assert "saved to" in out and "preview" in out  # handle + preview, not the body
+    assert len(out) < len(big)
+    # the full body landed under .marim/output/
+    offloaded = list((tmp_path / ".marim" / "output").glob("mcp-*.txt"))
+    assert offloaded and offloaded[0].read_text() == big
+
+
+def test_bound_tool_result_passes_small_string(tmp_path: Path):
+    from marim_harness.mcp.config import _bound_tool_result
+
+    out = _bound_tool_result("hi", label="files", name="read", args={}, workspace_root=tmp_path)
+    assert out == "hi"
+
+
+def test_bound_tool_result_offloads_large_structured(tmp_path: Path):
+    from marim_harness.mcp.config import _bound_tool_result
+
+    payload = {"rows": ["y" * 100 for _ in range(1000)]}  # well over the inline limit
+    out = _bound_tool_result(payload, label="db", name="query", args={"q": "x"},
+                             workspace_root=tmp_path)
+    assert isinstance(out, str) and "saved to" in out
+
+
+def test_bound_tool_result_keeps_small_structured(tmp_path: Path):
+    from marim_harness.mcp.config import _bound_tool_result
+
+    payload = {"ok": True, "n": 3}
+    out = _bound_tool_result(payload, label="db", name="query", args={"q": "x"},
+                             workspace_root=tmp_path)
+    assert out is payload  # small structured content reaches the model intact
+
+
+def test_bound_tool_result_passes_binary_through(tmp_path: Path):
+    from pydantic_ai.messages import BinaryContent
+
+    from marim_harness.mcp.config import _bound_tool_result
+
+    img = BinaryContent(data=b"\x89PNG" + b"\x00" * 80_000, media_type="image/png")
+    out = _bound_tool_result(img, label="cam", name="snap", args={}, workspace_root=tmp_path)
+    assert out is img  # binary is never offloaded as text
+
+
+@pytest.mark.anyio
+async def test_hook_offloads_large_result(tmp_path: Path):
+    """End to end: an auto-mode call whose server returns a huge body comes back
+    as a handle + preview, not the raw flood."""
+    from marim_harness.mcp.config import make_approval_hook
+
+    async def call_tool(name, args):
+        return "Z" * 60_000
+
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(mode=Mode.auto, request_approval=None, workspace_root=tmp_path)
+    )
+    hook = make_approval_hook("files", trusted=True)
+    out = await hook(ctx, call_tool, "read", {})
+    assert "saved to" in out and len(out) < 60_000
+
+
+def test_bound_tool_result_distinct_args_dont_collide(tmp_path: Path):
+    """Two large results from the same MCP tool with different args must land in
+    different offload files — keying on the tool name alone would clobber one
+    handle's content with the other's."""
+    from marim_harness.mcp.config import _bound_tool_result
+
+    a = "A" * 60_000
+    b = "B" * 60_000
+    out_a = _bound_tool_result(a, label="db", name="query",
+                               args={"sql": "select a"}, workspace_root=tmp_path)
+    out_b = _bound_tool_result(b, label="db", name="query",
+                               args={"sql": "select b"}, workspace_root=tmp_path)
+    files = sorted((tmp_path / ".marim" / "output").glob("mcp-*.txt"))
+    assert len(files) == 2  # not clobbered into one
+    bodies = {f.read_text() for f in files}
+    assert bodies == {a, b}
+    # the two handles point at different files
+    assert out_a != out_b
