@@ -439,3 +439,71 @@ async def test_fetch_refuses_ipv6_loopback(monkeypatch):
                                           0, "", (host, 0, 0, 0))])
     result = await fetch_url("http://[::1]/admin")
     assert "Fetched" not in result
+
+
+# ---------------------------------------------------------------------------
+# Tests — SSRF: connection is pinned to the validated IP (no DNS-rebinding gap)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_pinned_backend_connects_to_validated_ip(monkeypatch):
+    """The backend must hand the resolved IP to the inner connect, not the
+    hostname — otherwise httpcore would re-resolve and a rebinding server could
+    swap in a private address between our check and the connect."""
+    from marim_harness.tools.fetch import _PinnedBackend
+
+    monkeypatch.setattr(socket, "getaddrinfo",
+                        lambda host, *_: [(socket.AF_INET, socket.SOCK_STREAM,
+                                          0, "", ("93.184.216.34", 0))])
+    inner = AsyncMock()
+    inner.connect_tcp = AsyncMock(return_value="stream")
+    backend = _PinnedBackend(inner)
+
+    out = await backend.connect_tcp("example.com", 443)
+
+    assert out == "stream"
+    # Connected to the validated IP, never the hostname.
+    called_host = inner.connect_tcp.call_args.args[0]
+    assert called_host == "93.184.216.34"
+    assert called_host != "example.com"
+
+
+@pytest.mark.anyio
+async def test_pinned_backend_refuses_private_ip(monkeypatch):
+    """A host resolving to a blocked range raises a ConnectError at connect time
+    (covers redirect hops, which never hit the early pre-check)."""
+    import httpcore
+
+    from marim_harness.tools.fetch import _PinnedBackend
+
+    monkeypatch.setattr(socket, "getaddrinfo",
+                        lambda host, *_: [(socket.AF_INET, socket.SOCK_STREAM,
+                                          0, "", ("10.0.0.5", 0))])
+    backend = _PinnedBackend(AsyncMock())
+
+    with pytest.raises(httpcore.ConnectError) as ei:
+        await backend.connect_tcp("internal.example.com", 80)
+    assert "10.0.0.5" in str(ei.value) or "private" in str(ei.value).lower()
+
+
+def test_validated_ips_returns_public_addresses(monkeypatch):
+    from marim_harness.tools.fetch import _validated_ips
+
+    monkeypatch.setattr(socket, "getaddrinfo",
+                        lambda host, *_: [(socket.AF_INET, socket.SOCK_STREAM,
+                                          0, "", ("93.184.216.34", 0))])
+    assert _validated_ips("example.com") == ["93.184.216.34"]
+
+
+def test_validated_ips_raises_when_any_address_blocked(monkeypatch):
+    """If a name resolves to a mix of public and private, refuse outright."""
+    from marim_harness.tools.fetch import _validated_ips
+
+    monkeypatch.setattr(socket, "getaddrinfo",
+                        lambda host, *_: [
+                            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", 0)),
+                            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 0)),
+                        ])
+    with pytest.raises(ValueError, match="private/loopback/link-local"):
+        _validated_ips("rebind.example.com")

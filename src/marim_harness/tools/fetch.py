@@ -20,6 +20,7 @@ import socket
 from pathlib import Path
 from urllib.parse import urlparse
 
+import httpcore
 import httpx
 from markdownify import markdownify as md  # type: ignore[import-untyped]
 
@@ -56,10 +57,14 @@ _BLOCKED_NETS = [
 ]
 
 
-def _resolve_safely(host: str) -> list[str]:
-    """Resolve ``host`` and refuse if any address falls in a blocked range.
-    Returns the resolved address list on success; raises ``ValueError`` with a
-    clear message on DNS failure or any blocked address.
+def _validated_ips(host: str) -> list[str]:
+    """Resolve ``host`` and return its IP addresses, refusing if **any** falls in
+    a blocked range. Raises ``ValueError`` with a clear message on DNS failure or
+    a blocked address.
+
+    The returned list is what callers must connect to: a single DNS lookup whose
+    result is both validated *and* used to connect closes the resolve-then-
+    reresolve window a DNS-rebinding server could otherwise slip through.
     """
     if not host:
         raise ValueError("empty host")
@@ -67,9 +72,9 @@ def _resolve_safely(host: str) -> list[str]:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror as exc:
         raise ValueError(f"can't resolve {host!r}: {exc}") from exc
-    addrs: set[str] = {str(i[4][0]) for i in infos}
-    for raw in addrs:
-        bare = raw.split("%", 1)[0]
+    ips: list[str] = []
+    for info in infos:
+        bare = str(info[4][0]).split("%", 1)[0]
         try:
             ip = ipaddress.ip_address(bare)
         except ValueError:
@@ -78,7 +83,67 @@ def _resolve_safely(host: str) -> list[str]:
             raise ValueError(
                 f"refusing to fetch {ip} (private/loopback/link-local address)"
             )
-    return sorted(addrs)
+        if bare not in ips:
+            ips.append(bare)
+    if not ips:
+        raise ValueError(f"can't resolve {host!r}: no usable address")
+    return ips
+
+
+class _PinnedBackend(httpcore.AsyncNetworkBackend):
+    """Network backend that resolves+validates each host and connects to the
+    exact IP it just validated.
+
+    Validating a hostname and then handing the *name* back to httpcore would let
+    it re-resolve at connect time — a DNS-rebinding server can answer with a
+    public IP for our check and a private one for the connect. Pinning the
+    connect to the address we vetted removes that gap. TLS SNI and certificate
+    verification are unaffected: httpcore derives the server hostname from the
+    request origin, not from this connect target, so certs still validate against
+    the real name. Redirect hops route through here too, so each is vetted the
+    same way.
+    """
+
+    def __init__(self, inner: httpcore.AsyncNetworkBackend) -> None:
+        self._inner = inner
+
+    async def connect_tcp(self, host, port, timeout=None, local_address=None,
+                          socket_options=None):
+        try:
+            ip = _validated_ips(host)[0]
+        except ValueError as exc:
+            raise httpcore.ConnectError(str(exc)) from exc
+        return await self._inner.connect_tcp(
+            ip, port, timeout=timeout, local_address=local_address,
+            socket_options=socket_options,
+        )
+
+    async def connect_unix_socket(self, *args, **kwargs):
+        return await self._inner.connect_unix_socket(*args, **kwargs)
+
+    async def sleep(self, seconds: float) -> None:
+        await self._inner.sleep(seconds)
+
+
+def _build_client(*, timeout: int) -> httpx.AsyncClient:
+    """An ``AsyncClient`` whose DNS is pinned: every connection — the initial one
+    and each redirect hop — goes to an address we resolved and validated in the
+    same step (see :class:`_PinnedBackend`)."""
+    transport = httpx.AsyncHTTPTransport()
+    # httpx fully configures the pool (TLS context, limits); we only swap its
+    # network backend so the connect target is the validated IP. Reaching into
+    # ``_pool`` is the one private-API touch — kept to a single line and pinned
+    # by tests so an httpx upgrade that renames it fails loudly.
+    transport._pool._network_backend = _PinnedBackend(  # type: ignore[attr-defined]
+        transport._pool._network_backend  # type: ignore[attr-defined]
+    )
+    return httpx.AsyncClient(
+        transport=transport,
+        timeout=timeout,
+        follow_redirects=True,
+        max_redirects=5,
+        headers={"User-Agent": _UA},
+    )
 
 # Common markers for boilerplate we want to strip from the output.
 _BOILERPLATE_SELECTORS = (
@@ -180,26 +245,17 @@ async def fetch_url(
     if not host:
         return "Fetch failed: URL has no host"
     try:
-        _resolve_safely(host)
+        # Early, friendly check for the common case. The real enforcement is in
+        # the pinned client below, which re-validates atomically per connection
+        # (initial + every redirect hop), so this can't be bypassed by rebinding.
+        _validated_ips(host)
     except ValueError as exc:
         return str(exc)
 
-    async def _check_redirect(request):
-        h = urlparse(str(request.url)).hostname or ""
-        try:
-            _resolve_safely(h)
-        except ValueError as exc:
-            raise httpx.RequestError(str(exc), request=request) from exc
-
     truncated = False
     try:
-        async with httpx.AsyncClient(
-            timeout=timeout,
-            follow_redirects=True,
-            max_redirects=5,
-            headers={"User-Agent": _UA},
-            event_hooks={"request": [_check_redirect]},
-        ) as client, client.stream("GET", url) as resp:
+        async with _build_client(timeout=timeout) as client, \
+                client.stream("GET", url) as resp:
             resp.raise_for_status()
             # --- size guard: refuse declared-huge bodies before reading ---
             declared = resp.headers.get("content-length")
