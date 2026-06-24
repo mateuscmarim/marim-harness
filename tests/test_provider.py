@@ -99,6 +99,23 @@ async def test_bash_tool_accepts_description_arg(tmp_path: Path):
     assert "hi" in out
 
 
+@pytest.mark.anyio
+async def test_bash_tool_accepts_timeout_arg(tmp_path: Path):
+    # Like `description`, the model is trained on Claude Code's Bash tool, which
+    # accepts a `timeout`. The bash tool must accept it rather than reject it as
+    # `extra_forbidden`, and a per-call value must actually bound a foreground run.
+    from types import SimpleNamespace
+
+    from marim_harness.tools.provider import bash
+
+    ctx = SimpleNamespace(deps=Deps(workspace_root=tmp_path))
+    out = await bash(ctx, "echo quick", timeout=5)
+    assert "quick" in out
+
+    out = await bash(ctx, "sleep 5", timeout=1)
+    assert "timed out after 1s" in out
+
+
 def test_read_tool_executes_via_agent(tmp_path: Path):
     (tmp_path / "a.txt").write_text("content")
     agent = _build_agent()

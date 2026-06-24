@@ -433,13 +433,22 @@ async def edit_file(ctx: RunContext[Deps], path: str, edits: list[fs.Edit]) -> s
 
 
 async def bash(
-    ctx: RunContext[Deps], command: str, description: str = "", background: bool = False
+    ctx: RunContext[Deps],
+    command: str,
+    description: str = "",
+    background: bool = False,
+    timeout: int | None = None,
 ) -> str:
     """Run a shell command in the workspace root.
 
     `description` is an optional one-line summary of what the command does, in
     active voice (e.g. "Count total source lines"); it's shown in the UI and
     session history and is otherwise ignored — it never affects execution.
+
+    `timeout` caps a foreground run, in seconds; when omitted a default applies.
+    Raise it for a command you expect to be slow (a big test run) rather than
+    reaching for `background`. It is ignored for background runs, which are
+    detached and never time out.
 
     Set `background=True` for long-running commands (dev servers, builds, test
     watchers): the command is launched detached and the tool returns immediately
@@ -456,7 +465,9 @@ async def bash(
             "bash", command, bp.wait(), kill=bp.kill, output_fn=bp.output
         )
         return f"Started {job_id} (bash) — {command[:60]}"
-    return await shell.run_bash(ctx.deps.workspace_root, command)
+    if timeout is None:
+        return await shell.run_bash(ctx.deps.workspace_root, command)
+    return await shell.run_bash(ctx.deps.workspace_root, command, timeout=timeout)
 
 
 def jobs(ctx: RunContext[Deps]) -> str:
