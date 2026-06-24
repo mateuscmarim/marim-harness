@@ -1823,7 +1823,7 @@ async def test_subagent_event_shows_current_tool(tmp_path: Path):
         await pilot.pause()
         parent = app.stream.tool_widgets["s1"]
         assert parent.tool_count == 1
-        assert "Grep needle" in str(parent._activity.visual)
+        assert "Grep · needle" in parent._activity.render().plain
 
 
 @pytest.mark.anyio

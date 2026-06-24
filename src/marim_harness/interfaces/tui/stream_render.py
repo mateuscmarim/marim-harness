@@ -24,7 +24,6 @@ from .widgets import (
     ThinkingWidget,
     ToolCallWidget,
     ToolGroupWidget,
-    tool_preview,
 )
 from .widgets import format_cost as _format_cost
 from .widgets import format_token_split as _format_token_split
@@ -218,7 +217,7 @@ class _SubAgentSink(_StreamSink):
         self._parent.note_text()
 
     def on_tool(self, tool_name: str, args: dict) -> None:
-        self._parent.note_tool(tool_name, tool_preview(args))
+        self._parent.note_tool(tool_name, args)
 
 
 class StreamRenderer:

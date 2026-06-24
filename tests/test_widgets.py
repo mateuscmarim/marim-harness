@@ -666,13 +666,16 @@ async def test_subagent_card_shows_current_tool_then_tally():
         w = app.query_one(SubAgentWidget)
         await pilot.pause()
         # While running, the ↳ line shows the current (humanized) tool + its target.
-        w.note_tool("read_file", "src/foo.py")
-        assert "Read src/foo.py" in str(w._activity.visual)
-        w.note_tool("grep", "needle")
-        assert "Grep needle" in str(w._activity.visual)
+        w.note_tool("read_file", {"path": "src/foo.py"})
+        assert "Read · src/foo.py" in w._activity.render().plain
+        w.note_tool("grep", {"pattern": "needle"})
+        assert "Grep · needle" in w._activity.render().plain
+        w.note_tool("bash", {"command": "ls", "background": True})
+        assert "Bash · ls" in w._activity.render().plain
+        assert "bg" in w._activity.render().plain
         # Once finished, it collapses to the run summary (tally + frozen duration).
         w.finish("all done", status="done")
-        assert "2 toolcalls" in str(w._activity.visual)
+        assert "3 toolcalls" in str(w._activity.visual)
 
 
 @pytest.mark.anyio

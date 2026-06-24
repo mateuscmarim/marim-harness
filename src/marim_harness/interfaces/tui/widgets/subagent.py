@@ -18,7 +18,7 @@ from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
 from textual.widgets import Static
 
-from .tool_summary import humanize_tool
+from .tool_summary import summarize
 
 # Working-glyph animation frames (matches the status bar spinner) shown while the
 # sub-agent is still running; a finished agent shows a static ✓/✕ instead.
@@ -217,11 +217,16 @@ class SubAgentWidget(Vertical):
         self._usage_line.update(detail)
         self._usage_line.display = bool(detail)
 
-    def note_tool(self, tool_name: str = "", preview: str = "") -> None:
-        """Record that the sub-agent just called ``tool_name`` (with an optional arg
-        ``preview``): bump the tally and show it as the current tool on the ↳ line."""
+    def note_tool(self, tool_name: str = "", args: dict | None = None) -> None:
+        """Record that the sub-agent just called ``tool_name`` (with its ``args``):
+        bump the tally and show it as the current tool on the ↳ line, using the same
+        ``label · target  badges`` shape as the main log."""
         self.tool_count += 1
-        self.activity = f"{humanize_tool(tool_name)} {preview}".rstrip()
+        s = summarize(tool_name, args or {}, cap=60)
+        line = f"{s.label} · {s.target}" if s.target else s.label
+        if s.badges:
+            line = f"{line}  {' '.join(s.badges)}"
+        self.activity = line
         self._paint_activity()
 
     def note_text(self) -> None:
