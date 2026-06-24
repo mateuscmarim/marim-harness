@@ -949,6 +949,94 @@ async def test_on_events_mounts_and_finishes_tool_widget(tmp_path: Path):
         assert "1\tfoo" in widget.result_text
 
 
+def _fake_jobs(job):
+    class _Reg:
+        def get(self, _id):
+            return job
+    return _Reg()
+
+
+def test_wait_card_spec_done_agent_job_yields_type_and_task():
+    from types import SimpleNamespace
+
+    from marim_harness.interfaces.tui.stream_render import _wait_card_spec
+
+    job = SimpleNamespace(kind="agent", status="done", label="explore: map the loop")
+    assert _wait_card_spec("wait_for_job", {"id": "j1"}, _fake_jobs(job)) == (
+        "explore", "map the loop",
+    )
+
+
+def test_wait_card_spec_skips_running_job():
+    from types import SimpleNamespace
+
+    from marim_harness.interfaces.tui.stream_render import _wait_card_spec
+
+    # A still-running job has no report yet (the wait may time out), so no card.
+    job = SimpleNamespace(kind="agent", status="running", label="explore: x")
+    assert _wait_card_spec("wait_for_job", {"id": "j1"}, _fake_jobs(job)) is None
+
+
+def test_wait_card_spec_skips_bash_job_and_missing_and_other_tools():
+    from types import SimpleNamespace
+
+    from marim_harness.interfaces.tui.stream_render import _wait_card_spec
+
+    bash = SimpleNamespace(kind="bash", status="done", label="echo: hi")
+    assert _wait_card_spec("wait_for_job", {"id": "j1"}, _fake_jobs(bash)) is None
+    assert _wait_card_spec("wait_for_job", {"id": "j1"}, _fake_jobs(None)) is None
+    agent = SimpleNamespace(kind="agent", status="done", label="explore: x")
+    assert _wait_card_spec("read_file", {"path": "a"}, _fake_jobs(agent)) is None
+
+
+@pytest.mark.anyio
+async def test_wait_for_job_on_finished_agent_renders_subagent_card(tmp_path: Path):
+    """When the agent waits on an already-finished detached sub-agent, the wait
+    renders as the sub-agent's card carrying its report, not a plain tool row."""
+    import asyncio
+
+    from pydantic_ai.messages import (
+        FunctionToolCallEvent,
+        FunctionToolResultEvent,
+        ToolCallPart,
+        ToolReturnPart,
+    )
+
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+
+    app = _app(tmp_path)
+    reg = app.harness.deps.jobs
+
+    async def _work():
+        return "THE REPORT"
+
+    jid = reg.register("agent", "explore: map the core loop", _work())
+    for _ in range(400):  # let the job settle to done
+        if reg.get(jid).status != "running":
+            break
+        await asyncio.sleep(0)
+
+    call = FunctionToolCallEvent(part=ToolCallPart(
+        tool_name="wait_for_job", args={"id": jid}, tool_call_id="w1"))
+    result = FunctionToolResultEvent(part=ToolReturnPart(
+        tool_name="wait_for_job", content="THE REPORT", tool_call_id="w1"))
+
+    async def gen():
+        yield call
+        yield result
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.stream.on_events(None, gen())
+        await pilot.pause()
+        widget = app.stream.tool_widgets.get("w1")
+        assert isinstance(widget, SubAgentWidget)
+        assert widget.agent_type == "explore"
+        assert widget.agent_task == "map the core loop"
+        assert widget.report == "THE REPORT"
+        assert widget.status == "done"
+
+
 def test_subagent_failed_detects_runner_error_text():
     from marim_harness.interfaces.tui.stream_render import subagent_failed
 

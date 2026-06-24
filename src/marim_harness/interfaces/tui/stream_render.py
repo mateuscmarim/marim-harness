@@ -68,6 +68,23 @@ def subagent_failed(content: str) -> bool:
     return text.startswith(_SUBAGENT_FAIL_PREFIXES)
 
 
+def _wait_card_spec(tool_name: str, args: dict, jobs) -> tuple[str, str] | None:
+    """If a ``wait_for_job`` call targets an *already-finished* agent job, return
+    ``(agent_type, agent_task)`` so the wait renders as that sub-agent's card —
+    the moment a detached spawn's result becomes available inline. ``None`` when
+    it isn't such a call, notably when the job is still running: the wait may then
+    time out with no report, so a card (which has no honest "still waiting" state)
+    would be misleading; the plain tool row carries the timeout text instead.
+    Reads ``type``/``task`` back out of the job label (``f"{type}: {task}"``)."""
+    if tool_name != "wait_for_job":
+        return None
+    job = jobs.get(str(args.get("id", "")))
+    if job is None or job.kind != "agent" or job.status == "running":
+        return None
+    agent_type, _, agent_task = job.label.partition(": ")
+    return agent_type, agent_task
+
+
 def _stream_hidden(widget: Widget, viewing_sid: str | None) -> bool:
     """True when ``widget`` is a sub-agent transcript stream that isn't currently
     being viewed, so re-parsing its markdown every flush tick would be wasted work
@@ -168,6 +185,21 @@ class _TopLevelSink(_StreamSink):
         # the run so it isn't buried in a tool group).
         if event.part.tool_name == "spawn_agent" and not args.get("background"):
             widget = self._r.mount_spawn_widget(args)
+            widget.stream_id = event.part.tool_call_id
+            self._r.tool_widgets[event.part.tool_call_id] = widget
+            self.set_run(None, None)
+            await self.container.mount(widget)
+            return True
+        # Waiting on an already-finished detached sub-agent: render its card
+        # (filled by the result handler's finish()) instead of a plain tool row.
+        spec = _wait_card_spec(
+            event.part.tool_name, args, self._r.app.harness.deps.jobs
+        )
+        if spec is not None:
+            agent_type, agent_task = spec
+            widget = SubAgentWidget(
+                agent_type, agent_task, self._r.app.harness.model_label or ""
+            )
             widget.stream_id = event.part.tool_call_id
             self._r.tool_widgets[event.part.tool_call_id] = widget
             self.set_run(None, None)
