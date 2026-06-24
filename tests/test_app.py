@@ -32,6 +32,43 @@ async def test_status_bar_shows_mode(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_resumed_spawn_agent_renders_as_subagent_card(tmp_path: Path):
+    """On resume, a foreground spawn_agent call in history rebuilds as a
+    SubAgentWidget carrying its final report — not a generic tool widget."""
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ModelResponse,
+        ToolCallPart,
+        ToolReturnPart,
+    )
+
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget, ToolCallWidget
+
+    app = _app(tmp_path)
+    app.harness.session.history = [
+        ModelResponse(parts=[ToolCallPart(
+            tool_name="spawn_agent",
+            args={"type": "explore", "task": "review the core loop"},
+            tool_call_id="s1",
+        )]),
+        ModelRequest(parts=[ToolReturnPart(
+            tool_name="spawn_agent", content="REPORT-BODY", tool_call_id="s1",
+        )]),
+    ]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        cards = list(app.query(SubAgentWidget))
+        assert len(cards) == 1
+        card = cards[0]
+        assert card.agent_type == "explore"
+        assert card.report == "REPORT-BODY"
+        assert card.status == "done"
+        # It is NOT also rendered as a generic spawn_agent tool widget.
+        generic = [w for w in app.query(ToolCallWidget) if w.tool_name == "spawn_agent"]
+        assert generic == []
+
+
+@pytest.mark.anyio
 async def test_status_bar_shows_token_split(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:

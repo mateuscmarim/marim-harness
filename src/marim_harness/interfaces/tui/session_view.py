@@ -9,10 +9,11 @@ from textual.widgets import Static
 
 from ...agent import strip_turn_context
 from ...compaction import summary_text
-from .stream_render import status_from_part
+from .stream_render import status_from_part, subagent_failed
 from .widgets import (
     AssistantMessage,
     NoticeMessage,
+    SubAgentWidget,
     SummaryWidget,
     ThinkingWidget,
     ToolCallWidget,
@@ -41,7 +42,7 @@ class SessionView:
             UserPromptPart,
         )
 
-        tool_widgets: dict[str, ToolCallWidget] = {}
+        tool_widgets: dict[str, ToolCallWidget | SubAgentWidget] = {}
         # The current run of consecutive tool calls during replay, mirroring the
         # live path so a resumed session groups bursts the same way: a lone call
         # stays bare, a burst folds into a group.
@@ -88,20 +89,51 @@ class SessionView:
                             await log.mount(widget)
                             self.app.stream.append_stream(widget.body, part.content)
                     elif isinstance(part, ToolCallPart):
-                        widget = ToolCallWidget(
-                            part.tool_name, part.args_as_dict(),
-                            workspace_root=self.app.harness.deps.workspace_root,
-                        )
-                        tool_widgets[part.tool_call_id] = widget
-                        group, solo = await self.app.stream.add_tool_to_run(
-                            widget, log, group, solo
-                        )
+                        args = part.args_as_dict()
+                        # A foreground spawn_agent rebuilds as its SubAgentWidget
+                        # card (mirroring the live path, which mounts it standalone
+                        # and breaks the run) rather than a generic tool row. Its
+                        # nested transcript was never persisted, so the resumed card
+                        # carries only the final report — its resting state. A
+                        # background spawn returns a job id and stays a plain tool.
+                        if part.tool_name == "spawn_agent" and not args.get("background"):
+                            group = None
+                            solo = None
+                            model_label = str(
+                                args.get("model") or self.app.harness.model_label or ""
+                            )
+                            widget = SubAgentWidget(
+                                str(args.get("type", "")),
+                                str(args.get("task", "")),
+                                model_label,
+                            )
+                            widget.stream_id = part.tool_call_id
+                            tool_widgets[part.tool_call_id] = widget
+                            await log.mount(widget)
+                        else:
+                            widget = ToolCallWidget(
+                                part.tool_name, args,
+                                workspace_root=self.app.harness.deps.workspace_root,
+                            )
+                            tool_widgets[part.tool_call_id] = widget
+                            group, solo = await self.app.stream.add_tool_to_run(
+                                widget, log, group, solo
+                            )
                     elif isinstance(part, ToolReturnPart):
                         widget = tool_widgets.get(part.tool_call_id)
                         if widget is not None:
-                            widget.finish(
-                                str(part.content), status=status_from_part(part)
-                            )
+                            content = str(part.content)
+                            status = status_from_part(part)
+                            # A failed spawn returns its error as a normal tool
+                            # result; detect the runner's failure text so the card
+                            # shows failed, not a misleading ✓ (mirrors the live path).
+                            if (
+                                isinstance(widget, SubAgentWidget)
+                                and status == "done"
+                                and subagent_failed(content)
+                            ):
+                                status = "failed"
+                            widget.finish(content, status=status)
 
     async def mount_header(self, log: VerticalScroll) -> AssistantMessage:
         """Mount the two-column intro header — the MARIM banner on the left, the
