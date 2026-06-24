@@ -32,7 +32,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
-addopts = "-q --cov=marim_harness --cov-report=term-missing --cov-report=xml"
+addopts = "-q --cov=marim_harness --cov-report=term-missing --cov-report=xml --cov-fail-under=90"
 testpaths = ["tests"]
 markers = [
     # Opt-in tests that hit a real provider over the network and spend money.
