@@ -27,6 +27,12 @@ def _now() -> str:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="marim plugin", add_help=True)
+    # Like ``git -C``: pick the workspace root for project-scoped plugins instead
+    # of the cwd. Global plugins are found regardless. Must precede the subcommand.
+    parser.add_argument(
+        "-C", "--workspace", default=None, metavar="DIR",
+        help="Workspace root for project-scoped plugins (default: current directory).",
+    )
     sub = parser.add_subparsers(dest="cmd")
 
     inst = sub.add_parser("install", help="Install a plugin from a path or git URL.")
@@ -198,7 +204,14 @@ def main(
 ) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
-    ws = Path.cwd()
+    if args.workspace is not None:
+        ws = Path(args.workspace)
+        if not ws.is_dir():
+            print(f"error: not a directory: {args.workspace}", file=err)
+            return 2
+        ws = ws.resolve()
+    else:
+        ws = Path.cwd()
     if args.cmd == "install":
         return _cmd_install(args, ws=ws, out=out, err=err, input_fn=input_fn, now_fn=now_fn)
     if args.cmd == "list":

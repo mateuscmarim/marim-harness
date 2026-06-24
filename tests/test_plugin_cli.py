@@ -105,6 +105,39 @@ def test_install_inert_does_not_prompt(tmp_path, monkeypatch):
     assert code == 0, err
 
 
+def test_workspace_flag_targets_project_scope_off_cwd(tmp_path, monkeypatch):
+    """-C/--workspace picks the workspace root for project-scoped plugins instead
+    of cwd: a project install under one dir is visible via -C from elsewhere."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)  # cwd is NOT the project
+
+    src = tmp_path / "src"
+    _make_source(src, "demo")
+    code, out, err = _run(["-C", str(proj), "install", str(src), "--scope", "project"])
+    assert code == 0, err
+    # Project plugin lives under proj/.marim, not cwd.
+    assert (proj / ".marim" / "plugins" / "demo").exists()
+
+    # From cwd alone (no -C) the project plugin is invisible…
+    code, out, err = _run(["list"])
+    assert "demo" not in out
+    # …but -C surfaces it.
+    code, out, err = _run(["-C", str(proj), "list"])
+    assert "demo" in out
+
+
+def test_workspace_flag_rejects_missing_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.chdir(tmp_path)
+    code, out, err = _run(["-C", str(tmp_path / "nope"), "list"])
+    assert code == 2
+    assert "not a directory" in err
+
+
 def test_install_executable_accept_trust(tmp_path, monkeypatch):
     """Verify that accepting the trust prompt marks an executable plugin as trusted."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
