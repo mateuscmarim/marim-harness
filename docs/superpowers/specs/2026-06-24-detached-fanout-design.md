@@ -85,12 +85,27 @@ the wait-vs-end decision is the agent's, and wake guarantees synthesis either wa
 
 Reuses autonomous wake. The gap: `take_finished_digest()` carries only each job's
 output **tail**, so a naive wake would make the model fire N `job_output` calls to
-gather reports — extra tool calls, mimo's weak spot. For detached-fan-out jobs the
-wake turn instead **inlines the full reports** (bounded by the existing
-`max_output_chars` spill-to-file backstop in `run_background_agent`), framed as:
-*"Your detached sub-agents finished. Here are their reports; produce the combined
-result the user asked for."* One synthesis turn, no extra round-trips. Session
-history supplies the original request for context.
+gather reports. For detached-fan-out jobs the wake turn instead **inlines the full
+reports** (bounded by the existing `max_output_chars` spill-to-file backstop in
+`run_background_agent`), framed as: *"Your detached sub-agents finished. Here are
+their reports; produce the combined result the user asked for."* Session history
+supplies the original request for context.
+
+Two model-independent reasons inlining is preferred over pull-based collection
+(not model capability — this holds regardless of how strong the model is):
+
+- **Request economy.** Pull-based fires N sequential `job_output` requests in the
+  synthesis turn; inlining adds zero extra provider requests. Since this whole
+  feature exists because many requests trip a shared route's upstream rate limit,
+  re-adding N requests at synthesis time partly re-creates the problem.
+- **Completeness.** With the reports present, a synthesis cannot silently omit one
+  because the model enumerated job ids wrong or dropped a `job_output` call —
+  inlining removes the failure mode rather than betting the model avoids it.
+
+Inlining costs nothing here: a synthesis needs all reports anyway (so pull-based
+saves no context — the same N land in context either way), size is already bounded
+by the spill cap, and `job_output` / `wait_for_job` remain available for the agent
+to pull ad-hoc. Inlining is only the *default delivery* for the synthesis wake.
 
 ### 4. The premature-synthesis fix
 
