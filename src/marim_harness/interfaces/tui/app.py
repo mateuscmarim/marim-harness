@@ -534,10 +534,19 @@ class HarnessApp(App):
                 self._queue_seq += 1
                 self._queue.insert(0, QueuedMessage(text, atts, str(self._queue_seq)))
             self._render_queue()
-        if not self._queue_paused and self._queue:
-            await self._drain_next()
-        else:
-            self._maybe_wake()
+        # _after_turn runs from _run_turn's finally; an exception escaping here
+        # would kill the worker before it unwinds cleanly. Draining starts the
+        # next turn (worker scheduling, widget mounts) and the wake path touches
+        # jobs — both can fail. Pause the queue and surface the error rather than
+        # let it propagate out of the finally and strand the session.
+        try:
+            if not self._queue_paused and self._queue:
+                await self._drain_next()
+            else:
+                self._maybe_wake()
+        except Exception as exc:
+            self._queue_paused = True
+            self._append_log(ErrorMessage(f"failed to start next turn: {exc}"))
 
     def _render_queue(self) -> None:
         """Repaint the queue panel from the current queue."""

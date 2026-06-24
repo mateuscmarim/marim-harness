@@ -16,6 +16,20 @@ def test_parse_google_models_skips_row_with_non_list_methods():
     entries = parse_google_models(payload)
     assert [e.id for e in entries] == ["gemini-pro"]
 
+
+def test_parse_google_models_leaves_image_support_unknown():
+    """The Gemini catalog doesn't report input modalities, so supports_images
+    must be None (unknown), not a hardcoded True — matching the ModelEntry
+    contract and the OpenRouter parser's behavior for rows lacking the field."""
+    payload = {
+        "models": [
+            {"name": "models/gemini-pro", "supportedGenerationMethods": ["generateContent"]},
+        ]
+    }
+    entries = parse_google_models(payload)
+    assert entries[0].supports_images is None
+
+
 _SAMPLE = {
     "data": [
         {"id": "anthropic/claude-sonnet-4-6", "name": "Anthropic: Claude Sonnet 4.6"},

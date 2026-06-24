@@ -102,19 +102,71 @@ def _parse_skill(source: str, directory: Path, plugin: str | None = None) -> Ski
     )
 
 
+def _all_skill_roots(workspace_root) -> list[tuple[str, Path, str | None]]:
+    """Discovery roots in precedence order as ``(source, root, plugin)``: user
+    roots (project, then global) first, then plugin roots as ``plugin:name``."""
+    from ..plugins import plugin_skill_roots
+
+    roots: list[tuple[str, Path, str | None]] = [
+        (source, root, None) for source, root in skill_roots(workspace_root)
+    ]
+    roots += [
+        (f"plugin:{name}", root, name) for name, root in plugin_skill_roots(workspace_root)
+    ]
+    return roots
+
+
+# Cache of discovery results keyed by (resolved) workspace root, each tagged with
+# the filesystem signature it was computed from. Mirrors the agents cache: skills
+# are re-walked and re-parsed only when a SKILL.md is added/removed/edited, so the
+# per-turn _skill_index instruction doesn't re-read and re-parse YAML every turn.
+_DISCOVERY_CACHE: dict[str, tuple[tuple, list[Skill]]] = {}
+
+
+def _discovery_signature(roots: list[tuple[str, Path, str | None]]) -> tuple:
+    """A cheap stat-only fingerprint of every candidate skill: each skill dir's
+    name plus its SKILL.md mtime and size. Changes whenever a skill is added,
+    removed, or its SKILL.md edited — so a cache hit skips the read+YAML parse."""
+    sig: list = []
+    for source, root, _plugin in roots:
+        try:
+            dirs = sorted(p for p in root.iterdir() if p.is_dir())
+        except OSError:
+            sig.append((source, str(root), None))
+            continue
+        files = []
+        for d in dirs:
+            try:
+                st = (d / _SKILL_FILE).stat()
+            except OSError:
+                continue
+            files.append((d.name, st.st_mtime_ns, st.st_size))
+        sig.append((source, str(root), tuple(files)))
+    return tuple(sig)
+
+
 def discover_skills(workspace_root) -> list[Skill]:
     """All effective skills for a workspace, deduped by qualified name with the
     first root in precedence order winning, sorted for stable display. User
     roots (bare names) come first, then plugin roots (``plugin:name``), so a
-    user's own skill always beats a plugin's same-named one."""
-    from ..plugins import plugin_skill_roots
+    user's own skill always beats a plugin's same-named one.
+
+    Cached per workspace root and reused while the SKILL.md files on disk are
+    unchanged (by name/mtime/size), so repeated calls within a turn — and across
+    turns that didn't touch a skill — don't re-walk and re-parse them."""
+    roots = _all_skill_roots(workspace_root)
+    sig = _discovery_signature(roots)
+    key = str(Path(workspace_root).resolve())
+    cached = _DISCOVERY_CACHE.get(key)
+    if cached is not None and cached[0] == sig:
+        return cached[1]
 
     seen: dict[str, Skill] = {}
-    for source, root in skill_roots(workspace_root):
-        _collect_skills(seen, source, root, plugin=None)
-    for plugin_name, root in plugin_skill_roots(workspace_root):
-        _collect_skills(seen, f"plugin:{plugin_name}", root, plugin=plugin_name)
-    return sorted(seen.values(), key=lambda s: s.qualified_name)
+    for source, root, plugin in roots:
+        _collect_skills(seen, source, root, plugin=plugin)
+    result = sorted(seen.values(), key=lambda s: s.qualified_name)
+    _DISCOVERY_CACHE[key] = (sig, result)
+    return result
 
 
 def _collect_skills(seen: dict, source: str, root: Path, *, plugin: str | None) -> None:

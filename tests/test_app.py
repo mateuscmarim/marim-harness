@@ -32,6 +32,33 @@ async def test_status_bar_shows_mode(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_after_turn_survives_drain_failure(tmp_path: Path):
+    """_after_turn runs from _run_turn's finally; if starting the next queued
+    turn raises, it must not propagate (which would kill the worker before it
+    unwinds). The queue pauses and the error surfaces instead."""
+    from marim_harness.interfaces.tui.widgets import ErrorMessage
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        async def boom() -> None:
+            raise RuntimeError("drain exploded")
+
+        app._drain_next = boom  # type: ignore[method-assign]
+        app._enqueue("queued message")
+        assert app._queue and not app._queue_paused
+
+        # Must not raise out of _after_turn.
+        await app._after_turn()
+        await pilot.pause()
+
+        assert app._queue_paused is True
+        errors = [w for w in app.query(ErrorMessage)]
+        assert any("failed to start next turn" in str(w.render()) for w in errors)
+
+
+@pytest.mark.anyio
 async def test_resumed_spawn_agent_renders_as_subagent_card(tmp_path: Path):
     """On resume, a foreground spawn_agent call in history rebuilds as a
     SubAgentWidget carrying its final report — not a generic tool widget."""

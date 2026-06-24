@@ -61,14 +61,31 @@ def repo_root(path: Path) -> Path | None:
     return None
 
 
+# Characters git's check-ref-format forbids in a ref component: whitespace,
+# the glob/revision metacharacters, backslash, and ASCII control chars.
+_BRANCH_FORBIDDEN_CHARS = frozenset(" \t~^:?*[\\") | {chr(c) for c in range(32)} | {"\x7f"}
+
+
 def _validate_branch(branch: str) -> None:
-    """Reject empty, leading '-', leading '/', or any '.'/'..'/empty segment.
-    Slashes are otherwise allowed (e.g. 'feat/x')."""
+    """Reject names git itself would refuse, so a worktree branch can't shadow an
+    important ref (``HEAD``, ``refs/heads/main``) or smuggle revision syntax.
+    Rejects: empty, leading '-', any '.'/'..'/empty segment, the literal HEAD,
+    a ``refs/`` prefix, '..'/'@{' sequences, a lone '@', a trailing '.lock' or
+    '.', and the git-forbidden characters above. Slashes are otherwise allowed
+    (e.g. 'feat/x')."""
     segments = branch.split("/")
     if (
         not branch
+        or branch == "HEAD"
+        or branch == "@"
         or branch.startswith("-")
+        or branch.startswith("refs/")
+        or branch.endswith(".lock")
+        or branch.endswith(".")
+        or ".." in branch
+        or "@{" in branch
         or any(seg in ("", ".", "..") for seg in segments)
+        or any(ch in _BRANCH_FORBIDDEN_CHARS for ch in branch)
     ):
         raise WorktreeError(f"invalid branch name: {branch!r}")
 

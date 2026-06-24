@@ -75,7 +75,12 @@ def parse_google_models(payload: dict) -> list[ModelEntry]:
             continue
         model_id = raw_name.removeprefix("models/")
         display = row.get("displayName") or model_id
-        entries.append(ModelEntry(id=model_id, name=display, supports_images=True))
+        # The Gemini /v1beta/models response doesn't report input modalities, so
+        # image support is genuinely unknown here — leave it None rather than
+        # asserting True (the contract on ModelEntry.supports_images is
+        # "True/False when the catalog states it, else None"). None never blocks
+        # submission, same as the OpenRouter parser does for rows lacking the field.
+        entries.append(ModelEntry(id=model_id, name=display, supports_images=None))
     entries.sort(key=lambda e: e.id)
     return entries
 

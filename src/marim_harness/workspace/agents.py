@@ -196,7 +196,9 @@ def discover_agents(workspace_root) -> list[AgentDef]:
     turns that didn't touch an agent file — don't re-walk and re-parse them."""
     roots = _all_roots(workspace_root)
     sig = _discovery_signature(roots)
-    key = str(workspace_root)
+    # Resolve the key so different spellings of the same dir (symlinks, trailing
+    # slash, relative vs absolute) share one cache entry instead of duplicating.
+    key = str(Path(workspace_root).resolve())
     cached = _DISCOVERY_CACHE.get(key)
     if cached is not None and cached[0] == sig:
         return cached[1]

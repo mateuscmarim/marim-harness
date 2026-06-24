@@ -110,7 +110,16 @@ def test_remove_refuses_dirty_worktree(repo: Path):
         wt.remove_worktree(repo, "feat/x")
 
 
-@pytest.mark.parametrize("bad", ["", "-x", "../escape", "/abs", "feat/", "a/../b"])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "", "-x", "../escape", "/abs", "feat/", "a/../b",
+        # Refs that would shadow important git refs, and git-forbidden syntax.
+        "HEAD", "refs/heads/main", "@", "feat@{0}", "a..b",
+        "feat~1", "feat^1", "feat:x", "feat?", "feat*", "feat[x",
+        "feat bar", "branch.lock", "feat/x.lock",
+    ],
+)
 def test_validate_rejects_bad_branches(repo: Path, bad: str):
     with pytest.raises(wt.WorktreeError):
         wt.create_or_reuse_worktree(repo, bad)

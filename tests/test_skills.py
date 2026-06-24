@@ -72,6 +72,24 @@ def test_discover_finds_project_marim_skill(isolated_home):
     assert skills[0].source == "project"
 
 
+def test_discover_skills_caches_until_skill_md_changes(isolated_home):
+    """discover_skills runs every turn (the _skill_index instruction); a cache
+    keyed on a SKILL.md stat-signature must avoid re-parsing on an unchanged
+    tree but pick up an added skill."""
+    ws = isolated_home / "ws"
+    _make_skill(ws / ".marim" / "skills", "alpha", description="Does alpha.")
+    first = discover_skills(ws)
+    # Unchanged tree -> cache hit returns the very same cached list object.
+    assert discover_skills(ws) is first
+    # A differently-spelled but equivalent path must hit the same cache entry.
+    assert discover_skills(ws / "." ) is first
+    # Adding a skill changes the signature and invalidates the cache.
+    _make_skill(ws / ".marim" / "skills", "beta", description="Does beta.")
+    second = discover_skills(ws)
+    assert second is not first
+    assert {s.name for s in second} == {"alpha", "beta"}
+
+
 def test_discover_skips_dir_without_skill_md(isolated_home):
     ws = isolated_home / "ws"
     (ws / ".marim" / "skills" / "empty").mkdir(parents=True)
