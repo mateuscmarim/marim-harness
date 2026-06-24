@@ -895,28 +895,27 @@ def test_edit_file_widget_uses_file_diff_when_text_loaded():
 class _EditHarness(App):
     """Mounts a single edit_file widget; the diff tests drive finish() on it."""
 
-    def __init__(self, args: dict) -> None:
+    def __init__(self, args: dict, workspace_root=None) -> None:
         self._args = args
+        self._workspace_root = workspace_root
         super().__init__()
 
     def compose(self) -> ComposeResult:
-        yield ToolCallWidget("edit_file", self._args)
+        yield ToolCallWidget(
+            "edit_file", self._args, workspace_root=self._workspace_root
+        )
 
 
 @pytest.mark.anyio
 async def test_finish_loads_real_file_and_renders_gutter_diff(tmp_path):
-    """The real path: finish() reads the post-edit file via the app's workspace
+    """The real path: finish() reads the post-edit file via the injected workspace
     root, reconstructs the pre-edit text, and renders a gutter/line-number diff.
-    Exercises _load_diff → fs._safe → read_text → _reverse_edits end to end —
-    the chain every other diff test stubs past."""
-    import types
-
+    Exercises _load_diff → resolve_in_workspace → read_text → _reverse_edits end to
+    end — the chain every other diff test stubs past."""
     (tmp_path / "g.py").write_text("a\nX\nc\n")  # post-edit content on disk
     app = _EditHarness(
-        {"path": "g.py", "edits": [{"old_string": "b", "new_string": "X"}]}
-    )
-    app.harness = types.SimpleNamespace(
-        deps=types.SimpleNamespace(workspace_root=tmp_path)
+        {"path": "g.py", "edits": [{"old_string": "b", "new_string": "X"}]},
+        workspace_root=tmp_path,
     )
     async with app.run_test() as pilot:
         w = app.query_one(ToolCallWidget)
@@ -932,13 +931,9 @@ async def test_finish_loads_real_file_and_renders_gutter_diff(tmp_path):
 async def test_finish_falls_back_when_file_unreadable(tmp_path):
     """If the file can't be read (missing/changed), finish() leaves the simple
     diff in place instead of crashing or blanking — the swallowed-error path."""
-    import types
-
     app = _EditHarness(
-        {"path": "gone.py", "edits": [{"old_string": "b", "new_string": "X"}]}
-    )
-    app.harness = types.SimpleNamespace(
-        deps=types.SimpleNamespace(workspace_root=tmp_path)
+        {"path": "gone.py", "edits": [{"old_string": "b", "new_string": "X"}]},
+        workspace_root=tmp_path,
     )
     async with app.run_test() as pilot:
         w = app.query_one(ToolCallWidget)

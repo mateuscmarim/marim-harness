@@ -1,7 +1,7 @@
 # src/marim_harness/tools/offload.py
 """Offload large tool output to a gitignored file instead of flooding context.
 
-A tool builds its full result (bounded by ``MAX_OUTPUT_BYTES``) and passes it
+A tool builds its full result (bounded by ``MAX_OUTPUT_CHARS``) and passes it
 through :func:`offload_if_large`: small results return inline unchanged; large
 ones are written under ``.marim/output/`` and replaced by a handle + preview the
 agent can page with ``read_file``/``grep``. Mirrors ``fetch``'s offload pattern."""
@@ -11,7 +11,7 @@ from pathlib import Path
 
 _INLINE_CHAR_LIMIT = 50_000      # at/below this, return inline (~12k tokens)
 # Measured in characters (~bytes for ASCII); producers stop collecting here and callers may offload.
-MAX_OUTPUT_BYTES = 5_000_000
+MAX_OUTPUT_CHARS = 5_000_000
 _PREVIEW_LINES = 40
 _OUTPUT_DIR = (".marim", "output")
 
@@ -26,7 +26,7 @@ def _write_handle(content: str, *, kind: str, key: str,
     lines = content.splitlines()
     preview = "\n".join(lines[:_PREVIEW_LINES])
     cap_note = (
-        f"⚠️ Output hit the {MAX_OUTPUT_BYTES:,}-byte ceiling; the file holds what "
+        f"⚠️ Output hit the {MAX_OUTPUT_CHARS:,}-char ceiling; the file holds what "
         "was collected.\n" if capped else ""
     )
     return (

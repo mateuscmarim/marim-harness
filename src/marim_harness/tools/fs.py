@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from pydantic_ai import ModelRetry
 
 from ..workspace.fs import WorkspaceError, resolve_in_workspace
-from .offload import MAX_OUTPUT_BYTES, offload_if_large
+from .offload import MAX_OUTPUT_CHARS, offload_if_large
 
 # When no explicit ``limit`` is given, a read is capped at this many lines so a
 # blind read of a huge file can't flood the context. Pass ``offset``/``limit``
@@ -143,7 +143,7 @@ def _walk_tree(directory: Path, depth: int, level: int, lines: list[str],
                size: list[int]) -> bool:
     """Append the entries of ``directory`` to ``lines``, recursing while depth
     allows. ``size`` is a 1-element running byte total; returns True once the
-    MAX_OUTPUT_BYTES ceiling is reached so callers stop early."""
+    MAX_OUTPUT_CHARS ceiling is reached so callers stop early."""
     try:
         entries = list(directory.iterdir())
     except OSError:
@@ -151,7 +151,7 @@ def _walk_tree(directory: Path, depth: int, level: int, lines: list[str],
     entries.sort(key=lambda p: (p.is_file(), p.name.lower()))
     indent = "  " * level
     for entry in entries:
-        if size[0] >= MAX_OUTPUT_BYTES:
+        if size[0] >= MAX_OUTPUT_CHARS:
             return True
         if entry.is_dir():
             line = f"{indent}{entry.name}/"
@@ -195,7 +195,7 @@ def glob_files(root: Path, pattern: str) -> str:
             continue  # skip matches that escape the workspace root
         matches.append(rel)
         size += len(rel) + 1
-        if size >= MAX_OUTPUT_BYTES:
+        if size >= MAX_OUTPUT_CHARS:
             capped = True
             break
     if not matches:
@@ -238,7 +238,7 @@ def grep(root: Path, pattern: str, path: str | None = None) -> str:
     """Search file contents for a regex, returning `relpath:line:text` hits.
     Skips noise dirs (.git, node_modules, .venv, …) and binary files; large
     result sets are offloaded to a file (handle + preview) instead of flooding the
-    response; collection stops at MAX_OUTPUT_BYTES."""
+    response; collection stops at MAX_OUTPUT_CHARS."""
     rx = re.compile(pattern)
     base = _safe(root, path) if path else root
     out: list[str] = []
@@ -263,7 +263,7 @@ def grep(root: Path, pattern: str, path: str | None = None) -> str:
                         hit = f"{rel}:{i}:{line}"
                         out.append(hit)
                         size += len(hit) + 1
-                        if size >= MAX_OUTPUT_BYTES:
+                        if size >= MAX_OUTPUT_CHARS:
                             capped = True
                             break
         except OSError:

@@ -347,11 +347,13 @@ class Harness:
     ) -> None:
         """Wire the interactive UI's callbacks into the harness in one place.
 
-        The TUI app calls this once at construction instead of reaching into
-        ``harness.deps`` / ``harness.deps.tasks`` / ``harness.deps.jobs`` /
-        ``harness.session`` field by field. Headless never calls it: the
-        callbacks stay ``None`` and every reader guards with an ``is None``
-        check.
+        The TUI app calls this once at construction so the *callback* wiring
+        (approval, ask_user, on_change/on_compact/on_rename hooks) lives here
+        rather than being assigned field-by-field across the interface layer.
+        It does NOT forbid the interface from *reading* harness state: the TUI
+        still reads e.g. ``deps.tasks.items`` and ``deps.jobs.list()`` directly
+        when rendering. Headless never calls this: the callbacks stay ``None``
+        and every reader guards with an ``is None`` check.
         """
         self.deps.request_approval = request_approval
         self.deps.ask_user = ask_user

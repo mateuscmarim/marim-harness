@@ -34,9 +34,15 @@ class ToolCallWidget(Collapsible):
     """A single tool call: the (clickable) title shows a summary line; expanding
     reveals the arguments and the result."""
 
-    def __init__(self, tool_name: str, args: dict) -> None:
+    def __init__(
+        self, tool_name: str, args: dict, *, workspace_root: Path | None = None
+    ) -> None:
         self.tool_name = tool_name
         self.args = args
+        # Where edit_file paths resolve, injected by the renderer (which holds the
+        # app) so this leaf widget never reaches back through app.harness.deps.
+        # None ⇒ the diff falls back to the simple old/new-string view.
+        self._workspace_root = workspace_root
         self.status = "pending"
         self.result_text = ""
         # Show edit diffs uncapped (Ctrl+O / "reveal all" flips this on).
@@ -144,17 +150,16 @@ class ToolCallWidget(Collapsible):
 
     def _load_diff(self) -> None:
         """Read the just-edited file and reconstruct its pre-edit text so the body
-        can render a real diff. Best-effort: any failure (no app context, unreadable
-        file, ambiguous reversal) leaves ``_old_text``/``_new_text`` None and the
-        simple diff in place."""
-        try:
-            root = self.app.harness.deps.workspace_root  # type: ignore[attr-defined]
-        except Exception:
+        can render a real diff. Best-effort: any failure (no workspace root,
+        unreadable file, ambiguous reversal) leaves ``_old_text``/``_new_text``
+        None and the simple diff in place."""
+        root = self._workspace_root
+        if root is None:
             return
-        from ....tools import fs
+        from ....workspace.fs import resolve_in_workspace
 
         try:
-            path = fs._safe(root, str(self.args.get("path", "")))
+            path = resolve_in_workspace(root, str(self.args.get("path", "")))
             new_text = path.read_text(encoding="utf-8")
         except Exception:
             return

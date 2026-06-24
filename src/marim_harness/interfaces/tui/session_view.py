@@ -88,7 +88,10 @@ class SessionView:
                             await log.mount(widget)
                             self.app.stream.append_stream(widget.body, part.content)
                     elif isinstance(part, ToolCallPart):
-                        widget = ToolCallWidget(part.tool_name, part.args_as_dict())
+                        widget = ToolCallWidget(
+                            part.tool_name, part.args_as_dict(),
+                            workspace_root=self.app.harness.deps.workspace_root,
+                        )
                         tool_widgets[part.tool_call_id] = widget
                         group, solo = await self.app.stream.add_tool_to_run(
                             widget, log, group, solo

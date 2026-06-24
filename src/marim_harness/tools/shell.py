@@ -4,7 +4,7 @@ import os
 import signal
 from pathlib import Path
 
-from .offload import MAX_OUTPUT_BYTES, offload_if_large
+from .offload import MAX_OUTPUT_CHARS, offload_if_large
 
 _DEFAULT_TIMEOUT = 30
 _DEFAULT_MAX_OUTPUT = 20_000
@@ -129,8 +129,8 @@ class BashProcess:
                 self._buffer.append(chunk.decode(errors="replace"))
         await self._proc.wait()
         text = "".join(self._buffer)
-        if len(text) > MAX_OUTPUT_BYTES:
-            text = text[:MAX_OUTPUT_BYTES]
+        if len(text) > MAX_OUTPUT_CHARS:
+            text = text[:MAX_OUTPUT_CHARS]
             capped = True
         else:
             capped = False

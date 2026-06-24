@@ -102,6 +102,37 @@ def test_save_memory_upserts_index_no_duplicate(tmp_path: Path):
     assert "b2" in (sc.root / "build-tool.md").read_text()
 
 
+def test_upsert_index_does_not_clobber_entry_whose_hook_links_elsewhere(tmp_path: Path):
+    """A substring match (``](slug.md) in raw``) replaced the wrong line when
+    another entry's hook text linked to ``slug.md``. Anchor to the entry's own
+    link so only the real ``slug`` line is refreshed."""
+    sc = memory.project_scope(tmp_path)
+    sc.root.mkdir(parents=True, exist_ok=True)
+    (sc.root / "MEMORY.md").write_text(
+        "# Memory Index\n"
+        "- [Build](build.md) — see [[auth]] at [link](auth.md) for the token flow\n",
+        encoding="utf-8",
+    )
+    memory._upsert_index_line(sc, slug="auth", title="Auth", hook="how login works")
+    index = (sc.root / "MEMORY.md").read_text()
+    # The build entry, whose hook merely mentions auth.md, is left intact …
+    assert "- [Build](build.md) — see [[auth]] at [link](auth.md) for the token flow" in index
+    # … and the real auth entry is appended as its own line.
+    assert "- [Auth](auth.md) — how login works" in index
+
+
+def test_upsert_index_still_refreshes_the_matching_entry(tmp_path: Path):
+    sc = memory.project_scope(tmp_path)
+    sc.root.mkdir(parents=True, exist_ok=True)
+    (sc.root / "MEMORY.md").write_text(
+        "# Memory Index\n- [Auth](auth.md) — old hook\n", encoding="utf-8"
+    )
+    memory._upsert_index_line(sc, slug="auth", title="Auth", hook="new hook")
+    index = (sc.root / "MEMORY.md").read_text()
+    assert index.count("(auth.md)") == 1
+    assert "new hook" in index and "old hook" not in index
+
+
 def test_save_memory_index_line_carries_hook(tmp_path: Path):
     sc = memory.project_scope(tmp_path)
     memory.save_memory(

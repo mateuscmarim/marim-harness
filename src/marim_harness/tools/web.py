@@ -22,6 +22,13 @@ async def web_search(
     10, max 50)."""
     max_results = min(max(max_results, 1), 50)
 
+    # NOTE: egress here is intentionally NOT IP-pinned the way fetch.py is — this
+    # talks to a single trusted, configured SearXNG instance, not an arbitrary
+    # model-supplied URL. The results, however, ARE attacker-controlled (titles,
+    # snippets, and especially `url`s the model may then pass to fetch_url). That
+    # fetch_url hop is the prompt-injection boundary and is hardened there; keep
+    # this in mind before making `base_url` model-controlled (it would become an
+    # SSRF vector without fetch.py-style validation).
     params: dict = {"q": query, "format": "json"}
     if categories:
         params["categories"] = categories

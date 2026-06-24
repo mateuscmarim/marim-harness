@@ -429,7 +429,10 @@ class StreamRenderer:
             if await sink.intercept_tool(event, args):
                 return
             sink.on_tool(event.part.tool_name)  # live title status
-            widget = ToolCallWidget(event.part.tool_name, args)
+            widget = ToolCallWidget(
+                event.part.tool_name, args,
+                workspace_root=self.app.harness.deps.workspace_root,
+            )
             self.tool_widgets[event.part.tool_call_id] = widget
             group, solo = sink.get_run()
             group, solo = await self.add_tool_to_run(

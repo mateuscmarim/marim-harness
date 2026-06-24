@@ -22,12 +22,6 @@ class CommandAutocomplete(Static):
             self.command_name = command_name
             super().__init__()
 
-    class Dismissed(Message):
-        """Posted when the widget is dismissed (Escape or empty results)."""
-
-        def __init__(self) -> None:
-            super().__init__()
-
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._options: list[tuple[str, str, str]] = []  # (name, display, canonical)
@@ -79,9 +73,4 @@ class CommandAutocomplete(Static):
             name = self._options[idx][0]
             self.visible = False
             self.post_message(self.CommandSelected(name))
-
-    def dismiss(self) -> None:
-        """Hide the dropdown and post Dismissed."""
-        self.visible = False
-        self.post_message(self.Dismissed())
 

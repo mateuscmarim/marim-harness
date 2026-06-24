@@ -5,6 +5,18 @@ import pytest
 from marim_harness.jobs import Job, JobRegistry, render_jobs
 
 
+async def _settled(reg: JobRegistry, *, tries: int = 400) -> None:
+    """Poll until every job has left the 'running' state, yielding to the loop so
+    the background tasks settle — without consuming results via wait() (the digest
+    must still observe them). Replaces fixed ``asyncio.sleep`` waits that could
+    assert before a job finished on a loaded CI runner."""
+    for _ in range(tries):
+        if all(j.status != "running" for j in reg.list()):
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError("jobs did not reach a terminal state in time")
+
+
 @pytest.mark.anyio
 async def test_register_returns_id_and_tracks_running():
     reg = JobRegistry()
@@ -151,7 +163,7 @@ async def test_finished_digest_lists_completed_then_clears():
     reg = JobRegistry()
     reg.register("bash", "build", _sleep_then("ok", 0.01))
     reg.register("agent", "explore: map", _sleep_then("r", 0.01))
-    await asyncio.sleep(0.05)  # let both finish without consuming via wait()
+    await _settled(reg)
     digest = reg.take_finished_digest()
     assert "job-1 (bash) done" in digest
     assert "job-2 (agent) done" in digest
@@ -179,7 +191,7 @@ async def test_finished_digest_includes_result_tail():
         + "\n=== 717 passed in 12.3s ==="
     )
     reg.register("bash", "tests", _sleep_then(result, 0.01))
-    await asyncio.sleep(0.1)  # let it finish without consuming the digest
+    await _settled(reg)
     digest = reg.take_finished_digest()
     assert "job-1 (bash) done" in digest
     assert "717 passed in 12.3s" in digest  # the verdict (tail) is inline
@@ -192,7 +204,7 @@ async def test_finished_digest_caps_result_tail():
     reg = JobRegistry()
     result = "x" * 5000 + "VERDICT-END"
     reg.register("bash", "big", _sleep_then(result, 0.01))
-    await asyncio.sleep(0.1)  # let it finish without consuming the digest
+    await _settled(reg)
     digest = reg.take_finished_digest()
     assert "VERDICT-END" in digest  # tail kept
     assert len(digest) < 1000  # bounded, not the full 5000-char result
@@ -208,7 +220,7 @@ async def test_finished_digest_includes_cancelled_and_failed():
         raise ValueError("nope")
 
     reg.register("agent", "broken", boom())
-    await asyncio.sleep(0.1)  # let it finish without consuming the digest
+    await _settled(reg)
     digest = reg.take_finished_digest()
     assert "job-1 (bash) cancelled" in digest
     assert "job-2 (agent) failed" in digest
@@ -249,7 +261,7 @@ async def test_has_finished_pending_reflects_set_without_consuming():
     assert reg.has_finished_pending() is False
     reg.register("agent", "a", _sleep_then("R", 0.01))
     assert reg.has_finished_pending() is False  # still running
-    await asyncio.sleep(0.1)  # let it finish without consuming via wait()
+    await _settled(reg)
     # Finished -> pending, and checking it does NOT drain the digest.
     assert reg.has_finished_pending() is True
     assert reg.has_finished_pending() is True  # non-consuming
@@ -280,7 +292,7 @@ async def test_wait_already_finished_consumes_digest():
     """wait on an already-finished job also marks as wake-consumed."""
     reg = JobRegistry()
     job_id = reg.register("bash", "echo", _sleep_then("done", 0.01))
-    await asyncio.sleep(0.1)  # let it finish
+    await _settled(reg)
     assert reg.has_finished_pending() is True
     result = await reg.wait(job_id)
     assert result == "done"
@@ -296,7 +308,7 @@ async def test_output_marks_finished_job_consumed():
     turn — the agent already has the result. The digest is preserved."""
     reg = JobRegistry()
     job_id = reg.register("agent", "review", _sleep_then("all tests pass", 0.01))
-    await asyncio.sleep(0.1)  # let it finish
+    await _settled(reg)
     assert reg.has_finished_pending() is True
     assert reg.output(job_id, mark_seen=True) == "all tests pass"
     assert reg.has_finished_pending() is False  # wake-consumed
@@ -309,7 +321,7 @@ async def test_output_without_mark_seen_leaves_wake_pending():
     the agent still hasn't reacted, so its wake should still fire."""
     reg = JobRegistry()
     job_id = reg.register("agent", "review", _sleep_then("done", 0.01))
-    await asyncio.sleep(0.1)  # let it finish
+    await _settled(reg)
     assert reg.output(job_id) == "done"  # default: mark_seen=False
     assert reg.has_finished_pending() is True  # wake still pending
 
@@ -321,7 +333,7 @@ async def test_output_on_running_job_does_not_consume():
     reg = JobRegistry()
     job_id = reg.register("agent", "slow", _sleep_then("R", 0.2))
     reg.output(job_id, mark_seen=True)  # still running -> nothing to consume
-    await asyncio.sleep(0.3)  # now it finishes (unseen result)
+    await _settled(reg)  # now it finishes (unseen result)
     assert reg.has_finished_pending() is True
 
 

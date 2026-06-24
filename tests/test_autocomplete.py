@@ -125,29 +125,6 @@ async def test_filter_alias_cost():
 
 
 @pytest.mark.anyio
-async def test_dismiss_hides_and_posts_message():
-    dismissed = []
-
-    class DApp(App):
-        def compose(self) -> ComposeResult:
-            yield CommandAutocomplete()
-
-        def on_command_autocomplete_dismissed(self, _):
-            dismissed.append(True)
-
-    app = DApp()
-    async with app.run_test() as pilot:
-        ac = app.query_one(CommandAutocomplete)
-        ac.filter("help")
-        await pilot.pause()
-        assert ac.visible is True
-        ac.dismiss()
-        await pilot.pause()
-        assert ac.visible is False
-        assert dismissed == [True]
-
-
-@pytest.mark.anyio
 async def test_select_posts_command_selected():
     app = _AcApp()
     async with app.run_test() as pilot:

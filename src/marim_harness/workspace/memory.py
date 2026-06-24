@@ -97,12 +97,17 @@ def _upsert_index_line(scope: MemoryScope, *, slug: str, title: str, hook: str) 
     preserving every other line and never duplicating an entry."""
     path = scope.root / _INDEX_FILE
     line = f"- [{title}]({slug}.md) — {hook}"
-    target = f"]({slug}.md)"
+    # Match this entry by its OWN link target — the first `](…md)` of an index
+    # line — not by a bare substring. A plain ``"](slug.md)" in raw`` test would
+    # also fire on a *different* entry whose hook text happens to mention
+    # ``slug.md`` (e.g. "see [link](auth.md)"), clobbering the wrong line.
+    entry_link = re.compile(r"^- \[.*?\]\((?P<slug>[^)]+)\.md\)")
 
     existing = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
     new_lines, replaced = [], False
     for raw in existing:
-        if target in raw:
+        m = entry_link.match(raw)
+        if m and m.group("slug") == slug:
             new_lines.append(line)
             replaced = True
         else:
