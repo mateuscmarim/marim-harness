@@ -100,20 +100,20 @@ class _GroupHarness(App):
 
 
 @pytest.mark.anyio
-async def test_tool_group_starts_collapsed():
-    """A group only ever holds a burst (2+ calls), so it's born collapsed — a lone
-    call is left bare by the caller and never reaches a group."""
+async def test_tool_group_starts_expanded():
+    """A group starts expanded while calls are in flight — it folds to a one-line
+    summary only after every child finishes."""
     app = _GroupHarness()
     async with app.run_test() as pilot:
         g = app.query_one(ToolGroupWidget)
         await pilot.pause()
-        assert g.collapsed is True
+        assert g.collapsed is False
 
 
 @pytest.mark.anyio
 async def test_tool_group_summarizes_a_burst():
-    """Two-or-more consecutive calls fold to one line; the title summarizes the
-    batch (total + per-tool breakdown) and stays collapsed."""
+    """Two-or-more consecutive calls fold to one humanized line; the title uses
+    friendly verbs (Read, Grep) with a multiplier when the same tool repeats."""
     app = _GroupHarness()
     async with app.run_test() as pilot:
         g = app.query_one(ToolGroupWidget)
@@ -121,11 +121,12 @@ async def test_tool_group_summarizes_a_burst():
         await g.add_tool(ToolCallWidget("read_file", {"path": "b.py"}))
         await g.add_tool(ToolCallWidget("grep", {"pattern": "x"}))
         await pilot.pause()
-        assert g.collapsed is True
+        # Still open while children are running.
+        assert g.collapsed is False
         title = str(g.title)
         assert "3 tools" in title
-        assert "read_file ×2" in title
-        assert "grep" in title
+        assert "Read ×2" in title
+        assert "Grep" in title
         assert len(g.query(ToolCallWidget)) == 3
 
 

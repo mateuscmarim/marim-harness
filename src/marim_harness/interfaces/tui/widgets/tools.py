@@ -4,6 +4,7 @@ file tools — an inline diff for ``edit_file``, highlighted content for
 ``write_file``/``read_file``."""
 
 import re
+import time
 from pathlib import Path
 
 from rich.console import RenderableType
@@ -12,10 +13,10 @@ from textual.containers import Vertical
 from textual.content import Content
 from textual.widgets import Collapsible, Static
 
-from ..status import _SPINNER, _SPINNER_TICK_INTERVAL
+from ..status import _SPINNER, _SPINNER_TICK_INTERVAL, format_duration
 from .diff import _DIFF_CAP, _reverse_edits, render_edit_diff, render_file_diff
 from .highlight import _LEXERS, _highlight_lines, strip_line_numbers
-from .tool_summary import summarize
+from .tool_summary import humanize_tool, summarize
 
 # The bash tool prefixes its result with "exit N" (inline) or carries it as the
 # first preview line of an offloaded result — a non-zero N is a failed command.
@@ -232,27 +233,48 @@ class ToolGroupWidget(Collapsible):
 
     A group is only created once a run has two-or-more calls — a lone call stays a
     bare ToolCallWidget, since wrapping one tool adds a redundant header and an
-    extra click for no grouping benefit. Starts collapsed for that reason."""
+    extra click for no grouping benefit. Starts expanded while the run is live and
+    folds to a one-line summary once every child finishes."""
 
     def __init__(self) -> None:
         # Insertion-ordered count per tool name, for the title breakdown.
         self._counts: dict[str, int] = {}
+        self._finished = 0
+        self._any_failed = False
+        self._t0 = time.monotonic()
+        self._t_end: float | None = None
         self.body = Vertical(classes="tool-group-body")
-        # title is a Content (not str) on purpose — see _summary.
+        # Open while the run is in flight (live rows visible); folds on finish.
         super().__init__(
-            self.body, title=self._summary(), collapsed=True  # pyright: ignore[reportArgumentType]
+            self.body, title=self._summary(), collapsed=False  # pyright: ignore[reportArgumentType]
         )
 
     def _summary(self) -> Content:
         total = sum(self._counts.values())
         label = "1 tool" if total == 1 else f"{total} tools"
-        # "read_file ×3 · grep" — only show the multiplier when it repeats.
-        parts = [f"{name} ×{n}" if n > 1 else name for name, n in self._counts.items()]
+        # "Read ×3 · Grep" — humanized, multiplier only when it repeats.
+        parts = [
+            f"{humanize_tool(n)} ×{c}" if c > 1 else humanize_tool(n)
+            for n, c in self._counts.items()
+        ]
         breakdown = " · ".join(parts)
         text = f"≡ {label} · {breakdown}" if breakdown else f"≡ {label}"
+        if self._t_end is not None:
+            text = f"{text} · {format_duration(self._t_end - self._t0)}"
         # Tool names are our own literals, but bypass markup parsing anyway for
         # consistency with the other Collapsible titles in this module.
         return Content(text)
+
+    def note_child_finished(self, failed: bool = False) -> None:
+        """A child call reached a terminal status. Once every child is done, freeze
+        the duration into the header and fold the group — unless a child failed, in
+        which case stay open so the error stays visible."""
+        self._finished += 1
+        self._any_failed = self._any_failed or failed
+        if self._finished >= sum(self._counts.values()):
+            self._t_end = time.monotonic()
+            self.title = self._summary()
+            self.collapsed = not self._any_failed
 
     async def add_tool(self, widget: ToolCallWidget) -> None:
         """Mount a tool call into the group and refresh the summary line. The

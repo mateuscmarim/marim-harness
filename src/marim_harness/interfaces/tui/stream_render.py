@@ -341,6 +341,15 @@ class StreamRenderer:
             log.anchor()
             self._anchored_on_overflow = True
 
+    def _group_of(self, widget) -> ToolGroupWidget | None:
+        """The ToolGroupWidget a tool widget lives in, if any (its body's parent)."""
+        node = widget.parent
+        while node is not None:
+            if isinstance(node, ToolGroupWidget):
+                return node
+            node = node.parent
+        return None
+
     async def add_tool_to_run(
         self,
         widget: ToolCallWidget,
@@ -488,4 +497,10 @@ class StreamRenderer:
                 ):
                     status = "failed"
                 widget.finish(content, status=status)
+                if isinstance(widget, ToolCallWidget):
+                    group = self._group_of(widget)
+                    if group is not None:
+                        # Read widget.status *after* finish() so a bash non-zero
+                        # exit (self-flipped to "failed" inside finish) is detected.
+                        group.note_child_finished(failed=widget.status == "failed")
             sink.on_result(event)

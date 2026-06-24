@@ -2236,6 +2236,86 @@ async def test_tool_result_still_resolves_widget_inside_a_group(tmp_path: Path):
         assert "marim-green" in app.available_themes
 
 
+@pytest.mark.anyio
+async def test_tool_group_folds_to_summary_when_all_children_finish():
+    from textual.app import App
+
+    from marim_harness.interfaces.tui.widgets import ToolCallWidget, ToolGroupWidget
+
+    class _A(App):
+        def compose(self):
+            yield ToolGroupWidget()
+
+    app = _A()
+    async with app.run_test():
+        g = app.query_one(ToolGroupWidget)
+        a = ToolCallWidget("read_file", {"path": "a.py"})
+        b = ToolCallWidget("read_file", {"path": "b.py"})
+        await g.add_tool(a)
+        await g.add_tool(b)
+        # Header humanizes names with a multiplier; open while running.
+        assert "Read ×2" in g.title.plain
+        assert g.collapsed is False
+        g.note_child_finished()
+        assert g.collapsed is False  # one child still pending
+        g.note_child_finished()
+        assert g.collapsed is True  # all done → fold
+        assert "·" in g.title.plain  # duration appended
+
+
+@pytest.mark.anyio
+async def test_tool_group_with_failed_child_stays_open():
+    from textual.app import App
+
+    from marim_harness.interfaces.tui.widgets import ToolCallWidget, ToolGroupWidget
+
+    class _A(App):
+        def compose(self):
+            yield ToolGroupWidget()
+
+    app = _A()
+    async with app.run_test():
+        g = app.query_one(ToolGroupWidget)
+        await g.add_tool(ToolCallWidget("bash", {"command": "false"}))
+        await g.add_tool(ToolCallWidget("read_file", {"path": "a.py"}))
+        g.note_child_finished(failed=True)
+        g.note_child_finished()
+        assert g.collapsed is False  # an error must stay visible
+
+
+@pytest.mark.anyio
+async def test_tool_group_stays_open_when_bash_exits_nonzero(tmp_path: Path):
+    """A bash call that exits non-zero self-flips its status to 'failed' inside
+    finish(); the group must still detect the failure and stay open."""
+    from pydantic_ai.messages import FunctionToolResultEvent, ToolReturnPart
+
+    from marim_harness.interfaces.tui.widgets import ToolGroupWidget
+
+    async def gen():
+        yield _call("bash", "c1")
+        yield _call("bash", "c2")
+        yield FunctionToolResultEvent(
+            part=ToolReturnPart(
+                tool_name="bash", content="exit 1\ncommand not found", tool_call_id="c1"
+            )
+        )
+        yield FunctionToolResultEvent(
+            part=ToolReturnPart(
+                tool_name="bash", content="exit 1\nsomething failed", tool_call_id="c2"
+            )
+        )
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.stream.on_events(None, gen())
+        await pilot.pause()
+        groups = list(app.query(ToolGroupWidget))
+        assert len(groups) == 1
+        # The group must stay open because children failed.
+        assert groups[0].collapsed is False
+
+
 def _done(value: str):
     """A coroutine that resolves immediately to ``value`` — a finished job body."""
     async def coro():
