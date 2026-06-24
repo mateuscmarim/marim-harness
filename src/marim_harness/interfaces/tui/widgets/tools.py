@@ -74,6 +74,21 @@ class ToolCallWidget(Collapsible):
             expanded_symbol="" if self._breadcrumb else "▼",
             classes="tool-breadcrumb" if self._breadcrumb else None,
         )
+        # The breadcrumb is a plain status line, not a fold: drop the title's
+        # focusability so it can't take Tab focus or show the focus accent. The
+        # toggle itself is swallowed in _on_collapsible_title_toggle, so a click
+        # or Enter can't open it onto its (empty) body either.
+        if self._breadcrumb:
+            self._title.can_focus = False
+
+    def _on_collapsible_title_toggle(self, event) -> None:
+        """Swallow the breadcrumb's toggle so a click/Enter can't expand it onto an
+        empty body — it's a status line, not a fold. Every other tool keeps the
+        default collapse behavior."""
+        if self._breadcrumb:
+            event.stop()
+            return
+        super()._on_collapsible_title_toggle(event)
 
     def _glyph(self) -> tuple[str, str]:
         """The status glyph and its style: an animated spinner while pending (so

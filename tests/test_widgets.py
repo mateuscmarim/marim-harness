@@ -184,6 +184,40 @@ async def test_update_tasks_renders_as_a_flat_breadcrumb():
         assert "✓" in str(w.title)  # done glyph
 
 
+@pytest.mark.anyio
+async def test_update_tasks_breadcrumb_is_inert():
+    """The breadcrumb is a status line, not a fold: its title can't take focus and a
+    toggle (what a click or Enter routes to this handler) is swallowed, so it never
+    opens onto its empty body."""
+    from textual.widgets._collapsible import CollapsibleTitle
+
+    app = _TaskHarness()
+    async with app.run_test() as pilot:
+        w = app.query_one(ToolCallWidget)
+        await pilot.pause()
+        assert w.collapsed is True
+        assert w._title.can_focus is False  # can't be Tab-focused / Enter-toggled
+        # The handler a click/Enter reaches is a no-op for the breadcrumb.
+        w._on_collapsible_title_toggle(CollapsibleTitle.Toggle())
+        assert w.collapsed is True
+
+
+@pytest.mark.anyio
+async def test_normal_tool_still_toggles():
+    """Swallowing the breadcrumb's toggle must not break the default: a regular
+    tool card still expands through the same handler."""
+    from textual.widgets._collapsible import CollapsibleTitle
+
+    app = _Harness()  # a read_file card (collapsed by default)
+    async with app.run_test() as pilot:
+        w = app.query_one(ToolCallWidget)
+        await pilot.pause()
+        assert w.collapsed is True
+        assert w._title.can_focus is True  # normal tools stay interactive
+        w._on_collapsible_title_toggle(CollapsibleTitle.Toggle())
+        assert w.collapsed is False
+
+
 def test_strip_line_numbers():
     raw = "1\tdef greet():\n2\t    return 1\n3\t"
     assert strip_line_numbers(raw) == "def greet():\n    return 1\n"
