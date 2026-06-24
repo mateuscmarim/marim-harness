@@ -1184,6 +1184,7 @@ async def test_detached_card_fills_failed_when_job_fails(tmp_path: Path):
         card = app.stream.tool_widgets.get("s1")
         assert isinstance(card, SubAgentWidget)
         assert card.status == "failed"
+        assert "upstream 500" in card.report  # the failure text lands on the card
 
 
 @pytest.mark.anyio
