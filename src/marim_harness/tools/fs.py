@@ -69,8 +69,8 @@ def write_file(root: Path, path: str, content: str) -> str:
     """Create or overwrite a file relative to the workspace root."""
     p = _safe(root, path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(content)
-    return f"wrote {path} ({len(content)} bytes)"
+    n = p.write_text(content)  # returns the number of characters written
+    return f"wrote {path} ({len(content.encode('utf-8'))} bytes, {n} chars)"
 
 
 class Edit(BaseModel):

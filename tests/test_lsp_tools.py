@@ -136,7 +136,7 @@ async def test_edit_no_diagnostics_block_when_clean(tmp_path):
 async def test_write_without_lsp_is_unchanged(tmp_path):
     ctx = _Ctx(Deps(workspace_root=tmp_path, services=HarnessServices(lsp=None)))
     out = await provider.write_file(ctx, "n.py", "z = 3\n")
-    assert out == "wrote n.py (6 bytes)"
+    assert out == "wrote n.py (6 bytes, 6 chars)"
 
 
 @pytest.mark.anyio
@@ -149,7 +149,7 @@ async def test_diagnostics_exception_returns_unchanged_result(tmp_path):
     ctx = _Ctx(Deps(workspace_root=tmp_path, services=HarnessServices(lsp=_FailingLsp())))
     out = await provider.write_file(ctx, "n.py", "z = 3\n")
     # No diagnostics block; result unchanged
-    assert out == "wrote n.py (6 bytes)"
+    assert out == "wrote n.py (6 bytes, 6 chars)"
     assert "boom" not in out
 
 

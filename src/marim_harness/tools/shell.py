@@ -81,6 +81,10 @@ async def run_bash(
     text = b"".join(chunks).decode(errors="replace")
     body = f"exit {proc.returncode}\n{text}"
     if timed_out:
+        # Separate the marker from the last line of output so it can't glom onto
+        # it (e.g. "...last line(timed out after 30s)").
+        if body and not body.endswith("\n"):
+            body += "\n"
         body += f"(timed out after {timeout}s)"
     return offload_if_large(body, kind="bash", key=command,
                             workspace_root=root, capped=False)
