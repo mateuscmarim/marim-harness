@@ -9,6 +9,7 @@ from pydantic_ai.models.function import FunctionModel
 
 from marim_harness.deps import Deps
 from marim_harness.permissions import Mode
+from marim_harness.tools.provider import _DETACH_OUTPUT_BUDGET
 from tests.conftest import _last_instructions, _make_harness
 
 
@@ -55,3 +56,30 @@ async def test_inline_when_not_interactive(tmp_path: Path):
     harness.deps.interactive = False
     await harness.run_turn("go")
     assert harness.deps.jobs.list() == []
+
+
+@pytest.mark.anyio
+async def test_auto_detach_defaults_output_budget(tmp_path: Path):
+    """When spawn_agent is auto-detached and the model passes no max_output_chars,
+    run_background_agent must receive _DETACH_OUTPUT_BUDGET (not None), so the
+    report is distilled + hard-capped before landing in the digest."""
+    recorded: list = []
+
+    async def _stub_background(
+        type: str, task: str, mcp_names, max_output_chars, model, isolation
+    ) -> str:
+        recorded.append(max_output_chars)
+        return "ok"
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    harness = _make_harness(_spawn_once_model(), deps)
+    harness.deps.detach_fanout = True
+    harness.deps.interactive = True
+    harness.deps.services.run_background_agent = _stub_background
+
+    await harness.run_turn("go")
+
+    assert len(recorded) == 1, "run_background_agent was not called exactly once"
+    assert recorded[0] == _DETACH_OUTPUT_BUDGET, (
+        f"expected max_output_chars={_DETACH_OUTPUT_BUDGET}, got {recorded[0]}"
+    )

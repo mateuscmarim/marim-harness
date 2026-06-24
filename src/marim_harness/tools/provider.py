@@ -22,6 +22,11 @@ from .names import GATED_TOOLS, LSP_TOOLS, NET_TOOLS, READ_TOOLS, SUBAGENT_TOOLS
 
 _BASH_TIMEOUT = 60
 
+# Default output budget for auto-detached spawns (≈3k tokens/report) — keeps a
+# wide fan-out's synthesis prompt bounded while preserving the full report in the
+# spill file. Only applied when the model did not pass an explicit max_output_chars.
+_DETACH_OUTPUT_BUDGET = 12000
+
 _ASK_USER_EMPTY = "ask_user needs at least one question, each with at least one option."
 _ASK_USER_NO_UI = (
     "Can't ask the user — no interactive UI here. Proceed with your best judgment."
@@ -309,8 +314,8 @@ def _detach_handoff(job_id: str) -> str:
     """The return for an auto-detached spawn: tell the agent it's running in the
     background and that it may end its turn (wake will deliver the report) or wait."""
     return (
-        f"Started detached sub-agent {job_id}, running in the background "
-        f"(concurrency-capped). End your turn to let it run — its report will be "
+        f"Started detached sub-agent {job_id}, running in the background. "
+        f"End your turn to let it run — its report will be "
         f"delivered to you when it finishes — or wait_for_job(\"{job_id}\") if you "
         f"need the result in this turn. For a fan-out, ending the turn is better."
     )
@@ -388,11 +393,17 @@ async def spawn_agent(
     if background or auto_detached:
         if ctx.deps.services.run_background_agent is None:
             return "Background sub-agents are not available in this context."
+        # For auto-detached spawns, default to _DETACH_OUTPUT_BUDGET when the
+        # model did not pass an explicit cap — keeps the synthesis prompt bounded
+        # across a wide fan-out while the full report is preserved in the spill file.
+        budget = (
+            max_output_chars if max_output_chars is not None else _DETACH_OUTPUT_BUDGET
+        ) if auto_detached else max_output_chars
         label = f"{type}: {task}"
         job_id = ctx.deps.jobs.register(
             "agent", label,
             ctx.deps.services.run_background_agent(
-                type, task, mcp_names, max_output_chars, model, isolation
+                type, task, mcp_names, budget, model, isolation
             ),
         )
         if auto_detached:

@@ -249,8 +249,10 @@ class JobRegistry:
                 continue
             if job.kind == "agent" and job.status == "done" and job.result:
                 # Inline the whole report so the synthesis turn needs no extra
-                # job_output round-trips. Size is bounded upstream by the spawn's
-                # max_output_chars cap (already applied before the result lands).
+                # job_output round-trips. Size is conditionally bounded: the
+                # auto-detach path defaults a budget so those reports are capped +
+                # spilled before the result lands here; an explicit background=True
+                # spawn with no max_output_chars is inlined in full.
                 parts.append(
                     f"{job.id} ({job.kind}) {job.status} — full report:\n{job.result}"
                 )
