@@ -314,7 +314,7 @@ class HarnessApp(App):
         self._turn_worker = self.run_worker(self._run_turn(""), exclusive=True)
 
     def action_cycle_mode(self) -> None:
-        self.harness.deps.mode = self.harness.deps.mode.cycle()
+        self.harness.cycle_mode()
         self.status.refresh_status()
 
     def action_toggle_outputs(self) -> None:

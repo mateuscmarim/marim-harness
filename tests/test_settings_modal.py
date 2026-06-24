@@ -19,7 +19,7 @@ def isolated_env():
 def _fake_harness():
     from types import SimpleNamespace
 
-    return SimpleNamespace(
+    h = SimpleNamespace(
         deps=SimpleNamespace(mode=Mode.auto),
         model_label="openrouter/x",
         model_id="x",
@@ -31,6 +31,8 @@ def _fake_harness():
             mcp_status={"connected": [], "failed": []},
         ),
     )
+    h.set_mode = lambda mode: setattr(h.deps, "mode", mode)
+    return h
 
 
 def _env_cfg():

@@ -145,15 +145,15 @@ async def _cmd_rewind(app: HarnessApp, arg: str) -> None:
 async def _cmd_mode(app: HarnessApp, arg: str) -> None:
     arg = arg.strip().lower()
     if not arg:
-        app.harness.deps.mode = app.harness.deps.mode.cycle()
+        app.harness.cycle_mode()
     else:
         try:
-            app.harness.deps.mode = Mode(arg)
+            app.harness.set_mode(Mode(arg))
         except ValueError:
             await app.post_system(f"Unknown mode: `{arg}`. Use ask, auto, or plan.")
             return
     app.status.refresh_status()
-    await app.post_system(f"Mode: **{app.harness.deps.mode.value}**")
+    await app.post_system(f"Mode: **{app.harness.mode.value}**")
 
 
 async def _cmd_model(app: HarnessApp, arg: str) -> None:

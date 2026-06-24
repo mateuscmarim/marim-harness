@@ -198,7 +198,7 @@ class SettingsModal(ModalScreen[None]):
         if event.index is None:
             return
         if event.radio_set.id == "mode-set":
-            self.harness.deps.mode = Mode(_MODES[event.index])
+            self.harness.set_mode(Mode(_MODES[event.index]))
             self.app.status.refresh_status()  # type: ignore[attr-defined]
         elif event.radio_set.id == "theme-set":
             self.app.theme = THEME_NAMES[event.index]  # type: ignore[attr-defined]

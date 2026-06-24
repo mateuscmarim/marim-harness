@@ -440,6 +440,21 @@ class Harness:
         if persist:
             self.session.set_model(model_id)
 
+    @property
+    def mode(self) -> Mode:
+        """The current approval mode (auto/ask/plan)."""
+        return self.deps.mode
+
+    def set_mode(self, mode: Mode) -> None:
+        """Set the approval mode. The single write point for ``deps.mode`` so the
+        interface layer doesn't poke ``harness.deps`` field-by-field."""
+        self.deps.mode = mode
+
+    def cycle_mode(self) -> Mode:
+        """Advance to the next approval mode and return it."""
+        self.deps.mode = self.deps.mode.cycle()
+        return self.deps.mode
+
     def _apply_saved_model(self) -> None:
         """Re-point at a session's saved model after loading it, if one differs
         from what's already active."""
