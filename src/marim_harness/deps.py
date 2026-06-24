@@ -77,6 +77,11 @@ class HarnessServices:
 class Deps:
     workspace_root: Path
     mode: Mode = Mode.ask
+    # Detached fan-out routing. detach_fanout is the config knob; interactive is
+    # set True only when a UI is attached (bind_ui) — both required before
+    # spawn_agent auto-detaches, since headless has no wake loop to synthesize.
+    detach_fanout: bool = False
+    interactive: bool = False
     request_approval: ApprovalFn | None = None
     # Lets the ask_user tool put a structured question to the user mid-turn. None
     # when headless (the tool then returns a graceful note).

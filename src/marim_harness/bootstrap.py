@@ -51,6 +51,7 @@ def build_harness(
         command_policy=command_policy,
         hooks=hook_runner,
         notifier=notifier,
+        detach_fanout=cfg.detach_fanout,
     )
 
     manager = SessionManager(workspace)

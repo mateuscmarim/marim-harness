@@ -48,6 +48,18 @@ def test_subagent_concurrency_defaults_to_unbounded(monkeypatch):
     assert load_config().subagent_concurrency is None
 
 
+def test_detach_fanout_defaults_on(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.delenv("MARIM_DETACH_FANOUT", raising=False)
+    assert load_config().detach_fanout is True
+
+
+def test_detach_fanout_opt_out(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setenv("MARIM_DETACH_FANOUT", "0")
+    assert load_config().detach_fanout is False
+
+
 def test_load_config_command_lists_default_empty(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     monkeypatch.delenv("MARIM_COMMAND_DENYLIST", raising=False)

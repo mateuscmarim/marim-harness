@@ -449,6 +449,9 @@ class Harness:
         when rendering. Headless never calls this: the callbacks stay ``None``
         and every reader guards with an ``is None`` check.
         """
+        # A UI is attached → this session has a wake loop, so detached fan-out is
+        # safe to activate (headless never calls bind_ui and stays inline).
+        self.deps.interactive = True
         self.deps.request_approval = request_approval
         self.deps.ask_user = ask_user
         self.deps.on_subagent_event = on_subagent_event
