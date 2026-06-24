@@ -204,6 +204,20 @@ class _TopLevelSink(_StreamSink):
             self.set_run(None, None)
             await self.container.mount(widget)
             return True
+        # ask_user is a user-facing Q&A, not mechanical work — keep it out of the
+        # collapsed tool group, where the question and the user's answer would be
+        # hidden behind a "≡ N tools" fold. Render a normal tool widget but mount
+        # it standalone and break the run on both sides (same rationale as the
+        # foreground spawn_agent case above).
+        if event.part.tool_name == "ask_user":
+            widget = ToolCallWidget(
+                event.part.tool_name, args,
+                workspace_root=self._r.app.harness.deps.workspace_root,
+            )
+            self._r.tool_widgets[event.part.tool_call_id] = widget
+            self.set_run(None, None)
+            await self.container.mount(widget)
+            return True
         # Waiting on an already-finished detached sub-agent: render its card
         # (filled by the result handler's finish()) instead of a plain tool row.
         spec = _wait_card_spec(

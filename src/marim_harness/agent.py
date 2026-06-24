@@ -472,18 +472,23 @@ class Harness:
         self._apply_saved_model()
         return count
 
+    def _clear_job_context(self) -> None:
+        """Drop finished-job history and any re-stashed jobs digest when the
+        conversation context changes (/clear, /new, /switch): they belong to a
+        conversation that's no longer active. Running jobs are process-scoped and
+        deliberately kept (see JobRegistry.clear_history)."""
+        self.deps.jobs.clear_history()
+        self._pending_jobs_digest = None
+
     def reset(self) -> None:
         self.session.reset()
         self.checkpoints.clear()
-        # /clear wipes the conversation, so the finished-jobs history and any
-        # re-stashed jobs digest belong to a conversation that no longer exists —
-        # drop them too (running jobs are kept; see JobRegistry.clear_history).
-        self.deps.jobs.clear_history()
-        self._pending_jobs_digest = None
+        self._clear_job_context()
 
     def new_session(self, name: str | None = None) -> None:
         self.session.new_session(name)
         self.checkpoints.reload()
+        self._clear_job_context()
         # Apply the model inherited by SessionManager.create() when it
         # differs from the harness's current model.
         if (
@@ -497,6 +502,7 @@ class Harness:
         count = self.session.switch_session(session_id)
         self.checkpoints.reload()
         self._apply_saved_model()
+        self._clear_job_context()
         return count
 
     async def rename_session(self, name: str | None = None) -> str | None:

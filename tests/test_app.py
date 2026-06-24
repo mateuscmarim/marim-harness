@@ -1341,6 +1341,58 @@ async def test_resume_reflects_denied_tool_outcome(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_ask_user_is_not_folded_into_tool_group(tmp_path: Path):
+    """ask_user is a user-facing Q&A: it must mount standalone, never buried in a
+    collapsed '≡ N tools' group, even when sandwiched in a run of tool calls."""
+    from pydantic_ai.messages import (
+        FunctionToolCallEvent,
+        FunctionToolResultEvent,
+        ToolCallPart,
+        ToolReturnPart,
+    )
+
+    from marim_harness.interfaces.tui.widgets import ToolCallWidget, ToolGroupWidget
+
+    def _call(name, args, cid):
+        return FunctionToolCallEvent(
+            part=ToolCallPart(tool_name=name, args=args, tool_call_id=cid)
+        )
+
+    def _ret(name, content, cid):
+        return FunctionToolResultEvent(
+            part=ToolReturnPart(tool_name=name, content=content, tool_call_id=cid)
+        )
+
+    async def gen():
+        # Two reads fold into a group, then ask_user, then another read.
+        yield _call("read_file", {"path": "a.py"}, "r1")
+        yield _ret("read_file", "x", "r1")
+        yield _call("read_file", {"path": "b.py"}, "r2")
+        yield _ret("read_file", "y", "r2")
+        yield _call("ask_user", {"questions": [{"question": "Q?", "options": [
+            {"label": "A"}]}]}, "q1")
+        yield _ret("ask_user", "{}", "q1")
+        yield _call("read_file", {"path": "c.py"}, "r3")
+        yield _ret("read_file", "z", "r3")
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.stream.on_events(None, gen())
+        await pilot.pause()
+
+        ask = app.stream.tool_widgets.get("q1")
+        assert isinstance(ask, ToolCallWidget)
+        assert ask.tool_name == "ask_user"
+        # The two reads before it grouped…
+        groups = list(app.query(ToolGroupWidget))
+        assert groups, "consecutive reads should have folded into a group"
+        # …but ask_user is in none of them.
+        for g in groups:
+            assert ask not in g.walk_children()
+
+
+@pytest.mark.anyio
 async def test_spawn_agent_mounts_subagent_widget(tmp_path: Path):
     """A spawn_agent tool call gets a SubAgentWidget (not a generic ToolCallWidget),
     keyed by its tool_call_id, and is finished by the result event."""

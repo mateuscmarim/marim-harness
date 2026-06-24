@@ -113,6 +113,51 @@ async def test_reset_clears_job_history(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_new_and_switch_clear_job_history(tmp_path: Path):
+    """/new and /switch change the active conversation, so they drop finished-job
+    history and any re-stashed digest too — same as /clear."""
+    from marim_harness.agent import Harness, HarnessConfig
+    from marim_harness.session import SessionManager
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
+    store = manager.create("first")
+    first_id = store.session_id
+    harness = Harness(
+        model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
+        instructions="x", config=HarnessConfig(store=store, manager=manager),
+    )
+
+    async def _quick():
+        return "R"
+
+    async def _seed_finished_job() -> str:
+        jid = harness.deps.jobs.register("agent", "a", _quick())
+        for _ in range(400):
+            job = harness.deps.jobs.get(jid)
+            if job is not None and job.status != "running":
+                break
+            await asyncio.sleep(0.005)
+        assert harness.deps.jobs.has_finished_pending() is True
+        harness._pending_jobs_digest = "stale"
+        return jid
+
+    # /new wipes the finished-job history.
+    jid = await _seed_finished_job()
+    harness.new_session("second")
+    assert harness.deps.jobs.get(jid) is None
+    assert harness.deps.jobs.has_finished_pending() is False
+    assert harness._pending_jobs_digest is None
+
+    # /switch (back to the first session) wipes it too.
+    jid = await _seed_finished_job()
+    harness.switch_session(first_id)
+    assert harness.deps.jobs.get(jid) is None
+    assert harness.deps.jobs.has_finished_pending() is False
+    assert harness._pending_jobs_digest is None
+
+
+@pytest.mark.anyio
 async def test_auto_mode_applies_edit(tmp_path: Path):
     (tmp_path / "a.txt").write_text("foo")
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
