@@ -109,6 +109,33 @@ def _raw_target(tool_name: str, args: dict) -> str:
     return " ".join(str(items[0]).split()) if items else ""
 
 
+def _read_range(args: dict) -> str:
+    """The ``:start-end`` suffix for a partial ``read_file`` (its ``offset``/
+    ``limit`` window), or ``""`` for a full read (no offset, no limit).
+
+    ``offset`` is the 1-based start line, ``limit`` the line count. An open-ended
+    read (an offset but no limit, which pages to the cap) renders ``:start+`` —
+    the end isn't known here. Matches the clickable ``path:line`` convention, so
+    the start is a jump target."""
+    offset = args.get("offset", 1)
+    limit = args.get("limit")
+    try:
+        offset = int(offset)
+    except (TypeError, ValueError):
+        offset = 1
+    if offset < 1:
+        offset = 1
+    if limit in (None, ""):
+        return f":{offset}+" if offset > 1 else ""
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        return f":{offset}+" if offset > 1 else ""
+    if limit < 1:
+        return f":{offset}+" if offset > 1 else ""
+    return f":{offset}-{offset + limit - 1}"
+
+
 def _badges(tool_name: str, args: dict) -> tuple[str, ...]:
     out: list[str] = []
     if tool_name == "bash" and args.get("background"):
@@ -125,8 +152,13 @@ def _badges(tool_name: str, args: dict) -> tuple[str, ...]:
 def summarize(tool_name: str, args: dict, *, cap: int = _PREVIEW_CAP) -> ToolSummary:
     raw = _raw_target(tool_name, args)
     clip = _clip_middle if tool_name == "bash" else _clip
+    target = clip(raw, cap)
+    # Append the read window after clipping the path, so a long path can't push
+    # the range off the end — the range is the new, salient bit.
+    if tool_name == "read_file" and target:
+        target += _read_range(args)
     return ToolSummary(
         label=humanize_tool(tool_name),
-        target=clip(raw, cap),
+        target=target,
         badges=_badges(tool_name, args),
     )

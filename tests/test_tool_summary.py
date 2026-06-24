@@ -11,6 +11,34 @@ def test_single_arg_tool_targets_its_value():
     assert s == ToolSummary(label="Read", target=".marim/test_output.txt", badges=())
 
 
+def test_read_full_file_stays_a_bare_path():
+    # No offset/limit -> a full read shows just the path, no range.
+    s = summarize("read_file", {"path": "app.py"})
+    assert s.target == "app.py"
+    s = summarize("read_file", {"path": "app.py", "offset": 1})
+    assert s.target == "app.py"
+
+
+def test_read_partial_shows_line_range():
+    s = summarize("read_file", {"path": "app.py", "offset": 201, "limit": 200})
+    assert s.target == "app.py:201-400"
+    # First-N-lines read is still partial.
+    s = summarize("read_file", {"path": "app.py", "limit": 200})
+    assert s.target == "app.py:1-200"
+
+
+def test_read_open_ended_shows_start_plus():
+    # An offset with no limit pages to the cap; the end isn't known here.
+    s = summarize("read_file", {"path": "app.py", "offset": 201})
+    assert s.target == "app.py:201+"
+
+
+def test_read_range_appends_after_clip_so_it_survives_long_paths():
+    long_path = "src/marim_harness/" + "a" * 120 + ".py"
+    s = summarize("read_file", {"path": long_path, "offset": 50, "limit": 10})
+    assert s.target.endswith(":50-59"), s.target
+
+
 def test_spawn_agent_preview_prefers_description():
     s = summarize("spawn_agent", {
         "type": "explore", "task": "a very long task body that we don't want shown",
