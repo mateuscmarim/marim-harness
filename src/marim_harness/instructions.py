@@ -25,20 +25,14 @@ _PROJECT_INSTRUCTIONS_FILE = "AGENTS.md"
 _PROJECT_FALLBACK_FILES = ("AGENTS.md", "CLAUDE.md")
 
 _PROACTIVE_MEMORY_POLICY = (
-    "Proactive memory is ON. Beyond explicit requests, save durable facts that "
-    "will help in future sessions with the remember tool: the user's stable "
-    "preferences and identity, feedback they give on how you should work, and "
-    "project conventions or decisions not derivable from the code or git "
-    "history. Convert relative dates to absolute. Do NOT save anything "
-    "recoverable from the code, files, or git; one-off conversational details; "
-    "or secrets. Prefer updating an existing memory over adding a duplicate."
+    "Proactive memory is ON — save durable user preferences, feedback, and "
+    "project conventions with remember. Skip recoverable info, one-off details, "
+    "and secrets. Update existing entries over adding duplicates."
 )
 
 _ON_REQUEST_MEMORY_POLICY = (
-    "Save to memory only when the user explicitly asks you to (for example, "
-    "\"remember that …\" or the /remember command). Do not save memories "
-    "proactively or on your own initiative, even if the user mentions a "
-    "preference or fact in passing."
+    "Save to memory only when the user explicitly asks (e.g. 'remember that…' "
+    "or /remember). Do not save proactively."
 )
 
 
@@ -126,10 +120,8 @@ def register_instructions(
         if not parts:
             return ""
         return (
-            "Persistent memory indexes below. Each line is a one-line hook; "
-            "read the full fact with the recall tool (by the entry's title or "
-            "slug, with the matching scope). Save new durable facts with the "
-            "remember tool.\n\n" + "\n\n".join(parts)
+            "Memory index (use recall for full entries, "
+            "remember to save):\n\n" + "\n\n".join(parts)
         )
 
     @agent.instructions

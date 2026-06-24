@@ -54,10 +54,8 @@ def render_checklist_block(items: list[Task]) -> str:
     if not items:
         return ""
     return (
-        "Your current task checklist (✔ done · ▸ in progress · ○ "
-        "pending):\n\n" + render_tasks(items) + "\n\nKeep it current "
-        "with the update_tasks tool: pass the full list, keep one item "
-        "in progress, and mark items done as you complete them."
+        "Task checklist (✔ done · ▸ active · ○ pending):\n\n"
+        + render_tasks(items)
     )
 
 

@@ -9,7 +9,7 @@ agent can page with ``read_file``/``grep``. Mirrors ``fetch``'s offload pattern.
 import hashlib
 from pathlib import Path
 
-_INLINE_CHAR_LIMIT = 50_000      # at/below this, return inline (~12k tokens)
+_INLINE_CHAR_LIMIT = 25_000      # at/below this, return inline (~6k tokens)
 # Measured in characters (~bytes for ASCII); producers stop collecting here and callers may offload.
 MAX_OUTPUT_CHARS = 5_000_000
 _PREVIEW_LINES = 40
