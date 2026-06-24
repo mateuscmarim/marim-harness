@@ -2686,7 +2686,9 @@ async def test_finished_job_notifies_even_when_wake_disabled(tmp_path: Path):
     sent = []
 
     class _Notifier:
-        def send(self, title, body, event_type):
+        # _notify dispatches OFF the event loop via send_async (the blocking send
+        # would freeze the UI), so the stub records through that path.
+        async def send_async(self, title, body, event_type):
             sent.append((title, body, event_type))
 
     async def _done():

@@ -13,6 +13,7 @@ No third-party dependencies: Linux uses ``notify-send``, macOS uses
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import shutil
 import subprocess
@@ -91,6 +92,22 @@ class Notifier:
     def enabled(self) -> bool:
         return self.config.enabled
 
+    def _should_fire(self, event_type: str) -> bool:
+        """Shared gate for the sync and async send paths: enabled, the event is
+        configured, and we're outside this event type's coalesce window. Records
+        the fire timestamp as a side effect so callers don't double-fire — only
+        call this once per intended notification."""
+        if not self.config.enabled:
+            return False
+        if event_type not in self.config.events:
+            return False
+        now = time.monotonic()
+        last = self._last_fired.get(event_type)
+        if last is not None and (now - last) < self.config.coalesce_seconds:
+            return False
+        self._last_fired[event_type] = now
+        return True
+
     def send(self, title: str, body: str, event_type: str) -> None:
         """Fire a notification for ``event_type`` if enabled and configured.
 
@@ -101,63 +118,92 @@ class Notifier:
         **Coalescing:** if the same ``event_type`` was dispatched less than
         ``coalesce_seconds`` ago, the call is silently skipped. This prevents
         a burst of duplicate notifications (e.g. rapid ask_user calls).
+
+        This is the *blocking* path — it shells out with ``subprocess.run`` and
+        waits. It is fine for the headless CLI, but the TUI must never call it on
+        the event loop (the Windows backend alone sleeps ~5.5s); the TUI uses
+        :meth:`send_async` instead, which runs the same dispatch off the loop.
         """
-        if not self.config.enabled:
-            return
-        if event_type not in self.config.events:
-            return
-        now = time.monotonic()
-        last = self._last_fired.get(event_type)
-        if last is not None and (now - last) < self.config.coalesce_seconds:
+        if not self._should_fire(event_type):
+            # On a coalesce-window skip the timestamp is unchanged; on a fire it
+            # was already recorded by _should_fire. Roll it back if the dispatch
+            # raises so a later retry isn't suppressed.
             return
         try:
             self._dispatch(title, body)
-            self._last_fired[event_type] = now
         except Exception as exc:  # never let notifications break a turn
+            self._last_fired.pop(event_type, None)
             logger.debug("notification failed (%s): %s", event_type, exc)
 
-    def _dispatch(self, title: str, body: str) -> None:
-        if self._platform.startswith("linux"):
-            self._notify_send(title, body)
-        elif self._platform == "darwin":
-            self._osascript(title, body)
-        elif self._platform == "win32":
-            self._powershell(title, body)
-        # Unknown platform: silently do nothing.
-
-    # -- platform backends ------------------------------------------------
-
-    @staticmethod
-    def _notify_send(title: str, body: str) -> None:
-        if shutil.which("notify-send") is None:
+    async def send_async(self, title: str, body: str, event_type: str) -> None:
+        """Non-blocking counterpart to :meth:`send` for the event loop. Spawns the
+        platform notifier via ``asyncio.create_subprocess_exec`` and awaits it
+        without blocking other tasks. Failures are swallowed like ``send``."""
+        if not self._should_fire(event_type):
             return
+        spec = self._command_for(title, body)
+        if spec is None:
+            return  # unknown platform or missing binary — nothing to run
+        argv, stdin = spec
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.PIPE if stdin is not None else None,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.communicate(stdin)
+        except Exception as exc:  # never let notifications break a turn
+            self._last_fired.pop(event_type, None)
+            logger.debug("async notification failed (%s): %s", event_type, exc)
+
+    def _dispatch(self, title: str, body: str) -> None:
+        spec = self._command_for(title, body)
+        if spec is None:
+            return  # unknown platform or missing binary
+        argv, stdin = spec
         subprocess.run(
-            ["notify-send", "--app-name=marim", title, body],
+            argv,
+            input=stdin,
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
 
+    def _command_for(self, title: str, body: str) -> tuple[list[str], bytes | None] | None:
+        """Build the ``(argv, stdin_bytes)`` for the current platform's notifier,
+        or None when there's nothing to run (unknown platform / missing binary).
+        Single source of truth so the sync and async dispatch paths stay in step."""
+        if self._platform.startswith("linux"):
+            return self._notify_send_cmd(title, body)
+        if self._platform == "darwin":
+            return self._osascript_cmd(title, body)
+        if self._platform == "win32":
+            return self._powershell_cmd(title, body)
+        return None  # Unknown platform: silently do nothing.
+
+    # -- platform backends ------------------------------------------------
+
     @staticmethod
-    def _osascript(title: str, body: str) -> None:
+    def _notify_send_cmd(title: str, body: str) -> tuple[list[str], bytes | None] | None:
+        if shutil.which("notify-send") is None:
+            return None
+        return ["notify-send", "--app-name=marim", title, body], None
+
+    @staticmethod
+    def _osascript_cmd(title: str, body: str) -> tuple[list[str], bytes | None] | None:
         if shutil.which("osascript") is None:
-            return
+            return None
         # Pass the script on stdin to avoid shell interpretation entirely —
         # no escaping of title/body needed since they never touch a shell.
         script = (
             'display notification "' + body.replace('"', '\\"') + '" '
             'with title "marim" subtitle "' + title.replace('"', '\\"') + '"'
         )
-        subprocess.run(
-            ["osascript", "-"],
-            input=script.encode(),
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        return ["osascript", "-"], script.encode()
 
     @staticmethod
-    def _powershell(title: str, body: str) -> None:
+    def _powershell_cmd(title: str, body: str) -> tuple[list[str], bytes | None] | None:
         # Use the BurntToast-free fallback: a balloon tip via the system tray.
         # This avoids any module install; works on Windows 10/11 PowerShell 5+.
         # Pass the script on stdin to avoid shell interpretation.
@@ -173,10 +219,4 @@ class Notifier:
             "Start-Sleep -Milliseconds 5500;"
             "$n.Dispose()"
         )
-        subprocess.run(
-            ["powershell", "-NoProfile", "-Command", "-"],
-            input=ps.encode(),
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        return ["powershell", "-NoProfile", "-Command", "-"], ps.encode()

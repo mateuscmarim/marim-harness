@@ -16,7 +16,7 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..atomic_io import atomic_write_text
+from ..atomic_io import atomic_write_text, file_lock
 from ..config import config_dir
 
 logger = logging.getLogger(__name__)
@@ -104,19 +104,24 @@ def _upsert_index_line(scope: MemoryScope, *, slug: str, title: str, hook: str) 
     # ``slug.md`` (e.g. "see [link](auth.md)"), clobbering the wrong line.
     entry_link = re.compile(r"^- \[.*?\]\((?P<slug>[^)]+)\.md\)")
 
-    existing = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-    new_lines, replaced = [], False
-    for raw in existing:
-        m = entry_link.match(raw)
-        if m and m.group("slug") == slug:
+    # Serialize the read+modify+write of the shared index with a best-effort
+    # advisory lock: two concurrent save_memory calls each read the old index,
+    # add their own line, and write — last writer wins, silently dropping the
+    # other's entry. The lock makes each upsert see the prior one's result.
+    with file_lock(path):
+        existing = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        new_lines, replaced = [], False
+        for raw in existing:
+            m = entry_link.match(raw)
+            if m and m.group("slug") == slug:
+                new_lines.append(line)
+                replaced = True
+            else:
+                new_lines.append(raw)
+        if not replaced:
             new_lines.append(line)
-            replaced = True
-        else:
-            new_lines.append(raw)
-    if not replaced:
-        new_lines.append(line)
 
-    atomic_write_text(path, "\n".join(new_lines) + "\n")
+        atomic_write_text(path, "\n".join(new_lines) + "\n")
 
 
 def save_memory(

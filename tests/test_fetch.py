@@ -441,6 +441,67 @@ async def test_fetch_refuses_ipv6_loopback(monkeypatch):
     assert "Fetched" not in result
 
 
+def _getaddrinfo_returning(addr: str, *, family: int = socket.AF_INET):
+    """A fake getaddrinfo that resolves any host to a single crafted address,
+    so an SSRF check can be driven against an attacker-chosen IP."""
+    sockaddr = (addr, 0) if family == socket.AF_INET else (addr, 0, 0, 0)
+    return lambda host, *_: [(family, socket.SOCK_STREAM, 0, "", sockaddr)]
+
+
+@pytest.mark.anyio
+async def test_fetch_refuses_ipv4_mapped_loopback(monkeypatch):
+    """``::ffff:127.0.0.1`` is loopback spelled in IPv4-mapped IPv6 form — it must
+    be normalized to its v4 address and refused, not waved through the v6 nets."""
+    monkeypatch.setattr(socket, "getaddrinfo",
+                        _getaddrinfo_returning("::ffff:127.0.0.1", family=socket.AF_INET6))
+    result = await fetch_url("http://mapped-loopback.example/admin")
+    assert "Fetched" not in result
+
+
+@pytest.mark.anyio
+async def test_fetch_refuses_ipv4_mapped_private(monkeypatch):
+    """``::ffff:10.0.0.1`` maps to RFC1918 10/8 — refuse after normalization."""
+    monkeypatch.setattr(socket, "getaddrinfo",
+                        _getaddrinfo_returning("::ffff:10.0.0.1", family=socket.AF_INET6))
+    result = await fetch_url("http://mapped-private.example/internal")
+    assert "Fetched" not in result
+
+
+@pytest.mark.anyio
+async def test_fetch_refuses_unspecified_ipv4(monkeypatch):
+    """0.0.0.0 routes to localhost on many stacks — block it (and the 0/8 net)."""
+    monkeypatch.setattr(socket, "getaddrinfo", _getaddrinfo_returning("0.0.0.0"))
+    result = await fetch_url("http://zero.example/")
+    assert "Fetched" not in result
+
+
+@pytest.mark.anyio
+async def test_fetch_refuses_unspecified_ipv6(monkeypatch):
+    """:: (IPv6 unspecified) must be refused."""
+    monkeypatch.setattr(socket, "getaddrinfo",
+                        _getaddrinfo_returning("::", family=socket.AF_INET6))
+    result = await fetch_url("http://zero6.example/")
+    assert "Fetched" not in result
+
+
+@pytest.mark.anyio
+async def test_fetch_refuses_cgnat(monkeypatch):
+    """CGNAT 100.64.0.0/10 (RFC 6598) is carrier-internal — not a public target."""
+    monkeypatch.setattr(socket, "getaddrinfo", _getaddrinfo_returning("100.64.1.2"))
+    result = await fetch_url("http://cgnat.example/")
+    assert "Fetched" not in result
+
+
+@pytest.mark.anyio
+async def test_fetch_allows_public_ipv4(monkeypatch):
+    """Prove the new blocks don't over-block: a normal public IP still fetches."""
+    monkeypatch.setattr(socket, "getaddrinfo", _getaddrinfo_returning("93.184.216.34"))
+    resp = _mock_response(text="<p>Public OK</p>", content_type="text/html")
+    with _patch_client(resp):
+        result = await fetch_url("http://public.example/")
+    assert "Public OK" in result
+
+
 # ---------------------------------------------------------------------------
 # Tests — SSRF: connection is pinned to the validated IP (no DNS-rebinding gap)
 # ---------------------------------------------------------------------------

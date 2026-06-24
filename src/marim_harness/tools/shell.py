@@ -8,6 +8,11 @@ from .offload import MAX_OUTPUT_CHARS, offload_if_large
 
 _DEFAULT_TIMEOUT = 30
 _DEFAULT_MAX_OUTPUT = 20_000
+# Overall wall-clock ceiling for the post-kill drain. The per-readline timeout
+# below bounds a single read, but a process flushing a burst of short lines keeps
+# resetting that window — this caps the whole drain loop so the timeout path can't
+# stall (we keep what we got and move on).
+_DRAIN_BUDGET = 2.0  # seconds
 
 
 def _truncate_middle(text: str, max_output: int) -> str:
@@ -67,11 +72,20 @@ async def run_bash(
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
         # Drain anything the dying process flushed to the pipe before the kill
-        # propagated.  A short deadline keeps the timeout path fast.
+        # propagated.  A short deadline keeps the timeout path fast.  The
+        # per-readline timeout alone isn't a real ceiling: a process spewing many
+        # short lines resets that 1s window on every line, so the drain could run
+        # for as long as it keeps flushing.  Bound the whole loop with a fixed
+        # wall-clock budget so the timeout path stays snappy regardless of volume.
         if proc.stdout is not None:
+            drain_deadline = asyncio.get_event_loop().time() + _DRAIN_BUDGET
             try:
                 while True:
-                    line = await asyncio.wait_for(proc.stdout.readline(), timeout=1)
+                    remaining = drain_deadline - asyncio.get_event_loop().time()
+                    if remaining <= 0:
+                        break
+                    line = await asyncio.wait_for(proc.stdout.readline(),
+                                                  timeout=min(1, remaining))
                     if not line:
                         break
                     chunks.append(line)

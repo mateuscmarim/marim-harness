@@ -22,6 +22,7 @@ from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 from marim_harness.agent import (
     Harness,
+    _drop_nameless_tool_calls,
     _has_unanswered_tool_calls,
     _repair_unanswered_tool_calls,
 )
@@ -101,6 +102,135 @@ def test_repair_localizes_each_return_after_its_response():
         ("ModelRequest", ["b"]),
     ]
     assert not _has_unanswered_tool_calls(repaired)
+
+
+# --- unit: dropping nameless (malformed) tool calls --------------------------
+#
+# A model/provider can stream a partial tool call whose function name never
+# arrives, leaving a ToolCallPart with an empty tool_name. Persisted, every
+# provider then rejects the next request ("tool_calls[i] is missing a function
+# name"), wedging the session exactly like a dangling call does — but the
+# unanswered-call repair can't see it (the part HAS an id, it's just nameless).
+
+
+def test_drop_nameless_is_noop_on_clean_history():
+    clean = [
+        ModelRequest(parts=[UserPromptPart(content="hi")]),
+        ModelResponse(
+            parts=[ToolCallPart(tool_name="read_file", args={}, tool_call_id="a")]
+        ),
+        ModelRequest(parts=[ToolReturnPart(
+            tool_name="read_file", content="x", tool_call_id="a"
+        )]),
+    ]
+    # Same object back, so callers can skip a redundant persist.
+    assert _drop_nameless_tool_calls(clean) is clean
+
+
+def test_drop_nameless_removes_the_nameless_call_keeps_the_valid_one():
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="go")]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(tool_name="read_file", args={}, tool_call_id="ok"),
+                ToolCallPart(tool_name="", args={}, tool_call_id="bad"),
+            ]
+        ),
+    ]
+    cleaned = _drop_nameless_tool_calls(history)
+    calls = [
+        p
+        for m in cleaned
+        for p in getattr(m, "parts", [])
+        if isinstance(p, ToolCallPart)
+    ]
+    assert [c.tool_call_id for c in calls] == ["ok"]
+
+
+def test_drop_nameless_also_drops_a_return_orphaned_by_the_removal():
+    """A ToolReturnPart answering a nameless call must go too — once its call is
+    gone the return references nothing and is itself rejected."""
+    history = [
+        ModelResponse(
+            parts=[ToolCallPart(tool_name="", args={}, tool_call_id="bad")]
+        ),
+        ModelRequest(parts=[ToolReturnPart(
+            tool_name="", content="x", tool_call_id="bad"
+        )]),
+    ]
+    cleaned = _drop_nameless_tool_calls(history)
+    remaining_ids = [
+        getattr(p, "tool_call_id", None)
+        for m in cleaned
+        for p in getattr(m, "parts", [])
+    ]
+    assert "bad" not in remaining_ids
+
+
+def test_drop_nameless_drops_a_message_emptied_by_the_removal():
+    """A ModelResponse whose only part was the nameless call has nothing left to
+    say; the empty message is dropped rather than sent as a contentless turn."""
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="go")]),
+        ModelResponse(
+            parts=[ToolCallPart(tool_name="", args={}, tool_call_id="bad")]
+        ),
+    ]
+    cleaned = _drop_nameless_tool_calls(history)
+    assert len(cleaned) == 1
+    assert isinstance(cleaned[0], ModelRequest)
+
+
+def test_drop_nameless_keeps_other_parts_of_a_mixed_message():
+    """The model can emit reasoning text alongside the malformed call; only the
+    nameless part is stripped, the text survives."""
+    history = [
+        ModelResponse(
+            parts=[
+                TextPart(content="let me read that"),
+                ToolCallPart(tool_name="", args={}, tool_call_id="bad"),
+            ]
+        ),
+    ]
+    cleaned = _drop_nameless_tool_calls(history)
+    parts = list(cleaned[0].parts)
+    assert len(parts) == 1
+    assert isinstance(parts[0], TextPart)
+
+
+async def test_resume_strips_nameless_tool_call_then_runs(tmp_path):
+    """End-to-end: a persisted history carrying a nameless tool call must resume
+    on the next prompt — the malformed call is stripped before the request, so
+    the provider never sees the 'missing a function name' 400."""
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+
+    def reply(messages, info):
+        return ModelResponse(parts=[TextPart(content="resumed")])
+
+    harness = _harness(FunctionModel(reply), deps)
+    harness.session.history = [
+        ModelRequest(parts=[UserPromptPart(content="go")]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(tool_name="read_file", args={}, tool_call_id="ok"),
+                ToolCallPart(tool_name="", args={}, tool_call_id="bad"),
+            ]
+        ),
+        ModelRequest(parts=[ToolReturnPart(
+            tool_name="read_file", content="data", tool_call_id="ok"
+        )]),
+    ]
+
+    output = await harness.run_turn("continue")  # must NOT raise
+
+    assert output == "resumed"
+    calls = [
+        p
+        for m in harness.session.history
+        for p in getattr(m, "parts", [])
+        if isinstance(p, ToolCallPart)
+    ]
+    assert all(c.tool_name for c in calls)  # no nameless call survived
 
 
 # --- e2e: self-heal on resume (the reported bug) -----------------------------

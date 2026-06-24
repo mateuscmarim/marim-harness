@@ -28,6 +28,7 @@ import warnings
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from ..atomic_io import atomic_write_text
 from ..config import config_dir
 from ..permissions import Mode
 from ..tools.offload import _INLINE_CHAR_LIMIT, offload_if_large
@@ -164,7 +165,9 @@ def persist_server_enabled(workspace_root: Path, name: str, enabled: bool) -> bo
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             data["mcpServers"][name]["enabled"] = enabled
-            path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+            # Atomic write (matching the rest of the project): a crash mid-write
+            # must not truncate the user's mcp.json, which a bare write_text would.
+            atomic_write_text(path, json.dumps(data, indent=2) + "\n")
         except (json.JSONDecodeError, OSError, UnicodeDecodeError, KeyError, TypeError):
             return False
         return True

@@ -175,3 +175,104 @@ async def test_headless_fires_session_start_and_end(tmp_path: Path):
     logged = log.read_text()
     assert "SessionStart" in logged, f"SessionStart not found in hook log: {logged!r}"
     assert "SessionEnd" in logged, f"SessionEnd not found in hook log: {logged!r}"
+
+
+@pytest.mark.anyio
+async def test_finalizes_active_time_and_force_persists_on_shutdown(tmp_path: Path):
+    """Headless must close the active-time segment and force a persist before
+    teardown, mirroring the TUI — otherwise the final segment is dropped."""
+    from marim_harness.interfaces.cli.headless import run_headless
+
+    harness = _harness(tmp_path, "done")
+    calls = []
+    real_finalize = harness.session.finalize_active_time
+    real_persist = harness.session.persist
+
+    def spy_finalize():
+        calls.append("finalize")
+        return real_finalize()
+
+    def spy_persist(*, force=False):
+        calls.append(("persist", force))
+        return real_persist(force=force)
+
+    harness.session.finalize_active_time = spy_finalize  # type: ignore[method-assign]
+    harness.session.persist = spy_persist  # type: ignore[method-assign]
+
+    out = io.StringIO()
+    code = await run_headless(harness, "go", "text", out=out)
+    assert code == 0
+    # finalize ran, and a forced persist followed it (order matters: finalize
+    # closes the segment so the forced persist counts it exactly once).
+    assert "finalize" in calls
+    assert ("persist", True) in calls
+    assert calls.index("finalize") < calls.index(("persist", True))
+
+
+@pytest.mark.anyio
+async def test_cleanup_error_does_not_mask_turn_failure(tmp_path: Path):
+    """A raising teardown step must not swallow the real turn error or flip the
+    exit code from failure (1) back to success."""
+    from marim_harness.interfaces.cli.headless import run_headless
+
+    out = io.StringIO()
+    err = io.StringIO()
+    harness = _harness(tmp_path)
+
+    async def boom(*a, **k):
+        raise RuntimeError("upstream exploded")
+
+    async def session_end_boom(*a, **k):
+        raise RuntimeError("cleanup also exploded")
+
+    harness.run_turn = boom  # type: ignore[method-assign]
+    harness.session_end = session_end_boom  # type: ignore[method-assign]
+
+    code = await run_headless(harness, "go", "text", out=out, err=err)
+    assert code == 1  # primary failure exit code survives the cleanup error
+    assert "upstream exploded" in err.getvalue()  # primary error surfaced
+    assert "cleanup also exploded" not in err.getvalue()  # cleanup error stays out of band
+
+
+@pytest.mark.anyio
+async def test_cleanup_error_on_success_does_not_break(tmp_path: Path):
+    """A raising teardown on an otherwise-successful turn must not flip the exit
+    code or lose the result output."""
+    from marim_harness.interfaces.cli.headless import run_headless
+
+    harness = _harness(tmp_path, "the answer is 42")
+
+    async def aclose_boom():
+        raise RuntimeError("aclose exploded")
+
+    harness.aclose = aclose_boom  # type: ignore[method-assign]
+
+    out = io.StringIO()
+    code = await run_headless(harness, "go", "text", out=out)
+    assert code == 0
+    assert out.getvalue().strip() == "the answer is 42"
+
+
+@pytest.mark.anyio
+async def test_stream_json_emits_terminal_error_line_on_failure(tmp_path: Path):
+    """stream-json consumers parse NDJSON; a crashed turn must still emit a
+    terminal error line so the stream isn't silently truncated."""
+    from marim_harness.interfaces.cli.headless import run_headless
+
+    out = io.StringIO()
+    err = io.StringIO()
+    harness = _harness(tmp_path)
+
+    async def boom(*a, **k):
+        raise RuntimeError("upstream exploded")
+
+    harness.run_turn = boom  # type: ignore[method-assign]
+    code = await run_headless(harness, "go", "stream-json", out=out, err=err)
+    assert code == 1
+
+    lines = [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
+    assert lines, "expected a terminal error line on stdout"
+    assert lines[-1]["type"] == "error"
+    assert "upstream exploded" in lines[-1]["error"]
+    # and the human-readable error still goes to stderr
+    assert "upstream exploded" in err.getvalue()

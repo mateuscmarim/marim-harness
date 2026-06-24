@@ -161,6 +161,34 @@ def test_persist_no_op_for_unknown_server(tmp_path: Path, monkeypatch):
     assert persist_server_enabled(ws, "ghost", False) is False
 
 
+def test_persist_uses_atomic_write_no_temp_residue(tmp_path: Path, monkeypatch):
+    # Regression: persist used a bare path.write_text, which a crash mid-write
+    # could truncate. It must go through atomic_write_text now — the result is a
+    # valid, complete file with no leftover temp residue.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    gpath = tmp_path / "xdg" / "marim" / "mcp.json"
+    _write(gpath, {"a": {"command": "x"}})
+    ws = tmp_path / "ws"
+
+    import marim_harness.mcp.config as cfg
+
+    calls: list = []
+    real_atomic = cfg.atomic_write_text
+
+    def spy(path, text, **kw):
+        calls.append(Path(path))
+        return real_atomic(path, text, **kw)
+
+    monkeypatch.setattr(cfg, "atomic_write_text", spy)
+    assert persist_server_enabled(ws, "a", True) is True
+    # The write went through the atomic path...
+    assert gpath in calls
+    # ...the file is valid and complete...
+    assert _read_back(gpath)["a"]["enabled"] is True
+    # ...and no deterministic temp residue was left behind.
+    assert not (gpath.parent / "mcp.json.tmp").exists()
+
+
 # --- server construction ---------------------------------------------------
 
 

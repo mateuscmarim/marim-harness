@@ -107,6 +107,14 @@ class HarnessApp(App):
         self._compacting_notice: NoticeMessage | None = None
         self._vision_caps: dict[str, bool | None] = {}
         self._turn_worker = None
+        # Latch closing the window between "decided to start a turn" and the
+        # exclusive worker actually existing. _start_turn awaits a mount before it
+        # can set _turn_worker, so without this a second submit landing in that gap
+        # would pass the _turn_worker guard and start a *duplicate* exclusive
+        # worker — which Textual resolves by silently cancelling the first, the
+        # exact hazard turn_busy exists to prevent. Set before the first await,
+        # cleared on every _start_turn exit path.
+        self._turn_starting = False
         self._queue: list[QueuedMessage] = []
         self._queue_paused = False
         self._queue_seq = 0
@@ -285,10 +293,22 @@ class HarnessApp(App):
     def _notify(self, title: str, body: str, event_type: str) -> None:
         """Fire a desktop notification if one is wired on deps. Best-effort —
         the notifier itself swallows all errors, so this is a safe no-op when
-        notifications are off or the platform lacks a daemon."""
+        notifications are off or the platform lacks a daemon.
+
+        Dispatched OFF the event loop: the platform notifiers shell out and wait
+        (the Windows balloon-tip backend alone sleeps ~5.5s), so calling the
+        blocking ``send`` here — from turn-end / approval / job-completion
+        callbacks — would freeze the whole UI. We schedule the async send path,
+        which spawns the subprocess via asyncio and awaits it without blocking
+        other tasks. Failures stay swallowed inside the notifier."""
         notifier = self.harness.deps.notifier
         if notifier is not None:
-            notifier.send(title, body, event_type)
+            self.run_worker(
+                notifier.send_async(title, body, event_type),
+                name=f"notify:{event_type}",
+                group="notifications",
+                exit_on_error=False,
+            )
 
     def _notify_finished_jobs(self) -> None:
         """Desktop-notify once per genuinely completed (done/failed) background
@@ -316,7 +336,7 @@ class HarnessApp(App):
             return  # firing during teardown would race the unmount
         if not self._wake.should_wake(
             enabled=self.autonomous_wake,
-            turn_busy=self._turn_worker is not None,
+            turn_busy=self.turn_busy,
             has_finished_pending=self.harness.deps.jobs.has_finished_pending(),
         ):
             return
@@ -329,10 +349,12 @@ class HarnessApp(App):
     @property
     def turn_busy(self) -> bool:
         """True while a turn worker (user submit, drained queue, system command,
-        or autonomous wake) is live. The single guard against starting another
-        exclusive turn — which Textual would satisfy by silently cancelling the
-        running one — or tearing down the conversation/session under it."""
-        return self._turn_worker is not None
+        or autonomous wake) is live, OR is mid-spawn (``_turn_starting``). The
+        single guard against starting another exclusive turn — which Textual would
+        satisfy by silently cancelling the running one — or tearing down the
+        conversation/session under it. The ``_turn_starting`` term closes the gap
+        before ``_start_turn`` has set ``_turn_worker``."""
+        return self._turn_worker is not None or self._turn_starting
 
     def action_cycle_mode(self) -> None:
         self.harness.cycle_mode()
@@ -444,14 +466,24 @@ class HarnessApp(App):
     ) -> None:
         """Mount the user message and spawn the exclusive turn worker. Shared by
         a fresh submit and a drained queue item. Resets the autonomous-wake
-        chain and spawns the worker."""
-        self._wake.reset()
-        log = self.query_one("#log", VerticalScroll)
-        await log.mount(UserMessage(text))
-        self.stream.current_assistant = None
-        self._turn_worker = self.run_worker(
-            self._run_turn(text, attachments), exclusive=True
-        )
+        chain and spawns the worker.
+
+        ``_turn_starting`` is latched *before* the first await so a concurrent
+        submit can't slip through ``turn_busy`` while we're between the mount and
+        the worker being created. Cleared in ``finally`` on every path — the
+        worker (once created) carries the busy flag from there on, and on an early
+        error there is no worker, so the latch must drop or the UI wedges."""
+        self._turn_starting = True
+        try:
+            self._wake.reset()
+            log = self.query_one("#log", VerticalScroll)
+            await log.mount(UserMessage(text))
+            self.stream.current_assistant = None
+            self._turn_worker = self.run_worker(
+                self._run_turn(text, attachments), exclusive=True
+            )
+        finally:
+            self._turn_starting = False
 
     def start_system_turn(self, prompt: str) -> bool:
         """Spawn a turn for a system-initiated prompt — a slash command like
@@ -518,7 +550,7 @@ class HarnessApp(App):
 
     async def action_run_queued(self) -> None:
         """Resume a paused queue: clear the pause and start the next item."""
-        if self._queue and self._turn_worker is None:
+        if self._queue and not self.turn_busy:
             self._queue_paused = False
             await self._drain_next()
 
@@ -836,8 +868,8 @@ class HarnessApp(App):
         text = event.value.strip()
         if not text and not event.attachments:
             return  # nothing to steer
-        if self._turn_worker is None:
-            # No turn running — just run it normally.
+        if not self.turn_busy:
+            # No turn running (or starting) — just run it normally.
             await self._start_turn(text, event.attachments)
             return
         reason = self._image_block_reason(event.attachments)
@@ -862,7 +894,9 @@ class HarnessApp(App):
         if reason is not None:
             self._append_log(NoticeMessage(reason))
             return
-        if self._turn_worker is not None:
+        if self.turn_busy:
+            # turn_busy (not _turn_worker) so a submit landing in the start-up gap
+            # is queued rather than racing a second exclusive worker.
             self._enqueue(text, event.attachments)
             return
         self._queue_paused = False
@@ -873,6 +907,11 @@ class HarnessApp(App):
     ) -> None:
         self.status.turn_start = time.monotonic()
         self.status.set_busy(True)
+        # Drop finished tool-widget entries from the prior turn(s) so the per-turn
+        # tracking dict doesn't grow unbounded across a long session. Done at the
+        # turn boundary (not per approval round) so the within-turn duplicate guard
+        # for gated tools keeps its entries while the turn is live.
+        self.stream.prune_completed()
         log = self.query_one("#log", VerticalScroll)
         try:
             await self.harness.run_turn(

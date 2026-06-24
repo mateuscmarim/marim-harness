@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 
 import pytest
@@ -100,6 +101,33 @@ def test_save_memory_upserts_index_no_duplicate(tmp_path: Path):
     assert "second" in index
     # the file body was overwritten
     assert "b2" in (sc.root / "build-tool.md").read_text()
+
+
+def test_concurrent_save_memory_keeps_every_index_entry(tmp_path: Path):
+    """Regression: the index read-modify-write was unlocked, so two concurrent
+    save_memory calls each read the old index, added their line, and wrote —
+    last writer wins, silently dropping the other entry. The advisory lock in
+    _upsert_index_line serializes them so both survive."""
+    sc = memory.project_scope(tmp_path)
+    sc.root.mkdir(parents=True, exist_ok=True)
+    names = [f"Fact {i}" for i in range(12)]
+
+    def save(name: str):
+        memory.save_memory(
+            sc, name=name, description=f"desc {name}", mem_type="project",
+            body="b", title=name,
+        )
+
+    threads = [threading.Thread(target=save, args=(n,)) for n in names]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    index = (sc.root / "MEMORY.md").read_text()
+    for n in names:
+        slug = memory._slugify(n)
+        assert f"({slug}.md)" in index, f"lost index entry for {slug}"
 
 
 def test_upsert_index_does_not_clobber_entry_whose_hook_links_elsewhere(tmp_path: Path):

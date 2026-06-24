@@ -141,4 +141,16 @@ class McpManager:
             self.mcp_status["failed"] = [
                 f for f in self.mcp_status["failed"] if f[0] != name
             ]
+        else:
+            # Mirror connect()'s bookkeeping on the failure path so status stays
+            # accurate: a server that failed to (re)connect must not linger in
+            # "connected" from an earlier successful session, and the new failure
+            # must be recorded (de-duped) so the UI/status reflects it.
+            self.mcp_status["connected"] = [
+                n for n in self.mcp_status["connected"] if n != name
+            ]
+            self.mcp_status["failed"] = [
+                f for f in self.mcp_status["failed"] if f[0] != name
+            ]
+            self.mcp_status["failed"].append((name, err))
         return err

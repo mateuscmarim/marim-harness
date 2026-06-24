@@ -3,7 +3,10 @@ a stream, without the TUI. Supports three output formats — plain text, a singl
 JSON object, and newline-delimited JSON streaming."""
 
 import json
+import logging
 import sys
+from collections.abc import Awaitable, Callable
+from typing import TypeVar
 
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
@@ -19,6 +22,28 @@ from pydantic_ai.messages import (
 from ...agent import Harness
 from ...errors import format_provider_error
 from ...usage import usage_summary
+
+logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+
+
+def _safe(fn: Callable[[], _T]) -> None:
+    """Run a teardown step, swallowing and logging any error. Cleanup must never
+    raise out of the ``finally`` block — that would mask the real turn error and
+    the exit code the caller relies on."""
+    try:
+        fn()
+    except Exception:  # noqa: BLE001 - cleanup is best-effort
+        logger.warning("Ignoring error during headless cleanup.", exc_info=True)
+
+
+async def _safe_async(fn: Callable[[], Awaitable[_T]]) -> None:
+    """Async counterpart to ``_safe`` for awaitable teardown steps."""
+    try:
+        await fn()
+    except Exception:  # noqa: BLE001 - cleanup is best-effort
+        logger.warning("Ignoring error during headless cleanup.", exc_info=True)
 
 
 def _notify(harness: Harness, title: str, body: str, event_type: str) -> None:
@@ -118,10 +143,21 @@ async def run_headless(
         detail = format_provider_error(exc) or f"{type(exc).__name__}: {exc}"
         print(detail, file=err)
         _notify(harness, "Turn error", detail, "error")
+        # stream-json consumers parse NDJSON and need a terminal line even on
+        # failure, otherwise a crashed turn looks like a truncated stream.
+        if output_format == "stream-json":
+            print(json.dumps({"type": "error", "error": detail}), file=out, flush=True)
         return 1
     finally:
-        await harness.session_end("exit")
-        await harness.aclose()
+        # Fold this run's active time into the total and force a persist so the
+        # final segment lands even when history is unchanged — the TUI does the
+        # same in on_unmount before teardown. Then run lifecycle teardown.
+        # Every step is guarded: a raising finalize/session_end/aclose must not
+        # mask the real turn error (or its exit code) that brought us here.
+        _safe(harness.session.finalize_active_time)
+        _safe(lambda: harness.session.persist(force=True))
+        await _safe_async(lambda: harness.session_end("exit"))
+        await _safe_async(harness.aclose)
 
     _notify(harness, "Turn complete", _preview(output), "turn_complete")
 

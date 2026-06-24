@@ -121,6 +121,7 @@ def install_plugin(
     target_root = scope_dir(scope, workspace_root)
     use_git = _force_git or is_git_source(source)
 
+    source_record: dict
     with tempfile.TemporaryDirectory() as tmp:
         if use_git:
             if link:
@@ -144,6 +145,12 @@ def install_plugin(
             # after install would otherwise run trusted with no prompt. Trust
             # must be granted explicitly for a linked install.
             trusted = bool(trust)
+            # Record whether the source had executable parts (hooks/MCP) at the
+            # moment trust was granted. Discovery re-checks the *live* source each
+            # time and uses this baseline to detect post-trust elevation — a
+            # linked plugin that later gains hooks/MCP must not run that newly
+            # added code under the original trust without re-confirmation.
+            source_record["executable_at_install"] = has_executable(summary)
         else:
             trusted = True if not has_executable(summary) else bool(trust)
 

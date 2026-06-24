@@ -40,7 +40,14 @@ def strip_turn_context(content: str) -> str:
     prompt with no envelope is returned unchanged."""
     if not content.startswith(_TURN_CONTEXT_OPEN):
         return content
-    idx = content.find(_TURN_CONTEXT_SEP)
+    # Anchor on the LAST separator, not the first. The forward contract
+    # (`wrap_turn_context`) makes the user-typed text the suffix after the final
+    # `</turn-context>\n\n` (note `_assemble_prompt` asserts the prompt ends with
+    # `typed`). Injected context can legitimately contain the marker itself —
+    # e.g. a SessionStart hook that echoes a prior turn's persisted prompt — so a
+    # `find` (first occurrence) would stop inside the envelope and leak part of
+    # it back as "typed". `rfind` recovers the true suffix regardless.
+    idx = content.rfind(_TURN_CONTEXT_SEP)
     if idx == -1:
         return content
     return content[idx + len(_TURN_CONTEXT_SEP):]

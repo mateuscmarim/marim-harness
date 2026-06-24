@@ -276,6 +276,27 @@ class StreamRenderer:
         self.viewing_sid = None
         self.dirty_streams.clear()
 
+    def prune_completed(self) -> None:
+        """Drop finished entries from ``tool_widgets`` at a turn boundary so the
+        dict doesn't grow without bound across a long session.
+
+        ``tool_widgets`` is only read mid-run: to look up a tool's widget when its
+        result event arrives, to route a sub-agent's stream/notice events, and to
+        skip the re-emitted call of a gated tool across approval rounds. All three
+        concern *in-flight* calls — a widget whose status has left ``"pending"`` is
+        done and will never be looked up again, so it's pure leak after the turn.
+        We prune at the turn boundary (not per ``on_events`` / approval round) so
+        the cross-round duplicate guard for gated tools still sees its entry while
+        the turn is live.
+
+        ``subagents`` is deliberately NOT pruned: it's the ordered backing list for
+        the Ctrl+X viewer, which is meant to show every foreground sub-agent of the
+        session — so its growth is intended, not a leak."""
+        self.tool_widgets = {
+            tid: w for tid, w in self.tool_widgets.items()
+            if getattr(w, "status", None) == "pending"
+        }
+
     def reset_live_tokens(self) -> None:
         self.live_run_tokens = 0
 

@@ -74,8 +74,49 @@ def _enabled(workspace_root) -> list[ResolvedPlugin]:
     return [p for p in discover_plugins(workspace_root) if p.enabled]
 
 
+def _linked_elevation_revokes_trust(p: ResolvedPlugin) -> bool:
+    """Whether a trusted *linked* plugin has gained executable surface (hooks/MCP)
+    since trust was granted, so its executable contributions must NOT be honored.
+
+    A linked plugin loads from a live, mutable source dir every discovery (unlike
+    a copied/git install). install.py records ``executable_at_install`` on the
+    source when trust is granted; the git-update path drops trust when an update
+    introduces hooks/MCP, but a linked source can grow them silently with no such
+    gate. We close that gap conservatively here: if the *live* manifest now ships
+    executable parts that weren't present at trust time, treat it as untrusted for
+    executable contributions (hooks/MCP) and warn loudly. Inert contributions
+    (skills/agents/instructions) are unaffected — they don't execute code.
+
+    The chosen behavior is "fail safe, don't auto-honor": rather than silently
+    re-trusting newly-appeared executable surface, we withhold it until the user
+    re-confirms trust (e.g. via a reinstall / explicit set_trusted). Only applies
+    to linked plugins; copied/git installs are immutable on disk between updates."""
+    if not p.record.linked:
+        return False
+    baseline = bool(p.record.source.get("executable_at_install"))
+    if baseline:
+        # Executable surface was already present and vetted at trust time; an
+        # in-place edit to an *existing* hook command is a known residual risk of
+        # linking a mutable source the user explicitly trusted, and is out of
+        # scope for this presence-based guard.
+        return False
+    live = has_executable(plugin_bundle_summary(p.manifest))
+    if live:
+        logger.warning(
+            "linked plugin %r gained executable surface (hooks/MCP) after it was "
+            "trusted; refusing to auto-honor it. Re-confirm trust (reinstall or "
+            "re-trust) to enable its hooks/MCP.",
+            p.name,
+        )
+        return True
+    return False
+
+
 def _enabled_trusted(workspace_root) -> list[ResolvedPlugin]:
-    return [p for p in discover_plugins(workspace_root) if p.enabled and p.trusted]
+    return [
+        p for p in discover_plugins(workspace_root)
+        if p.enabled and p.trusted and not _linked_elevation_revokes_trust(p)
+    ]
 
 
 def plugin_skill_roots(workspace_root) -> list[tuple[str, Path]]:

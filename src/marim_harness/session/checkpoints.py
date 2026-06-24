@@ -110,6 +110,10 @@ class CheckpointManager:
         # tree — has no shadow commit, so without this stash a rewind's truncation
         # would be irreversible.
         self._pre_rewind_history: list | None = None
+        # Commit of the safety snapshot captured just before the last undo's file
+        # restore, so a redo/recovery has a baseline for the post-rewind work that
+        # undo would otherwise overwrite.
+        self._pre_undo_commit: str | None = None
         self.reload()
 
     # --- persistence -----------------------------------------------------
@@ -161,6 +165,14 @@ class CheckpointManager:
         session id keeps a rewind in one session from clobbering another's
         recovery point (the bug behind the old shared ``_pre_restore`` ref)."""
         return f"{_REF_PREFIX}/{self._session_id()}/_pre_restore"
+
+    def _pre_undo_ref(self) -> str:
+        """Per-session ref for the safety snapshot taken just before an undo's file
+        restore. Without it, undo_rewind's restore would delete any file created
+        after the rewind (files present now but absent from the pre-restore tree)
+        with no recovery path. Capturing the current tree here makes undo itself
+        recoverable, mirroring how rewind() guards its own restore."""
+        return f"{_REF_PREFIX}/{self._session_id()}/_pre_undo"
 
     def snapshot(self, prompt_preview: str) -> None:
         """Capture a checkpoint of the current state before a turn runs."""
@@ -259,8 +271,23 @@ class CheckpointManager:
             self._pre_rewind_history = None
             undone = True
         if self._pre_restore_commit is not None:
-            if self.snapshotter.restore(self._pre_restore_commit):
-                undone = True
+            # Safety net: undo's restore deletes files present now but absent from
+            # the pre-restore tree — i.e. any work created AFTER the rewind. Snapshot
+            # the current tree first so that post-rewind work is itself recoverable;
+            # if that snapshot can't be captured (git failure), refuse the
+            # destructive restore rather than wipe the new work with no recovery
+            # path. Mirrors how rewind() guards its own restore.
+            pre_undo = self.snapshotter.capture(
+                self._pre_undo_ref(), "pre-undo safety snapshot"
+            )
+            self._pre_undo_commit = pre_undo
+            if pre_undo is not None:
+                if self.snapshotter.restore(self._pre_restore_commit):
+                    undone = True
+            else:
+                logger.debug(
+                    "skipping undo file restore: pre-undo safety snapshot failed"
+                )
             self._pre_restore_commit = None
         return undone
 

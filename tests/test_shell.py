@@ -95,6 +95,59 @@ async def test_bash_timeout_reaps_child_processes(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_bash_timeout_drain_is_bounded(tmp_path: Path, monkeypatch):
+    """After a timeout kills the process, the post-kill drain must finish within a
+    bounded wall-clock budget even when the process keeps flushing short lines: the
+    per-readline timeout resets on every line, so a steady burst would let the drain
+    run forever. We drive run_bash with a fake process whose stdout never EOFs and
+    always returns a line quickly — exactly that pathological burst — and assert the
+    drain loop respects the wall-clock budget instead of looping unbounded.
+
+    A real subprocess can't reproduce this deterministically: a command that streams
+    fast enough to defeat the drain also streams fast enough that the *main* read
+    loop never hits its timeout, so the kill path is never entered. The fake forces
+    the timeout path (returncode set, lines always available) to test the drain in
+    isolation."""
+    import time
+
+    shrunk_budget = 0.3
+    monkeypatch.setattr(shell, "_DRAIN_BUDGET", shrunk_budget)
+
+    class _FloodStdout:
+        """A stdout that always has another line available almost instantly — the
+        burst that resets the per-readline timeout indefinitely."""
+
+        async def readline(self):
+            await asyncio.sleep(0.001)
+            return b"tick\n"
+
+    class _FakeProc:
+        pid = -1  # killpg will raise ProcessLookupError → falls back to .kill()
+        returncode = -9
+        stdout = _FloodStdout()
+
+        def kill(self):
+            pass
+
+        async def wait(self):
+            return -9
+
+    async def _fake_create(*args, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_shell", _fake_create)
+
+    start = time.monotonic()
+    # timeout=0 forces the main read loop straight into the timeout/kill path.
+    out = await shell.run_bash(tmp_path, "irrelevant", timeout=0)
+    elapsed = time.monotonic() - start
+
+    assert "timed out" in out
+    # The drain must honor the wall-clock budget, not loop on the endless burst.
+    assert elapsed < shrunk_budget + 1.0, f"drain not bounded: {elapsed:.2f}s"
+
+
+@pytest.mark.anyio
 async def test_start_bash_output_keeps_head_and_tail(tmp_path: Path):
     """The live-buffer output() path truncates from the middle (head+tail), so a
     pulled live preview still shows the verdict at the end."""

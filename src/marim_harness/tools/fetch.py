@@ -45,13 +45,19 @@ _INLINE_CHAR_LIMIT = 50_000
 _FETCH_DIR = (".marim", "fetch")
 _ALLOWED_SCHEMES = frozenset({"http", "https"})
 
+# "this host" 0/8 (0.0.0.0 routes to localhost on many stacks) and CGNAT
+# 100.64/10 (RFC 6598, carrier-internal) are not public targets — block both
+# alongside the usual loopback/private/link-local ranges.
 _BLOCKED_NETS = [
+    ipaddress.ip_network("0.0.0.0/8"),
     ipaddress.ip_network("127.0.0.0/8"),
     ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("100.64.0.0/10"),
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
     ipaddress.ip_network("169.254.0.0/16"),
     ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("::/128"),          # IPv6 unspecified
     ipaddress.ip_network("fc00::/7"),
     ipaddress.ip_network("fe80::/10"),
 ]
@@ -79,6 +85,11 @@ def _validated_ips(host: str) -> list[str]:
             ip = ipaddress.ip_address(bare)
         except ValueError:
             continue
+        # Normalize IPv4-mapped IPv6 (``::ffff:127.0.0.1``) to its IPv4 form so
+        # it's matched against the IPv4 blocks below — otherwise an attacker can
+        # spell a blocked v4 address in v6 and slip past every v4 net. ``ipv4_mapped``
+        # exists only on IPv6Address (and is None for non-mapped v6), so guard.
+        ip = getattr(ip, "ipv4_mapped", None) or ip
         if any(ip in net for net in _BLOCKED_NETS):
             raise ValueError(
                 f"refusing to fetch {ip} (private/loopback/link-local address)"

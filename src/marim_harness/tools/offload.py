@@ -9,6 +9,8 @@ agent can page with ``read_file``/``grep``. Mirrors ``fetch``'s offload pattern.
 import hashlib
 from pathlib import Path
 
+from ..atomic_io import atomic_write_text
+
 _INLINE_CHAR_LIMIT = 25_000      # at/below this, return inline (~6k tokens)
 # Measured in characters (~bytes for ASCII); producers stop collecting here and callers may offload.
 MAX_OUTPUT_CHARS = 5_000_000
@@ -37,7 +39,11 @@ def _write_handle(content: str, *, kind: str, key: str,
     rel = Path(*_OUTPUT_DIR, f"{kind}-{digest}.txt")
     dest = workspace_root / rel
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(content, encoding="utf-8")
+    # Route through atomic_write_text: the dest is sha-derived, so two concurrent
+    # offloads of the same (kind,key) target the *same* filename — a direct
+    # write_text would let them clobber each other's partial bytes. The atomic
+    # swap (unique temp → os.replace) is exactly what that layer exists to prevent.
+    atomic_write_text(dest, content)
     lines = content.splitlines()
     preview = _make_preview(lines)
     cap_note = (
@@ -59,7 +65,9 @@ def write_preview_file(content: str, *, rel: Path, workspace_root: Path) -> tupl
     line_count) for the caller to format into a handle."""
     dest = workspace_root / rel
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(content, encoding="utf-8")
+    # Atomic swap so concurrent writers to the same sha-derived path can't race on
+    # the shared filename (see _write_handle for the same reasoning).
+    atomic_write_text(dest, content)
     lines = content.splitlines()
     preview = _make_preview(lines)
     return rel.as_posix(), preview, len(lines)

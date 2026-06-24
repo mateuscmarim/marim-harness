@@ -62,6 +62,7 @@ class _FakeSnap:
         self.restore_ok = restore_ok
         self.captured: list[str] = []
         self.restored: list[str] = []
+        self.deleted: list[str] = []
 
     def capture(self, ref: str, message: str) -> str:
         self.captured.append(ref)
@@ -72,7 +73,7 @@ class _FakeSnap:
         return self.restore_ok
 
     def delete(self, ref: str) -> None:
-        pass
+        self.deleted.append(ref)
 
 
 def test_snapshot_records_history_length_and_preview(tmp_path: Path):
@@ -157,6 +158,49 @@ def test_undo_rewind_restores_the_pre_restore_snapshot(tmp_path: Path):
     assert result.pre_restore_commit in snap.restored
 
 
+def test_undo_rewind_captures_a_safety_snapshot_before_its_restore(tmp_path: Path):
+    """Regression: undo_rewind's file restore deletes files created AFTER the
+    rewind with no recovery path. It must first snapshot the current tree (under a
+    per-session _pre_undo ref) so that post-rewind work is itself recoverable —
+    mirroring how rewind() guards its own restore."""
+    s = _session(tmp_path)
+    snap = _FakeSnap()
+    mgr = CheckpointManager(s, snap)
+    mgr.snapshot("t1")
+    s.set_history(["u1", "a1"])
+    mgr.rewind(0)
+    snap.captured.clear()
+    assert mgr.undo_rewind() is True
+    # A pre-undo safety snapshot was captured before the destructive restore.
+    assert any(ref.endswith("sess/_pre_undo") for ref in snap.captured)
+
+
+def test_undo_rewind_refuses_file_restore_when_safety_snapshot_fails(tmp_path: Path):
+    """If the pre-undo safety snapshot can't be captured, undo must NOT run its
+    destructive file restore (which would wipe post-rewind work with no recovery).
+    The conversation half is still recovered from the in-memory stash."""
+
+    class _FailPreUndoSnap(_FakeSnap):
+        def capture(self, ref: str, message: str):
+            self.captured.append(ref)
+            if ref.endswith("_pre_undo"):
+                return None  # safety snapshot can't be taken
+            return f"commit:{ref}"
+
+    s = _session(tmp_path)
+    snap = _FailPreUndoSnap()
+    mgr = CheckpointManager(s, snap)
+    mgr.snapshot("t1")
+    s.set_history(["u1", "a1", "u2", "a2"])
+    mgr.rewind(0)
+    snap.restored.clear()
+    # The conversation is still recoverable from the stash...
+    assert mgr.undo_rewind() is True
+    assert s.history == ["u1", "a1", "u2", "a2"]
+    # ...but the destructive file restore was refused (never attempted).
+    assert snap.restored == []
+
+
 def test_undo_rewind_without_a_prior_rewind_is_a_noop(tmp_path: Path):
     mgr = CheckpointManager(_session(tmp_path), _FakeSnap())
     assert mgr.undo_rewind() is False
@@ -212,6 +256,65 @@ def test_rewind_conversation_only_checkpoint_has_no_pre_restore(tmp_path: Path):
     assert result.restore_failed is False
     assert result.pre_restore_commit is None
     assert snap.captured == []
+
+
+# --- compaction invalidates stale checkpoints --------------------------------
+#
+# Checkpoint.history_len is an ABSOLUTE index into the session history. Compaction
+# replaces history with a shorter, restructured list (summary + tail), so every
+# pre-compaction checkpoint's index now points at the wrong boundary — rewinding
+# to one would slice mid-pair and corrupt the conversation. They must be dropped.
+
+
+def test_invalidate_after_compaction_drops_all_checkpoints(tmp_path: Path):
+    s = _session(tmp_path)
+    mgr = CheckpointManager(s, _FakeSnap())
+    s.set_history(list(range(40)))
+    mgr.snapshot("t1")
+    s.set_history(list(range(45)))
+    mgr.snapshot("t2")
+    # Compaction collapsed 45 messages down to 6; the stored history_len values
+    # (40, 45) are now stale absolute indices.
+    s.set_history(list(range(6)))
+    mgr.invalidate_after_compaction()
+    assert mgr.list() == []
+
+
+def test_invalidate_after_compaction_deletes_git_refs(tmp_path: Path):
+    """The orphaned checkpoints' shadow refs are deleted so they don't leak and
+    block GC (mirrors _prune / rewind cleanup)."""
+    s = _session(tmp_path)
+    snap = _FakeSnap()
+    mgr = CheckpointManager(s, snap)
+    mgr.snapshot("t1")
+    s.set_history(["m0"])
+    mgr.snapshot("t2")
+    mgr.invalidate_after_compaction()
+    assert any(ref.endswith("sess/0") for ref in snap.deleted)
+    assert any(ref.endswith("sess/1") for ref in snap.deleted)
+
+
+def test_snapshot_after_invalidation_starts_a_fresh_index(tmp_path: Path):
+    """Post-compaction the next checkpoint is a clean slate — index restarts at 0
+    (its history_len is correct against the new compacted history)."""
+    s = _session(tmp_path)
+    mgr = CheckpointManager(s, _FakeSnap())
+    mgr.snapshot("t1")
+    s.set_history(["m0"])
+    mgr.snapshot("t2")
+    mgr.invalidate_after_compaction()
+    s.set_history(["s0", "s1"])
+    mgr.snapshot("fresh")
+    cps = mgr.list()
+    assert len(cps) == 1
+    assert cps[0].index == 0
+    assert cps[0].history_len == 2
+
+
+def test_invalidate_after_compaction_is_a_noop_with_no_checkpoints(tmp_path: Path):
+    mgr = CheckpointManager(_session(tmp_path), _FakeSnap())
+    mgr.invalidate_after_compaction()  # must not raise
+    assert mgr.list() == []
 
 
 def test_rewind_drops_later_checkpoints(tmp_path: Path):

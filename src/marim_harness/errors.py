@@ -12,6 +12,7 @@ the model-actionable note in :mod:`marim_harness.agent`.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from .atomic_io import atomic_write_text
@@ -87,8 +88,9 @@ _TRANSIENT_STATUS = frozenset({408, 409, 429, 500, 502, 503, 504})
 
 # Phrases an upstream uses for a transient condition even when OpenRouter has
 # wrapped it in a generic 400 "Provider returned error" — the real cause then
-# rides in the body's message / metadata.raw passthrough.
-_TRANSIENT_MARKERS = (
+# rides in the body's message / metadata.raw passthrough. These are distinctive
+# words, so a plain substring match is safe (none collide with unrelated text).
+_TRANSIENT_PHRASES = (
     "timeout",
     "timed out",
     "overloaded",
@@ -97,10 +99,30 @@ _TRANSIENT_MARKERS = (
     "temporarily",
     "try again",
     "unavailable",
-    "502",
-    "503",
-    "504",
 )
+
+# A transient HTTP status (502/503/504) named *in prose* — e.g. "upstream
+# returned 503" or "HTTP 502 Bad Gateway". Matched with a regex rather than a
+# bare substring so we don't misread an unrelated number that happens to contain
+# those digits (a byte count like 65029, a request id "req-503812", a timestamp).
+# Two precise shapes count: (a) a status word ("status"/"code"/"http"/"error")
+# within a few chars before the code, or (b) the code immediately followed by its
+# canonical reason phrase. Both require the three digits to stand alone as a token
+# (no surrounding digits), which alone already rules out the "65029" class of
+# false positives.
+_TRANSIENT_STATUS_RE = re.compile(
+    r"(?:\b(?:status|code|http|error)\b[^0-9]{0,8}(?:50[234])(?![0-9]))"
+    r"|(?:\b(?:50[234])\b\s*(?:bad gateway|service unavailable|gateway time))"
+)
+
+
+def _text_signals_transient(haystack: str) -> bool:
+    """Whether ``haystack`` (already lowercased) names a transient condition: a
+    distinctive transient phrase, or a 502/503/504 status named in prose. Kept
+    precise so unrelated numbers/text don't trigger a spurious retry."""
+    if any(phrase in haystack for phrase in _TRANSIENT_PHRASES):
+        return True
+    return _TRANSIENT_STATUS_RE.search(haystack) is not None
 
 
 def _find_model_http_error(exc: BaseException):
@@ -166,7 +188,7 @@ def _body_signals_transient(body) -> bool:
         return True
     message = body.get("message") if isinstance(body, dict) else None
     haystack = " ".join([str(message or ""), str(raw or "")]).lower()
-    return any(marker in haystack for marker in _TRANSIENT_MARKERS)
+    return _text_signals_transient(haystack)
 
 
 def is_transient_model_error(exc: BaseException) -> bool:

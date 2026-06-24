@@ -10,7 +10,7 @@ from pathlib import Path
 from pydantic_ai.messages import ModelMessagesTypeAdapter
 from pydantic_ai.usage import RunUsage
 
-from ..atomic_io import atomic_write_text
+from ..atomic_io import atomic_write_text, file_lock
 from ..images import externalize_images, rehydrate_images
 
 logger = logging.getLogger(__name__)
@@ -111,7 +111,12 @@ class SessionStore:
         messages_json = json.loads(ModelMessagesTypeAdapter.dump_json(history))
         messages_json = externalize_images(messages_json, self.session_id)
         payload["messages"] = messages_json
-        atomic_write_text(self.path, json.dumps(payload))
+        # Serialize same-session saves across processes (TUI + headless, or two
+        # runs) with a best-effort advisory lock. Without it, two writers racing
+        # on the same session_id last-writer-wins on os.replace and a whole
+        # conversation can be silently overwritten.
+        with file_lock(self.path):
+            atomic_write_text(self.path, json.dumps(payload))
 
     def load(self) -> tuple[list, RunUsage, list, float | None]:
         """Return ``(messages, usage, tasks, duration_seconds)``. Files written

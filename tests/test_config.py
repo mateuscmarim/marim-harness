@@ -352,3 +352,70 @@ def test_wake_depth_cap_reads_env(monkeypatch):
     monkeypatch.setenv("MARIM_WAKE_DEPTH_CAP", "5")
     monkeypatch.setenv("MARIM_PROVIDER", "openrouter")
     assert load_config().wake_depth_cap == 5
+
+
+def test_load_environment_survives_malformed_project_env(
+    isolated_env, monkeypatch, tmp_path, caplog
+):
+    """A corrupt/hostile project .env (runs on cloned repos) must not crash
+    startup: load_environment logs a warning and continues, and a good global
+    fallback still applies."""
+    from unittest.mock import patch
+
+    cfg_home = tmp_path / "xdg"
+    (cfg_home / "marim").mkdir(parents=True)
+    (cfg_home / "marim" / ".env").write_text("MARIM_MODEL=global-model\n")
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".env").write_text("garbage not a dotenv\n")
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(cfg_home))
+    monkeypatch.chdir(proj)
+    monkeypatch.delenv("MARIM_MODEL", raising=False)
+
+    # Force the project parse to raise to prove the guard catches *any* failure,
+    # not just whatever dotenv happens to tolerate. env.py imports dotenv_values
+    # locally from `dotenv`, so patch it at the source module.
+    with (
+        patch("dotenv.dotenv_values", side_effect=ValueError("corrupt .env")),
+        caplog.at_level("WARNING", logger="marim_harness.config.env"),
+    ):
+        load_environment()  # must not raise
+
+    assert any("project .env" in r.message for r in caplog.records)
+    # global fallback still applied despite the broken project file
+    assert os.environ["MARIM_MODEL"] == "global-model"
+
+
+@pytest.mark.parametrize("key", ["MARIM_MAX_CONTEXT_TOKENS", "MARIM_WAKE_DEPTH_CAP"])
+@pytest.mark.parametrize("bad", ["-5", "0", "abc", "1.5", "  "])
+def test_load_environment_drops_invalid_positive_int(
+    isolated_env, monkeypatch, tmp_path, key, bad
+):
+    """Negative/zero/non-integer numeric knobs are dropped so the downstream
+    reader falls back to its default."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(key, bad)
+    load_environment()
+    assert key not in os.environ
+
+
+@pytest.mark.parametrize("key", ["MARIM_MAX_CONTEXT_TOKENS", "MARIM_WAKE_DEPTH_CAP"])
+def test_load_environment_keeps_valid_positive_int(isolated_env, monkeypatch, tmp_path, key):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(key, "42")
+    load_environment()
+    assert os.environ[key] == "42"
+
+
+def test_load_environment_invalid_int_falls_back_to_default(isolated_env, monkeypatch, tmp_path):
+    """End-to-end: a bad MARIM_MAX_CONTEXT_TOKENS yields the built-in default in
+    the resolved config (not the garbage value)."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setenv("MARIM_MAX_CONTEXT_TOKENS", "-9")
+    load_environment()
+    assert load_config().max_context_tokens == 100_000

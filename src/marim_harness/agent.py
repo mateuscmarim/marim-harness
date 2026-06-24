@@ -329,6 +329,16 @@ class Harness:
         # One-shot context returned by a SessionStart hook, prepended to the next
         # turn's prompt and consumed there (mirrors _pending_error_note).
         self._pending_hook_context: str | None = None
+        # A finished-jobs digest re-stashed after a failed turn. The digest is
+        # normally drained from deps.jobs at assembly time (clearing that buffer),
+        # so a turn that then fails would lose it forever; we capture it for this
+        # turn and re-stash it here on failure so the next turn re-emits it. None
+        # when there's nothing carried over (the common path drains live).
+        self._pending_jobs_digest: str | None = None
+        # What this turn's _assemble_prompt consumed (hook context + jobs digest),
+        # held only for the duration of the run so the failure path can restore
+        # the one-shot consumables. See _assemble_prompt / run_turn.
+        self._consumed_this_turn: tuple[str | None, str | None] = (None, None)
         # Live RunContext of the in-flight turn, captured by the event-stream
         # handler wrapper; None between turns. A steer enqueues onto it.
         self._active_run_ctx: RunContext[Deps] | None = None
@@ -538,18 +548,31 @@ class Harness:
         checklist = render_checklist_block(self.deps.tasks.items)
         if checklist:
             prompt = f"{checklist}\n\n{prompt}"
-        digest = self.deps.jobs.take_finished_digest()
+        # The finished-jobs digest. Prefer one re-stashed by a previously-failed
+        # turn (so it isn't lost); otherwise drain the live buffer. Draining
+        # clears deps.jobs's finished-since-turn state, so a turn that then fails
+        # would forget it — we capture what we consumed (below) and the failure
+        # path re-stashes it so the next turn re-emits it.
+        digest = self._pending_jobs_digest or self.deps.jobs.take_finished_digest()
+        self._pending_jobs_digest = None
         if digest:
             prompt = f"{digest}\n\n{prompt}"
         # Surface the prior turn's actionable failure (if any) once, so the model
-        # can correct course rather than blindly retrying. Consumed here.
+        # can correct course rather than blindly retrying. Consumed here. Not
+        # re-stashed on failure: the new failure overwrites it with its own note.
         if self._pending_error_note:
             prompt = f"{self._pending_error_note}\n\n{prompt}"
             self._pending_error_note = None
         # Prepend any SessionStart-injected context, once.
+        hook_context = self._pending_hook_context
         if self._pending_hook_context:
             prompt = f"{self._pending_hook_context}\n\n{prompt}"
             self._pending_hook_context = None
+        # Record the one-shot consumables (hook context + jobs digest) for this
+        # turn so the run-failure path in run_turn can restore them — they're only
+        # truly "delivered" if the run reaches the model successfully. The error
+        # note is deliberately excluded (a fresh failure replaces it).
+        self._consumed_this_turn = (hook_context, digest or None)
         # Fire UserPromptSubmit and prepend any context it returns.
         ctx = await self.hooks.user_prompt_submit(prompt)
         if ctx:
@@ -706,6 +729,12 @@ class Harness:
             # delivered to the next round's fresh ctx, rather than being enqueued
             # onto a completed RunContext.
             self._active_run_ctx = None
+            # The run reached the model and returned, so this turn's one-shot
+            # consumables (hook context / jobs digest) were genuinely delivered.
+            # Clear the restore-on-failure stash so a later approval-round failure
+            # doesn't re-emit context the model already saw. Idempotent across
+            # rounds — only the first success matters.
+            self._consumed_this_turn = (None, None)
             self.session.history = result.all_messages()
             self.session.usage += result.usage
             if isinstance(result.output, DeferredToolRequests):
@@ -781,5 +810,20 @@ class Harness:
                 user_prompt, deferred_results=None, toolsets=toolsets,
                 event_stream_handler=event_stream_handler, resumable=resumable,
             )
+        except BaseException:
+            # The run never reached the model (it failed before the first round
+            # returned, so _run_with_approval left _consumed_this_turn set). The
+            # one-shot consumables we drained at assembly — SessionStart hook
+            # context and the finished-jobs digest — would otherwise be lost
+            # forever; re-stash them so the next turn re-emits them. After a
+            # successful round the stash is already cleared, so a later
+            # approval-round failure restores nothing (the model already saw it).
+            hook_context, jobs_digest = self._consumed_this_turn
+            self._consumed_this_turn = (None, None)
+            if hook_context and not self._pending_hook_context:
+                self._pending_hook_context = hook_context
+            if jobs_digest and not self._pending_jobs_digest:
+                self._pending_jobs_digest = jobs_digest
+            raise
         finally:
             self._active_run_ctx = None

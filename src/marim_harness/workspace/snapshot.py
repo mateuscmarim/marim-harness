@@ -78,17 +78,28 @@ class GitSnapshotter:
             logger.debug("checkpoint capture failed: %s", exc.stderr or exc)
             return None
 
+    @staticmethod
+    def _split_nul(out: str) -> set[str]:
+        """Split NUL-delimited git output into a set of paths. Using ``-z`` and
+        splitting on ``\\0`` (not ``.splitlines()``) keeps a filename containing
+        a newline from being shattered into bogus entries — critical here because
+        this set drives a *delete* path, where a misparse could unlink the wrong
+        file. The trailing NUL leaves an empty final field, which we drop."""
+        return {p for p in out.split("\0") if p}
+
     def _tree_files(self, commit: str) -> set[str]:
-        out = self._run("ls-tree", "-r", "--name-only", commit)
-        return set(out.splitlines()) if out else set()
+        # -z: NUL-delimited, newline-safe filenames (see _split_nul).
+        out = self._run("ls-tree", "-r", "-z", "--name-only", commit)
+        return self._split_nul(out) if out else set()
 
     def _present_files(self) -> set[str]:
-        tracked = self._run("ls-files")
-        untracked = self._run("ls-files", "--others", "--exclude-standard")
-        files = set()
+        # -z on both listings so filenames with newlines survive the parse.
+        tracked = self._run("ls-files", "-z")
+        untracked = self._run("ls-files", "-z", "--others", "--exclude-standard")
+        files: set[str] = set()
         for blob in (tracked, untracked):
             if blob:
-                files.update(blob.splitlines())
+                files.update(self._split_nul(blob))
         return files
 
     def delete(self, ref: str) -> None:
@@ -116,15 +127,30 @@ class GitSnapshotter:
             #    blanket clean. Git-ignored files are excluded by _present_files
             #    and intentionally left untouched.
             target = self._tree_files(commit)
+            failed: list[str] = []
             for rel in self._present_files() - target:
-                with contextlib.suppress(OSError):
+                try:
                     (self.workspace_root / rel).unlink()
+                except FileNotFoundError:
+                    pass  # already gone — that's the goal, not a failure
+                except OSError as exc:
+                    # Couldn't delete a file that should be absent after restore.
+                    # Don't swallow it: a partial restore left a stale file behind,
+                    # so we must not report success (the bug behind the old blanket
+                    # suppress(OSError) + unconditional True).
+                    failed.append(rel)
+                    logger.debug("checkpoint restore could not remove %s: %s", rel, exc)
             # 2. Restore tracked + untracked content via a throwaway index, so
             #    the user's real index/HEAD are untouched.
             with _temp_index() as idx:
                 env = {**os.environ, "GIT_INDEX_FILE": idx}
                 self._run("read-tree", commit, env=env)
                 self._run("checkout-index", "-a", "-f", env=env)
+            if failed:
+                logger.debug(
+                    "checkpoint restore left %d file(s) behind: %s", len(failed), failed
+                )
+                return False
             return True
         except subprocess.CalledProcessError as exc:
             logger.debug("checkpoint restore failed: %s", exc.stderr or exc)

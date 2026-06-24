@@ -50,3 +50,48 @@ def test_no_workspace_clips_instead_of_offloading(monkeypatch):
     assert "saved to" not in out
     assert len(out) < 200
     assert "clipped" in out.lower()
+
+
+def test_write_handle_goes_through_atomic_layer(tmp_path: Path, monkeypatch):
+    """_write_handle must route through atomic_write_text (unique temp + os.replace)
+    rather than a direct dest.write_text, so two concurrent writers to the same
+    sha-derived path can't clobber each other. Spy on the atomic helper to prove it
+    is used, and confirm the on-disk content is exactly what was passed."""
+    calls: list[tuple[Path, str]] = []
+    real = offload.atomic_write_text
+
+    def _spy(path, text, **kw):
+        calls.append((Path(path), text))
+        return real(path, text, **kw)
+
+    monkeypatch.setattr(offload, "atomic_write_text", _spy)
+    content = "exact content\nsecond line\n"
+    out = offload._write_handle(content, kind="grep", key="k",
+                                workspace_root=tmp_path, capped=False)
+    assert calls, "atomic_write_text was not used"
+    written_path, written_text = calls[0]
+    assert written_text == content
+    assert written_path.read_text() == content
+    assert "full output saved to" in out
+
+
+def test_write_preview_file_goes_through_atomic_layer(tmp_path: Path, monkeypatch):
+    """write_preview_file (used by fetch's offload) must also use atomic_write_text,
+    and the file must hold the exact content."""
+    calls: list[tuple[Path, str]] = []
+    real = offload.atomic_write_text
+
+    def _spy(path, text, **kw):
+        calls.append((Path(path), text))
+        return real(path, text, **kw)
+
+    monkeypatch.setattr(offload, "atomic_write_text", _spy)
+    content = "preview body line A\nline B\n"
+    rel = Path(".marim", "fetch", "abc123.md")
+    rel_posix, preview, n_lines = offload.write_preview_file(
+        content, rel=rel, workspace_root=tmp_path)
+    assert calls, "atomic_write_text was not used"
+    assert calls[0][1] == content
+    assert (tmp_path / rel).read_text() == content
+    assert rel_posix == rel.as_posix()
+    assert "line A" in preview

@@ -1,24 +1,90 @@
 """Persist a small set of MARIM_* settings to the global .env so they take
 effect on the next launch. Update-or-append per key, preserving comments and
 any unmanaged keys; the in-process os.environ is mirrored so a later
-load_config() in the same process reflects the save."""
+load_config() in the same process reflects the save.
 
+This module is the single source of truth for *how* a managed .env line is
+written. Both writers — the TUI's ``save_env_settings`` and the CLI's
+``marim config set`` — route through ``write_env_values`` so a value with a
+space or a ``#`` round-trips and the file lands atomically with secret-safe
+permissions. (An earlier version had the TUI path use ``set_key(...,
+quote_mode="never")``, a non-atomic in-place write that silently truncated such
+values at the first ``#``.)"""
+
+import contextlib
 import os
 from pathlib import Path
-
-from dotenv import set_key
 
 from .env import global_config_path
 
 
+def _format_value(value: str) -> str:
+    """Render a value for a dotenv line, quoting only when a bare value would not
+    survive reload. dotenv strips an unquoted value at the first ``#`` (inline
+    comment) and trims surrounding whitespace, so a value containing whitespace,
+    ``#``, or quote chars must be double-quoted (with ``\\`` and ``"`` escaped).
+    Simple values (model ids, booleans, keys) stay unquoted as before."""
+    if any(c in value for c in ' \t#"\'\n\r'):
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    return value
+
+
+def _secure(path: Path) -> None:
+    """Restrict the .env file to owner read/write (0600). It holds secrets such
+    as OPENROUTER_API_KEY, so it must not be world-readable. Best-effort: chmod
+    is meaningless on platforms (e.g. Windows) whose filesystems don't carry
+    POSIX permission bits, so a failure there is swallowed rather than breaking
+    the save."""
+    with contextlib.suppress(OSError, NotImplementedError):
+        os.chmod(path, 0o600)
+
+
+def write_env_values(values: dict[str, str], target: Path) -> None:
+    """Write each ``key=value`` in ``values`` into the dotenv file at ``target``,
+    updating a key's line in place if it already exists and preserving every
+    other line (comments and unmanaged keys). Writes the whole file atomically
+    (temp file + ``replace``) so a crash mid-write can't truncate the config, and
+    secures the result to 0600 since it may hold secrets.
+
+    This is the one correct writer; ``save_env_settings`` (TUI) and the CLI
+    ``_persist`` both delegate here so their on-disk format and durability match."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    existing = target.read_text(encoding="utf-8").splitlines() if target.exists() else []
+    new_lines = list(existing)
+
+    for key, value in values.items():
+        line = f"{key}={_format_value(value)}"
+        replaced = False
+        for i, raw in enumerate(new_lines):
+            stripped = raw.lstrip()
+            # Match `KEY=` or `export KEY=` for the same key.
+            head = stripped[len("export ") :] if stripped.startswith("export ") else stripped
+            if head.split("=", 1)[0].strip() == key:
+                new_lines[i] = line
+                replaced = True
+                break
+        if not replaced:
+            new_lines.append(line)
+
+    tmp = target.with_name(target.name + ".tmp")
+    tmp.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    # Secure the temp file before the rename so the secret is never briefly
+    # exposed under a world-readable mode at the final path.
+    _secure(tmp)
+    tmp.replace(target)
+    _secure(target)
+
+
 def save_env_settings(values: dict[str, str], path: Path | None = None) -> Path:
     """Write each ``key=value`` in ``values`` into the global .env (or ``path``),
-    creating the file and its parent directory if needed. Values are written
-    unquoted. Returns the path written."""
+    creating the file and its parent directory if needed. Values are quoted only
+    when needed to survive reload, the write is atomic, and the file is secured
+    to 0600. Mirrors each value into ``os.environ`` so a later ``load_config()``
+    in the same process reflects the save. Returns the path written."""
     target = path or global_config_path()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.touch(exist_ok=True)
+    write_env_values(values, target)
     for key, value in values.items():
-        set_key(str(target), key, value, quote_mode="never")
         os.environ[key] = value
     return target

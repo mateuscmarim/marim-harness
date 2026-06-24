@@ -140,6 +140,63 @@ def test_delete_rejects_ref_outside_marim_namespace(tmp_path: Path):
         GitSnapshotter(repo).delete("refs/heads/main")
 
 
+def test_restore_handles_filename_with_newline(tmp_path: Path):
+    """Regression: parsing ls-tree/ls-files with .splitlines() shatters a filename
+    containing a newline into bogus entries — and since this drives a DELETE path,
+    it could unlink the wrong file. With NUL-delimited (-z) parsing, a snapshot of
+    a newline-named file restores correctly and a post-checkpoint newline-named
+    file is removed."""
+    repo = _init_repo(tmp_path)
+    snap = GitSnapshotter(repo)
+    weird = "a\nb.txt"  # filename with an embedded newline
+    (repo / weird).write_text("captured\n")
+    commit = snap.capture("refs/marim/checkpoints/s/0", "cp 0")
+    assert commit
+    # Mutate after the checkpoint, then restore: the snapshot's content must come
+    # back and the newline-named file must not be misparsed/deleted.
+    (repo / weird).write_text("CHANGED\n")
+    assert snap.restore(commit) is True
+    assert (repo / weird).read_text() == "captured\n"
+
+
+def test_present_files_parses_newline_names_without_splitting(tmp_path: Path):
+    """_present_files must treat a newline-containing name as ONE path, not two."""
+    repo = _init_repo(tmp_path)
+    weird = "x\ny.txt"
+    (repo / weird).write_text("hi\n")
+    present = GitSnapshotter(repo)._present_files()
+    assert weird in present
+    # The bogus fragments a .splitlines() parse would have produced are absent.
+    assert "x" not in present
+    assert "y.txt" not in present
+
+
+def test_restore_returns_false_when_a_stale_file_cannot_be_removed(
+    tmp_path: Path, monkeypatch
+):
+    """Regression: the delete loop suppressed OSError and still returned True, so a
+    partial restore (a file that couldn't be removed) was reported as success. Now
+    an unlink failure surfaces as restore()==False."""
+    import pathlib
+
+    repo = _init_repo(tmp_path)
+    snap = GitSnapshotter(repo)
+    commit = snap.capture("refs/marim/checkpoints/s/0", "cp 0")
+    # Create a file AFTER the checkpoint; restore would try to delete it.
+    (repo / "after.txt").write_text("created post-checkpoint\n")
+
+    real_unlink = pathlib.Path.unlink
+
+    def flaky_unlink(self, *a, **k):
+        if self.name == "after.txt":
+            raise PermissionError("cannot remove")
+        return real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(pathlib.Path, "unlink", flaky_unlink)
+    # The unlink of after.txt fails -> partial restore -> must report False.
+    assert snap.restore(commit) is False
+
+
 def test_capture_restore_act_on_linked_worktree(tmp_path: Path):
     """Regression: GitSnapshotter(wt) must capture/restore the LINKED worktree,
     not the main worktree toplevel returned by repo_root()."""

@@ -5,6 +5,7 @@ import json
 import sys
 
 from ...config import global_config_path, load_config
+from ...config.persist import write_env_values
 
 # Keys that may be persisted to the global config file. Anything else is
 # rejected so a typo can't silently write an ignored line.
@@ -65,45 +66,12 @@ def _cmd_show(args, *, out, err) -> int:
     return 0
 
 
-def _format_value(value: str) -> str:
-    """Render a value for a dotenv line, quoting only when a bare value would not
-    survive reload. dotenv strips an unquoted value at the first ``#`` (inline
-    comment) and trims surrounding whitespace, so a value containing whitespace,
-    ``#``, or quote chars must be double-quoted (with ``\\`` and ``"`` escaped).
-    Simple values (model ids, booleans, keys) stay unquoted as before."""
-    if any(c in value for c in ' \t#"\'\n\r'):
-        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-        return f'"{escaped}"'
-    return value
-
-
 def _persist(key: str, value: str) -> None:
     """Write ``KEY=VALUE`` to the global config file, updating the line in place
-    if the key already exists and preserving all other lines. Writes atomically
-    (temp file + ``replace``) so a crash mid-write can't truncate the config."""
-    path = global_config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    line = f"{key}={_format_value(value)}"
-    existing = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-
-    replaced = False
-    new_lines = []
-    for raw in existing:
-        stripped = raw.lstrip()
-        # Match `KEY=` or `export KEY=` for the same key.
-        head = stripped[len("export ") :] if stripped.startswith("export ") else stripped
-        if head.split("=", 1)[0].strip() == key:
-            new_lines.append(line)
-            replaced = True
-        else:
-            new_lines.append(raw)
-    if not replaced:
-        new_lines.append(line)
-
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    if the key already exists and preserving all other lines. Delegates to the
+    shared ``write_env_values`` writer so the CLI and TUI paths produce identical
+    on-disk output: quoted-when-needed, atomic (temp + ``replace``), 0600."""
+    write_env_values({key: value}, global_config_path())
 
 
 def _cmd_set(args, *, out, err) -> int:
