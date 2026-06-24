@@ -30,6 +30,10 @@ _TARGET_ARG = {
     "read_file": "path", "write_file": "path", "edit_file": "path",
     "bash": "command", "grep": "pattern", "glob": "pattern", "tree": "path",
     "wait_for_job": "id", "web_search": "query", "fetch_url": "url",
+    # Pin the memory tools' targets to the title/name: their args also carry a
+    # multi-line `body`, so the order-dependent "first meaningful arg" fallback
+    # could otherwise surface a chunk of memory text instead of the title.
+    "remember": "title", "recall": "name",
 }
 
 
@@ -105,6 +109,10 @@ def _badges(tool_name: str, args: dict) -> tuple[str, ...]:
         out.append("bg")
     if tool_name == "grep" and args.get("path"):
         out.append(f"in {args['path']}")
+    # A global memory write/read hits the user-wide config dir, not this repo —
+    # surface that, since project scope (the default) is the silent common case.
+    if tool_name in ("remember", "recall") and args.get("scope") == "global":
+        out.append("global")
     return tuple(out)
 
 

@@ -83,6 +83,38 @@ def test_update_tasks_empty_is_label_only():
     assert s == ToolSummary(label="Update Tasks", target="", badges=())
 
 
+def test_remember_targets_title_regardless_of_arg_order():
+    # The model may emit `body` first; the header must still show the title, not
+    # a chunk of the multi-line memory body.
+    args = {
+        "body": "## Detail\nlots of text\nmore text",
+        "title": "User prefers uv",
+        "description": "The user prefers uv for Python envs.",
+        "scope": "project",
+        "type": "user",
+    }
+    s = summarize("remember", args)
+    assert s.label == "Remember"
+    assert s.target == "User prefers uv"
+    assert s.badges == ()  # project scope is the silent default
+
+
+def test_remember_global_scope_becomes_a_badge():
+    s = summarize(
+        "remember",
+        {"title": "User's name is Mateus", "body": "x", "scope": "global"},
+    )
+    assert s.target == "User's name is Mateus"
+    assert s.badges == ("global",)
+
+
+def test_recall_targets_name_and_flags_global_scope():
+    s = summarize("recall", {"name": "User's name is Mateus", "scope": "global"})
+    assert s.label == "Recall"
+    assert s.target == "User's name is Mateus"
+    assert s.badges == ("global",)
+
+
 def test_humanize_tool_maps_known_and_titlecases_unknown():
     assert humanize_tool("read_file") == "Read"
     assert humanize_tool("spawn_agent") == "Spawn Agent"
