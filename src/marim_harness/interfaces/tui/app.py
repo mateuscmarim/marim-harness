@@ -38,6 +38,8 @@ from .widgets import (
     NoticeMessage,
     PromptInput,
     QueuePanel,
+    SubAgentFooter,
+    SubAgentList,
     SummaryWidget,
     TaskPanel,
     TurnMeta,
@@ -75,6 +77,7 @@ class HarnessApp(App):
     BINDINGS = [
         ("ctrl+t", "cycle_mode", "Cycle mode"),
         ("ctrl+o", "toggle_outputs", "Show all output"),
+        ("ctrl+x", "toggle_subagents", "Subagents"),
         ("escape", "cancel_turn", "Cancel turn"),
         ("ctrl+r", "run_queued", "Run queued"),
         ("ctrl+c", "quit", "Quit"),
@@ -121,6 +124,10 @@ class HarnessApp(App):
         # completion pings exactly once, independent of the autonomous-wake path.
         self._notified_jobs: set[str] = set()
         self._autocomplete: CommandAutocomplete | None = None
+        # Full-screen sub-agent viewer state: whether it's open and which spawned
+        # sub-agent (index into stream.subagents) is on screen.
+        self.subagent_viewer_open = False
+        self.subagent_index = 0
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -131,6 +138,11 @@ class HarnessApp(App):
         yield Static(self.status.status_text(), id="status-bar")
         yield CommandAutocomplete(id="cmd-autocomplete")
         yield PromptInput(history=self._history)
+        # The full-screen sub-agent viewer chrome (hidden until ctrl+x). The
+        # transcript itself is revealed in place on each SubAgentWidget.body; these
+        # two are the side-panel list and the status footer that frame it.
+        yield SubAgentList()
+        yield SubAgentFooter(id="subagent-footer")
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -329,6 +341,96 @@ class HarnessApp(App):
         """Ctrl+O: reveal every tool output in full (expand groups, uncap edit
         diffs), or restore the default view on a second press."""
         self.stream.toggle_reveal_all()
+
+    # --- Sub-agent full-screen viewer (ctrl+x) ---
+
+    def action_toggle_subagents(self) -> None:
+        """Ctrl+X: open the full-screen sub-agent viewer (or close it if open)."""
+        if self.subagent_viewer_open:
+            self._close_subagents()
+        else:
+            self._open_subagents()
+
+    def action_close_subagents(self) -> None:
+        """Leave the viewer (bound to up/esc/ctrl+x on the focused side panel)."""
+        self._close_subagents()
+
+    def action_subagent_prev(self) -> None:
+        if self.subagent_viewer_open:
+            self.subagent_index -= 1
+            self._apply_subagent_view()
+
+    def action_subagent_next(self) -> None:
+        if self.subagent_viewer_open:
+            self.subagent_index += 1
+            self._apply_subagent_view()
+
+    def _open_subagents(self) -> None:
+        subs = self.stream.subagents
+        if not subs:
+            self.query_one("#log", VerticalScroll).mount(
+                NoticeMessage("No sub-agents spawned yet — nothing to view.")
+            )
+            return
+        self.subagent_viewer_open = True
+        # Open on the most recent spawn (the one you most likely just watched).
+        self.subagent_index = len(subs) - 1
+        self.query_one(SubAgentList).display = True
+        self.query_one("#subagent-footer", SubAgentFooter).display = True
+        self._apply_subagent_view()
+        self.query_one(SubAgentList).focus()
+
+    def _close_subagents(self) -> None:
+        self.subagent_viewer_open = False
+        self.stream.viewing_sid = None
+        for w in self.stream.subagents:
+            w.body.remove_class("viewing")
+            w.body.display = False
+        try:
+            self.query_one(SubAgentList).display = False
+            self.query_one("#subagent-footer", SubAgentFooter).display = False
+        except NoMatches:
+            pass
+        self.query_one(PromptInput).focus()
+
+    def _apply_subagent_view(self) -> None:
+        """Reveal the selected sub-agent's transcript in place and repaint the list
+        and footer. Clamps the index and closes the viewer if the list is empty."""
+        subs = self.stream.subagents
+        if not subs:
+            self._close_subagents()
+            return
+        self.subagent_index = max(0, min(self.subagent_index, len(subs) - 1))
+        current = subs[self.subagent_index]
+        # Exactly one transcript carries the overlay (`viewing`) class + display at a
+        # time; the rest stay hidden inline. Never reparented — just toggled.
+        for i, w in enumerate(subs):
+            if i == self.subagent_index:
+                w.body.add_class("viewing")
+                w.body.display = True
+            else:
+                w.body.remove_class("viewing")
+                w.body.display = False
+        self.stream.viewing_sid = current.stream_id
+        self.query_one(SubAgentList).show_subagents(subs, self.subagent_index)
+        self.query_one("#subagent-footer", SubAgentFooter).show_status(
+            current.agent_type, self.subagent_index, len(subs),
+            self._subagent_spend(current),
+        )
+        # Render the just-revealed transcript now rather than waiting for the next
+        # flush tick (its streams were skipped while it wasn't being viewed).
+        self.stream.flush_streams()
+
+    def _subagent_spend(self, widget) -> str:
+        """A compact ``{tokens} ({pct}%)`` spend tag for the footer, where pct is the
+        share of the model's context window; empty until the spawn is metered."""
+        if not widget.tokens:
+            return ""
+        max_ctx = getattr(self.harness.session, "max_context_tokens", 0) or 0
+        tag = human_tokens(widget.tokens)
+        if max_ctx:
+            tag += f" ({round(widget.tokens / max_ctx * 100)}%)"
+        return tag
 
     def watch_theme(self, theme: str) -> None:
         """Persist the active theme so it's the startup theme next run. Only the

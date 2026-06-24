@@ -1,84 +1,188 @@
-"""The spawned sub-agent widget: a collapsible whose title summarizes the
-delegation (and live activity / token spend) and whose body streams the
-sub-agent's own text and tool calls as they arrive."""
+"""The spawned sub-agent widget.
 
-from textual.containers import Vertical
+Inline in the log it is a *compact card*: a single-line header
+``{glyph} {type} Task — {title}`` (a title derived from the prompt, clipped with an
+ellipsis) plus an indented activity line. While the agent runs the activity line
+shows the *current* tool (``↳ Read src/foo.py``); once it finishes it collapses to
+the run summary (``↳ 45 toolcalls · 1m 18s``). The glyph animates while running
+(✓/✕ when done). The card text is muted, brightening to white on hover. The
+agent's full transcript streams into ``self.body``, a scroll container that
+stays mounted but ``display:none`` — the full-screen viewer reveals it in
+place by adding the ``viewing`` class (see ``subagent_viewer`` and the app's
+``action_toggle_subagents``). Nothing is ever reparented, so a live stream keeps
+mounting into the same container whether or not it is being viewed."""
+
+import time
+
+from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
-from textual.widgets import Collapsible, Static
+from textual.widgets import Static
 
-from .format import human_tokens
+# Working-glyph animation frames (matches the status bar spinner) shown while the
+# sub-agent is still running; a finished agent shows a static ✓/✕ instead.
+_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+_SPINNER_TICK = 0.1
+
+# Friendly verbs for the activity line's current-tool display; unknown tools fall
+# back to a title-cased form of their raw name (e.g. spawn_agent → "Spawn Agent").
+_TOOL_LABELS = {
+    "read_file": "Read", "write_file": "Write", "edit_file": "Edit", "bash": "Bash",
+    "grep": "Grep", "glob": "Glob", "tree": "Tree", "web_search": "Search",
+    "fetch_url": "Fetch", "goto_definition": "Definition",
+    "find_references": "References", "hover": "Hover", "document_symbols": "Symbols",
+    "workspace_symbols": "Symbols", "diagnostics": "Diagnostics",
+}
 
 
-class SubAgentWidget(Collapsible):
-    """A spawned sub-agent: the title summarizes the delegation; the (expanded)
-    body is a live stream of the sub-agent's own text and tool calls, mounted as
-    child widgets as its events arrive."""
+def humanize_tool(name: str) -> str:
+    """A short, friendly verb for a tool call (``read_file`` → ``Read``)."""
+    return _TOOL_LABELS.get(name) or name.replace("_", " ").title()
 
-    DEFAULT_CSS = """
-    SubAgentWidget .subagent-usage {
-        color: $text-muted;
-    }
-    """
+
+def _fmt_duration(seconds: float) -> str:
+    """Compact run duration: ``45s`` under a minute, else ``1m 18s``."""
+    s = int(seconds)
+    if s < 60:
+        return f"{s}s"
+    return f"{s // 60}m {s % 60}s"
+
+
+# Boundaries a verbose spawn prompt is cut at to derive a card title — the first
+# sentence/clause usually reads as a good title ("Provide a structural overview of
+# the codebase. Include: …" → "Provide a structural overview of the codebase").
+_TITLE_SEPS = (". ", ": ", "; ", " - ", " — ", "\n")
+_TITLE_MAX = 80
+
+
+def derive_title(task: str) -> str:
+    """Condense a (possibly multi-paragraph) spawn prompt into a one-line title:
+    take the text up to the first sentence/clause boundary, clipped to a sane
+    length. Falls back to the whole (whitespace-collapsed) task when it has no such
+    boundary; the card's CSS further clips it to the available width."""
+    text = " ".join(task.split())
+    cut = len(text)
+    for sep in _TITLE_SEPS:
+        i = text.find(sep)
+        if 0 <= i < cut:
+            cut = i
+    title = text[:cut].rstrip(" .:;-—") or text
+    if len(title) > _TITLE_MAX:
+        title = title[: _TITLE_MAX - 1] + "…"
+    return title or "(task)"
+
+
+class SubAgentWidget(Vertical):
+    """A spawned sub-agent rendered as a compact card. The header summarizes the
+    delegation and live status; ``self.body`` holds the streamed transcript, hidden
+    inline and revealed by the full-screen viewer."""
 
     def __init__(
-        self, agent_type: str, agent_task: str, collapsed: bool = False
+        self, agent_type: str, agent_task: str, model_label: str = ""
     ) -> None:
         self.agent_type = agent_type
         self.agent_task = agent_task
-        self.status = "pending"
+        self.model_label = model_label
+        # The owning stream's id (the spawn's tool_call_id); set by the renderer
+        # once the widget is registered. The flush tick uses it to skip transcripts
+        # that aren't currently being viewed.
+        self.stream_id = ""
+        self.status = "pending"  # "pending" | "done" | "denied"
         self.report = ""
-        # Live activity shown in the (collapsed) title so a fan-out of agents is
-        # legible at a glance without expanding each stream.
+        # The current tool (humanized name + arg preview) shown on the ↳ line while
+        # running; a tally + run timing replace it once finished. ``_t0`` is set at
+        # mount and ``_t_end`` frozen at finish.
         self.activity = ""
         self.tool_count = 0
-        # Live token usage. The total + cost ride in the (collapsed) title so a
-        # fan-out exposes each agent's consumption at a glance; the full cache
-        # split is reserved for the expanded body, where there's room for it.
+        self._t0 = time.monotonic()
+        self._t_end: float | None = None
+        # Live token usage. The total + cost ride on the card; the full cache split
+        # is reserved for the body's muted header, where there's room for it.
         self.tokens = 0
         self.cost_text: str | None = None
         self.split_text = ""
-        # A muted header line inside the expanded body carrying the detailed
-        # split + cost (mirrors the session status bar). Hidden until populated
-        # so an as-yet-unmetered agent doesn't show a blank line.
+        self._spin = 0
+        # The card's two visible lines: a single-line header and the ↳ progress line.
+        self._header = Static(classes="subagent-header")
+        self._activity = Static(classes="subagent-activity")
+        # The transcript home: a scroll container kept mounted but hidden inline.
+        # A muted body header carries "{type} · {model}"; the usage line mirrors the
+        # status bar's split + cost and stays hidden until metered. Transcript
+        # widgets (text, tool calls) mount after these via add().
+        self._body_header = Static(self._body_header_text(), classes="subagent-bhead")
         self._usage_line = Static("", classes="subagent-usage")
         self._usage_line.display = False
-        self.body = Vertical(self._usage_line, classes="subagent-body")
-        # title is a Content (not str) on purpose — see _summary.
-        super().__init__(
-            self.body, title=self._summary(), collapsed=collapsed  # pyright: ignore[reportArgumentType]
+        self.body = VerticalScroll(
+            self._body_header, self._usage_line, classes="subagent-body"
+        )
+        self.body.display = False
+        super().__init__(self._header, self._activity, self.body)
+
+    def on_mount(self) -> None:
+        self._paint_header()
+        self._paint_activity()
+        # Animate the working glyph and tick the duration while the agent runs; the
+        # callback no-ops once the status leaves "pending", so a finished card stops
+        # repainting.
+        self.set_interval(_SPINNER_TICK, self._tick)
+
+    def _glyph(self) -> str:
+        if self.status == "done":
+            return "✓"
+        if self.status == "denied":
+            return "✕"
+        return _SPINNER[self._spin]
+
+    def display_title(self) -> str:
+        """A concise one-line title derived from the (often verbose) spawn prompt —
+        used on the card header and in the viewer's side-panel list."""
+        return derive_title(self.agent_task)
+
+    def _paint_header(self) -> None:
+        # A derived title (not the raw prompt); CSS clips it with an ellipsis to the
+        # card width. Content() (not markup) — the title is untrusted and may contain
+        # bracket sequences markup parsing would choke on.
+        self._header.update(
+            Content(f"{self._glyph()} {self.agent_type} Task — {self.display_title()}")
         )
 
-    def _summary(self) -> Content:
-        glyph = {"pending": "▸", "done": "✓", "denied": "✕"}.get(self.status, "▸")
-        task = self.agent_task if len(self.agent_task) <= 40 else self.agent_task[:39] + "…"
-        parts = [f"{glyph} spawn_agent({self.agent_type}: {task!r})"]
-        # Only a running agent carries an activity tail; a finished one is clean.
-        if self.status == "pending" and self.activity:
-            parts.append(self.activity)
-        # Token count and cost persist across finish — the final spend stays
-        # visible. The three-way split is intentionally NOT here: it would bloat
-        # the title and hurt fan-out legibility, so it lives in the body instead.
-        if self.tokens:
-            parts.append(f"{human_tokens(self.tokens)} tok")
-        if self.cost_text:
-            parts.append(self.cost_text)
-        # Collapsible titles are parsed as Textual markup; the task text is
-        # untrusted and may contain bracket sequences escape() can't neutralise,
-        # so a literal Content bypasses markup parsing entirely.
-        return Content(" · ".join(parts))
+    def _duration(self) -> str:
+        end = self._t_end if self._t_end is not None else time.monotonic()
+        return _fmt_duration(end - self._t0)
+
+    def _paint_activity(self) -> None:
+        if self.status == "pending":
+            # Show the current tool while running; "working…" before the first call.
+            self._activity.update(Content(f"↳ {self.activity or 'working…'}"))
+        else:
+            # Finished: collapse to the run summary (tool tally + frozen duration).
+            plural = "" if self.tool_count == 1 else "s"
+            self._activity.update(
+                Content(f"↳ {self.tool_count} toolcall{plural} · {self._duration()}")
+            )
+
+    def _body_header_text(self) -> Content:
+        label = f"{self.agent_type} · {self.model_label}" if self.model_label else self.agent_type
+        return Content(f"◼ {label}")
+
+    def _tick(self) -> None:
+        if self.status != "pending":
+            return
+        self._spin = (self._spin + 1) % len(_SPINNER)
+        self._paint_header()  # advance the spinner glyph
+
+    # --- live status updates (called by the stream renderer) ---
 
     def set_tokens(self, n: int) -> None:
-        """Update the sub-agent's running token total and refresh the title."""
+        """Update the sub-agent's running token total."""
         self.tokens = n
-        self.title = self._summary()
 
     def set_usage(self, total: int, cost_text: str | None, split_text: str) -> None:
-        """Fold a full usage reading in: the title shows the running ``total`` (and
-        ``cost_text`` when priced), while the expanded body's muted header shows the
-        detailed ``split_text`` + cost — the status-bar view, where there's room."""
+        """Fold a full usage reading in: the running ``total`` (and ``cost_text``)
+        are kept for the card/footer; the detailed ``split_text`` + cost land in the
+        body's muted header — the status-bar view, where there's room."""
         self.cost_text = cost_text
         self.split_text = split_text
-        self.set_tokens(total)  # updates the token total + repaints the title
+        self.set_tokens(total)
         self._refresh_usage_line()
 
     def _refresh_usage_line(self) -> None:
@@ -88,25 +192,26 @@ class SubAgentWidget(Collapsible):
         self._usage_line.update(detail)
         self._usage_line.display = bool(detail)
 
-    def note_tool(self, tool_name: str) -> None:
-        """Record that the sub-agent just called ``tool_name`` and refresh the
-        title — a cheap status update that needs no body mount."""
+    def note_tool(self, tool_name: str = "", preview: str = "") -> None:
+        """Record that the sub-agent just called ``tool_name`` (with an optional arg
+        ``preview``): bump the tally and show it as the current tool on the ↳ line."""
         self.tool_count += 1
-        self.activity = f"{tool_name} ({self.tool_count})"
-        self.title = self._summary()
+        self.activity = f"{humanize_tool(tool_name)} {preview}".rstrip()
+        self._paint_activity()
 
     def note_text(self) -> None:
-        """Record that the sub-agent is generating text and refresh the title."""
-        self.activity = "responding"
-        self.title = self._summary()
+        """The sub-agent is generating text. The card's progress line tracks tool
+        tally + duration, so there's nothing to repaint here — kept for the renderer
+        sink's interface."""
 
     async def add(self, widget) -> None:
-        """Mount a child widget (the sub-agent's text or a nested tool call) into
-        the live body."""
+        """Mount a transcript child (the sub-agent's text or a nested tool call)
+        into the live body."""
         await self.body.mount(widget)
 
     def finish(self, report: str, status: str = "done") -> None:
         self.status = status
         self.report = report
-        self.activity = ""
-        self.title = self._summary()
+        self._t_end = time.monotonic()  # freeze the duration
+        self._paint_header()
+        self._paint_activity()

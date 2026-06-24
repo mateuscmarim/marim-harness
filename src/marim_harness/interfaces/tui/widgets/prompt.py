@@ -95,6 +95,16 @@ class PromptInput(TextArea):
             event.stop()
             self.insert("\n")
             return
+        if event.key == "ctrl+x":
+            # Open the sub-agent viewer. Intercepted here because TextArea binds
+            # ctrl+x to "cut", which would otherwise swallow it before the app's
+            # binding runs. Guarded so the widget still works in bare-app tests.
+            event.prevent_default()
+            event.stop()
+            toggle = getattr(self.app, "action_toggle_subagents", None)
+            if toggle is not None:
+                toggle()
+            return
         if event.key == "up" and self._at_first_line() and self._recall_prev():
             event.prevent_default()
             event.stop()

@@ -1,5 +1,20 @@
 """Compact formatting helpers for token counts and costs in the status chrome."""
 
+# Max chars of a tool-call preview on a sub-agent card's activity line before it's
+# ellipsized, so a long path/command can't run off the card's edge.
+_PREVIEW_CAP = 60
+
+
+def tool_preview(args: dict) -> str:
+    """A short preview of a tool call's target for a sub-agent card's ``↳`` line —
+    the first meaningful argument value (a path, command, or pattern, which by tool
+    signature comes first). Clipped; empty when there's nothing useful to show."""
+    items = [v for v in args.values() if v not in (None, "", [], {})]
+    if not items:
+        return ""
+    preview = " ".join(str(items[0]).split())  # first value, whitespace collapsed
+    return preview if len(preview) <= _PREVIEW_CAP else preview[: _PREVIEW_CAP - 1] + "…"
+
 
 def human_tokens(n: int) -> str:
     """Compact token count: 950 -> '950', 1500 -> '1.5k', 100000 -> '100k',

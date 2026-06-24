@@ -13,7 +13,7 @@ from .diff import (
     render_edit_diff,
     render_file_diff,
 )
-from .format import format_cost, format_token_split, human_tokens
+from .format import format_cost, format_token_split, human_tokens, tool_preview
 from .highlight import _highlight_lines, _strip_bg, strip_line_numbers
 from .messages import (
     AssistantMessage,
@@ -27,6 +27,7 @@ from .messages import (
 from .panels import JobPanel, QueuePanel, TaskPanel
 from .prompt import PromptInput
 from .subagent import SubAgentWidget
+from .subagent_viewer import SubAgentFooter, SubAgentList
 from .tools import ToolCallWidget, ToolGroupWidget
 
 __all__ = [
@@ -44,11 +45,14 @@ __all__ = [
     "format_cost",
     "format_token_split",
     "human_tokens",
+    "tool_preview",
     # tool widgets
     "ToolCallWidget",
     "ToolGroupWidget",
     # sub-agent
     "SubAgentWidget",
+    "SubAgentList",
+    "SubAgentFooter",
     # log messages
     "AssistantMessage",
     "ErrorMessage",

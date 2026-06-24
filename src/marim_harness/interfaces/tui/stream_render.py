@@ -16,7 +16,6 @@ from pydantic_ai.messages import (
 )
 from textual.containers import VerticalScroll
 from textual.widget import Widget
-from textual.widgets import Collapsible
 
 from ...usage import resolve_cost
 from .widgets import (
@@ -25,6 +24,7 @@ from .widgets import (
     ThinkingWidget,
     ToolCallWidget,
     ToolGroupWidget,
+    tool_preview,
 )
 from .widgets import format_cost as _format_cost
 from .widgets import format_token_split as _format_token_split
@@ -47,13 +47,17 @@ def status_from_part(part) -> str:
     return "done"
 
 
-def _hidden_in_collapsed(widget: Widget) -> bool:
-    """True when ``widget`` sits inside a collapsed Collapsible (e.g. a folded
-    sub-agent body) and so isn't visible — re-rendering it would be wasted work."""
+def _stream_hidden(widget: Widget, viewing_sid: str | None) -> bool:
+    """True when ``widget`` is a sub-agent transcript stream that isn't currently
+    being viewed, so re-parsing its markdown every flush tick would be wasted work
+    (and, ×N during a fan-out, would freeze the UI). A stream owned by a
+    ``SubAgentWidget`` is hidden unless that card's ``stream_id`` is the one on
+    screen in the viewer; a top-level log stream (no such ancestor) is never
+    hidden."""
     node = widget.parent
     while node is not None:
-        if isinstance(node, Collapsible) and node.collapsed:
-            return True
+        if isinstance(node, SubAgentWidget):
+            return node.stream_id != viewing_sid
         node = node.parent
     return False
 
@@ -95,8 +99,8 @@ class _StreamSink:
     def on_text(self) -> None:
         """Called when the stream starts a text part (title status, sub only)."""
 
-    def on_tool(self, tool_name: str) -> None:
-        """Called when the stream makes a tool call (title status, sub only)."""
+    def on_tool(self, tool_name: str, args: dict) -> None:
+        """Called when the stream makes a tool call (card status, sub only)."""
 
     async def intercept_tool(self, event, args: dict) -> bool:
         """Give the scope first refusal on a tool call; return True to claim it and
@@ -143,6 +147,7 @@ class _TopLevelSink(_StreamSink):
         # the run so it isn't buried in a tool group).
         if event.part.tool_name == "spawn_agent" and not args.get("background"):
             widget = self._r.mount_spawn_widget(args)
+            widget.stream_id = event.part.tool_call_id
             self._r.tool_widgets[event.part.tool_call_id] = widget
             self.set_run(None, None)
             await self.container.mount(widget)
@@ -190,8 +195,8 @@ class _SubAgentSink(_StreamSink):
     def on_text(self) -> None:
         self._parent.note_text()
 
-    def on_tool(self, tool_name: str) -> None:
-        self._parent.note_tool(tool_name)
+    def on_tool(self, tool_name: str, args: dict) -> None:
+        self._parent.note_tool(tool_name, tool_preview(args))
 
 
 class StreamRenderer:
@@ -210,6 +215,13 @@ class StreamRenderer:
         self.sub_solo_tools: dict[str, ToolCallWidget | None] = {}
         self.sub_assistants: dict[str, AssistantMessage] = {}
         self.sub_thinkings: dict[str, ThinkingWidget] = {}
+        # Every foreground sub-agent spawned this session, in spawn order — the
+        # backing list for the full-screen viewer's navigation and "(i of N)"
+        # count. ``viewing_sid`` is the stream_id of the card currently shown in
+        # the viewer (None when the viewer is closed); the flush tick uses it to
+        # render only the on-screen transcript.
+        self.subagents: list[SubAgentWidget] = []
+        self.viewing_sid: str | None = None
         # Either an AssistantMessage (reply/sub-agent body) or a ThinkingWidget —
         # both expose the append/flush streaming interface the tick drains.
         self.dirty_streams: set[AssistantMessage | ThinkingWidget] = set()
@@ -239,6 +251,8 @@ class StreamRenderer:
         self.sub_solo_tools.clear()
         self.sub_assistants.clear()
         self.sub_thinkings.clear()
+        self.subagents.clear()
+        self.viewing_sid = None
         self.dirty_streams.clear()
 
     def reset_live_tokens(self) -> None:
@@ -269,11 +283,11 @@ class StreamRenderer:
         streams."""
         dirty, self.dirty_streams = self.dirty_streams, set()
         for m in dirty:
-            # Skip streams hidden inside a collapsed widget (e.g. folded sub-agent
-            # bodies): re-parsing their full markdown every tick — ×N during a
-            # fan-out — blocks the event loop and freezes the UI for no visible
-            # gain. Keep them pending so they render the moment they're expanded.
-            if _hidden_in_collapsed(m):
+            # Skip sub-agent transcripts that aren't on screen in the viewer:
+            # re-parsing their full markdown every tick — ×N during a fan-out —
+            # blocks the event loop and freezes the UI for no visible gain. Keep
+            # them pending so they render the moment their card is viewed.
+            if _stream_hidden(m, self.viewing_sid):
                 self.dirty_streams.add(m)
                 continue
             m.flush()
@@ -334,21 +348,15 @@ class StreamRenderer:
         return group, None
 
     def mount_spawn_widget(self, args: dict):
-        """Build the widget for a foreground spawn_agent. When another sub-agent
-        is already running, this is a fan-out — collapse every sibling (and this
-        one) to a live one-line status so the log stays legible; a lone spawn is
-        left expanded."""
+        """Build the compact card for a foreground spawn_agent and register it in the
+        ordered ``subagents`` list (the viewer's navigation backing). The transcript
+        streams into the card's hidden body; the full view reveals it on demand, so
+        a fan-out stays legible as a stack of cards with no inline expansion."""
+        model_label = str(args.get("model") or self.app.harness.model_label or "")
         widget = SubAgentWidget(
-            str(args.get("type", "")), str(args.get("task", ""))
+            str(args.get("type", "")), str(args.get("task", "")), model_label
         )
-        live = [
-            w for w in self.tool_widgets.values()
-            if isinstance(w, SubAgentWidget) and w.status == "pending"
-        ]
-        if live:
-            widget.collapsed = True
-            for sibling in live:
-                sibling.collapsed = True
+        self.subagents.append(widget)
         return widget
 
     async def on_events(self, ctx, events) -> None:
@@ -430,7 +438,7 @@ class StreamRenderer:
             args = event.part.args_as_dict()
             if await sink.intercept_tool(event, args):
                 return
-            sink.on_tool(event.part.tool_name)  # live title status
+            sink.on_tool(event.part.tool_name, args)  # live card status
             widget = ToolCallWidget(
                 event.part.tool_name, args,
                 workspace_root=self.app.harness.deps.workspace_root,

@@ -260,19 +260,18 @@ async def test_tool_widget_survives_markup_like_args_and_result():
 @pytest.mark.anyio
 async def test_subagent_widget_survives_markup_like_task():
     """A spawned sub-agent's task text is arbitrary and may contain markup
-    syntax; its title must render literally rather than crash."""
+    syntax; the card header must render it literally rather than crash."""
     from marim_harness.interfaces.tui.widgets import SubAgentWidget
 
     class H(App):
         def compose(self) -> ComposeResult:
-            # Kept short so the bomb survives the title's 40-char truncation.
             yield SubAgentWidget("Explore", MARKUP_BOMB)
 
     app = H()
     async with app.run_test() as pilot:
         await pilot.pause()
         w = app.query_one(SubAgentWidget)
-        assert "[/]" in str(w.title)
+        assert "[/]" in str(w._header.visual)
 
 
 @pytest.mark.anyio
@@ -580,51 +579,52 @@ class _SubHarness(App):
         yield SubAgentWidget("explore", "map the code")
 
 
+def test_derive_subagent_title_takes_first_clause():
+    """A verbose spawn prompt condenses to its first sentence/clause as the title,
+    instead of inlining the whole prompt."""
+    from marim_harness.interfaces.tui.widgets.subagent import derive_title
+
+    assert derive_title(
+        "Provide a structural overview of the codebase. Include: a tree."
+    ) == "Provide a structural overview of the codebase"
+    # No boundary → the whole (whitespace-collapsed) task; multi-line is flattened.
+    assert derive_title("short\n  task") == "short task"
+    # Over-long single clause is clipped with an ellipsis.
+    assert derive_title("x" * 200).endswith("…")
+
+
 @pytest.mark.anyio
-async def test_subagent_widget_collapsed_param():
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
-
-    class H(App):
-        def compose(self) -> ComposeResult:
-            yield SubAgentWidget("explore", "t", collapsed=True)
-
-    app = H()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        assert app.query_one(SubAgentWidget).collapsed is True
-
-
-@pytest.mark.anyio
-async def test_subagent_widget_default_expanded():
+async def test_subagent_card_body_hidden_inline():
+    """The transcript home is mounted but hidden inline — it's only revealed by the
+    full-screen viewer, so the inline log shows a compact card."""
     from marim_harness.interfaces.tui.widgets import SubAgentWidget
 
     app = _SubHarness()
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert app.query_one(SubAgentWidget).collapsed is False
+        assert app.query_one(SubAgentWidget).body.display is False
 
 
 @pytest.mark.anyio
-async def test_subagent_title_shows_live_activity():
+async def test_subagent_card_shows_current_tool_then_tally():
     from marim_harness.interfaces.tui.widgets import SubAgentWidget
 
     app = _SubHarness()
     async with app.run_test() as pilot:
         w = app.query_one(SubAgentWidget)
         await pilot.pause()
-        # A tool call is reflected in the title with a running count.
-        w.note_tool("grep")
-        assert "grep" in str(w.title)
-        assert "(1)" in str(w.title)
-        w.note_tool("read_file")
-        assert "(2)" in str(w.title)
-        # Generating text shows a responding hint.
-        w.note_text()
-        assert "responding" in str(w.title)
+        # While running, the ↳ line shows the current (humanized) tool + its target.
+        w.note_tool("read_file", "src/foo.py")
+        assert "Read src/foo.py" in str(w._activity.visual)
+        w.note_tool("grep", "needle")
+        assert "Grep needle" in str(w._activity.visual)
+        # Once finished, it collapses to the run summary (tally + frozen duration).
+        w.finish("all done", status="done")
+        assert "2 toolcalls" in str(w._activity.visual)
 
 
 @pytest.mark.anyio
-async def test_subagent_finish_clears_activity_from_title():
+async def test_subagent_finish_marks_done_and_freezes_duration():
     from marim_harness.interfaces.tui.widgets import SubAgentWidget
 
     app = _SubHarness()
@@ -633,29 +633,27 @@ async def test_subagent_finish_clears_activity_from_title():
         await pilot.pause()
         w.note_tool("grep")
         w.finish("all done", status="done")
-        # Once finished, the title is the clean summary, no activity tail.
-        assert "grep" not in str(w.title)
-        assert "✓" in str(w.title)
+        # Once finished, the header shows ✓, the summary uses a singular toolcall,
+        # and the duration is frozen.
+        assert "✓" in str(w._header.visual)
+        assert "1 toolcall " in str(w._activity.visual)
+        assert w._t_end is not None
 
 
 @pytest.mark.anyio
-async def test_subagent_title_shows_token_usage():
+async def test_subagent_tracks_token_usage():
     from marim_harness.interfaces.tui.widgets import SubAgentWidget
 
     app = _SubHarness()
     async with app.run_test() as pilot:
         w = app.query_one(SubAgentWidget)
         await pilot.pause()
-        # No tokens yet: no token tail in the title.
-        assert "tok" not in str(w.title)
-        # Once tokens are reported, the (collapsed-legible) title shows them.
+        assert w.tokens == 0
         w.set_tokens(1500)
-        assert "1.5k" in str(w.title)
-        assert "tok" in str(w.title)
-        # The count keeps the live activity alongside it.
+        assert w.tokens == 1500
+        # Recording activity doesn't clobber the running token total.
         w.note_tool("grep")
-        assert "grep" in str(w.title)
-        assert "1.5k" in str(w.title)
+        assert w.tokens == 1500
 
 
 @pytest.mark.anyio
@@ -668,27 +666,22 @@ async def test_subagent_token_usage_survives_finish():
         await pilot.pause()
         w.set_tokens(2400)
         w.finish("all done", status="done")
-        # The final token count stays visible after the run finishes.
-        assert "2.4k" in str(w.title)
-        assert "tok" in str(w.title)
+        # The final token count stays available (for the viewer footer).
+        assert w.tokens == 2400
 
 
 @pytest.mark.anyio
-async def test_subagent_title_shows_cost_alongside_tokens():
+async def test_subagent_set_usage_stores_total_cost_and_split():
     from marim_harness.interfaces.tui.widgets import SubAgentWidget
 
     app = _SubHarness()
     async with app.run_test() as pilot:
         w = app.query_one(SubAgentWidget)
         await pilot.pause()
-        # set_usage carries the total (for the title) plus a cost and the full
-        # split (for the expanded body). The compact title gains the cost.
         w.set_usage(1500, "$0.03", "1k↑ 0⚡ 500↓")
-        title = str(w.title)
-        assert "1.5k" in title and "tok" in title  # total still in the title
-        assert "$0.03" in title  # cost now sits alongside it
-        # …but the three-way split stays OUT of the title to keep it legible.
-        assert "⚡" not in title
+        assert w.tokens == 1500
+        assert w.cost_text == "$0.03"
+        assert w.split_text == "1k↑ 0⚡ 500↓"
 
 
 @pytest.mark.anyio
@@ -712,18 +705,22 @@ async def test_subagent_expanded_body_shows_full_split_and_cost():
 
 
 @pytest.mark.anyio
-async def test_subagent_title_omits_cost_when_unpriced():
+async def test_subagent_body_usage_omits_cost_when_unpriced():
+    from textual.widgets import Static
+
     from marim_harness.interfaces.tui.widgets import SubAgentWidget
 
     app = _SubHarness()
     async with app.run_test() as pilot:
         w = app.query_one(SubAgentWidget)
         await pilot.pause()
-        # An unpriced model yields no cost — the title shows tokens, no stray '$'.
+        # An unpriced model yields no cost — the body usage line shows the split
+        # only, no stray '$'.
         w.set_usage(1500, None, "1k↑ 0⚡ 500↓")
-        title = str(w.title)
-        assert "1.5k" in title
-        assert "$" not in title
+        await pilot.pause()
+        text = str(w.body.query_one(".subagent-usage", Static).visual)
+        assert "1k↑ 0⚡ 500↓" in text
+        assert "$" not in text
 
 
 def _plain(renderable) -> str:
