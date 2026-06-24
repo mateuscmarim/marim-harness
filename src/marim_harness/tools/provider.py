@@ -128,12 +128,13 @@ async def workspace_symbols(ctx: RunContext[Deps], query: str) -> str:
 
 
 async def diagnostics(ctx: RunContext[Deps], path: str) -> str:
-    """Report the language server's errors and warnings for `path`, as
-    `path:line:col: severity: message`. Edits already append fresh diagnostics
-    automatically; call this to re-check a file on demand."""
+    """Report errors and warnings for `path`, as `path:line:col: severity: message`.
+    Edits already append fresh diagnostics automatically; call this to re-check a
+    file on demand. For Python this runs a full check (ruff plus, when available,
+    pyright type-checking) — deeper than the fast lint that rides on each edit."""
     if ctx.deps.services.lsp is None:
         return _LSP_UNAVAILABLE
-    return await ctx.deps.services.lsp.diagnostics(path)
+    return await ctx.deps.services.lsp.diagnostics(path, deep=True)
 
 
 def remember(

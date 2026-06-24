@@ -26,7 +26,7 @@ class _FakeLsp:
     async def workspace_symbols(self, query):
         return f"foo  a.py:4 ({query})"
 
-    async def diagnostics(self, path, *, settle=1.5):
+    async def diagnostics(self, path, *, settle=1.5, deep=False):
         return f"{path}: no diagnostics"
 
 
@@ -92,7 +92,7 @@ class _DiagLsp:
         self.report = report
         self.seen = []
 
-    async def diagnostics(self, path, *, settle=1.5):
+    async def diagnostics(self, path, *, settle=1.5, deep=False):
         self.seen.append((path, settle))
         return self.report
 
@@ -143,7 +143,7 @@ async def test_write_without_lsp_is_unchanged(tmp_path):
 async def test_diagnostics_exception_returns_unchanged_result(tmp_path):
     """Exception in lsp.diagnostics must not fail the write/edit."""
     class _FailingLsp:
-        async def diagnostics(self, path, *, settle=1.5):
+        async def diagnostics(self, path, *, settle=1.5, deep=False):
             raise RuntimeError("boom")
 
     ctx = _Ctx(Deps(workspace_root=tmp_path, services=HarnessServices(lsp=_FailingLsp())))

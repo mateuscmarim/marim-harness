@@ -197,6 +197,78 @@ async def test_request_timeout_degrades(tmp_path):
     await mgr.aclose()
 
 
+@pytest.mark.anyio
+async def test_concurrent_same_language_starts_once(tmp_path):
+    """Concurrent operations on one language share a single startup: the server is
+    created and started exactly once, never one-per-caller (fan-out safe)."""
+    import asyncio
+
+    fakes: list = []
+
+    class _Slow(_FakeServer):
+        @contextlib.asynccontextmanager
+        async def start_server(self):
+            self.started += 1
+            await asyncio.sleep(0.05)  # widen the race window between callers
+            yield self
+
+    def factory(language, root):
+        srv = _Slow(root)
+        fakes.append(srv)
+        return srv
+
+    (tmp_path / "m.py").write_text("x = 1\n")
+    mgr = LspManager(tmp_path, server_factory=factory)
+    outs = await asyncio.gather(*[mgr.goto_definition("m.py", 1, 1) for _ in range(6)])
+    assert all("target.py" in o for o in outs)
+    assert len(fakes) == 1 and fakes[0].started == 1
+    await mgr.aclose()
+
+
+@pytest.mark.anyio
+async def test_startup_does_not_block_across_languages(tmp_path, monkeypatch):
+    """A slow startup for one language must not block operations on a different
+    language — fan-out across languages can't serialize on a shared lock."""
+    import asyncio
+
+    from marim_harness.lsp import registry
+
+    monkeypatch.setattr(
+        registry, "availability", lambda lang: registry.Availability(True, "")
+    )
+
+    py_in_start = asyncio.Event()  # signals the python startup has begun
+    py_release = asyncio.Event()  # set by the test to let the slow start finish
+
+    class _Gated(_FakeServer):
+        def __init__(self, root, language):
+            super().__init__(root)
+            self.language = language
+
+        @contextlib.asynccontextmanager
+        async def start_server(self):
+            self.started += 1
+            if self.language == "python":
+                py_in_start.set()
+                await py_release.wait()  # hang the python startup
+            yield self
+
+    mgr = LspManager(tmp_path, server_factory=lambda lang, root: _Gated(root, lang))
+    (tmp_path / "m.py").write_text("x = 1\n")
+    (tmp_path / "m.ts").write_text("const x = 1\n")
+
+    py_task = asyncio.create_task(mgr.goto_definition("m.py", 1, 1))
+    await py_in_start.wait()  # python startup is in flight (would hold any lock)
+
+    # typescript must complete even while the python startup is stuck.
+    ts_out = await asyncio.wait_for(mgr.goto_definition("m.ts", 1, 1), timeout=2)
+    assert "target.py" in ts_out
+
+    py_release.set()  # release the python startup so its task can finish
+    await py_task
+    await mgr.aclose()
+
+
 def test_clamp_hover_caps_wide_blobs():
     from marim_harness.lsp.manager import _MAX_HOVER_CHARS, _clamp_hover
 

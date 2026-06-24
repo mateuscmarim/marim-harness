@@ -34,7 +34,13 @@ _EXT_TO_LANG = {
 # with an empty probe tuple is auto-provided by multilspy (it downloads the
 # server on first use) and is always reported available.
 _PROBES: dict[str, tuple[tuple[str, ...], str]] = {
-    "python": (("pyright-langserver", "pyright"), "install pyright (npm i -g pyright)"),
+    # multilspy starts jedi-language-server for Python (see multilspy's
+    # LanguageServer.create), so probe for *that* binary — not pyright, which the
+    # manager would never launch even when present.
+    "python": (
+        ("jedi-language-server",),
+        "install jedi-language-server (pip install jedi-language-server)",
+    ),
     "typescript": (
         ("typescript-language-server",),
         "install typescript-language-server (npm i -g typescript-language-server typescript)",

@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from . import registry
+from . import checks, registry
 from .diagnostics import DiagnosticsCollector, format_diagnostics
 
 logger = logging.getLogger(__name__)
@@ -78,32 +78,66 @@ class LspManager:
         self._stack = AsyncExitStack()
         self._servers: dict[str, Any] = {}
         self._collectors: dict[str, DiagnosticsCollector] = {}
-        self._lock = asyncio.Lock()
+        # In-flight per-language startups, for the single-flight pattern in
+        # _ensure_started. Deliberately NOT an asyncio.Lock: a lock would make a
+        # slow startup for one language block callers for *every* language (and
+        # the main agent's diagnostics-on-edit), which is exactly the fan-out
+        # stall this map avoids.
+        self._starts: dict[str, asyncio.Task[str | None]] = {}
 
     # --- lifecycle -----------------------------------------------------------
 
-    async def _start_language(self, language: str) -> str | None:
-        """Acquire the lock, double-check, start and register the server for
-        ``language``. Returns None on success or a short error string on failure.
-        Callers must have already verified the language is eligible (not disabled,
-        available, not already in self._servers)."""
-        async with self._lock:
-            if language in self._servers:  # double-checked after acquiring
-                return None
-            try:
-                server = self._factory(language, self.root)
-                await asyncio.wait_for(
-                    self._stack.enter_async_context(server.start_server()),
-                    timeout=self._start_timeout,
-                )
-            except Exception as exc:  # noqa: BLE001 — degrade to a message
-                logger.debug("failed to start %s server: %s", language, exc)
-                return f"Could not start the {language} language server: {exc}"
-            collector = DiagnosticsCollector()
-            collector.attach(server)
-            self._servers[language] = server
-            self._collectors[language] = collector
+    async def _ensure_started(self, language: str) -> str | None:
+        """Start the server for ``language`` exactly once, even under concurrent
+        fan-out. The first caller for a language kicks off the startup task; every
+        caller — the first included — awaits that same task, so duplicate servers
+        are never spawned and a slow cold start is paid once, not once per caller.
+
+        There is no shared lock: a startup for one language never blocks callers
+        for a *different* language (or any other coroutine). This is what lets
+        many sub-agents fan out across diagnostics without serializing. Returns
+        None on success or a short error string. Callers must have already
+        verified the language is eligible (not disabled, available)."""
+        if language in self._servers:
             return None
+        # Create-or-join the in-flight startup. There is no await between the
+        # lookup and the store, so two coroutines can't both create a task for the
+        # same language (asyncio is single-threaded) — that atomicity is the whole
+        # reason a lock isn't needed here.
+        task = self._starts.get(language)
+        if task is None:
+            task = asyncio.ensure_future(self._start_language(language))
+            self._starts[language] = task
+        try:
+            return await task
+        finally:
+            # Drop the slot once the startup has *resolved*: on success
+            # ``_servers`` short-circuits future calls; on failure a later call is
+            # free to retry. Gate on ``task.done()`` so an awaiter cancelled while
+            # the start is still in flight doesn't evict a live task (which would
+            # let a fresh caller spawn a second server).
+            if task.done() and self._starts.get(language) is task:
+                self._starts.pop(language, None)
+
+    async def _start_language(self, language: str) -> str | None:
+        """Start and register the server for ``language``. Returns None on success
+        or a short error string on failure. Always invoked through
+        ``_ensure_started``, which guarantees exactly one concurrent call per
+        language, so this needs no lock of its own."""
+        try:
+            server = self._factory(language, self.root)
+            await asyncio.wait_for(
+                self._stack.enter_async_context(server.start_server()),
+                timeout=self._start_timeout,
+            )
+        except Exception as exc:  # noqa: BLE001 — degrade to a message
+            logger.debug("failed to start %s server: %s", language, exc)
+            return f"Could not start the {language} language server: {exc}"
+        collector = DiagnosticsCollector()
+        collector.attach(server)
+        self._servers[language] = server
+        self._collectors[language] = collector
+        return None
 
     async def _server_for(
         self, path: str
@@ -120,7 +154,7 @@ class LspManager:
             return None, language, f"No {language} language server available; {avail.hint}."
         if language in self._servers:
             return self._servers[language], language, None
-        err = await self._start_language(language)
+        err = await self._ensure_started(language)
         if err:
             return None, language, err
         return self._servers[language], language, None
@@ -241,12 +275,20 @@ class LspManager:
 
     async def _start_named(self, language: str) -> None:
         """Lazily start a server by language name (no path), for workspace_symbols.
-        Delegates to _start_language; failures are swallowed (best-effort)."""
-        if language in self._servers:
-            return
-        await self._start_language(language)  # ignore returned error — best-effort
+        Delegates to _ensure_started (single-flight); failures are swallowed
+        (best-effort)."""
+        await self._ensure_started(language)  # ignore returned error — best-effort
 
-    async def diagnostics(self, path: str, *, settle: float = 1.5) -> str:
+    async def diagnostics(self, path: str, *, settle: float = 1.5, deep: bool = False) -> str:
+        # Python's resident server (jedi) only reports syntax errors, so route it
+        # to real external checkers instead — ruff always, plus pyright on a deep
+        # check (see lsp.checks). These are stateless subprocesses: no server
+        # startup, no shared state, so they never block other diagnostics callers
+        # and fan out across sub-agents for free. ``settle`` is unused here (it
+        # paces the LSP push path below, not a subprocess).
+        if registry.language_for(path) == "python":
+            diags = await checks.python_diagnostics(self.root, path, deep=deep)
+            return checks.format_checks(path, diags)
         server, language, err = await self._server_for(path)
         if err:
             return err
