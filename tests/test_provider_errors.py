@@ -18,6 +18,7 @@ from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
     TextPart,
+    ToolCallPart,
     UserPromptPart,
 )
 from pydantic_ai.models.function import FunctionModel
@@ -273,6 +274,36 @@ async def test_run_turn_overflow_retries_only_once(tmp_path):
     with pytest.raises(APIError):
         await harness.run_turn("now do it")
     assert calls["n"] == 2  # original attempt + exactly one retry
+
+
+@pytest.mark.anyio
+async def test_run_turn_accumulates_partial_usage_on_provider_error(tmp_path):
+    """Tokens spent before a mid-run provider failure must still land in
+    ``session.usage``. The first model step (which emitted a tool call) was
+    really billed; the second step's failure can't silently drop that usage from
+    the running total."""
+    (tmp_path / "f.txt").write_text("hello")
+    calls = {"n": 0}
+
+    def fn(messages, info):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name="read_file", args={"path": "f.txt"})]
+            )
+        raise _api_error(_OPENROUTER_502)
+
+    harness = Harness(
+        model=FunctionModel(fn),
+        provider=BuiltinToolProvider(),
+        deps=Deps(workspace_root=tmp_path, mode=Mode.auto),
+        instructions="x",
+    )
+    with pytest.raises(APIError):
+        await harness.run_turn("read it")
+    # The first call's usage must survive the second call's failure.
+    assert harness.session.usage.requests >= 1
+    assert harness.session.usage.input_tokens > 0
 
 
 @pytest.mark.anyio

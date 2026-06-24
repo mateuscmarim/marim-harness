@@ -10,6 +10,7 @@ from pydantic_ai import Agent, DeferredToolRequests, capture_run_messages
 from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.messages import BinaryContent, ModelMessage
 from pydantic_ai.settings import ModelSettings
+from pydantic_ai.usage import RunUsage
 
 if TYPE_CHECKING:
     from pydantic_ai import RunContext
@@ -746,6 +747,15 @@ class Harness:
             # may run several rounds. On failure we persist what was captured so
             # the user's prompt survives and the session can continue, rather
             # than discarding the turn entirely.
+            # A per-round usage accumulator that pydantic-ai mutates in place as
+            # each model step completes. Passing it in (rather than reading only
+            # the returned result.usage) is what lets a turn that dies mid-run
+            # still bank the tokens it already burned: on the success path the
+            # returned result.usage IS this object, and on the failure path it
+            # holds the partial usage from any steps that finished before the
+            # error. Fresh per round so the success-path `+= result.usage` below
+            # counts each round exactly once.
+            round_usage = RunUsage()
             with capture_run_messages() as captured:
                 try:
                     result = await self.agent.run(
@@ -756,8 +766,17 @@ class Harness:
                         deferred_tool_results=deferred_results,
                         event_stream_handler=event_stream_handler,
                         toolsets=toolsets,
+                        usage=round_usage,
                     )
                 except BaseException as exc:
+                    # Bank whatever the failed run already spent. The provider
+                    # billed those tokens regardless of the abort, so dropping
+                    # them would make the session's running total undercount. A
+                    # pure in-memory add — safe even on the cancel teardown path
+                    # (it can't block the re-raise / Ctrl-C). Counts the failed
+                    # attempt on the overflow-retry path too: those tokens were
+                    # spent before the compaction-and-retry below.
+                    self.session.usage += round_usage
                     # Context-overflow recovery: the request exceeded the real
                     # window despite our estimate. Force a compaction and retry the
                     # run once. Only when the compaction actually shrank the history
