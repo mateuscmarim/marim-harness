@@ -21,6 +21,9 @@ coverage.xml
 # Over-budget sub-agent reports spilled to disk by the output cap. Local scratch.
 .marim/subagent-output/
 
+# Full provider-error payload spilled by the turn loop for debugging. Local scratch.
+.marim/last-provider-error.json
+
 # Git worktrees created by --worktree / the /worktree command.
 .worktrees/
 .claude/worktrees/
