@@ -283,12 +283,20 @@ def build_collaborators(
         # before the turn fails with UnexpectedModelBehavior.
         retries=2,
         model_settings=_DEFAULT_MODEL_SETTINGS,
-        # Enrich an unknown-tool rejection with the nearest registered name so a
-        # model that mangled a tool name (e.g. agents_memory_smart_search for
-        # agentmemory_memory_smart_search) gets a concrete target on its retry
-        # instead of re-guessing from the available-tools list. Runs before every
-        # model request, including the retry that carries the rejection.
-        capabilities=[ProcessHistory(suggest_unknown_tool_retry)],
+        # History processors run before EVERY model request (including mid-turn
+        # tool-loop continuations and retries), so they catch malformations the
+        # turn-start sanitizer in run_turn can't see:
+        #  - _drop_nameless_tool_calls strips a ToolCallPart whose function name
+        #    never streamed (a flaky model/provider emits these live mid-turn);
+        #    left in, every provider rejects the next request with "tool_calls[i]
+        #    is missing a function name", failing the turn.
+        #  - suggest_unknown_tool_retry enriches an unknown-tool rejection with the
+        #    nearest registered name (e.g. agents_memory_smart_search for
+        #    agentmemory_memory_smart_search) so the retry has a concrete target.
+        capabilities=[
+            ProcessHistory(_drop_nameless_tool_calls),
+            ProcessHistory(suggest_unknown_tool_retry),
+        ],
     )
     provider.register(agent)
     mcp = McpManager(cfg.mcp_servers or [], set(cfg.mcp_disabled or []))

@@ -233,6 +233,41 @@ async def test_resume_strips_nameless_tool_call_then_runs(tmp_path):
     assert all(c.tool_name for c in calls)  # no nameless call survived
 
 
+async def test_nameless_call_stripped_before_every_request_not_just_resume(tmp_path):
+    """A nameless tool call the model emits LIVE mid-turn (not from persisted
+    history) must be stripped before the *next* model request. The turn-start
+    sanitizer can't see it — it runs once, before the turn — so this relies on a
+    ProcessHistory capability that runs before every request. Reproduces the
+    reported timeline: after a rewind cleared the old garbage, a fresh 'continue'
+    proceeded and then the flaky model emitted another nameless call that 400'd."""
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    calls = {"n": 0}
+    seen: dict = {}
+
+    def fn(messages, info):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # A flaky provider can stream a tool call whose name never arrives.
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name="", args={}, tool_call_id="bad")]
+            )
+        seen["messages"] = messages
+        return ModelResponse(parts=[TextPart(content="done")])
+
+    harness = _harness(FunctionModel(fn), deps)
+    output = await harness.run_turn("go")
+
+    assert output == "done"
+    # The continuation request the model saw must not carry the nameless call.
+    nameless = [
+        p
+        for m in seen["messages"]
+        for p in getattr(m, "parts", [])
+        if isinstance(p, ToolCallPart) and not p.tool_name
+    ]
+    assert nameless == []
+
+
 # --- e2e: self-heal on resume (the reported bug) -----------------------------
 
 
