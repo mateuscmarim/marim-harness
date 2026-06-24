@@ -47,6 +47,10 @@ class ModelConfig:
     # Cap on consecutive autonomous turns before one is forced to wait for the
     # user — a loop guard for wake→spawn→wake chains.
     wake_depth_cap: int = 3
+    # Cap on how many spawned sub-agents run their model loop at once. None ⇒
+    # unbounded; set MARIM_SUBAGENT_CONCURRENCY to bound a fan-out that trips a
+    # shared provider route's upstream rate limit.
+    subagent_concurrency: int | None = None
     # Shell-command allow/deny patterns (regex), enforced in the bash tool in
     # every mode. Empty lists -> no restriction.
     command_denylist: list[str] = field(default_factory=list)
@@ -80,6 +84,11 @@ def load_config() -> ModelConfig:
     job_tool_combined = _bool_env("MARIM_JOB_TOOL_COMBINED", False)
     autonomous_wake = _bool_env("MARIM_AUTONOMOUS_WAKE", True)
     wake_depth_cap = _int_env("MARIM_WAKE_DEPTH_CAP", 3)
+    # 0 (and any non-positive value) is the "no cap" sentinel, mapped to None so
+    # the runner stays unbounded — matching the historical default.
+    subagent_concurrency = _int_env("MARIM_SUBAGENT_CONCURRENCY", 0) or None
+    if subagent_concurrency is not None and subagent_concurrency < 0:
+        subagent_concurrency = None
     command_denylist = split_patterns(os.getenv("MARIM_COMMAND_DENYLIST", ""))
     command_allowlist = split_patterns(os.getenv("MARIM_COMMAND_ALLOWLIST", ""))
     notifications_enabled = _bool_env("MARIM_NOTIFICATIONS", True)
@@ -96,6 +105,7 @@ def load_config() -> ModelConfig:
         job_tool_combined=job_tool_combined,
         autonomous_wake=autonomous_wake,
         wake_depth_cap=wake_depth_cap,
+        subagent_concurrency=subagent_concurrency,
         command_denylist=command_denylist,
         command_allowlist=command_allowlist,
         notifications_enabled=notifications_enabled,

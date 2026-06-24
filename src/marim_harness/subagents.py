@@ -13,11 +13,12 @@ import asyncio
 import contextlib
 import logging
 import re
+import time
 from collections.abc import Callable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, capture_run_messages
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import UsageLimits
 
@@ -63,6 +64,22 @@ def _iso_branch(stream_id: str, seq: int) -> str:
     return f"subagent/{base or f'anon-{seq}'}"
 
 
+def _resumable_history(messages: list) -> list | None:
+    """Turn the conversation captured from a failed sub-agent attempt into a
+    history safe to resume from, or ``None`` when there's nothing to carry (the
+    request failed before any message was recorded — resume by re-sending the
+    task). Reuses the main turn's two repairs so a sub-agent resume obeys the same
+    provider invariant: drop a half-streamed nameless tool call, then synthesize a
+    return for any tool call left unanswered when the attempt died. Imported lazily
+    because ``agent`` imports this module — a top-level import would cycle."""
+    if not messages:
+        return None
+    from .agent import _drop_nameless_tool_calls, _repair_unanswered_tool_calls
+
+    repaired = _repair_unanswered_tool_calls(_drop_nameless_tool_calls(messages))
+    return repaired or None
+
+
 class SubagentRunner:
     """Builds and runs sub-agents for one harness. Reads the active model
     through ``get_model`` each spawn, so a runtime ``/model`` switch is picked
@@ -74,7 +91,8 @@ class SubagentRunner:
                  model_settings: ModelSettings | None = None,
                  request_limit: int = 50,
                  retry_attempts: int = 2,
-                 build_model: Callable[[str], Any] | None = None) -> None:
+                 build_model: Callable[[str], Any] | None = None,
+                 concurrency: int | None = None) -> None:
         self.provider = provider
         self.mcp = mcp
         self.deps = deps
@@ -98,6 +116,13 @@ class SubagentRunner:
         # Monotonic counter for naming a background spawn's output-spill file —
         # a background run has no stream id to key the spill on.
         self._bg_seq = 0
+        # Optional cap on how many spawns may run their model loop at once. A
+        # fan-out fires every spawn's request concurrently, which is exactly what
+        # trips a shared provider route's upstream rate limit; the cap queues the
+        # excess instead. None ⇒ unbounded (the historical behavior). The semaphore
+        # is built lazily on first use so the runner can be constructed off-loop.
+        self._concurrency = concurrency if (concurrency and concurrency > 0) else None
+        self._sem: asyncio.Semaphore | None = None
 
     def _open_worktree(self, stream_id: str):
         """Create an isolated git worktree for a spawn off the repo's HEAD.
@@ -154,15 +179,22 @@ class SubagentRunner:
             with contextlib.suppress(WorktreeError):
                 delete_branch(iso["repo"], iso["branch"])
 
-    def handler(self, stream_id: str | None):
+    def handler(self, stream_id: str | None,
+                on_first_event: Callable[[], None] | None = None):
         """An event_stream_handler for a sub-agent run. For each streamed event it
         fires the Pre/PostToolUse hooks (so a sub-agent's autonomous tool calls run
         under the same hooks engine as the main agent's — guardrails apply to
         delegated work too), and — when a UI is listening and this is a foreground
         spawn (``stream_id`` set) — forwards the event to the UI tagged with
-        ``stream_id`` so it streams nested under the spawn. Returns None only when
-        there's nothing to do: no hooks configured and no UI listener (e.g. a
-        headless background run with hooks off)."""
+        ``stream_id`` so it streams nested under the spawn. ``on_first_event``, when
+        given, is called exactly once on the first streamed event — the spawn's
+        time-to-first-token, used by the debug timing line in ``_execute_spawn``.
+        The probe never *creates* a handler on its own: measuring must not turn a
+        non-streamed spawn into a streamed one, so when there's nothing else to do
+        this still returns None and the spawn's ttft is reported as n/a. (Every
+        foreground fan-out spawn forwards to the UI, so it streams and is timed.)
+        Returns None only when there's nothing to do: no hooks configured and no
+        UI listener (e.g. a headless background run with hooks off)."""
         cb = self.deps.on_subagent_event
         hooks_on = self.deps.hooks is not None
         forward = cb is not None and stream_id is not None
@@ -171,9 +203,15 @@ class SubagentRunner:
         # Per-run correlation map (tool_call_id → input) so a PostToolUse event
         # carries the args from its matching PreToolUse, as the main turn does.
         call_inputs: dict = {}
+        seen_first = False
 
         async def handler(ctx, events) -> None:
+            nonlocal seen_first
             async for event in events:
+                if not seen_first:
+                    seen_first = True
+                    if on_first_event is not None:
+                        on_first_event()
                 if hooks_on:
                     await self.hooks.tool_event(event, call_inputs)
                 # Forward the whole usage (not just a token total) so the UI can
@@ -249,33 +287,58 @@ class SubagentRunner:
         delay = min(self._RETRY_BASE_DELAY * 2 ** (attempt - 1), self._RETRY_MAX_DELAY)
         await asyncio.sleep(delay)
 
+    def _slot(self):
+        """Acquire-context bounding concurrent spawn runs to ``_concurrency``; a
+        no-op ``nullcontext`` when unbounded. The semaphore is created on first use
+        (binds to the running loop), and the single-threaded event loop makes the
+        lazy ``is None`` check race-free."""
+        if self._concurrency is None:
+            return contextlib.nullcontext()
+        if self._sem is None:
+            self._sem = asyncio.Semaphore(self._concurrency)
+        return self._sem
+
     async def _run_to_completion(self, sub, task, run_deps, granted, handler,
                                  stream_id: str | None = None):
         """Run a built sub-agent to its final result, retrying *transient* model
         errors (gateway/server hiccups, timeouts, rate limits) with backoff. A
         permanent error, or exhausting the retry budget, re-raises for the caller's
-        contain/propagate path. The retried call is the model request only — a fresh
-        run on the same isolated deps — so read-only spawns retry cleanly; a mutating
-        isolated spawn may carry over partial files from the failed attempt, which is
-        acceptable since its worktree is a throwaway branch.
+        contain/propagate path.
+
+        A retry *resumes* the run rather than restarting it: the conversation the
+        failed attempt produced (captured even though it raised) is carried forward
+        as ``message_history``, so a transient blip on step 20 of a multi-step spawn
+        doesn't throw away — and re-pay for — the first 19 steps. The captured
+        history is sanitized and repaired the same way the main turn does before a
+        resumed request (drop a half-streamed nameless tool call, synthesize a
+        return for any unanswered call), or every provider rejects it. A mutating
+        isolated spawn keeps whatever files the failed attempt already wrote, which
+        is fine — its worktree is a throwaway branch.
 
         A foreground spawn (``stream_id`` set) gets an out-of-band UI notice on each
         retry so the user sees the card recover rather than silently stall."""
         attempt = 0
+        resume_history: list | None = None
         while True:
+            captured: list = []
             try:
-                return await sub.run(
-                    task, deps=run_deps, toolsets=granted,
-                    event_stream_handler=handler,
-                    usage_limits=UsageLimits(request_limit=self._request_limit),
-                )
+                with capture_run_messages() as captured:
+                    return await sub.run(
+                        task if resume_history is None else None,
+                        message_history=resume_history,
+                        deps=run_deps, toolsets=granted,
+                        event_stream_handler=handler,
+                        usage_limits=UsageLimits(request_limit=self._request_limit),
+                    )
             except Exception as exc:  # noqa: BLE001
                 if attempt >= self._retry_attempts or not is_transient_model_error(exc):
                     raise
                 attempt += 1
+                resume_history = _resumable_history(list(captured))
                 logger.info(
-                    "sub-agent hit a transient error (%s); retry %d/%d after backoff",
-                    exc.__class__.__name__, attempt, self._retry_attempts,
+                    "sub-agent hit a transient error (%s); resuming, retry %d/%d "
+                    "after backoff", exc.__class__.__name__, attempt,
+                    self._retry_attempts,
                 )
                 await self._notice_retry(stream_id, exc, attempt)
                 await self._retry_backoff(attempt)
@@ -313,6 +376,12 @@ class SubagentRunner:
         file is named after the ``_bg_seq`` counter.
         """
         iso = None
+        # Phase timing for the spawn (harness setup vs. model time-to-first-token).
+        # Only wired up under DEBUG so a normal run keeps the exact event-handler
+        # path it had before (passing an on_first_event probe would otherwise force
+        # a headless hooks-off spawn to iterate its event stream just to time it).
+        debug = logger.isEnabledFor(logging.DEBUG)
+        t0 = time.perf_counter()
         if isolation == "worktree":
             iso, err = self._open_worktree(stream_id)
             if err is not None:
@@ -323,6 +392,7 @@ class SubagentRunner:
             if iso:
                 self._discard_worktree(iso)
             return err or f"Failed to build sub-agent {type!r}."
+        t_built = time.perf_counter()
         granted, unknown = self.mcp.granted_servers(mcp_names)
         if background:
             # A background sub-agent runs detached and concurrently with the
@@ -338,13 +408,19 @@ class SubagentRunner:
         await self.hooks.subagent_start(type, task)
         # Foreground: pass stream_id so events are forwarded to the UI.
         # Background: pass None so the handler only fires hooks (no UI stream).
-        handler = self.handler(None if background else stream_id)
+        first_event_at: list[float] = []
+        probe = (lambda: first_event_at.append(time.perf_counter())) if debug else None
+        handler = self.handler(None if background else stream_id, on_first_event=probe)
         try:
-            result = await self._run_to_completion(
-                sub, task, run_deps, granted, handler,
-                None if background else stream_id,
-            )
+            # Bound concurrent model runs (the part that hits the provider) so a
+            # wide fan-out queues instead of slamming a rate-limited route at once.
+            async with self._slot():
+                result = await self._run_to_completion(
+                    sub, task, run_deps, granted, handler,
+                    None if background else stream_id,
+                )
         except Exception as exc:  # noqa: BLE001
+            self._log_spawn_timing(type, t0, t_built, first_event_at, failed=True)
             if iso:
                 self._discard_worktree(iso)
             if background:
@@ -356,6 +432,7 @@ class SubagentRunner:
             # sibling spawns fanning out alongside it. Contain it.
             await self.hooks.subagent_stop(type, task, f"error: {exc}")
             return f"Sub-agent {type!r} failed: {exc.__class__.__name__}: {exc}"
+        self._log_spawn_timing(type, t0, t_built, first_event_at, failed=False)
         await self.hooks.subagent_stop(type, task, result.output)
         self.session.usage += result.usage
         if background:
@@ -371,6 +448,29 @@ class SubagentRunner:
         capped = self._cap_output(result.output, max_output_chars, spill_ref)
         iso_note = self._close_worktree(iso) if iso else ""
         return self.mcp.grant_note(unknown) + capped + iso_note
+
+    def _log_spawn_timing(
+        self, type: str, t0: float, t_built: float,
+        first_event_at: list[float], *, failed: bool,
+    ) -> None:
+        """Emit a DEBUG line splitting a spawn's wall time into ``setup`` (all the
+        harness-side work before the model is asked: worktree open, discovery,
+        Agent build, tool registration) and ``ttft`` (time from spawn start to the
+        first streamed event — the provider's time-to-first-token, where the real
+        cost lives). ``total`` is the whole spawn. A no-op unless DEBUG logging is
+        on (set ``MARIM_DEBUG=1``), so a normal run pays nothing. Fan out a few
+        spawns and read these side by side to see whether a slow spawn is the
+        harness or the model — and whether parallel spawns serialize."""
+        if not logger.isEnabledFor(logging.DEBUG):
+            return
+        now = time.perf_counter()
+        setup_ms = (t_built - t0) * 1000
+        total_ms = (now - t0) * 1000
+        ttft = f"{(first_event_at[0] - t0) * 1000:.0f}ms" if first_event_at else "n/a"
+        logger.debug(
+            "spawn %r timing%s: setup=%.0fms ttft=%s total=%.0fms",
+            type, " (failed)" if failed else "", setup_ms, ttft, total_ms,
+        )
 
     async def run(
         self, type: str, task: str, stream_id: str,

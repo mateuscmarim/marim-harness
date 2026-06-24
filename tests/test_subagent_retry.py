@@ -11,7 +11,10 @@ the inner ``_run_to_completion`` loop so they don't depend on a live model.
 from pathlib import Path
 
 import pytest
+from pydantic_ai import Agent
 from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
+from pydantic_ai.models.function import FunctionModel
 
 from marim_harness.deps import Deps
 from marim_harness.permissions import Mode
@@ -83,6 +86,41 @@ async def test_does_not_retry_a_permanent_error(tmp_path: Path):
         await runner._run_to_completion(sub, "task", None, None, None)
     assert sub.calls == 1          # failed once, never retried
     assert sleeps == []
+
+
+@pytest.mark.anyio
+async def test_resumes_after_transient_error_without_re_running_work(tmp_path: Path):
+    """A transient error deep in a multi-step run resumes from the captured
+    conversation instead of restarting it — the tool call already completed in the
+    failed attempt is NOT run a second time."""
+    runner, sleeps = _runner(tmp_path)
+    state = {"tool_runs": 0, "raised": False}
+
+    def fn(messages, info):
+        parts = [p for m in messages for p in getattr(m, "parts", [])]
+        has_return = any(type(p).__name__ == "ToolReturnPart" for p in parts)
+        if not has_return:
+            # Step 1: call the tool.
+            return ModelResponse(parts=[ToolCallPart(
+                tool_name="counter", args={}, tool_call_id="t1")])
+        if not state["raised"]:
+            # Step 2 of the first attempt: fail transiently *after* the tool ran.
+            state["raised"] = True
+            raise ModelHTTPError(429, "rate limited", body={"e": 1})
+        # Resumed: the tool result is already in history → finish.
+        return ModelResponse(parts=[TextPart(content="done")])
+
+    sub = Agent(FunctionModel(fn))
+
+    @sub.tool_plain
+    def counter() -> str:
+        state["tool_runs"] += 1
+        return "counted"
+
+    result = await runner._run_to_completion(sub, "go", None, None, None)
+    assert result.output == "done"
+    assert state["tool_runs"] == 1     # resumed, not restarted from scratch
+    assert sleeps == [1]               # one transient retry
 
 
 @pytest.mark.anyio

@@ -33,6 +33,21 @@ def test_load_config_reads_command_lists(monkeypatch):
     assert cfg.command_allowlist == ["^git", "^ls"]
 
 
+def test_load_config_reads_subagent_concurrency(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setenv("MARIM_SUBAGENT_CONCURRENCY", "3")
+    assert load_config().subagent_concurrency == 3
+
+
+def test_subagent_concurrency_defaults_to_unbounded(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.delenv("MARIM_SUBAGENT_CONCURRENCY", raising=False)
+    # Unset (and the explicit 0 "off" sentinel) both mean no cap.
+    assert load_config().subagent_concurrency is None
+    monkeypatch.setenv("MARIM_SUBAGENT_CONCURRENCY", "0")
+    assert load_config().subagent_concurrency is None
+
+
 def test_load_config_command_lists_default_empty(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     monkeypatch.delenv("MARIM_COMMAND_DENYLIST", raising=False)

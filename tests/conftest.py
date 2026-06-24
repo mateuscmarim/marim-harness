@@ -80,9 +80,9 @@ def _edit_then_done_model() -> FunctionModel:
     return FunctionModel(fn, stream_function=stream_fn)
 
 
-def _make_harness(model, deps) -> Harness:
+def _make_harness(model, deps, **config_kwargs) -> Harness:
     return Harness(model=model, provider=BuiltinToolProvider(), deps=deps,
-                   instructions="You are a coding agent.")
+                   instructions="You are a coding agent.", **config_kwargs)
 
 
 def _text_model() -> FunctionModel:

@@ -226,6 +226,10 @@ class HarnessConfig:
     # (gateway/server hiccup, request timeout, rate limit) before the failure
     # surfaces. Permanent errors (malformed request, auth) are never retried.
     subagent_retry_attempts: int = 2
+    # Cap on how many spawns run their model loop concurrently. A wide fan-out
+    # otherwise fires every request at once, tripping a shared route's upstream
+    # rate limit; the cap queues the excess. None ⇒ unbounded (historical default).
+    subagent_concurrency: int | None = None
     # Desktop-notification config. Disabled by default; the TUI and headless
     # runner build a Notifier from this and fire at key event points.
     notifications: NotificationConfig = field(default_factory=NotificationConfig.disabled)
@@ -332,6 +336,7 @@ def build_collaborators(
         model_settings=_DEFAULT_MODEL_SETTINGS,
         request_limit=cfg.subagent_request_limit,
         retry_attempts=cfg.subagent_retry_attempts,
+        concurrency=cfg.subagent_concurrency,
         build_model=(
             # Bind the narrowed (non-None) source as a default so the
             # deferred closure keeps it typed; ``cfg.model_source`` alone
