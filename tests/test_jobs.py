@@ -370,6 +370,38 @@ async def test_digest_inlines_full_agent_report():
     assert "full report" in digest
 
 
+@pytest.mark.anyio
+async def test_clear_history_drops_finished_keeps_running():
+    """clear_history (used by /clear) removes terminal jobs and the digest/wake
+    buffers but leaves running jobs alive, repainting via on_change."""
+    calls = []
+    reg = JobRegistry(on_change=lambda: calls.append(True))
+    done_id = reg.register("agent", "done-job", _sleep_then("R", 0.01))
+    await _settled(reg)
+    running_id = reg.register("agent", "live-job", _sleep_then("later", 5))
+    assert reg.has_finished_pending() is True
+    calls.clear()
+
+    reg.clear_history()
+
+    # Finished job and the pending digest are gone; the running job survives.
+    assert reg.get(done_id) is None
+    assert reg.get(running_id) is not None
+    assert reg.has_finished_pending() is False
+    assert reg.take_finished_digest() == ""
+    assert calls, "clear_history should repaint via on_change"
+
+    # The surviving job still reports cleanly when it finishes later.
+    await reg.cancel(running_id)
+
+
+@pytest.mark.anyio
+async def test_clear_history_empty_registry_is_safe():
+    reg = JobRegistry()
+    reg.clear_history()  # must not raise on an empty registry
+    assert reg.list() == []
+
+
 def _sleep_then(value, seconds):
     async def coro():
         await asyncio.sleep(seconds)

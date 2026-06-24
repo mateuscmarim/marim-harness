@@ -475,6 +475,11 @@ class Harness:
     def reset(self) -> None:
         self.session.reset()
         self.checkpoints.clear()
+        # /clear wipes the conversation, so the finished-jobs history and any
+        # re-stashed jobs digest belong to a conversation that no longer exists —
+        # drop them too (running jobs are kept; see JobRegistry.clear_history).
+        self.deps.jobs.clear_history()
+        self._pending_jobs_digest = None
 
     def new_session(self, name: str | None = None) -> None:
         self.session.new_session(name)

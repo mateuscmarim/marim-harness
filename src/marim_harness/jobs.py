@@ -209,6 +209,18 @@ class JobRegistry:
             if job.status == "running":
                 await self.cancel(job.id)
 
+    def clear_history(self) -> None:
+        """Drop terminal (done/failed/cancelled) jobs and the digest/wake buffers
+        so the jobs panel and next-turn digest start as empty as a wiped
+        conversation. Called by ``/clear``. Running jobs are *kept* — clearing the
+        conversation shouldn't silently kill live background work — and their
+        results will surface in a later digest when they finish."""
+        self._jobs = {jid: job for jid, job in self._jobs.items() if job.status == "running"}
+        # Drained buffers reference only settled jobs, all of which are now gone.
+        self._finished_since_turn = []
+        self._wake_consumed.clear()
+        self._notify()
+
     def _digest_tail(self, job: Job) -> str:
         """A ``: <tail>`` snippet for a finished job's digest line — the last
         :data:`_DIGEST_RESULT_CHARS` chars of its result, whitespace-collapsed so

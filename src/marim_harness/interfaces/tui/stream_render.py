@@ -327,6 +327,43 @@ class StreamRenderer:
         self.viewing_sid = None
         self.dirty_streams.clear()
 
+    def note_detached_spawn(self, content: str, widget: "SubAgentWidget", jobs) -> bool:
+        """If ``content`` is a detached-spawn handoff, keep ``widget`` pending and
+        map its job_id → card so it fills when the job settles; return True so the
+        caller does NOT finish the card. Fills at once if the job already settled
+        (a fast job can finish before its handoff renders). Returns False for a
+        normal report, so foreground spawns and wait_for_job cards finish as usual."""
+        job_id = _detached_job_id(content)
+        if job_id is None:
+            return False
+        widget.activity = "running in background…"
+        self._detached_cards[job_id] = widget
+        self._fill_detached_card(job_id, jobs)
+        return True
+
+    def _fill_detached_card(self, job_id: str, jobs) -> None:
+        """Finish the mapped card for ``job_id`` if its job is terminal, then drop
+        it from the map. A no-op while the job still runs."""
+        widget = self._detached_cards.get(job_id)
+        if widget is None:
+            return
+        job = jobs.get(job_id)
+        if job is None or job.status == "running":
+            return
+        report = job.result or ""
+        if job.status in ("failed", "cancelled") or subagent_failed(report):
+            status = "failed"
+        else:
+            status = "done"
+        widget.finish(report, status=status)
+        del self._detached_cards[job_id]
+
+    def fill_finished_detached_cards(self, jobs) -> None:
+        """Fill every mapped detached card whose job has settled. Called from the
+        job-registry change hook so cards update live as background jobs complete."""
+        for job_id in list(self._detached_cards):
+            self._fill_detached_card(job_id, jobs)
+
     def prune_completed(self) -> None:
         """Drop finished entries from ``tool_widgets`` at a turn boundary so the
         dict doesn't grow without bound across a long session.
@@ -567,21 +604,26 @@ class StreamRenderer:
             widget = self.tool_widgets.get(event.tool_call_id)
             if widget is not None:
                 content = str(getattr(event.part, "content", ""))
-                status = status_from_part(event.part)
-                # A spawn that failed returns its error as a normal (successful)
-                # tool result, so detect the runner's failure text and mark the
-                # card failed rather than letting it render a misleading ✓.
-                if (
-                    isinstance(widget, SubAgentWidget)
-                    and status == "done"
-                    and subagent_failed(content)
+                if isinstance(widget, SubAgentWidget) and self.note_detached_spawn(
+                    content, widget, self.app.harness.deps.jobs
                 ):
-                    status = "failed"
-                widget.finish(content, status=status)
-                if isinstance(widget, ToolCallWidget):
-                    group = self._group_of(widget)
-                    if group is not None:
-                        # Read widget.status *after* finish() so a bash non-zero
-                        # exit (self-flipped to "failed" inside finish) is detected.
-                        group.note_child_finished(failed=widget.status == "failed")
+                    pass  # detached: card stays pending, fills when its job settles
+                else:
+                    status = status_from_part(event.part)
+                    # A spawn that failed returns its error as a normal (successful)
+                    # tool result, so detect the runner's failure text and mark the
+                    # card failed rather than letting it render a misleading ✓.
+                    if (
+                        isinstance(widget, SubAgentWidget)
+                        and status == "done"
+                        and subagent_failed(content)
+                    ):
+                        status = "failed"
+                    widget.finish(content, status=status)
+                    if isinstance(widget, ToolCallWidget):
+                        group = self._group_of(widget)
+                        if group is not None:
+                            # Read widget.status *after* finish() so a bash non-zero
+                            # exit (self-flipped inside finish) is detected.
+                            group.note_child_finished(failed=widget.status == "failed")
             sink.on_result(event)

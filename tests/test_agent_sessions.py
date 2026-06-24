@@ -87,6 +87,32 @@ async def _fake_titler(messages) -> str:
 
 
 @pytest.mark.anyio
+async def test_reset_clears_job_history(tmp_path: Path):
+    """/clear (harness.reset) drops finished-job history and any re-stashed jobs
+    digest so the wiped conversation starts with a clean jobs slate."""
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    harness = _make_harness(_text_model(), deps)
+
+    async def _quick():
+        return "R"
+
+    jid = harness.deps.jobs.register("agent", "a", _quick())
+    for _ in range(400):  # let the background job settle
+        job = harness.deps.jobs.get(jid)
+        if job is not None and job.status != "running":
+            break
+        await asyncio.sleep(0.005)
+    assert harness.deps.jobs.has_finished_pending() is True
+    harness._pending_jobs_digest = "stale digest"
+
+    harness.reset()
+
+    assert harness.deps.jobs.get(jid) is None
+    assert harness.deps.jobs.has_finished_pending() is False
+    assert harness._pending_jobs_digest is None
+
+
+@pytest.mark.anyio
 async def test_auto_mode_applies_edit(tmp_path: Path):
     (tmp_path / "a.txt").write_text("foo")
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)

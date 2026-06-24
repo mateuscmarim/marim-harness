@@ -1085,6 +1085,108 @@ def test_detached_job_id_round_trips_with_the_handoff():
 
 
 @pytest.mark.anyio
+async def test_detached_card_stays_pending_then_fills_on_settle(tmp_path: Path):
+    """An auto-detached spawn's card holds at pending on the handoff note, then
+    fills with the real report when the background job finishes."""
+    import asyncio
+
+    from pydantic_ai.messages import (
+        FunctionToolCallEvent,
+        FunctionToolResultEvent,
+        ToolCallPart,
+        ToolReturnPart,
+    )
+
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.tools.provider import _detach_handoff
+
+    app = _app(tmp_path)
+    reg = app.harness.deps.jobs
+    gate = asyncio.Event()
+
+    async def _work():
+        await gate.wait()
+        return "THE REAL REPORT"
+
+    jid = reg.register("agent", "explore: map the core loop", _work())  # running
+
+    call = FunctionToolCallEvent(part=ToolCallPart(
+        tool_name="spawn_agent",
+        args={"type": "explore", "task": "map the core loop"},
+        tool_call_id="s1"))
+    result = FunctionToolResultEvent(part=ToolReturnPart(
+        tool_name="spawn_agent", content=_detach_handoff(jid), tool_call_id="s1"))
+
+    async def gen():
+        yield call
+        yield result
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.stream.on_events(None, gen())
+        await pilot.pause()
+        card = app.stream.tool_widgets.get("s1")
+        assert isinstance(card, SubAgentWidget)
+        assert card.status == "pending"          # not finished on the handoff
+        assert card.report != _detach_handoff(jid)
+
+        gate.set()                               # let the job finish
+        for _ in range(400):
+            if reg.get(jid).status != "running":
+                break
+            await asyncio.sleep(0)
+        app.stream.fill_finished_detached_cards(reg)
+        await pilot.pause()
+        assert card.status == "done"
+        assert card.report == "THE REAL REPORT"
+
+
+@pytest.mark.anyio
+async def test_detached_card_fills_failed_when_job_fails(tmp_path: Path):
+    import asyncio
+
+    from pydantic_ai.messages import (
+        FunctionToolCallEvent,
+        FunctionToolResultEvent,
+        ToolCallPart,
+        ToolReturnPart,
+    )
+
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.tools.provider import _detach_handoff
+
+    app = _app(tmp_path)
+    reg = app.harness.deps.jobs
+
+    async def _boom():
+        raise ValueError("upstream 500")
+
+    jid = reg.register("agent", "explore: x", _boom())
+    for _ in range(400):  # let it settle to failed
+        if reg.get(jid).status != "running":
+            break
+        await asyncio.sleep(0)
+
+    call = FunctionToolCallEvent(part=ToolCallPart(
+        tool_name="spawn_agent", args={"type": "explore", "task": "x"},
+        tool_call_id="s1"))
+    result = FunctionToolResultEvent(part=ToolReturnPart(
+        tool_name="spawn_agent", content=_detach_handoff(jid), tool_call_id="s1"))
+
+    async def gen():
+        yield call
+        yield result
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.stream.on_events(None, gen())   # job already terminal → immediate fill
+        await pilot.pause()
+        card = app.stream.tool_widgets.get("s1")
+        assert isinstance(card, SubAgentWidget)
+        assert card.status == "failed"
+
+
+@pytest.mark.anyio
 async def test_failed_spawn_renders_card_as_failed(tmp_path: Path):
     """A spawn that fails returns its error as a (successful) tool result; the card
     must still render failed (✕), not a misleading ✓."""
