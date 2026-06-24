@@ -2,7 +2,7 @@
 name = "marim-harness"
 version = "0.1.0"
 description = "A terminal coding agent on Pydantic AI + Textual"
-authors = [{ name = "Mateus Coutinho Marim", email = "mateus.marim@ice.ufjf.br" }]
+authors = [{ name = "Mateus Coutinho Marim", email = "mateus@marim.dev" }]
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dependencies = [
