@@ -16,6 +16,7 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..atomic_io import atomic_write_text
 from ..config import config_dir
 
 logger = logging.getLogger(__name__)
@@ -115,7 +116,7 @@ def _upsert_index_line(scope: MemoryScope, *, slug: str, title: str, hook: str) 
     if not replaced:
         new_lines.append(line)
 
-    path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    atomic_write_text(path, "\n".join(new_lines) + "\n")
 
 
 def save_memory(
@@ -134,7 +135,7 @@ def save_memory(
 
     frontmatter = _render_frontmatter(slug=slug, description=description, mem_type=mem_type)
     path = scope.root / f"{slug}.md"
-    path.write_text(f"{frontmatter}\n{body.strip()}\n", encoding="utf-8")
+    atomic_write_text(path, f"{frontmatter}\n{body.strip()}\n")
     logger.debug("saved memory %s (%s)", path, scope.name)
 
     _upsert_index_line(scope, slug=slug, title=title, hook=description)

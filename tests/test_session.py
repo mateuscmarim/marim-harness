@@ -417,6 +417,28 @@ async def test_on_compact_start_not_fired_without_compaction(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_forced_compaction_clears_indicator_even_without_shrink(tmp_path):
+    # A forced compaction (used after a provider context-overflow where the token
+    # estimate undershot) can run yet not shrink history. The "compacting…"
+    # indicator must still be cleared: on_compact fires with before == after so
+    # the UI just drops the notice instead of leaving a stuck spinner.
+    deps = Deps(workspace_root=tmp_path)
+    ctrl = SessionController(
+        None, None, deps, max_context_tokens=100_000, keep_last_messages=20
+    )
+    ctrl.history = [ModelRequest(parts=[UserPromptPart(content="small")])]
+    events: list = []
+    ctrl.on_compact_start = lambda: events.append("start")
+    ctrl.on_compact = lambda before, after: events.append(("done", before, after))
+    did = await ctrl.maybe_compact(force=True)
+    assert did is False  # nothing to shrink
+    assert "start" in events  # the indicator was shown
+    done = [e for e in events if isinstance(e, tuple) and e[0] == "done"]
+    assert done, "on_compact must fire to clear the indicator even with no shrink"
+    assert done[0][1] == done[0][2]  # before == after: the clear-only signal
+
+
+@pytest.mark.anyio
 async def test_compaction_persists_the_compacted_history(tmp_path):
     """A compaction that fires must be persisted, so a process death between turns
     doesn't lose it (and the on-disk file matches the in-memory history)."""

@@ -479,6 +479,12 @@ class HarnessApp(App):
         if self._compacting_notice is not None:
             self._compacting_notice.remove()  # replace the live "compacting…" line
             self._compacting_notice = None
+        # before == after means a (forced) compaction ran without shrinking — the
+        # call exists only to clear the indicator above, so don't post a confusing
+        # "compacted: N → N" line or re-surface a stale summary.
+        if before == after:
+            self.status.refresh_status()
+            return
         log.mount(
             NoticeMessage(f"compacted history: {before} → {after} messages")
         )

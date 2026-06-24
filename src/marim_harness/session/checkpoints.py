@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
+from ..atomic_io import atomic_write_text
+
 
 @dataclass
 class Checkpoint:
@@ -120,9 +122,7 @@ class CheckpointManager:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             payload = {"checkpoints": [c.to_dict() for c in self._checkpoints]}
-            tmp = path.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(payload))
-            tmp.replace(path)  # atomic swap, mirrors SessionStore.save
+            atomic_write_text(path, json.dumps(payload))
         except OSError as exc:
             logger.debug("failed to persist checkpoints: %s", exc)
 
@@ -201,14 +201,26 @@ class CheckpointManager:
         pre: str | None = None
         if cp.commit is not None:
             # Safety net: snapshot the current working tree (under a per-session
-            # ref) so the rewind is undoable, then restore. restore() reports
-            # success, so a failed git restore is never dressed up as a clean one.
+            # ref) so the rewind is undoable, THEN restore. If that snapshot can't
+            # be captured (git failure), refuse the destructive restore rather than
+            # overwrite the working tree with no recovery path — report it as a
+            # failed restore (the conversation half is already rewound, matching
+            # the commit-less checkpoint case). restore() reports success too, so a
+            # failed git restore is never dressed up as a clean one.
             pre = self.snapshotter.capture(
                 self._pre_restore_ref(), "pre-restore safety snapshot"
             )
             self._pre_restore_commit = pre
-            restored = self.snapshotter.restore(cp.commit)
-            restore_failed = not restored
+            if pre is None:
+                restore_failed = True
+            else:
+                restored = self.snapshotter.restore(cp.commit)
+                restore_failed = not restored
+        # Drop the now-orphaned later checkpoints AND delete their git refs, so
+        # refs/marim/checkpoints/... doesn't leak and block GC (mirrors _prune).
+        for c in self._checkpoints:
+            if c.index > index and c.commit is not None:
+                self.snapshotter.delete(self._ref(c.index))
         self._checkpoints = [c for c in self._checkpoints if c.index <= index]
         self._save()
         return RewindResult(

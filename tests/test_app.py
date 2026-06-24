@@ -2627,3 +2627,34 @@ async def test_switch_session_refused_while_busy(tmp_path: Path, monkeypatch):
         app._turn_worker = object()
         await app.switch_to_session_id("alpha")
         assert called is False
+
+
+@pytest.mark.anyio
+async def test_on_compact_noop_clears_indicator_without_message(tmp_path: Path):
+    # A forced compaction that doesn't shrink calls _on_compact(before, before).
+    # The "compacting…" notice must be cleared, and no misleading "compacted
+    # history: N → N" line should be added.
+    app = _app(tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        app._on_compact_start()
+        assert app._compacting_notice is not None
+        app._on_compact(3, 3)  # no-shrink signal
+        await pilot.pause()
+        assert app._compacting_notice is None  # indicator cleared
+        texts = [str(w.render()) for w in app.query(NoticeMessage)]
+        assert not any("compacted history" in t for t in texts)
+
+
+@pytest.mark.anyio
+async def test_on_compact_shrink_shows_message(tmp_path: Path):
+    # A real compaction (after < before) still posts the summary line.
+    app = _app(tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        app._on_compact_start()
+        app._on_compact(10, 4)
+        await pilot.pause()
+        assert app._compacting_notice is None
+        texts = [str(w.render()) for w in app.query(NoticeMessage)]
+        assert any("compacted history: 10 → 4" in t for t in texts)

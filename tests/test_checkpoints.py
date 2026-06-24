@@ -192,6 +192,65 @@ def test_rewind_drops_later_checkpoints(tmp_path: Path):
     assert [c.index for c in mgr.list()] == [0]
 
 
+class _DeleteRecordingSnap(_FakeSnap):
+    """A _FakeSnap that records the refs passed to ``delete``."""
+
+    def __init__(self, *, restore_ok: bool = True) -> None:
+        super().__init__(restore_ok=restore_ok)
+        self.deleted: list[str] = []
+
+    def delete(self, ref: str) -> None:
+        self.deleted.append(ref)
+
+
+class _FailPreRestoreSnap(_FakeSnap):
+    """Captures real commits for checkpoints, but fails the pre-restore safety
+    snapshot — simulating a git failure exactly when undo-ability matters."""
+
+    def capture(self, ref: str, message: str) -> str | None:
+        self.captured.append(ref)
+        if ref.endswith("_pre_restore"):
+            return None  # safety snapshot can't be taken
+        return f"commit:{ref}"
+
+
+def test_rewind_deletes_dropped_checkpoint_refs(tmp_path: Path):
+    # Later checkpoints removed by a rewind must have their git refs deleted, not
+    # just dropped from the in-memory list — otherwise refs/marim/... leaks and
+    # blocks git GC (mirrors what _prune already does).
+    s = _session(tmp_path)
+    snap = _DeleteRecordingSnap()
+    mgr = CheckpointManager(s, snap)
+    mgr.snapshot("t0")  # index 0 (kept)
+    s.set_history(["u1", "a1"])
+    mgr.snapshot("t1")  # index 1 (dropped)
+    s.set_history(["u1", "a1", "u2", "a2"])
+    mgr.snapshot("t2")  # index 2 (dropped)
+    mgr.rewind(0)
+    assert [c.index for c in mgr.list()] == [0]
+    assert any(r.endswith("/1") for r in snap.deleted)
+    assert any(r.endswith("/2") for r in snap.deleted)
+    assert not any(r.endswith("/0") for r in snap.deleted)  # the kept one survives
+
+
+def test_rewind_aborts_restore_when_safety_snapshot_fails(tmp_path: Path):
+    # If the pre-restore safety snapshot can't be captured, the working tree must
+    # NOT be destructively restored — that would be an irreversible overwrite with
+    # no undo path. The file restore is skipped and reported as failed; the
+    # conversation half (already truncated) stays rewound.
+    s = _session(tmp_path)
+    snap = _FailPreRestoreSnap()
+    mgr = CheckpointManager(s, snap)
+    mgr.snapshot("t1")  # captures a real commit for the checkpoint
+    s.set_history(["u1", "a1"])
+    result = mgr.rewind(0)
+    assert snap.restored == []  # restore was never attempted
+    assert result.restored_files is False
+    assert result.restore_failed is True
+    assert result.pre_restore_commit is None
+    assert s.history == []  # history was still rewound
+
+
 def test_rewind_unknown_index_raises(tmp_path: Path):
     s = _session(tmp_path)
     mgr = CheckpointManager(s)

@@ -10,6 +10,7 @@ from pathlib import Path
 from pydantic_ai.messages import ModelMessagesTypeAdapter
 from pydantic_ai.usage import RunUsage
 
+from ..atomic_io import atomic_write_text
 from ..images import externalize_images, rehydrate_images
 
 logger = logging.getLogger(__name__)
@@ -100,9 +101,7 @@ class SessionStore:
         messages_json = json.loads(ModelMessagesTypeAdapter.dump_json(history))
         messages_json = externalize_images(messages_json, self.session_id)
         payload["messages"] = messages_json
-        tmp = self.path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload))
-        tmp.replace(self.path)  # atomic swap so a crash mid-write can't corrupt
+        atomic_write_text(self.path, json.dumps(payload))
 
     def load(self) -> tuple[list, RunUsage, list, float | None]:
         """Return ``(messages, usage, tasks, duration_seconds)``. Files written
