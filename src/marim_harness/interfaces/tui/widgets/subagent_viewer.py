@@ -34,7 +34,7 @@ class SubAgentList(VerticalScroll):
         """Repaint the list, marking row ``index`` as the current selection."""
         lines = []
         for i, w in enumerate(subagents):
-            glyph = {"done": "✓", "denied": "✕"}.get(w.status, "▸")
+            glyph = {"done": "✓", "denied": "✕", "failed": "✕"}.get(w.status, "▸")
             text = f"{glyph} {w.agent_type} — {w.display_title()}"
             # Reverse-video the selected row; (text, style) assembly applies the
             # style without parsing the untrusted task text as markup.

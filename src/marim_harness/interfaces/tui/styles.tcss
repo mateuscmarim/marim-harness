@@ -44,15 +44,17 @@ ToolCallWidget { margin: 0 0 1 0; border-left: tall $primary; padding-left: 1; }
    The header clips to one line with an ellipsis. The full transcript lives in
    .subagent-body, hidden inline and revealed full-screen by the viewer (ctrl+x). */
 SubAgentWidget { margin: 0 0 1 0; height: auto; border-left: tall $primary; padding-left: 1; }
-SubAgentWidget:hover { border-left: tall $accent; }
 .subagent-header { height: 1; text-wrap: nowrap; text-overflow: ellipsis; color: $text-muted; }
 .subagent-activity { height: 1; padding-left: 2; color: $text-muted; }
-/* Brighten the whole row to white + bold on hover (:hover propagates from the
-   child under the pointer up to the card, so the explicit child rules fire). */
-SubAgentWidget:hover .subagent-header,
-SubAgentWidget:hover .subagent-activity { color: white; text-style: bold; }
+/* Brighten the whole row to white + bold on hover. Driven by a `-hovered` class
+   the card toggles from its own mouse state (CSS :hover only lands on the leaf
+   line under the pointer, not the container — see SubAgentWidget.on_enter). */
+SubAgentWidget.-hovered { border-left: tall $accent; }
+SubAgentWidget.-hovered .subagent-header,
+SubAgentWidget.-hovered .subagent-activity { color: white; text-style: bold; }
 .subagent-bhead { color: $accent; text-style: bold; margin: 0 0 1 0; }
 .subagent-usage { color: $text-muted; }
+.subagent-error { color: $error; margin: 1 0 0 0; }
 
 /* The transcript home. Hidden inline (display toggled in Python); the `viewing`
    class promotes it to a full-screen overlay docked above the log, leaving a gap

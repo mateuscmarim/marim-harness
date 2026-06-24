@@ -47,6 +47,28 @@ def status_from_part(part) -> str:
     return "done"
 
 
+# Prefixes of the strings a failed foreground spawn *returns* (it contains its
+# error rather than raising, so the spawn_agent tool call's outcome is still
+# "success"). The card would otherwise render a ✓; matching these flips it to ✕.
+_SUBAGENT_FAIL_PREFIXES = (
+    "No sub-agent type ",
+    "Can't run sub-agent ",
+    "Failed to build sub-agent",
+    "Isolated spawn needs ",
+    "Couldn't create an isolated worktree",
+)
+
+
+def subagent_failed(content: str) -> bool:
+    """True when a spawn's returned text is one of the runner's failure messages —
+    so a contained failure (which the tool reports as a successful return) still
+    renders the card as failed."""
+    text = content.lstrip()
+    if text.startswith("Sub-agent ") and " failed:" in text[:120]:
+        return True
+    return text.startswith(_SUBAGENT_FAIL_PREFIXES)
+
+
 def _stream_hidden(widget: Widget, viewing_sid: str | None) -> bool:
     """True when ``widget`` is a sub-agent transcript stream that isn't currently
     being viewed, so re-parsing its markdown every flush tick would be wasted work
@@ -454,8 +476,16 @@ class StreamRenderer:
         elif isinstance(event, FunctionToolResultEvent):
             widget = self.tool_widgets.get(event.tool_call_id)
             if widget is not None:
-                widget.finish(
-                    str(getattr(event.part, "content", "")),
-                    status=status_from_part(event.part),
-                )
+                content = str(getattr(event.part, "content", ""))
+                status = status_from_part(event.part)
+                # A spawn that failed returns its error as a normal (successful)
+                # tool result, so detect the runner's failure text and mark the
+                # card failed rather than letting it render a misleading ✓.
+                if (
+                    isinstance(widget, SubAgentWidget)
+                    and status == "done"
+                    and subagent_failed(content)
+                ):
+                    status = "failed"
+                widget.finish(content, status=status)
             sink.on_result(event)

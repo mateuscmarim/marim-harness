@@ -579,6 +579,18 @@ class _SubHarness(App):
         yield SubAgentWidget("explore", "map the code")
 
 
+def test_failure_reason_strips_prefix_and_clips():
+    from marim_harness.interfaces.tui.widgets.subagent import failure_reason
+
+    # The "Sub-agent 'x' failed: " prefix is stripped, leaving the real error.
+    assert failure_reason("Sub-agent 'explore' failed: ValueError: boom") == "ValueError: boom"
+    # Other failure messages pass through (whitespace collapsed).
+    assert failure_reason("No sub-agent type 'ghost'.\nAvailable: explore") == (
+        "No sub-agent type 'ghost'. Available: explore"
+    )
+    assert failure_reason("Sub-agent 'x' failed: " + "y" * 200).endswith("…")
+
+
 def test_derive_subagent_title_takes_first_clause():
     """A verbose spawn prompt condenses to its first sentence/clause as the title,
     instead of inlining the whole prompt."""
@@ -591,6 +603,45 @@ def test_derive_subagent_title_takes_first_clause():
     assert derive_title("short\n  task") == "short task"
     # Over-long single clause is clipped with an ellipsis.
     assert derive_title("x" * 200).endswith("…")
+
+
+@pytest.mark.anyio
+async def test_subagent_card_hover_toggles_highlight_class():
+    """Hovering anywhere on the card adds the `-hovered` class (which the CSS uses to
+    brighten the whole row); it persists while moving between the card's two lines
+    and clears on leave. The class is needed because CSS :hover only lands on the
+    leaf line under the pointer, not the container."""
+    from textual.containers import VerticalScroll
+
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+
+    class H(App):
+        def compose(self) -> ComposeResult:
+            yield VerticalScroll(id="log")
+
+        async def on_mount(self) -> None:
+            self.card = SubAgentWidget("explore", "map the code. then report.", "m1")
+            self.other = SubAgentWidget("explore", "another task. do it.", "m2")
+            await self.query_one("#log").mount(self.card, self.other)
+
+    app = H()
+    async with app.run_test(size=(80, 12)) as pilot:
+        await pilot.pause()
+        card, other = app.card, app.other
+        assert card.has_class("-hovered") is False
+        await pilot.hover(card, offset=(2, 0))  # hover the card's header line
+        await pilot.pause()
+        assert card.has_class("-hovered") is True
+        # Hopping to the ↳ line keeps the highlight (no flicker).
+        await pilot.hover(card, offset=(2, 1))
+        await pilot.pause()
+        assert card.has_class("-hovered") is True
+        # Moving onto the other card clears the first and lights the second.
+        await pilot.hover(other, offset=(2, 0))
+        await pilot.pause()
+        await pilot.pause()
+        assert card.has_class("-hovered") is False
+        assert other.has_class("-hovered") is True
 
 
 @pytest.mark.anyio

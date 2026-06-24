@@ -47,6 +47,20 @@ def _fmt_duration(seconds: float) -> str:
     return f"{s // 60}m {s % 60}s"
 
 
+_REASON_CAP = 70
+
+
+def failure_reason(report: str) -> str:
+    """The concise reason from a failed spawn's report — strips the
+    ``Sub-agent 'x' failed: `` prefix (leaving the underlying error) and collapses
+    whitespace; the full report stays available in the viewer transcript."""
+    text = " ".join(report.split())
+    marker = " failed: "
+    if text.startswith("Sub-agent ") and marker in text:
+        text = text.split(marker, 1)[1]
+    return text if len(text) <= _REASON_CAP else text[: _REASON_CAP - 1] + "…"
+
+
 # Boundaries a verbose spawn prompt is cut at to derive a card title — the first
 # sentence/clause usually reads as a good title ("Provide a structural overview of
 # the codebase. Include: …" → "Provide a structural overview of the codebase").
@@ -86,8 +100,9 @@ class SubAgentWidget(Vertical):
         # once the widget is registered. The flush tick uses it to skip transcripts
         # that aren't currently being viewed.
         self.stream_id = ""
-        self.status = "pending"  # "pending" | "done" | "denied"
+        self.status = "pending"  # "pending" | "done" | "denied" | "failed"
         self.report = ""
+        self._fail_reason = ""
         # The current tool (humanized name + arg preview) shown on the ↳ line while
         # running; a tally + run timing replace it once finished. ``_t0`` is set at
         # mount and ``_t_end`` frozen at finish.
@@ -125,10 +140,25 @@ class SubAgentWidget(Vertical):
         # repainting.
         self.set_interval(_SPINNER_TICK, self._tick)
 
+    # The CSS ``:hover`` pseudo-class only lands on the leaf widget under the
+    # pointer, not on this container, so hovering a child line wouldn't light up
+    # the whole card. Drive a ``-hovered`` class off the card's own mouse state
+    # instead. Moving between the card's two lines fires Leave→Enter, so the leave
+    # check is deferred until is_mouse_over has settled — otherwise the highlight
+    # would flicker off as the pointer crosses from the header to the ↳ line.
+    def on_enter(self, _event) -> None:
+        self._sync_hover()
+
+    def on_leave(self, _event) -> None:
+        self.call_after_refresh(self._sync_hover)
+
+    def _sync_hover(self) -> None:
+        self.set_class(self.is_mouse_over, "-hovered")
+
     def _glyph(self) -> str:
         if self.status == "done":
             return "✓"
-        if self.status == "denied":
+        if self.status in ("denied", "failed"):
             return "✕"
         return _SPINNER[self._spin]
 
@@ -139,10 +169,14 @@ class SubAgentWidget(Vertical):
 
     def _paint_header(self) -> None:
         # A derived title (not the raw prompt); CSS clips it with an ellipsis to the
-        # card width. Content() (not markup) — the title is untrusted and may contain
-        # bracket sequences markup parsing would choke on.
+        # card width. Content.assemble keeps the (untrusted) title a literal — never
+        # markup-parsed — while tinting a failure glyph red so it reads at a glance.
+        glyph_style = "red" if self.status in ("denied", "failed") else ""
         self._header.update(
-            Content(f"{self._glyph()} {self.agent_type} Task — {self.display_title()}")
+            Content.assemble(
+                (f"{self._glyph()} ", glyph_style),
+                f"{self.agent_type} Task — {self.display_title()}",
+            )
         )
 
     def _duration(self) -> str:
@@ -153,8 +187,12 @@ class SubAgentWidget(Vertical):
         if self.status == "pending":
             # Show the current tool while running; "working…" before the first call.
             self._activity.update(Content(f"↳ {self.activity or 'working…'}"))
+        elif self.status in ("failed", "denied"):
+            # Surface why it failed (literal + red); the full report is in the body.
+            reason = self._fail_reason or ("denied" if self.status == "denied" else "failed")
+            self._activity.update(Content.assemble((f"↳ {reason}", "red")))
         else:
-            # Finished: collapse to the run summary (tool tally + frozen duration).
+            # Done: collapse to the run summary (tool tally + frozen duration).
             plural = "" if self.tool_count == 1 else "s"
             self._activity.update(
                 Content(f"↳ {self.tool_count} toolcall{plural} · {self._duration()}")
@@ -213,5 +251,10 @@ class SubAgentWidget(Vertical):
         self.status = status
         self.report = report
         self._t_end = time.monotonic()  # freeze the duration
+        if status in ("failed", "denied") and report:
+            self._fail_reason = failure_reason(report)
+            # The failure is returned, not streamed as an event, so the transcript
+            # otherwise ends without it — append it so the viewer shows the reason.
+            self.body.mount(Static(Content(report), classes="subagent-error"))
         self._paint_header()
         self._paint_activity()

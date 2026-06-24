@@ -888,6 +888,78 @@ async def test_on_events_mounts_and_finishes_tool_widget(tmp_path: Path):
         assert "1\tfoo" in widget.result_text
 
 
+def test_subagent_failed_detects_runner_error_text():
+    from marim_harness.interfaces.tui.stream_render import subagent_failed
+
+    assert subagent_failed("Sub-agent 'explore' failed: ValueError: boom") is True
+    assert subagent_failed("No sub-agent type 'ghost'. Available: explore") is True
+    assert subagent_failed("Couldn't create an isolated worktree: locked") is True
+    # A normal report (even one that mentions a sub-agent) is not a failure.
+    assert subagent_failed("Here is my report. The sub-agent system looks fine.") is False
+
+
+@pytest.mark.anyio
+async def test_failed_spawn_renders_card_as_failed(tmp_path: Path):
+    """A spawn that fails returns its error as a (successful) tool result; the card
+    must still render failed (✕), not a misleading ✓."""
+    from pydantic_ai.messages import FunctionToolResultEvent, ToolReturnPart
+
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+
+    async def gen():
+        yield _spawn_call("s1", "look around")
+        yield FunctionToolResultEvent(
+            part=ToolReturnPart(
+                tool_name="spawn_agent",
+                content="Sub-agent 'explore' failed: ValueError: boom",
+                tool_call_id="s1",
+            )
+        )
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.stream.on_events(None, gen())
+        await pilot.pause()
+        w = app.stream.tool_widgets["s1"]
+        assert isinstance(w, SubAgentWidget)
+        assert w.status == "failed"
+        assert "✕" in str(w._header.visual)
+        # The reason shows on the ↳ line (prefix stripped) and the full report is
+        # appended to the transcript body for the viewer.
+        assert "ValueError: boom" in str(w._activity.visual)
+        body_text = " ".join(str(c.visual) for c in w.body.query(".subagent-error"))
+        assert "ValueError: boom" in body_text
+
+
+@pytest.mark.anyio
+async def test_successful_spawn_renders_card_done(tmp_path: Path):
+    """A spawn whose report happens to start like prose still renders done (✓)."""
+    from pydantic_ai.messages import FunctionToolResultEvent, ToolReturnPart
+
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+
+    async def gen():
+        yield _spawn_call("s1", "look around")
+        yield FunctionToolResultEvent(
+            part=ToolReturnPart(
+                tool_name="spawn_agent",
+                content="Here is the report: the codebase is well structured.",
+                tool_call_id="s1",
+            )
+        )
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.stream.on_events(None, gen())
+        await pilot.pause()
+        w = app.stream.tool_widgets["s1"]
+        assert isinstance(w, SubAgentWidget)
+        assert w.status == "done"
+        assert "✓" in str(w._header.visual)
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     "outcome, expected",
