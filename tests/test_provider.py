@@ -84,6 +84,21 @@ def test_tree_tool_executes_via_agent(tmp_path: Path):
     assert any("sub/" in r and "x.txt" in r for r in returns)
 
 
+@pytest.mark.anyio
+async def test_bash_tool_accepts_description_arg(tmp_path: Path):
+    # The model is trained on Claude Code's Bash tool, whose schema has a required
+    # `description`. It reflexively sends it on every shell call, so the bash tool
+    # must accept `description` rather than reject it as `extra_forbidden`. The arg
+    # is metadata only — it must not affect execution.
+    from types import SimpleNamespace
+
+    from marim_harness.tools.provider import bash
+
+    ctx = SimpleNamespace(deps=Deps(workspace_root=tmp_path))
+    out = await bash(ctx, "echo hi", description="Say hi")
+    assert "hi" in out
+
+
 def test_read_tool_executes_via_agent(tmp_path: Path):
     (tmp_path / "a.txt").write_text("content")
     agent = _build_agent()

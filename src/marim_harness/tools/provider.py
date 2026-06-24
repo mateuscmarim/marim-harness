@@ -432,8 +432,14 @@ async def edit_file(ctx: RunContext[Deps], path: str, edits: list[fs.Edit]) -> s
     return await _with_diagnostics(ctx, path, result)
 
 
-async def bash(ctx: RunContext[Deps], command: str, background: bool = False) -> str:
+async def bash(
+    ctx: RunContext[Deps], command: str, description: str = "", background: bool = False
+) -> str:
     """Run a shell command in the workspace root.
+
+    `description` is an optional one-line summary of what the command does, in
+    active voice (e.g. "Count total source lines"); it's shown in the UI and
+    session history and is otherwise ignored — it never affects execution.
 
     Set `background=True` for long-running commands (dev servers, builds, test
     watchers): the command is launched detached and the tool returns immediately
