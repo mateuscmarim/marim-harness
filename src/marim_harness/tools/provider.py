@@ -305,11 +305,22 @@ def _coerce_mcp(mcp: "list[str] | str | None") -> list[str] | None:
     return cleaned or None
 
 
+def _detach_handoff(job_id: str) -> str:
+    """The return for an auto-detached spawn: tell the agent it's running in the
+    background and that it may end its turn (wake will deliver the report) or wait."""
+    return (
+        f"Started detached sub-agent {job_id}, running in the background "
+        f"(concurrency-capped). End your turn to let it run — its report will be "
+        f"delivered to you when it finishes — or wait_for_job(\"{job_id}\") if you "
+        f"need the result in this turn. For a fan-out, ending the turn is better."
+    )
+
+
 async def spawn_agent(
     ctx: RunContext[Deps],
     type: str,
     task: str,
-    background: bool = False,
+    background: bool | None = None,
     mcp: list[str] | str | None = None,
     max_output_chars: int | None = None,
     returns: str | None = None,
@@ -326,10 +337,11 @@ async def spawn_agent(
     its final message becomes this tool's result. Spawn several in one turn to
     fan out independent work; sub-agents cannot spawn further sub-agents.
 
-    Set `background=True` to launch it as a detached job and return immediately
-    with a job id instead of waiting — keep working, then read its report later
-    with job_output / wait_for_job. Background sub-agents don't stream their
-    steps; you only see the final report when you pull it.
+    Set `background=True` to force a detached job (returns a job id immediately);
+    `background=False` forces an inline run. Left unset, a spawn auto-detaches when
+    detached-fanout mode is on and the session is interactive — it returns a job
+    handle and you choose to end your turn (its report is delivered later) or
+    wait_for_job for it inline.
 
     `mcp` grants the sub-agent specific MCP servers by name (none by default).
     Pass the names listed as enabled in the sub-agents index — e.g.
@@ -370,7 +382,10 @@ async def spawn_agent(
     task = compose_subagent_task(
         task, returns=returns, constraints=constraints, context=context
     )
-    if background:
+    auto_detached = (
+        background is None and ctx.deps.detach_fanout and ctx.deps.interactive
+    )
+    if background or auto_detached:
         if ctx.deps.services.run_background_agent is None:
             return "Background sub-agents are not available in this context."
         label = f"{type}: {task}"
@@ -380,6 +395,8 @@ async def spawn_agent(
                 type, task, mcp_names, max_output_chars, model, isolation
             ),
         )
+        if auto_detached:
+            return _detach_handoff(job_id)
         return f"Started {job_id} (agent) — {label[:60]}"
     if ctx.deps.services.run_subagent is None:
         return "Sub-agents are not available in this context."
