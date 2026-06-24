@@ -11,6 +11,24 @@ def test_single_arg_tool_targets_its_value():
     assert s == ToolSummary(label="Read", target=".marim/test_output.txt", badges=())
 
 
+def test_spawn_agent_preview_prefers_description():
+    s = summarize("spawn_agent", {
+        "type": "explore", "task": "a very long task body that we don't want shown",
+        "description": "review core loop", "background": True,
+    })
+    assert s.label == "Spawn Agent"
+    assert s.target == "review core loop"
+
+
+def test_spawn_agent_preview_falls_back_to_task_never_a_bare_bool():
+    # Regression: with no `description` and an early boolean arg, the old
+    # "first meaningful arg" fallback surfaced "True" instead of the task.
+    s = summarize("spawn_agent", {"background": True, "type": "explore",
+                                   "task": "review the parser"})
+    assert s.target == "review the parser"
+    assert s.target != "True"
+
+
 def test_multi_arg_tool_uses_registered_target_not_repr():
     # The old code rendered this as wait_for_job(id='job-6', timeout=600).
     s = summarize("wait_for_job", {"id": "job-6", "timeout": 600})

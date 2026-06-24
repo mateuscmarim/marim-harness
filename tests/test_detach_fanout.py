@@ -83,3 +83,13 @@ async def test_auto_detach_defaults_output_budget(tmp_path: Path):
     assert recorded[0] == _DETACH_OUTPUT_BUDGET, (
         f"expected max_output_chars={_DETACH_OUTPUT_BUDGET}, got {recorded[0]}"
     )
+
+
+def test_spawn_agent_accepts_a_description_param():
+    """The model habitually passes a `description` (Claude Code's Task tool has
+    one); spawn_agent must accept it so a fan-out doesn't fail validation."""
+    import inspect
+
+    from marim_harness.tools.provider import spawn_agent
+
+    assert "description" in inspect.signature(spawn_agent).parameters

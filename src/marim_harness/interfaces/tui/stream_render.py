@@ -405,7 +405,9 @@ class StreamRenderer:
         a fan-out stays legible as a stack of cards with no inline expansion."""
         model_label = str(args.get("model") or self.app.harness.model_label or "")
         widget = SubAgentWidget(
-            str(args.get("type", "")), str(args.get("task", "")), model_label
+            str(args.get("type", "")),
+            str(args.get("description") or args.get("task", "")),
+            model_label,
         )
         self.subagents.append(widget)
         return widget

@@ -325,6 +325,7 @@ async def spawn_agent(
     ctx: RunContext[Deps],
     type: str,
     task: str,
+    description: str | None = None,
     background: bool | None = None,
     mcp: list[str] | str | None = None,
     max_output_chars: int | None = None,
@@ -372,6 +373,10 @@ async def spawn_agent(
     reach is still set by `type`/`mcp`, not prose); `context` is the orchestration-
     level background it can't see (why this task, what's already known). The plain
     `task` stays the one required ask.
+
+    `description` is an optional short (3-5 word) label for this spawn — it does
+    not affect what the sub-agent does, only how the spawn is shown (it titles the
+    sub-agent card and the tool line). Omit it and the card falls back to `task`.
 
     `model` optionally runs this spawn on a different model than yours — pass a
     cheaper model for read-only fan-out, or a stronger one for a hard sub-task.

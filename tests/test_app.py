@@ -69,6 +69,30 @@ async def test_resumed_spawn_agent_renders_as_subagent_card(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_resumed_spawn_card_label_prefers_description(tmp_path: Path):
+    """When the spawn carried a short `description`, the resumed card uses it as
+    the label instead of the full task."""
+    from pydantic_ai.messages import ModelResponse, ToolCallPart
+
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+
+    app = _app(tmp_path)
+    app.harness.session.history = [
+        ModelResponse(parts=[ToolCallPart(
+            tool_name="spawn_agent",
+            args={"type": "explore", "task": "a long task body",
+                  "description": "review core loop"},
+            tool_call_id="s1",
+        )]),
+    ]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        cards = list(app.query(SubAgentWidget))
+        assert len(cards) == 1
+        assert cards[0].agent_task == "review core loop"
+
+
+@pytest.mark.anyio
 async def test_status_bar_shows_token_split(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:

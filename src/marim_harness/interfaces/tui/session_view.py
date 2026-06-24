@@ -104,7 +104,7 @@ class SessionView:
                             )
                             widget = SubAgentWidget(
                                 str(args.get("type", "")),
-                                str(args.get("task", "")),
+                                str(args.get("description") or args.get("task", "")),
                                 model_label,
                             )
                             widget.stream_id = part.tool_call_id

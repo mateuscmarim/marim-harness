@@ -94,6 +94,12 @@ def _task_digest(tasks) -> str:
 def _raw_target(tool_name: str, args: dict) -> str:
     if tool_name == "update_tasks":
         return _task_digest(args.get("todos"))
+    if tool_name == "spawn_agent":
+        # Prefer the short `description`, then the `task`. Pinning the target keeps
+        # the order-dependent "first meaningful arg" fallback from surfacing a bare
+        # `background: True` (which rendered as "Spawn Agent · True").
+        v = args.get("description") or args.get("task") or ""
+        return " ".join(str(v).split())
     key = _TARGET_ARG.get(tool_name)
     if key is not None:
         v = args.get(key)
