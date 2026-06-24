@@ -78,6 +78,74 @@ def test_take_buffered_steers_returns_and_clears(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_steer_during_approval_gap_buffers_not_stale_ctx(tmp_path):
+    """A steer that arrives while the approval modal is up (between rounds) must
+    buffer for the next round, not enqueue onto the just-finished round's
+    RunContext. Regression: the captured ctx was nulled only at turn end, so a
+    steer in the inter-round gap hit a completed ctx."""
+    import json
+
+    from pydantic_ai.messages import ModelResponse, TextPart
+    from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+
+    from marim_harness.agent import Harness
+    from marim_harness.tools.provider import BuiltinToolProvider
+
+    (tmp_path / "a.txt").write_text("foo")
+
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content="unused")])
+
+    n = {"stream": 0}
+
+    async def stream_fn(messages, info):
+        n["stream"] += 1
+        if n["stream"] == 1:
+            # Round 1: a gated edit → deferred approval round.
+            yield {
+                0: DeltaToolCall(
+                    name="edit_file",
+                    json_args=json.dumps(
+                        {"path": "a.txt",
+                         "edits": [{"old_string": "foo", "new_string": "bar"}]}
+                    ),
+                    tool_call_id="tc-edit",
+                )
+            }
+        else:
+            yield "done"  # continuation finishes cleanly
+
+    observed: dict = {}
+
+    async def approve(_call):
+        # Runs between rounds: round 1's run() has returned, so the captured ctx
+        # must already be cleared. A steer here must buffer.
+        observed["ctx"] = harness._active_run_ctx
+        harness.steer("mid-approval steer")
+        # Drain so the (empty) continuation doesn't enqueue onto a test ctx.
+        observed["buffered"] = harness.take_buffered_steers()
+        return True
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.ask, request_approval=approve)
+    harness = Harness(
+        model=FunctionModel(fn, stream_function=stream_fn),
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="test",
+    )
+
+    async def handler(stream_ctx, events):
+        async for _ in events:
+            pass
+
+    out = await harness.run_turn("change foo to bar", event_stream_handler=handler)
+
+    assert out == "done"
+    assert observed["ctx"] is None  # stale ctx cleared before the approval gap
+    assert observed["buffered"] == [("mid-approval steer", None)]
+
+
+@pytest.mark.anyio
 async def test_alt_enter_posts_steer_message(tmp_path):
     from textual.app import App, ComposeResult
 

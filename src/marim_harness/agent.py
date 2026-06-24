@@ -407,9 +407,9 @@ class Harness:
     async def _flush_resumable(self, captured, resumable) -> None:
         """Best-effort: repair any tool call the abort left unanswered and
         persist. Tolerates a slow disk with a short deadline so Ctrl-C remains
-        snappy. Never raises — a flush failure must never mask the original
-        exception. The caller is responsible for re-raising whatever triggered
-        the flush."""
+        snappy. Swallows ordinary failures (a flush failure must never mask the
+        original exception) but lets a cancellation of the flush *itself*
+        propagate. The caller re-raises whatever triggered the flush."""
         try:
             recovered = _repair_unanswered_tool_calls(
                 list(captured) if captured else resumable
@@ -419,7 +419,15 @@ class Harness:
                 asyncio.to_thread(self.session.persist),
                 timeout=0.25,
             )
-        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+        except asyncio.CancelledError:
+            # A second Ctrl-C (or shutdown) cancelled the flush itself. Don't
+            # swallow it — propagate so teardown stays snappy rather than
+            # dropping the shutdown signal on the floor.
+            logger.debug("resumable flush cancelled", exc_info=True)
+            raise
+        except Exception:
+            # Ordinary failure or the 0.25s deadline (asyncio.TimeoutError is an
+            # Exception). Best-effort: never mask the original exception.
             logger.debug("resumable flush failed or timed out", exc_info=True)
 
     def set_model(self, model_id: str, *, persist: bool = True) -> None:
@@ -655,13 +663,26 @@ class Harness:
                     # prepend to the next turn's prompt.
                     self._pending_error_note = _actionable_error_note(exc)
                     # Spill the full provider payload to disk so the real upstream
-                    # error survives the terse on-screen view. Best-effort: a dump
-                    # failure must never mask the original error.
+                    # error survives the terse on-screen view. Best-effort and
+                    # deadline-bounded (like the flush above) so a slow disk on
+                    # the teardown path can't block the re-raise / Ctrl-C. A
+                    # cancellation here propagates rather than being swallowed.
                     try:
-                        dump_provider_error(self.deps.workspace_root, exc)
+                        await asyncio.wait_for(
+                            asyncio.to_thread(
+                                dump_provider_error, self.deps.workspace_root, exc
+                            ),
+                            timeout=0.25,
+                        )
                     except Exception:
                         logger.debug("failed to dump provider error", exc_info=True)
                     raise
+            # This round's streaming ends the moment run() returns, so the
+            # captured ctx is now stale. Null it before the approval modal /
+            # next-round gap so a steer arriving in that window buffers and is
+            # delivered to the next round's fresh ctx, rather than being enqueued
+            # onto a completed RunContext.
+            self._active_run_ctx = None
             self.session.history = result.all_messages()
             self.session.usage += result.usage
             if isinstance(result.output, DeferredToolRequests):
