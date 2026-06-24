@@ -18,25 +18,12 @@ from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
 from textual.widgets import Static
 
+from .tool_summary import humanize_tool
+
 # Working-glyph animation frames (matches the status bar spinner) shown while the
 # sub-agent is still running; a finished agent shows a static ✓/✕ instead.
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _SPINNER_TICK = 0.1
-
-# Friendly verbs for the activity line's current-tool display; unknown tools fall
-# back to a title-cased form of their raw name (e.g. spawn_agent → "Spawn Agent").
-_TOOL_LABELS = {
-    "read_file": "Read", "write_file": "Write", "edit_file": "Edit", "bash": "Bash",
-    "grep": "Grep", "glob": "Glob", "tree": "Tree", "web_search": "Search",
-    "fetch_url": "Fetch", "goto_definition": "Definition",
-    "find_references": "References", "hover": "Hover", "document_symbols": "Symbols",
-    "workspace_symbols": "Symbols", "diagnostics": "Diagnostics",
-}
-
-
-def humanize_tool(name: str) -> str:
-    """A short, friendly verb for a tool call (``read_file`` → ``Read``)."""
-    return _TOOL_LABELS.get(name) or name.replace("_", " ").title()
 
 
 def _fmt_duration(seconds: float) -> str:
