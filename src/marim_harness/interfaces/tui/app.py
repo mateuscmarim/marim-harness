@@ -338,6 +338,7 @@ class HarnessApp(App):
             enabled=self.autonomous_wake,
             turn_busy=self.turn_busy,
             has_finished_pending=self.harness.deps.jobs.has_finished_pending(),
+            all_jobs_settled=not self.harness.deps.jobs.any_running(),
         ):
             return
         self._wake.record_auto_turn()

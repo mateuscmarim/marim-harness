@@ -32,16 +32,20 @@ class WakeController:
         return self._depth_cap
 
     def should_wake(
-        self, *, enabled: bool, turn_busy: bool, has_finished_pending: bool
+        self, *, enabled: bool, turn_busy: bool, has_finished_pending: bool,
+        all_jobs_settled: bool,
     ) -> bool:
         """True iff an idle TUI should fire one autonomous digest turn now: wake
-        is enabled, no turn is in flight, the depth cap is not yet reached, and a
-        finished-job digest is pending. A pure predicate — it never mutates."""
+        is enabled, no turn is in flight, the depth cap is not yet reached, a
+        finished-job digest is pending, and no job is still running (so an N-way
+        detached fan-out wakes once, after the whole batch, not per completion).
+        A pure predicate — it never mutates."""
         return (
             enabled
             and not turn_busy
             and self._depth < self._depth_cap
             and has_finished_pending
+            and all_jobs_settled
         )
 
     def record_auto_turn(self) -> None:

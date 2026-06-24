@@ -221,6 +221,10 @@ class JobRegistry:
             compact = "…" + compact[-_DIGEST_RESULT_CHARS:]
         return f": {compact}"
 
+    def any_running(self) -> bool:
+        """True if any job is still in the ``running`` state."""
+        return any(j.status == "running" for j in self._jobs.values())
+
     def has_finished_pending(self) -> bool:
         """True if one or more jobs finished since the last
         :meth:`take_finished_digest` **and** were not already consumed by

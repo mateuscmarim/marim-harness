@@ -351,6 +351,11 @@ async def test_cancel_consumes_wake_digest():
     assert "job-1 (agent) cancelled" in digest  # still surfaced to the model
 
 
+def test_any_running_reflects_live_jobs():
+    reg = JobRegistry()
+    assert reg.any_running() is False
+
+
 def _sleep_then(value, seconds):
     async def coro():
         await asyncio.sleep(seconds)
