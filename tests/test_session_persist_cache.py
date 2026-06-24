@@ -94,3 +94,39 @@ def test_assign_directly_to_history_invalidates_cache(tmp_path):
     ctrl.history = [{"role": "user", "content": "b"}]  # direct assignment
     ctrl.persist()
     assert len(save_calls) == 2, "direct assignment should invalidate cache"
+
+
+def test_in_place_history_mutation_invalidates_cache(tmp_path):
+    """In-place mutations (``history.append``/``+=``/``history[i] = ...``) must
+    bump the version too, so the persist cache can't silently drop them — the
+    list returned by ``.history`` is a version-tracking proxy."""
+    workspace = tmp_path
+    manager = SessionManager(workspace)
+    store = manager.create("s4")
+    deps = Deps(workspace_root=workspace)
+
+    save_calls = []
+    original_save = store.save
+
+    def tracking_save(*args, **kwargs):
+        save_calls.append(1)
+        return original_save(*args, **kwargs)
+
+    store.save = tracking_save
+
+    ctrl = SessionController(store, manager, deps, 100_000, 20)
+    ctrl.set_history([{"role": "user", "content": "a"}])
+    ctrl.persist()
+    assert len(save_calls) == 1
+
+    ctrl.history.append({"role": "user", "content": "b"})
+    ctrl.persist()
+    assert len(save_calls) == 2, "append should invalidate cache"
+
+    ctrl.history += [{"role": "user", "content": "c"}]
+    ctrl.persist()
+    assert len(save_calls) == 3, "+= should invalidate cache"
+
+    ctrl.history[0] = {"role": "user", "content": "a2"}
+    ctrl.persist()
+    assert len(save_calls) == 4, "item assignment should invalidate cache"

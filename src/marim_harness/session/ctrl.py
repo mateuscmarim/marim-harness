@@ -1,6 +1,7 @@
 import logging
 import time
 from collections.abc import Callable
+from typing import SupportsIndex
 
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.usage import RunUsage
@@ -18,6 +19,77 @@ from ..hooks.runner import base_payload
 from .store import SessionInfo, SessionManager, SessionStore
 
 logger = logging.getLogger(__name__)
+
+
+class _VersionedHistory(list):
+    """A ``list`` that bumps its owner controller's ``history_version`` on every
+    in-place mutation.
+
+    The persist cache (`SessionController.persist`) skips the disk write when
+    ``history_version`` is unchanged. The property setter bumps the version on
+    *replacement* (``self.history = x``), but an in-place mutation
+    (``history.append(...)``, ``history += [...]``, ``history[i] = ...``) would
+    otherwise change the list without bumping the version — and the next
+    ``persist()`` would silently drop it. Routing every mutator through
+    ``_bump`` closes that trap so ``.append()`` is safe rather than lossy."""
+
+    def __init__(self, iterable, owner: "SessionController") -> None:
+        super().__init__(iterable)
+        self._owner = owner
+
+    def _bump(self) -> None:
+        self._owner.history_version += 1
+
+    def append(self, item) -> None:
+        super().append(item)
+        self._bump()
+
+    def extend(self, items) -> None:
+        super().extend(items)
+        self._bump()
+
+    def insert(self, index, item) -> None:
+        super().insert(index, item)
+        self._bump()
+
+    def pop(self, index: SupportsIndex = -1):
+        item = super().pop(index)
+        self._bump()
+        return item
+
+    def remove(self, item) -> None:
+        super().remove(item)
+        self._bump()
+
+    def clear(self) -> None:
+        super().clear()
+        self._bump()
+
+    def sort(self, *args, **kwargs) -> None:
+        super().sort(*args, **kwargs)
+        self._bump()
+
+    def reverse(self) -> None:
+        super().reverse()
+        self._bump()
+
+    def __setitem__(self, index, value) -> None:
+        super().__setitem__(index, value)
+        self._bump()
+
+    def __delitem__(self, index) -> None:
+        super().__delitem__(index)
+        self._bump()
+
+    def __iadd__(self, other):
+        super().__iadd__(other)
+        self._bump()
+        return self
+
+    def __imul__(self, n):
+        super().__imul__(n)
+        self._bump()
+        return self
 
 
 class SessionController:
@@ -72,7 +144,9 @@ class SessionController:
 
     @history.setter
     def history(self, value: list[ModelMessage]) -> None:
-        self._history = value
+        # Wrap in a version-tracking proxy so in-place mutations
+        # (append/+=/[i]=) bump the version too — see _VersionedHistory.
+        self._history = _VersionedHistory(value, self)
         self.history_version += 1
 
     def set_history(self, history: list[ModelMessage]) -> None:

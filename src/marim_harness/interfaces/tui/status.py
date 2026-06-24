@@ -88,8 +88,16 @@ class StatusPresenter:
         name = self.app.harness.session.session_name or "marim-harness"
         self.app.title = f"{mark} {name}"  # in-app Header
         if self.app._driver is not None:  # the actual terminal tab
-            self.app._driver.write(osc_title(f"{mark} {name}"))
-            self.app._driver.flush()
+            # Best-effort: refresh_title runs from set_busy, which fires in
+            # _run_turn's finally block. If the driver is mid-teardown (e.g.
+            # /exit fired mid-turn) write/flush can raise BrokenPipeError —
+            # letting it escape would skip _after_turn() and stall the queue /
+            # autonomous-wake chain. Swallow it, mirroring on_unmount.
+            try:
+                self.app._driver.write(osc_title(f"{mark} {name}"))
+                self.app._driver.flush()
+            except Exception:
+                pass
 
     def tick_spinner(self) -> None:
         """Advance the working-indicator animation while a turn runs. No-op when
