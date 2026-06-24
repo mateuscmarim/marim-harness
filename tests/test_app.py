@@ -1074,6 +1074,16 @@ def test_subagent_failed_detects_runner_error_text():
     assert subagent_failed("Here is my report. The sub-agent system looks fine.") is False
 
 
+def test_detached_job_id_round_trips_with_the_handoff():
+    from marim_harness.interfaces.tui.stream_render import _detached_job_id
+    from marim_harness.tools.provider import _detach_handoff
+
+    assert _detached_job_id(_detach_handoff("job-7")) == "job-7"
+    # A normal report is not a handoff.
+    assert _detached_job_id("Here is my report on the parser.") is None
+    assert _detached_job_id("") is None
+
+
 @pytest.mark.anyio
 async def test_failed_spawn_renders_card_as_failed(tmp_path: Path):
     """A spawn that fails returns its error as a (successful) tool result; the card

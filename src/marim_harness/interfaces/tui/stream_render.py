@@ -68,6 +68,20 @@ def subagent_failed(content: str) -> bool:
     return text.startswith(_SUBAGENT_FAIL_PREFIXES)
 
 
+_DETACH_PREFIX = "Started detached sub-agent "
+
+
+def _detached_job_id(content: str) -> str | None:
+    """The job id from an auto-detached spawn's handoff note (the text
+    ``_detach_handoff`` returns), or None for any other tool return. Paired with
+    that producer — a round-trip test pins the two formats together."""
+    text = content.lstrip()
+    if not text.startswith(_DETACH_PREFIX):
+        return None
+    job_id, sep, _ = text[len(_DETACH_PREFIX):].partition(",")
+    return job_id.strip() if sep and job_id.strip() else None
+
+
 def _wait_card_spec(tool_name: str, args: dict, jobs) -> tuple[str, str] | None:
     """If a ``wait_for_job`` call targets an *already-finished* agent job, return
     ``(agent_type, agent_task)`` so the wait renders as that sub-agent's card —
@@ -274,6 +288,10 @@ class StreamRenderer:
         # the viewer (None when the viewer is closed); the flush tick uses it to
         # render only the on-screen transcript.
         self.subagents: list[SubAgentWidget] = []
+        # job_id → a pending detached-spawn card, awaiting its background job's
+        # report. Filled on job settle (fill_finished_detached_cards); cleared on
+        # session reset. Not pruned per-turn: the job finishes after the turn ends.
+        self._detached_cards: dict[str, SubAgentWidget] = {}
         self.viewing_sid: str | None = None
         # Either an AssistantMessage (reply/sub-agent body) or a ThinkingWidget —
         # both expose the append/flush streaming interface the tick drains.
@@ -305,6 +323,7 @@ class StreamRenderer:
         self.sub_assistants.clear()
         self.sub_thinkings.clear()
         self.subagents.clear()
+        self._detached_cards.clear()
         self.viewing_sid = None
         self.dirty_streams.clear()
 
