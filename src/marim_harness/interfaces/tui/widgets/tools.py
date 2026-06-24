@@ -12,22 +12,16 @@ from textual.containers import Vertical
 from textual.content import Content
 from textual.widgets import Collapsible, Static
 
+from ..status import _SPINNER, _SPINNER_TICK_INTERVAL
 from .diff import _DIFF_CAP, _reverse_edits, render_edit_diff, render_file_diff
 from .highlight import _LEXERS, _highlight_lines, strip_line_numbers
-
-# Max chars of the title's argument preview before it's ellipsized, so a long
-# command (e.g. a multi-line git commit) can't run off the right edge.
-_PREVIEW_CAP = 100
+from .tool_summary import summarize
 
 # The bash tool prefixes its result with "exit N" (inline) or carries it as the
 # first preview line of an offloaded result — a non-zero N is a failed command.
 _EXIT_RE = re.compile(r"(?m)^exit (-?\d+)")
 # Foreground for failed bash output (the shared error red, see themes.py).
 _FAIL_FG = "#d9544f"
-
-
-def _clip(text: str, limit: int = _PREVIEW_CAP) -> str:
-    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 class ToolCallWidget(Collapsible):
@@ -44,6 +38,7 @@ class ToolCallWidget(Collapsible):
         # None ⇒ the diff falls back to the simple old/new-string view.
         self._workspace_root = workspace_root
         self.status = "pending"
+        self._spin = 0
         self.result_text = ""
         # Show edit diffs uncapped (Ctrl+O / "reveal all" flips this on).
         self.reveal = False
@@ -65,28 +60,43 @@ class ToolCallWidget(Collapsible):
             collapsed=tool_name != "edit_file",
         )
 
-    def _summary(self) -> Content:
-        body = self._summary_body()
-        # A failed tool gets a red ✗ at the status indicator; the (untrusted) body
-        # is appended as a literal Content so markup in it is never parsed.
+    def _glyph(self) -> tuple[str, str]:
+        """The status glyph and its style: an animated spinner while pending (so
+        ``·`` is freed up to mean 'separator' only), then ✓/✕/✗."""
         if self.status == "failed":
-            return Content.from_markup(f"[{_FAIL_FG}]✗[/]") + Content(f" {body}")
-        glyph = {"pending": "·", "done": "✓", "denied": "✕"}.get(self.status, "·")
-        return Content(f"{glyph} {body}")
+            return "✗", _FAIL_FG
+        if self.status == "denied":
+            return "✕", ""
+        if self.status == "done":
+            return "✓", ""
+        return _SPINNER[self._spin], ""
 
-    def _summary_body(self) -> str:
-        """The title text after the status glyph (the tool + arg preview)."""
-        # edit_file: show just the path + a +N -M line stat (the diff is the body).
+    def _summary(self) -> Content:
+        glyph, gstyle = self._glyph()
+        s = summarize(self.tool_name, self.args)
+        target = s.target
+        # edit_file appends a +N -M line stat to its path (the diff is the body).
         if self.tool_name == "edit_file":
             _, added, removed = self._edit_diff(cap=None)
-            return f"edit_file({self.args.get('path', '')}) +{added} -{removed}"
-        items = list(self.args.items())
-        # A single-arg tool reads cleaner as "tool · value" (no redundant key=,
-        # no repr quotes) — e.g. `bash · uv run pytest …`; multiple args keep the
-        # keyed form. Either way the preview is clipped so it can't overflow.
-        if len(items) == 1:
-            return f"{self.tool_name} · {_clip(str(items[0][1]))}"
-        return f"{self.tool_name}({_clip(', '.join(f'{k}={v!r}' for k, v in items[:2]))})"
+            target = f"{target} +{added} -{removed}" if target else f"+{added} -{removed}"
+        head = f"{s.label} · {target}" if target else s.label
+        # Glyph carries the status colour; the (untrusted) head is a literal span so
+        # markup in a path/command is never parsed; badges trail dim.
+        parts: list = [(f"{glyph} ", gstyle), head]
+        for b in s.badges:
+            parts.extend(("   ", (b, "dim")))
+        return Content.assemble(*parts)
+
+    def on_mount(self) -> None:
+        # Animate the working glyph while pending; the timer is stopped at finish so
+        # a finished session isn't left with hundreds of 10Hz no-op ticks.
+        self._spinner_timer = self.set_interval(_SPINNER_TICK_INTERVAL, self._tick)
+
+    def _tick(self) -> None:
+        if self.status != "pending":
+            return
+        self._spin = (self._spin + 1) % len(_SPINNER)
+        self.title = self._summary()
 
     def _bash_failed(self) -> bool:
         """True when this is a bash call whose result reports a non-zero exit."""
@@ -210,6 +220,9 @@ class ToolCallWidget(Collapsible):
             self.collapsed = False
         self.title = self._summary()
         self._body.update(self._render_body())
+        timer = getattr(self, "_spinner_timer", None)
+        if timer is not None:
+            timer.stop()
 
 
 class ToolGroupWidget(Collapsible):

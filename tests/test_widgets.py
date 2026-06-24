@@ -90,7 +90,7 @@ async def test_tool_widget_is_collapsible_with_working_title():
         # Collapsible builds its own title bar; ours must still exist.
         assert w.query_one(Collapsible.Contents) is not None
         # The summary glyph shows the pending state in the title.
-        assert "read_file" in str(w.title)
+        assert "Read" in str(w.title)
         assert "·" in str(w.title)
 
 
@@ -1043,19 +1043,21 @@ def test_non_special_tool_stays_collapsed():
 
 
 def test_single_arg_tool_title_drops_key_and_quotes():
-    # A one-arg tool reads as "tool · value" — no redundant key=, no repr quotes.
+    # A one-arg tool reads as "Label · value" — no redundant key=, no repr quotes.
     w = ToolCallWidget("bash", {"command": "uv run pytest"})
     title = str(w.title)
-    assert "bash · uv run pytest" in title
+    assert "Bash · uv run pytest" in title
     assert "command=" not in title
     assert "'" not in title  # not the repr form
 
 
-def test_multi_arg_tool_title_keeps_keyed_form():
+def test_multi_arg_tool_title_shows_salient_arg():
+    # Multi-arg tools now show just the salient arg as target; no keyed repr.
     w = ToolCallWidget("read_file", {"path": "a.py", "offset": 515})
     title = str(w.title)
-    assert "read_file(" in title
-    assert "path=" in title and "offset=515" in title
+    assert "Read" in title
+    assert "a.py" in title
+    assert "offset=515" not in title  # offset is not the salient arg
 
 
 def test_long_arg_preview_is_truncated():
@@ -1110,3 +1112,53 @@ def test_bash_failure_output_renders_red():
     reds = [s.text for line in lines for s in line
             if s.style and s.style.color and "d9544f" in str(s.style.color).lower()]
     assert any("boom" in t for t in reds)  # the output is colored red
+
+
+@pytest.mark.anyio
+async def test_toolcall_header_uses_summary_shape():
+    from textual.app import App
+
+    from marim_harness.interfaces.tui.widgets import ToolCallWidget
+
+    class _A(App):
+        def compose(self):
+            yield ToolCallWidget("wait_for_job", {"id": "job-6", "timeout": 600})
+
+    app = _A()
+    async with app.run_test():
+        w = app.query_one(ToolCallWidget)
+        # No raw repr — the registered target only, no key= / quotes / timeout.
+        assert "Wait · job-6" in w.title.plain
+        assert "timeout" not in w.title.plain
+        assert "id='job-6'" not in w.title.plain
+
+
+@pytest.mark.anyio
+async def test_toolcall_bash_background_shows_bg_badge():
+    from textual.app import App
+
+    from marim_harness.interfaces.tui.widgets import ToolCallWidget
+
+    class _A(App):
+        def compose(self):
+            yield ToolCallWidget("bash", {"command": "uv run pytest", "background": True})
+
+    app = _A()
+    async with app.run_test():
+        w = app.query_one(ToolCallWidget)
+        assert "Bash · uv run pytest" in w.title.plain
+        assert "bg" in w.title.plain
+
+
+def test_toolcall_pending_glyph_is_spinner_done_is_check():
+    from marim_harness.interfaces.tui.status import _SPINNER
+    from marim_harness.interfaces.tui.widgets import ToolCallWidget
+
+    w = ToolCallWidget("read_file", {"path": "a.py"})
+    assert w._glyph()[0] == _SPINNER[0]  # pending → spinner frame, not "·"
+    w.status = "done"
+    assert w._glyph()[0] == "✓"
+    w.status = "failed"
+    assert w._glyph()[0] == "✗"
+    w.status = "denied"
+    assert w._glyph()[0] == "✕"
