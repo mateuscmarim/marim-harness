@@ -107,14 +107,22 @@ class SessionController:
             self.store.model = model_id
             self.persist(force=True)
 
-    def resume(self) -> int:
-        if self.store is None:
-            return 0
+    def _load_active_store(self) -> int:
+        """Load history/usage/tasks/duration from ``self.store`` (assumed set) into
+        this controller and (re)start the active-time clock. Shared by ``resume``
+        and ``switch_session`` so the load sequence can't drift between them.
+        Returns the loaded message count."""
+        assert self.store is not None  # callers guard; narrows for the type checker
         self.history, self.usage, tasks, prev_duration = self.store.load()
         self.deps.tasks.load(tasks)
         self.duration_seconds = prev_duration or 0.0
         self._segment_start = time.monotonic()
         return len(self.history)
+
+    def resume(self) -> int:
+        if self.store is None:
+            return 0
+        return self._load_active_store()
 
     def ensure_segment_started(self) -> None:
         """Start the active-time segment clock if it isn't already running.
@@ -163,11 +171,7 @@ class SessionController:
         if self.manager is None:
             return 0
         self.store = self.manager.store(session_id)
-        self.history, self.usage, tasks, prev_duration = self.store.load()
-        self.deps.tasks.load(tasks)
-        self.duration_seconds = prev_duration or 0.0
-        self._segment_start = time.monotonic()
-        return len(self.history)
+        return self._load_active_store()
 
     async def maybe_compact(self, *, force: bool = False) -> bool:
         """Compact the history when over budget (or unconditionally when ``force``,

@@ -11,6 +11,9 @@ from pydantic_ai.messages import BinaryContent, ModelMessage
 from pydantic_ai.settings import ModelSettings
 
 if TYPE_CHECKING:
+    from pydantic_ai import RunContext
+    from pydantic_ai.models import Model
+
     from .config.model import ModelSource
 
 from .compaction import (
@@ -205,7 +208,7 @@ class Collaborators:
 
 
 def build_collaborators(
-    model,
+    model: Model,
     provider: ToolProvider,
     deps: Deps,
     instructions: str,
@@ -315,7 +318,7 @@ class Harness:
         self._pending_hook_context: str | None = None
         # Live RunContext of the in-flight turn, captured by the event-stream
         # handler wrapper; None between turns. A steer enqueues onto it.
-        self._active_run_ctx = None
+        self._active_run_ctx: RunContext[Deps] | None = None
         # Steers typed when no run is live yet (ask-mode between-round gap):
         # (text, attachments) buffered, flushed when a ctx is next captured.
         self._steer_buffer: list[tuple[str, list[tuple[bytes, str]] | None]] = []

@@ -39,7 +39,7 @@ _IMAGE_TOKEN_ESTIMATE = 1500
 Summarizer = Callable[[list[ModelMessage]], Awaitable[str]]
 
 
-def estimate_tokens(history: list) -> int:
+def estimate_tokens(history: list[ModelMessage]) -> int:
     """Rough token estimate (~4 chars/token) over the serialized part content.
 
     Binary attachments (images) are counted as a flat nominal cost rather than by

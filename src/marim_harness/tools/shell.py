@@ -105,7 +105,7 @@ class BashProcess:
         self._buffer: list[str] = []
 
     @property
-    def returncode(self):
+    def returncode(self) -> int | None:
         return self._proc.returncode
 
     def output(self) -> str:

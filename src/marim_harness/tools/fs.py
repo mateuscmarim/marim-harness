@@ -279,7 +279,10 @@ def grep(root: Path, pattern: str, path: str | None = None) -> str:
     Skips noise dirs (.git, node_modules, .venv, …) and binary files; large
     result sets are offloaded to a file (handle + preview) instead of flooding the
     response; collection stops at MAX_OUTPUT_CHARS."""
-    rx = re.compile(pattern)
+    try:
+        rx = re.compile(pattern)
+    except re.error as exc:
+        raise ModelRetry(f"invalid regex {pattern!r}: {exc}") from exc
     base = _safe(root, path) if path else root
     out: list[str] = []
     size = 0

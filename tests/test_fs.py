@@ -190,6 +190,14 @@ def test_grep_returns_location_lines(tmp_path: Path):
     assert "beta" not in out
 
 
+def test_grep_invalid_regex_raises_model_retry(tmp_path: Path):
+    # A malformed regex from the model must come back as a retryable ModelRetry
+    # (like every other input check in this module), not an unhandled re.error.
+    (tmp_path / "a.txt").write_text("alpha\n")
+    with pytest.raises(ModelRetry):
+        fs.grep(tmp_path, "[")  # unterminated character class
+
+
 def test_grep_does_not_follow_symlink_out_of_workspace(tmp_path: Path):
     root = tmp_path / "ws"
     root.mkdir()

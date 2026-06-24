@@ -29,7 +29,7 @@ async def web_search(
     # fetch_url hop is the prompt-injection boundary and is hardened there; keep
     # this in mind before making `base_url` model-controlled (it would become an
     # SSRF vector without fetch.py-style validation).
-    params: dict = {"q": query, "format": "json"}
+    params: dict[str, str] = {"q": query, "format": "json"}
     if categories:
         params["categories"] = categories
 

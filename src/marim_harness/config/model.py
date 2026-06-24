@@ -1,5 +1,6 @@
 import os
 from dataclasses import dataclass, field, replace
+from typing import Any
 
 from ..command_policy import split_patterns
 from ..notifications import DEFAULT_EVENTS, parse_events
@@ -68,53 +69,10 @@ def load_config() -> ModelConfig:
     command_allowlist = split_patterns(os.getenv("MARIM_COMMAND_ALLOWLIST", ""))
     notifications_enabled = _bool_env("MARIM_NOTIFICATIONS", True)
     notification_events = parse_events(os.getenv("MARIM_NOTIFICATION_EVENTS", ""))
-    if provider == "local":
-        return ModelConfig(
-            provider="local",
-            model=os.getenv("MARIM_MODEL", _DEFAULT_LOCAL_MODEL),
-            base_url=os.getenv("MARIM_BASE_URL", "http://localhost:11434/v1"),
-            api_key=os.getenv("MARIM_API_KEY", "local"),
-            max_context_tokens=max_context_tokens,
-            proactive_memory=proactive_memory,
-            trust_project_hooks=trust_project_hooks,
-            lsp_enabled=lsp_enabled,
-            lsp_tools_enabled=lsp_tools_enabled,
-            job_tool_combined=job_tool_combined,
-            autonomous_wake=autonomous_wake,
-            wake_depth_cap=wake_depth_cap,
-            command_denylist=command_denylist,
-            command_allowlist=command_allowlist,
-            notifications_enabled=notifications_enabled,
-            notification_events=notification_events,
-        )
-    if provider == "google":
-        return ModelConfig(
-            provider="google",
-            model=os.getenv("MARIM_MODEL", _DEFAULT_GOOGLE_MODEL),
-            base_url=None,
-            api_key=(
-                os.getenv("GOOGLE_API_KEY")
-                or os.getenv("GEMINI_API_KEY")
-                or os.getenv("MARIM_API_KEY")
-            ),
-            max_context_tokens=max_context_tokens,
-            proactive_memory=proactive_memory,
-            trust_project_hooks=trust_project_hooks,
-            lsp_enabled=lsp_enabled,
-            lsp_tools_enabled=lsp_tools_enabled,
-            job_tool_combined=job_tool_combined,
-            autonomous_wake=autonomous_wake,
-            wake_depth_cap=wake_depth_cap,
-            command_denylist=command_denylist,
-            command_allowlist=command_allowlist,
-            notifications_enabled=notifications_enabled,
-            notification_events=notification_events,
-        )
-    return ModelConfig(
-        provider="openrouter",
-        model=os.getenv("MARIM_MODEL", _DEFAULT_OPENROUTER_MODEL),
-        base_url=None,
-        api_key=os.getenv("OPENROUTER_API_KEY") or os.getenv("MARIM_API_KEY"),
+    # Provider-independent knobs, shared verbatim by every branch below. Keeping
+    # them in one dict means a new ModelConfig field is added here once, not in
+    # three parallel constructor calls that silently drift.
+    common: dict[str, Any] = dict(
         max_context_tokens=max_context_tokens,
         proactive_memory=proactive_memory,
         trust_project_hooks=trust_project_hooks,
@@ -127,6 +85,33 @@ def load_config() -> ModelConfig:
         command_allowlist=command_allowlist,
         notifications_enabled=notifications_enabled,
         notification_events=notification_events,
+    )
+    if provider == "local":
+        return ModelConfig(
+            provider="local",
+            model=os.getenv("MARIM_MODEL", _DEFAULT_LOCAL_MODEL),
+            base_url=os.getenv("MARIM_BASE_URL", "http://localhost:11434/v1"),
+            api_key=os.getenv("MARIM_API_KEY", "local"),
+            **common,
+        )
+    if provider == "google":
+        return ModelConfig(
+            provider="google",
+            model=os.getenv("MARIM_MODEL", _DEFAULT_GOOGLE_MODEL),
+            base_url=None,
+            api_key=(
+                os.getenv("GOOGLE_API_KEY")
+                or os.getenv("GEMINI_API_KEY")
+                or os.getenv("MARIM_API_KEY")
+            ),
+            **common,
+        )
+    return ModelConfig(
+        provider="openrouter",
+        model=os.getenv("MARIM_MODEL", _DEFAULT_OPENROUTER_MODEL),
+        base_url=None,
+        api_key=os.getenv("OPENROUTER_API_KEY") or os.getenv("MARIM_API_KEY"),
+        **common,
     )
 
 
