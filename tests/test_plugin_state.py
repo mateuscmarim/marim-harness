@@ -24,6 +24,25 @@ def test_roundtrip(tmp_path):
     assert loaded["p"] == rec
 
 
+def test_save_is_atomic_no_temp_left_behind(tmp_path):
+    pdir = tmp_path / "plugins"
+    rec = InstalledPlugin(
+        name="p",
+        version="1.0.0",
+        source={"type": "local", "path": "/src/p"},
+        enabled=True,
+        trusted=False,
+        linked=False,
+        installed_at="2026-06-22T00:00:00Z",
+    )
+    save_state(pdir, {"p": rec})
+    # atomic_write_text fsyncs a temp then renames it over the target; on success
+    # no temp file is left in the directory.
+    leftovers = [p.name for p in pdir.iterdir() if p.name != state_path(pdir).name]
+    assert leftovers == []
+    assert load_state(pdir)["p"] == rec
+
+
 def test_missing_state_is_empty(tmp_path):
     assert load_state(tmp_path / "nope") == {}
 

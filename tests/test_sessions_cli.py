@@ -8,6 +8,20 @@ from marim_harness.interfaces.cli import sessions
 from marim_harness.session import SessionManager
 
 
+def test_sessions_cli_does_not_import_textual():
+    """`marim sessions ...` is a plain CLI path; it must not drag in Textual just
+    to format a duration. Import in a fresh subprocess so other tests that have
+    already loaded the TUI don't mask a regression."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; import marim_harness.interfaces.cli.sessions;"
+        " sys.exit(1 if 'textual' in sys.modules else 0)"
+    )
+    assert subprocess.run([sys.executable, "-c", code]).returncode == 0
+
+
 @pytest.fixture
 def workspace(tmp_path, monkeypatch):
     """A workspace dir whose session storage is redirected into tmp_path so no

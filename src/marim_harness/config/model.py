@@ -1,3 +1,4 @@
+import logging
 import os
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -6,9 +7,16 @@ from ..command_policy import split_patterns
 from ..notifications import DEFAULT_EVENTS, parse_events
 from ..workspace.catalog import ModelEntry, fetch_google_models, fetch_openrouter_models
 
+logger = logging.getLogger(__name__)
+
 _DEFAULT_OPENROUTER_MODEL = "anthropic/claude-sonnet-4-6"
 _DEFAULT_LOCAL_MODEL = "qwen2.5-coder"
 _DEFAULT_GOOGLE_MODEL = "gemini-2.5-flash"
+
+# Every provider load_config knows how to wire. An unknown value falls through to
+# the OpenRouter branch (the historical default), but we warn first so a typo
+# like MARIM_PROVIDER=azure doesn't masquerade as a confusing "missing API key".
+_KNOWN_PROVIDERS = frozenset({"openrouter", "local", "google"})
 
 
 @dataclass
@@ -57,6 +65,13 @@ def load_config() -> ModelConfig:
     MARIM_COMMAND_ALLOWLIST hold comma- or newline-separated command patterns.
     """
     provider = os.getenv("MARIM_PROVIDER", "openrouter").lower()
+    if provider not in _KNOWN_PROVIDERS:
+        logger.warning(
+            "Unknown MARIM_PROVIDER=%r; falling back to 'openrouter' "
+            "(known providers: %s).",
+            provider,
+            ", ".join(sorted(_KNOWN_PROVIDERS)),
+        )
     max_context_tokens = _int_env("MARIM_MAX_CONTEXT_TOKENS", 100_000)
     proactive_memory = _bool_env("MARIM_PROACTIVE_MEMORY", False)
     trust_project_hooks = _bool_env("MARIM_TRUST_PROJECT_HOOKS", False)
@@ -122,6 +137,7 @@ def _int_env(name: str, default: int) -> int:
     try:
         return int(raw)
     except ValueError:
+        logger.debug("Ignoring invalid %s=%r (not an integer); using %d.", name, raw, default)
         return default
 
 

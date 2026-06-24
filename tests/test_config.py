@@ -62,6 +62,25 @@ def test_load_config_local_reads_base_url(monkeypatch):
     assert cfg.model == "qwen2.5-coder"
 
 
+def test_unknown_provider_warns_and_falls_back_to_openrouter(monkeypatch, caplog):
+    monkeypatch.setenv("MARIM_PROVIDER", "azure")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    with caplog.at_level("WARNING", logger="marim_harness.config.model"):
+        cfg = load_config()
+    # Behavior preserved (still constructs an openrouter config) but no longer silent.
+    assert cfg.provider == "openrouter"
+    assert any("azure" in r.message for r in caplog.records)
+
+
+def test_int_env_logs_when_value_unparseable(monkeypatch, caplog):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setenv("MARIM_MAX_CONTEXT_TOKENS", "abc")
+    with caplog.at_level("DEBUG", logger="marim_harness.config.model"):
+        cfg = load_config()
+    assert cfg.max_context_tokens == 100_000  # reverts to default
+    assert any("MARIM_MAX_CONTEXT_TOKENS" in r.message for r in caplog.records)
+
+
 @pytest.mark.parametrize("raw", ["1", "true", "TRUE", "on", "yes", "Yes"])
 def test_proactive_memory_truthy_values_enable(monkeypatch, raw):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")

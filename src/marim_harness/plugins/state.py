@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..atomic_io import atomic_write_text
 from ..config import config_dir
 
 
@@ -80,7 +81,9 @@ def save_state(plugins_dir: Path, state: dict[str, "InstalledPlugin"]) -> None:
     path = state_path(plugins_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"plugins": {name: rec.to_dict() for name, rec in state.items()}}
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    # Atomic temp+rename so a crash mid-write can't corrupt the registry — a
+    # truncated plugins.json reads as empty and silently drops every install.
+    atomic_write_text(path, json.dumps(payload, indent=2) + "\n")
 
 
 __all__ = [
