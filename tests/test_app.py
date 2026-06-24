@@ -2542,3 +2542,88 @@ async def test_rewind_command_refuses_while_busy(tmp_path: Path):
         # Busy → refused, history untouched.
         assert app.harness.session.history == ["u1", "a1"]
         app.status.set_busy(False)
+
+
+@pytest.mark.anyio
+async def test_start_system_turn_refused_while_busy(tmp_path: Path):
+    # /remember and /skill spawn an exclusive system turn. Doing so mid-turn would
+    # silently cancel the in-flight worker (Textual exclusivity) and race its
+    # bookkeeping — so it must refuse while a turn is running.
+    app = _app(tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        sentinel = object()
+        app._turn_worker = sentinel  # pretend a turn is running
+        started = app.start_system_turn("save this fact")
+        assert started is False
+        assert app._turn_worker is sentinel  # the running turn was not clobbered
+
+
+@pytest.mark.anyio
+async def test_start_system_turn_runs_when_idle(tmp_path: Path, monkeypatch):
+    app = _app(tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        spawned: list[str] = []
+
+        async def fake_run_turn(text, attachments=None):
+            spawned.append(text)
+
+        monkeypatch.setattr(app, "_run_turn", fake_run_turn)
+        assert app._turn_worker is None
+        started = app.start_system_turn("save this fact")
+        assert started is True
+        assert app._turn_worker is not None
+        await app.workers.wait_for_complete()  # let the spawned worker finish cleanly
+        assert spawned == ["save this fact"]  # the prompt was routed to a turn
+
+
+@pytest.mark.anyio
+async def test_clear_refused_while_busy(tmp_path: Path, monkeypatch):
+    app = _app(tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        called = False
+
+        async def spy() -> None:
+            nonlocal called
+            called = True
+
+        monkeypatch.setattr(app.session, "reset_conversation", spy)
+        app._turn_worker = object()  # a turn is running
+        await app.reset_conversation()
+        assert called is False  # refused: did not tear down the live conversation
+
+
+@pytest.mark.anyio
+async def test_new_session_refused_while_busy(tmp_path: Path, monkeypatch):
+    app = _app(tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        called = False
+
+        async def spy(name=None) -> None:
+            nonlocal called
+            called = True
+
+        monkeypatch.setattr(app.session, "start_new_session", spy)
+        app._turn_worker = object()
+        await app.start_new_session("feature")
+        assert called is False
+
+
+@pytest.mark.anyio
+async def test_switch_session_refused_while_busy(tmp_path: Path, monkeypatch):
+    app = _app(tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        called = False
+
+        async def spy(session_id) -> None:
+            nonlocal called
+            called = True
+
+        monkeypatch.setattr(app.session, "switch_to_session_id", spy)
+        app._turn_worker = object()
+        await app.switch_to_session_id("alpha")
+        assert called is False

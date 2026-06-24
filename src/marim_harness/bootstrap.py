@@ -67,7 +67,7 @@ def build_harness(
     # MCP servers from the merged global + project config. Malformed specs are
     # dropped (build returns warnings); connections are opened later by the caller
     # (the TUI on mount, headless around its run).
-    mcp_specs = load_mcp_config(workspace)
+    mcp_specs = load_mcp_config(workspace, trust_project=cfg.trust_project_hooks)
     mcp_servers, mcp_warnings = build_mcp_servers(mcp_specs)
     for warning in mcp_warnings:
         logger.warning("MCP config: %s", warning)

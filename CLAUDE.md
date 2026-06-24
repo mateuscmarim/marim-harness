@@ -97,7 +97,9 @@ to avoid import cycles.
   `SessionManager`, `SessionController` (compaction/autoname), `CheckpointManager`
   (rewind via `GitSnapshotter`, honoring `.gitignore`).
 - `mcp/` — Model Context Protocol server config + lifecycle; servers can be granted
-  selectively to sub-agents.
+  selectively to sub-agents. Project-local `.marim/mcp.json` servers launch code on
+  connect, so they load only when the project is trusted (the same
+  `MARIM_TRUST_PROJECT_HOOKS` gate as project hooks); global/plugin servers always load.
 - `lsp/` — multilspy-backed language-server pool. Two independent switches:
   `lsp_enabled` (the manager + diagnostics-on-edit) and `lsp_tools_enabled` (the six
   navigation tools). Diagnostics are appended to write/edit results best-effort.

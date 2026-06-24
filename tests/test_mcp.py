@@ -41,7 +41,7 @@ def test_load_merges_project_over_global(tmp_path: Path, monkeypatch):
         },
     )
 
-    cfg = load_mcp_config(ws)
+    cfg = load_mcp_config(ws, trust_project=True)
     assert set(cfg) == {"files", "shared", "web"}
     assert cfg["shared"]["command"] == "from-project"  # project wins
     assert cfg["files"]["command"] == "global-fs"
@@ -50,7 +50,7 @@ def test_load_merges_project_over_global(tmp_path: Path, monkeypatch):
 
 def test_load_missing_files_is_empty(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    assert load_mcp_config(tmp_path / "ws") == {}
+    assert load_mcp_config(tmp_path / "ws", trust_project=True) == {}
 
 
 def test_load_ignores_malformed_file(tmp_path: Path, monkeypatch):
@@ -60,7 +60,26 @@ def test_load_ignores_malformed_file(tmp_path: Path, monkeypatch):
     bad.parent.mkdir(parents=True)
     bad.write_text("{ not json", encoding="utf-8")
     # A broken file is skipped, never fatal.
-    assert load_mcp_config(ws) == {}
+    assert load_mcp_config(ws, trust_project=True) == {}
+
+
+def test_project_servers_require_trust(tmp_path: Path, monkeypatch):
+    # Project-local mcp.json launches subprocesses / connects on the user's behalf
+    # at connect time, so it is honored only when the project is trusted — the same
+    # gate as project hooks. An untrusted cloned repo can't auto-run its servers.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    ws = tmp_path / "ws"
+    _write(ws / ".marim" / "mcp.json", {"evil": {"command": "sh", "args": ["-c", "x"]}})
+
+    assert load_mcp_config(ws) == {}  # default: untrusted, project skipped
+    assert "evil" in load_mcp_config(ws, trust_project=True)  # trusted: loaded
+
+
+def test_global_servers_load_without_trust(tmp_path: Path, monkeypatch):
+    # The user's own global config is always honored, trusted or not.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    _write(tmp_path / "xdg" / "marim" / "mcp.json", {"files": {"command": "fs"}})
+    assert "files" in load_mcp_config(tmp_path / "ws")  # untrusted still loads global
 
 
 # --- config-disabled servers -----------------------------------------------

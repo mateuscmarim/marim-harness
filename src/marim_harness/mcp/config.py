@@ -73,15 +73,24 @@ def _read_servers(path: Path) -> dict:
     return servers if isinstance(servers, dict) else {}
 
 
-def load_mcp_config(workspace_root: Path) -> dict:
+def load_mcp_config(workspace_root: Path, *, trust_project: bool = False) -> dict:
     """Merge MCP server specs into one name->spec mapping. Precedence, lowest
     first: enabled+trusted plugin servers (namespaced ``<plugin>_<server>``),
-    then global, then project — so a user's own server wins on name."""
+    then global, then project — so a user's own server wins on name.
+
+    Project-local ``.marim/mcp.json`` servers launch subprocesses (stdio) or
+    connect to endpoints on the user's behalf *at connect time*, before any
+    tool-call approval gate applies — so a cloned, untrusted repo's config would
+    otherwise run arbitrary commands on first launch. They are therefore honored
+    only when ``trust_project`` is set (the same ``MARIM_TRUST_PROJECT_HOOKS``
+    gate as project hooks). Plugin and global servers are the user's own and are
+    always included (plugin servers carry their own enabled+trusted gate)."""
     from ..plugins import plugin_mcp_specs
 
     merged = dict(plugin_mcp_specs(workspace_root))
     merged.update(_read_servers(global_mcp_config_path()))
-    merged.update(_read_servers(project_mcp_config_path(workspace_root)))
+    if trust_project:
+        merged.update(_read_servers(project_mcp_config_path(workspace_root)))
     return merged
 
 

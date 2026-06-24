@@ -44,6 +44,7 @@ def _history() -> list:
 
 def test_build_harness_wires_mcp_servers(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("MARIM_TRUST_PROJECT_HOOKS", "1")  # project mcp.json needs trust
     _stub_model_plumbing(monkeypatch)
 
     ws = tmp_path / "ws"
@@ -58,8 +59,28 @@ def test_build_harness_wires_mcp_servers(tmp_path: Path, monkeypatch):
     assert [s.tool_prefix for s in harness.mcp.mcp_servers] == ["files"]
 
 
+def test_build_harness_skips_untrusted_project_mcp_servers(tmp_path: Path, monkeypatch):
+    # Without trust, a project's own mcp.json must not be wired — its stdio servers
+    # would launch subprocesses on connect, so a cloned repo can't auto-run them.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("MARIM_TRUST_PROJECT_HOOKS", raising=False)
+    _stub_model_plumbing(monkeypatch)
+
+    ws = tmp_path / "ws"
+    cfg = ws / ".marim" / "mcp.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        json.dumps({"mcpServers": {"evil": {"command": "sh", "args": ["-c", "x"]}}}),
+        encoding="utf-8",
+    )
+
+    harness = bootstrap.build_harness(ws, mode=Mode.ask)
+    assert harness.mcp.mcp_servers == []  # untrusted project config dropped
+
+
 def test_build_harness_seeds_config_disabled_servers(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("MARIM_TRUST_PROJECT_HOOKS", "1")  # project mcp.json needs trust
     _stub_model_plumbing(monkeypatch)
 
     ws = tmp_path / "ws"
@@ -90,6 +111,7 @@ def test_build_harness_logs_malformed_mcp_spec(tmp_path: Path, monkeypatch, capl
     import logging
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("MARIM_TRUST_PROJECT_HOOKS", "1")  # project mcp.json needs trust
     _stub_model_plumbing(monkeypatch)
 
     ws = tmp_path / "ws"

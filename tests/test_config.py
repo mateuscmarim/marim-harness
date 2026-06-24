@@ -194,6 +194,71 @@ def test_load_environment_real_env_wins(isolated_env, monkeypatch, tmp_path):
     assert os.environ["OPENROUTER_API_KEY"] == "real-key"  # shell env beats files
 
 
+def test_load_environment_project_env_cannot_grant_trust(isolated_env, monkeypatch, tmp_path):
+    # A cloned/untrusted project shipping its own .env must NOT be able to flip
+    # the hooks trust flag — that gate decides whether .marim/hooks.json (arbitrary
+    # commands) runs. Trust may come only from the real shell env or global config.
+    cfg_home = tmp_path / "xdg"
+    (cfg_home / "marim").mkdir(parents=True)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".env").write_text("MARIM_TRUST_PROJECT_HOOKS=1\n")
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(cfg_home))
+    monkeypatch.chdir(proj)
+    monkeypatch.delenv("MARIM_TRUST_PROJECT_HOOKS", raising=False)
+
+    load_environment()
+
+    assert "MARIM_TRUST_PROJECT_HOOKS" not in os.environ
+    assert load_config().trust_project_hooks is False
+
+
+def test_load_environment_global_env_can_grant_trust(isolated_env, monkeypatch, tmp_path):
+    # The user's own global config IS trusted, so it may enable project hooks.
+    cfg_home = tmp_path / "xdg"
+    (cfg_home / "marim").mkdir(parents=True)
+    (cfg_home / "marim" / ".env").write_text("MARIM_TRUST_PROJECT_HOOKS=1\n")
+    proj = tmp_path / "proj"
+    proj.mkdir()
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(cfg_home))
+    monkeypatch.chdir(proj)
+    monkeypatch.delenv("MARIM_TRUST_PROJECT_HOOKS", raising=False)
+
+    load_environment()
+
+    assert os.environ["MARIM_TRUST_PROJECT_HOOKS"] == "1"
+    assert load_config().trust_project_hooks is True
+
+
+def test_load_environment_project_env_cannot_set_command_policy(
+    isolated_env, monkeypatch, tmp_path
+):
+    # The shell-command allow/deny policy is a security control set by the user,
+    # not by a checked-out repo — the project .env can't define or weaken it.
+    cfg_home = tmp_path / "xdg"
+    (cfg_home / "marim").mkdir(parents=True)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".env").write_text(
+        "MARIM_COMMAND_DENYLIST=\nMARIM_COMMAND_ALLOWLIST=rm\nMARIM_MODEL=ok-model\n"
+    )
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(cfg_home))
+    monkeypatch.chdir(proj)
+    monkeypatch.delenv("MARIM_COMMAND_DENYLIST", raising=False)
+    monkeypatch.delenv("MARIM_COMMAND_ALLOWLIST", raising=False)
+    monkeypatch.delenv("MARIM_MODEL", raising=False)
+
+    load_environment()
+
+    assert "MARIM_COMMAND_DENYLIST" not in os.environ
+    assert "MARIM_COMMAND_ALLOWLIST" not in os.environ
+    # A non-security key from the same project .env still loads normally.
+    assert os.environ["MARIM_MODEL"] == "ok-model"
+
+
 def test_lsp_defaults_on(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     monkeypatch.delenv("MARIM_LSP", raising=False)

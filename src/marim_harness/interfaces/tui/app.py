@@ -313,6 +313,14 @@ class HarnessApp(App):
         log.mount(NoticeMessage("⏰ Resumed — background job(s) finished"))
         self._turn_worker = self.run_worker(self._run_turn(""), exclusive=True)
 
+    @property
+    def turn_busy(self) -> bool:
+        """True while a turn worker (user submit, drained queue, system command,
+        or autonomous wake) is live. The single guard against starting another
+        exclusive turn — which Textual would satisfy by silently cancelling the
+        running one — or tearing down the conversation/session under it."""
+        return self._turn_worker is not None
+
     def action_cycle_mode(self) -> None:
         self.harness.cycle_mode()
         self.status.refresh_status()
@@ -342,13 +350,26 @@ class HarnessApp(App):
             self._run_turn(text, attachments), exclusive=True
         )
 
-    def start_system_turn(self, prompt: str) -> None:
+    def start_system_turn(self, prompt: str) -> bool:
         """Spawn a turn for a system-initiated prompt — a slash command like
-        /remember or /run that injects its own prompt. Unlike _start_turn it
+        /remember or /skill that injects its own prompt. Unlike _start_turn it
         mounts no user message and leaves the autonomous-wake chain untouched;
-        it just resets the stream and runs the exclusive worker."""
+        it just resets the stream and runs the exclusive worker.
+
+        Refused (returns False, no turn started) while a turn is already running:
+        the exclusive worker would otherwise silently cancel the in-flight turn
+        and race its finally-block bookkeeping. Returns True when the turn was
+        started."""
+        if self.turn_busy:
+            self.query_one("#log", VerticalScroll).mount(
+                NoticeMessage(
+                    "A turn is already running — wait for it to finish or press Esc."
+                )
+            )
+            return False
         self.stream.current_assistant = None
         self._turn_worker = self.run_worker(self._run_turn(prompt), exclusive=True)
+        return True
 
     def _enqueue(
         self, text: str, attachments: list[tuple[bytes, str]] | None = None
@@ -489,15 +510,34 @@ class HarnessApp(App):
         self.stream.flush_streams()  # one-shot system text: render it now, no tick wait
 
     async def reset_conversation(self) -> None:
-        """Wipe the conversation and re-show the welcome screen (the /clear cmd)."""
+        """Wipe the conversation and re-show the welcome screen (the /clear cmd).
+        Refused mid-turn — clearing would tear down the log the running turn is
+        still streaming into and wipe history it is appending to."""
+        if self.turn_busy:
+            await self.post_system("Can't clear while a turn is running. Press Esc first.")
+            return
         await self.session.reset_conversation()
 
     async def start_new_session(self, name: str | None = None) -> None:
-        """Begin a fresh named session, leaving existing ones on disk."""
+        """Begin a fresh named session, leaving existing ones on disk. Refused
+        mid-turn — switching the active session out from under a running turn
+        would race its history persist."""
+        if self.turn_busy:
+            await self.post_system(
+                "Can't start a new session while a turn is running. Press Esc first."
+            )
+            return
         await self.session.start_new_session(name)
 
     async def switch_to_session_id(self, session_id: str) -> None:
-        """Load an existing session and show where it left off."""
+        """Load an existing session and show where it left off. Refused mid-turn
+        for the same reason as /new — the running turn writes to the session it
+        would be switched away from."""
+        if self.turn_busy:
+            await self.post_system(
+                "Can't switch sessions while a turn is running. Press Esc first."
+            )
+            return
         await self.session.switch_to_session_id(session_id)
 
     async def rewind_to_checkpoint(self, index: int) -> None:
