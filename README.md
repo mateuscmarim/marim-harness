@@ -124,7 +124,7 @@ from the environment — they are never written to session files or logs.**
 | `MARIM_LSP` | LSP master switch (default: on). Falsey ⇒ no language servers start: the navigation tools are not registered and diagnostics-on-edit is a no-op |
 | `MARIM_LSP_TOOLS` | LSP navigation tools (default: on). Falsey (while `MARIM_LSP` is on) ⇒ the six navigation tools are not registered, but diagnostics-on-edit keeps running |
 | `MARIM_JOB_TOOL_COMBINED` | Prototype (default: off). Truthy ⇒ the four job tools collapse into one `job(action, …)` tool |
-| `MARIM_NOTIFICATIONS` | Enable desktop notifications (default: off). Truthy ⇒ native OS notifications fire for configured events |
+| `MARIM_NOTIFICATIONS` | Desktop notifications (default: on). Native OS notifications fire for configured events; set to a falsy value (`0`) to mute |
 | `MARIM_NOTIFICATION_EVENTS` | Comma-separated events that trigger a notification (default: `turn_complete,error,approval_needed,ask_user`). Also `job_done` |
 
 You can also view and change these from inside the TUI with `/settings` (alias
@@ -178,8 +178,8 @@ stdin; `SessionStart` and `UserPromptSubmit` may inject context via
 
 marim can fire native desktop notifications so you're alerted when a turn
 finishes, errors, or needs your attention — useful when you've switched to
-another window. Enable with `MARIM_NOTIFICATIONS=1` and pick which events fire
-via `MARIM_NOTIFICATION_EVENTS` (comma-separated):
+another window. They're on by default; mute with `MARIM_NOTIFICATIONS=0`, and
+pick which events fire via `MARIM_NOTIFICATION_EVENTS` (comma-separated):
 
 | Event | When it fires |
 | --- | --- |

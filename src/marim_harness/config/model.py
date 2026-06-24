@@ -42,9 +42,9 @@ class ModelConfig:
     # every mode. Empty lists -> no restriction.
     command_denylist: list[str] = field(default_factory=list)
     command_allowlist: list[str] = field(default_factory=list)
-    # Desktop notifications: off by default. When on, fire native OS
-    # notifications for the events listed in ``notification_events``.
-    notifications_enabled: bool = False
+    # Desktop notifications: on by default. Fires native OS notifications for the
+    # events listed in ``notification_events``; set MARIM_NOTIFICATIONS=0 to mute.
+    notifications_enabled: bool = True
     notification_events: set[str] = field(default_factory=lambda: set(DEFAULT_EVENTS))
 
 
@@ -66,7 +66,7 @@ def load_config() -> ModelConfig:
     wake_depth_cap = _int_env("MARIM_WAKE_DEPTH_CAP", 3)
     command_denylist = split_patterns(os.getenv("MARIM_COMMAND_DENYLIST", ""))
     command_allowlist = split_patterns(os.getenv("MARIM_COMMAND_ALLOWLIST", ""))
-    notifications_enabled = _bool_env("MARIM_NOTIFICATIONS", False)
+    notifications_enabled = _bool_env("MARIM_NOTIFICATIONS", True)
     notification_events = parse_events(os.getenv("MARIM_NOTIFICATION_EVENTS", ""))
     if provider == "local":
         return ModelConfig(

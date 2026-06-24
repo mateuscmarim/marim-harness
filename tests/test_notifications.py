@@ -191,13 +191,26 @@ def test_notify_send_macos_calls_osascript():
 # Config integration
 # ---------------------------------------------------------------------------
 
-def test_load_config_notifications_default_off(monkeypatch):
+def test_load_config_notifications_default_on(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     monkeypatch.delenv("MARIM_NOTIFICATIONS", raising=False)
     monkeypatch.delenv("MARIM_NOTIFICATION_EVENTS", raising=False)
     cfg = load_config()
-    assert cfg.notifications_enabled is False
+    assert cfg.notifications_enabled is True
     assert cfg.notification_events == set(DEFAULT_EVENTS)
+
+
+def test_load_config_notifications_can_be_disabled(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setenv("MARIM_NOTIFICATIONS", "0")
+    cfg = load_config()
+    assert cfg.notifications_enabled is False
+
+
+def test_model_config_notifications_default_on():
+    from marim_harness.config.model import ModelConfig
+
+    assert ModelConfig(provider="openrouter", model="x").notifications_enabled is True
 
 
 def test_load_config_notifications_enabled(monkeypatch):
