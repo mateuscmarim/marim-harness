@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import Agent, DeferredToolRequests, capture_run_messages
@@ -72,6 +72,50 @@ def _has_unanswered_tool_calls(history: list[ModelMessage]) -> bool:
             elif isinstance(part, ToolReturnPart):
                 returns.add(part.tool_call_id)
     return bool(calls - returns)
+
+
+def _drop_nameless_tool_calls(history: list[ModelMessage]) -> list[ModelMessage]:
+    """Return a history with every nameless ``ToolCallPart`` (and the returns it
+    orphans) removed. A flaky model/provider can stream a partial tool call whose
+    function name never arrives, leaving a ``ToolCallPart`` with an empty
+    ``tool_name``; persisted, every provider then rejects the next request
+    ("tool_calls[i] is missing a function name"), wedging the session just like a
+    dangling call does. The unanswered-call repair can't catch it — the part has
+    an id, it's just nameless — so it needs its own pass. A ``ToolReturnPart``
+    that answered a dropped call is dropped too (it would now reference nothing),
+    and a message left with no parts is removed rather than sent empty. Returns
+    the input list unchanged when nothing is nameless, so callers can skip a
+    redundant persist."""
+    from pydantic_ai.messages import ToolCallPart, ToolReturnPart
+
+    nameless_ids = {
+        part.tool_call_id
+        for message in history
+        for part in getattr(message, "parts", [])
+        if isinstance(part, ToolCallPart) and not part.tool_name
+    }
+    if not nameless_ids:
+        return history
+    cleaned: list = []
+    for message in history:
+        parts = getattr(message, "parts", None)
+        if parts is None:
+            cleaned.append(message)
+            continue
+        kept = [
+            part
+            for part in parts
+            if not (
+                isinstance(part, (ToolCallPart, ToolReturnPart))
+                and part.tool_call_id in nameless_ids
+            )
+        ]
+        if not kept:
+            continue  # the malformed call was all this message carried — drop it
+        if len(kept) != len(parts):
+            message = replace(message, parts=kept)
+        cleaned.append(message)
+    return cleaned
 
 
 _INTERRUPTED_TOOL_NOTE = (
@@ -427,7 +471,13 @@ class Harness:
         return await self.session.rename(name)
 
     async def _maybe_compact(self) -> None:
-        await self.session.maybe_compact()
+        # When compaction actually shrinks the history, the checkpoints captured
+        # against the old (absolute) indices are stale — rewinding to one would
+        # slice the restructured history at the wrong boundary. Drop them so a
+        # later rewind can't corrupt the conversation. (run_turn re-snapshots
+        # after this, so the current turn keeps a valid rewind point.)
+        if await self.session.maybe_compact():
+            self.checkpoints.invalidate_after_compaction()
 
     async def _maybe_autoname(self) -> None:
         await self.session.maybe_autoname()
@@ -440,7 +490,7 @@ class Harness:
         propagate. The caller re-raises whatever triggered the flush."""
         try:
             recovered = _repair_unanswered_tool_calls(
-                list(captured) if captured else resumable
+                _drop_nameless_tool_calls(list(captured) if captured else resumable)
             )
             self.session.history = recovered
             await asyncio.wait_for(
@@ -791,11 +841,14 @@ class Harness:
         # When hooks are configured, intercept each streamed tool event to fire
         # Pre/PostToolUse, then forward to the original handler (or drain if none).
         event_stream_handler = self._build_hooked_handler(event_stream_handler)
-        # Self-heal a session left mid-exchange by an earlier aborted turn: a
-        # persisted ToolCallPart with no matching return makes every provider
-        # reject the next request ("unprocessed tool calls"), wedging the
-        # session. Repair it before running so the session resumes instead.
-        repaired = _repair_unanswered_tool_calls(self.session.history)
+        # Self-heal a session left mid-exchange by an earlier aborted turn or a
+        # flaky model. Two distinct malformations both make every provider reject
+        # the next request and wedge the session: a nameless ToolCallPart (a
+        # partial tool call whose function name never streamed) and a ToolCallPart
+        # with no matching return ("unprocessed tool calls"). Strip the former,
+        # then repair the latter, before running so the session resumes instead.
+        sanitized = _drop_nameless_tool_calls(self.session.history)
+        repaired = _repair_unanswered_tool_calls(sanitized)
         if repaired is not self.session.history:
             self.session.history = repaired
             self.session.persist()

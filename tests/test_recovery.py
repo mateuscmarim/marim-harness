@@ -254,6 +254,46 @@ async def test_resume_heals_dangling_tool_call_then_runs(tmp_path):
     assert not _has_unanswered_tool_calls(harness.session.history)
 
 
+# --- e2e: compaction during a turn invalidates stale checkpoints -------------
+
+
+async def test_compaction_during_turn_invalidates_checkpoints(tmp_path):
+    """A compaction restructures history, so the checkpoints captured against the
+    pre-compaction (absolute) indices are stale and must be dropped — otherwise a
+    later rewind slices at the wrong boundary and corrupts the conversation."""
+    from marim_harness.agent import HarnessConfig
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+
+    def reply(messages, info):
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    # Tiny budget so the first start-of-turn compaction fires on the seeded
+    # history; keep only the last 2 messages.
+    harness = Harness(
+        model=FunctionModel(reply),
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="You are a coding agent.",
+        config=HarnessConfig(max_context_tokens=10, keep_last_messages=2),
+    )
+    # Seed a long, well-formed history and a checkpoint that points into it.
+    harness.session.history = [
+        ModelRequest(parts=[UserPromptPart(content=f"m {i}")]) for i in range(20)
+    ]
+    harness.checkpoints.snapshot("stale turn")
+    assert harness.checkpoints.list()  # checkpoint exists pre-compaction
+
+    await harness.run_turn("next")
+
+    # The start-of-turn compaction shrank history, so the stale checkpoint was
+    # dropped rather than left pointing at a vanished boundary.
+    assert harness.session.history  # compaction kept the tail (didn't wipe)
+    assert len(harness.session.history) < 20
+    stale = [c for c in harness.checkpoints.list() if c.prompt_preview == "stale turn"]
+    assert stale == []
+
+
 # --- Part A: a failed continuation after an approval round stays resumable ----
 
 

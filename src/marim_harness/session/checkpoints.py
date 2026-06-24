@@ -291,6 +291,29 @@ class CheckpointManager:
             self._pre_restore_commit = None
         return undone
 
+    def invalidate_after_compaction(self) -> None:
+        """Drop every checkpoint after a compaction restructured the history.
+
+        ``Checkpoint.history_len`` is an *absolute* index into the session
+        history, but compaction replaces that history with a shorter, summarized
+        list — so every existing checkpoint's index now points at a different
+        (wrong) boundary. Rewinding to one would slice ``history[:stale_len]``
+        mid-pair, stranding a tool call from its return or keeping a user message
+        without its response, exactly the corruption that yields a malformed
+        history on the next request. Those messages no longer exist in the same
+        form (the prefix was collapsed into a summary), so the checkpoints are
+        genuinely unrewindable and are dropped — along with their shadow refs, so
+        they don't leak and block GC (mirrors ``_prune``).
+
+        The current turn re-snapshots *after* compaction (see ``run_turn``), so
+        this never discards the in-flight turn's rewind point — only the stale
+        pre-compaction ones."""
+        for cp in self._checkpoints:
+            if cp.commit is not None:
+                self.snapshotter.delete(self._ref(cp.index))
+        self._checkpoints = []
+        self._save()
+
     def clear(self) -> None:
         """Drop all checkpoints (called on session reset/clear) and their refs."""
         for cp in self._checkpoints:
