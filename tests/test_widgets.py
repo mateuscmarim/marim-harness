@@ -624,6 +624,59 @@ def test_failure_reason_strips_prefix_and_clips():
     assert failure_reason("Sub-agent 'x' failed: " + "y" * 200).endswith("…")
 
 
+@pytest.mark.anyio
+async def test_subagent_failure_click_expands_to_full_reason():
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+
+    long_body = "ModelHTTPError: status_code: 400, body: " + "detail " * 60
+    app = _SubHarness()
+    async with app.run_test() as pilot:
+        w = app.query_one(SubAgentWidget)
+        await pilot.pause()
+        w.finish(long_body, status="failed")
+        await pilot.pause()
+        # Collapsed: clipped reason + a ▸ expand marker, one row only.
+        collapsed = str(w._activity.visual)
+        assert collapsed.endswith("…  ▸")
+        assert not w._activity.has_class("-expanded")
+
+        # Click expands to the full (unclipped) reason with a ▾ marker; the line
+        # is now allowed to grow + wrap.
+        w.on_click(None)  # toggles + repaints
+        await pilot.pause()
+        expanded = str(w._activity.visual)
+        assert "ModelHTTPError: status_code: 400" in expanded
+        assert expanded.rstrip().endswith("▾")
+        assert "…" not in expanded
+        assert w._activity.has_class("-expanded")
+
+        # Click again collapses back.
+        w.on_click(None)
+        await pilot.pause()
+        assert str(w._activity.visual).endswith("…  ▸")
+        assert not w._activity.has_class("-expanded")
+
+
+@pytest.mark.anyio
+async def test_subagent_short_failure_is_not_clickable():
+    """A failure that fits within the cap has no ▸ marker and ignores clicks —
+    there's nothing more to show."""
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+
+    app = _SubHarness()
+    async with app.run_test() as pilot:
+        w = app.query_one(SubAgentWidget)
+        await pilot.pause()
+        w.finish("Sub-agent 'x' failed: ValueError: boom", status="failed")
+        await pilot.pause()
+        line = str(w._activity.visual)
+        assert "ValueError: boom" in line
+        assert "▸" not in line
+        w.on_click(None)  # no-op
+        await pilot.pause()
+        assert not w._activity.has_class("-expanded")
+
+
 def test_derive_subagent_title_takes_first_clause():
     """A verbose spawn prompt condenses to its first sentence/clause as the title,
     instead of inlining the whole prompt."""

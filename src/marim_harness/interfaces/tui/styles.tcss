@@ -57,6 +57,8 @@ ToolGroupWidget { margin: 0 0 1 0; background: transparent; }
 SubAgentWidget { margin: 0 0 1 0; height: auto; padding-left: 2; }
 .subagent-header { height: 1; text-wrap: nowrap; text-overflow: ellipsis; color: $text-muted; }
 .subagent-activity { height: 1; padding-left: 2; color: $text-muted; }
+/* Expanded failure: let the error line grow and wrap to show the full body. */
+.subagent-activity.-expanded { height: auto; text-wrap: wrap; }
 /* Brighten the whole row to white + bold on hover. Driven by a `-hovered` class
    the card toggles from its own mouse state (CSS :hover only lands on the leaf
    line under the pointer, not the container — see SubAgentWidget.on_enter). */

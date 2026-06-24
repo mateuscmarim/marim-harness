@@ -34,17 +34,25 @@ def _fmt_duration(seconds: float) -> str:
     return f"{s // 60}m {s % 60}s"
 
 
-_REASON_CAP = 70
+_REASON_CAP = 160
 
 
-def failure_reason(report: str) -> str:
-    """The concise reason from a failed spawn's report — strips the
-    ``Sub-agent 'x' failed: `` prefix (leaving the underlying error) and collapses
-    whitespace; the full report stays available in the viewer transcript."""
+def clean_reason(report: str) -> str:
+    """The underlying error from a failed spawn's report — strips the
+    ``Sub-agent 'x' failed: `` prefix (leaving the error itself) and collapses
+    whitespace, but does NOT clip. This is the full text the card expands to."""
     text = " ".join(report.split())
     marker = " failed: "
     if text.startswith("Sub-agent ") and marker in text:
         text = text.split(marker, 1)[1]
+    return text
+
+
+def failure_reason(report: str) -> str:
+    """The concise (clipped) reason for the card's collapsed line. The full,
+    unclipped reason stays available via :func:`clean_reason` (the card expands to
+    it on click) and in the viewer transcript."""
+    text = clean_reason(report)
     return text if len(text) <= _REASON_CAP else text[: _REASON_CAP - 1] + "…"
 
 
@@ -89,7 +97,11 @@ class SubAgentWidget(Vertical):
         self.stream_id = ""
         self.status = "pending"  # "pending" | "done" | "denied" | "failed"
         self.report = ""
-        self._fail_reason = ""
+        self._fail_reason = ""  # clipped, shown on the collapsed card line
+        self._full_reason = ""  # unclipped; the expanded line shows this
+        # Click a failed card to expand its (clipped) error to the full body, and
+        # back. Only meaningful when the reason was actually clipped.
+        self._expanded = False
         # The current tool (humanized name + arg preview) shown on the ↳ line while
         # running; a tally + run timing replace it once finished. ``_t0`` is set at
         # mount and ``_t_end`` frozen at finish.
@@ -142,6 +154,14 @@ class SubAgentWidget(Vertical):
     def _sync_hover(self) -> None:
         self.set_class(self.is_mouse_over, "-hovered")
 
+    def on_click(self, _event) -> None:
+        # Click a failed card to expand the clipped error to its full body, and
+        # back. A no-op unless the reason was actually clipped (so a fully-shown
+        # error or a running/done card doesn't react to clicks).
+        if self.status in ("failed", "denied") and self._full_reason != self._fail_reason:
+            self._expanded = not self._expanded
+            self._paint_activity()
+
     def _glyph(self) -> str:
         if self.status == "done":
             return "✓"
@@ -175,9 +195,20 @@ class SubAgentWidget(Vertical):
             # Show the current tool while running; "working…" before the first call.
             self._activity.update(Content(f"↳ {self.activity or 'working…'}"))
         elif self.status in ("failed", "denied"):
-            # Surface why it failed (literal + red); the full report is in the body.
-            reason = self._fail_reason or ("denied" if self.status == "denied" else "failed")
-            self._activity.update(Content.assemble((f"↳ {reason}", "red")))
+            # Surface why it failed (literal + red). The line is clipped to one row
+            # by default; if the reason was clipped, a ▸/▾ marks it click-to-expand
+            # (the full body also lives in the viewer transcript).
+            expandable = self._full_reason != self._fail_reason
+            if self._expanded and expandable:
+                reason = self._full_reason
+            else:
+                reason = self._fail_reason or (
+                    "denied" if self.status == "denied" else "failed"
+                )
+            marker = ("  ▾" if self._expanded else "  ▸") if expandable else ""
+            # Let the line grow + wrap only while expanded; otherwise it stays one row.
+            self._activity.set_class(self._expanded and expandable, "-expanded")
+            self._activity.update(Content.assemble((f"↳ {reason}", "red"), (marker, "dim")))
         else:
             # Done: collapse to the run summary (tool tally + frozen duration).
             plural = "" if self.tool_count == 1 else "s"
@@ -245,6 +276,7 @@ class SubAgentWidget(Vertical):
         self._t_end = time.monotonic()  # freeze the duration
         if status in ("failed", "denied") and report:
             self._fail_reason = failure_reason(report)
+            self._full_reason = clean_reason(report)
             # The failure is returned, not streamed as an event, so the transcript
             # otherwise ends without it — append it so the viewer shows the reason.
             self.body.mount(Static(Content(report), classes="subagent-error"))
