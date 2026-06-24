@@ -45,8 +45,8 @@ results are synthesized in a follow-up turn — robustly, without depending on t
 model to set a flag or remember to poll. The agent is *told* the spawns are
 detached so it can choose to wait inline when that's better.
 
-Non-goals: changing single-spawn behavior; cross-restart job persistence;
-per-batch (vs. global) synthesis gating (deferred — see Alternatives).
+Non-goals: cross-restart job persistence; per-batch (vs. global) synthesis gating
+(deferred — see Alternatives).
 
 ## Design
 
@@ -56,30 +56,38 @@ New knob `MARIM_DETACH_FANOUT` (bool), **default on** (opt-out: `=0` restores
 always-inline). Threaded `ModelConfig → HarnessConfig → Deps`, mirroring
 `MARIM_SUBAGENT_CONCURRENCY`.
 
-When **on**, a turn whose triggering model response contains **≥2** `spawn_agent`
-tool calls runs them all detached. A **single** spawn stays inline (a lone
-dependent subtask is better resolved in-turn than bounced through a wake). The
-count is read from the triggering `ModelResponse` via `ctx` inside `spawn_agent`,
-so the *harness* decides — robust regardless of model. An explicit
-`background=False` from the model still forces inline.
+When **on**, **every** `spawn_agent` runs detached (background job + handoff
+note) — the harness does not try to distinguish a fan-out from a single spawn. An
+explicit `background=False` from the model still forces inline.
+
+Why detach all, not just fan-outs of ≥2: a tool cannot see its sibling tool calls
+in pydantic-ai 1.107 (`RunContext` exposes no message history; the parallel-call
+list lives in the agent graph's internal scope), so a harness-side "≥2" test isn't
+cleanly available. More importantly, it isn't needed: the informed handoff (§2)
+delegates the wait-vs-end decision to the agent, which already knows both things a
+threshold would proxy for — how many it just spawned and whether it needs a result
+inline. A lone dependent spawn simply costs one `wait_for_job` round-trip; a
+fan-out ends the turn. The harness detaches uniformly; the agent decides.
 
 ### 2. Launching turn — informed handoff
 
 Each detached spawn registers a background job (existing `run_background_agent`
-path → inherits cap + resume). Instead of a report, the tool returns an
-**informational handoff**:
+path → inherits cap + resume). Each `spawn_agent` call returns its own
+**informational handoff** (the model sees one per call — N of them for an N-way
+fan-out):
 
-> Launched N detached sub-agents [ids], running in the background
-> (concurrency-capped). You can end your turn now — their combined reports will be
-> delivered to you when they finish, and you synthesize then — or `wait_for_job`
-> on them if you need the results in this turn. For a large/long fan-out, ending
-> the turn is usually better.
+> Started detached sub-agent `<id>`, running in the background
+> (concurrency-capped). End your turn to let it run — I'll deliver its report when
+> it finishes and you act on it then — or `wait_for_job("<id>")` if you need the
+> result in this turn. For a fan-out, ending the turn is usually better.
 
 The agent then **chooses**: end the turn (control returns immediately — the UX
 win, with wake as the synthesis path) or `wait_for_job` (inline; its 60s timeout
 is a natural escape — a model that waits on a long batch is bounced with "still
 running" and can then end the turn). The detach itself is harness-enforced; only
 the wait-vs-end decision is the agent's, and wake guarantees synthesis either way.
+For a single detached spawn the agent typically just `wait_for_job`s — one extra
+round-trip vs. the old inline path, the cost of detaching uniformly.
 
 ### 3. Synthesis — wake turn
 
@@ -137,7 +145,7 @@ finished digest is unchanged for the non-fan-out background path.
 Routing through the existing `run_background_agent` means detached fan-out
 **composes automatically** with the concurrency cap (bounds the batch's request
 load — the rate-limit protection) and resume-retry (cheap 429 recovery). No new
-interaction code. Threshold stays ≥2.
+interaction code.
 
 ## Config wiring
 
@@ -147,9 +155,10 @@ interaction code. Threshold stays ≥2.
 
 ## Testing (TDD)
 
-- **Detach trigger:** a turn fanning out ≥2 spawns registers N background jobs and
-  the tool returns the handoff note (not reports); a single spawn stays inline.
-- **Default-on / opt-out:** no env → fan-out detaches; `MARIM_DETACH_FANOUT=0` →
+- **Detach trigger:** with the mode on, `spawn_agent` registers a background job
+  and returns the handoff note (not a report) — for both a fan-out and a single
+  spawn; an explicit `background=False` still runs inline.
+- **Default-on / opt-out:** no env → spawn detaches; `MARIM_DETACH_FANOUT=0` →
   inline.
 - **Synthesis gate:** wake does **not** fire while any job runs; fires once all are
   terminal; a failed job still appears in the synthesis input.
@@ -166,3 +175,6 @@ interaction code. Threshold stays ≥2.
   running" gate is sufficient and simpler.
 - **Dedicated `fan_out` batch tool / prompt-only:** both make the *trigger*
   model-dependent, failing the robustness bar on mimo.
+- **Harness-side ≥2 fan-out detection (single spawn stays inline):** rejected — not
+  cleanly implementable (a tool can't see its sibling calls in pydantic-ai 1.107),
+  and unnecessary once the agent owns the wait-vs-end choice. Detach uniformly.
