@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from .atomic_io import atomic_write_text
+
 
 def _find_api_error(exc: BaseException):
     """The first ``openai.APIError`` in ``exc``'s cause/context chain, or None.
@@ -150,5 +152,5 @@ def dump_provider_error(workspace_root: Path, exc: BaseException) -> Path | None
         return None
     out = Path(workspace_root) / ".marim" / "last-provider-error.json"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(payload, indent=2, default=str))
+    atomic_write_text(out, json.dumps(payload, indent=2, default=str))
     return out

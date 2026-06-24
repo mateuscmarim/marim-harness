@@ -10,6 +10,8 @@ import logging
 import os
 from pathlib import Path
 
+from .atomic_io import atomic_write_text
+
 logger = logging.getLogger(__name__)
 
 
@@ -66,4 +68,4 @@ class PromptHistory:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         body = "\n".join(json.dumps(entry) for entry in self.entries)
-        self.path.write_text(body + "\n" if body else "", encoding="utf-8")
+        atomic_write_text(self.path, body + "\n" if body else "")

@@ -40,6 +40,28 @@ def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None
     _fsync_dir(directory)
 
 
+def atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Write ``data`` to ``path`` atomically and durably — the bytes counterpart
+    of :func:`atomic_write_text`. Same unique-temp-then-``os.replace`` strategy, so
+    two writers racing on the same target never collide on a shared temp name (the
+    bug in the old ``out.with_suffix(".tmp")`` pattern). The target's directory must
+    already exist."""
+    path = Path(path)
+    directory = path.parent
+    fd, tmp_name = tempfile.mkstemp(dir=directory, prefix=f".{path.name}.", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)  # don't leave a temp behind on failure
+        raise
+    _fsync_dir(directory)
+
+
 def _fsync_dir(directory: Path) -> None:
     """fsync a directory so a rename into it is durable. Best-effort: some
     platforms/filesystems can't open a directory for fsync, in which case the

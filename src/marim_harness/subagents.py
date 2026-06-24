@@ -214,7 +214,6 @@ class SubagentRunner:
             model_settings=self._model_settings,
         )
         self.provider.register_subagent(sub, effective_tools(defn, allow_gated=allow_gated))
-        assert sub is not None, "build must return (sub, err) with exactly one non-None"
         return sub, None
 
     def _cap_output(self, output: str, max_output_chars: int | None, ref: str) -> str:

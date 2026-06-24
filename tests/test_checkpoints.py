@@ -162,6 +162,38 @@ def test_undo_rewind_without_a_prior_rewind_is_a_noop(tmp_path: Path):
     assert mgr.undo_rewind() is False
 
 
+def test_undo_rewind_restores_the_truncated_conversation(tmp_path: Path):
+    """A rewind's history truncation is reversible: undo_rewind puts the
+    conversation back (not just files) and persists the restoration."""
+    s = _session(tmp_path)
+    snap = _FakeSnap()
+    mgr = CheckpointManager(s, snap)
+    mgr.snapshot("t1")  # history_len 0 captured
+    s.set_history(["u1", "a1", "u2", "a2"])
+    mgr.rewind(0)
+    assert s.history == []  # rewound
+    persisted_before = s.persisted
+    assert mgr.undo_rewind() is True
+    assert s.history == ["u1", "a1", "u2", "a2"]  # conversation recovered
+    assert s.persisted > persisted_before  # restoration was persisted
+
+
+def test_undo_rewind_restores_conversation_for_conversation_only_rewind(tmp_path: Path):
+    """A commit-less (conversation-only) rewind is now undoable too, even though it
+    captured no file snapshot."""
+    s = _session(tmp_path)
+    snap = _FakeSnap()
+    mgr = CheckpointManager(s, snap)
+    mgr._checkpoints.append(
+        Checkpoint(index=0, history_len=0, commit=None, created="t", prompt_preview="x")
+    )
+    s.set_history(["u1", "a1"])
+    mgr.rewind(0)
+    assert s.history == []
+    assert mgr.undo_rewind() is True
+    assert s.history == ["u1", "a1"]
+
+
 def test_rewind_conversation_only_checkpoint_has_no_pre_restore(tmp_path: Path):
     """A checkpoint with no commit (NullSnapshotter / conversation-only) neither
     restores files nor captures a pre-restore snapshot."""

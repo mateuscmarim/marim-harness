@@ -14,6 +14,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from .atomic_io import atomic_write_bytes
+
 logger = logging.getLogger(__name__)
 
 _EXT = {
@@ -146,9 +148,7 @@ def store_image(session_id: str, data: bytes, media_type: str) -> CachedImage:
     out = image_cache_root() / session_id / f"{sha}.{media_ext(media_type)}"
     if not out.exists():
         out.parent.mkdir(parents=True, exist_ok=True)
-        tmp = out.with_suffix(out.suffix + ".tmp")
-        tmp.write_bytes(data)
-        tmp.replace(out)
+        atomic_write_bytes(out, data)
     return CachedImage(path=out, sha=sha, media_type=media_type)
 
 

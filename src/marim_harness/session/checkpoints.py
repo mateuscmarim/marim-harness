@@ -105,6 +105,11 @@ class CheckpointManager:
         # Commit of the most recent pre-rewind safety snapshot, so undo_rewind can
         # restore the working tree to its state just before the last rewind.
         self._pre_restore_commit: str | None = None
+        # The conversation history stashed just before the last rewind truncated it,
+        # so undo_rewind can put the conversation back. History — unlike the working
+        # tree — has no shadow commit, so without this stash a rewind's truncation
+        # would be irreversible.
+        self._pre_rewind_history: list | None = None
         self.reload()
 
     # --- persistence -----------------------------------------------------
@@ -188,25 +193,28 @@ class CheckpointManager:
         return list(self._checkpoints)
 
     def rewind(self, index: int) -> RewindResult:
-        """Restore the session to checkpoint ``index``: truncate history, restore
-        files (if the checkpoint has a commit), and drop later checkpoints.
-        Raises ``KeyError`` if no checkpoint has that index."""
+        """Restore the session to checkpoint ``index``: restore files (if the
+        checkpoint has a commit), truncate history, and drop later checkpoints.
+        Raises ``KeyError`` if no checkpoint has that index.
+
+        The pre-rewind conversation is stashed first so ``undo_rewind`` can recover
+        it — a rewind's history truncation is otherwise irreversible (history, unlike
+        the working tree, has no shadow commit). File restore stays best-effort: a
+        git failure never blocks the conversation rewind, and is independently
+        recoverable via the pre-restore safety snapshot."""
         cp = next((c for c in self._checkpoints if c.index == index), None)
         if cp is None:
             raise KeyError(index)
-        self.session.set_history(self.session.history[: cp.history_len])
-        self.session.persist(force=True)
         restored = False
         restore_failed = False
         pre: str | None = None
         if cp.commit is not None:
             # Safety net: snapshot the current working tree (under a per-session
-            # ref) so the rewind is undoable, THEN restore. If that snapshot can't
-            # be captured (git failure), refuse the destructive restore rather than
-            # overwrite the working tree with no recovery path — report it as a
-            # failed restore (the conversation half is already rewound, matching
-            # the commit-less checkpoint case). restore() reports success too, so a
-            # failed git restore is never dressed up as a clean one.
+            # ref) so the file restore is undoable, THEN restore. If that snapshot
+            # can't be captured (git failure), refuse the destructive restore rather
+            # than overwrite the working tree with no recovery path — report it as a
+            # failed restore. restore() reports success too, so a failed git restore
+            # is never dressed up as a clean one.
             pre = self.snapshotter.capture(
                 self._pre_restore_ref(), "pre-restore safety snapshot"
             )
@@ -216,6 +224,12 @@ class CheckpointManager:
             else:
                 restored = self.snapshotter.restore(cp.commit)
                 restore_failed = not restored
+        # Stash the conversation, THEN truncate. The best-effort restore above never
+        # blocks this, so the conversation always rewinds — and the stash lets
+        # undo_rewind put it back even when the file restore failed or was absent.
+        self._pre_rewind_history = list(self.session.history)
+        self.session.set_history(self.session.history[: cp.history_len])
+        self.session.persist(force=True)
         # Drop the now-orphaned later checkpoints AND delete their git refs, so
         # refs/marim/checkpoints/... doesn't leak and block GC (mirrors _prune).
         for c in self._checkpoints:
@@ -231,14 +245,24 @@ class CheckpointManager:
         )
 
     def undo_rewind(self) -> bool:
-        """Restore the working tree to the safety snapshot taken by the last
-        rewind, recovering files a rewind replaced. Returns True if files were
-        restored, False when there is nothing to undo (no rewind this session, or
-        a conversation-only rewind). The conversation half is not restored — the
-        history was already truncated and persisted; this recovers file state."""
-        if self._pre_restore_commit is None:
-            return False
-        return self.snapshotter.restore(self._pre_restore_commit)
+        """Undo the last rewind, restoring both the conversation and the working
+        tree to their pre-rewind state. Returns True if anything was restored, False
+        when there is nothing to undo (no rewind this session). The conversation is
+        recovered from the stash captured by ``rewind`` (and re-persisted); files are
+        recovered from the pre-restore safety snapshot, which is absent for a
+        conversation-only rewind. Both stashes are consumed, so a second call is a
+        no-op."""
+        undone = False
+        if self._pre_rewind_history is not None:
+            self.session.set_history(self._pre_rewind_history)
+            self.session.persist(force=True)
+            self._pre_rewind_history = None
+            undone = True
+        if self._pre_restore_commit is not None:
+            if self.snapshotter.restore(self._pre_restore_commit):
+                undone = True
+            self._pre_restore_commit = None
+        return undone
 
     def clear(self) -> None:
         """Drop all checkpoints (called on session reset/clear) and their refs."""

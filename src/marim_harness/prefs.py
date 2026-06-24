@@ -7,6 +7,7 @@ never raises — it falls back to the default theme."""
 import json
 from pathlib import Path
 
+from .atomic_io import atomic_write_text
 from .config import config_dir
 from .interfaces.tui.themes import DEFAULT_THEME, THEME_NAMES
 
@@ -42,7 +43,7 @@ def save_theme(name: str) -> bool:
     try:
         path = prefs_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        atomic_write_text(path, json.dumps(data, indent=2) + "\n")
     except OSError:
         return False
     return True
