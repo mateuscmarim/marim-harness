@@ -55,6 +55,17 @@ async def test_deny_returns_false():
     assert app.result is False
 
 
+@pytest.mark.anyio
+async def test_escape_denies():
+    """Esc backs out of the approval as a deny (consistent with the other modals)."""
+    app = _Harness()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+    assert app.result is False
+
+
 def test_format_detail_edit_shows_diff():
     detail = format_detail(
         "edit_file",

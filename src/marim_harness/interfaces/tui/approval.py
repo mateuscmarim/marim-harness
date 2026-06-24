@@ -81,7 +81,14 @@ class ApprovalModal(ModalScreen[bool]):
     }
     """
 
-    BINDINGS = [("a", "approve", "Approve"), ("d", "deny", "Deny")]
+    # Esc denies — backing out of an approval is a deny, and it keeps the modal
+    # consistent with every other modal (model picker, ask-user, settings), which
+    # all bind Esc to cancel. Without it a reflexive Esc does nothing and traps you.
+    BINDINGS = [
+        ("a", "approve", "Approve"),
+        ("d", "deny", "Deny"),
+        ("escape", "deny", "Cancel"),
+    ]
 
     def __init__(self, tool_name: str, args: dict) -> None:
         super().__init__()

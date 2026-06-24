@@ -74,6 +74,23 @@ class PromptInput(TextArea):
             event.prevent_default()
             event.stop()
             return
+        if self._slash_active:
+            # Drive the (unfocusable) slash menu from the prompt: Up/Down move its
+            # highlight, Tab completes the highlighted command into the box. Each
+            # helper returns False when the menu is hidden/empty, so the key falls
+            # through to the prompt's own handling (history recall, normal Tab).
+            if event.key == "down" and self._menu_navigate(1):
+                event.prevent_default()
+                event.stop()
+                return
+            if event.key == "up" and self._menu_navigate(-1):
+                event.prevent_default()
+                event.stop()
+                return
+            if event.key == "tab" and self._menu_accept():
+                event.prevent_default()
+                event.stop()
+                return
         if event.key in ("alt+enter", "ctrl+g"):
             event.prevent_default()
             event.stop()
@@ -123,6 +140,19 @@ class PromptInput(TextArea):
             return
         await super()._on_key(event)
 
+    def _menu_navigate(self, delta: int) -> bool:
+        """Ask the app to move the open slash menu's highlight. Reached through the
+        app (like ctrl+x) rather than the widget directly, so the prompt still works
+        in bare-widget tests where no app method exists."""
+        nav = getattr(self.app, "autocomplete_navigate", None)
+        return bool(nav and nav(delta))
+
+    def _menu_accept(self) -> bool:
+        """Ask the app to complete the highlighted slash command. Returns True when
+        the menu was open and a command was accepted."""
+        accept = getattr(self.app, "autocomplete_accept", None)
+        return bool(accept and accept())
+
     def _on_paste_image(self) -> bool:
         from .... import images
 
@@ -131,6 +161,18 @@ class PromptInput(TextArea):
             return False
         data, media_type = got
         return self._cache_and_insert(data, media_type)
+
+    def load_attachments(self, attachments: list[tuple[bytes, str]]) -> None:
+        """Restore image attachments from their raw bytes (e.g. when a queued
+        message is popped back into the box for editing). The text already carries
+        the matching ``[Image #N]`` markers, so this only re-caches the bytes and
+        repopulates ``self.attachments`` in order — it inserts no markers."""
+        from .... import images
+
+        self.attachments = []
+        for data, media_type in attachments:
+            cached = images.store_image(self._session_id(), data, media_type)
+            self.attachments.append((cached.path, media_type))
 
     def _cache_and_insert(self, data: bytes, media_type: str) -> bool:
         from .... import images

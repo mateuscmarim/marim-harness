@@ -66,6 +66,35 @@ class CommandAutocomplete(Static):
         # Highlight the first item.
         option_list.highlighted = 0
 
+    def move_highlight(self, delta: int) -> bool:
+        """Move the highlighted option by ``delta`` (clamped to the list bounds).
+        The dropdown can't take focus (so it never steals keys from the prompt),
+        so the prompt drives navigation through here while the slash menu is open.
+        Returns True when it consumed the key, False when there's nothing to move."""
+        if not self.visible or not self._options:
+            return False
+        option_list = self.query_one("#cmd-options", OptionList)
+        if not option_list.option_count:
+            return False
+        current = option_list.highlighted or 0
+        option_list.highlighted = max(0, min(current + delta, option_list.option_count - 1))
+        return True
+
+    def accept_highlighted(self) -> bool:
+        """Complete the highlighted command, mirroring a click/Enter on the list.
+        Returns True when a command was accepted, False when the dropdown is empty
+        or hidden (so the key falls through to the prompt's normal handling)."""
+        if not self.visible or not self._options:
+            return False
+        option_list = self.query_one("#cmd-options", OptionList)
+        idx = option_list.highlighted
+        if idx is None or not (0 <= idx < len(self._options)):
+            return False
+        name = self._options[idx][0]
+        self.visible = False
+        self.post_message(self.CommandSelected(name))
+        return True
+
     @on(OptionList.OptionSelected)
     def _on_option_selected(self, event: OptionList.OptionSelected) -> None:
         idx = event.option_index

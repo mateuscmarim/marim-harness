@@ -140,6 +140,63 @@ async def test_select_posts_command_selected():
         assert app.selected == ["help"]
 
 
+@pytest.mark.anyio
+async def test_move_highlight_steps_and_clamps():
+    """move_highlight advances the selection and clamps at the list bounds."""
+    app = _AcApp()
+    async with app.run_test() as pilot:
+        ac = app.query_one(CommandAutocomplete)
+        ac.filter("")  # all commands
+        await pilot.pause()
+        options = ac.query_one("#cmd-options", OptionList)
+        assert options.highlighted == 0
+        assert ac.move_highlight(1) is True
+        assert options.highlighted == 1
+        assert ac.move_highlight(-1) is True
+        assert options.highlighted == 0
+        # Can't go below 0, but still consumes the key.
+        assert ac.move_highlight(-1) is True
+        assert options.highlighted == 0
+
+
+@pytest.mark.anyio
+async def test_move_highlight_hidden_returns_false():
+    """When the menu is hidden there's nothing to move — the key falls through."""
+    app = _AcApp()
+    async with app.run_test() as pilot:
+        ac = app.query_one(CommandAutocomplete)
+        ac.filter("xyz_nonexistent")  # hides the menu
+        await pilot.pause()
+        assert ac.visible is False
+        assert ac.move_highlight(1) is False
+
+
+@pytest.mark.anyio
+async def test_accept_highlighted_posts_selection():
+    """accept_highlighted completes the highlighted command and hides the menu."""
+    app = _AcApp()
+    async with app.run_test() as pilot:
+        ac = app.query_one(CommandAutocomplete)
+        ac.filter("s")  # several commands; first is highlighted
+        await pilot.pause()
+        first = ac._options[0][0]
+        assert ac.accept_highlighted() is True
+        await pilot.pause()
+        assert app.selected == [first]
+        assert ac.visible is False
+
+
+@pytest.mark.anyio
+async def test_accept_highlighted_hidden_returns_false():
+    app = _AcApp()
+    async with app.run_test() as pilot:
+        ac = app.query_one(CommandAutocomplete)
+        ac.filter("xyz_nonexistent")
+        await pilot.pause()
+        assert ac.accept_highlighted() is False
+        assert app.selected == []
+
+
 # --- PromptInput slash-detection tests ---
 
 

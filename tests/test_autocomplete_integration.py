@@ -33,6 +33,16 @@ class _AcIntegrationApp(App):
         if self._autocomplete is not None:
             self._autocomplete.visible = False
 
+    def autocomplete_navigate(self, delta: int) -> bool:
+        if self._autocomplete is None:
+            return False
+        return self._autocomplete.move_highlight(delta)
+
+    def autocomplete_accept(self) -> bool:
+        if self._autocomplete is None:
+            return False
+        return self._autocomplete.accept_highlighted()
+
     def on_prompt_input_slash_changed(self, event: PromptInput.SlashChanged) -> None:
         first_line = event.value.split("\n", 1)[0]
         self._show_autocomplete(first_line[1:])
@@ -126,6 +136,59 @@ async def test_select_replaces_prompt_text():
         await pilot.pause()
         assert pi.text == "/help "
         assert ac.visible is False
+
+
+@pytest.mark.anyio
+async def test_tab_completes_highlighted_command():
+    """Typing ``/`` then Tab completes the highlighted command into the prompt —
+    the keyboard path that mirrors clicking an option."""
+    app = _AcIntegrationApp()
+    async with app.run_test() as pilot:
+        pi = app.query_one(PromptInput)
+        pi.focus()
+        await pilot.pause()
+        await pilot.press("slash", "h", "e")  # filters to /help
+        await pilot.pause()
+        await pilot.press("tab")
+        await pilot.pause()
+        assert pi.text == "/help "
+        ac = app.query_one(CommandAutocomplete)
+        assert ac.visible is False
+
+
+@pytest.mark.anyio
+async def test_down_moves_highlight_then_tab_completes():
+    """Down steps the highlight to the second match; Tab completes that one."""
+    app = _AcIntegrationApp()
+    async with app.run_test() as pilot:
+        pi = app.query_one(PromptInput)
+        pi.focus()
+        await pilot.pause()
+        await pilot.press("slash", "s")  # several commands start with 's'
+        await pilot.pause()
+        ac = app.query_one(CommandAutocomplete)
+        assert len(ac._options) >= 2
+        second = ac._options[1][0]
+        await pilot.press("down")
+        await pilot.pause()
+        await pilot.press("tab")
+        await pilot.pause()
+        assert pi.text == f"/{second} "
+
+
+@pytest.mark.anyio
+async def test_tab_with_no_menu_does_not_complete():
+    """Tab while no slash menu is open is a normal keystroke, not a completion."""
+    app = _AcIntegrationApp()
+    async with app.run_test() as pilot:
+        pi = app.query_one(PromptInput)
+        pi.focus()
+        await pilot.pause()
+        await pilot.press("h", "i")
+        await pilot.press("tab")
+        await pilot.pause()
+        # No command was completed; the prompt keeps its typed text.
+        assert pi.text.startswith("hi")
 
 
 @pytest.mark.anyio

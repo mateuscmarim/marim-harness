@@ -191,6 +191,39 @@ async def test_edit_queued_pops_text_into_input(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_edit_queued_restores_attachments(tmp_path):
+    """Editing round-trips a queued item's image attachments: the text's
+    ``[Image #N]`` markers ride along and the bytes are re-cached back onto the
+    prompt, so resubmitting keeps the images."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._queue = [
+            QueuedMessage("look [Image #1]", [(b"pngbytes", "image/png")], "1")
+        ]
+        await app.action_edit_queued("1")
+        await pilot.pause()
+        prompt = app.query_one(PromptInput)
+        assert prompt.text == "look [Image #1]"
+        assert len(prompt.attachments) == 1
+        path, media_type = prompt.attachments[0]
+        assert media_type == "image/png"
+        assert path.read_bytes() == b"pngbytes"  # re-cached on disk
+
+
+@pytest.mark.anyio
+async def test_edit_queued_without_attachments_clears_prior(tmp_path):
+    """Editing a text-only item leaves no stale attachments on the prompt."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._queue = [QueuedMessage("draft", None, "1")]
+        await app.action_edit_queued("1")
+        await pilot.pause()
+        assert app.query_one(PromptInput).attachments == []
+
+
+@pytest.mark.anyio
 async def test_edit_queued_unknown_id_is_noop(tmp_path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:

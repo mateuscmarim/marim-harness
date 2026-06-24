@@ -64,6 +64,7 @@ _STREAM_FLUSH_INTERVAL = 0.08
 
 _WELCOME = (
     "Type a message below to start, or `/help` for commands.\n\n"
+    "- `/` opens the command menu — `↑`/`↓` to move, `tab` to complete\n"
     "- `enter` sends · `shift+enter` (or `ctrl+j`) inserts a newline\n"
     "- `ctrl+t` cycles the approval mode (ask → auto → plan)\n"
     "- `esc` cancels the running turn\n"
@@ -527,9 +528,10 @@ class HarnessApp(App):
         self._render_queue()
 
     async def action_edit_queued(self, id: str) -> None:
-        """Pop a queued message out of the queue and load its text into the
-        prompt input for editing. Attachments are not restored — editing is
-        text-only; re-add attachments before resubmitting if needed."""
+        """Pop a queued message out of the queue and load it into the prompt input
+        for editing — text and image attachments both, so an edit round-trips
+        without losing the images (their ``[Image #N]`` markers ride along in the
+        text)."""
         item = next((m for m in self._queue if m.id == id), None)
         if item is None:
             return
@@ -537,6 +539,7 @@ class HarnessApp(App):
         self._render_queue()
         prompt = self.query_one(PromptInput)
         prompt.text = item.text
+        prompt.load_attachments(item.attachments or [])
         prompt.move_cursor(prompt.document.end)
         prompt.focus()
 
@@ -760,7 +763,7 @@ class HarnessApp(App):
         model_id = self.harness.model_id
         if model_id is not None and self._vision_caps.get(model_id) is False:
             return (f"{model_id} can't read images — "
-                    "switch to a vision model (Ctrl+P) or remove the image.")
+                    "switch to a vision model with /model or remove the image.")
         return None
 
     async def _request_approval(self, call) -> DeferredToolApprovalResult | bool:
@@ -792,6 +795,21 @@ class HarnessApp(App):
     def _hide_autocomplete(self) -> None:
         if self._autocomplete is not None:
             self._autocomplete.visible = False
+
+    def autocomplete_navigate(self, delta: int) -> bool:
+        """Move the open slash-menu's highlight (the prompt forwards Up/Down here
+        while the menu is showing). Returns True when it consumed the key."""
+        if self._autocomplete is None:
+            return False
+        return self._autocomplete.move_highlight(delta)
+
+    def autocomplete_accept(self) -> bool:
+        """Complete the highlighted slash command into the prompt (the prompt
+        forwards Tab here while the menu is showing). Returns True when a command
+        was filled in, False when there's nothing to accept."""
+        if self._autocomplete is None:
+            return False
+        return self._autocomplete.accept_highlighted()
 
     def on_prompt_input_slash_changed(
         self, event: PromptInput.SlashChanged
