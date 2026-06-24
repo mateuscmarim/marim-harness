@@ -44,6 +44,9 @@ AssistantMessage { margin: 0 0 1 0; }
    so a single row separates the prose from what follows. */
 AssistantMessage > MarkdownBlock:last-child { margin-bottom: 0; }
 ToolCallWidget { margin: 0 0 1 0; border-left: tall $primary; padding-left: 1; background: transparent; }
+/* update_tasks renders as a muted breadcrumb: same column as tool rows (the border
+   keeps the indent) but the accent recedes, so it reads as a status marker. */
+ToolCallWidget.tool-breadcrumb { border-left: tall $panel; }
 ToolCallWidget > CollapsibleTitle, ToolGroupWidget > CollapsibleTitle { background: transparent; }
 ToolGroupWidget { margin: 0 0 1 0; background: transparent; }
 /* Sub-agent compact card (inline in the log): a single-line header and an

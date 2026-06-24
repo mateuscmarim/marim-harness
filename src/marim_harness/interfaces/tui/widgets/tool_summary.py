@@ -64,7 +64,32 @@ def _meaningful(args: dict) -> list:
     return [v for v in args.values() if v not in (None, "", [], {})]
 
 
+def _task_field(task, key: str) -> str:
+    """Read ``text``/``status`` from a task whether it arrived as a raw dict (the
+    model's JSON) or a coerced Task object."""
+    v = task.get(key, "") if isinstance(task, dict) else getattr(task, key, "")
+    return " ".join(str(v).split())
+
+
+def _task_digest(tasks) -> str:
+    """A progress line for update_tasks: ``2/5 done · ▸ <current item>`` (the ▸
+    matches the in-progress glyph in tasks.py). Empty when there are no items, so
+    the header degrades to the bare label rather than dumping the raw list."""
+    items = [t for t in (tasks or []) if _task_field(t, "text")]
+    if not items:
+        return ""
+    done = sum(1 for t in items if _task_field(t, "status") == "done")
+    current = next(
+        (_task_field(t, "text") for t in items if _task_field(t, "status") == "in_progress"),
+        "",
+    )
+    head = f"{done}/{len(items)} done"
+    return f"{head} · ▸ {current}" if current else head
+
+
 def _raw_target(tool_name: str, args: dict) -> str:
+    if tool_name == "update_tasks":
+        return _task_digest(args.get("tasks"))
     key = _TARGET_ARG.get(tool_name)
     if key is not None:
         v = args.get(key)

@@ -149,6 +149,38 @@ async def test_tool_widget_body_shows_args_and_result():
         body = str(w.query_one("#tool-body").render())
         assert "a.txt" in body
         assert "done editing" in body
+
+
+class _TaskHarness(App):
+    def compose(self) -> ComposeResult:
+        yield ToolCallWidget(
+            "update_tasks",
+            {"tasks": [
+                {"text": "Run static analysis", "status": "done"},
+                {"text": "Map project structure", "status": "in_progress"},
+            ]},
+        )
+
+
+@pytest.mark.anyio
+async def test_update_tasks_renders_as_a_flat_breadcrumb():
+    """update_tasks is a title-only breadcrumb: digest in the title (no raw dict
+    dump), no collapse arrow, no body — the live TaskPanel owns the checklist."""
+    app = _TaskHarness()
+    async with app.run_test() as pilot:
+        w = app.query_one(ToolCallWidget)
+        w.finish("2 tasks: 1 done, 1 in progress, 0 pending")
+        await pilot.pause()
+        title = str(w.title)
+        assert "Update Tasks" in title
+        assert "1/2 done" in title
+        assert "Map project structure" in title
+        assert "{" not in title  # never the raw [{'text': …}] repr
+        # No arrow, marked as a breadcrumb, and an empty body (not the arg repr).
+        assert w._breadcrumb is True
+        assert w._title.collapsed_symbol == ""  # blanked: reads as a plain line
+        assert w.has_class("tool-breadcrumb")
+        assert str(w.query_one("#tool-body").render()) == ""
         assert "✓" in str(w.title)  # done glyph
 
 

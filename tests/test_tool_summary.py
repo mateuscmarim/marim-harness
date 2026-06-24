@@ -53,6 +53,36 @@ def test_empty_args_gives_label_only():
     assert s == ToolSummary(label="Tree", target="", badges=())
 
 
+def test_update_tasks_digests_instead_of_dumping_the_list():
+    # The old code rendered this as [{'text': 'a', 'status': 'done'}, …].
+    s = summarize(
+        "update_tasks",
+        {
+            "tasks": [
+                {"text": "Run static analysis", "status": "done"},
+                {"text": "Map project structure", "status": "in_progress"},
+                {"text": "Write report", "status": "pending"},
+            ]
+        },
+    )
+    assert s.label == "Update Tasks"
+    assert s.target == "1/3 done · ▸ Map project structure"
+    assert "{" not in s.target
+
+
+def test_update_tasks_without_in_progress_shows_counts_only():
+    s = summarize(
+        "update_tasks",
+        {"tasks": [{"text": "a", "status": "done"}, {"text": "b", "status": "done"}]},
+    )
+    assert s.target == "2/2 done"
+
+
+def test_update_tasks_empty_is_label_only():
+    s = summarize("update_tasks", {"tasks": []})
+    assert s == ToolSummary(label="Update Tasks", target="", badges=())
+
+
 def test_humanize_tool_maps_known_and_titlecases_unknown():
     assert humanize_tool("read_file") == "Read"
     assert humanize_tool("spawn_agent") == "Spawn Agent"

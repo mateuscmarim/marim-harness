@@ -34,6 +34,14 @@ class ToolCallWidget(Collapsible):
     ) -> None:
         self.tool_name = tool_name
         self.args = args
+        # update_tasks renders as a flat one-line breadcrumb, not a card: the live
+        # TaskPanel already shows the current checklist (always-visible, up to date),
+        # so an expandable body here would just duplicate it. The header digest
+        # (``2/5 done · ▸ <current>``) is the temporal marker the panel can't give —
+        # "the plan moved here". No arrow, no body, dim line. Doing it in the widget
+        # (rather than a renderer hook) keeps the live and restored paths identical,
+        # since both construct a ToolCallWidget.
+        self._breadcrumb = tool_name == "update_tasks"
         # Where edit_file paths resolve, injected by the renderer (which holds the
         # app) so this leaf widget never reaches back through app.harness.deps.
         # None ⇒ the diff falls back to the simple old/new-string view.
@@ -55,10 +63,16 @@ class ToolCallWidget(Collapsible):
         # collapsed and click-to-expand.
         # title is a Content (not str) on purpose — see _summary; Textual renders
         # it at runtime, but its stub types title as str.
+        # Blank the collapse arrows for the breadcrumb so it reads as a plain line
+        # rather than a fold the user is invited to open onto nothing (the default
+        # ▶/▼ are restored for every other tool).
         super().__init__(
             self._body,
             title=self._summary(),  # pyright: ignore[reportArgumentType]
             collapsed=tool_name != "edit_file",
+            collapsed_symbol="" if self._breadcrumb else "▶",
+            expanded_symbol="" if self._breadcrumb else "▼",
+            classes="tool-breadcrumb" if self._breadcrumb else None,
         )
 
     def _glyph(self) -> tuple[str, str]:
@@ -82,8 +96,10 @@ class ToolCallWidget(Collapsible):
             target = f"{target} +{added} -{removed}" if target else f"+{added} -{removed}"
         head = f"{s.label} · {target}" if target else s.label
         # Glyph carries the status colour; the (untrusted) head is a literal span so
-        # markup in a path/command is never parsed; badges trail dim.
-        parts: list = [(f"{glyph} ", gstyle), head]
+        # markup in a path/command is never parsed; badges trail dim. The breadcrumb
+        # mutes its whole head so it recedes next to real tool actions.
+        head_span = (head, "dim") if self._breadcrumb else head
+        parts: list = [(f"{glyph} ", gstyle), head_span]
         for b in s.badges:
             parts.extend(("   ", (b, "dim")))
         return Content.assemble(*parts)
@@ -181,6 +197,9 @@ class ToolCallWidget(Collapsible):
     def _render_body(self) -> RenderableType:
         from rich.console import Group
 
+        # The breadcrumb is title-only — the checklist lives in the TaskPanel.
+        if self._breadcrumb:
+            return ""
         primary = self._primary_renderable()
         if primary is not None:
             if not self.result_text:
