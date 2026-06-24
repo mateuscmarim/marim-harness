@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import Agent, DeferredToolRequests, capture_run_messages
+from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.messages import BinaryContent, ModelMessage
 from pydantic_ai.settings import ModelSettings
 
@@ -34,6 +35,7 @@ from .session import SessionController, SessionManager, SessionStore
 from .session.checkpoints import CheckpointManager
 from .subagents import SubagentRunner
 from .tools.provider import ToolProvider
+from .tools.suggest import suggest_unknown_tool_retry
 from .turn_context import (
     actionable_error_note as _actionable_error_note,
 )
@@ -233,6 +235,12 @@ def build_collaborators(
         # before the turn fails with UnexpectedModelBehavior.
         retries=2,
         model_settings=_DEFAULT_MODEL_SETTINGS,
+        # Enrich an unknown-tool rejection with the nearest registered name so a
+        # model that mangled a tool name (e.g. agents_memory_smart_search for
+        # agentmemory_memory_smart_search) gets a concrete target on its retry
+        # instead of re-guessing from the available-tools list. Runs before every
+        # model request, including the retry that carries the rejection.
+        capabilities=[ProcessHistory(suggest_unknown_tool_retry)],
     )
     provider.register(agent)
     mcp = McpManager(cfg.mcp_servers or [], set(cfg.mcp_disabled or []))
