@@ -294,7 +294,9 @@ class ToolGroupWidget(Collapsible):
         breakdown = " · ".join(parts)
         text = f"≡ {label} · {breakdown}" if breakdown else f"≡ {label}"
         if self._t_end is not None:
-            text = f"{text} · {format_duration(self._t_end - self._t0)}"
+            # precise=True keeps a decimal under a minute so a fast batch reads
+            # "0.3s" rather than rounding to a "0s" that looks like a bug.
+            text = f"{text} · {format_duration(self._t_end - self._t0, precise=True)}"
         # Tool names are our own literals, but bypass markup parsing anyway for
         # consistency with the other Collapsible titles in this module.
         return Content(text)

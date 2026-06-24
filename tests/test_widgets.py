@@ -131,6 +131,27 @@ async def test_tool_group_summarizes_a_burst():
 
 
 @pytest.mark.anyio
+async def test_tool_group_folds_with_subsecond_duration():
+    """When every child finishes, the frozen duration keeps a decimal so a fast
+    batch reads e.g. '0.0s' rather than rounding to a '0s' that looks broken."""
+    import re
+
+    app = _GroupHarness()
+    async with app.run_test() as pilot:
+        g = app.query_one(ToolGroupWidget)
+        await g.add_tool(ToolCallWidget("read_file", {"path": "a.py"}))
+        await g.add_tool(ToolCallWidget("tree", {}))
+        g.note_child_finished()
+        g.note_child_finished()
+        await pilot.pause()
+        title = str(g.title)
+        # Folds shut and ends with a sub-second decimal, never a bare "0s".
+        assert g.collapsed is True
+        assert re.search(r"· \d+\.\d+s$", title), title
+        assert not title.endswith("· 0s")
+
+
+@pytest.mark.anyio
 async def test_tool_group_is_collapsible():
     app = _GroupHarness()
     async with app.run_test() as pilot:
