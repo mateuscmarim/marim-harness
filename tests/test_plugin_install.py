@@ -237,6 +237,96 @@ def test_update_plugin_happy_path_git(tmp_path, monkeypatch):
     assert json.loads(installed_manifest.read_text())["version"] == "2.0.0"
 
 
+def _commit_all(repo: Path, msg: str) -> None:
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", msg],
+        cwd=repo,
+        check=True,
+    )
+
+
+def test_update_dropping_trust_when_update_adds_executable_surface(tmp_path, monkeypatch):
+    """An inert plugin is auto-trusted at install. If an upstream update adds a
+    hook, that now-executable code must NOT keep running trusted silently — trust
+    drops so it has to be re-granted."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    repo = _make_git_repo(tmp_path / "repo", "evolving", version="1.0.0")
+
+    rec = install_plugin(
+        str(repo), scope="global", workspace_root=ws, trust=False, now="T1",
+        _force_git=True,
+    )
+    assert rec.trusted is True  # inert -> auto-trusted
+
+    # Upstream adds a hook (executable surface) and bumps the version.
+    (repo / "hooks").mkdir(parents=True, exist_ok=True)
+    (repo / "hooks" / "hooks.json").write_text(
+        json.dumps({"hooks": {"Stop": [{"type": "command", "command": "echo pwned"}]}}),
+        encoding="utf-8",
+    )
+    (repo / ".marim-plugin" / "plugin.json").write_text(
+        json.dumps({"name": "evolving", "version": "2.0.0"}), encoding="utf-8"
+    )
+    _commit_all(repo, "add hook")
+
+    rec2 = update_plugin("evolving", scope="global", workspace_root=ws, now="T2")
+    assert rec2.version == "2.0.0"
+    assert rec2.trusted is False  # newly executable -> trust revoked
+    gdir = tmp_path / "cfg" / "marim" / "plugins"
+    assert load_state(gdir)["evolving"].trusted is False
+
+
+def test_update_keeps_trust_when_still_inert(tmp_path, monkeypatch):
+    """An update that adds no executable surface leaves the auto-trust intact."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    repo = _make_git_repo(tmp_path / "repo", "calm", version="1.0.0")
+    install_plugin(
+        str(repo), scope="global", workspace_root=ws, trust=False, now="T1",
+        _force_git=True,
+    )
+    (repo / ".marim-plugin" / "plugin.json").write_text(
+        json.dumps({"name": "calm", "version": "2.0.0"}), encoding="utf-8"
+    )
+    _commit_all(repo, "bump")
+
+    rec2 = update_plugin("calm", scope="global", workspace_root=ws, now="T2")
+    assert rec2.version == "2.0.0"
+    assert rec2.trusted is True
+
+
+def test_update_already_executable_keeps_explicit_trust(tmp_path, monkeypatch):
+    """A plugin that was already executable and explicitly trusted keeps trust on
+    update (the gap is only the inert->executable transition, not executable
+    plugins the user already vetted)."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    repo = _make_git_repo(tmp_path / "repo", "tool", version="1.0.0")
+    (repo / "hooks").mkdir(parents=True, exist_ok=True)
+    (repo / "hooks" / "hooks.json").write_text(
+        json.dumps({"hooks": {"Stop": [{"type": "command", "command": "echo"}]}}),
+        encoding="utf-8",
+    )
+    _commit_all(repo, "with hook")
+    rec = install_plugin(
+        str(repo), scope="global", workspace_root=ws, trust=True, now="T1",
+        _force_git=True,
+    )
+    assert rec.trusted is True
+
+    (repo / ".marim-plugin" / "plugin.json").write_text(
+        json.dumps({"name": "tool", "version": "2.0.0"}), encoding="utf-8"
+    )
+    _commit_all(repo, "bump")
+    rec2 = update_plugin("tool", scope="global", workspace_root=ws, now="T2")
+    assert rec2.trusted is True
+
+
 def test_update_plugin_rejects_local_source(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
     ws = tmp_path / "ws"

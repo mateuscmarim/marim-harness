@@ -200,6 +200,18 @@ def remove_plugin(name: str, *, scope: str, workspace_root) -> bool:
     return True
 
 
+def _has_executable_surface(plugin_dir: Path) -> bool:
+    """Whether the plugin currently on disk ships hooks/MCP. Best-effort: an
+    unreadable/invalid manifest is treated as inert, which is the safe default
+    for the update trust check (it makes any newly-added executable surface look
+    like an elevation and drop trust)."""
+    try:
+        manifest = load_manifest(plugin_dir)
+    except ManifestError:
+        return False
+    return has_executable(plugin_bundle_summary(manifest))
+
+
 def update_plugin(name: str, *, scope: str, workspace_root, now: str) -> InstalledPlugin:
     """Re-fetch a git-sourced plugin to the latest of its ref. Local/linked
     plugins cannot be updated this way."""
@@ -212,13 +224,24 @@ def update_plugin(name: str, *, scope: str, workspace_root, now: str) -> Install
         raise InstallError(f"{name} was not installed from git; reinstall to update")
     url = rec.source["url"]
     ref = rec.source.get("ref")
+    dest = target_root / name
+    # Executable surface of the version on disk *before* we overwrite it. Used to
+    # detect an update that introduces hooks/MCP into a previously inert plugin.
+    had_executable = _has_executable_surface(dest)
     with tempfile.TemporaryDirectory() as tmp:
         staging = Path(tmp) / "clone"
         source_record = _clone_git(url, staging, ref=ref)
         manifest = _validated_manifest(staging)
-        _materialize(staging, target_root / name, link=False)
+        now_executable = has_executable(plugin_bundle_summary(manifest))
+        _materialize(staging, dest, link=False)
     rec.version = manifest.version
     rec.source = source_record
     rec.installed_at = now
+    # Trust-elevation guard. An inert plugin is auto-trusted at install; if an
+    # upstream update adds a hook or MCP server, that now-executable code would
+    # otherwise run trusted with no prompt. Drop trust so it must be re-granted —
+    # the same threat the linked-install path guards against (see install_plugin).
+    if now_executable and not had_executable:
+        rec.trusted = False
     save_state(target_root, state)
     return rec
