@@ -10,9 +10,10 @@ Screen { layers: base subagents subagents-top; }
 
 /* The input carries the accent as a persistent frame. The box border eats two
    rows (top + bottom), so the height here and PromptInput._resize both add 2 to
-   the desired text-line count to keep the visible text area at its [3, 10]
-   window. */
-PromptInput { height: 5; max-height: 12; border: round $accent; padding: 0 1; }
+   the desired text-line count to keep the visible text area at its [1, 6]
+   window. The opening height matches _MIN_LINES (1) + 2 so the box starts at its
+   minimum instead of rendering tall and snapping down on first resize. */
+PromptInput { height: 3; max-height: 8; border: round $accent; padding: 0 1; }
 
 #status-bar { height: 1; background: $panel; color: $text-muted; padding: 0 1; }
 
@@ -25,7 +26,7 @@ PromptInput { height: 5; max-height: 12; border: round $accent; padding: 0 1; }
 
 /* Reasoning shown inline behind an accent rail, italic + muted so it reads as
    an aside to the reply. The "Thinking:" label carries its own colour inline. */
-.thinking { margin: 1 0 1 0; padding: 0 0 0 1; border-left: tall $accent; color: $text-muted; text-style: italic; }
+.thinking { margin: 1 0 1 0; padding: 0 0 0 2; color: $text-muted; text-style: italic; }
 
 /* Two-column intro header (Claude-style): the accent block-ASCII banner on the
    left, the welcome/resume text on the right behind a vertical accent divider,
@@ -37,6 +38,11 @@ PromptInput { height: 5; max-height: 12; border: round $accent; padding: 0 1; }
 }
 
 AssistantMessage { margin: 0 0 1 0; }
+/* Markdown gives every paragraph a 1-row bottom margin; on the message's final
+   block that stacks with AssistantMessage's own margin-bottom, doubling the gap
+   before the next widget (e.g. a tool group). Drop the trailing block's margin
+   so a single row separates the prose from what follows. */
+AssistantMessage > MarkdownBlock:last-child { margin-bottom: 0; }
 ToolCallWidget { margin: 0 0 1 0; border-left: tall $primary; padding-left: 1; background: transparent; }
 ToolCallWidget > CollapsibleTitle, ToolGroupWidget > CollapsibleTitle { background: transparent; }
 ToolGroupWidget { margin: 0 0 1 0; background: transparent; }
@@ -45,13 +51,12 @@ ToolGroupWidget { margin: 0 0 1 0; background: transparent; }
    to white + bold on hover (the whole row, since :hover propagates to the card).
    The header clips to one line with an ellipsis. The full transcript lives in
    .subagent-body, hidden inline and revealed full-screen by the viewer (ctrl+x). */
-SubAgentWidget { margin: 0 0 1 0; height: auto; border-left: tall $primary; padding-left: 1; }
+SubAgentWidget { margin: 0 0 1 0; height: auto; padding-left: 2; }
 .subagent-header { height: 1; text-wrap: nowrap; text-overflow: ellipsis; color: $text-muted; }
 .subagent-activity { height: 1; padding-left: 2; color: $text-muted; }
 /* Brighten the whole row to white + bold on hover. Driven by a `-hovered` class
    the card toggles from its own mouse state (CSS :hover only lands on the leaf
    line under the pointer, not the container — see SubAgentWidget.on_enter). */
-SubAgentWidget.-hovered { border-left: tall $accent; }
 SubAgentWidget.-hovered .subagent-header,
 SubAgentWidget.-hovered .subagent-activity { color: white; text-style: bold; }
 .subagent-bhead { color: $accent; text-style: bold; margin: 0 0 1 0; }
@@ -107,15 +112,15 @@ CollapsibleTitle:focus { background: transparent; color: $accent; text-style: bo
 
 /* Slash-command autocomplete dropdown.  Docked to the screen bottom (same
    edge as the Footer), offset upward so it sits directly above the prompt.
-   The offset value: -(footer=1 + prompt-border-top=1 + prompt-min-height=3
-   + prompt-border-bottom=1) = -6.  Uses layer:overlay so it floats above
+   The offset value: -(footer=1 + prompt-border-top=1 + prompt-min-height=1
+   + prompt-border-bottom=1) = -4.  Uses layer:overlay so it floats above
    sibling content without pushing the layout. */
 #cmd-autocomplete {
     layer: overlay;
     dock: bottom;
     width: 60;
     max-height: 8;
-    offset: 0 -6;
+    offset: 0 -4;
     background: $panel;
     border: round $accent;
 }

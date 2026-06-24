@@ -20,8 +20,8 @@ class PromptInput(TextArea):
     text boundaries (Up on the first line, Down on the last), so inside a
     multi-line draft the arrows still move the cursor normally."""
 
-    _MIN_LINES = 3
-    _MAX_LINES = 10
+    _MIN_LINES = 1
+    _MAX_LINES = 6
 
     class Submitted(Message):
         """Posted when the user presses Enter; carries the box's full text and
