@@ -1,4 +1,22 @@
-"""Compact formatting helpers for token counts and costs in the status chrome."""
+"""Compact formatting helpers for token counts, costs, and durations in the status chrome."""
+
+# Spinner characters and tick interval — defined here (a leaf module) so that
+# tools.py can import them without pulling in status.py, breaking the circular
+# import that otherwise forms: tools → status → widgets → tools.
+_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+_SPINNER_TICK_INTERVAL = 0.1
+
+
+def format_duration(seconds: float, *, precise: bool = False) -> str:
+    """Human-readable elapsed time. ``precise`` (for the per-turn stamp) keeps a
+    decimal under a minute (``12.4s``); otherwise whole units (``12s``, ``3m``,
+    ``1h 5m``)."""
+    if seconds < 60:
+        return f"{seconds:.1f}s" if precise else f"{int(seconds)}s"
+    minutes = int(seconds // 60)
+    if minutes < 60:
+        return f"{minutes}m"
+    return f"{minutes // 60}h {minutes % 60}m"
 
 
 def human_tokens(n: int) -> str:

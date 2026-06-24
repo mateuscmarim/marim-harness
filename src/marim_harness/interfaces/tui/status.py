@@ -12,30 +12,21 @@ from textual.widgets import Static
 from ...compaction import estimate_tokens
 from ...usage import resolve_cost
 from .widgets import format_cost, format_token_split, human_tokens
+from .widgets.format import (  # re-exported  # noqa: F401
+    _SPINNER,
+    _SPINNER_TICK_INTERVAL,
+    format_duration,
+)
 
 if TYPE_CHECKING:
     from .app import HarnessApp
 
 _CLOCK_TICK_INTERVAL = 1.0
-_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-_SPINNER_TICK_INTERVAL = 0.1
 
 
 def osc_title(text: str) -> str:
     """OSC 0 escape that sets the terminal's tab AND window title."""
     return f"\033]0;{text}\007"
-
-
-def format_duration(seconds: float, *, precise: bool = False) -> str:
-    """Human-readable elapsed time. ``precise`` (for the per-turn stamp) keeps a
-    decimal under a minute (``12.4s``); otherwise whole units (``12s``, ``3m``,
-    ``1h 5m``)."""
-    if seconds < 60:
-        return f"{seconds:.1f}s" if precise else f"{int(seconds)}s"
-    minutes = int(seconds // 60)
-    if minutes < 60:
-        return f"{minutes}m"
-    return f"{minutes // 60}h {minutes % 60}m"
 
 
 class StatusPresenter:

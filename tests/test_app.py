@@ -2316,6 +2316,46 @@ async def test_tool_group_stays_open_when_bash_exits_nonzero(tmp_path: Path):
         assert groups[0].collapsed is False
 
 
+@pytest.mark.anyio
+async def test_tool_group_stays_open_when_non_bash_tool_fails(tmp_path: Path):
+    """A non-bash tool (e.g. read_file) whose ToolReturnPart carries
+    outcome='failed' must cause the group to stay open — exercises the
+    status_from_part → widget.finish() → group.note_child_finished(failed=True)
+    path for tools that don't use the exit-code heuristic."""
+    from pydantic_ai.messages import FunctionToolResultEvent, ToolReturnPart
+
+    from marim_harness.interfaces.tui.widgets import ToolGroupWidget
+
+    async def gen():
+        yield _call("read_file", "r1")
+        yield _call("read_file", "r2")
+        yield FunctionToolResultEvent(
+            part=ToolReturnPart(
+                tool_name="read_file",
+                content="file not found",
+                tool_call_id="r1",
+                outcome="failed",
+            )
+        )
+        yield FunctionToolResultEvent(
+            part=ToolReturnPart(
+                tool_name="read_file",
+                content="ok",
+                tool_call_id="r2",
+            )
+        )
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.stream.on_events(None, gen())
+        await pilot.pause()
+        groups = list(app.query(ToolGroupWidget))
+        assert len(groups) == 1
+        # The group must stay open because one child failed.
+        assert groups[0].collapsed is False
+
+
 def _done(value: str):
     """A coroutine that resolves immediately to ``value`` — a finished job body."""
     async def coro():

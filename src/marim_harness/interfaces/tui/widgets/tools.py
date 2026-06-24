@@ -13,8 +13,8 @@ from textual.containers import Vertical
 from textual.content import Content
 from textual.widgets import Collapsible, Static
 
-from ..status import _SPINNER, _SPINNER_TICK_INTERVAL, format_duration
 from .diff import _DIFF_CAP, _reverse_edits, render_edit_diff, render_file_diff
+from .format import _SPINNER, _SPINNER_TICK_INTERVAL, format_duration
 from .highlight import _LEXERS, _highlight_lines, strip_line_numbers
 from .tool_summary import humanize_tool, summarize
 
