@@ -472,7 +472,9 @@ async def wait_for_job(ctx: RunContext[Deps], id: str, timeout: float = 60) -> s
     """Block until a background job finishes (up to `timeout` seconds), then
     return its result. If it's still running when the timeout elapses, the job
     keeps going and you get a "still running" note — call again or check
-    job_output later. Use this when you need a job's result before continuing."""
+    job_output later. Use this when you need a job's result before continuing.
+    To make progress meanwhile, emit independent read_file/grep calls in the SAME
+    response as this wait — they run concurrently while the job finishes."""
     return await ctx.deps.jobs.wait(id, timeout)
 
 
