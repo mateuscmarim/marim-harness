@@ -118,6 +118,16 @@ def _drop_nameless_tool_calls(history: list[ModelMessage]) -> list[ModelMessage]
     return cleaned
 
 
+def _turn_produced_response(history: list[ModelMessage], since: int) -> bool:
+    """True if the turn that began at history index ``since`` produced at least one
+    model response. A turn that failed before reaching a response leaves only its
+    (flushed) bare user prompt after ``since`` — no ``ModelResponse`` — so its
+    start-of-turn checkpoint is a dead rewind target and is rolled back."""
+    from pydantic_ai.messages import ModelResponse
+
+    return any(isinstance(m, ModelResponse) for m in history[since:])
+
+
 _INTERRUPTED_TOOL_NOTE = (
     "Tool call was interrupted before completion and did not run (the turn was "
     "aborted). Re-issue it if you still need the result."
@@ -837,8 +847,11 @@ class Harness:
         """Run the agent until it produces a final text answer, looping through
         any approval rounds. Returns the final text output."""
         await self._maybe_compact()
-        # Capture a rewind point for this turn before any work runs.
-        self.checkpoints.snapshot(prompt)
+        # Capture a rewind point for this turn before any work runs. Remember where
+        # the history stood and which checkpoint this is, so a turn that fails
+        # without producing any model output can roll its (dead) checkpoint back.
+        pre_turn_len = len(self.session.history)
+        checkpoint_index = self.checkpoints.snapshot(prompt)
         user_prompt: str | list[str | BinaryContent] | None = await self._assemble_prompt(prompt)
         if attachments and user_prompt is not None:
             user_prompt = [user_prompt, *(BinaryContent(data=d, media_type=m)
@@ -885,6 +898,15 @@ class Harness:
                 self._pending_hook_context = hook_context
             if jobs_digest and not self._pending_jobs_digest:
                 self._pending_jobs_digest = jobs_digest
+            # Roll back this turn's start-of-turn checkpoint if the turn failed
+            # before producing any model response (the resumable flush has already
+            # run by now, so the history reflects what survived). Such a checkpoint
+            # is a dead rewind target — its preview is just the failed prompt and it
+            # points right before a turn that did nothing — and a string of failed
+            # retries would otherwise litter /rewind with them. The bare prompt
+            # still persists for resumability; only the useless checkpoint goes.
+            if not _turn_produced_response(self.session.history, pre_turn_len):
+                self.checkpoints.discard(checkpoint_index)
             raise
         finally:
             self._active_run_ctx = None

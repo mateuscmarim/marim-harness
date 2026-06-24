@@ -289,6 +289,53 @@ async def test_resume_heals_dangling_tool_call_then_runs(tmp_path):
     assert not _has_unanswered_tool_calls(harness.session.history)
 
 
+# --- a failed, output-less turn rolls back its own checkpoint ----------------
+
+
+async def test_failed_turn_with_no_model_output_drops_its_checkpoint(tmp_path):
+    """A turn that errors before producing any model response is a dead rewind
+    target — its checkpoint preview is just the failed prompt and rewinding to it
+    lands right before a turn that did nothing. The start-of-turn checkpoint is
+    rolled back (the bare prompt still persists for resumability; only the useless
+    checkpoint goes), so /rewind lands on real assistant states."""
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+
+    def fn(messages, info):
+        raise RuntimeError("model boom")  # fails before any response
+
+    harness = _harness(FunctionModel(fn), deps)
+    before = len(harness.checkpoints.list())
+
+    with pytest.raises(BaseException):  # noqa: B017 - model error propagates
+        await harness.run_turn("continue")
+
+    assert len(harness.checkpoints.list()) == before  # checkpoint rolled back
+
+
+async def test_failed_turn_after_a_model_response_keeps_its_checkpoint(tmp_path):
+    """A turn that DID produce model output (a tool call) before failing keeps its
+    checkpoint — there is real work to rewind to."""
+    (tmp_path / "a.txt").write_text("hello")
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    calls = {"n": 0}
+
+    def fn(messages, info):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return ModelResponse(parts=[ToolCallPart(
+                tool_name="read_file", args={"path": "a.txt"}, tool_call_id="t1"
+            )])
+        raise RuntimeError("boom on continuation")
+
+    harness = _harness(FunctionModel(fn), deps)
+    before = len(harness.checkpoints.list())
+
+    with pytest.raises(BaseException):  # noqa: B017
+        await harness.run_turn("read it")
+
+    assert len(harness.checkpoints.list()) == before + 1  # checkpoint kept
+
+
 # --- e2e: compaction during a turn invalidates stale checkpoints -------------
 
 

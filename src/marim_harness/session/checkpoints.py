@@ -174,8 +174,10 @@ class CheckpointManager:
         recoverable, mirroring how rewind() guards its own restore."""
         return f"{_REF_PREFIX}/{self._session_id()}/_pre_undo"
 
-    def snapshot(self, prompt_preview: str) -> None:
-        """Capture a checkpoint of the current state before a turn runs."""
+    def snapshot(self, prompt_preview: str) -> int:
+        """Capture a checkpoint of the current state before a turn runs. Returns
+        the new checkpoint's index so the caller can ``discard`` it if the turn
+        then fails without producing anything."""
         index = (self._checkpoints[-1].index + 1) if self._checkpoints else 0
         commit = self.snapshotter.capture(
             self._ref(index), f"marim checkpoint {index}"
@@ -191,6 +193,24 @@ class CheckpointManager:
         )
         self._prune()
         self._save()
+        return index
+
+    def discard(self, index: int) -> bool:
+        """Drop the checkpoint with ``index`` iff it is the most recent one,
+        deleting its shadow ref. Used to roll back the checkpoint a turn captured
+        at its start when that turn then failed without producing any model output
+        — such a checkpoint is a dead rewind target (its preview is just the
+        failed prompt, and rewinding to it lands right before a turn that did
+        nothing). The bare prompt itself still persists via the resumable flush;
+        only the useless checkpoint goes. Returns True if one was dropped. Only the
+        last checkpoint is removable, so a stale index can't punch a hole mid-list."""
+        if not self._checkpoints or self._checkpoints[-1].index != index:
+            return False
+        cp = self._checkpoints.pop()
+        if cp.commit is not None:
+            self.snapshotter.delete(self._ref(cp.index))
+        self._save()
+        return True
 
     def _prune(self) -> None:
         if len(self._checkpoints) <= self.limit:

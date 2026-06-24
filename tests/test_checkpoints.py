@@ -317,6 +317,42 @@ def test_invalidate_after_compaction_is_a_noop_with_no_checkpoints(tmp_path: Pat
     assert mgr.list() == []
 
 
+# --- discarding the checkpoint of a failed, output-less turn -----------------
+
+
+def test_snapshot_returns_the_new_index(tmp_path: Path):
+    mgr = CheckpointManager(_session(tmp_path), _FakeSnap())
+    assert mgr.snapshot("a") == 0
+    assert mgr.snapshot("b") == 1
+
+
+def test_discard_drops_the_last_checkpoint_and_its_ref(tmp_path: Path):
+    s = _session(tmp_path)
+    snap = _FakeSnap()
+    mgr = CheckpointManager(s, snap)
+    mgr.snapshot("t1")
+    idx = mgr.snapshot("t2")
+    assert mgr.discard(idx) is True
+    assert [c.index for c in mgr.list()] == [0]
+    assert any(ref.endswith("sess/1") for ref in snap.deleted)
+
+
+def test_discard_refuses_when_index_is_not_the_last(tmp_path: Path):
+    """Only the most recent checkpoint is removable, so a stale index can't punch
+    a hole mid-list."""
+    s = _session(tmp_path)
+    mgr = CheckpointManager(s, _FakeSnap())
+    mgr.snapshot("t1")  # index 0
+    mgr.snapshot("t2")  # index 1
+    assert mgr.discard(0) is False
+    assert len(mgr.list()) == 2
+
+
+def test_discard_is_a_noop_with_no_checkpoints(tmp_path: Path):
+    mgr = CheckpointManager(_session(tmp_path), _FakeSnap())
+    assert mgr.discard(0) is False
+
+
 def test_rewind_drops_later_checkpoints(tmp_path: Path):
     s = _session(tmp_path)
     mgr = CheckpointManager(s)
