@@ -36,7 +36,7 @@ def test_update_tasks_mutates_deps(tmp_path):
     agent = _agent()
     model, captured = _call_tool(
         "update_tasks",
-        {"tasks": [
+        {"todos": [
             {"text": "first", "status": "done"},
             {"text": "second", "status": "in_progress"},
             {"text": "third"},
@@ -53,7 +53,7 @@ def test_update_tasks_returns_summary(tmp_path):
     agent = _agent()
     model, captured = _call_tool(
         "update_tasks",
-        {"tasks": [{"text": "a", "status": "done"}, {"text": "b"}]},
+        {"todos": [{"text": "a", "status": "done"}, {"text": "b"}]},
     )
     with agent.override(model=model):
         agent.run_sync("go", deps=deps)
@@ -65,7 +65,7 @@ def test_update_tasks_replaces_previous_list(tmp_path):
     deps = Deps(workspace_root=tmp_path)
     deps.tasks.replace([{"text": "old", "status": "pending"}])
     agent = _agent()
-    model, _ = _call_tool("update_tasks", {"tasks": [{"text": "new"}]})
+    model, _ = _call_tool("update_tasks", {"todos": [{"text": "new"}]})
     with agent.override(model=model):
         agent.run_sync("go", deps=deps)
     assert [t.text for t in deps.tasks.items] == ["new"]
@@ -76,7 +76,7 @@ def test_update_tasks_is_not_approval_gated(tmp_path):
     round (the run completes and echoes the summary)."""
     deps = Deps(workspace_root=tmp_path)
     agent = _agent()
-    model, captured = _call_tool("update_tasks", {"tasks": [{"text": "x"}]})
+    model, captured = _call_tool("update_tasks", {"todos": [{"text": "x"}]})
     with agent.override(model=model):
         agent.run_sync("go", deps=deps)
     assert "1 tasks" in captured["ret"]
@@ -97,7 +97,7 @@ def test_update_tasks_fires_task_completed_for_newly_done(tmp_path):
     agent = _agent()
     model, _ = _call_tool(
         "update_tasks",
-        {"tasks": [{"text": "a", "status": "done"},
+        {"todos": [{"text": "a", "status": "done"},
                    {"text": "b", "status": "in_progress"},
                    {"text": "c"}]},
     )
@@ -114,7 +114,7 @@ def test_update_tasks_does_not_refire_already_done(tmp_path):
     agent = _agent()
     model, _ = _call_tool(
         "update_tasks",
-        {"tasks": [{"text": "a", "status": "done"},
+        {"todos": [{"text": "a", "status": "done"},
                    {"text": "b", "status": "done"}]},
     )
     with agent.override(model=model):
@@ -125,7 +125,7 @@ def test_update_tasks_does_not_refire_already_done(tmp_path):
 def test_update_tasks_no_hooks_is_safe(tmp_path):
     deps = Deps(workspace_root=tmp_path)  # turn_hooks defaults None
     agent = _agent()
-    model, _ = _call_tool("update_tasks", {"tasks": [{"text": "x", "status": "done"}]})
+    model, _ = _call_tool("update_tasks", {"todos": [{"text": "x", "status": "done"}]})
     with agent.override(model=model):
         agent.run_sync("go", deps=deps)
     assert [t.text for t in deps.tasks.items] == ["x"]

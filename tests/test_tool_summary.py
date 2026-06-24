@@ -58,7 +58,7 @@ def test_update_tasks_digests_instead_of_dumping_the_list():
     s = summarize(
         "update_tasks",
         {
-            "tasks": [
+            "todos": [
                 {"text": "Run static analysis", "status": "done"},
                 {"text": "Map project structure", "status": "in_progress"},
                 {"text": "Write report", "status": "pending"},
@@ -73,13 +73,13 @@ def test_update_tasks_digests_instead_of_dumping_the_list():
 def test_update_tasks_without_in_progress_shows_counts_only():
     s = summarize(
         "update_tasks",
-        {"tasks": [{"text": "a", "status": "done"}, {"text": "b", "status": "done"}]},
+        {"todos": [{"text": "a", "status": "done"}, {"text": "b", "status": "done"}]},
     )
     assert s.target == "2/2 done"
 
 
 def test_update_tasks_empty_is_label_only():
-    s = summarize("update_tasks", {"tasks": []})
+    s = summarize("update_tasks", {"todos": []})
     assert s == ToolSummary(label="Update Tasks", target="", badges=())
 
 

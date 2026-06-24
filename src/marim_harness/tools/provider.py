@@ -210,7 +210,7 @@ def read_skill_file(ctx: RunContext[Deps], name: str, path: str) -> str:
     return read_bundled_file(skill, path)
 
 
-async def update_tasks(ctx: RunContext[Deps], tasks: list[Task]) -> str:
+async def update_tasks(ctx: RunContext[Deps], todos: list[Task]) -> str:
     """Maintain your checklist for the current multi-step task. Pass the
     FULL list every time — it replaces the previous one. Each item is
     {text, status} where status is pending, in_progress, or done. Keep
@@ -218,7 +218,7 @@ async def update_tasks(ctx: RunContext[Deps], tasks: list[Task]) -> str:
     Use this for non-trivial work spanning several steps so progress is
     visible; skip it for single-step requests. No approval is needed."""
     before = {t.text: t.status for t in ctx.deps.tasks.items}
-    ctx.deps.tasks.replace(tasks)
+    ctx.deps.tasks.replace(todos)
     th = ctx.deps.services.turn_hooks
     if th is not None:
         for t in ctx.deps.tasks.items:

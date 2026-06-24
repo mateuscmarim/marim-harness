@@ -155,7 +155,7 @@ class _TaskHarness(App):
     def compose(self) -> ComposeResult:
         yield ToolCallWidget(
             "update_tasks",
-            {"tasks": [
+            {"todos": [
                 {"text": "Run static analysis", "status": "done"},
                 {"text": "Map project structure", "status": "in_progress"},
             ]},

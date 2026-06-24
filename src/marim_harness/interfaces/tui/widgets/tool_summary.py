@@ -89,7 +89,7 @@ def _task_digest(tasks) -> str:
 
 def _raw_target(tool_name: str, args: dict) -> str:
     if tool_name == "update_tasks":
-        return _task_digest(args.get("tasks"))
+        return _task_digest(args.get("todos"))
     key = _TARGET_ARG.get(tool_name)
     if key is not None:
         v = args.get(key)
