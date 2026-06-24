@@ -37,7 +37,9 @@ PromptInput { height: 5; max-height: 12; border: round $accent; padding: 0 1; }
 }
 
 AssistantMessage { margin: 0 0 1 0; }
-ToolCallWidget { margin: 0 0 1 0; border-left: tall $primary; padding-left: 1; }
+ToolCallWidget { margin: 0 0 1 0; border-left: tall $primary; padding-left: 1; background: transparent; }
+ToolCallWidget > CollapsibleTitle, ToolGroupWidget > CollapsibleTitle { background: transparent; }
+ToolGroupWidget { margin: 0 0 1 0; background: transparent; }
 /* Sub-agent compact card (inline in the log): a single-line header and an
    indented ↳ progress line (toolcalls · duration). Muted by default, brightening
    to white + bold on hover (the whole row, since :hover propagates to the card).
@@ -91,7 +93,6 @@ SubAgentWidget.-hovered .subagent-activity { color: white; text-style: bold; }
     padding: 0 1;
 }
 
-ToolGroupWidget { margin: 0 0 1 0; }
 /* Indent the group's children and drop their inter-row gap so a run of tools
    reads as one compact cluster (the per-child accent rail still separates them)
    instead of sprawling a blank line between each. */
