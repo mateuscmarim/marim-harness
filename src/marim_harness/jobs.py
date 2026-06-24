@@ -235,22 +235,34 @@ class JobRegistry:
 
     def take_finished_digest(self) -> str:
         """Summary of jobs that finished since this was last called, then clear the
-        buffer. Empty string when nothing finished. Each line carries a tail of the
-        job's output so the verdict is readable inline; the Harness prepends this to
-        the next turn so the model notices completions it didn't wait on."""
+        buffer. Empty string when nothing finished. Finished agent jobs inline their
+        full result so the synthesis turn needs no extra ``job_output`` round-trips;
+        bash jobs keep a tail of their output. The Harness prepends this to the next
+        turn so the model notices completions it didn't wait on."""
         ids = self._finished_since_turn
         self._finished_since_turn = []
         self._wake_consumed.clear()
         parts = []
         for jid in ids:
             job = self._jobs.get(jid)
-            if job is not None:
-                parts.append(f"{job.id} ({job.kind}) {job.status}{self._digest_tail(job)}")
+            if job is None:
+                continue
+            if job.kind == "agent" and job.status == "done" and job.result:
+                # Inline the whole report so the synthesis turn needs no extra
+                # job_output round-trips. Size is bounded upstream by the spawn's
+                # max_output_chars cap (already applied before the result lands).
+                parts.append(
+                    f"{job.id} ({job.kind}) {job.status} — full report:\n{job.result}"
+                )
+            else:
+                parts.append(
+                    f"{job.id} ({job.kind}) {job.status}{self._digest_tail(job)}"
+                )
         if not parts:
             return ""
         return (
             "[background jobs finished since your last turn "
-            "(tail shown; full output via job_output):\n"
+            "(agent reports inlined; bash tail shown, full output via job_output):\n"
             + "\n".join(parts)
             + "]"
         )

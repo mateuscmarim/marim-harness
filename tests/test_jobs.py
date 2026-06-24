@@ -356,6 +356,20 @@ def test_any_running_reflects_live_jobs():
     assert reg.any_running() is False
 
 
+@pytest.mark.anyio
+async def test_digest_inlines_full_agent_report():
+    reg = JobRegistry()
+
+    async def _work():
+        return "LINE1\nLINE2\nFULL-REPORT-BODY-VERDICT"
+
+    reg.register("agent", "explore: x", _work())
+    await _settled(reg)
+    digest = reg.take_finished_digest()
+    assert "FULL-REPORT-BODY-VERDICT" in digest        # full body, not just tail
+    assert "full report" in digest
+
+
 def _sleep_then(value, seconds):
     async def coro():
         await asyncio.sleep(seconds)
