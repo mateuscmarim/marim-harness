@@ -707,7 +707,8 @@ async def test_detached_card_done_line_shows_real_tally():
 @pytest.mark.anyio
 async def test_foreground_card_done_line_keeps_toolcount():
     """A streamed (foreground) sub-agent keeps its real tool tally on the done
-    line — the omission is only for detached cards with no streamed count."""
+    line. (Background cards stream their steps too now, so they show a real
+    tally as well — see test_detached_card_done_line_shows_real_tally.)"""
     from marim_harness.interfaces.tui.widgets import SubAgentWidget
 
     app = _SubHarness()
