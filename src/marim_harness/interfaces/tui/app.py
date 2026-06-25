@@ -29,6 +29,7 @@ from .status import (
     osc_title,
 )
 from .stream_render import StreamRenderer
+from .subagent_view import SubAgentViewer, spend_tag
 from .themes import MARIM_THEMES
 from .wake import WakeController
 from .widgets import (
@@ -135,8 +136,7 @@ class HarnessApp(App):
         self._autocomplete: CommandAutocomplete | None = None
         # Full-screen sub-agent viewer state: whether it's open and which spawned
         # sub-agent (index into stream.subagents) is on screen.
-        self.subagent_viewer_open = False
-        self.subagent_index = 0
+        self._viewer = SubAgentViewer()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -368,7 +368,7 @@ class HarnessApp(App):
 
     def action_toggle_subagents(self) -> None:
         """Ctrl+X: open the full-screen sub-agent viewer (or close it if open)."""
-        if self.subagent_viewer_open:
+        if self._viewer.open:
             self._close_subagents()
         else:
             self._open_subagents()
@@ -378,13 +378,13 @@ class HarnessApp(App):
         self._close_subagents()
 
     def action_subagent_prev(self) -> None:
-        if self.subagent_viewer_open:
-            self.subagent_index -= 1
+        if self._viewer.open:
+            self._viewer.prev()
             self._apply_subagent_view()
 
     def action_subagent_next(self) -> None:
-        if self.subagent_viewer_open:
-            self.subagent_index += 1
+        if self._viewer.open:
+            self._viewer.next()
             self._apply_subagent_view()
 
     def _open_subagents(self) -> None:
@@ -394,16 +394,16 @@ class HarnessApp(App):
                 NoticeMessage("No sub-agents spawned yet — nothing to view.")
             )
             return
-        self.subagent_viewer_open = True
+        self._viewer.open = True
         # Open on the most recent spawn (the one you most likely just watched).
-        self.subagent_index = len(subs) - 1
+        self._viewer.index = len(subs) - 1
         self.query_one(SubAgentList).display = True
         self.query_one("#subagent-footer", SubAgentFooter).display = True
         self._apply_subagent_view()
         self.query_one(SubAgentList).focus()
 
     def _close_subagents(self) -> None:
-        self.subagent_viewer_open = False
+        self._viewer.open = False
         self.stream.viewing_sid = None
         for w in self.stream.subagents:
             w.body.remove_class("viewing")
@@ -422,37 +422,27 @@ class HarnessApp(App):
         if not subs:
             self._close_subagents()
             return
-        self.subagent_index = max(0, min(self.subagent_index, len(subs) - 1))
-        current = subs[self.subagent_index]
+        idx = self._viewer.clamp(len(subs))
+        current = subs[idx]
         # Exactly one transcript carries the overlay (`viewing`) class + display at a
         # time; the rest stay hidden inline. Never reparented — just toggled.
         for i, w in enumerate(subs):
-            if i == self.subagent_index:
+            if i == idx:
                 w.body.add_class("viewing")
                 w.body.display = True
             else:
                 w.body.remove_class("viewing")
                 w.body.display = False
         self.stream.viewing_sid = current.stream_id
-        self.query_one(SubAgentList).show_subagents(subs, self.subagent_index)
+        self.query_one(SubAgentList).show_subagents(subs, idx)
+        max_ctx = getattr(self.harness.session, "max_context_tokens", 0) or 0
         self.query_one("#subagent-footer", SubAgentFooter).show_status(
-            current.agent_type, self.subagent_index, len(subs),
-            self._subagent_spend(current),
+            current.agent_type, idx, len(subs),
+            spend_tag(current.tokens, max_ctx),
         )
         # Render the just-revealed transcript now rather than waiting for the next
         # flush tick (its streams were skipped while it wasn't being viewed).
         self.stream.flush_streams()
-
-    def _subagent_spend(self, widget) -> str:
-        """A compact ``{tokens} ({pct}%)`` spend tag for the footer, where pct is the
-        share of the model's context window; empty until the spawn is metered."""
-        if not widget.tokens:
-            return ""
-        max_ctx = getattr(self.harness.session, "max_context_tokens", 0) or 0
-        tag = human_tokens(widget.tokens)
-        if max_ctx:
-            tag += f" ({round(widget.tokens / max_ctx * 100)}%)"
-        return tag
 
     def watch_theme(self, theme: str) -> None:
         """Persist the active theme so it's the startup theme next run. Only the

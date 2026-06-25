@@ -310,6 +310,51 @@ async def test_thinking_stream_renders_inline_widget(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_thinking_caps_after_stream_and_reveals_on_ctrl_o(tmp_path: Path):
+    """A long thought streams in full, then caps to its last lines once the next
+    part (assistant text) starts. Ctrl+O reveals the full reasoning in place and a
+    second press restores the capped preview."""
+    import types
+
+    from pydantic_ai.messages import (
+        PartStartEvent,
+        TextPart,
+        ThinkingPart,
+    )
+
+    from marim_harness.interfaces.tui.widgets import ThinkingWidget
+
+    ctx = types.SimpleNamespace(usage=types.SimpleNamespace(total_tokens=0))
+    long_thought = "\n".join(f"line {i}" for i in range(40))
+
+    async def gen():
+        yield PartStartEvent(index=0, part=ThinkingPart(content=long_thought))
+        # The assistant reply that follows ends the thought, capping it.
+        yield PartStartEvent(index=1, part=TextPart(content="the answer"))
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.stream.on_events(ctx, gen())
+        await pilot.pause()
+
+        thinking = app.query_one(ThinkingWidget)
+        assert thinking.text == long_thought  # full reasoning retained in state
+        capped = str(thinking._render())
+        assert "line 0" not in capped and "line 39" in capped  # tail kept
+        assert "more lines (ctrl+o)" in capped
+
+        await pilot.press("ctrl+o")  # reveal-all
+        await pilot.pause()
+        revealed = str(thinking._render())
+        assert "line 0" in revealed and "more lines" not in revealed
+
+        await pilot.press("ctrl+o")  # restore capped preview
+        await pilot.pause()
+        assert "line 0" not in str(thinking._render())
+
+
+@pytest.mark.anyio
 async def test_replay_renders_compaction_summary_as_widget(tmp_path: Path):
     """A restored summary message renders as a distinct SummaryWidget, while a
     normal prompt still renders as a UserMessage."""
@@ -335,6 +380,33 @@ async def test_replay_renders_compaction_summary_as_widget(tmp_path: Path):
         users = [str(u.render()) for u in app.query(UserMessage)]
         assert any("a normal question" in u for u in users)
         assert not any("Summary of earlier conversation" in u for u in users)
+
+
+@pytest.mark.anyio
+async def test_replay_caps_restored_thinking(tmp_path: Path):
+    """A restored ThinkingPart is an already-complete thought, so the resumed view
+    caps it to its preview (matching the live resting state) rather than dumping
+    the full reasoning."""
+    from pydantic_ai.messages import ModelResponse, TextPart, ThinkingPart
+
+    from marim_harness.interfaces.tui.widgets import ThinkingWidget
+
+    long_thought = "\n".join(f"line {i}" for i in range(40))
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        app.harness.session.history = [
+            ModelResponse(parts=[
+                ThinkingPart(content=long_thought),
+                TextPart(content="the answer"),
+            ]),
+        ]
+        await app.session.render_session("resume")
+        await pilot.pause()
+
+        thinking = app.query_one(ThinkingWidget)
+        rendered = str(thinking._render())
+        assert "line 0" not in rendered and "line 39" in rendered
+        assert "more lines (ctrl+o)" in rendered
 
 
 @pytest.mark.anyio
@@ -2145,8 +2217,8 @@ async def test_subagent_viewer_opens_navigates_and_closes(tmp_path: Path):
         # Open: lands on the most recent (index 2), chrome shown, only s3 revealed.
         app.action_toggle_subagents()
         await pilot.pause()
-        assert app.subagent_viewer_open is True
-        assert app.subagent_index == 2
+        assert app._viewer.open is True
+        assert app._viewer.index == 2
         assert app.query_one(SubAgentList).display is True
         assert app.query_one("#subagent-footer", SubAgentFooter).display is True
         assert app.stream.viewing_sid == "s3"
@@ -2157,7 +2229,7 @@ async def test_subagent_viewer_opens_navigates_and_closes(tmp_path: Path):
         # Prev moves to s2; the revealed transcript follows.
         app.action_subagent_prev()
         await pilot.pause()
-        assert app.subagent_index == 1
+        assert app._viewer.index == 1
         assert app.stream.viewing_sid == "s2"
         assert subs[1].body.has_class("viewing")
         assert not subs[2].body.has_class("viewing")
@@ -2165,12 +2237,12 @@ async def test_subagent_viewer_opens_navigates_and_closes(tmp_path: Path):
         # Prev clamps at the first card.
         app.action_subagent_prev()
         app.action_subagent_prev()
-        assert app.subagent_index == 0
+        assert app._viewer.index == 0
 
         # Close: chrome hidden, no transcript left revealed.
         app.action_toggle_subagents()
         await pilot.pause()
-        assert app.subagent_viewer_open is False
+        assert app._viewer.open is False
         assert app.stream.viewing_sid is None
         assert app.query_one(SubAgentList).display is False
         assert all(not w.body.has_class("viewing") for w in subs)
@@ -2185,7 +2257,7 @@ async def test_subagent_viewer_noop_without_subagents(tmp_path: Path):
         await pilot.pause()
         app.action_toggle_subagents()
         await pilot.pause()
-        assert app.subagent_viewer_open is False
+        assert app._viewer.open is False
         assert "no sub-agents" in _log_text(app).lower()
 
 
