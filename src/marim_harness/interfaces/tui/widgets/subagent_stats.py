@@ -18,14 +18,17 @@ def status_glyph(status: str) -> str:
 
 def row_cells(agent) -> list[str]:
     """The six `DataTable` cells for one agent row: glyph, "{type} — {title}",
-    tool count, tokens, cost, duration. A detached agent's tool tally is unknown
-    (it never streamed its steps), so it shows "—" rather than a misleading "0"."""
-    tools = "—" if agent.detached else str(agent.tool_count)
+    tool count, tokens, cost, duration. A background (detached) agent carries a
+    quiet "bg · " tag on its label so off-turn agents are tellable at a glance; it
+    still shows its real streamed tool tally (Phase 2 streams its steps)."""
+    label = f"{agent.agent_type} — {agent.display_title()}"
+    if agent.detached:
+        label = f"bg · {label}"
     tokens = human_tokens(agent.tokens) if agent.tokens else ""
     return [
         status_glyph(agent.status),
-        f"{agent.agent_type} — {agent.display_title()}",
-        tools,
+        label,
+        str(agent.tool_count),
         tokens,
         agent.cost_text or "",
         agent._duration(),

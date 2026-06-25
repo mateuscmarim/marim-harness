@@ -43,10 +43,13 @@ def test_row_cells_running_agent():
     assert cells[5] == "12s"
 
 
-def test_row_cells_detached_has_no_tool_count():
-    a = FakeAgent(status="pending", detached=True, tool_count=0)
-    # A background run never streamed its steps, so don't show a misleading "0".
-    assert row_cells(a)[2] == "—"
+def test_row_cells_detached_shows_bg_tag_and_real_tally():
+    # Phase 2: a background agent streams its steps, so it shows its real tool
+    # tally; a "bg · " tag marks it as an off-turn (background) run.
+    a = FakeAgent(status="pending", detached=True, tool_count=4)
+    cells = row_cells(a)
+    assert cells[1] == "bg · research — map the codebase"
+    assert cells[2] == "4"
 
 
 def test_row_cells_blank_cost_when_unmetered():

@@ -13,6 +13,25 @@ def test_card_has_no_body_and_tolerates_no_pane():
     assert w.status == "done"
 
 
+def test_detached_card_shows_bg_marker_in_header():
+    w = SubAgentWidget("research", "Map it", "sonnet")
+    w.detached = True
+    w._paint_header()
+    assert "bg" in str(w._header.render())
+
+
+def test_finished_detached_card_shows_real_tool_tally():
+    # Phase 2: a background agent streams its steps, so a finished card shows the
+    # real tally rather than "ran in background".
+    w = SubAgentWidget("research", "Map it", "sonnet")
+    w.detached = True
+    w.tool_count = 5
+    w.finish("ok", status="done")
+    line = str(w._activity.render())
+    assert "5 toolcall" in line
+    assert "ran in background" not in line
+
+
 def test_finish_failure_appends_to_pane_when_present():
     class _Pane:
         def __init__(self):

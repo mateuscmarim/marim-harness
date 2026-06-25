@@ -113,10 +113,11 @@ class SubAgentWidget(Vertical):
         # mount and ``_t_end`` frozen at finish.
         self.activity = ""
         self.tool_count = 0
-        # A detached/background spawn never streams its steps to this card, so its
-        # tool tally is unknown (stays 0). The done line then reports "ran in
-        # background" instead of a misleading "0 toolcalls". Set by the renderer
-        # when the card is mapped to a background job (note_detached_spawn).
+        # True when this spawn ran as a background job (Phase 2). It streams its
+        # steps into this card like a foreground spawn, so the tally is real; the
+        # flag only drives the quiet ``bg`` marker on the card header and list row.
+        # Set by the renderer when the card is mapped to a background job
+        # (note_detached_spawn).
         self.detached = False
         self._t0 = time.monotonic()
         self._t_end: float | None = None
@@ -192,13 +193,14 @@ class SubAgentWidget(Vertical):
         # A derived title (not the raw prompt); CSS clips it with an ellipsis to the
         # card width. Content.assemble keeps the (untrusted) title a literal — never
         # markup-parsed — while tinting a failure glyph red so it reads at a glance.
+        # A background (detached) spawn carries a dim ``bg`` tag so an off-turn agent
+        # is tellable from one running inside the current turn.
         glyph_style = "red" if self.status in ("denied", "failed") else ""
-        self._header.update(
-            Content.assemble(
-                (f"{self._glyph()} ", glyph_style),
-                f"{self.agent_type} Task — {self.display_title()}",
-            )
-        )
+        parts: list = [(f"{self._glyph()} ", glyph_style)]
+        if self.detached:
+            parts.append(("bg ", "dim"))
+        parts.append(f"{self.agent_type} Task — {self.display_title()}")
+        self._header.update(Content.assemble(*parts))
 
     def _duration(self) -> str:
         end = self._t_end if self._t_end is not None else time.monotonic()
@@ -223,12 +225,9 @@ class SubAgentWidget(Vertical):
             # Let the line grow + wrap only while expanded; otherwise it stays one row.
             self._activity.set_class(self._expanded and expandable, "-expanded")
             self._activity.update(Content.assemble((f"↳ {reason}", "red"), (marker, "dim")))
-        elif self.detached:
-            # A background run streamed no steps here, so the tool tally is unknown
-            # — don't fabricate "0 toolcalls"; note it ran detached, with duration.
-            self._activity.update(Content(f"↳ ran in background · {self._duration()}"))
         else:
-            # Done: collapse to the run summary (tool tally + frozen duration).
+            # Done: collapse to the run summary (tool tally + frozen duration). A
+            # background agent streams its steps too, so its tally is real.
             plural = "" if self.tool_count == 1 else "s"
             self._activity.update(
                 Content(f"↳ {self.tool_count} toolcall{plural} · {self._duration()}")

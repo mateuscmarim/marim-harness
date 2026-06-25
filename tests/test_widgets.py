@@ -686,10 +686,9 @@ async def test_subagent_note_retry_shows_on_the_activity_line():
 
 
 @pytest.mark.anyio
-async def test_detached_card_done_line_omits_fabricated_toolcount():
-    """A detached sub-agent doesn't stream its steps, so the card has no tool
-    count — the done line must not claim "0 toolcalls"; it says it ran in the
-    background instead, alongside the duration."""
+async def test_detached_card_done_line_shows_real_tally():
+    """Phase 2: a background (detached) sub-agent streams its steps, so its done
+    line shows the real tool tally — "ran in background" is gone."""
     from marim_harness.interfaces.tui.widgets import SubAgentWidget
 
     app = _SubHarness()
@@ -697,11 +696,12 @@ async def test_detached_card_done_line_omits_fabricated_toolcount():
         w = app.query_one(SubAgentWidget)
         await pilot.pause()
         w.detached = True
+        w.tool_count = 3
         w.finish("the report", status="done")
         await pilot.pause()
         line = str(w._activity.visual)
-        assert "toolcall" not in line
-        assert "background" in line
+        assert "3 toolcall" in line
+        assert "background" not in line
 
 
 @pytest.mark.anyio
