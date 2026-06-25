@@ -1,3 +1,4 @@
+import io
 import json
 from pathlib import Path
 
@@ -133,3 +134,94 @@ def test_build_spec_rejects_extra_url_positionals():
 def test_parse_pairs_bad_token():
     with pytest.raises(mcp_cmd.SpecError):
         mcp_cmd._parse_pairs(["noequals"], "=", "env")
+
+
+def _run(argv, **kw):
+    out, err = io.StringIO(), io.StringIO()
+    code = mcp_cmd.main(argv, out=out, err=err, **kw)
+    return code, out.getvalue(), err.getvalue()
+
+
+def test_main_add_stdio_writes_project_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.chdir(tmp_path)
+    code, out, err = _run(["add", "mddocs", "node", "x.js", "-e", "K=v"])
+    assert code == 0, err
+    data = json.loads((tmp_path / ".marim" / "mcp.json").read_text())["mcpServers"]
+    assert data["mddocs"] == {"command": "node", "args": ["x.js"], "env": {"K": "v"}}
+    # project-scope trust caveat surfaced on stderr
+    assert "trust" in err.lower()
+
+
+def test_main_add_http_user_scope(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.chdir(tmp_path)
+    code, out, err = _run([
+        "add", "--transport", "http", "--scope", "user", "remote",
+        "https://x/mcp", "-H", "Authorization: Bearer t",
+    ])
+    assert code == 0, err
+    from marim_harness.mcp.config import global_mcp_config_path
+    data = json.loads(global_mcp_config_path().read_text())["mcpServers"]
+    assert data["remote"] == {"url": "https://x/mcp", "headers": {"Authorization": "Bearer t"}}
+
+
+def test_main_add_duplicate_fails(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.chdir(tmp_path)
+    assert _run(["add", "a", "x"])[0] == 0
+    code, out, err = _run(["add", "a", "y"])
+    assert code == 1
+    assert "already" in err.lower()
+
+
+def test_main_add_validation_error_exits_2(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.chdir(tmp_path)
+    code, out, err = _run(["add", "a", "x", "-H", "K: v"])  # header on stdio
+    assert code == 2
+    assert "http/sse" in err
+
+
+def test_main_list_shows_source(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.chdir(tmp_path)
+    _run(["add", "--scope", "user", "g", "x"])
+    _run(["add", "--scope", "project", "p", "y"])
+    code, out, err = _run(["list"])
+    assert code == 0
+    assert "g" in out and "user" in out
+    assert "p" in out and "project" in out
+
+
+def test_main_list_empty(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.chdir(tmp_path)
+    code, out, err = _run(["list"])
+    assert code == 0
+    assert "no" in out.lower()
+
+
+def test_main_get_known_and_unknown(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.chdir(tmp_path)
+    _run(["add", "--scope", "user", "g", "node", "x.js"])
+    code, out, err = _run(["get", "g"])
+    assert code == 0
+    assert "node" in out and "user" in out
+    code, out, err = _run(["get", "nope"])
+    assert code == 1
+
+
+def test_main_remove_present_and_absent(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.chdir(tmp_path)
+    _run(["add", "--scope", "user", "g", "x"])
+    assert _run(["remove", "g"])[0] == 0
+    code, out, err = _run(["remove", "g"])
+    assert code == 1
+
+
+def test_main_no_subcommand_prints_help(tmp_path, monkeypatch):
+    code, out, err = _run([])
+    assert code == 2
