@@ -31,6 +31,47 @@ async def test_status_presenter_owns_busy_and_drives_title(tmp_path: Path):
         assert not hasattr(app, "_busy")  # state truly moved, no shim left behind
 
 
+def test_context_tokens_memoized_until_history_changes(monkeypatch):
+    """The status bar repaints every second while idle and ~12.5x/s while a turn
+    streams. estimate_tokens() serializes the *whole* history (O(total bytes)), so
+    it must be cached and recomputed only when the history actually changes —
+    re-stringifying the transcript on every repaint is pure waste that grows with
+    session length."""
+    import marim_harness.interfaces.tui.status as status_mod
+
+    calls = {"n": 0}
+
+    def fake_estimate(history):
+        calls["n"] += 1
+        return len(history) * 10
+
+    monkeypatch.setattr(status_mod, "estimate_tokens", fake_estimate)
+
+    history = [object(), object()]
+
+    class _App:
+        class harness:
+            class session:
+                pass
+
+    _App.harness.session.history = history
+
+    presenter = StatusPresenter.__new__(StatusPresenter)
+    presenter.app = _App()  # type: ignore[assignment]
+    presenter._ctx_tokens_key = -1
+    presenter._ctx_tokens = 0
+
+    # Repeated reads (every repaint) recompute the estimate exactly once.
+    assert presenter._context_tokens() == 20
+    assert presenter._context_tokens() == 20
+    assert calls["n"] == 1
+
+    # A committed message grows the history → recompute exactly once more.
+    history.append(object())
+    assert presenter._context_tokens() == 30
+    assert calls["n"] == 2
+
+
 def test_refresh_title_swallows_driver_errors_during_teardown():
     """refresh_title runs from set_busy in _run_turn's finally block. A driver
     mid-teardown can raise BrokenPipeError on write/flush; it must not escape,

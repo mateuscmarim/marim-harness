@@ -259,6 +259,63 @@ async def test_streamed_events_coalesce_list_repaint_to_flush_tick(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_subagent_usage_priced_once_per_flush_tick(tmp_path, monkeypatch):
+    """Sub-agent usage must not be priced inline per delta — resolve_cost is a
+    genai-prices table lookup and a fan-out emits many deltas per frame ×N agents.
+    note_subagent_usage stashes; the flush tick prices each card at most once per
+    frame, and skips a card whose token total hasn't moved since it was last priced."""
+    from types import SimpleNamespace
+
+    import marim_harness.interfaces.tui.stream_render as sr
+
+    calls = {"n": 0}
+    real = sr.resolve_cost
+
+    def counting(usage, model):
+        calls["n"] += 1
+        return real(usage, model)
+
+    monkeypatch.setattr(sr, "resolve_cost", counting)
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        r = app.stream
+        w = r.mount_spawn_widget({"type": "explore", "description": "map"})
+        w.stream_id = "call_1"
+        r.tool_widgets["call_1"] = w
+        r.ensure_pane(w)
+        await pilot.pause()
+
+        usage = SimpleNamespace(
+            total_tokens=100, input_tokens=80, output_tokens=20,
+            cache_read_tokens=0, cache_write_tokens=0, details={},
+        )
+        # Many deltas in one frame stash only — no pricing yet.
+        for _ in range(5):
+            r.note_subagent_usage(w, usage)
+        assert calls["n"] == 0
+
+        # The flush tick prices it exactly once and the total lands on the card.
+        r.flush_streams()
+        assert calls["n"] == 1
+        assert w.tokens == 100
+
+        # A tick with no token movement does not re-price.
+        r.note_subagent_usage(w, usage)
+        r.flush_streams()
+        assert calls["n"] == 1
+
+        # A new token total reprices exactly once.
+        r.note_subagent_usage(w, SimpleNamespace(
+            total_tokens=250, input_tokens=200, output_tokens=50,
+            cache_read_tokens=0, cache_write_tokens=0, details={},
+        ))
+        r.flush_streams()
+        assert calls["n"] == 2
+        assert w.tokens == 250
+
+
+@pytest.mark.anyio
 async def test_refresh_subagents_view_is_noop_when_closed(tmp_path):
     """When the screen is closed, a streamed event must not even mark it dirty, so
     streaming pays nothing for a hidden screen."""

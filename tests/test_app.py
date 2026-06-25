@@ -1755,6 +1755,8 @@ async def test_subagent_event_usage_populates_total_and_body_split(tmp_path: Pat
             PartStartEvent(index=0, part=TextPart(content="checking")),
             usage,
         )
+        # Usage pricing is coalesced onto the flush tick (not priced per delta).
+        app.stream.flush_streams()
         await pilot.pause()
 
         # 56k in + 2k out = 58k total, tracked for the screen's list row.
@@ -2374,6 +2376,8 @@ async def test_subagent_event_updates_token_usage(tmp_path: Path):
         await app.stream.on_subagent_event(
             "s1", tool_call, RunUsage(input_tokens=1500, output_tokens=500)
         )
+        # Usage pricing is coalesced onto the flush tick (not priced per delta).
+        app.stream.flush_streams()
         await pilot.pause()
         parent = app.stream.tool_widgets["s1"]
         assert parent.tokens == 2000
