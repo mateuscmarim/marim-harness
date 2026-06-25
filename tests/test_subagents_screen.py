@@ -139,9 +139,12 @@ async def test_clicking_card_opens_screen_at_that_agent(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_detached_spawn_shows_pane_placeholder(tmp_path):
-    """A detached spawn streams nothing into its pane, so the pane shows the
-    'no live transcript' placeholder rather than an empty transcript."""
+async def test_detached_spawn_streams_live_with_bg_marker(tmp_path):
+    """Phase 2: a detached spawn is marked as a background run (bg marker + detached
+    flag) and kept pending for settle, but streams live into its pane — no
+    'no live transcript' placeholder."""
+    from marim_harness.interfaces.tui.widgets.subagent_stats import row_cells
+
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         r = app.stream
@@ -152,14 +155,28 @@ async def test_detached_spawn_shows_pane_placeholder(tmp_path):
         await app.query_one("#log").mount(w)
         await pilot.pause()
 
-        # A detach handoff keeps the card pending and marks the pane as detached.
         kept = r.note_detached_spawn(
             "Started detached sub-agent job-1, watching…", w, app.harness.deps.jobs
         )
         await pilot.pause()
         assert kept is True
-        assert w.detached is True
-        assert w.pane._placeholder.display is True
+        assert w.detached is True                     # marked as a background run
+        assert w.pane._placeholder.display is False    # no placeholder — it streams
+        assert "bg" in str(w._header.render())         # bg marker on the card
+        assert row_cells(w)[1].startswith("bg · ")     # bg marker on the list row
+
+
+@pytest.mark.anyio
+async def test_stream_event_after_clear_is_a_noop(tmp_path):
+    """A background job that streams after /clear (its card cleared from the log)
+    must not crash — on_subagent_event no-ops when the parent card is absent."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        r = app.stream
+        r.reset()  # simulate /clear: cards + tool_widgets cleared
+        await r.on_subagent_event("ghost", object(), None)  # must not raise
+        await pilot.pause()
+        assert r.tool_widgets.get("ghost") is None
 
 
 @pytest.mark.anyio

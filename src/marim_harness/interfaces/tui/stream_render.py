@@ -347,20 +347,22 @@ class StreamRenderer:
         self.dirty_streams.clear()
 
     def note_detached_spawn(self, content: str, widget: "SubAgentWidget", jobs) -> bool:
-        """If ``content`` is a detached-spawn handoff, keep ``widget`` pending and
-        map its job_id → card so it fills when the job settles; return True so the
-        caller does NOT finish the card. Fills at once if the job already settled
-        (a fast job can finish before its handoff renders). Returns False for a
-        normal report, so foreground spawns and wait_for_job cards finish as usual."""
+        """If ``content`` is a detached-spawn handoff, mark the card as a background
+        run and map its job_id → card so it settles when the job finishes; return
+        True so the caller does NOT finish the card on the handoff text (which is a
+        job-id handoff, not the report). Returns False for a normal report, so
+        foreground spawns and wait_for_job cards finish as usual.
+
+        Phase 2: a background sub-agent streams its transcript into this card's pane
+        live (its run is wired with this spawn's stream_id), so the card shows real
+        activity — no 'no live transcript' placeholder. ``widget.detached`` here
+        means 'ran as a background job' and drives only the quiet ``bg`` marker on
+        the card and list row. Fills at once if the job already settled (a fast job
+        can finish before its handoff renders)."""
         job_id = _detached_job_id(content)
         if job_id is None:
             return False
-        widget.detached = True  # no streamed steps → don't claim a 0 tool tally
-        widget.activity = "running in background…"
-        # A detached spawn streams nothing into its pane, so show the placeholder
-        # note rather than an empty transcript when the screen is opened on it.
-        if widget.pane is not None:
-            widget.pane.placeholder()
+        widget.detached = True  # bg marker; the live stream fills the tally + pane
         self._detached_cards[job_id] = widget
         self._fill_detached_card(job_id, jobs)
         return True
