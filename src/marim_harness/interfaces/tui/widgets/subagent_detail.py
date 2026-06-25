@@ -67,6 +67,13 @@ class SubAgentDetailHost(ContentSwitcher):
 
     def add_pane(self, stream_id: str, agent_type: str, model_label: str) -> SubAgentPane:
         pane = SubAgentPane(stream_id, agent_type, model_label)
+        # Hide the pane before mounting. ContentSwitcher only hides children present
+        # at compose time, and watch_current only toggles the old/new pair on a
+        # switch — it never hides the other dynamically-mounted panes. Without this,
+        # every pane mounts visible (display defaults True) and they render stacked
+        # instead of one-at-a-time. This mirrors Textual's own ContentSwitcher.
+        # add_content, which sets display=False before mounting.
+        pane.display = False
         self.mount(pane)
         return pane
 
