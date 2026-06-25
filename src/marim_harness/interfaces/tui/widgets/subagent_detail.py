@@ -44,19 +44,23 @@ class SubAgentPane(VerticalScroll):
                  title: str = "") -> None:
         self.stream_id = stream_id
         model = _short_model(model_label)
-        label = f"{agent_type} · {model}" if model else agent_type
-        self._header = Static(Content(f"◼ {label}"), classes="subagent-bhead")
-        # The agent's title on its own line, so a pane is self-identifying — with
-        # several same-type spawns the ``◼ explore · model`` header alone is
-        # ambiguous. Hidden when there's no title (e.g. a bare unit-test pane).
-        self._title = Static(Content(title), classes="subagent-btitle")
-        self._title.display = bool(title)
+        context = f"{agent_type} · {model}" if model else agent_type
+        # Line 1 (headline): the agent's description/title with the ◼ glyph — the
+        # most useful identifier when several same-type agents are spawned. Falls
+        # back to the type · model context for a bare pane with no title.
+        self._header = Static(Content(f"◼ {title or context}"), classes="subagent-bhead")
+        # Line 2 (subtitle): the type · model context, muted. Shown only when line 1
+        # carries a title — otherwise it would just repeat the header. (Named
+        # ``_subhead`` rather than ``_context`` — the latter shadows a Textual
+        # Widget internal.)
+        self._subhead = Static(Content(context), classes="subagent-bsub")
+        self._subhead.display = bool(title)
         self._usage_line = Static("", classes="subagent-usage")
         self._usage_line.display = False
         self._placeholder = Static(Content(_DETACHED_NOTE), classes="subagent-detached")
         self._placeholder.display = False
         super().__init__(
-            self._header, self._title, self._usage_line, self._placeholder,
+            self._header, self._subhead, self._usage_line, self._placeholder,
             id=pane_id(stream_id), classes="subagent-pane",
         )
 

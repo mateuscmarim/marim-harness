@@ -24,7 +24,7 @@ def test_short_model_takes_last_path_segment():
 
 
 @pytest.mark.anyio
-async def test_pane_header_shows_title_and_short_model():
+async def test_pane_header_is_title_with_model_subtitle():
     app = _Host()
     async with app.run_test() as pilot:
         host = app.query_one(SubAgentDetailHost)
@@ -32,21 +32,26 @@ async def test_pane_header_shows_title_and_short_model():
             "c1", "explore", "openrouter/openrouter/owl-alpha", "Architecture review"
         )
         await pilot.pause()
-        header = str(pane._header.render())
-        assert "owl-alpha" in header  # short model name
-        assert "openrouter/openrouter" not in header  # not the routed label
-        assert "Architecture review" in str(pane._title.render())  # title line
-        assert pane._title.display is True
+        # Line 1 is the description/title (the headline).
+        assert "Architecture review" in str(pane._header.render())
+        # Line 2 is the muted type · model subtitle, with a shortened model name.
+        subhead = str(pane._subhead.render())
+        assert "explore" in subhead
+        assert "owl-alpha" in subhead  # short model name
+        assert "openrouter/openrouter" not in subhead  # not the routed label
+        assert pane._subhead.display is True
 
 
 @pytest.mark.anyio
-async def test_pane_title_line_hidden_when_no_title():
+async def test_pane_subtitle_hidden_and_header_falls_back_when_no_title():
     app = _Host()
     async with app.run_test() as pilot:
         host = app.query_one(SubAgentDetailHost)
         pane = host.add_pane("c1", "explore", "owl")  # no title
         await pilot.pause()
-        assert pane._title.display is False
+        assert pane._subhead.display is False
+        # With no title the header falls back to the type · model context.
+        assert "explore" in str(pane._header.render())
 
 
 class _Host(App):

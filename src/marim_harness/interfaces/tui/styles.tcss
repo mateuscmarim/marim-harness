@@ -76,10 +76,10 @@ SubAgentWidget { margin: 0 0 1 0; height: auto; padding-left: 2; }
    line under the pointer, not the container — see SubAgentWidget.on_enter). */
 SubAgentWidget.-hovered .subagent-header,
 SubAgentWidget.-hovered .subagent-activity { color: white; text-style: bold; }
-.subagent-bhead { color: $accent; text-style: bold; }
-/* The agent's title on its own line under the ◼ header, brighter than the
-   muted header so it reads as the pane's identity; clipped to one row. */
-.subagent-btitle { color: $text; text-style: bold; height: 1; text-wrap: nowrap; text-overflow: ellipsis; margin: 0 0 1 0; }
+/* Line 1: the agent's description/title (the ◼ headline), clipped to one row. */
+.subagent-bhead { color: $accent; text-style: bold; height: 1; text-wrap: nowrap; text-overflow: ellipsis; }
+/* Line 2: the muted type · model subtitle below the headline. */
+.subagent-bsub { color: $text-muted; height: 1; margin: 0 0 1 0; }
 .subagent-usage { color: $text-muted; }
 .subagent-error { color: $error; margin: 1 0 0 0; }
 
