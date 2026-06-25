@@ -217,3 +217,52 @@ async def test_runner_raises_when_no_result(tmp_path):
             allow_gated=False, allowed_tools=frozenset(), model=None, stream_id="",
         )
     assert "no result" in str(exc.value).lower()
+
+
+_FAKE_CLI_LARGE_STDERR = '''#!{python}
+import json, sys
+
+# Write a large blob to stderr BEFORE writing the stdout result line.
+# If the parent drains stdout to EOF before reading stderr, the child will
+# block here once the OS pipe buffer (~64 KB) plus asyncio's internal
+# StreamReader buffer (~128 KB) are both full — deadlock. 2 MB comfortably
+# exceeds both buffers so the deadlock is deterministic.
+sys.stderr.write("x" * 2_000_000)
+sys.stderr.flush()
+
+result = {{
+    "type": "result",
+    "subtype": "success",
+    "result": "ok after big stderr",
+    "num_turns": 1,
+    "usage": {{"input_tokens": 1, "output_tokens": 1}},
+}}
+sys.stdout.write(json.dumps(result) + "\\n")
+sys.stdout.flush()
+'''
+
+
+@pytest.mark.anyio
+async def test_runner_drains_stderr_concurrently_no_deadlock(tmp_path):
+    """Regression: draining stdout before stderr deadlocks when stderr > pipe buffer.
+
+    The fake CLI writes 250 KB to stderr before its stdout result line. On old
+    sequential-drain code the child blocks on the stderr write, the parent waits
+    forever on stdout EOF — deadlock. The fix starts an asyncio task to drain stderr
+    concurrently so the child never blocks.
+    """
+    import asyncio
+
+    p = tmp_path / "large_stderr.py"
+    p.write_text(_FAKE_CLI_LARGE_STDERR.format(python=sys.executable), encoding="utf-8")
+    p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IRWXU)
+
+    runner = ClaudeCliRunner(None, None)
+    result = await asyncio.wait_for(
+        runner.run(
+            binary=str(p), prompt="go", system_prompt="s", cwd=str(tmp_path),
+            allow_gated=False, allowed_tools=frozenset(), model=None, stream_id="",
+        ),
+        timeout=15,
+    )
+    assert result.output == "ok after big stderr"

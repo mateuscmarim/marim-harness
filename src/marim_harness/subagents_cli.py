@@ -237,6 +237,10 @@ class ClaudeCliRunner:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        # Drain stderr concurrently: if the child floods stderr past the OS pipe
+        # buffer before finishing stdout, a sequential "read stdout then stderr"
+        # would deadlock (child blocks writing stderr, parent waits on stdout EOF).
+        stderr_task = asyncio.ensure_future(proc.stderr.read()) if proc.stderr is not None else None
         translator = CliStreamTranslator()
         output = ""
         usage = RunUsage()
@@ -258,7 +262,7 @@ class ClaudeCliRunner:
             for event in translator.translate(obj):
                 if self._on_event is not None and stream_id:
                     await self._on_event(stream_id, event, None)
-        stderr_bytes = await proc.stderr.read() if proc.stderr is not None else b""
+        stderr_bytes = await stderr_task if stderr_task is not None else b""
         code = await proc.wait()
         if not result_seen:
             detail = stderr_bytes.decode("utf-8", "replace").strip() or f"exit code {code}"
