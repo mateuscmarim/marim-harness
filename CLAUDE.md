@@ -125,3 +125,9 @@ to avoid import cycles.
 - The codebase favors long, explanatory comments on *why* a non-obvious invariant
   holds (especially around resumability and the deps/services cycle). Preserve them
   when editing nearby code.
+- Follow `coding-guidelines.md` for code design principles: control complexity,
+  prefer straight-line flow, model the domain when it pays off, encapsulate
+  collections with behavior, limit deep navigation, name for clarity, optimize for
+  cohesion, treat large state as a smell, and encapsulate behavior over data.
+  It's guidance, not dogma — break a rule when the tradeoff is clear and
+  document why.
