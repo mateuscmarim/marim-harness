@@ -6,17 +6,23 @@ ellipsis) plus an indented activity line. While the agent runs the activity line
 shows the *current* tool (``↳ Read src/foo.py``); once it finishes it collapses to
 the run summary (``↳ 45 toolcalls · 1m 18s``). The glyph animates while running
 (✓/✕ when done). The card text is muted, brightening to white on hover. The
-agent's full transcript streams into ``self.body``, a scroll container that
-stays mounted but ``display:none`` — the full-screen viewer reveals it in
-place by adding the ``viewing`` class (see ``subagent_viewer`` and the app's
-``action_toggle_subagents``). Nothing is ever reparented, so a live stream keeps
-mounting into the same container whether or not it is being viewed."""
+agent's full transcript streams into a ``SubAgentPane`` owned by the detail host
+(``SubAgentDetailHost``); the renderer attaches it to ``self.pane`` once both are
+created, and scalar updates (usage/finish) redirect their body-side effects through
+it. Nothing is ever reparented, so a live stream keeps mounting into the same pane
+whether or not it is being viewed."""
+
+from __future__ import annotations
 
 import time
+from typing import TYPE_CHECKING
 
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Vertical
 from textual.content import Content
 from textual.widgets import Static
+
+if TYPE_CHECKING:
+    from .subagent_detail import SubAgentPane
 
 from .tool_summary import summarize
 
@@ -82,8 +88,8 @@ def derive_title(task: str) -> str:
 
 class SubAgentWidget(Vertical):
     """A spawned sub-agent rendered as a compact card. The header summarizes the
-    delegation and live status; ``self.body`` holds the streamed transcript, hidden
-    inline and revealed by the full-screen viewer."""
+    delegation and live status; ``self.pane`` (set by the renderer) holds a reference
+    to the ``SubAgentPane`` where the streamed transcript lives."""
 
     def __init__(
         self, agent_type: str, agent_task: str, model_label: str = ""
@@ -115,7 +121,7 @@ class SubAgentWidget(Vertical):
         self._t0 = time.monotonic()
         self._t_end: float | None = None
         # Live token usage. The total + cost ride on the card; the full cache split
-        # is reserved for the body's muted header, where there's room for it.
+        # is forwarded to the pane's usage line, where there's room for it.
         self.tokens = 0
         self.cost_text: str | None = None
         self.split_text = ""
@@ -123,18 +129,16 @@ class SubAgentWidget(Vertical):
         # The card's two visible lines: a single-line header and the ↳ progress line.
         self._header = Static(classes="subagent-header")
         self._activity = Static(classes="subagent-activity")
-        # The transcript home: a scroll container kept mounted but hidden inline.
-        # A muted body header carries "{type} · {model}"; the usage line mirrors the
-        # status bar's split + cost and stays hidden until metered. Transcript
-        # widgets (text, tool calls) mount after these via add().
-        self._body_header = Static(self._body_header_text(), classes="subagent-bhead")
-        self._usage_line = Static("", classes="subagent-usage")
-        self._usage_line.display = False
-        self.body = VerticalScroll(
-            self._body_header, self._usage_line, classes="subagent-body"
-        )
-        self.body.display = False
-        super().__init__(self._header, self._activity, self.body)
+        # The transcript no longer lives on the card — it streams into a
+        # SubAgentPane owned by the detail host. The renderer attaches that pane
+        # here once both are created; scalar updates (usage/finish) redirect their
+        # body-side effects through it. None until attached, and stays None for the
+        # pure card unit tests, so every access guards on it.
+        self.pane: SubAgentPane | None = None
+        # The numeric cost of this agent's run, folded in by set_usage; the summary
+        # bar sums these (rather than re-parsing the formatted cost_text).
+        self.cost_value: float | None = None
+        super().__init__(self._header, self._activity)
 
     def on_mount(self) -> None:
         self._paint_header()
@@ -162,10 +166,15 @@ class SubAgentWidget(Vertical):
     def on_click(self, _event) -> None:
         # Click a failed card to expand the clipped error to its full body, and
         # back. A no-op unless the reason was actually clipped (so a fully-shown
-        # error or a running/done card doesn't react to clicks).
+        # error doesn't react to clicks).
         if self.status in ("failed", "denied") and self._full_reason != self._fail_reason:
             self._expanded = not self._expanded
             self._paint_activity()
+            return
+        # Otherwise, a click jumps into the sub-agents screen focused on this card.
+        opener = getattr(self.app, "open_subagents_at", None)
+        if opener is not None:
+            opener(self.stream_id)
 
     def _glyph(self) -> str:
         if self.status == "done":
@@ -225,10 +234,6 @@ class SubAgentWidget(Vertical):
                 Content(f"↳ {self.tool_count} toolcall{plural} · {self._duration()}")
             )
 
-    def _body_header_text(self) -> Content:
-        label = f"{self.agent_type} · {self.model_label}" if self.model_label else self.agent_type
-        return Content(f"◼ {label}")
-
     def _tick(self) -> None:
         if self.status != "pending":
             return
@@ -241,21 +246,23 @@ class SubAgentWidget(Vertical):
         """Update the sub-agent's running token total."""
         self.tokens = n
 
-    def set_usage(self, total: int, cost_text: str | None, split_text: str) -> None:
+    def set_usage(
+        self, total: int, cost_text: str | None, split_text: str,
+        cost_value: float | None = None,
+    ) -> None:
         """Fold a full usage reading in: the running ``total`` (and ``cost_text``)
-        are kept for the card/footer; the detailed ``split_text`` + cost land in the
-        body's muted header — the status-bar view, where there's room."""
+        ride on the card for the list row; ``cost_value`` (numeric) feeds the
+        summary roll-up; the detailed ``split_text`` + cost land on the pane's usage
+        line (the status-bar view, where there's room)."""
         self.cost_text = cost_text
+        self.cost_value = cost_value
         self.split_text = split_text
         self.set_tokens(total)
-        self._refresh_usage_line()
-
-    def _refresh_usage_line(self) -> None:
-        detail = self.split_text
-        if self.cost_text:
-            detail = f"{detail} · {self.cost_text}" if detail else self.cost_text
-        self._usage_line.update(detail)
-        self._usage_line.display = bool(detail)
+        if self.pane is not None:
+            detail = split_text
+            if cost_text:
+                detail = f"{detail} · {cost_text}" if detail else cost_text
+            self.pane.set_usage_line(detail)
 
     def note_tool(self, tool_name: str = "", args: dict | None = None) -> None:
         """Record that the sub-agent just called ``tool_name`` (with its ``args``):
@@ -281,11 +288,6 @@ class SubAgentWidget(Vertical):
         tally + duration, so there's nothing to repaint here — kept for the renderer
         sink's interface."""
 
-    async def add(self, widget) -> None:
-        """Mount a transcript child (the sub-agent's text or a nested tool call)
-        into the live body."""
-        await self.body.mount(widget)
-
     def finish(self, report: str, status: str = "done") -> None:
         self.status = status
         self.report = report
@@ -293,8 +295,10 @@ class SubAgentWidget(Vertical):
         if status in ("failed", "denied") and report:
             self._fail_reason = failure_reason(report)
             self._full_reason = clean_reason(report)
-            # The failure is returned, not streamed as an event, so the transcript
-            # otherwise ends without it — append it so the viewer shows the reason.
-            self.body.mount(Static(Content(report), classes="subagent-error"))
+            # The failure is returned, not streamed, so the transcript would
+            # otherwise end without it — append it to the pane so the screen shows
+            # the reason. Guard: a detached/pre-pane card has no pane yet.
+            if self.pane is not None:
+                self.pane.append_error(report)
         self._paint_header()
         self._paint_activity()

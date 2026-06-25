@@ -136,8 +136,8 @@ def test_prune_completed_drops_finished_keeps_in_flight():
 
 
 def test_prune_completed_preserves_subagents_list_for_viewer():
-    """The Ctrl+X viewer reads ``subagents`` directly; pruning the tracking dict
-    must not touch that list."""
+    """The Ctrl+X sub-agents screen reads ``subagents`` directly; pruning the
+    tracking dict must not touch that list."""
     from marim_harness.interfaces.tui.stream_render import StreamRenderer
 
     class _Sub:

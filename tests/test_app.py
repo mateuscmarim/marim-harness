@@ -1340,7 +1340,7 @@ async def test_failed_spawn_renders_card_as_failed(tmp_path: Path):
         # The reason shows on the ↳ line (prefix stripped) and the full report is
         # appended to the transcript body for the viewer.
         assert "ValueError: boom" in str(w._activity.visual)
-        body_text = " ".join(str(c.visual) for c in w.body.query(".subagent-error"))
+        body_text = " ".join(str(c.visual) for c in w.pane.query(".subagent-error"))
         assert "ValueError: boom" in body_text
 
 
@@ -1627,8 +1627,8 @@ async def test_subagent_event_routes_stream_into_widget(tmp_path: Path):
         )
         await pilot.pause()
 
-        # Both nested widgets live inside the SubAgentWidget body.
-        body_children = list(parent.body.walk_children())
+        # Both nested widgets live inside the SubAgentWidget's pane.
+        body_children = list(parent.pane.walk_children())
         sub_texts = [c for c in body_children if isinstance(c, AssistantMessage)]
         sub_tools = [c for c in body_children if isinstance(c, ToolCallWidget)]
         assert any("checking files" in m.text for m in sub_texts)
@@ -1697,10 +1697,10 @@ async def test_subagent_event_usage_populates_total_and_body_split(tmp_path: Pat
         )
         await pilot.pause()
 
-        # 56k in + 2k out = 58k total, tracked for the viewer footer.
+        # 56k in + 2k out = 58k total, tracked for the screen's list row.
         assert parent.tokens == 58000
-        # The full split lands in the body (cost may be absent if unpriced).
-        usage_line = parent.body.query_one(".subagent-usage", Static)
+        # The full split lands in the pane's usage line (cost may be absent if unpriced).
+        usage_line = parent.pane.query_one(".subagent-usage", Static)
         assert "1k↑ 55k⚡ 2k↓" in str(usage_line.visual)
 
 
@@ -2153,8 +2153,8 @@ def _spawn_call(tool_call_id: str, task: str):
 
 @pytest.mark.anyio
 async def test_single_subagent_registers_card(tmp_path: Path):
-    """A lone spawn mounts a compact card whose transcript is hidden inline and is
-    registered in the viewer's navigation list."""
+    """A lone spawn mounts a compact card whose transcript lives in a detail-host
+    pane (not inline) and is registered in the screen's navigation list."""
     from marim_harness.interfaces.tui.widgets import SubAgentWidget
 
     async def gen():
@@ -2167,15 +2167,17 @@ async def test_single_subagent_registers_card(tmp_path: Path):
         await pilot.pause()
         w = app.stream.tool_widgets["s1"]
         assert isinstance(w, SubAgentWidget)
-        assert w.body.display is False  # transcript hidden inline
+        # The transcript is no longer inline on the card; it lives in a pane in the
+        # detail host, which is hidden until the screen is opened (ctrl+x).
+        assert w.pane is not None
         assert w.stream_id == "s1"
         assert app.stream.subagents == [w]
 
 
 @pytest.mark.anyio
 async def test_parallel_subagents_register_in_spawn_order(tmp_path: Path):
-    """A fan-out registers every card in the viewer's ordered navigation list, all
-    rendered as compact (hidden-transcript) cards."""
+    """A fan-out registers every card in the screen's ordered navigation list, each
+    rendered as a compact card whose transcript lives in its own detail-host pane."""
     from marim_harness.interfaces.tui.widgets import SubAgentWidget
 
     async def gen():
@@ -2191,16 +2193,16 @@ async def test_parallel_subagents_register_in_spawn_order(tmp_path: Path):
         cards = [app.stream.tool_widgets[sid] for sid in ("s1", "s2", "s3")]
         for w in cards:
             assert isinstance(w, SubAgentWidget)
-            assert w.body.display is False
+            assert w.pane is not None
         assert app.stream.subagents == cards
 
 
 @pytest.mark.anyio
 async def test_subagent_viewer_opens_navigates_and_closes(tmp_path: Path):
-    """ctrl+x opens the full-screen viewer on the most recent spawn; left/right move
-    between cards (revealing exactly one transcript at a time); closing hides the
-    chrome and all transcripts."""
-    from marim_harness.interfaces.tui.widgets import SubAgentFooter, SubAgentList
+    """ctrl+x opens the full-bleed screen on the most recent spawn; moving the list
+    cursor selects another agent's transcript (via the detail host); closing hides
+    the screen and restores the log."""
+    from marim_harness.interfaces.tui.widgets import SubAgentsView
 
     async def gen():
         yield _spawn_call("s1", "first")
@@ -2212,41 +2214,36 @@ async def test_subagent_viewer_opens_navigates_and_closes(tmp_path: Path):
         await pilot.pause()
         await app.stream.on_events(None, gen())
         await pilot.pause()
-        subs = app.stream.subagents
 
-        # Open: lands on the most recent (index 2), chrome shown, only s3 revealed.
+        # Open: lands on the most recent (index 2), screen shown, log hidden, the
+        # host showing s3's pane.
         app.action_toggle_subagents()
         await pilot.pause()
-        assert app._viewer.open is True
-        assert app._viewer.index == 2
-        assert app.query_one(SubAgentList).display is True
-        assert app.query_one("#subagent-footer", SubAgentFooter).display is True
-        assert app.stream.viewing_sid == "s3"
-        assert subs[2].body.has_class("viewing") and subs[2].body.display is True
-        assert not subs[0].body.has_class("viewing")
-        assert subs[0].body.display is False
+        view = app.query_one(SubAgentsView)
+        assert app.subagent_viewer_open is True
+        assert app.subagent_index == 2
+        assert view.display is True
+        assert app.query_one("#log").display is False
+        assert view.host.current_sid() == "s3"
 
-        # Prev moves to s2; the revealed transcript follows.
-        app.action_subagent_prev()
+        # Moving the list cursor up selects s2; the shown transcript follows.
+        view.list.move_cursor(row=1)
         await pilot.pause()
-        assert app._viewer.index == 1
-        assert app.stream.viewing_sid == "s2"
-        assert subs[1].body.has_class("viewing")
-        assert not subs[2].body.has_class("viewing")
+        assert app.subagent_index == 1
+        assert view.host.current_sid() == "s2"
 
-        # Prev clamps at the first card.
-        app.action_subagent_prev()
-        app.action_subagent_prev()
-        assert app._viewer.index == 0
+        # Driving the opener directly jumps to a specific card.
+        app.open_subagents_at("s1")
+        await pilot.pause()
+        assert app.subagent_index == 0
+        assert view.host.current_sid() == "s1"
 
-        # Close: chrome hidden, no transcript left revealed.
+        # Close: screen hidden, log restored.
         app.action_toggle_subagents()
         await pilot.pause()
-        assert app._viewer.open is False
-        assert app.stream.viewing_sid is None
-        assert app.query_one(SubAgentList).display is False
-        assert all(not w.body.has_class("viewing") for w in subs)
-        assert all(w.body.display is False for w in subs)
+        assert app.subagent_viewer_open is False
+        assert view.display is False
+        assert app.query_one("#log").display is True
 
 
 @pytest.mark.anyio
@@ -2257,7 +2254,7 @@ async def test_subagent_viewer_noop_without_subagents(tmp_path: Path):
         await pilot.pause()
         app.action_toggle_subagents()
         await pilot.pause()
-        assert app._viewer.open is False
+        assert app.subagent_viewer_open is False
         assert "no sub-agents" in _log_text(app).lower()
 
 
@@ -2352,8 +2349,8 @@ async def test_lone_nested_tool_call_is_not_wrapped_in_a_group(tmp_path: Path):
         await pilot.pause()
         parent = app.stream.tool_widgets["s1"]
         assert isinstance(parent, SubAgentWidget)
-        assert len(parent.query(ToolGroupWidget)) == 0
-        assert len(parent.query(ToolCallWidget)) == 1
+        assert len(parent.pane.query(ToolGroupWidget)) == 0
+        assert len(parent.pane.query(ToolCallWidget)) == 1
 
 
 @pytest.mark.anyio
@@ -2383,7 +2380,7 @@ async def test_nested_tool_burst_groups_under_a_subagent(tmp_path: Path):
         await app.stream.on_subagent_event("s1", nested("t3"))
         await pilot.pause()
         parent = app.stream.tool_widgets["s1"]
-        groups = parent.query(ToolGroupWidget)
+        groups = parent.pane.query(ToolGroupWidget)
         assert len(groups) == 1
         assert len(groups.first().query(ToolCallWidget)) == 3
 
@@ -2420,8 +2417,8 @@ async def test_streaming_text_is_debounced_until_flush(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_flush_streams_renders_viewed_subagent_text(tmp_path: Path):
-    """The shared flush renders a nested sub-agent stream when its card is the one
-    on screen in the viewer (viewing_sid matches)."""
+    """The shared flush renders a nested sub-agent stream when its pane is the one
+    the detail host is currently showing."""
     from pydantic_ai.messages import PartStartEvent, TextPart
 
     app = _app(tmp_path)
@@ -2437,8 +2434,8 @@ async def test_flush_streams_renders_viewed_subagent_text(tmp_path: Path):
             "s1", PartStartEvent(index=0, part=TextPart(content="nested"))
         )
         msg = app.stream.sub_assistants["s1"]
-        # Simulate the viewer showing this card so its transcript flushes.
-        app.stream.viewing_sid = "s1"
+        # Show this card's pane in the detail host so its transcript flushes.
+        app.stream.detail_host.show("s1")
         # Synchronous append → assert → flush so the interval timer can't interleave.
         msg.append("!")
         assert msg._pending is True
@@ -2495,28 +2492,35 @@ async def test_flush_does_not_anchor_during_rebuild(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_flush_skips_streams_for_unviewed_subagents(tmp_path: Path):
-    """A sub-agent transcript that isn't the one on screen in the viewer must not be
-    re-rendered on every flush tick — re-parsing the full markdown of N cards each
-    tick blocks the event loop and freezes the UI. It stays pending and renders only
-    once its card is viewed."""
-    from marim_harness.interfaces.tui.widgets import AssistantMessage, SubAgentWidget
+    """A sub-agent transcript whose pane isn't the one shown in the detail host must
+    not be re-rendered on every flush tick — re-parsing the full markdown of N cards
+    each tick blocks the event loop and freezes the UI. It stays pending and renders
+    only once its pane is shown."""
+    from marim_harness.interfaces.tui.widgets import AssistantMessage
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:
-        log = app.query_one("#log")
-        sa = SubAgentWidget("explore", "task")
-        sa.stream_id = "s1"
-        await log.mount(sa)
+        await pilot.pause()
+
+        async def spawn():
+            yield _spawn_call("s1", "look")
+            yield _spawn_call("s2", "other")
+
+        await app.stream.on_events(None, spawn())
+        await pilot.pause()
+        # Show s2's pane so s1's transcript is the unviewed one.
+        app.stream.detail_host.show("s2")
+        sa = app.stream.tool_widgets["s1"]
         msg = AssistantMessage()
-        await sa.add(msg)
+        await sa.pane.add(msg)
         await pilot.pause()
 
         app.stream.append_stream(msg, "hello world")
         app.stream.flush_streams()
-        assert msg._pending is True  # not viewing this card → skipped
+        assert msg._pending is True  # s1's pane not shown → skipped
         assert msg in app.stream.dirty_streams  # kept pending for later
 
-        app.stream.viewing_sid = "s1"  # open the viewer on this card
+        app.stream.detail_host.show("s1")  # show this card's pane
         app.stream.flush_streams()
         assert msg._pending is False
 

@@ -1,60 +1,34 @@
-"""The full-screen sub-agent viewer chrome: a master list of all spawned
-sub-agents (the left side panel) and a status footer. The transcript itself is not
-owned here — it lives in each ``SubAgentWidget.body`` and is revealed in place by
-the ``viewing`` class (see the app's ``action_toggle_subagents``). These two
-widgets are pure presentation driven by the app, plus the keyboard navigation that
-drives the viewer."""
+"""The sub-agents screen's master list: one row per spawned sub-agent, with live
+status/stats columns. Pure presentation — the app drives it via ``refresh_rows``
+and reads the cursor via ``selected_index``; row selection (the DataTable cursor)
+chooses which transcript the detail host shows."""
 
-from textual.binding import Binding
-from textual.containers import VerticalScroll
-from textual.content import Content
-from textual.widgets import Static
+from textual.widgets import DataTable
+
+from .subagent_stats import row_cells
+
+_COLUMNS = ("", "agent", "tools", "tokens", "cost", "dur")
 
 
-class SubAgentList(VerticalScroll):
-    """The viewer's left side panel: one row per session sub-agent, the current one
-    highlighted. Focusable so its bindings own the arrow keys while the viewer is
-    open (left/right switch, up/esc return to the log)."""
-
-    can_focus = True
-
-    BINDINGS = [
-        Binding("left", "app.subagent_prev", "Prev", show=False),
-        Binding("right", "app.subagent_next", "Next", show=False),
-        Binding("up", "app.close_subagents", "Parent", show=False),
-        Binding("escape", "app.close_subagents", "Parent", show=False),
-        Binding("ctrl+x", "app.close_subagents", "Close", show=False),
-    ]
+class SubAgentList(DataTable):
+    """The left pane: a focusable row-cursor table of session sub-agents."""
 
     def __init__(self) -> None:
-        self._inner = Static(id="subagent-list-inner")
-        super().__init__(self._inner, id="subagent-list")
+        super().__init__(id="subagent-list", cursor_type="row", zebra_stripes=True)
 
-    def show_subagents(self, subagents: list, index: int) -> None:
-        """Repaint the list, marking row ``index`` as the current selection."""
-        lines = []
-        for i, w in enumerate(subagents):
-            glyph = {"done": "✓", "denied": "✕", "failed": "✕"}.get(w.status, "▸")
-            text = f"{glyph} {w.agent_type} — {w.display_title()}"
-            # Reverse-video the selected row; (text, style) assembly applies the
-            # style without parsing the untrusted task text as markup.
-            row = Content.assemble((text, "reverse")) if i == index else Content(text)
-            lines.append(row)
-        sep = Content("\n")
-        body = sep.join(lines) if lines else Content("(no sub-agents)")
-        self._inner.update(body)
+    def on_mount(self) -> None:
+        for c in _COLUMNS:
+            self.add_column(c, key=c)
 
+    def refresh_rows(self, subagents: list, selected: int) -> None:
+        """Rebuild every row from ``subagents`` and place the cursor on
+        ``selected``. N is the session's sub-agent count (small), so a full rebuild
+        per change is cheap and avoids per-cell key bookkeeping."""
+        self.clear()
+        for w in subagents:
+            self.add_row(*row_cells(w))
+        if self.row_count:
+            self.move_cursor(row=max(0, min(selected, self.row_count - 1)))
 
-class SubAgentFooter(Static):
-    """The viewer's status footer: ``{type} ({i} of {N}) {spend}`` on the left and
-    the dim navigation hints on the right."""
-
-    _HINTS = "Parent up · Prev left · Next right"
-
-    def show_status(self, agent_type: str, index: int, total: int, spend: str) -> None:
-        left = f"{agent_type} ({index + 1} of {total})"
-        if spend:
-            left = f"{left} {spend}"
-        # Pad the hints to the right edge; the Static spans the docked footer width,
-        # so a wide gap reads as left/right justification without a table.
-        self.update(Content.from_markup(f"{left}  [dim]·[/]  [dim]{self._HINTS}[/]"))
+    def selected_index(self) -> int:
+        return self.cursor_row

@@ -4,6 +4,8 @@ Turns a turn's (and each sub-agent's) streamed events into the log's live
 AssistantMessage / ToolCallWidget / SubAgentWidget tree. Owns all per-turn stream
 state; reaches the app and the status presenter through ``self.app``."""
 
+from typing import cast
+
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
@@ -27,6 +29,7 @@ from .widgets import (
 )
 from .widgets import format_cost as _format_cost
 from .widgets import format_token_split as _format_token_split
+from .widgets.subagent_detail import SubAgentDetailHost, SubAgentPane  # noqa: F401
 
 
 def status_from_part(part) -> str:
@@ -106,17 +109,18 @@ def _wait_subagent_label(args: dict, jobs) -> str | None:
     return job.label or None
 
 
-def _stream_hidden(widget: Widget, viewing_sid: str | None) -> bool:
-    """True when ``widget`` is a sub-agent transcript stream that isn't currently
-    being viewed, so re-parsing its markdown every flush tick would be wasted work
-    (and, ×N during a fan-out, would freeze the UI). A stream owned by a
-    ``SubAgentWidget`` is hidden unless that card's ``stream_id`` is the one on
-    screen in the viewer; a top-level log stream (no such ancestor) is never
-    hidden."""
+def _stream_hidden(widget: Widget, host: "SubAgentDetailHost | None") -> bool:
+    """True when ``widget`` is a sub-agent transcript that isn't the one currently
+    on screen, so re-parsing its markdown every flush tick would be wasted work
+    (and, ×N during a fan-out, would freeze the UI). A widget inside a SubAgentPane
+    is hidden unless that pane is the host's current one; a top-level log stream
+    (no pane ancestor) is never hidden. With no host, or no pane selected (screen
+    closed), every sub-agent stream is hidden — they render the moment a pane is
+    shown."""
     node = widget.parent
     while node is not None:
-        if isinstance(node, SubAgentWidget):
-            return node.stream_id != viewing_sid
+        if isinstance(node, SubAgentPane):
+            return host is None or node.id != host.current
         node = node.parent
     return False
 
@@ -210,6 +214,7 @@ class _TopLevelSink(_StreamSink):
             widget = self._r.mount_spawn_widget(args)
             widget.stream_id = event.part.tool_call_id
             self._r.tool_widgets[event.part.tool_call_id] = widget
+            self._r.ensure_pane(widget)          # build + attach the pane
             self.set_run(None, None)
             await self.container.mount(widget)
             return True
@@ -236,16 +241,22 @@ class _TopLevelSink(_StreamSink):
 
 
 class _SubAgentSink(_StreamSink):
-    """A nested sub-agent stream: mounts into its SubAgentWidget body, keeps
-    run-state and the current assistant in per-stream dicts keyed by ``stream_id``,
-    and pushes live text/tool activity into the (collapsed) widget title."""
+    """A nested sub-agent stream: mounts into the agent's pane in the detail host,
+    keeps run-state and the current assistant in per-stream dicts keyed by
+    ``stream_id``, and pushes live text/tool activity into the (collapsed) widget
+    title."""
 
     def __init__(self, renderer: "StreamRenderer", parent: SubAgentWidget,
                  stream_id: str) -> None:
         self._r = renderer
         self._parent = parent
         self._sid = stream_id
-        self.container = parent.body
+        # Mount transcript widgets into the agent's pane in the detail host. The
+        # pane is created at spawn; ensure_pane is idempotent and covers the rare
+        # race where the sink runs before intercept_tool attached it. None when the
+        # host isn't mounted (headless); dispatch_stream_event guards on None and
+        # skips — cast satisfies the base-class Widget annotation at the type level.
+        self.container = cast(Widget, renderer.ensure_pane(parent))
 
     def get_run(self) -> tuple:
         return (self._r.sub_tool_groups.get(self._sid),
@@ -291,16 +302,17 @@ class StreamRenderer:
         self.sub_assistants: dict[str, AssistantMessage] = {}
         self.sub_thinkings: dict[str, ThinkingWidget] = {}
         # Every foreground sub-agent spawned this session, in spawn order — the
-        # backing list for the full-screen viewer's navigation and "(i of N)"
-        # count. ``viewing_sid`` is the stream_id of the card currently shown in
-        # the viewer (None when the viewer is closed); the flush tick uses it to
-        # render only the on-screen transcript.
+        # backing list for the sub-agents screen's list/navigation and the
+        # summary roll-up.
         self.subagents: list[SubAgentWidget] = []
         # job_id → a pending detached-spawn card, awaiting its background job's
         # report. Filled on job settle (fill_finished_detached_cards); cleared on
         # session reset. Not pruned per-turn: the job finishes after the turn ends.
         self._detached_cards: dict[str, SubAgentWidget] = {}
-        self.viewing_sid: str | None = None
+        # The persistent transcript host (a ContentSwitcher of SubAgentPanes), set
+        # by the app at mount. Panes are created here per spawn and attached to
+        # their card; the sub-agent sink mounts each stream into its pane.
+        self.detail_host: SubAgentDetailHost | None = None
         # Either an AssistantMessage (reply/sub-agent body) or a ThinkingWidget —
         # both expose the append/flush streaming interface the tick drains.
         self.dirty_streams: set[AssistantMessage | ThinkingWidget] = set()
@@ -332,7 +344,6 @@ class StreamRenderer:
         self.sub_thinkings.clear()
         self.subagents.clear()
         self._detached_cards.clear()
-        self.viewing_sid = None
         self.dirty_streams.clear()
 
     def note_detached_spawn(self, content: str, widget: "SubAgentWidget", jobs) -> bool:
@@ -346,6 +357,10 @@ class StreamRenderer:
             return False
         widget.detached = True  # no streamed steps → don't claim a 0 tool tally
         widget.activity = "running in background…"
+        # A detached spawn streams nothing into its pane, so show the placeholder
+        # note rather than an empty transcript when the screen is opened on it.
+        if widget.pane is not None:
+            widget.pane.placeholder()
         self._detached_cards[job_id] = widget
         self._fill_detached_card(job_id, jobs)
         return True
@@ -372,6 +387,9 @@ class StreamRenderer:
         job-registry change hook so cards update live as background jobs complete."""
         for job_id in list(self._detached_cards):
             self._fill_detached_card(job_id, jobs)
+        # A settling background job changes a card's status/stats; repaint the
+        # open screen so its list/summary tick live.
+        self.app.refresh_subagents_view()
 
     def prune_completed(self) -> None:
         """Drop finished entries from ``tool_widgets`` at a turn boundary so the
@@ -429,7 +447,7 @@ class StreamRenderer:
             # re-parsing their full markdown every tick — ×N during a fan-out —
             # blocks the event loop and freezes the UI for no visible gain. Keep
             # them pending so they render the moment their card is viewed.
-            if _stream_hidden(m, self.viewing_sid):
+            if _stream_hidden(m, self.detail_host):
                 self.dirty_streams.add(m)
                 continue
             m.flush()
@@ -522,6 +540,20 @@ class StreamRenderer:
         self.subagents.append(widget)
         return widget
 
+    def ensure_pane(self, widget: SubAgentWidget) -> "SubAgentPane | None":
+        """Create (once) the detail-host pane for ``widget`` and attach it to the
+        card. Returns the pane, or None if the host isn't mounted yet (headless /
+        early calls) — callers tolerate None the way every UI callback does."""
+        if self.detail_host is None:
+            return None
+        if widget.pane is not None:
+            return widget.pane
+        pane = self.detail_host.add_pane(
+            widget.stream_id, widget.agent_type, widget.model_label
+        )
+        widget.pane = pane
+        return pane
+
     async def on_events(self, ctx, events) -> None:
         # Fresh run: clear any in-flight tally from a prior approval round so the
         # next round's usage replaces it rather than stacking (each agent.run gets
@@ -548,19 +580,23 @@ class StreamRenderer:
     async def on_subagent_event(self, stream_id: str, event, usage=None) -> None:
         """Route a spawned sub-agent's own stream into the SubAgentWidget that owns
         it. Shares dispatch_stream_event with the top-level handler, but through a
-        sub-agent sink that mounts into the widget body and tracks per-stream state.
-        ``usage`` is the run's live RunUsage (or None): its total + cost ride in the
-        (collapsed) title and the full cache split lands in the expanded body. Fired
-        on the app's event loop, so direct widget mutation is safe and parallel
-        streams stay race-free by stream_id."""
+        sub-agent sink that mounts into the widget's pane (in the detail host) and
+        tracks per-stream state. ``usage`` is the run's live RunUsage (or None): its
+        total + cost ride on the breadcrumb card and the full cache split lands on
+        the pane's usage line. Fired on the app's event loop, so direct widget
+        mutation is safe and parallel streams stay race-free by stream_id."""
         parent = self.tool_widgets.get(stream_id)
         if not isinstance(parent, SubAgentWidget):
             return
         if usage is not None and usage.total_tokens:
             cost, _ = resolve_cost(usage, self.app.harness.model_id)
             cost_text = _format_cost(cost) if cost is not None else None
-            parent.set_usage(usage.total_tokens, cost_text, _format_token_split(usage))
+            parent.set_usage(
+                usage.total_tokens, cost_text, _format_token_split(usage),
+                cost_value=cost,  # numeric cost for the summary roll-up
+            )
         await self.dispatch_stream_event(event, _SubAgentSink(self, parent, stream_id))
+        self.app.refresh_subagents_view()  # list/summary tick live while open
 
     async def on_subagent_notice(self, stream_id: str, message: str) -> None:
         """Show an out-of-band status line (e.g. a transient-error retry) on the
@@ -575,6 +611,11 @@ class StreamRenderer:
         where to mount and how to read/write this stream's run-state. The top-level
         and sub-agent handlers differ only in that sink (and their own pre/post
         bookkeeping), so the four event branches live here once."""
+        # If the sink has no container (e.g. a sub-agent sink whose pane isn't
+        # mounted yet — headless mode or an early race), there's nowhere to mount
+        # widgets; skip the event rather than crashing.
+        if sink.container is None:
+            return
         # A reasoning block is complete the moment any event other than its own
         # thinking-delta arrives — the next part has started, so cap the thought
         # to its preview now (Ctrl+O still reveals it). A thought that's still
@@ -661,6 +702,9 @@ class StreamRenderer:
                     ):
                         status = "failed"
                     widget.finish(content, status=status)
+                    if isinstance(widget, SubAgentWidget):
+                        # A finished card changes the screen's list/summary scalars.
+                        self.app.refresh_subagents_view()
                     if isinstance(widget, ToolCallWidget):
                         group = self._group_of(widget)
                         if group is not None:

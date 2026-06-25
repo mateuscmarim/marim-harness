@@ -837,15 +837,17 @@ async def test_subagent_card_hover_toggles_highlight_class():
 
 
 @pytest.mark.anyio
-async def test_subagent_card_body_hidden_inline():
-    """The transcript home is mounted but hidden inline — it's only revealed by the
-    full-screen viewer, so the inline log shows a compact card."""
+async def test_subagent_card_has_no_inline_transcript():
+    """The transcript no longer lives inline on the card — it streams into a
+    SubAgentPane owned by the detail host, attached by the renderer. A bare card
+    (no renderer wiring) therefore has no pane, so the inline log stays a compact
+    two-line card."""
     from marim_harness.interfaces.tui.widgets import SubAgentWidget
 
     app = _SubHarness()
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert app.query_one(SubAgentWidget).body.display is False
+        assert app.query_one(SubAgentWidget).pane is None
 
 
 @pytest.mark.anyio
@@ -930,21 +932,49 @@ async def test_subagent_set_usage_stores_total_cost_and_split():
         assert w.split_text == "1k↑ 0⚡ 500↓"
 
 
+class _PanedSubHarness(App):
+    """A bare SubAgentWidget wired to a SubAgentPane via a detail host, the way the
+    renderer wires them in the running app — so usage forwarded to ``self.pane``
+    lands somewhere queryable."""
+
+    def compose(self) -> ComposeResult:
+        from textual.containers import VerticalScroll
+
+        from marim_harness.interfaces.tui.widgets import (
+            SubAgentDetailHost,
+            SubAgentWidget,
+        )
+
+        yield VerticalScroll(SubAgentWidget("explore", "map the code"), id="log")
+        yield SubAgentDetailHost(id="host")
+
+    async def on_mount(self) -> None:
+        from marim_harness.interfaces.tui.widgets import (
+            SubAgentDetailHost,
+            SubAgentWidget,
+        )
+
+        card = self.query_one(SubAgentWidget)
+        card.stream_id = "s1"
+        host = self.query_one("#host", SubAgentDetailHost)
+        card.pane = host.add_pane("s1", card.agent_type, card.model_label)
+
+
 @pytest.mark.anyio
 async def test_subagent_expanded_body_shows_full_split_and_cost():
     from textual.widgets import Static
 
     from marim_harness.interfaces.tui.widgets import SubAgentWidget
 
-    app = _SubHarness()
+    app = _PanedSubHarness()
     async with app.run_test() as pilot:
         w = app.query_one(SubAgentWidget)
         await pilot.pause()
         w.set_usage(56000, "$0.12", "1k↑ 55k⚡ 2k↓")
         await pilot.pause()
-        # The detailed split + cost live in the (expanded) body, where there's
+        # The detailed split + cost live in the pane's usage line, where there's
         # room — mirroring the session status bar.
-        usage_line = w.body.query_one(".subagent-usage", Static)
+        usage_line = w.pane.query_one(".subagent-usage", Static)
         text = str(usage_line.visual)
         assert "1k↑ 55k⚡ 2k↓" in text
         assert "$0.12" in text
@@ -956,15 +986,15 @@ async def test_subagent_body_usage_omits_cost_when_unpriced():
 
     from marim_harness.interfaces.tui.widgets import SubAgentWidget
 
-    app = _SubHarness()
+    app = _PanedSubHarness()
     async with app.run_test() as pilot:
         w = app.query_one(SubAgentWidget)
         await pilot.pause()
-        # An unpriced model yields no cost — the body usage line shows the split
+        # An unpriced model yields no cost — the pane usage line shows the split
         # only, no stray '$'.
         w.set_usage(1500, None, "1k↑ 0⚡ 500↓")
         await pilot.pause()
-        text = str(w.body.query_one(".subagent-usage", Static).visual)
+        text = str(w.pane.query_one(".subagent-usage", Static).visual)
         assert "1k↑ 0⚡ 500↓" in text
         assert "$" not in text
 
