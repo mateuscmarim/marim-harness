@@ -19,7 +19,7 @@ PromptInput { height: 3; max-height: 8; border: round $accent; padding: 0 1; }
 
 /* Task/Jobs panel styling lives in LivePanel.DEFAULT_CSS (widgets/panels.py). */
 
-.user-msg { color: $accent; text-style: bold; margin-top: 1; }
+.user-msg { color: $accent; text-style: bold; margin: 1 0 1 0; }
 .error-msg { color: $error; text-style: bold; margin: 1 0; }
 .notice-msg { color: $text-muted; text-style: italic; margin: 1 0; }
 .turn-meta { color: $text-muted; text-style: dim; margin: 0 0 1 0; }
