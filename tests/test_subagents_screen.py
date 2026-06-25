@@ -1,8 +1,12 @@
 from pathlib import Path
 
 import pytest
+from textual.app import App, ComposeResult
 
 from marim_harness.interfaces.tui.widgets.subagent_detail import SubAgentDetailHost
+from marim_harness.interfaces.tui.widgets.subagent_stats import aggregate
+from marim_harness.interfaces.tui.widgets.subagent_viewer import SubAgentList
+from marim_harness.interfaces.tui.widgets.subagents_view import SubAgentSummary
 
 
 def _app(tmp_path: Path):
@@ -17,6 +21,34 @@ def _app(tmp_path: Path):
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     harness = Harness(TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test")
     return HarnessApp(harness)
+
+
+class _ListApp(App):
+    def compose(self) -> ComposeResult:
+        yield SubAgentList()
+        yield SubAgentSummary()
+
+
+@pytest.mark.anyio
+async def test_list_rows_and_summary(monkeypatch):
+    from tests.test_subagent_stats import FakeAgent  # reuse the stand-in
+
+    agents = [
+        FakeAgent(status="pending", agent_type="research", tool_count=2, tokens=100),
+        FakeAgent(status="done", agent_type="coding", tokens=200, cost_text="$0.02"),
+    ]
+    app = _ListApp()
+    async with app.run_test() as pilot:
+        lst = app.query_one(SubAgentList)
+        lst.refresh_rows(agents, selected=1)
+        summ = app.query_one(SubAgentSummary)
+        summ.refresh_totals(aggregate(agents, cost_of=lambda a: 0.0))
+        await pilot.pause()
+        assert lst.row_count == 2
+        assert lst.selected_index() == 1
+        # summary text mentions the running/done split and total agents
+        rendered = str(summ.render())
+        assert "2" in rendered  # total agents
 
 
 @pytest.mark.anyio

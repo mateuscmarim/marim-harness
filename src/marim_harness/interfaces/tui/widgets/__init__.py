@@ -27,7 +27,9 @@ from .messages import (
 from .panels import JobPanel, QueuePanel, TaskPanel
 from .prompt import PromptInput
 from .subagent import SubAgentWidget
-from .subagent_viewer import SubAgentFooter, SubAgentList
+from .subagent_detail import SubAgentDetailHost, SubAgentPane
+from .subagent_viewer import SubAgentList
+from .subagents_view import SubAgentSummary
 from .tools import ToolCallWidget, ToolGroupWidget
 
 __all__ = [
@@ -51,7 +53,9 @@ __all__ = [
     # sub-agent
     "SubAgentWidget",
     "SubAgentList",
-    "SubAgentFooter",
+    "SubAgentPane",
+    "SubAgentDetailHost",
+    "SubAgentSummary",
     # log messages
     "AssistantMessage",
     "ErrorMessage",
