@@ -49,7 +49,7 @@ async def test_list_rows_and_summary(monkeypatch):
         assert lst.selected_index() == 1
         # summary text mentions the running/done split and total agents
         rendered = str(summ.render())
-        assert "2" in rendered  # total agents
+        assert "2 sub-agents" in rendered  # total agents (not just "2", which matches "200 tokens")
 
 
 @pytest.mark.anyio

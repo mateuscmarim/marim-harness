@@ -580,11 +580,11 @@ class StreamRenderer:
     async def on_subagent_event(self, stream_id: str, event, usage=None) -> None:
         """Route a spawned sub-agent's own stream into the SubAgentWidget that owns
         it. Shares dispatch_stream_event with the top-level handler, but through a
-        sub-agent sink that mounts into the widget body and tracks per-stream state.
-        ``usage`` is the run's live RunUsage (or None): its total + cost ride in the
-        (collapsed) title and the full cache split lands in the expanded body. Fired
-        on the app's event loop, so direct widget mutation is safe and parallel
-        streams stay race-free by stream_id."""
+        sub-agent sink that mounts into the widget's pane (in the detail host) and
+        tracks per-stream state. ``usage`` is the run's live RunUsage (or None): its
+        total + cost ride on the breadcrumb card and the full cache split lands on
+        the pane's usage line. Fired on the app's event loop, so direct widget
+        mutation is safe and parallel streams stay race-free by stream_id."""
         parent = self.tool_widgets.get(stream_id)
         if not isinstance(parent, SubAgentWidget):
             return
