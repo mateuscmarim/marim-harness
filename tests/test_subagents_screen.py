@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 from textual.app import App, ComposeResult
+from textual.widgets import Static
 
 from marim_harness.interfaces.tui.widgets.subagent_detail import SubAgentDetailHost
 from marim_harness.interfaces.tui.widgets.subagent_stats import aggregate
@@ -187,3 +188,40 @@ async def test_refresh_subagents_view_ticks_list_live_while_open(tmp_path):
         app.refresh_subagents_view()
         await pilot.pause()
         assert view.list.row_count == 2
+
+
+@pytest.mark.anyio
+async def test_live_stream_then_open_shows_current_transcript(tmp_path: Path):
+    """Content streamed into a pane while the sub-agents screen is CLOSED is
+    present and current when the screen is opened with ctrl+x.
+
+    Distinct from test_ctrl_x_opens_view_and_shows_selected_transcript (which
+    only checks routing) and test_refresh_subagents_view_ticks_list_live_while_open
+    (which only checks the list row count).  This test specifically asserts that
+    widgets added to the pane *before* the screen opens are still queryable after
+    opening, and that finish() updates the status while the screen is open.
+    """
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        r = app.stream
+        w = r.mount_spawn_widget({"type": "research", "description": "map it"})
+        w.stream_id = "call_1"
+        r.tool_widgets["call_1"] = w
+        r.ensure_pane(w)
+        await app.query_one("#log").mount(w)
+        # Stream while the screen is CLOSED: content lands in the pane regardless.
+        await w.pane.add(Static("first line"))
+        w.note_tool("read_file", {"path": "a.py"})
+        await pilot.pause()
+        # Open: the list shows the agent with its live tool count; transcript is current.
+        await pilot.press("ctrl+x")
+        await pilot.pause()
+        view = app.query_one(SubAgentsView)
+        assert view.list.row_count == 1
+        assert view.host.current_sid() == "call_1"
+        assert len(w.pane.query(Static)) >= 2  # body header + streamed line
+        # Finish updates the row glyph live while open.
+        w.finish("ok", status="done")
+        app.refresh_subagents_view()
+        await pilot.pause()
+        assert w.status == "done"
