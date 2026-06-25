@@ -1,7 +1,18 @@
+from typing import cast
+
+from pydantic_ai.messages import (
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    PartDeltaEvent,
+    PartStartEvent,
+    TextPartDelta,
+    ToolReturnPart,
+)
 from pydantic_ai.usage import RunUsage
 
 from marim_harness.subagents_cli import (
     CLI_BINARY_ENV,
+    CliStreamTranslator,
     build_cli_argv,
     cli_permission_mode,
     map_tools_to_cc,
@@ -74,18 +85,6 @@ def test_synth_usage_tolerates_none():
     assert u.input_tokens == 0 and u.output_tokens == 0
 
 
-# ===== Task 3: CliStreamTranslator tests =====
-from pydantic_ai.messages import (
-    FunctionToolCallEvent,
-    FunctionToolResultEvent,
-    PartDeltaEvent,
-    PartStartEvent,
-    TextPartDelta,
-)
-
-from marim_harness.subagents_cli import CliStreamTranslator
-
-
 def test_translate_assistant_text_emits_start_then_full_delta():
     t = CliStreamTranslator()
     events = t.translate({
@@ -134,10 +133,11 @@ def test_translate_tool_result_labels_from_prior_call_and_marks_failure():
     assert len(events) == 1
     ev = events[0]
     assert isinstance(ev, FunctionToolResultEvent)
-    assert ev.part.tool_name == "Bash"          # carried from the matching call
-    assert ev.part.tool_call_id == "toolu_9"
-    assert ev.part.content == "boom"            # list-of-blocks flattened to text
-    assert ev.part.outcome == "failed"          # is_error → failed
+    part = cast(ToolReturnPart, ev.part)
+    assert part.tool_name == "Bash"          # carried from the matching call
+    assert part.tool_call_id == "toolu_9"
+    assert part.content == "boom"            # list-of-blocks flattened to text
+    assert part.outcome == "failed"          # is_error → failed
 
 
 def test_translate_ignores_system_and_result():
