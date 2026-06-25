@@ -52,9 +52,21 @@ async def run_bash(
     chunks: list[bytes] = []
     timed_out = False
     if proc.stdout is not None:
+        # ``timeout`` is a TOTAL wall-clock ceiling, not a per-line idle gap. A
+        # chatty command (e.g. ``pytest -v``) emits output continuously, so a
+        # per-readline timeout would reset on every line and let the command run
+        # unbounded — only a silent command would ever trip it. Track one deadline
+        # and shrink each readline's budget to the time remaining so the whole run
+        # is bounded regardless of how talkative the command is.
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout
         try:
             while True:
-                line = await asyncio.wait_for(proc.stdout.readline(), timeout=timeout)
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    timed_out = True
+                    break
+                line = await asyncio.wait_for(proc.stdout.readline(), timeout=remaining)
                 if not line:
                     break  # EOF — process exited
                 chunks.append(line)
@@ -91,7 +103,13 @@ async def run_bash(
                     chunks.append(line)
             except (asyncio.TimeoutError, OSError):
                 pass
-    await proc.wait()
+    # Reap the process. After EOF (clean exit) or the SIGKILL above this returns
+    # at once — but a process wedged in uninterruptible I/O (D-state: dead NFS, a
+    # stuck disk) can ignore even SIGKILL indefinitely. Bound the reap so the tool
+    # can never hang with no ceiling; ``returncode`` stays None in that rare case,
+    # which surfaces as ``exit None`` alongside the timeout marker.
+    with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(proc.wait(), timeout=_DRAIN_BUDGET)
     text = b"".join(chunks).decode(errors="replace")
     body = f"exit {proc.returncode}\n{text}"
     if timed_out:

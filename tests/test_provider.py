@@ -436,6 +436,34 @@ async def test_bash_blocks_denylisted_command(tmp_path: Path):
     assert not sentinel.exists()  # the shell never ran
 
 
+def test_resolve_bash_timeout_treats_value_as_ms_and_clamps():
+    """The bash timeout is milliseconds (Claude Code convention) clamped to a sane
+    range, then converted to whole seconds for run_bash. A bogus huge value (e.g. a
+    model passing 180000 meaning '3 min' but landing as 180000ms) must not become
+    hours; None falls back to the default."""
+    from marim_harness.tools import provider
+
+    assert provider._resolve_bash_timeout_seconds(None) == 30  # default 30000ms
+    assert provider._resolve_bash_timeout_seconds(120_000) == 120  # 2 min, not 33h
+    assert provider._resolve_bash_timeout_seconds(180_000) == 180
+    assert provider._resolve_bash_timeout_seconds(10_000_000) == 600  # clamped to max
+    assert provider._resolve_bash_timeout_seconds(50) == 1  # floored to 1s, not 0
+
+
+@pytest.mark.anyio
+async def test_bash_timeout_is_milliseconds(tmp_path: Path):
+    """A 500ms timeout must stop a 2s command — proving the param is read as
+    milliseconds (clamped to 1s), not as 500 seconds."""
+    from types import SimpleNamespace
+
+    from marim_harness.tools import provider
+
+    deps = Deps(workspace_root=tmp_path)
+    ctx = SimpleNamespace(deps=deps)
+    out = await provider.bash(ctx, "sleep 2", timeout=500)
+    assert "timed out" in out
+
+
 @pytest.mark.anyio
 async def test_bash_allows_permitted_command(tmp_path: Path):
     from types import SimpleNamespace

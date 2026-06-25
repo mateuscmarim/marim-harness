@@ -20,7 +20,25 @@ from . import fetch, fs, shell, web
 # form an import cycle.
 from .names import GATED_TOOLS, LSP_TOOLS, NET_TOOLS, READ_TOOLS, SUBAGENT_TOOLS  # noqa: F401
 
-_BASH_TIMEOUT = 60
+# Foreground bash timeout, expressed in milliseconds to match the convention the
+# model already uses (Claude Code's Bash tool is ms; models reliably pass ms even
+# to a seconds parameter). The value is clamped to ``_BASH_MAX_TIMEOUT_MS`` so a
+# mistaken huge value (or a hung command) can't block the turn for hours — past
+# that ceiling the model should use ``background=True``. NB: this is enforced
+# inside the tool via shell.run_bash, NOT via pydantic-ai's ``agent.tool(timeout=)``:
+# that wrapper is a static cap that can't see the per-call argument, silently
+# overrides it, and — worse — raises ModelRetry on expiry, which burns the tool's
+# retry budget and kills the whole (sub-)agent after two slow commands.
+_BASH_DEFAULT_TIMEOUT_MS = 30_000
+_BASH_MAX_TIMEOUT_MS = 600_000
+
+
+def _resolve_bash_timeout_seconds(timeout_ms: int | None) -> int:
+    """Clamp a model-supplied foreground timeout (milliseconds) to a sane range and
+    return whole seconds for ``shell.run_bash``. ``None`` falls back to the default."""
+    ms = _BASH_DEFAULT_TIMEOUT_MS if timeout_ms is None else int(timeout_ms)
+    ms = max(1000, min(ms, _BASH_MAX_TIMEOUT_MS))
+    return ms // 1000
 
 # Default output budget for auto-detached spawns (≈3k tokens/report) — keeps a
 # wide fan-out's synthesis prompt bounded while preserving the full report in the
@@ -483,10 +501,11 @@ async def bash(
     active voice (e.g. "Count total source lines"); it's shown in the UI and
     session history and is otherwise ignored — it never affects execution.
 
-    `timeout` caps a foreground run, in seconds; when omitted a default applies.
-    Raise it for a command you expect to be slow (a big test run) rather than
-    reaching for `background`. It is ignored for background runs, which are
-    detached and never time out.
+    `timeout` caps a foreground run, in milliseconds (default 30000, max 600000);
+    it is a total wall-clock ceiling, so a slow-but-chatty command still stops at
+    the limit. Raise it for a command you expect to be slow (a big test run)
+    rather than reaching for `background`. It is ignored for background runs,
+    which are detached and never time out.
 
     Set `background=True` for long-running commands (dev servers, builds, test
     watchers): the command is launched detached and the tool returns immediately
@@ -503,9 +522,8 @@ async def bash(
             "bash", command, bp.wait(), kill=bp.kill, output_fn=bp.output
         )
         return f"Started {job_id} (bash) — {command[:60]}"
-    if timeout is None:
-        return await shell.run_bash(ctx.deps.workspace_root, command)
-    return await shell.run_bash(ctx.deps.workspace_root, command, timeout=timeout)
+    timeout_s = _resolve_bash_timeout_seconds(timeout)
+    return await shell.run_bash(ctx.deps.workspace_root, command, timeout=timeout_s)
 
 
 def jobs(ctx: RunContext[Deps]) -> str:
@@ -525,7 +543,8 @@ def job_output(ctx: RunContext[Deps], id: str) -> str:
 
 
 async def wait_for_job(ctx: RunContext[Deps], id: str, timeout: float = 60) -> str:
-    """Block until a background job finishes (up to `timeout` seconds), then
+    """Block until a background job finishes (up to `timeout` seconds — note this
+    one is seconds, unlike bash's millisecond timeout), then
     return its result. If it's still running when the timeout elapses, the job
     keeps going and you get a "still running" note — call again or check
     job_output later. Use this when you need a job's result before continuing.
@@ -553,7 +572,8 @@ async def job(
     - "wait": block until job `id` finishes (up to `timeout` seconds) and return
       its result; a still-running note if the timeout elapses (the job keeps going).
     - "cancel": stop running job `id` (kills its process or cancels its run).
-    `id` is required for every action except "list"; `timeout` applies only to "wait"."""
+    `id` is required for every action except "list"; `timeout` applies only to
+    "wait" and is in seconds (unlike bash's millisecond timeout)."""
     if action == "list":
         return render_jobs(ctx.deps.jobs.list()) or "No background jobs."
     if not id:
@@ -648,7 +668,7 @@ class BuiltinToolProvider:
             agent.tool(cancel_job)
         agent.tool(requires_approval=True)(write_file)
         agent.tool(requires_approval=True)(edit_file)
-        agent.tool(requires_approval=True, timeout=_BASH_TIMEOUT)(bash)
+        agent.tool(requires_approval=True)(bash)
 
     def register_subagent(self, agent: SubAgent, tool_names: Iterable[str]) -> None:
         """Register exactly ``tool_names`` onto a sub-agent. Gated tools are
@@ -661,7 +681,4 @@ class BuiltinToolProvider:
             fn = _SUBAGENT_FNS.get(name)
             if fn is None:
                 continue
-            if name == "bash":
-                agent.tool(timeout=_BASH_TIMEOUT)(fn)
-            else:
-                agent.tool(fn)
+            agent.tool(fn)

@@ -55,6 +55,24 @@ async def test_bash_times_out(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_bash_timeout_is_total_not_idle(tmp_path: Path):
+    """The timeout is a TOTAL wall-clock ceiling, not a per-line idle gap. A
+    command that emits output continuously (never idle) must still stop at the
+    limit; a per-readline timeout would reset on every line and run unbounded."""
+    loop = asyncio.get_event_loop()
+    start = loop.time()
+    out = await shell.run_bash(
+        tmp_path,
+        "while true; do echo tick; sleep 0.05; done",
+        timeout=1,
+    )
+    elapsed = loop.time() - start
+    assert "timed out" in out
+    assert "tick" in out  # output before the deadline is preserved
+    assert elapsed < 5, f"chatty command ran {elapsed:.1f}s past its 1s total timeout"
+
+
+@pytest.mark.anyio
 async def test_bash_timeout_preserves_output_before_timeout(tmp_path: Path):
     """Output written before a timeout must not be discarded. The process
     produces visible output, then hangs — the kill should drain what's in
