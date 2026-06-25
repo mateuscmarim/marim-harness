@@ -66,6 +66,9 @@ class PromptInput(TextArea):
         super().__init__(soft_wrap=True, show_line_numbers=False)
         self.attachments: list[tuple[Path, str]] = []
         self._slash_active: bool = False
+        # Set for the next text change when it comes from a history recall (_show),
+        # so on_text_area_changed skips slash-menu activation for it — see _show.
+        self._suppress_slash: bool = False
 
     async def _on_key(self, event: events.Key) -> None:
         if event.key == "escape" and self._slash_active:
@@ -272,7 +275,17 @@ class PromptInput(TextArea):
         self._draft = ""
 
     def _show(self, text: str) -> None:
-        """Replace the box with ``text`` and drop the cursor at the end."""
+        """Replace the box with ``text`` and drop the cursor at the end.
+
+        Recalling a history entry that is a slash command must NOT pop the
+        autocomplete menu: it would capture Up/Down (the slash menu owns those keys
+        while open) and trap the user on that entry, unable to keep scrolling
+        history. Flag the resulting change so on_text_area_changed skips slash
+        activation — the menu still appears the moment the user actually edits the
+        recalled text. Only arm the flag when the text really changes, since an
+        unchanged assignment fires no Changed event to consume it."""
+        if text != self.text:
+            self._suppress_slash = True
         self.text = text
         self.move_cursor(self.document.end)
 
@@ -316,6 +329,12 @@ class PromptInput(TextArea):
 
     def on_text_area_changed(self, event: "TextArea.Changed") -> None:
         self._resize()
+        # A history recall set this text (see _show): don't open the slash menu for
+        # it, so Up/Down keep scrolling history instead of being captured by the
+        # menu. The menu still opens once the user edits the recalled text.
+        if self._suppress_slash:
+            self._suppress_slash = False
+            return
         # Slash-command autocomplete: track when the first line starts with /.
         first_line = self.text.split("\n", 1)[0]
         if first_line.startswith("/"):
