@@ -47,6 +47,11 @@ async def test_list_rows_and_summary(monkeypatch):
         await pilot.pause()
         assert lst.row_count == 2
         assert lst.selected_index() == 1
+        # Every column has a FIXED width so the stat columns (tools/tokens/cost/dur)
+        # stay visible and aligned instead of being pushed off the pane by a long
+        # "{type} — title" cell (which DataTable truncates to the agent width).
+        assert all(c.width for c in lst.columns.values())
+        assert len(lst.columns) == 6
         # summary text mentions the running/done split and total agents
         rendered = str(summ.render())
         assert "2 sub-agents" in rendered  # total agents (not just "2", which matches "200 tokens")

@@ -86,7 +86,7 @@ SubAgentWidget.-hovered .subagent-activity { color: white; text-style: bold; }
 }
 #subagent-summary { height: 1; padding: 0 1; color: $text-muted; background: $panel; }
 #subagents-body { height: 1fr; }
-#subagent-list { width: 42; border-right: solid $panel; }
+#subagent-list { width: 66; border-right: solid $panel; }
 #subagent-list:focus { border-right: solid $accent; }
 .subagent-pane { height: 1fr; padding: 0 1; }
 .subagent-pane:focus { background: $boost; }

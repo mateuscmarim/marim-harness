@@ -7,7 +7,18 @@ from textual.widgets import DataTable
 
 from .subagent_stats import row_cells
 
-_COLUMNS = ("", "agent", "tools", "tokens", "cost", "dur")
+# (label, width) per column. Fixed widths keep the stat columns (tools/tokens/
+# cost/dur) visible and aligned: DataTable truncates the long "{type} — title"
+# cell to the agent column's width instead of letting it push the stats off the
+# pane's right edge. The pane width in styles.tcss is sized to fit their sum.
+_COLUMNS = (
+    ("", 2),
+    ("agent", 28),
+    ("tools", 5),
+    ("tokens", 6),
+    ("cost", 6),
+    ("dur", 6),
+)
 
 
 class SubAgentList(DataTable):
@@ -17,8 +28,8 @@ class SubAgentList(DataTable):
         super().__init__(id="subagent-list", cursor_type="row", zebra_stripes=True)
 
     def on_mount(self) -> None:
-        for c in _COLUMNS:
-            self.add_column(c, key=c)
+        for label, width in _COLUMNS:
+            self.add_column(label, key=label, width=width)
 
     def refresh_rows(self, subagents: list, selected: int) -> None:
         """Rebuild every row from ``subagents`` and place the cursor on
