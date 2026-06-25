@@ -17,6 +17,7 @@ from .approval import ApprovalModal
 from .ask_user import AskUserModal
 from .commands import dispatch
 from .model_picker import ModelPickerModal
+from .notify import FinishedJobNotifier
 from .queue import TurnQueue
 from .session_view import SessionView
 from .settings import SettingsModal
@@ -128,9 +129,9 @@ class HarnessApp(App):
         # Bounds the wake→spawn→wake chain and owns the should-wake decision; the
         # App keeps the public autonomous_wake toggle and the wake's side effects.
         self._wake = WakeController(harness.wake_depth_cap)
-        # Ids of finished (done/failed) jobs already desktop-notified, so each
-        # completion pings exactly once, independent of the autonomous-wake path.
-        self._notified_jobs: set[str] = set()
+        # Dedup tracker: pings each finished job exactly once, independent of
+        # the autonomous-wake path.
+        self._job_notifier = FinishedJobNotifier()
         self._autocomplete: CommandAutocomplete | None = None
         # Full-screen sub-agent viewer state: whether it's open and which spawned
         # sub-agent (index into stream.subagents) is on screen.
@@ -315,14 +316,12 @@ class HarnessApp(App):
         when wake is off, a turn is busy, or the depth cap is hit. Cancelled jobs
         are skipped — they're either agent-initiated or shutdown teardown, so a
         ping would be noise (and this keeps ``cancel_all`` on exit silent)."""
-        for job in self.harness.deps.jobs.list():
-            if job.status in ("done", "failed") and job.id not in self._notified_jobs:
-                self._notified_jobs.add(job.id)
-                self._notify(
-                    "Background job finished",
-                    f"{job.id} ({job.kind}) {job.status}",
-                    "job_done",
-                )
+        for job in self._job_notifier.newly_finished(self.harness.deps.jobs.list()):
+            self._notify(
+                "Background job finished",
+                f"{job.id} ({job.kind}) {job.status}",
+                "job_done",
+            )
 
     def _maybe_wake(self) -> None:
         """Fire one digest-only autonomous turn iff a background job has finished
