@@ -399,12 +399,15 @@ class StreamRenderer:
 
     def toggle_reveal_all(self) -> None:
         """Ctrl+O: reveal every tool output in full (open groups, uncap edit
-        diffs), or restore the default view on a second press."""
+        diffs, expand finished thoughts), or restore the default view on a second
+        press."""
         self.show_all_output = not self.show_all_output
         for group in self.app.query(ToolGroupWidget):
             group.collapsed = not self.show_all_output
         for widget in self.app.query(ToolCallWidget):
             widget.set_reveal(self.show_all_output)
+        for thought in self.app.query(ThinkingWidget):
+            thought.set_reveal(self.show_all_output)
 
     def append_stream(self, widget: AssistantMessage | ThinkingWidget, delta: str) -> None:
         """Buffer a streamed delta into ``widget`` and mark it for the next flush
@@ -535,6 +538,12 @@ class StreamRenderer:
                 getattr(getattr(ctx, "usage", None), "total_tokens", 0) or 0
             )
             await self.dispatch_stream_event(event, sink)
+        # A round that ends on a thought (no following text/tool to trigger the
+        # per-event cap) still collapses to its preview.
+        trailing_thought = sink.get_thinking()
+        if trailing_thought is not None:
+            trailing_thought.finalize()
+            sink.set_thinking(None)
 
     async def on_subagent_event(self, stream_id: str, event, usage=None) -> None:
         """Route a spawned sub-agent's own stream into the SubAgentWidget that owns
@@ -566,6 +575,18 @@ class StreamRenderer:
         where to mount and how to read/write this stream's run-state. The top-level
         and sub-agent handlers differ only in that sink (and their own pre/post
         bookkeeping), so the four event branches live here once."""
+        # A reasoning block is complete the moment any event other than its own
+        # thinking-delta arrives — the next part has started, so cap the thought
+        # to its preview now (Ctrl+O still reveals it). A thought that's still
+        # streaming (more ThinkingPartDeltas to come) is left uncapped.
+        if not (
+            isinstance(event, PartDeltaEvent)
+            and isinstance(event.delta, ThinkingPartDelta)
+        ):
+            active_thought = sink.get_thinking()
+            if active_thought is not None:
+                active_thought.finalize()
+                sink.set_thinking(None)
         if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
             sink.set_run(None, None)  # assistant text ends the run of tools
             sink.on_text()  # live title status, useful while collapsed

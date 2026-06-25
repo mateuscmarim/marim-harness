@@ -88,6 +88,10 @@ class SessionView:
                             widget = ThinkingWidget()
                             await log.mount(widget)
                             self.app.stream.append_stream(widget.body, part.content)
+                            # A replayed thought is already complete — cap it to
+                            # its preview so a resumed session matches the live
+                            # resting state (Ctrl+O still reveals the full text).
+                            widget.finalize()
                     elif isinstance(part, ToolCallPart):
                         args = part.args_as_dict()
                         # A foreground spawn_agent rebuilds as its SubAgentWidget

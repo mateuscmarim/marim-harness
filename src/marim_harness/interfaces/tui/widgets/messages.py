@@ -47,6 +47,11 @@ class SummaryWidget(Collapsible):
         )
 
 
+# Lines of a *finished* thought kept inline; the tail is kept (not the head)
+# because a thought's conclusion sits at its end. Ctrl+O reveals the rest.
+_THINKING_CAP = 8
+
+
 class ThinkingWidget(Static):
     """A model's chain-of-thought, shown inline behind an accent rail with an
     italic ``Thinking:`` label — distinct from the reply but read at a glance, no
@@ -56,12 +61,22 @@ class ThinkingWidget(Static):
     them. ``self.body = self`` keeps the streaming interface the renderer drives
     (``append``/``flush`` on ``widget.body``) pointed at this widget.
 
+    A thought streams in *full*; once it finishes (``finalize``) it collapses to
+    its last ``_THINKING_CAP`` lines behind a dim ``… +N more lines (ctrl+o)``
+    header, so a long deliberation doesn't bury the reply. The app's Ctrl+O
+    reveal-all toggle (``set_reveal``) expands it back to the whole text in place.
+
     Content is built via ``Content`` (not markup parsing) so untrusted reasoning
-    text can't raise a MarkupError — only the fixed label is markup-parsed."""
+    text can't raise a MarkupError — only the fixed label/header are markup-parsed."""
 
     def __init__(self) -> None:
         self.text = ""
         self._pending = False
+        # The cap only applies once the stream ends; while ``_done`` is False the
+        # full thought streams so the user sees it form in real time.
+        self._done = False
+        # Ctrl+O override: show the full text even after the thought finished.
+        self.reveal = False
         self.body = self
         super().__init__(classes="thinking")
 
@@ -78,11 +93,44 @@ class ThinkingWidget(Static):
         self._pending = False
         return True
 
+    def finalize(self) -> None:
+        """Mark the reasoning stream complete so the inline view caps to its last
+        lines. Called once when the thought ends — the next part starts or the
+        run's event stream drains. Idempotent: re-finalizing is a no-op."""
+        if self._done:
+            return
+        self._done = True
+        self.update(self._render())
+
+    def set_reveal(self, value: bool) -> None:
+        """Ctrl+O reveal-all: show the whole thought, or restore the capped
+        preview on a second press. A short or still-streaming thought renders the
+        same either way, so this only visibly changes a finished, over-cap one."""
+        self.reveal = value
+        self.update(self._render())
+
     def _render(self) -> Content:
         # The label carries its own themed colour via markup; the reasoning text
         # is appended as a literal Content (no markup parse) and inherits the
-        # italic/muted styling the .tcss puts on the widget.
-        return Content.from_markup("[$text-accent]Thinking:[/] ") + Content(self.text)
+        # italic/muted styling the .tcss puts on the widget. While streaming (or
+        # when revealed) the full text shows; a finished thought caps to its tail.
+        label = Content.from_markup("[$text-accent]Thinking:[/] ")
+        if not self._done or self.reveal:
+            return label + Content(self.text)
+        kept, hidden = _cap_tail(self.text, _THINKING_CAP)
+        if not hidden:
+            return label + Content(kept)
+        header = Content.from_markup(f"[dim]… +{hidden} more lines (ctrl+o)[/]\n")
+        return label + header + Content(kept)
+
+
+def _cap_tail(text: str, cap: int) -> "tuple[str, int]":
+    """Keep the last ``cap`` lines of ``text``, returning ``(kept, hidden)`` where
+    ``hidden`` is how many leading lines were dropped (0 if it fit). Pure."""
+    lines = text.split("\n")
+    if len(lines) <= cap:
+        return text, 0
+    return "\n".join(lines[-cap:]), len(lines) - cap
 
 
 class TurnMeta(Static):

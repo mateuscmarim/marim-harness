@@ -8,6 +8,7 @@ from textual.widgets import Collapsible, Markdown
 from marim_harness.interfaces.tui.widgets import (
     AssistantMessage,
     PromptInput,
+    ThinkingWidget,
     ToolCallWidget,
     ToolGroupWidget,
     UserMessage,
@@ -1203,6 +1204,53 @@ def test_edit_file_diff_caps_until_revealed():
     assert "more lines (ctrl+o)" in _plain(w._render_body())  # capped by default
     w.reveal = True  # what set_reveal flips (the mounted path is covered in test_app)
     assert "more lines" not in _plain(w._render_body())  # uncapped when revealed
+
+
+def _think_plain(w: ThinkingWidget) -> str:
+    return str(w._render())  # Content stringifies to its plain text
+
+
+def test_thinking_shows_full_text_while_streaming():
+    # Before the stream finishes, the whole thought is visible — no cap, no marker,
+    # even when it runs long.
+    w = ThinkingWidget()
+    w.text = "\n".join(f"line {i}" for i in range(40))
+    plain = _think_plain(w)
+    assert "line 0" in plain and "line 39" in plain
+    assert "more lines" not in plain
+
+
+def test_thinking_caps_to_tail_after_finalize():
+    # Once finished, a long thought collapses to its LAST lines behind a marker;
+    # the opening lines drop, the conclusion (the tail) stays.
+    w = ThinkingWidget()
+    w.text = "\n".join(f"line {i}" for i in range(40))
+    w._done = True  # what finalize() flips (the mounted path is covered in test_app)
+    plain = _think_plain(w)
+    assert "line 0" not in plain  # head dropped
+    assert "line 39" in plain  # tail kept
+    assert "more lines (ctrl+o)" in plain
+
+
+def test_thinking_short_thought_is_not_capped():
+    # A thought within the cap renders whole even after finishing — no marker.
+    w = ThinkingWidget()
+    w.text = "just\na couple\nlines"
+    w._done = True
+    plain = _think_plain(w)
+    assert "just" in plain and "lines" in plain
+    assert "more lines" not in plain
+
+
+def test_thinking_reveal_uncaps_finished_thought():
+    # Ctrl+O reveal-all restores the full text of a capped thought.
+    w = ThinkingWidget()
+    w.text = "\n".join(f"line {i}" for i in range(40))
+    w._done = True
+    w.reveal = True  # what set_reveal() flips
+    plain = _think_plain(w)
+    assert "line 0" in plain and "line 39" in plain
+    assert "more lines" not in plain
 
 
 def test_read_file_highlight_has_no_baked_background():
