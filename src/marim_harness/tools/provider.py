@@ -343,11 +343,13 @@ async def spawn_agent(
     its final message becomes this tool's result. Spawn several in one turn to
     fan out independent work; sub-agents cannot spawn further sub-agents.
 
-    Set `background=True` to force a detached job (returns a job id immediately);
-    `background=False` forces an inline run. Left unset, a spawn auto-detaches when
-    detached-fanout mode is on and the session is interactive — it returns a job
-    handle and you choose to end your turn (its report is delivered later) or
-    wait_for_job for it inline.
+    Leave `background` unset for a normal spawn or fan-out — that is almost always
+    right. When detached-fanout mode is on, an unset spawn auto-detaches: it shows a
+    live sub-agent card, returns a job handle, and you either end your turn (its
+    report is delivered when it finishes) or wait_for_job for it inline. Only set
+    `background=True` for a genuine fire-and-forget job; you do NOT need it to run a
+    fan-out in parallel — unset already does, with better display. `background=False`
+    forces an inline run (no detach).
 
     `mcp` grants the sub-agent specific MCP servers by name (none by default).
     Pass the names listed as enabled in the sub-agents index — e.g.
