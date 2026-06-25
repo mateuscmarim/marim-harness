@@ -69,34 +69,41 @@ def subagent_failed(content: str) -> bool:
 
 
 _DETACH_PREFIX = "Started detached sub-agent "
+_BG_PREFIX = "Started "
+_BG_AGENT_MARK = " (agent)"
 
 
 def _detached_job_id(content: str) -> str | None:
-    """The job id from an auto-detached spawn's handoff note (the text
-    ``_detach_handoff`` returns), or None for any other tool return. Paired with
-    that producer — a round-trip test pins the two formats together."""
+    """The background job id behind an agent spawn's return, or None for any
+    other tool return. Recognizes both producers so the card fills for either
+    detach path: an *auto-detached* handoff (``_detach_handoff`` →
+    ``"Started detached sub-agent <id>, …"``) and an *explicit* ``background=True``
+    spawn (``provider.spawn_agent`` → ``"Started <id> (agent) — <label>"``). A bash
+    background job (``"Started <id> (bash) …"``) is intentionally not matched — it's
+    not a sub-agent card. Round-trip tests pin both formats."""
     text = content.lstrip()
-    if not text.startswith(_DETACH_PREFIX):
-        return None
-    job_id, sep, _ = text[len(_DETACH_PREFIX):].partition(",")
-    return job_id.strip() if sep and job_id.strip() else None
+    if text.startswith(_DETACH_PREFIX):
+        job_id, sep, _ = text[len(_DETACH_PREFIX):].partition(",")
+        return job_id.strip() if sep and job_id.strip() else None
+    if text.startswith(_BG_PREFIX):
+        rest = text[len(_BG_PREFIX):]
+        idx = rest.find(_BG_AGENT_MARK)
+        if idx > 0:
+            return rest[:idx].strip() or None
+    return None
 
 
-def _wait_card_spec(tool_name: str, args: dict, jobs) -> tuple[str, str] | None:
-    """If a ``wait_for_job`` call targets an *already-finished* agent job, return
-    ``(agent_type, agent_task)`` so the wait renders as that sub-agent's card —
-    the moment a detached spawn's result becomes available inline. ``None`` when
-    it isn't such a call, notably when the job is still running: the wait may then
-    time out with no report, so a card (which has no honest "still waiting" state)
-    would be misleading; the plain tool row carries the timeout text instead.
-    Reads ``type``/``task`` back out of the job label (``f"{type}: {task}"``)."""
-    if tool_name != "wait_for_job":
-        return None
+def _wait_subagent_label(args: dict, jobs) -> str | None:
+    """The sub-agent display label (``f"{type}: {task}"``, the job label) a
+    ``wait_for_job`` is blocking on, or None when the waited job isn't a sub-agent
+    (a bash job, or no such job). Used to name the wait row — "Wait · <task>" —
+    rather than show a bare job id. Returned for any status: the spawn owns the
+    sub-agent card, so the wait is just a thin labelled row, with no card-vs-timeout
+    concern that would need the job to be finished."""
     job = jobs.get(str(args.get("id", "")))
-    if job is None or job.kind != "agent" or job.status == "running":
+    if job is None or job.kind != "agent":
         return None
-    agent_type, _, agent_task = job.label.partition(": ")
-    return agent_type, agent_task
+    return job.label or None
 
 
 def _stream_hidden(widget: Widget, viewing_sid: str | None) -> bool:
@@ -193,11 +200,13 @@ class _TopLevelSink(_StreamSink):
         self._r.current_thinking = widget
 
     async def intercept_tool(self, event, args: dict) -> bool:
-        # A background spawn returns a job id immediately and doesn't stream its
-        # steps, so it falls through to a plain tool widget; only a foreground
-        # spawn gets the live SubAgentWidget (and is mounted standalone, breaking
-        # the run so it isn't buried in a tool group).
-        if event.part.tool_name == "spawn_agent" and not args.get("background"):
+        # Every spawn_agent gets a live SubAgentWidget, mounted standalone so it
+        # isn't buried in a tool group. A foreground spawn streams its steps into
+        # the card; a background/detached spawn (auto or explicit background=True)
+        # returns a job-id handoff that holds the card pending until the job
+        # settles and fills it (note_detached_spawn / fill_finished_detached_cards)
+        # — so a backgrounded spawn no longer renders a misleading ✓ tool row.
+        if event.part.tool_name == "spawn_agent":
             widget = self._r.mount_spawn_widget(args)
             widget.stream_id = event.part.tool_call_id
             self._r.tool_widgets[event.part.tool_call_id] = widget
@@ -214,21 +223,6 @@ class _TopLevelSink(_StreamSink):
                 event.part.tool_name, args,
                 workspace_root=self._r.app.harness.deps.workspace_root,
             )
-            self._r.tool_widgets[event.part.tool_call_id] = widget
-            self.set_run(None, None)
-            await self.container.mount(widget)
-            return True
-        # Waiting on an already-finished detached sub-agent: render its card
-        # (filled by the result handler's finish()) instead of a plain tool row.
-        spec = _wait_card_spec(
-            event.part.tool_name, args, self._r.app.harness.deps.jobs
-        )
-        if spec is not None:
-            agent_type, agent_task = spec
-            widget = SubAgentWidget(
-                agent_type, agent_task, self._r.app.harness.model_label or ""
-            )
-            widget.stream_id = event.part.tool_call_id
             self._r.tool_widgets[event.part.tool_call_id] = widget
             self.set_run(None, None)
             await self.container.mount(widget)
@@ -500,6 +494,16 @@ class StreamRenderer:
         await group.add_tool(widget)
         return group, None
 
+    def _with_wait_label(self, tool_name: str, args: dict) -> dict:
+        """For a ``wait_for_job`` blocking on a sub-agent, return ``args`` with the
+        sub-agent's label injected as ``_wait_label`` so the row reads
+        "Wait · <task>" instead of a bare job id. ``args`` is returned unchanged for
+        any other tool, or a wait on a non-sub-agent job."""
+        if tool_name != "wait_for_job":
+            return args
+        label = _wait_subagent_label(args, self.app.harness.deps.jobs)
+        return {**args, "_wait_label": label} if label else args
+
     def mount_spawn_widget(self, args: dict):
         """Build the compact card for a foreground spawn_agent and register it in the
         ordered ``subagents`` list (the viewer's navigation backing). The transcript
@@ -601,6 +605,7 @@ class StreamRenderer:
             args = event.part.args_as_dict()
             if await sink.intercept_tool(event, args):
                 return
+            args = self._with_wait_label(event.part.tool_name, args)
             sink.on_tool(event.part.tool_name, args)  # live card status
             widget = ToolCallWidget(
                 event.part.tool_name, args,

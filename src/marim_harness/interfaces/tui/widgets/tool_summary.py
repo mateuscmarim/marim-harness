@@ -100,6 +100,12 @@ def _raw_target(tool_name: str, args: dict) -> str:
         # `background: True` (which rendered as "Spawn Agent · True").
         v = args.get("description") or args.get("task") or ""
         return " ".join(str(v).split())
+    if tool_name == "wait_for_job":
+        # The renderer injects `_wait_label` (the sub-agent's "type: task") when the
+        # waited job is a sub-agent, so the row reads "Wait · <task>" and names what
+        # it's blocking on instead of a bare job id.
+        v = args.get("_wait_label") or args.get("id") or ""
+        return " ".join(str(v).split())
     key = _TARGET_ARG.get(tool_name)
     if key is not None:
         v = args.get(key)

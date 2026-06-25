@@ -983,85 +983,67 @@ def _fake_jobs(job):
     return _Reg()
 
 
-def test_wait_card_spec_done_agent_job_yields_type_and_task():
+def test_wait_subagent_label_for_agent_job_any_status():
     from types import SimpleNamespace
 
-    from marim_harness.interfaces.tui.stream_render import _wait_card_spec
+    from marim_harness.interfaces.tui.stream_render import _wait_subagent_label
 
-    job = SimpleNamespace(kind="agent", status="done", label="explore: map the loop")
-    assert _wait_card_spec("wait_for_job", {"id": "j1"}, _fake_jobs(job)) == (
-        "explore", "map the loop",
-    )
+    # A label is returned for an agent job regardless of status — we're naming the
+    # wait, not carding it, so the running case is included (unlike the old card).
+    running = SimpleNamespace(kind="agent", status="running", label="explore: map the loop")
+    assert _wait_subagent_label({"id": "j1"}, _fake_jobs(running)) == "explore: map the loop"
+    done = SimpleNamespace(kind="agent", status="done", label="explore: x")
+    assert _wait_subagent_label({"id": "j1"}, _fake_jobs(done)) == "explore: x"
 
 
-def test_wait_card_spec_skips_running_job():
+def test_wait_subagent_label_skips_bash_and_missing():
     from types import SimpleNamespace
 
-    from marim_harness.interfaces.tui.stream_render import _wait_card_spec
+    from marim_harness.interfaces.tui.stream_render import _wait_subagent_label
 
-    # A still-running job has no report yet (the wait may time out), so no card.
-    job = SimpleNamespace(kind="agent", status="running", label="explore: x")
-    assert _wait_card_spec("wait_for_job", {"id": "j1"}, _fake_jobs(job)) is None
-
-
-def test_wait_card_spec_skips_bash_job_and_missing_and_other_tools():
-    from types import SimpleNamespace
-
-    from marim_harness.interfaces.tui.stream_render import _wait_card_spec
-
-    bash = SimpleNamespace(kind="bash", status="done", label="echo: hi")
-    assert _wait_card_spec("wait_for_job", {"id": "j1"}, _fake_jobs(bash)) is None
-    assert _wait_card_spec("wait_for_job", {"id": "j1"}, _fake_jobs(None)) is None
-    agent = SimpleNamespace(kind="agent", status="done", label="explore: x")
-    assert _wait_card_spec("read_file", {"path": "a"}, _fake_jobs(agent)) is None
+    bash = SimpleNamespace(kind="bash", status="running", label="echo: hi")
+    assert _wait_subagent_label({"id": "j1"}, _fake_jobs(bash)) is None
+    assert _wait_subagent_label({"id": "j1"}, _fake_jobs(None)) is None
 
 
 @pytest.mark.anyio
-async def test_wait_for_job_on_finished_agent_renders_subagent_card(tmp_path: Path):
-    """When the agent waits on an already-finished detached sub-agent, the wait
-    renders as the sub-agent's card carrying its report, not a plain tool row."""
+async def test_wait_for_job_row_names_the_subagent(tmp_path: Path):
+    """Waiting on a (still-running) detached sub-agent is a thin tool row — not a
+    card (the spawn owns the card) — but the row names the sub-agent it's blocking
+    on instead of a bare job id."""
     import asyncio
 
-    from pydantic_ai.messages import (
-        FunctionToolCallEvent,
-        FunctionToolResultEvent,
-        ToolCallPart,
-        ToolReturnPart,
-    )
+    from pydantic_ai.messages import FunctionToolCallEvent, ToolCallPart
 
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget, ToolCallWidget
+    from marim_harness.interfaces.tui.widgets.tool_summary import summarize
 
     app = _app(tmp_path)
     reg = app.harness.deps.jobs
+    gate = asyncio.Event()
 
     async def _work():
-        return "THE REPORT"
+        await gate.wait()
+        return "r"
 
-    jid = reg.register("agent", "explore: map the core loop", _work())
-    for _ in range(400):  # let the job settle to done
-        if reg.get(jid).status != "running":
-            break
-        await asyncio.sleep(0)
+    jid = reg.register("agent", "explore: review TUI subsystem", _work())  # running
 
     call = FunctionToolCallEvent(part=ToolCallPart(
         tool_name="wait_for_job", args={"id": jid}, tool_call_id="w1"))
-    result = FunctionToolResultEvent(part=ToolReturnPart(
-        tool_name="wait_for_job", content="THE REPORT", tool_call_id="w1"))
 
     async def gen():
         yield call
-        yield result
 
     async with app.run_test() as pilot:
         await pilot.pause()
         await app.stream.on_events(None, gen())
         await pilot.pause()
         widget = app.stream.tool_widgets.get("w1")
-        assert isinstance(widget, SubAgentWidget)
-        assert widget.agent_type == "explore"
-        assert widget.agent_task == "map the core loop"
-        assert widget.report == "THE REPORT"
-        assert widget.status == "done"
+        assert isinstance(widget, ToolCallWidget)        # a row, not a card
+        assert not isinstance(widget, SubAgentWidget)
+        # The row's preview names the sub-agent, not just the job id.
+        assert "review TUI subsystem" in summarize("wait_for_job", widget.args).target
+        gate.set()
 
 
 def test_subagent_failed_detects_runner_error_text():
@@ -1082,6 +1064,19 @@ def test_detached_job_id_round_trips_with_the_handoff():
     # A normal report is not a handoff.
     assert _detached_job_id("Here is my report on the parser.") is None
     assert _detached_job_id("") is None
+
+
+def test_detached_job_id_parses_explicit_background_return():
+    """An explicit background=True agent spawn returns
+    "Started <id> (agent) — <label>" (provider.py spawn_agent) — the parser must
+    recover its job id too, so the card fills for that path as well."""
+    from marim_harness.interfaces.tui.stream_render import _detached_job_id
+
+    assert _detached_job_id("Started job-9 (agent) — explore: map the loop") == "job-9"
+    # A bash background job is not an agent spawn → no card.
+    assert _detached_job_id("Started job-3 (bash) — echo hi") is None
+    # A normal report that merely starts with "Started" is not a handoff.
+    assert _detached_job_id("Started writing the report; here goes.") is None
 
 
 @pytest.mark.anyio
@@ -1185,6 +1180,62 @@ async def test_detached_card_fills_failed_when_job_fails(tmp_path: Path):
         assert isinstance(card, SubAgentWidget)
         assert card.status == "failed"
         assert "upstream 500" in card.report  # the failure text lands on the card
+
+
+@pytest.mark.anyio
+async def test_explicit_background_spawn_renders_card_and_fills(tmp_path: Path):
+    """A spawn the model explicitly marks background=True (return
+    "Started <id> (agent) — …") now also renders a SubAgentWidget that holds
+    pending and fills on settle — not a generic ✓ tool row."""
+    import asyncio
+
+    from pydantic_ai.messages import (
+        FunctionToolCallEvent,
+        FunctionToolResultEvent,
+        ToolCallPart,
+        ToolReturnPart,
+    )
+
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+
+    app = _app(tmp_path)
+    reg = app.harness.deps.jobs
+    gate = asyncio.Event()
+
+    async def _work():
+        await gate.wait()
+        return "EXPLICIT BG REPORT"
+
+    jid = reg.register("agent", "explore: review TUI", _work())  # running
+
+    call = FunctionToolCallEvent(part=ToolCallPart(
+        tool_name="spawn_agent",
+        args={"type": "explore", "task": "review TUI", "background": True},
+        tool_call_id="s1"))
+    result = FunctionToolResultEvent(part=ToolReturnPart(
+        tool_name="spawn_agent",
+        content=f"Started {jid} (agent) — explore: review TUI", tool_call_id="s1"))
+
+    async def gen():
+        yield call
+        yield result
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.stream.on_events(None, gen())
+        await pilot.pause()
+        card = app.stream.tool_widgets.get("s1")
+        assert isinstance(card, SubAgentWidget)   # a card, not a generic tool row
+        assert card.status == "pending"           # not a misleading ✓
+        gate.set()
+        for _ in range(400):
+            if reg.get(jid).status != "running":
+                break
+            await asyncio.sleep(0)
+        app.stream.fill_finished_detached_cards(reg)
+        await pilot.pause()
+        assert card.status == "done"
+        assert card.report == "EXPLICIT BG REPORT"
 
 
 @pytest.mark.anyio
@@ -1954,9 +2005,10 @@ async def test_job_panel_reflects_jobs_on_mount(tmp_path: Path):
 
 
 @pytest.mark.anyio
-async def test_background_spawn_renders_as_tool_widget(tmp_path: Path):
-    """A background spawn_agent doesn't stream, so it gets a plain ToolCallWidget
-    rather than a live SubAgentWidget."""
+async def test_background_spawn_renders_a_card_held_pending(tmp_path: Path):
+    """A background spawn_agent now renders a SubAgentWidget (not a plain tool
+    row). With no live job behind it, the card holds pending rather than showing a
+    misleading ✓ on the dispatch handoff."""
     from pydantic_ai.messages import (
         FunctionToolCallEvent,
         FunctionToolResultEvent,
@@ -1964,7 +2016,7 @@ async def test_background_spawn_renders_as_tool_widget(tmp_path: Path):
         ToolReturnPart,
     )
 
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget, ToolCallWidget
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget
 
     call = FunctionToolCallEvent(
         part=ToolCallPart(
@@ -1991,9 +2043,8 @@ async def test_background_spawn_renders_as_tool_widget(tmp_path: Path):
         await app.stream.on_events(None, gen())
         await pilot.pause()
         widget = app.stream.tool_widgets.get("spawn-bg")
-        assert isinstance(widget, ToolCallWidget)
-        assert not isinstance(widget, SubAgentWidget)
-        assert widget.status == "done"
+        assert isinstance(widget, SubAgentWidget)
+        assert widget.status == "pending"
 
 
 @pytest.mark.anyio
