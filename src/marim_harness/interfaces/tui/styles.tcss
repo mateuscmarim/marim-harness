@@ -30,8 +30,12 @@ PromptInput { height: 3; max-height: 8; border: round $accent; padding: 0 1; }
 .turn-meta { color: $text-muted; text-style: dim; margin: 0 0 1 0; }
 
 /* Reasoning shown inline behind an accent rail, italic + muted so it reads as
-   an aside to the reply. The "Thinking:" label carries its own colour inline. */
-.thinking { margin: 1 0 1 0; padding: 0 0 0 2; color: $text-muted; text-style: italic; }
+   an aside to the reply. The "Thinking:" label carries its own colour inline.
+   height:auto/width:1fr override Vertical's 1fr default — ThinkingWidget is now a
+   column of frozen line-Statics + a live tail (incremental streaming), not a
+   single Static, so it must hug its content instead of filling the viewport. The
+   muted italic colour is inherited by the child Statics. */
+.thinking { margin: 1 0 1 0; padding: 0 0 0 2; height: auto; width: 1fr; color: $text-muted; text-style: italic; }
 
 /* Two-column intro header (Claude-style): the accent block-ASCII banner on the
    left, the welcome/resume text on the right behind a vertical accent divider,

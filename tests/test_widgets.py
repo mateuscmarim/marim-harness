@@ -564,6 +564,49 @@ async def test_assistant_message_defers_render_until_flush():
         assert w.flush() is False
 
 
+@pytest.mark.anyio
+async def test_assistant_message_renders_incrementally_matching_single_shot():
+    """Streaming the reply in small deltas (flushing each, like the tick) must
+    render the *same* document as one big flush — Markdown.append only parses the
+    new tail, so the per-turn cost is O(n) not O(n²), but the result is identical.
+    Guards the incremental-flush optimization against block-boundary corruption."""
+    from textual.widgets.markdown import MarkdownBlock
+
+    doc = (
+        "# Heading\n\n"
+        "A paragraph with **bold** and `code`.\n\n"
+        "- one\n- two\n- three\n\n"
+        "```python\ndef f(x):\n    return x + 1\n```\n\n"
+        "Closing paragraph.\n"
+    )
+
+    class H(App):
+        def compose(self) -> ComposeResult:
+            yield AssistantMessage()
+
+    async def render(stream: bool) -> list[str]:
+        app = H()
+        async with app.run_test() as pilot:
+            w = app.query_one(AssistantMessage)
+            await pilot.pause()
+            if stream:
+                for i in range(0, len(doc), 5):  # tiny deltas across block edges
+                    w.append(doc[i : i + 5])
+                    w.flush()
+                    await pilot.pause()
+            else:
+                w.append(doc)
+                w.flush()
+            for _ in range(3):
+                await pilot.pause()
+            # The full source is reconstructed and the parse cursor reached the end.
+            assert w.text == doc
+            assert w._rendered_len == len(doc)
+            return [type(b).__name__ for b in w.query(MarkdownBlock)]
+
+    assert await render(stream=True) == await render(stream=False)
+
+
 def _history_host(hist):
     class H(App):
         def compose(self) -> ComposeResult:
@@ -1284,6 +1327,53 @@ def test_thinking_reveal_uncaps_finished_thought():
     plain = _think_plain(w)
     assert "line 0" in plain and "line 39" in plain
     assert "more lines" not in plain
+
+
+@pytest.mark.anyio
+async def test_thinking_streams_incrementally_and_freezes_completed_lines():
+    """Streaming reasoning must show the whole thought live yet stay O(delta) per
+    flush: completed lines are frozen into immutable child Statics (rendered once,
+    never reflowed), while only the live tail re-renders. Guards the incremental
+    redesign — frozen content must survive further streaming unchanged, and the
+    full text must remain visible across frozen + live."""
+    from textual.containers import VerticalScroll
+
+    class H(App):
+        def compose(self) -> ComposeResult:
+            with VerticalScroll():
+                yield ThinkingWidget()
+
+    full = "\n".join(f"line {i}" for i in range(60))  # > _FREEZE_EVERY → chunks
+    app = H()
+    async with app.run_test() as pilot:
+        w = app.query_one(ThinkingWidget)
+        await pilot.pause()
+        for i in range(0, len(full), 9):  # tiny deltas, flush each like the tick
+            w.append(full[i : i + 9])
+            w.flush()
+            await pilot.pause()
+        await pilot.pause()
+
+        shown = "\n".join(str(s.render()) for s in (*w._frozen, w._live))
+        assert w.text == full
+        assert len(w._frozen) >= 2  # completed lines were frozen in batches
+        assert "line 0" in shown and "line 59" in shown  # full thought visible
+        assert "Thinking:" in str(w._frozen[0].render())  # label pinned at top
+        assert "Thinking:" not in str(w._live.render())  # not duplicated below
+
+        # A frozen chunk is immutable: more streaming must not re-render it.
+        snapshot = str(w._frozen[0].render())
+        w.append("\nlater")
+        w.flush()
+        await pilot.pause()
+        assert str(w._frozen[0].render()) == snapshot
+
+        # finalize drops the frozen chunks and caps to the tail in the live Static.
+        w.finalize()
+        await pilot.pause()
+        assert w._frozen == []
+        capped = str(w._live.render())
+        assert "line 0" not in capped and "more lines (ctrl+o)" in capped
 
 
 def test_read_file_highlight_has_no_baked_background():
