@@ -57,6 +57,14 @@ class AgentDef:
     tools: frozenset[str]
     source: str
     plugin: str | None = None
+    # Which runner executes this agent. "native" is the in-process Pydantic AI
+    # loop; "claude-cli" spawns the Claude Code CLI (see subagents_cli.py). New
+    # backends slot in here without touching discovery.
+    backend: str = "native"
+    # Backend-specific default model. For "claude-cli" this is a Claude Code model
+    # name (e.g. "opus"/"sonnet" alias or a full id), passed verbatim to --model;
+    # ignored by the native backend, which tracks the harness's runtime model.
+    model: str | None = None
 
     @property
     def qualified_name(self) -> str:
@@ -129,6 +137,18 @@ def _parse_agent(source: str, path: Path, plugin: str | None = None) -> AgentDef
     description = data.get("description")
     if not isinstance(description, str) or not description.strip():
         return None
+    backend_raw = data.get("backend")
+    backend = (
+        backend_raw.strip()
+        if isinstance(backend_raw, str) and backend_raw.strip()
+        else "native"
+    )
+    model_raw = data.get("model")
+    model = (
+        model_raw.strip()
+        if isinstance(model_raw, str) and model_raw.strip()
+        else None
+    )
     return AgentDef(
         name=name,
         description=description.strip(),
@@ -136,6 +156,8 @@ def _parse_agent(source: str, path: Path, plugin: str | None = None) -> AgentDef
         tools=_parse_tools(data.get("tools")),
         source=source,
         plugin=plugin,
+        backend=backend,
+        model=model,
     )
 
 
