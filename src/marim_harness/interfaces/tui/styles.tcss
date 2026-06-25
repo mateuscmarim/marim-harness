@@ -2,9 +2,9 @@
    variables so switching the theme recolors everything. Keep it free of
    hard-coded colors. */
 
-/* Layer stack: base chrome, then the sub-agent transcript overlay, then its
-   side panel + footer on top of that (see the sub-agent viewer rules below). */
-Screen { layers: base subagents subagents-top; }
+/* Layer stack: base chrome, then the sub-agents full-bleed view (subagents),
+   then the autocomplete dropdown (overlay) on top of everything. */
+Screen { layers: base subagents overlay; }
 
 #log { height: 1fr; padding: 0 1; }
 
@@ -75,40 +75,23 @@ SubAgentWidget.-hovered .subagent-activity { color: white; text-style: bold; }
 .subagent-usage { color: $text-muted; }
 .subagent-error { color: $error; margin: 1 0 0 0; }
 
-/* The transcript home. Hidden inline (display toggled in Python); the `viewing`
-   class promotes it to a full-screen overlay docked above the log, leaving a gap
-   on the left for the docked side panel. */
-.subagent-body { height: auto; }
-.subagent-body.viewing {
-    layer: subagents;
-    dock: top;
+/* Full-bleed sub-agents screen (ctrl+x). Hidden by default; shown by the app
+   via display:block. Covers the log, status bar, and prompt entirely. */
+#subagents-view {
+    display: none;
     width: 100%;
     height: 100%;
+    layer: subagents;
     background: $surface;
-    padding: 1 2 1 38;
 }
-
-/* Viewer chrome — the master list (left) and status footer (bottom). Both start
-   hidden; the app shows them by setting display while the viewer is open. */
-#subagent-list {
-    display: none;
-    layer: subagents-top;
-    dock: left;
-    width: 36;
-    height: 100%;
-    background: $panel;
-    border-right: solid $accent;
-    padding: 1;
-}
-#subagent-footer {
-    display: none;
-    layer: subagents-top;
-    dock: bottom;
-    height: 1;
-    background: $panel;
-    color: $text-muted;
-    padding: 0 1;
-}
+#subagent-summary { height: 1; padding: 0 1; color: $text-muted; background: $panel; }
+#subagents-body { height: 1fr; }
+#subagent-list { width: 42; border-right: solid $panel; }
+#subagent-list:focus { border-right: solid $accent; }
+.subagent-pane { height: 1fr; padding: 0 1; }
+.subagent-pane:focus { background: $boost; }
+#subagent-hints { height: 1; padding: 0 1; color: $text-muted; background: $panel; }
+.subagent-detached { color: $text-muted; text-style: italic; margin: 1 0; }
 
 /* Indent the group's children and drop their inter-row gap so a run of tools
    reads as one compact cluster (the per-child accent rail still separates them)
