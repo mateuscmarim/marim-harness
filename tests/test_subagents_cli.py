@@ -1,5 +1,8 @@
+import stat
+import sys
 from typing import cast
 
+import pytest
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
@@ -12,6 +15,7 @@ from pydantic_ai.usage import RunUsage
 
 from marim_harness.subagents_cli import (
     CLI_BINARY_ENV,
+    ClaudeCliRunner,
     CliStreamTranslator,
     build_cli_argv,
     cli_permission_mode,
@@ -144,3 +148,72 @@ def test_translate_ignores_system_and_result():
     t = CliStreamTranslator()
     assert t.translate({"type": "system", "subtype": "init"}) == []
     assert t.translate({"type": "result", "result": "done"}) == []
+
+
+# ---------------------------------------------------------------------------
+# ClaudeCliRunner — fake-binary integration tests
+# ---------------------------------------------------------------------------
+
+_FAKE_CLI = '''#!{python}
+import json, sys
+lines = [
+    {{"type": "system", "subtype": "init"}},
+    {{"type": "assistant", "message": {{"content": [
+        {{"type": "text", "text": "Working on it"}},
+        {{"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {{"path": "x"}}}},
+    ]}}}},
+    {{"type": "user", "message": {{"content": [
+        {{"type": "tool_result", "tool_use_id": "toolu_1",
+         "content": "file body", "is_error": False}},
+    ]}}}},
+    {{"type": "result", "subtype": "success", "result": "Done: found it",
+      "num_turns": 2, "total_cost_usd": 0.001,
+      "usage": {{"input_tokens": 10, "output_tokens": 5,
+                 "cache_read_input_tokens": 2, "cache_creation_input_tokens": 1}}}},
+]
+for o in lines:
+    sys.stdout.write(json.dumps(o) + "\\n")
+'''
+
+
+def _make_fake_cli(tmp_path) -> str:
+    p = tmp_path / "fake_claude.py"
+    p.write_text(_FAKE_CLI.format(python=sys.executable), encoding="utf-8")
+    p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IRWXU)
+    return str(p)
+
+
+@pytest.mark.anyio
+async def test_runner_streams_events_and_returns_result(tmp_path):
+    binary = _make_fake_cli(tmp_path)
+    seen = []
+
+    async def on_event(stream_id, event, usage):
+        seen.append((stream_id, type(event).__name__))
+
+    runner = ClaudeCliRunner(on_event, None)
+    result = await runner.run(
+        binary=binary, prompt="go", system_prompt="be a worker",
+        cwd=str(tmp_path), allow_gated=True, allowed_tools=frozenset({"read_file"}),
+        model=None, stream_id="s1",
+    )
+    assert result.output == "Done: found it"
+    assert result.usage.input_tokens == 10 and result.usage.output_tokens == 5
+    names = [n for _, n in seen]
+    assert "FunctionToolCallEvent" in names
+    assert "FunctionToolResultEvent" in names
+    assert all(sid == "s1" for sid, _ in seen)
+
+
+@pytest.mark.anyio
+async def test_runner_raises_when_no_result(tmp_path):
+    p = tmp_path / "silent.py"
+    p.write_text(f"#!{sys.executable}\nimport sys; sys.exit(3)\n", encoding="utf-8")
+    p.chmod(0o755)
+    runner = ClaudeCliRunner(None, None)
+    with pytest.raises(Exception) as exc:
+        await runner.run(
+            binary=str(p), prompt="go", system_prompt="s", cwd=str(tmp_path),
+            allow_gated=False, allowed_tools=frozenset(), model=None, stream_id="",
+        )
+    assert "no result" in str(exc.value).lower()

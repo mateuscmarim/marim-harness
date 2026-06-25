@@ -12,6 +12,8 @@ spawns the process and forwards its activity to the UI. The harness wrapping
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
 import shutil
@@ -205,3 +207,60 @@ def _flatten_tool_result(content) -> str:
             if isinstance(b, dict) and b.get("type") == "text"
         )
     return "" if content is None else str(content)
+
+
+class ClaudeCliRunner:
+    """Spawns the Claude Code CLI for one sub-agent task and forwards its activity.
+
+    Reads the process's stream-json stdout line by line, translates each event for
+    the UI (when a foreground ``stream_id`` and an ``on_event`` sink are present),
+    and captures the terminal ``result`` event's text + usage. Raises CliRunError
+    if the process ends without a result. The harness wraps this with hooks,
+    output cap, and worktree handling — see SubagentRunner._execute_cli_spawn.
+    """
+
+    def __init__(self, on_event, on_notice) -> None:
+        self._on_event = on_event      # Deps.on_subagent_event | None
+        self._on_notice = on_notice    # Deps.on_subagent_notice | None
+
+    async def run(
+        self, *, binary: str, prompt: str, system_prompt: str, cwd: str,
+        allow_gated: bool, allowed_tools, model: str | None, stream_id: str,
+    ) -> CliResult:
+        argv = build_cli_argv(
+            binary, prompt, system_prompt,
+            cli_permission_mode(allow_gated),
+            map_tools_to_cc(allowed_tools), model,
+        )
+        proc = await asyncio.create_subprocess_exec(
+            *argv, cwd=cwd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        translator = CliStreamTranslator()
+        output = ""
+        usage = RunUsage()
+        result_seen = False
+        assert proc.stdout is not None
+        async for raw in proc.stdout:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # non-JSON noise on stdout — skip
+            if obj.get("type") == "result":
+                output = obj.get("result", "") or ""
+                usage = synth_usage(obj.get("usage"), obj.get("num_turns", 0) or 0)
+                result_seen = True
+                continue
+            for event in translator.translate(obj):
+                if self._on_event is not None and stream_id:
+                    await self._on_event(stream_id, event, None)
+        stderr_bytes = await proc.stderr.read() if proc.stderr is not None else b""
+        code = await proc.wait()
+        if not result_seen:
+            detail = stderr_bytes.decode("utf-8", "replace").strip() or f"exit code {code}"
+            raise CliRunError(f"claude produced no result ({detail})")
+        return CliResult(output=output, usage=usage)
