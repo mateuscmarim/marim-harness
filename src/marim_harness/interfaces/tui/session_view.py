@@ -114,6 +114,19 @@ class SessionView:
                             widget.stream_id = part.tool_call_id
                             tool_widgets[part.tool_call_id] = widget
                             await log.mount(widget)
+                        elif part.tool_name == "ask_user":
+                            # Mirror the live path (intercept_tool): ask_user mounts
+                            # standalone and breaks the run, so the question + answer
+                            # aren't buried in a collapsed tool group on a resumed
+                            # session.
+                            group = None
+                            solo = None
+                            widget = ToolCallWidget(
+                                part.tool_name, args,
+                                workspace_root=self.app.harness.deps.workspace_root,
+                            )
+                            tool_widgets[part.tool_call_id] = widget
+                            await log.mount(widget)
                         else:
                             widget = ToolCallWidget(
                                 part.tool_name, args,

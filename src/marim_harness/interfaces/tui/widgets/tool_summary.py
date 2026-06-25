@@ -19,6 +19,7 @@ _TOOL_LABELS = {
     "read_file": "Read", "write_file": "Write", "edit_file": "Edit", "bash": "Bash",
     "grep": "Grep", "glob": "Glob", "tree": "Tree", "web_search": "Search",
     "fetch_url": "Fetch", "wait_for_job": "Wait", "spawn_agent": "Spawn Agent",
+    "ask_user": "Ask User",
     "goto_definition": "Definition", "find_references": "References", "hover": "Hover",
     "document_symbols": "Symbols", "workspace_symbols": "Symbols",
     "diagnostics": "Diagnostics",

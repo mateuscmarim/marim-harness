@@ -1517,6 +1517,66 @@ async def test_ask_user_is_not_folded_into_tool_group(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_resume_ask_user_not_folded_into_tool_group(tmp_path: Path):
+    """On a resumed session, ask_user must mount standalone (mirroring the live path),
+    not buried in a collapsed '≡ N tools' group when adjacent to other tool calls."""
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ModelResponse,
+        ToolCallPart,
+        ToolReturnPart,
+        UserPromptPart,
+    )
+
+    from marim_harness.interfaces.tui.widgets import ToolCallWidget, ToolGroupWidget
+
+    app = _app(tmp_path)
+    app.harness.session.history = [
+        ModelRequest(parts=[UserPromptPart(content="do something")]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="read_file", args={"path": "a.py"}, tool_call_id="r1"
+                ),
+                ToolCallPart(
+                    tool_name="read_file", args={"path": "b.py"}, tool_call_id="r2"
+                ),
+                ToolCallPart(
+                    tool_name="ask_user",
+                    args={"questions": [{"question": "Proceed?", "options": [{"label": "Yes"}]}]},
+                    tool_call_id="q1",
+                ),
+                ToolCallPart(
+                    tool_name="read_file", args={"path": "c.py"}, tool_call_id="r3"
+                ),
+            ]
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(tool_name="read_file", content="a", tool_call_id="r1"),
+                ToolReturnPart(tool_name="read_file", content="b", tool_call_id="r2"),
+                ToolReturnPart(tool_name="ask_user", content="{}", tool_call_id="q1"),
+                ToolReturnPart(tool_name="read_file", content="c", tool_call_id="r3"),
+            ]
+        ),
+    ]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        # The ask_user widget must be present and finished.
+        ask_widgets = [w for w in app.query(ToolCallWidget) if w.tool_name == "ask_user"]
+        assert len(ask_widgets) == 1, "ask_user ToolCallWidget should be mounted"
+        ask = ask_widgets[0]
+
+        # Adjacent reads may group — that's fine — but ask_user must not be in any group.
+        groups = list(app.query(ToolGroupWidget))
+        for g in groups:
+            assert ask not in g.walk_children(), (
+                "ask_user must mount standalone on replay, not folded into a ToolGroupWidget"
+            )
+
+
+@pytest.mark.anyio
 async def test_spawn_agent_mounts_subagent_widget(tmp_path: Path):
     """A spawn_agent tool call gets a SubAgentWidget (not a generic ToolCallWidget),
     keyed by its tool_call_id, and is finished by the result event."""
