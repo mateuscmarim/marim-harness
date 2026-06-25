@@ -31,3 +31,14 @@ def test_backend_defaults_to_native(tmp_path: Path):
 def test_builtins_are_native(tmp_path: Path):
     defn = find_agent(tmp_path, "explore")
     assert defn is not None and defn.backend == "native" and defn.model is None
+
+
+def test_example_cli_agent_parses_as_claude_cli(tmp_path: Path):
+    import shutil
+    src = Path("docs/examples/agents/cli-worker.md")
+    dst = tmp_path / ".marim" / "agents" / "cli-worker.md"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, dst)
+    defn = find_agent(tmp_path, "cli-worker")
+    assert defn is not None
+    assert defn.backend == "claude-cli"
