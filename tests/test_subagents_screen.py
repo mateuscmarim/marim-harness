@@ -202,14 +202,72 @@ async def test_refresh_subagents_view_ticks_list_live_while_open(tmp_path):
         view = app.query_one(SubAgentsView)
         assert view.list.row_count == 1
 
-        # A second spawn + refresh ticks the list to two rows live.
+        # A second spawn + refresh marks the list dirty; the flush tick repaints it
+        # to two rows live (the repaint is coalesced onto the tick, not per event).
         w2 = r.mount_spawn_widget({"type": "coding", "description": "build it"})
         w2.stream_id = "call_2"
         r.tool_widgets["call_2"] = w2
         r.ensure_pane(w2)
         app.refresh_subagents_view()
+        r.flush_streams()  # the tick drains the dirty repaint
         await pilot.pause()
         assert view.list.row_count == 2
+
+
+@pytest.mark.anyio
+async def test_streamed_events_coalesce_list_repaint_to_flush_tick(tmp_path):
+    """Streamed sub-agent events must NOT repaint the list inline — a full
+    DataTable rebuild per token, ×N streams, pins a core during a fan-out. Each
+    event marks the screen dirty; the flush tick repaints it once per frame."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        r = app.stream
+        w = r.mount_spawn_widget({"type": "explore", "description": "map"})
+        w.stream_id = "call_1"
+        r.tool_widgets["call_1"] = w
+        r.ensure_pane(w)
+        await app.query_one("#log").mount(w)
+        app.open_subagents_at("call_1")
+        await pilot.pause()
+
+        # Spy on the list rebuild after the initial open paint.
+        lst = app.query_one(SubAgentList)
+        n = {"c": 0}
+        orig = lst.refresh_rows
+
+        def spy(*a, **k):
+            n["c"] += 1
+            return orig(*a, **k)
+
+        lst.refresh_rows = spy
+
+        # Many per-event repaint requests do not rebuild the table; they only mark
+        # it dirty.
+        for _ in range(10):
+            app.refresh_subagents_view()
+        assert n["c"] == 0
+        assert app._subagents_view_dirty is True
+
+        # The flush tick repaints exactly once and clears the dirty flag.
+        r.flush_streams()
+        assert n["c"] == 1
+        assert app._subagents_view_dirty is False
+
+        # A tick with no new events does not repaint again.
+        r.flush_streams()
+        assert n["c"] == 1
+
+
+@pytest.mark.anyio
+async def test_refresh_subagents_view_is_noop_when_closed(tmp_path):
+    """When the screen is closed, a streamed event must not even mark it dirty, so
+    streaming pays nothing for a hidden screen."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.subagent_viewer_open is False
+        app.refresh_subagents_view()
+        assert app._subagents_view_dirty is False
 
 
 @pytest.mark.anyio

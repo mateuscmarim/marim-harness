@@ -136,6 +136,11 @@ class HarnessApp(App):
         # sub-agent (index into stream.subagents) is on screen.
         self.subagent_viewer_open = False
         self.subagent_index = 0
+        # Set by a streamed sub-agent event to ask for a list/summary repaint; the
+        # flush tick drains it once per frame. Coalescing here (rather than
+        # repainting inline per event) is what keeps a fan-out from pinning a core —
+        # see refresh_subagents_view / drain_subagents_repaint.
+        self._subagents_view_dirty = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -406,9 +411,11 @@ class HarnessApp(App):
         self.query_one("#log", VerticalScroll).display = True
         self.query_one(PromptInput).focus()
 
-    def _apply_subagent_view(self) -> None:
-        """Repaint the list/summary and show the selected agent's pane. Clamps the
-        index and closes the screen if the list emptied."""
+    def _repaint_subagents_list(self) -> None:
+        """Repaint the list/summary scalars and show the selected agent's pane.
+        Clamps the index and closes the screen if the list emptied. Does NOT flush
+        transcripts — the flush tick owns that — so this is safe to call from
+        within the tick without re-entering it."""
         subs = self.stream.subagents
         if not subs:
             self._close_subagents()
@@ -419,16 +426,35 @@ class HarnessApp(App):
         view.repaint(subs, self.subagent_index, self.subagent_cost)
         if current.pane is not None:
             view.host.show(current.stream_id)
-        # Render the just-shown transcript now (its stream was skipped while it
-        # wasn't the host's current pane).
-        self.stream.flush_streams()
+
+    def _apply_subagent_view(self) -> None:
+        """Open/navigate path: repaint the list AND flush the now-selected
+        transcript immediately (its stream is skipped while it isn't the host's
+        current pane, so it needs a one-off render on selection). Driven by user
+        actions (open, cursor move), which are infrequent — unlike the live
+        streaming path, which coalesces via refresh_subagents_view."""
+        self._repaint_subagents_list()
+        if self.subagent_viewer_open:  # still open (not closed by an emptied list)
+            self.stream.flush_streams()
 
     def refresh_subagents_view(self) -> None:
-        """Repaint the screen if it's open — called from the renderer when a card's
-        scalars change (tool call, usage, finish) so the list ticks live. A no-op
-        when closed, so streaming pays nothing for a hidden screen."""
+        """Mark the open screen for a repaint on the next flush tick. Called from
+        the renderer on every streamed sub-agent event; repainting inline per event
+        — a full DataTable rebuild plus a transcript flush — pins a core during a
+        fan-out, so the actual repaint is coalesced to the ~12.5Hz flush tick
+        (drain_subagents_repaint). A no-op when closed, so streaming pays nothing
+        for a hidden screen."""
         if self.subagent_viewer_open:
-            self._apply_subagent_view()
+            self._subagents_view_dirty = True
+
+    def drain_subagents_repaint(self) -> None:
+        """Repaint the open screen's list once if a streamed event marked it dirty
+        since the last frame. Called from the flush tick so per-event repaint
+        requests collapse into one repaint per frame. No transcript flush here: the
+        tick already flushed the visible pane before draining."""
+        if self.subagent_viewer_open and self._subagents_view_dirty:
+            self._subagents_view_dirty = False
+            self._repaint_subagents_list()
 
     def subagent_cost(self, widget) -> float:
         """The dollar cost of one sub-agent for the summary roll-up — the numeric

@@ -454,6 +454,11 @@ class StreamRenderer:
                 continue
             m.flush()
         self._anchor_on_overflow()
+        # Coalesced sub-agents-screen repaint: streamed events mark the screen
+        # dirty rather than repainting inline (a per-event DataTable rebuild + flush
+        # pins a core during a fan-out); drain that here, once per frame, after the
+        # visible pane's transcript has been flushed above.
+        self.app.drain_subagents_repaint()
         # Piggyback on the same per-frame tick to repaint the status bar while a
         # turn is running, so the live token counter advances as the run streams.
         if self.app.status.busy:
