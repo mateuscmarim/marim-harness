@@ -118,7 +118,8 @@ to avoid import cycles.
 
 - Use `uv` for everything (`uv run …`, `uv sync`). Don't invoke `pip` or a bare
   `python`/`pytest`.
-- Ruff line length is 100; lint set is `E,F,I` (import sorting enforced).
+- Ruff line length is 100; lint set is `E,F,I,UP,B,SIM` (import sorting enforced;
+  pyupgrade, bugbear, and flake8-simplify also on).
 - Pure helpers (fs ops, command policy, snapshots) are kept side-effect-free and
   unit-tested directly; the I/O wiring lives in the thin tool/interface layer. Follow
   that split when adding behavior.
