@@ -166,10 +166,15 @@ class SubAgentWidget(Vertical):
     def on_click(self, _event) -> None:
         # Click a failed card to expand the clipped error to its full body, and
         # back. A no-op unless the reason was actually clipped (so a fully-shown
-        # error or a running/done card doesn't react to clicks).
+        # error doesn't react to clicks).
         if self.status in ("failed", "denied") and self._full_reason != self._fail_reason:
             self._expanded = not self._expanded
             self._paint_activity()
+            return
+        # Otherwise, a click jumps into the sub-agents screen focused on this card.
+        opener = getattr(self.app, "open_subagents_at", None)
+        if opener is not None:
+            opener(self.stream_id)
 
     def _glyph(self) -> str:
         if self.status == "done":

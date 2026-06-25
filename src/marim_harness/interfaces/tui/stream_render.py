@@ -302,15 +302,13 @@ class StreamRenderer:
         self.sub_assistants: dict[str, AssistantMessage] = {}
         self.sub_thinkings: dict[str, ThinkingWidget] = {}
         # Every foreground sub-agent spawned this session, in spawn order — the
-        # backing list for the full-screen viewer's navigation and "(i of N)"
-        # count. ``viewing_sid`` is kept for backward compatibility while app.py
-        # still references it (removed in Task 8).
+        # backing list for the sub-agents screen's list/navigation and the
+        # summary roll-up.
         self.subagents: list[SubAgentWidget] = []
         # job_id → a pending detached-spawn card, awaiting its background job's
         # report. Filled on job settle (fill_finished_detached_cards); cleared on
         # session reset. Not pruned per-turn: the job finishes after the turn ends.
         self._detached_cards: dict[str, SubAgentWidget] = {}
-        self.viewing_sid: str | None = None
         # The persistent transcript host (a ContentSwitcher of SubAgentPanes), set
         # by the app at mount. Panes are created here per spawn and attached to
         # their card; the sub-agent sink mounts each stream into its pane.
@@ -346,7 +344,6 @@ class StreamRenderer:
         self.sub_thinkings.clear()
         self.subagents.clear()
         self._detached_cards.clear()
-        self.viewing_sid = None
         self.dirty_streams.clear()
 
     def note_detached_spawn(self, content: str, widget: "SubAgentWidget", jobs) -> bool:
@@ -360,6 +357,10 @@ class StreamRenderer:
             return False
         widget.detached = True  # no streamed steps → don't claim a 0 tool tally
         widget.activity = "running in background…"
+        # A detached spawn streams nothing into its pane, so show the placeholder
+        # note rather than an empty transcript when the screen is opened on it.
+        if widget.pane is not None:
+            widget.pane.placeholder()
         self._detached_cards[job_id] = widget
         self._fill_detached_card(job_id, jobs)
         return True
@@ -386,6 +387,9 @@ class StreamRenderer:
         job-registry change hook so cards update live as background jobs complete."""
         for job_id in list(self._detached_cards):
             self._fill_detached_card(job_id, jobs)
+        # A settling background job changes a card's status/stats; repaint the
+        # open screen so its list/summary tick live.
+        self.app.refresh_subagents_view()
 
     def prune_completed(self) -> None:
         """Drop finished entries from ``tool_widgets`` at a turn boundary so the
@@ -587,8 +591,12 @@ class StreamRenderer:
         if usage is not None and usage.total_tokens:
             cost, _ = resolve_cost(usage, self.app.harness.model_id)
             cost_text = _format_cost(cost) if cost is not None else None
-            parent.set_usage(usage.total_tokens, cost_text, _format_token_split(usage))
+            parent.set_usage(
+                usage.total_tokens, cost_text, _format_token_split(usage),
+                cost_value=cost,  # numeric cost for the summary roll-up
+            )
         await self.dispatch_stream_event(event, _SubAgentSink(self, parent, stream_id))
+        self.app.refresh_subagents_view()  # list/summary tick live while open
 
     async def on_subagent_notice(self, stream_id: str, message: str) -> None:
         """Show an out-of-band status line (e.g. a transient-error retry) on the
@@ -694,6 +702,9 @@ class StreamRenderer:
                     ):
                         status = "failed"
                     widget.finish(content, status=status)
+                    if isinstance(widget, SubAgentWidget):
+                        # A finished card changes the screen's list/summary scalars.
+                        self.app.refresh_subagents_view()
                     if isinstance(widget, ToolCallWidget):
                         group = self._group_of(widget)
                         if group is not None:

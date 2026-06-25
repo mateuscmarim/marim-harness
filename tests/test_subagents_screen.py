@@ -84,3 +84,106 @@ async def test_spawn_creates_pane_attached_to_card(tmp_path: Path):
         await pilot.pause()
         assert widget.pane is pane
         assert r.detail_host.pane("call_1") is pane
+
+
+@pytest.mark.anyio
+async def test_ctrl_x_opens_view_and_shows_selected_transcript(tmp_path):
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        r = app.stream
+        w = r.mount_spawn_widget({"type": "research", "description": "map it"})
+        w.stream_id = "call_1"
+        r.tool_widgets["call_1"] = w
+        r.ensure_pane(w)
+        await app.query_one("#log").mount(w)
+        await pilot.pause()
+
+        await pilot.press("ctrl+x")
+        await pilot.pause()
+        view = app.query_one("SubAgentsView")
+        assert view.display is True
+        assert app.query_one("#log").display is False
+        assert view.host.current_sid() == "call_1"
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert view.display is False
+        assert app.query_one("#log").display is True
+
+
+@pytest.mark.anyio
+async def test_clicking_card_opens_screen_at_that_agent(tmp_path):
+    """A click on a (non-failed) card jumps into the screen focused on it."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        r = app.stream
+        w = r.mount_spawn_widget({"type": "research", "description": "map it"})
+        w.stream_id = "call_1"
+        r.tool_widgets["call_1"] = w
+        r.ensure_pane(w)
+        await app.query_one("#log").mount(w)
+        await pilot.pause()
+
+        w.on_click(None)  # click-to-open
+        await pilot.pause()
+        view = app.query_one(SubAgentsView)
+        assert app.subagent_viewer_open is True
+        assert view.display is True
+        assert view.host.current_sid() == "call_1"
+
+
+@pytest.mark.anyio
+async def test_detached_spawn_shows_pane_placeholder(tmp_path):
+    """A detached spawn streams nothing into its pane, so the pane shows the
+    'no live transcript' placeholder rather than an empty transcript."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        r = app.stream
+        w = r.mount_spawn_widget({"type": "research", "description": "bg work"})
+        w.stream_id = "call_1"
+        r.tool_widgets["call_1"] = w
+        r.ensure_pane(w)
+        await app.query_one("#log").mount(w)
+        await pilot.pause()
+
+        # A detach handoff keeps the card pending and marks the pane as detached.
+        kept = r.note_detached_spawn(
+            "Started detached sub-agent job-1, watching…", w, app.harness.deps.jobs
+        )
+        await pilot.pause()
+        assert kept is True
+        assert w.detached is True
+        assert w.pane._placeholder.display is True
+
+
+@pytest.mark.anyio
+async def test_refresh_subagents_view_ticks_list_live_while_open(tmp_path):
+    """While the screen is open, refresh_subagents_view repaints the list as cards'
+    scalars change; it's a no-op when closed."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        r = app.stream
+        w = r.mount_spawn_widget({"type": "research", "description": "map it"})
+        w.stream_id = "call_1"
+        r.tool_widgets["call_1"] = w
+        r.ensure_pane(w)
+        await app.query_one("#log").mount(w)
+        await pilot.pause()
+
+        # Closed: a no-op (no crash, screen stays hidden).
+        app.refresh_subagents_view()
+        assert app.subagent_viewer_open is False
+
+        app.open_subagents_at("call_1")
+        await pilot.pause()
+        view = app.query_one(SubAgentsView)
+        assert view.list.row_count == 1
+
+        # A second spawn + refresh ticks the list to two rows live.
+        w2 = r.mount_spawn_widget({"type": "coding", "description": "build it"})
+        w2.stream_id = "call_2"
+        r.tool_widgets["call_2"] = w2
+        r.ensure_pane(w2)
+        app.refresh_subagents_view()
+        await pilot.pause()
+        assert view.list.row_count == 2
