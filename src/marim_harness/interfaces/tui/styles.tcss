@@ -43,7 +43,11 @@ AssistantMessage { margin: 0 0 1 0; }
    before the next widget (e.g. a tool group). Drop the trailing block's margin
    so a single row separates the prose from what follows. */
 AssistantMessage > MarkdownBlock:last-child { margin-bottom: 0; }
-ToolCallWidget { margin: 0 0 1 0; border-left: tall $primary; padding-left: 1; background: transparent; }
+/* border-top/padding-bottom: 0 strip Collapsible's default chrome — an invisible
+   hkey border row (drawn in $background) and a trailing pad row — that otherwise
+   stack with our margin-bottom into a ~3-row gap between cards. Left only the
+   intentional margin: 0 0 1 0. */
+ToolCallWidget { margin: 0 0 1 0; border-left: tall $primary; border-top: none; padding-left: 1; padding-bottom: 0; background: transparent; }
 /* update_tasks renders as a muted breadcrumb: same column as tool rows (the border
    keeps the indent) but the accent recedes, so it reads as a status marker. Its
    title is inert (no toggle, not focusable), so drop the pointer cursor the base
@@ -51,7 +55,7 @@ ToolCallWidget { margin: 0 0 1 0; border-left: tall $primary; padding-left: 1; b
 ToolCallWidget.tool-breadcrumb { border-left: tall $panel; }
 ToolCallWidget.tool-breadcrumb CollapsibleTitle { pointer: default; }
 ToolCallWidget > CollapsibleTitle, ToolGroupWidget > CollapsibleTitle { background: transparent; }
-ToolGroupWidget { margin: 0 0 1 0; background: transparent; }
+ToolGroupWidget { margin: 0 0 1 0; border-top: none; padding-bottom: 0; background: transparent; }
 /* Sub-agent compact card (inline in the log): a single-line header and an
    indented ↳ progress line (toolcalls · duration). Muted by default, brightening
    to white + bold on hover (the whole row, since :hover propagates to the card).
