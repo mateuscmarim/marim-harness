@@ -1,6 +1,9 @@
 import json
 from pathlib import Path
 
+import pytest
+
+from marim_harness.interfaces.cli import mcp as mcp_cmd
 from marim_harness.mcp import config as mcp_config
 
 
@@ -69,3 +72,64 @@ def test_read_servers_with_source_project_wins(tmp_path, monkeypatch):
     assert result["g"] == ({"command": "x"}, "user")
     assert result["p"] == ({"command": "y"}, "project")
     assert result["shared"] == ({"command": "proj"}, "project")  # project wins
+
+
+def test_build_spec_stdio():
+    spec = mcp_cmd._build_spec(
+        transport="stdio", rest=["node", "x.js", "--port"],
+        headers=[], envs=["A=1", "B=2"], trust=False,
+    )
+    assert spec == {"command": "node", "args": ["x.js", "--port"], "env": {"A": "1", "B": "2"}}
+
+
+def test_build_spec_stdio_minimal():
+    spec = mcp_cmd._build_spec(
+        transport="stdio", rest=["mddocs-mcp"], headers=[], envs=[], trust=False,
+    )
+    assert spec == {"command": "mddocs-mcp"}
+
+
+def test_build_spec_http_with_header_and_trust():
+    spec = mcp_cmd._build_spec(
+        transport="http", rest=["https://x/mcp"],
+        headers=["Authorization: Bearer t"], envs=[], trust=True,
+    )
+    assert spec == {"url": "https://x/mcp", "headers": {"Authorization": "Bearer t"}, "trust": True}
+
+
+def test_build_spec_sse_sets_type():
+    spec = mcp_cmd._build_spec(
+        transport="sse", rest=["https://x/sse"], headers=[], envs=[], trust=False,
+    )
+    assert spec == {"url": "https://x/sse", "type": "sse"}
+
+
+def test_build_spec_rejects_header_on_stdio():
+    with pytest.raises(mcp_cmd.SpecError):
+        mcp_cmd._build_spec(
+            transport="stdio", rest=["node"], headers=["A: b"], envs=[], trust=False,
+        )
+
+
+def test_build_spec_rejects_env_on_http():
+    with pytest.raises(mcp_cmd.SpecError):
+        mcp_cmd._build_spec(
+            transport="http", rest=["https://x/mcp"], headers=[], envs=["A=1"], trust=False,
+        )
+
+
+def test_build_spec_rejects_empty_rest():
+    with pytest.raises(mcp_cmd.SpecError):
+        mcp_cmd._build_spec(transport="stdio", rest=[], headers=[], envs=[], trust=False)
+
+
+def test_build_spec_rejects_extra_url_positionals():
+    with pytest.raises(mcp_cmd.SpecError):
+        mcp_cmd._build_spec(
+            transport="http", rest=["https://x/mcp", "junk"], headers=[], envs=[], trust=False,
+        )
+
+
+def test_parse_pairs_bad_token():
+    with pytest.raises(mcp_cmd.SpecError):
+        mcp_cmd._parse_pairs(["noequals"], "=", "env")
