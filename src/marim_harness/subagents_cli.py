@@ -16,7 +16,18 @@ import logging
 import os
 import shutil
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
+from pydantic_ai.messages import (
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    PartDeltaEvent,
+    PartStartEvent,
+    TextPart,
+    TextPartDelta,
+    ToolCallPart,
+    ToolReturnPart,
+)
 from pydantic_ai.usage import RunUsage
 
 logger = logging.getLogger(__name__)
@@ -116,3 +127,81 @@ def synth_usage(cli_usage: dict | None, num_turns: int) -> RunUsage:
         cache_write_tokens=int(u.get("cache_creation_input_tokens", 0) or 0),
         requests=int(num_turns or 0),
     )
+
+
+class CliStreamTranslator:
+    """Turns parsed Claude Code stream-json objects into the Pydantic AI message
+    events the TUI already renders, so a CLI spawn streams nested under its card
+    like a native sub-agent. Stateful across a run: numbers parts and remembers
+    each tool_use's name so the matching tool_result can be labeled. ``translate``
+    returns zero or more events per object; ``system`` and the terminal ``result``
+    yield nothing (the runner reads result text/usage separately).
+
+    stream-json without ``--include-partial-messages`` delivers each assistant
+    message whole, so a text block becomes an empty part-start plus one full
+    delta — the render path's delta branch appends it exactly as for live tokens.
+    """
+
+    def __init__(self) -> None:
+        self._index = 0
+        self._call_names: dict[str, str] = {}
+
+    def translate(self, obj: dict) -> list:
+        kind = obj.get("type")
+        if kind == "assistant":
+            return self._assistant(obj)
+        if kind == "user":
+            return self._user(obj)
+        return []
+
+    def _assistant(self, obj: dict) -> list:
+        events: list = []
+        for block in obj.get("message", {}).get("content", []):
+            btype = block.get("type")
+            if btype == "text":
+                idx = self._index
+                self._index += 1
+                events.append(PartStartEvent(index=idx, part=TextPart(content="")))
+                events.append(PartDeltaEvent(
+                    index=idx,
+                    delta=TextPartDelta(content_delta=block.get("text", "")),
+                ))
+            elif btype == "tool_use":
+                call_id = block.get("id", "")
+                name = block.get("name", "tool")
+                self._call_names[call_id] = name
+                events.append(FunctionToolCallEvent(part=ToolCallPart(
+                    tool_name=name,
+                    args=block.get("input", {}),
+                    tool_call_id=call_id,
+                )))
+        return events
+
+    def _user(self, obj: dict) -> list:
+        events: list = []
+        for block in obj.get("message", {}).get("content", []):
+            if block.get("type") != "tool_result":
+                continue
+            call_id = block.get("tool_use_id", "")
+            events.append(FunctionToolResultEvent(part=ToolReturnPart(
+                tool_name=self._call_names.get(call_id, "tool"),
+                content=_flatten_tool_result(block.get("content")),
+                tool_call_id=call_id,
+                timestamp=datetime.now(tz=timezone.utc),
+                outcome="failed" if block.get("is_error") else "success",
+            )))
+        return events
+
+
+def _flatten_tool_result(content) -> str:
+    """A tool_result's content is either a string or a list of content blocks;
+    reduce it to plain text for the card."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            b.get("text", "")
+            for b in content
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
+    return "" if content is None else str(content)

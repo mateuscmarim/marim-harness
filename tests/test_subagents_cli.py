@@ -72,3 +72,75 @@ def test_synth_usage_maps_token_fields():
 def test_synth_usage_tolerates_none():
     u = synth_usage(None, num_turns=0)
     assert u.input_tokens == 0 and u.output_tokens == 0
+
+
+# ===== Task 3: CliStreamTranslator tests =====
+from pydantic_ai.messages import (
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    PartDeltaEvent,
+    PartStartEvent,
+    TextPartDelta,
+)
+
+from marim_harness.subagents_cli import CliStreamTranslator
+
+
+def test_translate_assistant_text_emits_start_then_full_delta():
+    t = CliStreamTranslator()
+    events = t.translate({
+        "type": "assistant",
+        "message": {"content": [{"type": "text", "text": "Hello there"}]},
+    })
+    assert isinstance(events[0], PartStartEvent)
+    assert isinstance(events[1], PartDeltaEvent)
+    assert isinstance(events[1].delta, TextPartDelta)
+    assert events[1].delta.content_delta == "Hello there"
+    # start and its delta share the same part index
+    assert events[0].index == events[1].index
+
+
+def test_translate_tool_use_emits_call_event():
+    t = CliStreamTranslator()
+    events = t.translate({
+        "type": "assistant",
+        "message": {"content": [
+            {"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {"path": "x.py"}},
+        ]},
+    })
+    assert len(events) == 1
+    ev = events[0]
+    assert isinstance(ev, FunctionToolCallEvent)
+    assert ev.part.tool_name == "Read"
+    assert ev.part.tool_call_id == "toolu_1"
+    assert ev.part.args_as_dict() == {"path": "x.py"}
+
+
+def test_translate_tool_result_labels_from_prior_call_and_marks_failure():
+    t = CliStreamTranslator()
+    t.translate({
+        "type": "assistant",
+        "message": {"content": [
+            {"type": "tool_use", "id": "toolu_9", "name": "Bash", "input": {"command": "ls"}},
+        ]},
+    })
+    events = t.translate({
+        "type": "user",
+        "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "toolu_9",
+             "content": [{"type": "text", "text": "boom"}], "is_error": True},
+        ]},
+    })
+    assert len(events) == 1
+    ev = events[0]
+    assert isinstance(ev, FunctionToolResultEvent)
+    assert ev.part.tool_name == "Bash"          # carried from the matching call
+    assert ev.part.tool_call_id == "toolu_9"
+    assert ev.part.content == "boom"            # list-of-blocks flattened to text
+    assert ev.part.outcome == "failed"          # is_error → failed
+
+
+def test_translate_ignores_system_and_result():
+    t = CliStreamTranslator()
+    assert t.translate({"type": "system", "subtype": "init"}) == []
+    assert t.translate({"type": "result", "result": "done"}) == []
