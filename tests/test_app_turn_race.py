@@ -79,7 +79,7 @@ async def test_concurrent_submit_during_start_gap_enqueues_not_duplicate(
         await app.on_prompt_input_submitted(PromptInput.Submitted("second", []))
         # Second did NOT start a turn; it was enqueued instead.
         assert started == ["first"]
-        assert any(m.text == "second" for m in app._queue)
+        assert any(m.text == "second" for m in app._queue.items)
 
 
 @pytest.mark.anyio

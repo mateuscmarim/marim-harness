@@ -5,7 +5,6 @@ import pytest
 
 from marim_harness.deps import Deps
 from marim_harness.interfaces.tui.app import HarnessApp
-from marim_harness.interfaces.tui.queue import QueuedMessage
 from marim_harness.interfaces.tui.widgets.prompt import PromptInput
 from marim_harness.permissions import Mode
 
@@ -191,7 +190,7 @@ async def test_steer_while_busy_calls_harness_steer(tmp_path):
         app._turn_worker = object()  # simulate a running turn
         await app.on_prompt_input_steer(PromptInput.Steer("redirect", []))
         assert seen == [("redirect", [])]
-        assert app._queue == []  # not queued
+        assert app._queue.items == []  # not queued
         assert app._turn_worker is not None  # no new worker
 
 
@@ -224,8 +223,8 @@ async def test_stranded_steer_goes_to_front_of_queue(tmp_path):
     app = _tui_app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._queue = [QueuedMessage("existing", None, "1")]
-        app._queue_paused = False
+        app._queue.enqueue("existing")
+        app._queue.paused = False
         # simulate a steer left buffered on the harness when the turn ended
         app.harness._steer_buffer = [("stranded", None)]
         started = []
@@ -234,7 +233,7 @@ async def test_stranded_steer_goes_to_front_of_queue(tmp_path):
         # "stranded" was prepended to the front and drained first;
         # "existing" remains at position 0 after the drain.
         assert started[0] == "stranded"  # stranded steer was first to run
-        assert app._queue[0].text == "existing"  # existing item is now front
+        assert app._queue.items[0].text == "existing"  # existing item is now front
 
 
 @pytest.mark.anyio
@@ -244,7 +243,7 @@ async def test_stranded_steer_kept_on_paused_finish(tmp_path):
     app = _tui_app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._queue_paused = True
+        app._queue.paused = True
         # simulate a steer buffered in the harness when the turn ended
         app.harness._steer_buffer = [("stranded", None)]
         start_calls = []
@@ -253,7 +252,7 @@ async def test_stranded_steer_kept_on_paused_finish(tmp_path):
         # steer was NOT started (queue is paused)
         assert start_calls == []
         # steer was kept at front of the queue, not dropped
-        assert app._queue[0].text == "stranded"
+        assert app._queue.items[0].text == "stranded"
 
 
 def _recording_streaming_harness(tmp_path, calls):

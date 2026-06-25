@@ -115,7 +115,7 @@ class HarnessApp(App):
         # exact hazard turn_busy exists to prevent. Set before the first await,
         # cleared on every _start_turn exit path.
         self._turn_starting = False
-        self._turn_queue = TurnQueue()
+        self._queue = TurnQueue()
         # Confirm-once quit latch: set True by the first quit attempt that warns
         # about pending queued messages. One-way for the process — once the user
         # has been warned, later quits proceed without re-warning.
@@ -136,37 +136,6 @@ class HarnessApp(App):
         # sub-agent (index into stream.subagents) is on screen.
         self.subagent_viewer_open = False
         self.subagent_index = 0
-
-    # -- Backward-compat shims for tests that poke internal queue state --------
-    # Tests in test_queue.py were written against the old flat-list / flag API.
-    # These properties delegate to TurnQueue so those tests stay green without
-    # needing edits while the rest of the codebase uses the new object.
-
-    @property
-    def _queue(self) -> TurnQueue:
-        return self._turn_queue
-
-    @_queue.setter
-    def _queue(self, value: "list | TurnQueue") -> None:
-        if isinstance(value, TurnQueue):
-            self._turn_queue = value
-        else:
-            # A test assigned a plain list — populate a fresh TurnQueue from it.
-            tq = TurnQueue()
-            for item in value:
-                tq._seq += 1
-                tq._items.append(item)
-            self._turn_queue = tq
-
-    @property
-    def _queue_paused(self) -> bool:
-        return self._turn_queue.paused
-
-    @_queue_paused.setter
-    def _queue_paused(self, value: bool) -> None:
-        self._turn_queue.paused = value
-
-    # -------------------------------------------------------------------------
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)

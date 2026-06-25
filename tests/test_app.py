@@ -47,13 +47,13 @@ async def test_after_turn_survives_drain_failure(tmp_path: Path):
 
         app._drain_next = boom  # type: ignore[method-assign]
         app._enqueue("queued message")
-        assert app._queue and not app._queue_paused
+        assert app._queue and not app._queue.paused
 
         # Must not raise out of _after_turn.
         await app._after_turn()
         await pilot.pause()
 
-        assert app._queue_paused is True
+        assert app._queue.paused is True
         errors = [w for w in app.query(ErrorMessage)]
         assert any("failed to start next turn" in str(w.render()) for w in errors)
 

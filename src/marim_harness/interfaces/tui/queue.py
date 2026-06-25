@@ -56,22 +56,6 @@ class TurnQueue:
     def __bool__(self) -> bool:
         return bool(self._items)
 
-    def __iter__(self):  # type: ignore[override]
-        return iter(self._items)
-
-    def __len__(self) -> int:
-        return len(self._items)
-
-    def __eq__(self, other: object) -> bool:
-        if isinstance(other, list):
-            return self._items == other
-        if isinstance(other, TurnQueue):
-            return self._items == other._items
-        return NotImplemented
-
-    def __getitem__(self, index: int) -> "QueuedMessage":
-        return self._items[index]
-
     def enqueue(
         self, text: str, attachments: list[tuple[bytes, str]] | None = None
     ) -> None:
