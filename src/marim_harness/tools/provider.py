@@ -4,7 +4,7 @@ import re
 from collections.abc import Iterable
 from typing import Literal, Protocol
 
-from pydantic_ai import RunContext
+from pydantic_ai import ModelRetry, RunContext
 
 from ..ask_user import Question, answers_to_json, coerce_questions
 from ..deps import Deps, HarnessAgent, SubAgent
@@ -98,9 +98,75 @@ def tree(ctx: RunContext[Deps], path: str = ".", depth: int = 2) -> str:
     return fs.tree(ctx.deps.workspace_root, path, depth)
 
 
-def grep(ctx: RunContext[Deps], pattern: str, path: str | None = None) -> str:
-    """Search file contents for a regex. Optionally scope to `path`."""
-    return fs.grep(ctx.deps.workspace_root, pattern, path)
+def _grep_int_flag(key: str, val: object) -> int:
+    """Coerce a ripgrep context flag (`-A`/`-B`/`-C`) value to a non-negative int,
+    raising a model-facing retry on garbage rather than a 500."""
+    try:
+        return max(0, int(val))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise ModelRetry(f"grep: {key} expects an integer, got {val!r}.") from None
+
+
+def grep(
+    ctx: RunContext[Deps],
+    pattern: str,
+    path: str | None = None,
+    glob: str | None = None,
+    type: str | None = None,
+    output_mode: Literal["content", "files_with_matches", "count"] = "content",
+    head_limit: int | None = None,
+    multiline: bool = False,
+    **flags: object,
+) -> str:
+    """Search file contents for a regex (ripgrep-style), returning matches in the
+    workspace.
+
+    - `path` scopes the search to a file or directory (default: whole workspace).
+    - `glob` filters files by name, e.g. `*.py` or `*.{ts,tsx}`.
+    - `type` filters by language, e.g. `py`, `js`, `rust`.
+    - `output_mode`: `content` (default) shows `path:line:text`;
+      `files_with_matches` lists only matching file paths; `count` shows
+      `path:count` per file.
+    - `head_limit` caps how many output rows come back.
+    - `multiline` lets the pattern span lines (`.` matches newlines).
+    - `-i` (bool) searches case-insensitively. `-n` is accepted but a no-op:
+      line numbers are always included in `content` mode.
+    - `-A` / `-B` / `-C` (ints) show that many context lines after / before /
+      around each match (`content` mode only).
+
+    Skips noise dirs (.git, node_modules, .venv, …) and binary files; large
+    results are offloaded to a file with a preview."""
+    case_insensitive = False
+    before = after = 0
+    for key, val in flags.items():
+        if key == "-i":
+            case_insensitive = bool(val)
+        elif key == "-n":
+            pass  # line numbers are always emitted in content mode
+        elif key == "-A":
+            after = _grep_int_flag(key, val)
+        elif key == "-B":
+            before = _grep_int_flag(key, val)
+        elif key == "-C":
+            before = after = _grep_int_flag(key, val)
+        else:
+            raise ModelRetry(
+                f"grep: unknown argument {key!r}. Supported: pattern, path, glob, "
+                "type, output_mode, head_limit, multiline, -i, -n, -A, -B, -C."
+            )
+    return fs.grep(
+        ctx.deps.workspace_root,
+        pattern,
+        path,
+        glob=glob,
+        file_type=type,
+        output_mode=output_mode,
+        head_limit=head_limit,
+        case_insensitive=case_insensitive,
+        before_context=before,
+        after_context=after,
+        multiline=multiline,
+    )
 
 
 _LSP_UNAVAILABLE = "LSP is not available in this session."

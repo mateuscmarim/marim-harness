@@ -427,6 +427,96 @@ def test_grep_finds_deeply_nested_match(tmp_path: Path):
     assert "a/b/c/d.txt:2:needle on line two" in out
 
 
+def test_grep_case_insensitive(tmp_path: Path):
+    (tmp_path / "a.txt").write_text("Alpha\nBETA\n")
+    assert fs.grep(tmp_path, "alpha") == "(no matches)"
+    out = fs.grep(tmp_path, "alpha", case_insensitive=True)
+    assert "a.txt:1:Alpha" in out
+
+
+def test_grep_head_limit_caps_rows(tmp_path: Path):
+    (tmp_path / "a.txt").write_text("m\n" * 10)
+    out = fs.grep(tmp_path, "m", head_limit=3)
+    # 3 content rows + the truncation note
+    assert out.count("a.txt:") == 3
+    assert "head_limit=3" in out
+
+
+def test_grep_output_mode_files_with_matches(tmp_path: Path):
+    (tmp_path / "a.txt").write_text("needle\nneedle\n")
+    (tmp_path / "b.txt").write_text("nope\n")
+    out = fs.grep(tmp_path, "needle", output_mode="files_with_matches")
+    assert out == "a.txt"  # one path, no line text, no duplicate per match
+
+
+def test_grep_output_mode_count(tmp_path: Path):
+    (tmp_path / "a.txt").write_text("x\nx\ny\nx\n")
+    out = fs.grep(tmp_path, "x", output_mode="count")
+    assert out == "a.txt:3"
+
+
+def test_grep_invalid_output_mode_raises_model_retry(tmp_path: Path):
+    (tmp_path / "a.txt").write_text("x\n")
+    with pytest.raises(ModelRetry):
+        fs.grep(tmp_path, "x", output_mode="bogus")
+
+
+def test_grep_glob_filters_files(tmp_path: Path):
+    (tmp_path / "a.py").write_text("needle\n")
+    (tmp_path / "a.txt").write_text("needle\n")
+    out = fs.grep(tmp_path, "needle", glob="*.py")
+    assert "a.py:1:needle" in out
+    assert "a.txt" not in out
+
+
+def test_grep_glob_brace_expansion(tmp_path: Path):
+    (tmp_path / "a.ts").write_text("needle\n")
+    (tmp_path / "a.tsx").write_text("needle\n")
+    (tmp_path / "a.js").write_text("needle\n")
+    out = fs.grep(tmp_path, "needle", glob="*.{ts,tsx}")
+    assert "a.ts:1:needle" in out
+    assert "a.tsx:1:needle" in out
+    assert "a.js" not in out
+
+
+def test_grep_type_filters_by_language(tmp_path: Path):
+    (tmp_path / "a.py").write_text("needle\n")
+    (tmp_path / "a.js").write_text("needle\n")
+    out = fs.grep(tmp_path, "needle", file_type="py")
+    assert "a.py:1:needle" in out
+    assert "a.js" not in out
+
+
+def test_grep_context_lines(tmp_path: Path):
+    (tmp_path / "a.txt").write_text("one\ntwo\nMATCH\nfour\nfive\n")
+    out = fs.grep(tmp_path, "MATCH", after_context=1, before_context=1)
+    # match line uses ':', context lines use '-'
+    assert "a.txt-2-two" in out
+    assert "a.txt:3:MATCH" in out
+    assert "a.txt-4-four" in out
+    assert "one" not in out and "five" not in out
+
+
+def test_grep_multiline_spans_lines(tmp_path: Path):
+    (tmp_path / "a.txt").write_text("start\nfoo\nbar\nend\n")
+    # Without multiline the pattern can't cross the newline.
+    assert fs.grep(tmp_path, r"foo.bar") == "(no matches)"
+    out = fs.grep(tmp_path, r"foo.bar", multiline=True)
+    assert "a.txt:2:foo" in out
+
+
+def test_grep_multiline_honors_context(tmp_path: Path):
+    """Context (-A/-B/-C) must apply in multiline mode too, not be silently
+    dropped: a multiline match marks the lines it spans, so context wraps them."""
+    (tmp_path / "a.txt").write_text("one\ntwo\nfoo\nbar\nfive\nsix\n")
+    out = fs.grep(tmp_path, r"foo.bar", multiline=True, before_context=1, after_context=1)
+    assert "a.txt-2-two" in out      # before-context of the match start
+    assert "a.txt:3:foo" in out      # match lines
+    assert "a.txt:4:bar" in out
+    assert "a.txt-5-five" in out     # after-context of the match end
+    assert "one" not in out and "six" not in out
+
+
 def test_grep_skips_unreadable_directories(tmp_path: Path, monkeypatch):
     """A directory the process can't read (PermissionError from os.walk)
     must not crash grep — it's skipped and other files are still found."""

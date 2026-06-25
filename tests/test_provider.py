@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pytest
-from pydantic_ai import Agent
+from pydantic_ai import Agent, ModelRetry
 from pydantic_ai.models.test import TestModel
 
 from marim_harness.deps import Deps
@@ -462,6 +462,44 @@ async def test_bash_timeout_is_milliseconds(tmp_path: Path):
     ctx = SimpleNamespace(deps=deps)
     out = await provider.bash(ctx, "sleep 2", timeout=500)
     assert "timed out" in out
+
+
+def test_grep_dash_i_flag_is_case_insensitive(tmp_path: Path):
+    """The model passes Claude Code's `-i` flag (not a valid Python identifier, so
+    it arrives via **flags); grep must honor it as case-insensitive."""
+    from types import SimpleNamespace
+
+    from marim_harness.tools import provider
+
+    (tmp_path / "a.txt").write_text("Alpha\n")
+    ctx = SimpleNamespace(deps=Deps(workspace_root=tmp_path))
+    assert provider.grep(ctx, "alpha") == "(no matches)"
+    assert "a.txt:1:Alpha" in provider.grep(ctx, "alpha", **{"-i": True})
+
+
+def test_grep_context_flags_map_to_before_after(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from marim_harness.tools import provider
+
+    (tmp_path / "a.txt").write_text("one\ntwo\nMATCH\nfour\n")
+    ctx = SimpleNamespace(deps=Deps(workspace_root=tmp_path))
+    out = provider.grep(ctx, "MATCH", **{"-C": 1})
+    assert "a.txt-2-two" in out
+    assert "a.txt:3:MATCH" in out
+    assert "a.txt-4-four" in out
+
+
+def test_grep_unknown_flag_raises_model_retry(tmp_path: Path):
+    """An unsupported flag must surface as a retryable ModelRetry with the valid
+    options — not a silent no-op and not a 500."""
+    from types import SimpleNamespace
+
+    from marim_harness.tools import provider
+
+    ctx = SimpleNamespace(deps=Deps(workspace_root=tmp_path))
+    with pytest.raises(ModelRetry):
+        provider.grep(ctx, "x", **{"--nonsense": True})
 
 
 @pytest.mark.anyio

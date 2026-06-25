@@ -260,6 +260,14 @@ class SubagentRunner:
             instructions=subagent_instructions(
                 defn, instr_root, max_output_chars
             ),
+            # Match the main agent's tool-retry budget (agent.py builds it with
+            # retries=2). pydantic-ai defaults to 1, which gives the model a single
+            # attempt to correct a malformed tool argument before the whole turn
+            # dies with UnexpectedModelBehavior. Sub-agents hit this constantly:
+            # models carry strong priors for Claude Code's tool interfaces (bash
+            # timeout in ms, grep's -i/output_mode/head_limit), and a sub-agent at
+            # budget 1 dies on the first mispredict where the main agent recovers.
+            retries=2,
             model_settings=self._model_settings,
         )
         self.provider.register_subagent(sub, effective_tools(defn, allow_gated=allow_gated))

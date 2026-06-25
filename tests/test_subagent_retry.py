@@ -55,6 +55,19 @@ def _runner(tmp_path: Path):
     return runner, sleeps
 
 
+def test_subagent_gets_the_same_tool_retry_budget_as_main_agent(tmp_path: Path):
+    """A built sub-agent must carry retries=2 (the main agent's tool-arg budget),
+    not pydantic-ai's default of 1. At budget 1 a single malformed tool argument —
+    e.g. a model applying Claude Code's grep (-i/output_mode) or bash (ms timeout)
+    interface to marim's tools — kills the whole sub-agent with
+    UnexpectedModelBehavior before it can self-correct on a retry."""
+    runner, _ = _runner(tmp_path)
+    sub, err = runner.build("general")
+    assert err is None, err
+    assert sub is not None
+    assert sub._max_tool_retries == 2
+
+
 @pytest.mark.anyio
 async def test_retries_a_transient_error_then_succeeds(tmp_path: Path):
     runner, sleeps = _runner(tmp_path)

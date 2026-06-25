@@ -1,3 +1,4 @@
+import fnmatch
 import os
 import re
 import stat
@@ -302,20 +303,146 @@ def _walk_files(base: Path) -> Iterator[Path]:
         pass
 
 
-def grep(root: Path, pattern: str, path: str | None = None) -> str:
-    """Search file contents for a regex, returning `relpath:line:text` hits.
-    Skips noise dirs (.git, node_modules, .venv, …) and binary files; large
-    result sets are offloaded to a file (handle + preview) instead of flooding the
-    response; collection stops at MAX_OUTPUT_CHARS."""
+# Common ripgrep ``--type`` names mapped to the file extensions they cover, so the
+# model can scope a search by language (``type="py"``) the way it does in Claude
+# Code. An unrecognized name falls back to a literal extension match (see
+# ``_type_extensions``), so a niche type still does something sensible.
+_TYPE_EXTENSIONS: dict[str, set[str]] = {
+    "py": {".py", ".pyi"}, "python": {".py", ".pyi"},
+    "js": {".js", ".jsx", ".mjs", ".cjs"},
+    "ts": {".ts", ".tsx", ".mts", ".cts"},
+    "rust": {".rs"}, "rs": {".rs"},
+    "go": {".go"},
+    "java": {".java"},
+    "kotlin": {".kt", ".kts"},
+    "c": {".c", ".h"},
+    "cpp": {".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"},
+    "cs": {".cs"},
+    "rb": {".rb"}, "ruby": {".rb"},
+    "php": {".php"},
+    "swift": {".swift"},
+    "sh": {".sh", ".bash", ".zsh"}, "bash": {".sh", ".bash"},
+    "json": {".json"},
+    "yaml": {".yaml", ".yml"}, "yml": {".yaml", ".yml"},
+    "toml": {".toml"},
+    "md": {".md", ".markdown"}, "markdown": {".md", ".markdown"},
+    "html": {".html", ".htm"},
+    "css": {".css", ".scss", ".sass", ".less"},
+    "xml": {".xml"},
+    "sql": {".sql"},
+    "txt": {".txt"},
+}
+
+_GREP_MODES = ("content", "files_with_matches", "count")
+
+
+def _type_extensions(file_type: str) -> set[str]:
+    """Extensions a ripgrep ``--type`` name covers; unknown names fall back to a
+    single literal ``.<name>`` extension."""
+    return _TYPE_EXTENSIONS.get(file_type.lower(), {f".{file_type.lstrip('.')}"})
+
+
+def _brace_expand(glob: str) -> list[str]:
+    """Expand a single-level brace alternation (``*.{ts,tsx}`` → ``*.ts``,
+    ``*.tsx``) into concrete fnmatch patterns. Recurses so multiple groups expand;
+    a glob with no braces returns unchanged."""
+    m = re.search(r"\{([^{}]*)\}", glob)
+    if not m:
+        return [glob]
+    pre, post = glob[: m.start()], glob[m.end() :]
+    out: list[str] = []
+    for opt in m.group(1).split(","):
+        out.extend(_brace_expand(pre + opt + post))
+    return out
+
+
+def _match_glob(rel: str, name: str, patterns: list[str]) -> bool:
+    """True if the file matches any glob. A pattern with no ``/`` matches the
+    basename (``*.py`` hits ``src/a.py``); otherwise it matches the whole relative
+    path. A leading ``**/`` is also tried against the basename so ``**/*.py``
+    behaves like ripgrep regardless of depth."""
+    for p in patterns:
+        target = rel if "/" in p.replace("**/", "") else name
+        if fnmatch.fnmatchcase(target, p):
+            return True
+        if p.startswith("**/") and fnmatch.fnmatchcase(name, p[3:]):
+            return True
+    return False
+
+
+def _context_ranges(
+    matches: list[int], before: int, after: int, n_lines: int
+) -> list[tuple[int, int]]:
+    """Merge each match's [i-before, i+after] window into ordered, non-overlapping
+    inclusive line ranges (adjacent windows coalesce, like ripgrep)."""
+    ranges: list[tuple[int, int]] = []
+    for i in matches:
+        lo, hi = max(0, i - before), min(n_lines - 1, i + after)
+        if ranges and lo <= ranges[-1][1] + 1:
+            ranges[-1] = (ranges[-1][0], max(ranges[-1][1], hi))
+        else:
+            ranges.append((lo, hi))
+    return ranges
+
+
+def grep(
+    root: Path,
+    pattern: str,
+    path: str | None = None,
+    *,
+    glob: str | None = None,
+    file_type: str | None = None,
+    output_mode: str = "content",
+    head_limit: int | None = None,
+    case_insensitive: bool = False,
+    before_context: int = 0,
+    after_context: int = 0,
+    multiline: bool = False,
+) -> str:
+    """Search file contents for a regex. ``output_mode`` picks the shape:
+    ``content`` → ``relpath:line:text`` hits (context lines, when requested, use a
+    ``-`` separator and ``--`` between groups, like ripgrep); ``files_with_matches``
+    → one ``relpath`` per matching file; ``count`` → ``relpath:count`` per file.
+    Skips noise dirs (.git, node_modules, .venv, …) and binary files; ``glob`` /
+    ``file_type`` scope which files are searched; ``head_limit`` caps the number of
+    output rows; large results are offloaded to a file; collection stops at
+    MAX_OUTPUT_CHARS."""
+    if output_mode not in _GREP_MODES:
+        raise ModelRetry(
+            f"invalid output_mode {output_mode!r}; use one of {', '.join(_GREP_MODES)}."
+        )
+    re_flags = 0
+    if case_insensitive:
+        re_flags |= re.IGNORECASE
+    if multiline:
+        re_flags |= re.DOTALL | re.MULTILINE
     try:
-        rx = re.compile(pattern)
+        rx = re.compile(pattern, re_flags)
     except re.error as exc:
         raise ModelRetry(f"invalid regex {pattern!r}: {exc}") from exc
     base = _safe(root, path) if path else root
+    globs = _brace_expand(glob) if glob else None
+    exts = _type_extensions(file_type) if file_type else None
+    before, after = max(0, before_context), max(0, after_context)
+
     out: list[str] = []
     size = 0
     capped = False
+    limited = False
+    stop = False
+
+    def emit(line: str) -> None:
+        nonlocal size, capped, limited, stop
+        out.append(line)
+        size += len(line) + 1
+        if size >= MAX_OUTPUT_CHARS:
+            capped = stop = True
+        if head_limit is not None and len(out) >= head_limit:
+            limited = stop = True
+
     for f in _walk_files(base):
+        if stop:
+            break
         # os.walk won't descend symlinked dirs; a symlinked *file* could still
         # point outside the workspace, so gate just that rare case.
         if f.is_symlink():
@@ -325,25 +452,63 @@ def grep(root: Path, pattern: str, path: str | None = None) -> str:
                 continue
         if not f.is_file() or _is_binary(f):
             continue
-        rel = f.relative_to(root)
+        rel = f.relative_to(root).as_posix()
+        if globs is not None and not _match_glob(rel, f.name, globs):
+            continue
+        if exts is not None and f.suffix not in exts:
+            continue
         try:
-            with open(f, encoding="utf-8", errors="replace") as fh:
-                for i, raw in enumerate(fh, 1):
-                    line = raw.rstrip("\n")
-                    if rx.search(line):
-                        hit = f"{rel}:{i}:{line}"
-                        out.append(hit)
-                        size += len(hit) + 1
-                        if size >= MAX_OUTPUT_CHARS:
-                            capped = True
-                            break
+            text = f.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        if capped:
-            break
+
+        lines = text.split("\n")
+        if lines and lines[-1] == "":
+            lines.pop()  # a trailing newline isn't an extra empty line
+        # ``match_idx`` is the sorted set of matching line numbers; ``n_matches`` is
+        # the match count for ``count`` mode. In multiline mode a single match can
+        # span lines, so every line it covers is a match line — which lets the same
+        # content-emission path below apply context (-A/-B/-C) uniformly instead of
+        # silently dropping it.
+        if multiline:
+            hits = list(rx.finditer(text))
+            n_matches = len(hits)
+            covered: set[int] = set()
+            for m in hits:
+                lo = text.count("\n", 0, m.start())
+                hi = min(text.count("\n", 0, m.end()), len(lines) - 1)
+                covered.update(range(lo, hi + 1))
+            match_idx = sorted(covered)
+        else:
+            match_idx = [i for i, ln in enumerate(lines) if rx.search(ln)]
+            n_matches = len(match_idx)
+        if not match_idx:
+            continue
+        if output_mode == "files_with_matches":
+            emit(rel)
+        elif output_mode == "count":
+            emit(f"{rel}:{n_matches}")
+        else:
+            match_set = set(match_idx)
+            for gi, (lo, hi) in enumerate(
+                _context_ranges(match_idx, before, after, len(lines))
+            ):
+                if (before or after) and gi:
+                    emit("--")
+                    if stop:
+                        break
+                for i in range(lo, hi + 1):
+                    sep = ":" if i in match_set else "-"
+                    emit(f"{rel}{sep}{i + 1}{sep}{lines[i]}")
+                    if stop:
+                        break
+                if stop:
+                    break
+
     if not out:
         return "(no matches)"
-    return offload_if_large(
-        "\n".join(out), kind="grep", key=f"{pattern}\0{path or ''}",
-        workspace_root=root, capped=capped,
-    )
+    body = "\n".join(out)
+    if limited:
+        body += f"\n(stopped at head_limit={head_limit})"
+    key = f"{pattern}\0{path or ''}\0{output_mode}\0{glob or ''}\0{file_type or ''}"
+    return offload_if_large(body, kind="grep", key=key, workspace_root=root, capped=capped)
