@@ -181,6 +181,7 @@ marim mcp remove mddocs     # delete an entry
 (default) targets `.marim/mcp.json` in the current workspace. Other flags:
 `-t`/`--transport` (`stdio`|`http`|`sse`), `-H`/`--header` (http/sse, repeatable),
 `-e`/`--env KEY=value` (stdio, repeatable), `--trust` (bypass tool-call approval).
+Use `--` before the command to pass child arguments that start with `-` (e.g. `marim mcp add srv -- node --inspect`), otherwise they may be parsed as `marim`'s own flags.
 The CLI and hand-editing produce the same result — both approaches are
 interchangeable.
 

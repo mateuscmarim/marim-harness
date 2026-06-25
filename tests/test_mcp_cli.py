@@ -222,6 +222,19 @@ def test_main_remove_present_and_absent(tmp_path, monkeypatch):
     assert code == 1
 
 
+def test_main_list_marks_disabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.chdir(tmp_path)
+    global_path = mcp_config.global_mcp_config_path()
+    mcp_config.add_server(global_path, "enabled_srv", {"command": "x"})
+    mcp_config.add_server(global_path, "disabled_srv", {"command": "y", "enabled": False})
+    code, out, err = _run(["list"])
+    assert code == 0
+    lines = {line.split()[0]: line for line in out.splitlines() if line.strip()}
+    assert "(disabled)" in lines["disabled_srv"]
+    assert "(disabled)" not in lines["enabled_srv"]
+
+
 def test_main_no_subcommand_prints_help(tmp_path, monkeypatch):
     code, out, err = _run([])
     assert code == 2

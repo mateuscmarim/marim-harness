@@ -149,7 +149,8 @@ def _cmd_list(args, *, out, err) -> int:
         return 0
     for name, (spec, source) in sorted(servers.items()):
         target = spec.get("command") or spec.get("url") or "?"
-        print(f"{name}  [{source}]  {target}", file=out)
+        disabled = "  (disabled)" if spec.get("enabled") is False else ""
+        print(f"{name}  [{source}]  {target}{disabled}", file=out)
     return 0
 
 
@@ -181,8 +182,10 @@ def main(argv: list[str], *, out=sys.stdout, err=sys.stderr) -> int:
     parser = _build_parser()
     # ``add`` accepts a positional remainder (command + args, or url) that may
     # contain dashes; parse_known_args pulls the recognized options out wherever
-    # they appear and leaves the rest in order. The first leftover is consumed as
-    # ``name`` by the parser; the remaining leftovers are the spec positionals.
+    # they appear and leaves the rest in order.
+    # ``name`` is a declared positional on each subparser; parse_known_args leaves
+    # the ``add`` spec positionals (command + args, or url) in ``rest`` — they may
+    # contain dashes, so they cannot be declared as a fixed positional.
     args, rest = parser.parse_known_args(argv)
     if args.cmd == "add":
         return _cmd_add(args, rest, out=out, err=err)
