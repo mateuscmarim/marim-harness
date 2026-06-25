@@ -316,6 +316,42 @@ async def test_subagent_usage_priced_once_per_flush_tick(tmp_path, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_live_repaint_preserves_user_selection(tmp_path):
+    """A live stats repaint must not snap the selection back to the first agent.
+
+    Moving the list cursor updates the cursor synchronously but its RowHighlighted
+    fires async; if a fan-out's per-frame repaint lands before that message updates
+    subagent_index, the repaint must follow the cursor (the source of truth), not
+    force the stale stored index. Regression for the 'selecting an agent jumps back
+    to the first' bug."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        r = app.stream
+        for i in range(4):
+            w = r.mount_spawn_widget({"type": "explore", "description": f"agent {i}"})
+            w.stream_id = f"c{i}"
+            r.tool_widgets[f"c{i}"] = w
+            r.ensure_pane(w)
+            await app.query_one("#log").mount(w)
+        await pilot.pause()
+        app.open_subagents_at("c0")
+        await pilot.pause()
+
+        lst = app.query_one(SubAgentList)
+        # Move the cursor (cursor updates now; its RowHighlighted is still queued)…
+        lst.move_cursor(row=2)
+        # …and a live event repaints the list before that message is processed.
+        app.refresh_subagents_view()
+        r.flush_streams()
+        await pilot.pause()
+        await pilot.pause()
+
+        assert lst.cursor_row == 2
+        assert app.subagent_index == 2
+        assert app.query_one(SubAgentsView).host.current_sid() == "c2"
+
+
+@pytest.mark.anyio
 async def test_refresh_subagents_view_is_noop_when_closed(tmp_path):
     """When the screen is closed, a streamed event must not even mark it dirty, so
     streaming pays nothing for a hidden screen."""

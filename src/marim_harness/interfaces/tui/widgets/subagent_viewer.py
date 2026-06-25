@@ -31,15 +31,25 @@ class SubAgentList(DataTable):
         for label, width in _COLUMNS:
             self.add_column(label, key=label, width=width)
 
-    def refresh_rows(self, subagents: list, selected: int) -> None:
-        """Rebuild every row from ``subagents`` and place the cursor on
-        ``selected``. N is the session's sub-agent count (small), so a full rebuild
-        per change is cheap and avoids per-cell key bookkeeping."""
-        self.clear()
-        for w in subagents:
-            self.add_row(*row_cells(w))
-        if self.row_count:
-            self.move_cursor(row=max(0, min(selected, self.row_count - 1)))
+    def refresh_rows(self, subagents: list, selected: int | None = None) -> None:
+        """Rebuild every row from ``subagents``. With ``selected`` given, place the
+        cursor there (open/navigate); with ``selected`` None, preserve the *current*
+        cursor — a live stats repaint must not move the user's selection. N is the
+        session's sub-agent count (small), so a full rebuild per change is cheap and
+        avoids per-cell key bookkeeping.
+
+        The rebuild is wrapped in ``prevent(RowHighlighted)`` so its programmatic
+        cursor moves (clear() resets the cursor to row 0; move_cursor restores it)
+        don't emit highlight events. Otherwise the app's on_data_table_row_highlighted
+        would mistake them for user navigation and, during a fan-out's per-frame
+        repaints, fight the user's selection back to the first row."""
+        keep = self.cursor_row if selected is None else selected
+        with self.prevent(DataTable.RowHighlighted):
+            self.clear()
+            for w in subagents:
+                self.add_row(*row_cells(w))
+            if self.row_count:
+                self.move_cursor(row=max(0, min(keep, self.row_count - 1)))
 
     def selected_index(self) -> int:
         return self.cursor_row

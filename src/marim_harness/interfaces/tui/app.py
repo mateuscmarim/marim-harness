@@ -411,19 +411,26 @@ class HarnessApp(App):
         self.query_one("#log", VerticalScroll).display = True
         self.query_one(PromptInput).focus()
 
-    def _repaint_subagents_list(self) -> None:
+    def _repaint_subagents_list(self, select: int | None = None) -> None:
         """Repaint the list/summary scalars and show the selected agent's pane.
-        Clamps the index and closes the screen if the list emptied. Does NOT flush
-        transcripts — the flush tick owns that — so this is safe to call from
-        within the tick without re-entering it."""
+        Closes the screen if the list emptied. Does NOT flush transcripts — the
+        flush tick owns that — so this is safe to call from within the tick without
+        re-entering it.
+
+        ``select`` forces the cursor (open/navigate); None preserves it (a live
+        stats repaint). The DataTable cursor is the source of truth for the
+        selection: we sync ``subagent_index`` FROM it after the repaint, so a
+        per-frame repaint during a fan-out follows the user's cursor instead of
+        snapping it back to a stale stored index (the lag between a key press moving
+        the cursor and its async RowHighlighted updating subagent_index)."""
         subs = self.stream.subagents
         if not subs:
             self._close_subagents()
             return
-        self.subagent_index = max(0, min(self.subagent_index, len(subs) - 1))
-        current = subs[self.subagent_index]
         view = self.query_one(SubAgentsView)
-        view.repaint(subs, self.subagent_index, self.subagent_cost)
+        view.repaint(subs, self.subagent_cost, selected=select)
+        self.subagent_index = max(0, min(view.list.cursor_row, len(subs) - 1))
+        current = subs[self.subagent_index]
         if current.pane is not None:
             view.host.show(current.stream_id)
 
@@ -433,7 +440,7 @@ class HarnessApp(App):
         current pane, so it needs a one-off render on selection). Driven by user
         actions (open, cursor move), which are infrequent — unlike the live
         streaming path, which coalesces via refresh_subagents_view."""
-        self._repaint_subagents_list()
+        self._repaint_subagents_list(select=self.subagent_index)
         if self.subagent_viewer_open:  # still open (not closed by an emptied list)
             self.stream.flush_streams()
 
