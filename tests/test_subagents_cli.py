@@ -242,11 +242,84 @@ sys.stdout.flush()
 '''
 
 
+_FAKE_CLI_SLEEPY = '''#!{python}
+import json, os, sys, time
+
+pidfile = os.environ.get("FAKE_CLI_PIDFILE", "")
+if pidfile:
+    with open(pidfile, "w") as f:
+        f.write(str(os.getpid()))
+        f.flush()
+
+event = {{"type": "assistant", "message": {{"content": [
+    {{"type": "text", "text": "working on it"}},
+]}}}}
+sys.stdout.write(json.dumps(event) + "\\n")
+sys.stdout.flush()
+
+time.sleep(30)
+'''
+
+
+@pytest.mark.anyio
+async def test_runner_kills_subprocess_when_event_callback_raises(tmp_path, monkeypatch):
+    """Regression: on an exceptional exit the subprocess must be reaped.
+
+    A fake CLI writes its PID, emits one assistant event, then sleeps 30 s.
+    The on_event callback raises on the first event. With no try/finally the
+    child would keep sleeping (orphaned); with the fix the finally block kills
+    and reaps it.
+    """
+    import asyncio
+    import os
+    import time
+
+    pidfile = tmp_path / "cli_pid.txt"
+    monkeypatch.setenv("FAKE_CLI_PIDFILE", str(pidfile))
+
+    p = tmp_path / "sleepy_claude.py"
+    p.write_text(_FAKE_CLI_SLEEPY.format(python=sys.executable), encoding="utf-8")
+    p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IRWXU)
+
+    async def on_event_raises(stream_id, event, usage):
+        raise RuntimeError("simulated on_event failure")
+
+    runner = ClaudeCliRunner(on_event_raises, None)
+
+    with pytest.raises(RuntimeError):
+        await asyncio.wait_for(
+            runner.run(
+                binary=str(p), prompt="go", system_prompt="s", cwd=str(tmp_path),
+                allow_gated=True, allowed_tools=frozenset(), model=None, stream_id="s1",
+            ),
+            timeout=15,
+        )
+
+    assert pidfile.exists(), "fake CLI never wrote its PID — test setup broken"
+    pid = int(pidfile.read_text().strip())
+
+    # Poll until the process is reaped (or give up after a few seconds).
+    deadline = time.monotonic() + 5.0
+    reaped = False
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+            await asyncio.sleep(0.1)
+        except (ProcessLookupError, OSError):
+            reaped = True
+            break
+
+    assert reaped, (
+        f"subprocess (pid {pid}) was NOT reaped after ClaudeCliRunner.run raised — "
+        "orphaned child is still running"
+    )
+
+
 @pytest.mark.anyio
 async def test_runner_drains_stderr_concurrently_no_deadlock(tmp_path):
     """Regression: draining stdout before stderr deadlocks when stderr > pipe buffer.
 
-    The fake CLI writes 250 KB to stderr before its stdout result line. On old
+    The fake CLI writes 2 MB to stderr before its stdout result line. On old
     sequential-drain code the child blocks on the stderr write, the parent waits
     forever on stdout EOF — deadlock. The fix starts an asyncio task to drain stderr
     concurrently so the child never blocks.

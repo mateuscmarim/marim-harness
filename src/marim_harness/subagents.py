@@ -398,9 +398,9 @@ class SubagentRunner:
                 return err
         work_root = iso["path"] if iso else None
         # CLI-backed agents run an external `claude` process instead of the
-        # in-process Pydantic AI loop. Branch here so everything below stays the
-        # native path, byte-for-byte. The CLI path mirrors the same wrapper
-        # (hooks bracketing, output cap, worktree, background persist) in
+        # in-process Pydantic AI loop. Branch here so the native build+run flow
+        # below is unchanged. The CLI path mirrors the same wrapper (hooks
+        # bracketing, output cap, worktree, background persist) in
         # _execute_cli_spawn — duplicated deliberately to keep the native flow
         # untouched; both halves are small and evolve independently.
         defn = find_agent(self.deps.workspace_root, type)

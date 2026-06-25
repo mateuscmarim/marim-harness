@@ -13,6 +13,7 @@ spawns the process and forwards its activity to the UI. The harness wrapping
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -221,6 +222,8 @@ class ClaudeCliRunner:
 
     def __init__(self, on_event, on_notice) -> None:
         self._on_event = on_event      # Deps.on_subagent_event | None
+        # Reserved for the spec's low-fidelity on_subagent_notice fallback; not
+        # wired in v1 — full-fidelity event translation via _on_event is always used.
         self._on_notice = on_notice    # Deps.on_subagent_notice | None
 
     async def run(
@@ -241,30 +244,46 @@ class ClaudeCliRunner:
         # buffer before finishing stdout, a sequential "read stdout then stderr"
         # would deadlock (child blocks writing stderr, parent waits on stdout EOF).
         stderr_task = asyncio.ensure_future(proc.stderr.read()) if proc.stderr is not None else None
-        translator = CliStreamTranslator()
-        output = ""
-        usage = RunUsage()
-        result_seen = False
-        assert proc.stdout is not None
-        async for raw in proc.stdout:
-            line = raw.decode("utf-8", "replace").strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue  # non-JSON noise on stdout — skip
-            if obj.get("type") == "result":
-                output = obj.get("result", "") or ""
-                usage = synth_usage(obj.get("usage"), obj.get("num_turns", 0) or 0)
-                result_seen = True
-                continue
-            for event in translator.translate(obj):
-                if self._on_event is not None and stream_id:
-                    await self._on_event(stream_id, event, None)
-        stderr_bytes = await stderr_task if stderr_task is not None else b""
-        code = await proc.wait()
-        if not result_seen:
-            detail = stderr_bytes.decode("utf-8", "replace").strip() or f"exit code {code}"
-            raise CliRunError(f"claude produced no result ({detail})")
-        return CliResult(output=output, usage=usage)
+        try:
+            translator = CliStreamTranslator()
+            output = ""
+            usage = RunUsage()
+            result_seen = False
+            assert proc.stdout is not None
+            async for raw in proc.stdout:
+                line = raw.decode("utf-8", "replace").strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue  # non-JSON noise on stdout — skip
+                if obj.get("type") == "result":
+                    output = obj.get("result", "") or ""
+                    usage = synth_usage(obj.get("usage"), obj.get("num_turns", 0) or 0)
+                    result_seen = True
+                    continue
+                for event in translator.translate(obj):
+                    if self._on_event is not None and stream_id:
+                        await self._on_event(stream_id, event, None)
+            stderr_bytes = await stderr_task if stderr_task is not None else b""
+            stderr_task = None  # consumed — don't cancel it in finally
+            code = await proc.wait()
+            if not result_seen:
+                detail = stderr_bytes.decode("utf-8", "replace").strip() or f"exit code {code}"
+                raise CliRunError(f"claude produced no result ({detail})")
+            return CliResult(output=output, usage=usage)
+        finally:
+            # On an exceptional/cancelled exit, reap the child so an auto-mode CLI
+            # can't keep editing files after the spawn was abandoned, and never leave
+            # stderr_task un-retrieved (which would log an asyncio "Future destroyed"
+            # warning and suppress the real exception on Python 3.11+).
+            if stderr_task is not None:
+                stderr_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await stderr_task
+            if proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                with contextlib.suppress(BaseException):
+                    await proc.wait()
