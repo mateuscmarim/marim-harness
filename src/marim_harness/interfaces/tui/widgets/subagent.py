@@ -107,6 +107,11 @@ class SubAgentWidget(Vertical):
         # mount and ``_t_end`` frozen at finish.
         self.activity = ""
         self.tool_count = 0
+        # A detached/background spawn never streams its steps to this card, so its
+        # tool tally is unknown (stays 0). The done line then reports "ran in
+        # background" instead of a misleading "0 toolcalls". Set by the renderer
+        # when the card is mapped to a background job (note_detached_spawn).
+        self.detached = False
         self._t0 = time.monotonic()
         self._t_end: float | None = None
         # Live token usage. The total + cost ride on the card; the full cache split
@@ -209,6 +214,10 @@ class SubAgentWidget(Vertical):
             # Let the line grow + wrap only while expanded; otherwise it stays one row.
             self._activity.set_class(self._expanded and expandable, "-expanded")
             self._activity.update(Content.assemble((f"↳ {reason}", "red"), (marker, "dim")))
+        elif self.detached:
+            # A background run streamed no steps here, so the tool tally is unknown
+            # — don't fabricate "0 toolcalls"; note it ran detached, with duration.
+            self._activity.update(Content(f"↳ ran in background · {self._duration()}"))
         else:
             # Done: collapse to the run summary (tool tally + frozen duration).
             plural = "" if self.tool_count == 1 else "s"

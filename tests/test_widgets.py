@@ -682,6 +682,41 @@ async def test_subagent_note_retry_shows_on_the_activity_line():
         assert w.status == "pending"  # the run is still going, not failed
 
 
+@pytest.mark.anyio
+async def test_detached_card_done_line_omits_fabricated_toolcount():
+    """A detached sub-agent doesn't stream its steps, so the card has no tool
+    count — the done line must not claim "0 toolcalls"; it says it ran in the
+    background instead, alongside the duration."""
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+
+    app = _SubHarness()
+    async with app.run_test() as pilot:
+        w = app.query_one(SubAgentWidget)
+        await pilot.pause()
+        w.detached = True
+        w.finish("the report", status="done")
+        await pilot.pause()
+        line = str(w._activity.visual)
+        assert "toolcall" not in line
+        assert "background" in line
+
+
+@pytest.mark.anyio
+async def test_foreground_card_done_line_keeps_toolcount():
+    """A streamed (foreground) sub-agent keeps its real tool tally on the done
+    line — the omission is only for detached cards with no streamed count."""
+    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+
+    app = _SubHarness()
+    async with app.run_test() as pilot:
+        w = app.query_one(SubAgentWidget)
+        await pilot.pause()
+        w.tool_count = 2  # as if two tool calls had streamed in
+        w.finish("the report", status="done")
+        await pilot.pause()
+        assert "2 toolcalls" in str(w._activity.visual)
+
+
 def test_failure_reason_strips_prefix_and_clips():
     from marim_harness.interfaces.tui.widgets.subagent import failure_reason
 

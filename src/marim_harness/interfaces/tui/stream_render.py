@@ -344,6 +344,7 @@ class StreamRenderer:
         job_id = _detached_job_id(content)
         if job_id is None:
             return False
+        widget.detached = True  # no streamed steps → don't claim a 0 tool tally
         widget.activity = "running in background…"
         self._detached_cards[job_id] = widget
         self._fill_detached_card(job_id, jobs)
