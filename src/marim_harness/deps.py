@@ -35,11 +35,11 @@ SubAgentEventCb = Callable[[str, object, object], Awaitable[None]]
 # spawn's card (e.g. "transient error — retrying 1/2…"), distinct from the run's
 # own streamed events. None when there's no UI listening.
 SubAgentNoticeCb = Callable[[str, str], Awaitable[None]]
-# (type, task, mcp_names, max_output_chars, model, isolation) -> the sub-agent's
-# final report. Like SubAgentRunner but with no streaming — used to run a
-# sub-agent as a detached background job.
+# (type, task, mcp_names, max_output_chars, model, isolation, stream_id) -> the
+# sub-agent's final report. Like SubAgentRunner; when stream_id is set (the spawn's
+# tool_call_id) the detached run also streams its events to the UI (Phase 2).
 BackgroundAgentRunner = Callable[
-    [str, str, list[str] | None, int | None, str | None, str | None],
+    [str, str, list[str] | None, int | None, str | None, str | None, str],
     Awaitable[str],
 ]
 

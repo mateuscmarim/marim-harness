@@ -303,6 +303,48 @@ async def test_run_background_subagent_respects_mode(tmp_path: Path):
     assert captured["tools"] == set(SUBAGENT_TOOLS)
 
 
+@pytest.mark.anyio
+async def test_run_background_streams_events_to_listener(tmp_path: Path):
+    """A background spawn with a stream_id + UI listener forwards its run events,
+    exactly like a foreground spawn — the Phase 2 live-streaming wiring."""
+    from pydantic_ai.models.function import DeltaToolCall  # noqa: F401 — streaming model
+
+    recorded: list[str] = []
+
+    async def cb(stream_id, event, usage):
+        recorded.append(stream_id)
+
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content="BG ANSWER")])
+
+    async def stream_fn(messages, info):
+        yield "BG ANSWER"
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto, on_subagent_event=cb)
+    h = _make_harness(FunctionModel(fn, stream_function=stream_fn), deps)
+    out = await h.subagents.run_background("explore", "scan", stream_id="call_99")
+    assert out == "BG ANSWER"
+    assert recorded and all(sid == "call_99" for sid in recorded)
+
+
+@pytest.mark.anyio
+async def test_run_background_without_stream_id_does_not_forward(tmp_path: Path):
+    """An empty stream_id (headless / no tool-call id) forwards nothing, even when
+    a listener is wired."""
+    recorded: list[str] = []
+
+    async def cb(stream_id, event, usage):
+        recorded.append(stream_id)
+
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content="X")])
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto, on_subagent_event=cb)
+    h = _make_harness(FunctionModel(fn), deps)
+    await h.subagents.run_background("explore", "scan")  # no stream_id
+    assert recorded == []
+
+
 def test_background_agent_runner_wired(tmp_path: Path):
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(_text_model(), deps)

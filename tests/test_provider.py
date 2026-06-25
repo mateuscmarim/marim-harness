@@ -294,7 +294,8 @@ async def test_spawn_agent_forwards_mcp_background(tmp_path):
 
     captured = {}
 
-    def fake_bg(type, task, mcp_names, max_output_chars=None, model=None, isolation=None):
+    def fake_bg(type, task, mcp_names, max_output_chars=None, model=None, isolation=None,
+                stream_id: str = ""):
         captured["args"] = (type, task, mcp_names)
         async def _coro():
             return "bg-report"
@@ -394,7 +395,8 @@ async def test_spawn_agent_coerces_comma_separated_mcp_background(tmp_path):
 
     captured = {}
 
-    def fake_bg(type, task, mcp_names, max_output_chars=None, model=None, isolation=None):
+    def fake_bg(type, task, mcp_names, max_output_chars=None, model=None, isolation=None,
+                stream_id: str = ""):
         captured["mcp_names"] = mcp_names
 
         async def _coro():

@@ -412,7 +412,8 @@ async def spawn_agent(
         job_id = ctx.deps.jobs.register(
             "agent", label,
             ctx.deps.services.run_background_agent(
-                type, task, mcp_names, budget, model, isolation
+                type, task, mcp_names, budget, model, isolation,
+                ctx.tool_call_id or "",
             ),
         )
         if auto_detached:

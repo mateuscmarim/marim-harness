@@ -197,7 +197,7 @@ class SubagentRunner:
         UI listener (e.g. a headless background run with hooks off)."""
         cb = self.deps.on_subagent_event
         hooks_on = self.deps.hooks is not None
-        forward = cb is not None and stream_id is not None
+        forward = cb is not None and bool(stream_id)
         if not hooks_on and not forward:
             return None
         # Per-run correlation map (tool_call_id → input) so a PostToolUse event
@@ -216,7 +216,7 @@ class SubagentRunner:
                     await self.hooks.tool_event(event, call_inputs)
                 # Forward the whole usage (not just a token total) so the UI can
                 # render the cache split and cost, not only the running count.
-                if cb is not None and stream_id is not None:
+                if cb is not None and stream_id:
                     await cb(stream_id, event, getattr(ctx, "usage", None))
 
         return handler
@@ -406,18 +406,19 @@ class SubagentRunner:
         else:
             run_deps = replace(self.deps, workspace_root=work_root) if iso else self.deps
         await self.hooks.subagent_start(type, task)
-        # Foreground: pass stream_id so events are forwarded to the UI.
-        # Background: pass None so the handler only fires hooks (no UI stream).
+        # Foreground passes its tool_call_id; a background spawn now passes its own
+        # stream_id too (Phase 2), so it streams to the UI exactly like foreground.
+        # An empty stream_id (headless / no id) forwards nothing — handler() gates
+        # on truthiness.
         first_event_at: list[float] = []
         probe = (lambda: first_event_at.append(time.perf_counter())) if debug else None
-        handler = self.handler(None if background else stream_id, on_first_event=probe)
+        handler = self.handler(stream_id, on_first_event=probe)
         try:
             # Bound concurrent model runs (the part that hits the provider) so a
             # wide fan-out queues instead of slamming a rate-limited route at once.
             async with self._slot():
                 result = await self._run_to_completion(
-                    sub, task, run_deps, granted, handler,
-                    None if background else stream_id,
+                    sub, task, run_deps, granted, handler, stream_id,
                 )
         except Exception as exc:  # noqa: BLE001
             self._log_spawn_timing(type, t0, t_built, first_event_at, failed=True)
@@ -499,19 +500,22 @@ class SubagentRunner:
     async def run_background(
         self, type: str, task: str, mcp_names: list[str] | None = None,
         max_output_chars: int | None = None, model: str | None = None,
-        isolation: str | None = None,
+        isolation: str | None = None, stream_id: str = "",
     ) -> str:
         """Run a sub-agent as a detached background job: same isolation, mode-based
-        reach, and MCP grant as a foreground spawn, but with no event streaming —
-        the job's result is its final report, surfaced when the agent pulls it.
-        Any unknown-server note rides along on that report. ``max_output_chars``
-        applies only as a soft instruction here (the report is pulled later via
-        the jobs API, which has no spill hook), so a background report is not
-        hard-capped, with the over-budget remainder spilled to a workspace file
-        the same way a foreground one is. ``model`` optionally overrides the model
-        this spawn runs on. ``isolation="worktree"`` runs it in its own git
-        worktree, committing its changes to a branch named in the report."""
+        reach, and MCP grant as a foreground spawn. When ``stream_id`` is set (the
+        launching spawn's tool_call_id) and a UI listener exists, the run streams
+        its events to that card live — identical to a foreground spawn (Phase 2);
+        with no ``stream_id`` (headless) it streams nothing and the job's result is
+        its final report, surfaced when the agent pulls it. Any unknown-server note
+        rides along on that report. ``max_output_chars`` applies only as a soft
+        instruction here (the report is pulled later via the jobs API, which has no
+        spill hook), so a background report is not hard-capped, with the over-budget
+        remainder spilled to a workspace file the same way a foreground one is.
+        ``model`` optionally overrides the model this spawn runs on.
+        ``isolation="worktree"`` runs it in its own git worktree, committing its
+        changes to a branch named in the report."""
         return await self._execute_spawn(
             type, task, mcp_names, max_output_chars, model, isolation,
-            background=True, stream_id="",
+            background=True, stream_id=stream_id,
         )

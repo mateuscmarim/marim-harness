@@ -66,7 +66,8 @@ async def test_auto_detach_defaults_output_budget(tmp_path: Path):
     recorded: list = []
 
     async def _stub_background(
-        type: str, task: str, mcp_names, max_output_chars, model, isolation
+        type: str, task: str, mcp_names, max_output_chars, model, isolation,
+        stream_id: str = "",
     ) -> str:
         recorded.append(max_output_chars)
         return "ok"
