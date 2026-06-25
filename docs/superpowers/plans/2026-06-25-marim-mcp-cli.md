@@ -294,19 +294,6 @@ Mirrors the ``claude mcp add`` flag surface so docs and muscle memory transfer:
 ``marim mcp add --transport http|sse <name> <url> -H "K: V"`` for remote servers.
 """
 
-import argparse
-import json
-import sys
-from pathlib import Path
-
-from ...mcp.config import (
-    add_server,
-    global_mcp_config_path,
-    project_mcp_config_path,
-    read_servers_with_source,
-    remove_server,
-)
-
 
 class SpecError(ValueError):
     """A user-facing validation failure while building a server spec."""
@@ -364,9 +351,9 @@ Expected: PASS (9 tests).
 - [ ] **Step 5: Lint + type-check**
 
 Run: `uv run ruff check src tests && uv run pyright src/marim_harness/interfaces/cli/mcp.py`
-Expected: no errors. (Note: `add_server`, `global_mcp_config_path`, `project_mcp_config_path`, `read_servers_with_source`, `remove_server` are imported now but used in Task 3 — if pyright/ruff flags them as unused, that resolves in Task 3; if ruff F401 fails here, proceed to Task 3 before committing, or add the command handlers in this same commit. Prefer committing Tasks 2+3 together if the unused-import lint blocks.)
+Expected: no errors. (The module so far has no imports — `_build_spec`/`_parse_pairs`/`SpecError` are pure builtins-only. The config-helper and argparse imports are added in Task 3 alongside the code that uses them.)
 
-- [ ] **Step 6: Commit (only if lint is clean; otherwise fold into Task 3's commit)**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/marim_harness/interfaces/cli/mcp.py tests/test_mcp_cli.py
@@ -492,7 +479,24 @@ Expected: FAIL — `AttributeError: module ... has no attribute 'main'`.
 
 - [ ] **Step 3: Add the parser, handlers, and `main` to `cli/mcp.py`**
 
-Append to `src/marim_harness/interfaces/cli/mcp.py`:
+First add the imports at the **top** of `src/marim_harness/interfaces/cli/mcp.py`, immediately after the module docstring (before `class SpecError`):
+
+```python
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from ...mcp.config import (
+    add_server,
+    global_mcp_config_path,
+    project_mcp_config_path,
+    read_servers_with_source,
+    remove_server,
+)
+```
+
+Then append the rest to the end of the module:
 
 ```python
 def _scope_path(scope: str, workspace_root: Path) -> Path:
