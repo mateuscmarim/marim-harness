@@ -22,6 +22,8 @@ from textual.content import Content
 from textual.widgets import Static
 
 if TYPE_CHECKING:
+    from pydantic_ai.usage import RunUsage
+
     from .subagent_detail import SubAgentPane
 
 from .tool_summary import summarize
@@ -97,6 +99,10 @@ class SubAgentWidget(Vertical):
         self.agent_type = agent_type
         self.agent_task = agent_task
         self.model_label = model_label
+        # Derived lazily from agent_task (which is fixed) and cached: _paint_header
+        # asks for it on every spinner tick just to redraw one glyph, so condensing
+        # the (often multi-paragraph) prompt per frame, ×N running agents, is waste.
+        self._title: str | None = None
         # The owning stream's id (the spawn's tool_call_id); set by the renderer
         # once the widget is registered. The flush tick uses it to skip transcripts
         # that aren't currently being viewed.
@@ -139,6 +145,12 @@ class SubAgentWidget(Vertical):
         # The numeric cost of this agent's run, folded in by set_usage; the summary
         # bar sums these (rather than re-parsing the formatted cost_text).
         self.cost_value: float | None = None
+        # Latest live RunUsage stashed by the renderer, priced on the next flush
+        # tick rather than inline per delta (see StreamRenderer._drain_subagent_usage).
+        # _priced_tokens is the token total at the last pricing, so a tick can skip a
+        # card whose usage hasn't moved. -1 forces the first pricing.
+        self._pending_usage: RunUsage | None = None
+        self._priced_tokens = -1
         super().__init__(self._header, self._activity)
 
     def on_mount(self) -> None:
@@ -186,8 +198,11 @@ class SubAgentWidget(Vertical):
 
     def display_title(self) -> str:
         """A concise one-line title derived from the (often verbose) spawn prompt —
-        used on the card header and in the viewer's side-panel list."""
-        return derive_title(self.agent_task)
+        used on the card header and in the viewer's side-panel list. Derived once
+        and cached: agent_task is fixed, but this is called per spinner tick."""
+        if self._title is None:
+            self._title = derive_title(self.agent_task)
+        return self._title
 
     def _paint_header(self) -> None:
         # A derived title (not the raw prompt); CSS clips it with an ellipsis to the

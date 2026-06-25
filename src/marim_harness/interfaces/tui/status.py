@@ -36,10 +36,31 @@ class StatusPresenter:
         self.spin = 0
         self.session_start = time.monotonic()
         self.turn_start = time.monotonic()
+        # Memoized context-size estimate (see _context_tokens). -1 forces a first
+        # compute; 0 is a legitimate cached value for an empty history.
+        self._ctx_tokens_key = -1
+        self._ctx_tokens = 0
+
+    def _context_tokens(self) -> int:
+        """The context-size estimate for the status bar, memoized on history length.
+
+        estimate_tokens() serializes every part of every message (O(total bytes)),
+        but the status bar repaints once a second while idle and ~12.5x/s while a
+        turn streams — recomputing it each time re-stringifies the whole transcript
+        for a number that only moves when a message is committed. The committed
+        history grows message-by-message (a streamed reply is one ModelResponse
+        appended at turn end, not parts mutated in place), so len(history) is an
+        exact change key: stable between commits, bumped on each new message."""
+        history = self.app.harness.session.history
+        key = len(history)
+        if key != self._ctx_tokens_key:
+            self._ctx_tokens_key = key
+            self._ctx_tokens = estimate_tokens(history)
+        return self._ctx_tokens
 
     def status_text(self) -> Content:
         cfg = getattr(self.app.harness, "model_label", "model")
-        used = estimate_tokens(self.app.harness.session.history)
+        used = self._context_tokens()
         max_ctx = getattr(self.app.harness.session, "max_context_tokens", 0) or 0
         pct = round(used / max_ctx * 100) if max_ctx else 0
         ctx_text = f"ctx {human_tokens(used)}/{human_tokens(max_ctx)} ({pct}%)"

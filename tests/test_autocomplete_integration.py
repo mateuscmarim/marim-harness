@@ -191,6 +191,76 @@ async def test_tab_with_no_menu_does_not_complete():
         assert pi.text.startswith("hi")
 
 
+class _AcHistoryApp(_AcIntegrationApp):
+    """The wired autocomplete app, but with a seeded prompt history so we can
+    exercise history recall against the slash menu."""
+
+    def __init__(self, history):
+        super().__init__()
+        self._history = history
+
+    def compose(self) -> ComposeResult:
+        yield CommandAutocomplete(id="cmd-autocomplete")
+        yield PromptInput(history=self._history)
+
+
+@pytest.mark.anyio
+async def test_recalling_command_from_history_does_not_trap_scrolling():
+    """Recalling a slash command from history must NOT open the autocomplete menu:
+    the menu owns Up/Down while open, so popping it would trap the user on that
+    entry, unable to keep scrolling. Regression for 'scrolling history onto a
+    command shows the autocomplete and blocks further scrolling'."""
+    from marim_harness.history import PromptHistory
+
+    hist = PromptHistory()
+    for p in ("first thing", "/help", "third thing"):
+        hist.add(p)
+
+    app = _AcHistoryApp(hist)
+    async with app.run_test() as pilot:
+        pi = app.query_one(PromptInput)
+        ac = app.query_one(CommandAutocomplete)
+        pi.focus()
+        await pilot.pause()
+
+        await pilot.press("up")  # -> "third thing" (newest)
+        await pilot.press("up")  # -> "/help" (a command — must not open the menu)
+        await pilot.pause()
+        assert pi.text == "/help"
+        assert ac.visible is False
+        assert pi._slash_active is False
+
+        await pilot.press("up")  # keeps scrolling instead of navigating the menu
+        await pilot.pause()
+        assert pi.text == "first thing"
+
+
+@pytest.mark.anyio
+async def test_editing_a_recalled_command_reopens_menu():
+    """Suppression is only for the recall itself — once the user edits the recalled
+    command, the menu opens again so completion still works."""
+    from marim_harness.history import PromptHistory
+
+    hist = PromptHistory()
+    hist.add("/help")
+
+    app = _AcHistoryApp(hist)
+    async with app.run_test() as pilot:
+        pi = app.query_one(PromptInput)
+        ac = app.query_one(CommandAutocomplete)
+        pi.focus()
+        await pilot.pause()
+
+        await pilot.press("up")  # -> "/help", menu suppressed
+        await pilot.pause()
+        assert ac.visible is False
+
+        await pilot.press("backspace")  # edit -> "/hel": menu reopens
+        await pilot.pause()
+        assert pi.text == "/hel"
+        assert ac.visible is True
+
+
 @pytest.mark.anyio
 async def test_bare_slash_shows_all_commands():
     from marim_harness.interfaces.tui.commands import COMMANDS

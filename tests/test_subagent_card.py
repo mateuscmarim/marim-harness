@@ -1,4 +1,26 @@
+import marim_harness.interfaces.tui.widgets.subagent as subagent_mod
 from marim_harness.interfaces.tui.widgets.subagent import SubAgentWidget
+
+
+def test_display_title_is_derived_once_and_cached(monkeypatch):
+    """_paint_header runs on every spinner tick (10 Hz, ×N running agents) and asks
+    for display_title() to redraw one glyph. agent_task is fixed at construction, so
+    the (whitespace-collapsing, separator-scanning) derivation must happen once and
+    be cached — not re-condense the whole spawn prompt per frame."""
+    calls = {"n": 0}
+    real = subagent_mod.derive_title
+
+    def counting(task):
+        calls["n"] += 1
+        return real(task)
+
+    monkeypatch.setattr(subagent_mod, "derive_title", counting)
+
+    w = SubAgentWidget("research", "Map the codebase. Then summarize.", "sonnet")
+    assert w.display_title() == "Map the codebase"
+    w.display_title()
+    w._paint_header()  # the per-tick caller
+    assert calls["n"] == 1
 
 
 def test_card_has_no_body_and_tolerates_no_pane():

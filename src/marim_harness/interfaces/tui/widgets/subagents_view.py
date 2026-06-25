@@ -68,7 +68,9 @@ class SubAgentsView(Vertical):
     def host(self) -> SubAgentDetailHost:
         return self.query_one(SubAgentDetailHost)
 
-    def repaint(self, subagents: list, selected: int, cost_of) -> None:
+    def repaint(self, subagents: list, cost_of, selected: int | None = None) -> None:
+        """Repaint the summary + list. ``selected`` None preserves the list cursor
+        (a live stats repaint); an int forces it (open/navigate)."""
         self.query_one(SubAgentSummary).refresh_totals(aggregate(subagents, cost_of))
         self.list.refresh_rows(subagents, selected)
 

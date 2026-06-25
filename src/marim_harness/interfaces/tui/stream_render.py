@@ -316,6 +316,9 @@ class StreamRenderer:
         # Either an AssistantMessage (reply/sub-agent body) or a ThinkingWidget —
         # both expose the append/flush streaming interface the tick drains.
         self.dirty_streams: set[AssistantMessage | ThinkingWidget] = set()
+        # Sub-agent cards that took new live usage since the last frame; priced once
+        # per flush tick rather than inline per delta (see _drain_subagent_usage).
+        self.dirty_usage_cards: set[SubAgentWidget] = set()
         self.live_run_tokens = 0
         self.show_all_output = False  # Ctrl+O reveal-all toggle
         # True while a session view is being rebuilt (clear/switch/new). During the
@@ -453,11 +456,48 @@ class StreamRenderer:
                 self.dirty_streams.add(m)
                 continue
             m.flush()
+        self._drain_subagent_usage()
         self._anchor_on_overflow()
+        # Coalesced sub-agents-screen repaint: streamed events mark the screen
+        # dirty rather than repainting inline (a per-event DataTable rebuild + flush
+        # pins a core during a fan-out); drain that here, once per frame, after the
+        # visible pane's transcript has been flushed above.
+        self.app.drain_subagents_repaint()
         # Piggyback on the same per-frame tick to repaint the status bar while a
         # turn is running, so the live token counter advances as the run streams.
         if self.app.status.busy:
             self.app.status.refresh_status()
+
+    def note_subagent_usage(self, parent: SubAgentWidget, usage) -> None:
+        """Stash a sub-agent's latest live usage to be priced on the next flush tick.
+
+        Pricing (resolve_cost → a genai-prices table lookup) plus the token-split
+        format is deferred and coalesced rather than run inline per event: a fast
+        provider emits many text deltas between 80 ms ticks and a fan-out multiplies
+        that ×N concurrent agents, so pricing per delta pins a core for a number that
+        barely moves. The flush tick prices each card at most once per frame."""
+        parent._pending_usage = usage
+        self.dirty_usage_cards.add(parent)
+
+    def _drain_subagent_usage(self) -> None:
+        """Price the sub-agent cards that took new usage since the last frame (see
+        note_subagent_usage). Coalesced to the flush tick and deduped on the token
+        total, so a quiet card costs nothing and a streaming one is priced ≤12.5x/s,
+        not once per delta."""
+        if not self.dirty_usage_cards:
+            return
+        cards, self.dirty_usage_cards = self.dirty_usage_cards, set()
+        for card in cards:
+            usage = card._pending_usage
+            if usage is None or usage.total_tokens == card._priced_tokens:
+                continue
+            card._priced_tokens = usage.total_tokens
+            cost, _ = resolve_cost(usage, self.app.harness.model_id)
+            cost_text = _format_cost(cost) if cost is not None else None
+            card.set_usage(
+                usage.total_tokens, cost_text, _format_token_split(usage),
+                cost_value=cost,  # numeric cost for the summary roll-up
+            )
 
     def _anchor_on_overflow(self) -> None:
         """Anchor the log the moment its content first overflows the viewport, so
@@ -592,12 +632,7 @@ class StreamRenderer:
         if not isinstance(parent, SubAgentWidget):
             return
         if usage is not None and usage.total_tokens:
-            cost, _ = resolve_cost(usage, self.app.harness.model_id)
-            cost_text = _format_cost(cost) if cost is not None else None
-            parent.set_usage(
-                usage.total_tokens, cost_text, _format_token_split(usage),
-                cost_value=cost,  # numeric cost for the summary roll-up
-            )
+            self.note_subagent_usage(parent, usage)
         await self.dispatch_stream_event(event, _SubAgentSink(self, parent, stream_id))
         self.app.refresh_subagents_view()  # list/summary tick live while open
 

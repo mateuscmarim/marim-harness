@@ -8,6 +8,8 @@ CSS classes, not inline markup, so an unescaped bracket can't raise a MarkupErro
 that crashes the app during layout.
 """
 
+from textual.app import ComposeResult
+from textual.containers import Vertical
 from textual.content import Content
 from textual.widgets import Collapsible, Markdown, Static
 
@@ -52,19 +54,45 @@ class SummaryWidget(Collapsible):
 _THINKING_CAP = 8
 
 
-class ThinkingWidget(Static):
+# While streaming, completed lines are frozen into immutable child Statics in
+# batches of this many lines; only the small live tail is re-rendered each flush.
+_FREEZE_EVERY = 24
+
+
+def _nth_newline(text: str, n: int) -> "int | None":
+    """Index of the ``n``-th ``\\n`` in ``text``, or ``None`` if there are fewer
+    than ``n``. Used to find how much of the live tail is complete enough to
+    freeze (a line is only complete once a newline follows it)."""
+    idx = -1
+    for _ in range(n):
+        idx = text.find("\n", idx + 1)
+        if idx == -1:
+            return None
+    return idx
+
+
+class ThinkingWidget(Vertical):
     """A model's chain-of-thought, shown inline behind an accent rail with an
     italic ``Thinking:`` label — distinct from the reply but read at a glance, no
     expand needed. Reasoning is rendered as plain styled text (not Markdown): it's
-    conversational prose where markdown structure rarely matters, and a single
-    flowing Static lets the label sit inline with the first words and wrap with
-    them. ``self.body = self`` keeps the streaming interface the renderer drives
-    (``append``/``flush`` on ``widget.body``) pointed at this widget.
+    conversational prose where markdown structure rarely matters. ``self.body =
+    self`` keeps the streaming interface the renderer drives (``append``/``flush``
+    on ``widget.body``) pointed at this widget.
 
-    A thought streams in *full*; once it finishes (``finalize``) it collapses to
-    its last ``_THINKING_CAP`` lines behind a dim ``… +N more lines (ctrl+o)``
-    header, so a long deliberation doesn't bury the reply. The app's Ctrl+O
-    reveal-all toggle (``set_reveal``) expands it back to the whole text in place.
+    **Incremental streaming.** A single Static reflows its *whole* content on every
+    update, so streaming a long thought through one would be O(n²) over the turn.
+    Instead the widget is a column of child Statics: as completed lines pile up they
+    are *frozen* into immutable child Statics (rendered once, never touched again) in
+    batches of ``_FREEZE_EVERY``, while a small ``_live`` Static holds only the
+    current unfrozen tail. So each flush re-renders only the bounded tail — O(delta),
+    not O(whole thought) — while the user still sees the full thought form live (the
+    frozen children stay on screen and remain scrollable).
+
+    A thought streams in *full*; once it finishes (``finalize``) it collapses to its
+    last ``_THINKING_CAP`` lines behind a dim ``… +N more lines (ctrl+o)`` header, so
+    a long deliberation doesn't bury the reply. ``finalize`` drops the frozen
+    children and renders the capped view (``_render``) into ``_live``; the app's
+    Ctrl+O reveal-all (``set_reveal``) re-renders it expanded in place.
 
     Content is built via ``Content`` (not markup parsing) so untrusted reasoning
     text can't raise a MarkupError — only the fixed label/header are markup-parsed."""
@@ -78,50 +106,87 @@ class ThinkingWidget(Static):
         # Ctrl+O override: show the full text even after the thought finished.
         self.reveal = False
         self.body = self
+        # The themed label, built once (it resolves $text-accent at render time).
+        self._label = Content.from_markup("[$text-accent]Thinking:[/] ")
+        # How many chars of self.text have been frozen into immutable child Statics;
+        # self.text[_frozen_chars:] is the live tail shown in _live.
+        self._frozen_chars = 0
+        self._frozen: list[Static] = []
+        self._live = Static(markup=False)
         super().__init__(classes="thinking")
+
+    def compose(self) -> ComposeResult:
+        yield self._live
 
     def append(self, delta: str) -> None:
         self.text += delta
         self._pending = True
 
     def flush(self) -> bool:
-        """Render the buffered reasoning if it changed. Returns whether it
-        rendered so the flush tick can skip idle streams."""
-        if not self._pending:
+        """Render the reasoning buffered since the last flush. Returns whether it
+        rendered, so the flush tick can skip idle streams.
+
+        Completed lines beyond the live window are frozen into child Statics (which
+        are never re-rendered after); only the bounded live tail is re-rendered, so
+        the work per flush is proportional to the new delta, not the whole thought."""
+        # After finalize the capped view is static; nothing more to stream. Before
+        # mount, keep the delta buffered (mounting frozen chunks needs the anchor).
+        if self._done or not self._pending or not self.is_mounted:
             return False
-        self.update(self._render())
         self._pending = False
+        live = self.text[self._frozen_chars :]
+        while (nl := _nth_newline(live, _FREEZE_EVERY)) is not None:
+            chunk = live[: nl + 1]
+            self._freeze_chunk(chunk, first=self._frozen_chars == 0)
+            self._frozen_chars += len(chunk)
+            live = self.text[self._frozen_chars :]
+        body = Content(live)
+        self._live.update(self._label + body if self._frozen_chars == 0 else body)
         return True
+
+    def _freeze_chunk(self, chunk: str, first: bool) -> None:
+        """Mount the completed ``chunk`` as an immutable child Static above the live
+        tail. The first chunk carries the label so it stays pinned at the top."""
+        body = Content(chunk.rstrip("\n"))
+        content = self._label + body if first else body
+        frozen = Static(content, markup=False)
+        self._frozen.append(frozen)
+        self.mount(frozen, before=self._live)
 
     def finalize(self) -> None:
         """Mark the reasoning stream complete so the inline view caps to its last
-        lines. Called once when the thought ends — the next part starts or the
-        run's event stream drains. Idempotent: re-finalizing is a no-op."""
+        lines. Called once when the thought ends — the next part starts or the run's
+        event stream drains. Idempotent: re-finalizing is a no-op. Drops the frozen
+        chunks and renders the capped view into the (now sole) live Static."""
         if self._done:
             return
         self._done = True
-        self.update(self._render())
+        for frozen in self._frozen:
+            frozen.remove()
+        self._frozen.clear()
+        self._frozen_chars = 0
+        self._live.update(self._render())
 
     def set_reveal(self, value: bool) -> None:
-        """Ctrl+O reveal-all: show the whole thought, or restore the capped
-        preview on a second press. A short or still-streaming thought renders the
-        same either way, so this only visibly changes a finished, over-cap one."""
+        """Ctrl+O reveal-all: show the whole thought, or restore the capped preview
+        on a second press. Only meaningful once finished — while streaming the full
+        text is already on screen, so this just records the flag for finalize."""
         self.reveal = value
-        self.update(self._render())
+        if self._done:
+            self._live.update(self._render())
 
     def _render(self) -> Content:
         # The label carries its own themed colour via markup; the reasoning text
         # is appended as a literal Content (no markup parse) and inherits the
         # italic/muted styling the .tcss puts on the widget. While streaming (or
         # when revealed) the full text shows; a finished thought caps to its tail.
-        label = Content.from_markup("[$text-accent]Thinking:[/] ")
         if not self._done or self.reveal:
-            return label + Content(self.text)
+            return self._label + Content(self.text)
         kept, hidden = _cap_tail(self.text, _THINKING_CAP)
         if not hidden:
-            return label + Content(kept)
+            return self._label + Content(kept)
         header = Content.from_markup(f"[dim]… +{hidden} more lines (ctrl+o)[/]\n")
-        return label + header + Content(kept)
+        return self._label + header + Content(kept)
 
 
 def _cap_tail(text: str, cap: int) -> "tuple[str, int]":
@@ -145,11 +210,21 @@ class AssistantMessage(Markdown):
     delta — re-parsing the whole markdown document on every token is O(n²) and
     makes streaming janky — so the (expensive) render is deferred to ``flush``,
     which the app drives on a shared interval to coalesce many deltas into one
-    parse."""
+    parse.
+
+    ``flush`` renders *incrementally*: it feeds only the text added since the last
+    flush to ``Markdown.append`` (the base class), which re-parses just the trailing
+    (still-open) block and advances its parse cursor past completed ones. So the work
+    per flush is proportional to the new delta, not the whole accumulated reply —
+    turning the per-turn cost from O(n²) back to O(n). ``self.text`` holds the full
+    buffered source (the renderer reads it on replay/inspection); ``_rendered_len``
+    marks how much of it has been handed to the document."""
 
     def __init__(self) -> None:
         self.text = ""
         self._pending = False
+        # How many chars of self.text have already been parsed into the document.
+        self._rendered_len = 0
         super().__init__("")
 
     def append(self, delta: str) -> None:  # type: ignore[override]
@@ -157,10 +232,21 @@ class AssistantMessage(Markdown):
         self._pending = True
 
     def flush(self) -> bool:
-        """Render the buffered text if there is any. Returns whether it rendered,
-        so the caller can skip scroll/update work when nothing changed."""
+        """Render the text buffered since the last flush. Returns whether it
+        rendered, so the caller can skip scroll/update work when nothing changed.
+
+        Only the new tail is parsed: Markdown.append re-parses from its last parsed
+        line, keeping each flush proportional to the delta rather than the whole
+        document."""
         if not self._pending:
             return False
-        self.update(self.text)
+        delta = self.text[self._rendered_len :]
         self._pending = False
+        if not delta:
+            return False
+        self._rendered_len = len(self.text)
+        # Markdown.append (the base method this class shadows) takes only the new
+        # fragment and appends it to the live document. Fire-and-forget like the
+        # update() it replaces: the returned AwaitComplete self-schedules.
+        super().append(delta)
         return True
