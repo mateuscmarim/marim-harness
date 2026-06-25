@@ -466,7 +466,12 @@ async def spawn_agent(
 
     `model` optionally runs this spawn on a different model than yours — pass a
     cheaper model for read-only fan-out, or a stronger one for a hard sub-task.
-    Omit it to inherit your current model (the usual case).
+    Omit it to inherit your current model (the usual case). For a sub-agent whose
+    definition sets `backend: claude-cli`, `model` is a Claude Code model name (an
+    alias like `opus`, `sonnet`, `haiku`, or `fable`, or a full id like
+    `claude-sonnet-4-6`) passed straight to the CLI — not a harness/OpenRouter
+    model id. Omit it to use the agent's own `model:` default or the CLI's
+    configured default.
 
     `isolation="worktree"` runs a mutating spawn in its own git worktree, so
     several spawns editing files at once can't clobber each other or your working

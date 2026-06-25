@@ -12,6 +12,7 @@ immediately. The harness wires ``run``/``run_background`` onto ``Deps`` so the
 import asyncio
 import contextlib
 import logging
+import os
 import re
 import time
 from collections.abc import Callable
@@ -25,6 +26,7 @@ from pydantic_ai.usage import UsageLimits
 if TYPE_CHECKING:
     from .mcp.manager import McpManager
     from .session.ctrl import SessionController
+    from .subagents_cli import CliResult
     from .tools.provider import ToolProvider
 
 from .deps import Deps, SubAgent
@@ -395,6 +397,18 @@ class SubagentRunner:
             if err is not None:
                 return err
         work_root = iso["path"] if iso else None
+        # CLI-backed agents run an external `claude` process instead of the
+        # in-process Pydantic AI loop. Branch here so the native build+run flow
+        # below is unchanged. The CLI path mirrors the same wrapper (hooks
+        # bracketing, output cap, worktree, background persist) in
+        # _execute_cli_spawn — duplicated deliberately to keep the native flow
+        # untouched; both halves are small and evolve independently.
+        defn = find_agent(self.deps.workspace_root, type)
+        if defn is not None and defn.backend == "claude-cli":
+            return await self._execute_cli_spawn(
+                defn, task, work_root, iso, mcp_names, max_output_chars,
+                model, stream_id, background=background,
+            )
         sub, err = self.build(type, max_output_chars, model, work_root)
         if sub is None:
             if iso:
@@ -457,6 +471,91 @@ class SubagentRunner:
         capped = self._cap_output(result.output, max_output_chars, spill_ref)
         iso_note = self._close_worktree(iso) if iso else ""
         return self.mcp.grant_note(unknown) + capped + iso_note
+
+    async def _execute_cli_spawn(
+        self, defn, task: str, work_root, iso,
+        mcp_names: list[str] | None, max_output_chars: int | None,
+        model: str | None, stream_id: str, *, background: bool,
+    ) -> str:
+        """Run a ``backend: claude-cli`` agent inside the same lifecycle the native
+        path uses: hooks bracketing, output cap/spill, worktree close, background
+        persist. Harness MCP grants are NOT forwarded to the CLI (it uses its own
+        MCP config); a non-empty ``mcp_names`` is noted, not honored.
+
+        Mirrors _execute_spawn's foreground/background contract: foreground
+        contains a failure as an error string (so a sibling fan-out spawn isn't
+        taken down); background re-raises to the job registry. Usage is folded into
+        the session, and a background spawn persists immediately since no run_turn
+        will fold its spend."""
+        await self.hooks.subagent_start(defn.name, task)
+        try:
+            async with self._slot():
+                result = await self._run_cli(defn, task, work_root, model, stream_id)
+        except Exception as exc:  # noqa: BLE001
+            if iso:
+                self._discard_worktree(iso)
+            if background:
+                raise
+            await self.hooks.subagent_stop(defn.name, task, f"error: {exc}")
+            return f"Sub-agent {defn.name!r} failed: {exc.__class__.__name__}: {exc}"
+        await self.hooks.subagent_stop(defn.name, task, result.output)
+        self.session.usage += result.usage
+        if background:
+            self.session.persist()
+            self._bg_seq += 1
+            spill_ref = f"bg-{self._bg_seq}"
+        else:
+            spill_ref = stream_id
+        capped = self._cap_output(result.output, max_output_chars, spill_ref)
+        iso_note = self._close_worktree(iso) if iso else ""
+        return self._cli_mcp_note(mcp_names) + capped + iso_note
+
+    @staticmethod
+    def _cli_mcp_note(mcp_names: list[str] | None) -> str:
+        """A one-line note when the orchestrator named MCP servers for a CLI spawn:
+        they aren't forwarded (the CLI uses its own MCP config), so say so rather
+        than silently dropping them."""
+        if not mcp_names:
+            return ""
+        names = ", ".join(mcp_names)
+        return (
+            f"[note: MCP servers ({names}) are not forwarded to claude-cli "
+            "sub-agents; configure them in the CLI's own settings]\n\n"
+        )
+
+    async def _run_cli(self, defn, task: str, work_root, model: str | None,
+                       stream_id: str) -> "CliResult":
+        """Resolve binary, tool reach, model, and cwd for a CLI spawn, then run it.
+        Raises CliUnavailable when no `claude` binary is found so the caller's
+        contained-error path reports it. Reach mirrors the native gate — gated
+        tools only in auto mode. Model precedence: per-spawn override, then the
+        agent's frontmatter model, then $MARIM_CLAUDE_CLI_MODEL, then the CLI's
+        own default."""
+        from .subagents_cli import (
+            CLI_MODEL_ENV,
+            ClaudeCliRunner,
+            CliUnavailable,
+            resolve_cli_binary,
+        )
+
+        binary = resolve_cli_binary()
+        if binary is None:
+            raise CliUnavailable(
+                "no `claude` binary found (set MARIM_CLAUDE_CLI_BIN or install "
+                "Claude Code)"
+            )
+        allow_gated = self.deps.mode is Mode.auto
+        tools = effective_tools(defn, allow_gated=allow_gated)
+        cwd = str(work_root or self.deps.workspace_root)
+        model_name = model or defn.model or os.environ.get(CLI_MODEL_ENV)
+        runner = ClaudeCliRunner(
+            self.deps.on_subagent_event, self.deps.on_subagent_notice,
+        )
+        return await runner.run(
+            binary=binary, prompt=task, system_prompt=defn.prompt, cwd=cwd,
+            allow_gated=allow_gated, allowed_tools=tools, model=model_name,
+            stream_id=stream_id,
+        )
 
     def _log_spawn_timing(
         self, type: str, t0: float, t_built: float,
