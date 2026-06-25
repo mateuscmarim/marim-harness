@@ -163,10 +163,16 @@ accepted deliberately:
 
 ## Error handling
 
-Contained-error parity with the native path: missing binary, non-zero exit,
-unparseable stream, or timeout each return a descriptive string (foreground) or
-propagate to the job registry (background). No new failure mode reaches
-`run_turn`.
+Contained-error parity with the native path: missing binary, non-zero exit, or
+an unparseable stream each return a descriptive string (foreground) or propagate
+to the job registry (background). No new failure mode reaches `run_turn`. On an
+exceptional/cancelled exit (e.g. a Ctrl-C'd turn), `ClaudeCliRunner.run` reaps the
+subprocess in a `finally` so an abandoned `claude` child — which in auto mode holds
+write/Bash reach — is not orphaned.
+
+No watchdog timeout in v1 (see Out of scope): a hung CLI with stdout still open
+blocks the spawn until the turn is cancelled, at which point the `finally` kills
+the child. A bounded timeout is deferred to v2.
 
 ## Testing
 
@@ -182,6 +188,7 @@ propagate to the job registry (background). No new failure mode reaches
 ## Out of scope (v1)
 
 - Transient-error auto-resume for CLI spawns.
+- A bounded watchdog timeout on a hung CLI (cancellation reaps it instead; v2).
 - Auto-isolation of writable CLI agents.
 - Runtime model enumeration / validation.
 - Granting harness MCP servers *into* the CLI (it uses its own MCP config).
