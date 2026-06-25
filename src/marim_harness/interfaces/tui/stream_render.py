@@ -551,7 +551,8 @@ class StreamRenderer:
         if widget.pane is not None:
             return widget.pane
         pane = self.detail_host.add_pane(
-            widget.stream_id, widget.agent_type, widget.model_label
+            widget.stream_id, widget.agent_type, widget.model_label,
+            widget.display_title(),
         )
         widget.pane = pane
         return pane

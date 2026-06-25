@@ -5,6 +5,7 @@ from textual.widgets import Static
 from marim_harness.interfaces.tui.widgets.subagent_detail import (
     SubAgentDetailHost,
     SubAgentPane,
+    _short_model,
     pane_id,
 )
 
@@ -13,6 +14,39 @@ def test_pane_id_sanitizes_tool_call_id():
     pid = pane_id("call/abc.123:x")
     assert pid.startswith("sap-")
     assert all(c.isalnum() or c in "-_" for c in pid)
+
+
+def test_short_model_takes_last_path_segment():
+    assert _short_model("openrouter/openrouter/owl-alpha") == "owl-alpha"
+    assert _short_model("openrouter/anthropic/claude-sonnet-4-6") == "claude-sonnet-4-6"
+    assert _short_model("owl-alpha") == "owl-alpha"
+    assert _short_model("") == ""
+
+
+@pytest.mark.anyio
+async def test_pane_header_shows_title_and_short_model():
+    app = _Host()
+    async with app.run_test() as pilot:
+        host = app.query_one(SubAgentDetailHost)
+        pane = host.add_pane(
+            "c1", "explore", "openrouter/openrouter/owl-alpha", "Architecture review"
+        )
+        await pilot.pause()
+        header = str(pane._header.render())
+        assert "owl-alpha" in header  # short model name
+        assert "openrouter/openrouter" not in header  # not the routed label
+        assert "Architecture review" in str(pane._title.render())  # title line
+        assert pane._title.display is True
+
+
+@pytest.mark.anyio
+async def test_pane_title_line_hidden_when_no_title():
+    app = _Host()
+    async with app.run_test() as pilot:
+        host = app.query_one(SubAgentDetailHost)
+        pane = host.add_pane("c1", "explore", "owl")  # no title
+        await pilot.pause()
+        assert pane._title.display is False
 
 
 class _Host(App):

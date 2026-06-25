@@ -3,8 +3,13 @@
    hard-coded colors. */
 
 /* Layer stack: base chrome, then the sub-agents full-bleed view (subagents),
-   then the autocomplete dropdown (overlay) on top of everything. */
-Screen { layers: base subagents overlay; }
+   then the autocomplete dropdown (overlay) on top of everything.
+   overflow:hidden — the root screen is fixed chrome, never a scroll surface (the
+   log and the sub-agent panes scroll internally). Without this, opening the
+   full-bleed sub-agents view on its own layer pushes the screen's virtual height
+   one row past the viewport (the docked Footer's row), surfacing a spurious outer
+   scrollbar beside the pane's own — a double scrollbar. */
+Screen { layers: base subagents overlay; overflow: hidden hidden; }
 
 #log { height: 1fr; padding: 0 1; }
 
@@ -71,7 +76,10 @@ SubAgentWidget { margin: 0 0 1 0; height: auto; padding-left: 2; }
    line under the pointer, not the container — see SubAgentWidget.on_enter). */
 SubAgentWidget.-hovered .subagent-header,
 SubAgentWidget.-hovered .subagent-activity { color: white; text-style: bold; }
-.subagent-bhead { color: $accent; text-style: bold; margin: 0 0 1 0; }
+.subagent-bhead { color: $accent; text-style: bold; }
+/* The agent's title on its own line under the ◼ header, brighter than the
+   muted header so it reads as the pane's identity; clipped to one row. */
+.subagent-btitle { color: $text; text-style: bold; height: 1; text-wrap: nowrap; text-overflow: ellipsis; margin: 0 0 1 0; }
 .subagent-usage { color: $text-muted; }
 .subagent-error { color: $error; margin: 1 0 0 0; }
 
@@ -86,7 +94,9 @@ SubAgentWidget.-hovered .subagent-activity { color: white; text-style: bold; }
 }
 #subagent-summary { height: 1; padding: 0 1; color: $text-muted; background: $panel; }
 #subagents-body { height: 1fr; }
-#subagent-list { width: 66; border-right: solid $panel; }
+/* height:1fr so the list fills the body and its right border runs full height —
+   a clean master/detail divider instead of one that stops at the last row. */
+#subagent-list { width: 66; height: 1fr; border-right: solid $panel; }
 #subagent-list:focus { border-right: solid $accent; }
 .subagent-pane { height: 1fr; padding: 0 1; }
 .subagent-pane:focus { background: $boost; }

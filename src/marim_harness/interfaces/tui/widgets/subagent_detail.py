@@ -24,22 +24,39 @@ def pane_id(stream_id: str) -> str:
     return "sap-" + re.sub(r"[^a-zA-Z0-9_-]", "-", stream_id or "none")
 
 
+def _short_model(model_label: str) -> str:
+    """The compact model name for the pane header: the last path segment of a
+    routed id (``openrouter/openrouter/owl-alpha`` → ``owl-alpha``,
+    ``openrouter/anthropic/claude-sonnet-4-6`` → ``claude-sonnet-4-6``). The pane
+    now carries the agent's title to identify it, so the bare model name reads
+    cleaner here than the full provider-routed label (which still shows on the
+    status bar)."""
+    return model_label.rsplit("/", 1)[-1] if model_label else ""
+
+
 class SubAgentPane(VerticalScroll):
     """One sub-agent's transcript: a muted ``◼ {type} · {model}`` header, an
     (initially hidden) usage line mirroring the status bar's split + cost, and the
     streamed transcript widgets mounted after them. Replaces the old
     ``SubAgentWidget.body``."""
 
-    def __init__(self, stream_id: str, agent_type: str, model_label: str) -> None:
+    def __init__(self, stream_id: str, agent_type: str, model_label: str,
+                 title: str = "") -> None:
         self.stream_id = stream_id
-        label = f"{agent_type} · {model_label}" if model_label else agent_type
+        model = _short_model(model_label)
+        label = f"{agent_type} · {model}" if model else agent_type
         self._header = Static(Content(f"◼ {label}"), classes="subagent-bhead")
+        # The agent's title on its own line, so a pane is self-identifying — with
+        # several same-type spawns the ``◼ explore · model`` header alone is
+        # ambiguous. Hidden when there's no title (e.g. a bare unit-test pane).
+        self._title = Static(Content(title), classes="subagent-btitle")
+        self._title.display = bool(title)
         self._usage_line = Static("", classes="subagent-usage")
         self._usage_line.display = False
         self._placeholder = Static(Content(_DETACHED_NOTE), classes="subagent-detached")
         self._placeholder.display = False
         super().__init__(
-            self._header, self._usage_line, self._placeholder,
+            self._header, self._title, self._usage_line, self._placeholder,
             id=pane_id(stream_id), classes="subagent-pane",
         )
 
@@ -65,8 +82,9 @@ class SubAgentDetailHost(ContentSwitcher):
     """A ``ContentSwitcher`` of ``SubAgentPane``s — the screen's right pane. One
     pane per ``stream_id``; ``current`` selects which is visible."""
 
-    def add_pane(self, stream_id: str, agent_type: str, model_label: str) -> SubAgentPane:
-        pane = SubAgentPane(stream_id, agent_type, model_label)
+    def add_pane(self, stream_id: str, agent_type: str, model_label: str,
+                 title: str = "") -> SubAgentPane:
+        pane = SubAgentPane(stream_id, agent_type, model_label, title)
         # Hide the pane before mounting. ContentSwitcher only hides children present
         # at compose time, and watch_current only toggles the old/new pair on a
         # switch — it never hides the other dynamically-mounted panes. Without this,

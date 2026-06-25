@@ -213,6 +213,34 @@ async def test_refresh_subagents_view_ticks_list_live_while_open(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_open_screen_fits_viewport_no_double_scrollbar(tmp_path):
+    """The full-bleed view must fit the visible area: opening it (even with a
+    transcript taller than the pane) must not make the app's root Screen scroll —
+    only the transcript pane gets a scrollbar, never a second outer one. The list
+    also fills the body height so its right-border divider runs to the bottom."""
+    app = _app(tmp_path)
+    async with app.run_test(size=(120, 30)) as pilot:
+        r = app.stream
+        w = r.mount_spawn_widget({"type": "explore", "description": "map"})
+        w.stream_id = "call_1"
+        r.tool_widgets["call_1"] = w
+        r.ensure_pane(w)
+        await app.query_one("#log").mount(w)
+        for i in range(60):  # overflow the pane so it (and only it) scrolls
+            await w.pane.add(Static(f"line {i}"))
+        await pilot.pause()
+        app.open_subagents_at("call_1")
+        await pilot.pause()
+        # The root Screen must not show a scrollbar (no double scrollbar).
+        assert app.screen.show_vertical_scrollbar is False
+        # The transcript pane is the single scroll surface.
+        assert w.pane.show_vertical_scrollbar is True
+        # The list fills the body height, so its border-right divider is full-height.
+        body = app.query_one("#subagents-body")
+        assert app.query_one("#subagent-list").size.height == body.size.height
+
+
+@pytest.mark.anyio
 async def test_live_stream_then_open_shows_current_transcript(tmp_path: Path):
     """Content streamed into a pane while the sub-agents screen is CLOSED is
     present and current when the screen is opened with ctrl+x.
