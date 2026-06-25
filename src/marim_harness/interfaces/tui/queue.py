@@ -31,3 +31,74 @@ def render_queue(items: list[QueuedMessage]) -> str:
             f"[@click=app.remove_queued('{m.id}')]✕[/]"
         )
     return "\n".join(lines)
+
+
+class TurnQueue:
+    """The in-memory queue of user submissions buffered while a turn is running,
+    held to run as their own turns afterward. Owns the ordering, the stable
+    per-app id sequence, and the paused flag; the App performs the effects
+    (panel repaint, draining a popped item into a turn worker). Free of Textual
+    so the queue logic is unit-testable without an App."""
+
+    def __init__(self) -> None:
+        self._items: list[QueuedMessage] = []
+        # Monotonic across enqueue AND prepend so a re-inserted steer never
+        # collides with a pending item's id — the panel targets items by id.
+        self._seq = 0
+        # Flipped by the App on cancel/error so a drained turn waits for an
+        # explicit resume; lives here because every queue read needs it.
+        self.paused = False
+
+    @property
+    def items(self) -> list[QueuedMessage]:
+        return self._items
+
+    def __bool__(self) -> bool:
+        return bool(self._items)
+
+    def __iter__(self):  # type: ignore[override]
+        return iter(self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, list):
+            return self._items == other
+        if isinstance(other, TurnQueue):
+            return self._items == other._items
+        return NotImplemented
+
+    def __getitem__(self, index: int) -> "QueuedMessage":
+        return self._items[index]
+
+    def enqueue(
+        self, text: str, attachments: list[tuple[bytes, str]] | None = None
+    ) -> None:
+        """Buffer a submission to run after the current turn."""
+        self._seq += 1
+        self._items.append(QueuedMessage(text, attachments, str(self._seq)))
+
+    def prepend(
+        self, text: str, attachments: list[tuple[bytes, str]] | None = None
+    ) -> None:
+        """Re-insert a submission at the FRONT so it runs next — used for steers
+        that landed in the turn-finishing gap and fall back to the queue."""
+        self._seq += 1
+        self._items.insert(0, QueuedMessage(text, attachments, str(self._seq)))
+
+    def pop_next(self) -> QueuedMessage:
+        """Remove and return the front item (the next to run)."""
+        return self._items.pop(0)
+
+    def remove(self, id: str) -> None:
+        """Drop a pending item by id; a no-op if the id is absent."""
+        self._items = [m for m in self._items if m.id != id]
+
+    def take(self, id: str) -> QueuedMessage | None:
+        """Pop a specific item out of the queue and return it, or None if the id
+        is not present (used to load a queued message back into the prompt)."""
+        item = next((m for m in self._items if m.id == id), None)
+        if item is not None:
+            self._items = [m for m in self._items if m.id != id]
+        return item

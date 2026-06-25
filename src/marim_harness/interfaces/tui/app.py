@@ -17,7 +17,7 @@ from .approval import ApprovalModal
 from .ask_user import AskUserModal
 from .commands import dispatch
 from .model_picker import ModelPickerModal
-from .queue import QueuedMessage
+from .queue import TurnQueue
 from .session_view import SessionView
 from .settings import SettingsModal
 from .status import (
@@ -115,9 +115,7 @@ class HarnessApp(App):
         # exact hazard turn_busy exists to prevent. Set before the first await,
         # cleared on every _start_turn exit path.
         self._turn_starting = False
-        self._queue: list[QueuedMessage] = []
-        self._queue_paused = False
-        self._queue_seq = 0
+        self._turn_queue = TurnQueue()
         # Confirm-once quit latch: set True by the first quit attempt that warns
         # about pending queued messages. One-way for the process — once the user
         # has been warned, later quits proceed without re-warning.
@@ -138,6 +136,37 @@ class HarnessApp(App):
         # sub-agent (index into stream.subagents) is on screen.
         self.subagent_viewer_open = False
         self.subagent_index = 0
+
+    # -- Backward-compat shims for tests that poke internal queue state --------
+    # Tests in test_queue.py were written against the old flat-list / flag API.
+    # These properties delegate to TurnQueue so those tests stay green without
+    # needing edits while the rest of the codebase uses the new object.
+
+    @property
+    def _queue(self) -> TurnQueue:
+        return self._turn_queue
+
+    @_queue.setter
+    def _queue(self, value: "list | TurnQueue") -> None:
+        if isinstance(value, TurnQueue):
+            self._turn_queue = value
+        else:
+            # A test assigned a plain list — populate a fresh TurnQueue from it.
+            tq = TurnQueue()
+            for item in value:
+                tq._seq += 1
+                tq._items.append(item)
+            self._turn_queue = tq
+
+    @property
+    def _queue_paused(self) -> bool:
+        return self._turn_queue.paused
+
+    @_queue_paused.setter
+    def _queue_paused(self, value: bool) -> None:
+        self._turn_queue.paused = value
+
+    # -------------------------------------------------------------------------
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -512,13 +541,12 @@ class HarnessApp(App):
         self, text: str, attachments: list[tuple[bytes, str]] | None = None
     ) -> None:
         """Buffer a submission to run after the current turn."""
-        self._queue_seq += 1
-        self._queue.append(QueuedMessage(text, attachments, str(self._queue_seq)))
+        self._queue.enqueue(text, attachments)
         self._render_queue()
 
     async def _drain_next(self) -> None:
         """Pop and start the next queued message."""
-        item = self._queue.pop(0)
+        item = self._queue.pop_next()
         self._render_queue()
         await self._start_turn(item.text, item.attachments)
 
@@ -532,8 +560,7 @@ class HarnessApp(App):
         leftover = self.harness.take_buffered_steers()
         if leftover:
             for text, atts in reversed(leftover):
-                self._queue_seq += 1
-                self._queue.insert(0, QueuedMessage(text, atts, str(self._queue_seq)))
+                self._queue.prepend(text, atts)
             self._render_queue()
         # _after_turn runs from _run_turn's finally; an exception escaping here
         # would kill the worker before it unwinds cleanly. Draining starts the
@@ -541,12 +568,12 @@ class HarnessApp(App):
         # jobs — both can fail. Pause the queue and surface the error rather than
         # let it propagate out of the finally and strand the session.
         try:
-            if not self._queue_paused and self._queue:
+            if not self._queue.paused and self._queue:
                 await self._drain_next()
             else:
                 self._maybe_wake()
         except Exception as exc:
-            self._queue_paused = True
+            self._queue.paused = True
             self._append_log(ErrorMessage(f"failed to start next turn: {exc}"))
 
     def _render_queue(self) -> None:
@@ -557,17 +584,17 @@ class HarnessApp(App):
             panel = self.query_one(QueuePanel)
         except NoMatches:
             return  # tearing down; nothing to paint
-        panel.show_queue(self._queue, paused=self._queue_paused)
+        panel.show_queue(self._queue.items, paused=self._queue.paused)
 
     async def action_run_queued(self) -> None:
         """Resume a paused queue: clear the pause and start the next item."""
         if self._queue and not self.turn_busy:
-            self._queue_paused = False
+            self._queue.paused = False
             await self._drain_next()
 
     def action_remove_queued(self, id: str) -> None:
         """Drop a pending queued message before it runs."""
-        self._queue = [m for m in self._queue if m.id != id]
+        self._queue.remove(id)
         self._render_queue()
 
     async def action_edit_queued(self, id: str) -> None:
@@ -575,10 +602,9 @@ class HarnessApp(App):
         for editing — text and image attachments both, so an edit round-trips
         without losing the images (their ``[Image #N]`` markers ride along in the
         text)."""
-        item = next((m for m in self._queue if m.id == id), None)
+        item = self._queue.take(id)
         if item is None:
             return
-        self._queue = [m for m in self._queue if m.id != id]
         self._render_queue()
         prompt = self.query_one(PromptInput)
         prompt.text = item.text
@@ -599,7 +625,7 @@ class HarnessApp(App):
             self._quit_armed = True
             self.query_one("#log", VerticalScroll).mount(
                 NoticeMessage(
-                    f"{len(self._queue)} queued message(s) will be discarded. "
+                    f"{len(self._queue.items)} queued message(s) will be discarded. "
                     "Quit again to confirm."
                 )
             )
@@ -910,7 +936,7 @@ class HarnessApp(App):
             # is queued rather than racing a second exclusive worker.
             self._enqueue(text, event.attachments)
             return
-        self._queue_paused = False
+        self._queue.paused = False
         await self._start_turn(text, event.attachments)
 
     async def _run_turn(
@@ -936,11 +962,11 @@ class HarnessApp(App):
         except CancelledError:
             # User pressed escape; mount synchronously (we are unwinding) and
             # let the worker finish as cancelled.
-            self._queue_paused = True
+            self._queue.paused = True
             self._append_log(ErrorMessage("turn cancelled"))
             raise
         except Exception as exc:  # keep the session alive on any turn failure
-            self._queue_paused = True
+            self._queue.paused = True
             detail = format_provider_error(exc) or f"{type(exc).__name__}: {exc}"
             self._append_log(ErrorMessage(detail))
             self._notify("Turn error", detail, "error")
