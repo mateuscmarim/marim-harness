@@ -406,7 +406,9 @@ async def spawn_agent(
         budget = (
             max_output_chars if max_output_chars is not None else _DETACH_OUTPUT_BUDGET
         ) if auto_detached else max_output_chars
-        label = f"{type}: {task}"
+        # Prefer the short `description` for the job label (the jobs panel and the
+        # wait row read it) — the composed `task` is a full multi-section prompt.
+        label = f"{type}: {description or task}"
         job_id = ctx.deps.jobs.register(
             "agent", label,
             ctx.deps.services.run_background_agent(

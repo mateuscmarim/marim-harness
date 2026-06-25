@@ -93,3 +93,35 @@ def test_spawn_agent_accepts_a_description_param():
     from marim_harness.tools.provider import spawn_agent
 
     assert "description" in inspect.signature(spawn_agent).parameters
+
+
+def _bg_described_spawn_model() -> FunctionModel:
+    """Main agent: emit one explicit background spawn with a short description,
+    then finish. The sub-agent itself returns immediately."""
+    def fn(messages, info):
+        if "sub-agent" in _last_instructions(messages):
+            return ModelResponse(parts=[TextPart(content="SUB")])
+        for m in messages:
+            for p in getattr(m, "parts", []):
+                if type(p).__name__ == "ToolReturnPart" and \
+                        getattr(p, "tool_name", "") == "spawn_agent":
+                    return ModelResponse(parts=[TextPart(content="done")])
+        return ModelResponse(parts=[ToolCallPart(
+            tool_name="spawn_agent",
+            args={"type": "explore",
+                  "task": "You are doing a thorough review of the TUI.\n\n## Scope\n…",
+                  "description": "Review TUI subsystem",
+                  "background": True})])
+    return FunctionModel(fn)
+
+
+@pytest.mark.anyio
+async def test_background_job_label_uses_description_not_full_task(tmp_path: Path):
+    """A background spawn's job label is the short `description` (so the jobs panel
+    reads `explore: Review TUI subsystem`), not the full composed task prompt."""
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    harness = _make_harness(_bg_described_spawn_model(), deps)
+    await harness.run_turn("go")
+    jobs = harness.deps.jobs.list()
+    assert len(jobs) == 1
+    assert jobs[0].label == "explore: Review TUI subsystem"

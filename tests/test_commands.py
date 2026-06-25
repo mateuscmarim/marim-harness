@@ -507,7 +507,8 @@ async def test_jobs_lists_running_jobs():
     app.harness = SimpleNamespace(deps=SimpleNamespace(jobs=reg))
     await dispatch(app, "/jobs")
     out = app.posted[-1]
-    assert "job-1" in out and "explore: map" in out
+    # An agent row surfaces the type as its column + the concise title.
+    assert "job-1" in out and "explore" in out and "map" in out
     await reg.cancel_all()
 
 

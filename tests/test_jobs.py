@@ -239,6 +239,42 @@ def test_render_jobs_formats_rows():
     assert render_jobs([]) == ""
 
 
+def test_render_jobs_agent_row_shows_type_and_clips_to_one_line():
+    # An agent label is "<type>: <title>", and the title can be a huge multi-line
+    # composed prompt. The row must surface the type and collapse the title to one
+    # clipped line — no spill into the panel.
+    job = Job(
+        id="job-1", kind="agent",
+        label="explore: Review the TUI subsystem\n\n## Scope\nlots of detail here",
+        status="running",
+    )
+    out = render_jobs([job])
+    assert "\n" not in out                      # one line for the one job
+    assert "explore" in out                     # the agent type is surfaced
+    assert "Review the TUI subsystem" in out
+    assert "## Scope" not in out                # the multi-line body is dropped
+    assert "agent" not in out                   # kind column replaced by the type
+
+
+def test_render_jobs_clips_an_overlong_label():
+    job = Job(id="job-1", kind="agent", label="explore: " + "x" * 300,
+              status="running")
+    out = render_jobs([job])
+    assert "\n" not in out
+    assert len(out) < 120          # bounded
+    assert "…" in out              # truncation marker
+
+
+def test_render_jobs_bash_keeps_its_kind_and_clips():
+    job = Job(id="job-2", kind="bash", label="uv run pytest\n--verbose",
+              status="running")
+    out = render_jobs([job])
+    assert "\n" not in out
+    assert "bash" in out
+    assert "uv run pytest" in out      # first line shown
+    assert "--verbose" not in out      # the body line is dropped
+
+
 @pytest.mark.anyio
 async def test_cancel_before_start_closes_coroutine():
     """A job cancelled before its task ever runs must still consume the caller's

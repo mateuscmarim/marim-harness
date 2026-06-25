@@ -282,12 +282,35 @@ class JobRegistry:
         )
 
 
+_JOBS_LABEL_WIDTH = 60
+
+
+def _one_line(text: str, width: int = _JOBS_LABEL_WIDTH) -> str:
+    """The first non-empty line of ``text`` (the meaningful summary; a verbose
+    multi-section prompt's body is dropped), whitespace-collapsed and clipped to
+    ``width`` with an ellipsis — so a label can never spill the jobs panel."""
+    first = next((ln for ln in text.splitlines() if ln.strip()), "")
+    s = " ".join(first.split())
+    return s if len(s) <= width else s[: width - 1].rstrip() + "…"
+
+
 def render_jobs(jobs: list[Job]) -> str:
-    """The jobs panel body: one ``[glyph] id  kind  label`` line per job, with a
-    trailing ``(exit/...)`` hint for finished jobs. Empty string when none."""
+    """The jobs panel body: one ``[glyph] id  col  title`` line per job, with a
+    trailing ``(status)`` hint for finished jobs. Empty string when none.
+
+    For an agent (sub-agent) job the ``col`` is the agent *type* (``explore`` /
+    ``general`` / a custom name) — parsed from the ``"<type>: <title>"`` label —
+    which is more informative than the bare ``agent`` kind; the title is the
+    concise remainder, clipped to one line. Other jobs (bash) keep their kind."""
     lines = []
     for job in jobs:
         glyph = _GLYPH.get(job.status, "?")
         suffix = "" if job.status == "running" else f"  ({job.status})"
-        lines.append(f"[{glyph}] {job.id}  {job.kind}  {job.label}{suffix}")
+        if job.kind == "agent":
+            col, sep, title = job.label.partition(": ")
+            if not sep or not title.strip():  # no "<type>: " prefix — show as-is
+                col, title = job.kind, job.label
+        else:
+            col, title = job.kind, job.label
+        lines.append(f"[{glyph}] {job.id}  {col}  {_one_line(title)}{suffix}")
     return "\n".join(lines)

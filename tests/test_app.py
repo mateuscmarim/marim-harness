@@ -2000,7 +2000,8 @@ async def test_job_panel_reflects_jobs_on_mount(tmp_path: Path):
         await pilot.pause()
         panel = app.query_one(JobPanel)
         assert panel.display is True
-        assert "explore: look" in str(app.query_one("#job-body").render())
+        body = str(app.query_one("#job-body").render())
+        assert "explore" in body and "look" in body  # type column + concise title
         await app.harness.deps.jobs.cancel_all()
 
 
