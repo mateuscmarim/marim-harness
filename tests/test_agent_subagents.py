@@ -307,8 +307,6 @@ async def test_run_background_subagent_respects_mode(tmp_path: Path):
 async def test_run_background_streams_events_to_listener(tmp_path: Path):
     """A background spawn with a stream_id + UI listener forwards its run events,
     exactly like a foreground spawn — the Phase 2 live-streaming wiring."""
-    from pydantic_ai.models.function import DeltaToolCall  # noqa: F401 — streaming model
-
     recorded: list[str] = []
 
     async def cb(stream_id, event, usage):
