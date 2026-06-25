@@ -162,6 +162,31 @@ entries by name). The config shape follows Claude Code's format:
 }
 ```
 
+The `marim mcp` subcommand manages these files without hand-editing:
+
+```bash
+# Add a stdio server (default transport)
+marim mcp add mddocs node /path/dist/index.js -e MDDOCS_API_KEY=xxx
+
+# Add an HTTP server
+marim mcp add --transport http mddocs https://nanocore.marim.dev/mcp \
+    -H "Authorization: Bearer mddocs_xxx"
+
+marim mcp list              # list all servers from both scopes
+marim mcp get mddocs        # show one entry as JSON
+marim mcp remove mddocs     # delete an entry
+```
+
+`--scope user` targets `~/.config/marim/mcp.json` (global); `--scope project`
+(default) targets `.marim/mcp.json` in the current workspace. Other flags:
+`-t`/`--transport` (`stdio`|`http`|`sse`), `-H`/`--header` (http/sse, repeatable),
+`-e`/`--env KEY=value` (stdio, repeatable), `--trust` (bypass tool-call approval).
+The CLI and hand-editing produce the same result — both approaches are
+interchangeable.
+
+**Note:** project-scoped servers load only when `MARIM_TRUST_PROJECT_HOOKS=1`
+is set (same supply-chain gate as project hooks).
+
 ### Hooks
 
 marim runs Claude-Code-compatible lifecycle hooks. Define them in
