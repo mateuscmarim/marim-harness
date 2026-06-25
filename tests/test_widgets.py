@@ -212,7 +212,12 @@ async def test_update_tasks_renders_as_a_flat_breadcrumb():
 async def test_update_tasks_breadcrumb_is_inert():
     """The breadcrumb is a status line, not a fold: its title can't take focus and a
     toggle (what a click or Enter routes to this handler) is swallowed, so it never
-    opens onto its empty body."""
+    opens onto its empty body.
+
+    Routes a real ``Toggle`` through the title's action so the message goes through
+    Textual's full MRO dispatch — calling the handler method directly would only
+    invoke our override once and miss the base ``Collapsible`` handler the
+    dispatcher also reaches by name (see ``test_normal_tool_still_toggles``)."""
     from textual.widgets._collapsible import CollapsibleTitle
 
     app = _TaskHarness()
@@ -221,15 +226,22 @@ async def test_update_tasks_breadcrumb_is_inert():
         await pilot.pause()
         assert w.collapsed is True
         assert w._title.can_focus is False  # can't be Tab-focused / Enter-toggled
-        # The handler a click/Enter reaches is a no-op for the breadcrumb.
-        w._on_collapsible_title_toggle(CollapsibleTitle.Toggle())
-        assert w.collapsed is True
+        # A click/Enter routes to action_toggle_collapsible → Toggle message.
+        w.query_one(CollapsibleTitle).action_toggle_collapsible()
+        await pilot.pause()
+        assert w.collapsed is True  # swallowed: never opens onto its empty body
 
 
 @pytest.mark.anyio
 async def test_normal_tool_still_toggles():
     """Swallowing the breadcrumb's toggle must not break the default: a regular
-    tool card still expands through the same handler."""
+    tool card still expands when its title is toggled.
+
+    Drives the toggle through ``action_toggle_collapsible`` (the real click/Enter
+    path) rather than calling ``_on_collapsible_title_toggle`` directly. Textual's
+    dispatcher walks the whole MRO and invokes *every* class that defines that
+    handler by name — both our override and the base ``Collapsible`` — so a direct
+    one-shot call hides the double-dispatch that a real message triggers."""
     from textual.widgets._collapsible import CollapsibleTitle
 
     app = _Harness()  # a read_file card (collapsed by default)
@@ -238,8 +250,13 @@ async def test_normal_tool_still_toggles():
         await pilot.pause()
         assert w.collapsed is True
         assert w._title.can_focus is True  # normal tools stay interactive
-        w._on_collapsible_title_toggle(CollapsibleTitle.Toggle())
-        assert w.collapsed is False
+        title = w.query_one(CollapsibleTitle)
+        title.action_toggle_collapsible()
+        await pilot.pause()
+        assert w.collapsed is False  # one toggle → expanded
+        title.action_toggle_collapsible()
+        await pilot.pause()
+        assert w.collapsed is True  # toggles back, not stuck
 
 
 def test_strip_line_numbers():

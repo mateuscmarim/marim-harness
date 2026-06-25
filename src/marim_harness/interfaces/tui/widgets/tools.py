@@ -88,13 +88,26 @@ class ToolCallWidget(Collapsible):
             self._title.can_focus = False
 
     def _on_collapsible_title_toggle(self, event) -> None:
-        """Swallow the breadcrumb's toggle so a click/Enter can't expand it onto an
-        empty body — it's a status line, not a fold. Every other tool keeps the
-        default collapse behavior."""
+        """Handle the title's Toggle: swallow it for the breadcrumb (a status line,
+        not a fold — a click/Enter must not expand it onto its empty body), and for
+        every other tool flip the fold exactly once.
+
+        We drive the toggle ourselves and call ``event.prevent_default()`` rather
+        than delegating to ``super()``. This method shadows
+        ``Collapsible._on_collapsible_title_toggle`` *by name*, and Textual's
+        dispatcher walks the whole MRO invoking every class that defines a handler
+        of that name — so a lone Toggle reaches BOTH our override and the base
+        handler. The base handler is ``collapsed = not collapsed``; left to run it
+        would toggle a second time and cancel ours (the fold never moves; the
+        breadcrumb opens anyway). ``prevent_default`` sets the message's
+        no-default-action flag, which stops the MRO walk before the base class's
+        same-named handler. ``event.stop`` additionally keeps the Toggle from
+        bubbling to an enclosing ToolGroupWidget."""
+        event.stop()
+        event.prevent_default()
         if self._breadcrumb:
-            event.stop()
             return
-        super()._on_collapsible_title_toggle(event)
+        self.collapsed = not self.collapsed
 
     def _glyph(self) -> tuple[str, str]:
         """The status glyph and its style: an animated spinner while pending (so
