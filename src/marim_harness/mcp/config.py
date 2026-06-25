@@ -174,6 +174,59 @@ def persist_server_enabled(workspace_root: Path, name: str, enabled: bool) -> bo
     return False
 
 
+def add_server(path: Path, name: str, spec: dict, *, overwrite: bool = False) -> bool:
+    """Write ``spec`` under ``name`` into the ``mcpServers`` map at ``path``,
+    creating the file (and parent dir) if absent. A missing or malformed file is
+    treated as empty. Returns False without writing if ``name`` already exists and
+    ``overwrite`` is not set; otherwise writes atomically and returns True."""
+    data: dict = {}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            data = {}
+    servers = data.get("mcpServers")
+    if not isinstance(servers, dict):
+        servers = {}
+    if name in servers and not overwrite:
+        return False
+    servers[name] = spec
+    data["mcpServers"] = servers
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(path, json.dumps(data, indent=2) + "\n")
+    return True
+
+
+def remove_server(path: Path, name: str) -> bool:
+    """Delete ``name`` from the ``mcpServers`` map at ``path`` and rewrite
+    atomically. Returns False if the file is missing/malformed or has no such
+    server (nothing removed)."""
+    if name not in _read_servers(path):
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        del data["mcpServers"][name]
+        atomic_write_text(path, json.dumps(data, indent=2) + "\n")
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError, KeyError, TypeError):
+        return False
+    return True
+
+
+def read_servers_with_source(workspace_root: Path) -> dict[str, tuple[dict, str]]:
+    """Map each user-editable server to ``(spec, source)`` where ``source`` is
+    ``"user"`` (global file) or ``"project"`` (``.marim/mcp.json``). Project wins
+    on a name clash, matching ``load_mcp_config`` precedence. Plugin-provided
+    servers are not included — only the two files the CLI can edit."""
+    result: dict[str, tuple[dict, str]] = {}
+    for spec_name, spec in _read_servers(global_mcp_config_path()).items():
+        result[spec_name] = (spec, "user")
+    for spec_name, spec in _read_servers(project_mcp_config_path(workspace_root)).items():
+        result[spec_name] = (spec, "project")
+    return result
+
+
 def disabled_server_names(specs: dict) -> set[str]:
     """Names of servers turned off in the config via ``"enabled": false``. Only an
     explicit ``false`` disables — an absent or true flag (or a non-dict spec) keeps
