@@ -29,7 +29,7 @@ from .prompt import PromptInput
 from .subagent import SubAgentWidget
 from .subagent_detail import SubAgentDetailHost, SubAgentPane
 from .subagent_viewer import SubAgentList
-from .subagents_view import SubAgentSummary
+from .subagents_view import SubAgentSummary, SubAgentsView
 from .tools import ToolCallWidget, ToolGroupWidget
 
 __all__ = [
@@ -56,6 +56,7 @@ __all__ = [
     "SubAgentPane",
     "SubAgentDetailHost",
     "SubAgentSummary",
+    "SubAgentsView",
     # log messages
     "AssistantMessage",
     "ErrorMessage",

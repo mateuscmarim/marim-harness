@@ -6,7 +6,7 @@ from textual.app import App, ComposeResult
 from marim_harness.interfaces.tui.widgets.subagent_detail import SubAgentDetailHost
 from marim_harness.interfaces.tui.widgets.subagent_stats import aggregate
 from marim_harness.interfaces.tui.widgets.subagent_viewer import SubAgentList
-from marim_harness.interfaces.tui.widgets.subagents_view import SubAgentSummary
+from marim_harness.interfaces.tui.widgets.subagents_view import SubAgentSummary, SubAgentsView
 
 
 def _app(tmp_path: Path):
@@ -49,6 +49,24 @@ async def test_list_rows_and_summary(monkeypatch):
         # summary text mentions the running/done split and total agents
         rendered = str(summ.render())
         assert "2" in rendered  # total agents
+
+
+@pytest.mark.anyio
+async def test_view_refresh_paints_list_and_host():
+    from tests.test_subagent_stats import FakeAgent
+
+    class _ViewApp(App):
+        def compose(self):
+            yield SubAgentsView()
+
+    agents = [FakeAgent(status="done", tokens=100)]
+    app = _ViewApp()
+    async with app.run_test() as pilot:
+        view = app.query_one(SubAgentsView)
+        view.repaint(agents, selected=0, cost_of=lambda a: 0.0)
+        await pilot.pause()
+        assert view.list.row_count == 1
+        assert "1 sub-agents" in str(view.query_one(SubAgentSummary).render())
 
 
 @pytest.mark.anyio
