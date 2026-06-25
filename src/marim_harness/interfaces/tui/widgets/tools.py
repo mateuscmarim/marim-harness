@@ -13,6 +13,12 @@ from textual.containers import Vertical
 from textual.content import Content
 from textual.widgets import Collapsible, Static
 
+from .ask_user_render import (
+    ask_user_body,
+    ask_user_title_tail,
+    overall_state,
+    parse_ask_user,
+)
 from .diff import _DIFF_CAP, _reverse_edits, render_edit_diff, render_file_diff
 from .format import _SPINNER, _SPINNER_TICK_INTERVAL, format_duration
 from .highlight import _LEXERS, _highlight_lines, strip_line_numbers
@@ -102,6 +108,8 @@ class ToolCallWidget(Collapsible):
         return _SPINNER[self._spin], ""
 
     def _summary(self) -> Content:
+        if self.tool_name == "ask_user":
+            return self._ask_user_summary()
         glyph, gstyle = self._glyph()
         s = summarize(self.tool_name, self.args)
         target = s.target
@@ -118,6 +126,24 @@ class ToolCallWidget(Collapsible):
         for b in s.badges:
             parts.extend(("   ", (b, "dim")))
         return Content.assemble(*parts)
+
+    def _ask_user_summary(self) -> Content:
+        """The ask_user title: a state-driven glyph + 'Ask User · {Q→A | count |
+        awaiting | cancelled}'. Cancelled overrides the success glyph with ✕, since
+        a dismissed prompt returns a (successful) note string, not an error."""
+        state = overall_state(self.result_text, self.status)
+        if state == "pending":
+            glyph, gstyle = self._glyph()  # animated spinner
+        elif state == "cancelled":
+            glyph, gstyle = "✕", ""
+        else:
+            glyph, gstyle = "✓", ""
+        qas = parse_ask_user(self.args, self.result_text, self.status)
+        tail = ask_user_title_tail(qas, state)
+        head = f"{humanize_tool('ask_user')} · {tail}"
+        # head is our own composed text but bypass markup parsing for consistency
+        # with the other Collapsible titles (untrusted question/answer text).
+        return Content.assemble((f"{glyph} ", gstyle), head)
 
     def on_mount(self) -> None:
         # Animate the working glyph while pending; the timer is stopped at finish so
@@ -215,6 +241,8 @@ class ToolCallWidget(Collapsible):
         # The breadcrumb is title-only — the checklist lives in the TaskPanel.
         if self._breadcrumb:
             return ""
+        if self.tool_name == "ask_user":
+            return ask_user_body(parse_ask_user(self.args, self.result_text, self.status))
         primary = self._primary_renderable()
         if primary is not None:
             if not self.result_text:

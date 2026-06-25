@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from pydantic_ai.usage import RunUsage
 from rich.syntax import Syntax
@@ -1434,3 +1436,36 @@ def test_toolcall_pending_glyph_is_spinner_done_is_check():
     assert w._glyph()[0] == "✗"
     w.status = "denied"
     assert w._glyph()[0] == "✕"
+
+
+_ASK_ARGS = {
+    "questions": [
+        {"question": "Which approach?", "header": "approach",
+         "options": [{"label": "Option A"}, {"label": "Option B"}], "multi": False}
+    ]
+}
+
+
+def test_ask_user_widget_answered_title_and_body():
+    w = ToolCallWidget("ask_user", _ASK_ARGS)
+    w.finish(json.dumps({"approach": "Option B"}), status="done")
+    title = str(w._summary())
+    assert "Ask User" in title and "Which approach? → Option B" in title
+    assert "✓" in title
+    assert w._render_body() == "Which approach?\n→ Option B"
+
+
+def test_ask_user_widget_pending_title():
+    w = ToolCallWidget("ask_user", _ASK_ARGS)  # status defaults to "pending"
+    title = str(w._summary())
+    assert "Which approach?  awaiting answer…" in title
+    assert w._render_body() == "Which approach?\n→ (awaiting answer)"
+
+
+def test_ask_user_widget_cancelled_title():
+    w = ToolCallWidget("ask_user", _ASK_ARGS)
+    w.finish("User dismissed the prompt without answering.", status="done")
+    title = str(w._summary())
+    assert "cancelled — no answer" in title
+    assert "✕" in title
+    assert w._render_body() == "Which approach?\n→ (cancelled)"
