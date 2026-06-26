@@ -164,18 +164,32 @@ def synth_usage(
     When ``total_cost_usd`` is provided (the CLI's billed amount), it is stored
     in ``details[COST_DETAIL_KEY]`` as integer micro-USD so ``resolve_cost``
     surfaces it as the exact cost — no model-id lookup needed. Missing token
-    keys default to 0."""
+    keys default to 0.
+
+    The CLI reports Anthropic's *raw* usage, where ``input_tokens`` is the
+    uncached prompt tokens only — the cache read/write buckets are reported
+    separately and are NOT included in it. But the rest of the harness (and
+    pydantic-ai/genai-prices for the native path) treats ``RunUsage.input_tokens``
+    as *inclusive* of cache: ``split_tokens`` recovers the uncached bucket as
+    ``input_tokens - cache_read - cache_write``, and ``total_tokens`` is
+    ``input_tokens + output_tokens``. So we fold the cache buckets into
+    ``input_tokens`` here, exactly as genai-prices does for a native Anthropic
+    response. Without this the uncached split underflowed to 0 (the reported ``↑``
+    was always zero) and the token total omitted all cached tokens."""
     from .usage import COST_DETAIL_KEY
 
     u = cli_usage or {}
     details: dict = {}
     if total_cost_usd is not None:
         details[COST_DETAIL_KEY] = int(total_cost_usd * 1_000_000)
+    uncached_in = int(u.get("input_tokens", 0) or 0)
+    cache_read = int(u.get("cache_read_input_tokens", 0) or 0)
+    cache_write = int(u.get("cache_creation_input_tokens", 0) or 0)
     return RunUsage(
-        input_tokens=int(u.get("input_tokens", 0) or 0),
+        input_tokens=uncached_in + cache_read + cache_write,  # inclusive of cache
         output_tokens=int(u.get("output_tokens", 0) or 0),
-        cache_read_tokens=int(u.get("cache_read_input_tokens", 0) or 0),
-        cache_write_tokens=int(u.get("cache_creation_input_tokens", 0) or 0),
+        cache_read_tokens=cache_read,
+        cache_write_tokens=cache_write,
         requests=int(num_turns or 0),
         details=details,
     )
