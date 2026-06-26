@@ -428,6 +428,25 @@ async def test_live_stream_then_open_shows_current_transcript(tmp_path: Path):
         assert w.status == "done"
 
 
+@pytest.mark.anyio
+async def test_live_pane_is_marked_transcript_loaded(tmp_path: Path):
+    """A pane created for a live (streaming) sub-agent via ensure_pane is fed by
+    the live stream, so it must be marked transcript_loaded. Otherwise the
+    resume-time lazy-load fires on open, reads a sidecar that a still-running
+    agent hasn't written yet, and appends 'transcript unavailable for this
+    resumed sub-agent' over the live transcript."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        r = app.stream
+        w = r.mount_spawn_widget({"type": "research", "description": "map it"})
+        w.stream_id = "call_1"
+        r.tool_widgets["call_1"] = w
+        pane = r.ensure_pane(w)
+        await pilot.pause()
+        assert pane is not None
+        assert pane.transcript_loaded is True
+
+
 def test_repaint_before_children_mount_is_noop():
     """A live stream flush tick can call repaint() after SubAgentsView is created
     but before its compose children mount (observed as a NoMatches crash on a
