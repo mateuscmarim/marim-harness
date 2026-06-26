@@ -25,7 +25,9 @@ _DEFAULT_GOOGLE_MODEL = "gemini-2.5-flash"
 _KNOWN_PROVIDERS = frozenset({"openrouter", "local", "google"})
 
 
-def parse_qualified(qualified, active, default):
+def parse_qualified(
+    qualified: str, active: set[str] | frozenset[str], default: str
+) -> tuple[str, str]:
     """Split a ``provider:model_id`` into ``(provider, bare_id)``.
 
     If the segment before the first ':' is an active provider, route there with
@@ -272,9 +274,12 @@ class MultiModelSource:
 
     @property
     def is_local(self) -> bool:
-        # The composite is not a single local provider; the picker reads this only
-        # to keep free-text entry available, which we always want here.
-        return False
+        # The picker reads is_local only to decide whether to keep free-text entry
+        # available after a catalog loads. The composite always wants free-text on
+        # so a user can type a qualified `provider:model_id` even when catalogs are
+        # populated — so report True. (This flag does not assert "local provider"
+        # for the composite; nothing else consumes it on this type.)
+        return True
 
     def _route(self, qualified: str) -> tuple[ModelSource, str]:
         provider, bare = parse_qualified(qualified, set(self.sources), self.default)

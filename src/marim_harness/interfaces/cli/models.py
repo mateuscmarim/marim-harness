@@ -5,7 +5,7 @@ import asyncio
 import json
 import sys
 
-from ...config import ModelSource, load_config
+from ...config import MultiModelSource
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -19,27 +19,25 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_list(args, *, out, err) -> int:
-    source = ModelSource(load_config())
+    source = MultiModelSource.from_env()
     entries = asyncio.run(source.list_models())
 
     if args.json:
-        print(json.dumps([{"id": e.id, "name": e.name} for e in entries]), file=out)
+        print(json.dumps([{"id": e.id, "name": e.name, "provider": e.provider}
+                          for e in entries]), file=out)
         return 0
 
     if not entries:
-        if getattr(source, "is_local", False):
-            print(
-                "No models returned from the local server — is it running at "
-                "MARIM_BASE_URL? You can also set MARIM_MODEL to a model id directly.",
-                file=out,
-            )
-        else:
-            print("No models available.", file=out)
+        print(
+            "No models available from the configured providers. Check your credentials"
+            " / MARIM_BASE_URL, or set MARIM_MODEL to a model id directly.",
+            file=out,
+        )
         return 0
 
-    width = max(len(e.id) for e in entries)
+    width = max((len(e.qualified) for e in entries), default=0)
     for e in entries:
-        print(f"{e.id.ljust(width)}  {e.name}", file=out)
+        print(f"{e.qualified.ljust(width)}  {e.name}", file=out)
     return 0
 
 

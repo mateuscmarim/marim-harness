@@ -567,6 +567,17 @@ def test_multi_source_build_routes_by_prefix(monkeypatch):
     assert calls == {"loc": "qwen2.5-coder", "or": "anthropic/claude-sonnet-4-6"}
 
 
+def test_multi_source_is_local_always_true():
+    from marim_harness.config.model import ModelConfig, ModelSource, MultiModelSource
+    orc = ModelSource(ModelConfig(provider="openrouter", model="x"))
+    assert MultiModelSource({"openrouter": orc}, "openrouter").is_local is True
+
+
+def test_parse_qualified_empty_remainder():
+    from marim_harness.config.model import parse_qualified
+    assert parse_qualified("local:", {"local", "openrouter"}, "openrouter") == ("local", "")
+
+
 def test_multi_source_label_qualifies():
     from marim_harness.config.model import ModelConfig, ModelSource, MultiModelSource
     orc = ModelSource(ModelConfig(provider="openrouter", model="x"))

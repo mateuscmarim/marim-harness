@@ -150,6 +150,23 @@ async def test_empty_remote_catalog_allows_free_text_after_load():
 
 
 @pytest.mark.anyio
+async def test_allow_free_text_stays_on_after_catalog_loads_when_is_local():
+    """When is_local=True, allow_free_text must remain True even after a non-empty
+    catalog is loaded — so the user can type a qualified provider:model_id."""
+    async def fetch():
+        return _ENTRIES
+
+    modal = ModelPickerModal(fetch=fetch, is_local=True)
+    app = _PushHost(modal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        # Catalog has loaded (entries are populated); free-text must still be on.
+        assert modal.allow_free_text is True
+        assert len(modal.entries) == len(_ENTRIES)
+
+
+@pytest.mark.anyio
 async def test_picker_option_id_is_qualified_and_label_tags_provider():
     entries = [ModelEntry(id="anthropic/c", name="Claude", provider="openrouter")]
     modal = ModelPickerModal(entries=entries, allow_free_text=True)

@@ -56,7 +56,7 @@ def parse_models(payload: dict) -> list[ModelEntry]:
 
 
 def filter_entries(entries: list[ModelEntry], query: str) -> list[ModelEntry]:
-    """Substring filter over id and name (case-insensitive). Blank query keeps
+    """Substring filter over id, name, and provider (case-insensitive). Blank query keeps
     everything."""
     q = query.strip().lower()
     if not q:
