@@ -13,6 +13,7 @@ from .agents import (
 from .catalog import (
     ModelEntry,
     fetch_google_models,
+    fetch_local_models,
     fetch_openrouter_models,
     filter_entries,
     model_supports_images,
@@ -53,6 +54,7 @@ __all__ = [
     # catalog
     "ModelEntry",
     "fetch_google_models",
+    "fetch_local_models",
     "fetch_openrouter_models",
     "filter_entries",
     "model_supports_images",

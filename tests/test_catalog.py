@@ -1,5 +1,56 @@
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
 from marim_harness.workspace import ModelEntry, filter_entries, model_supports_images, parse_models
-from marim_harness.workspace.catalog import parse_google_models
+from marim_harness.workspace.catalog import fetch_local_models, parse_google_models
+
+
+def _mock_async_client(payload, *, raises: Exception | None = None):
+    """Patch catalog.httpx.AsyncClient with a stub whose .get returns ``payload``
+    (or raises ``raises``). Returns the patch context manager and the captured
+    get mock so the caller can assert the URL that was hit."""
+    mock_resp = AsyncMock()
+    mock_resp.raise_for_status = lambda: None
+    mock_resp.json = lambda: payload
+    client = AsyncMock()
+    client.get = AsyncMock(side_effect=raises) if raises else AsyncMock(return_value=mock_resp)
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    # catalog imports httpx lazily inside the fetcher (keeps the CLI import chain
+    # light), so there's no catalog.httpx attribute — patch httpx.AsyncClient itself.
+    cm = patch("httpx.AsyncClient", return_value=client)
+    return cm, client.get
+
+
+@pytest.mark.anyio
+async def test_fetch_local_models_hits_models_endpoint_and_parses():
+    """Fetches {base_url}/models and parses the OpenAI-style payload that an
+    LM Studio / Ollama server returns."""
+    payload = {"data": [{"id": "qwen2.5-coder"}, {"id": "llama-3.1-8b"}]}
+    cm, get = _mock_async_client(payload)
+    with cm:
+        entries = await fetch_local_models("http://localhost:1234/v1", "lmstudio")
+    assert [e.id for e in entries] == ["llama-3.1-8b", "qwen2.5-coder"]  # sorted
+    assert get.await_args.args[0] == "http://localhost:1234/v1/models"
+
+
+@pytest.mark.anyio
+async def test_fetch_local_models_strips_trailing_slash():
+    """A base_url with a trailing slash must not yield a doubled // before models."""
+    cm, get = _mock_async_client({"data": []})
+    with cm:
+        await fetch_local_models("http://localhost:1234/v1/", None)
+    assert get.await_args.args[0] == "http://localhost:1234/v1/models"
+
+
+@pytest.mark.anyio
+async def test_fetch_local_models_returns_empty_on_error():
+    """A network/HTTP failure degrades to [] so the picker falls back to free
+    text rather than crashing."""
+    cm, _ = _mock_async_client(None, raises=RuntimeError("connection refused"))
+    with cm:
+        assert await fetch_local_models("http://localhost:1234/v1", None) == []
 
 
 def test_parse_google_models_skips_row_with_non_list_methods():
