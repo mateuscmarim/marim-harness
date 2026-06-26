@@ -552,11 +552,14 @@ class SubagentRunner:
             self.deps.on_subagent_event, self.deps.on_subagent_notice,
             self.deps.on_subagent_model,
         )
-        return await runner.run(
+        result = await runner.run(
             binary=binary, prompt=task, system_prompt=defn.prompt, cwd=cwd,
             allow_gated=allow_gated, allowed_tools=tools, model=model_name,
             stream_id=stream_id,
         )
+        if stream_id and self.deps.on_subagent_usage is not None:
+            await self.deps.on_subagent_usage(stream_id, result.usage)
+        return result
 
     def _log_spawn_timing(
         self, type: str, t0: float, t_built: float,

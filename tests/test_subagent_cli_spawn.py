@@ -76,3 +76,52 @@ async def test_cli_backend_notes_unforwarded_mcp(tmp_path: Path, monkeypatch):
     ).subagents
     out = await runner.run("cli-worker", "t", stream_id="s1", mcp_names=["mddocs"])
     assert "mddocs" in out and "not forwarded" in out.lower()
+
+
+@pytest.mark.anyio
+async def test_cli_backend_fires_usage_callback(tmp_path: Path, monkeypatch):
+    """After a CLI spawn the on_subagent_usage callback receives the final
+    RunUsage so the card and pane can show token counts and cost."""
+    from pydantic_ai.usage import RunUsage
+
+    monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", _fake_cli(tmp_path))
+    _write_cli_agent(tmp_path)
+
+    received: list[tuple[str, RunUsage]] = []
+
+    async def on_usage(stream_id: str, usage) -> None:
+        received.append((stream_id, usage))
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps.on_subagent_usage = on_usage
+    runner = _make_harness(_dummy_model(), deps).subagents
+    await runner.run("cli-worker", "do the thing", stream_id="sg1")
+
+    assert len(received) == 1
+    sid, usage = received[0]
+    assert sid == "sg1"
+    assert isinstance(usage, RunUsage)
+    assert usage.input_tokens == 7 and usage.output_tokens == 4
+
+
+@pytest.mark.anyio
+async def test_cli_backend_skips_usage_callback_without_stream_id(
+    tmp_path: Path, monkeypatch
+):
+    """No stream_id means headless / background: no card to update, so the
+    callback must not fire."""
+    monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", _fake_cli(tmp_path))
+    _write_cli_agent(tmp_path)
+
+    received: list = []
+
+    async def on_usage(stream_id: str, usage) -> None:
+        received.append(usage)
+
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps.on_subagent_usage = on_usage
+    runner = _make_harness(_dummy_model(), deps).subagents
+    # Empty stream_id → headless/background: no card to address.
+    await runner.run("cli-worker", "do the thing", stream_id="")
+
+    assert received == []

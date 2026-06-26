@@ -208,7 +208,9 @@ class SubAgentWidget(Vertical):
         """Record the real model this sub-agent ran on (e.g. the model a claude-cli
         spawn reported), overriding the harness-model fallback set at creation. The
         model isn't shown on the card itself; storing it here means a pane created
-        later picks it up, and the renderer also pushes it to an already-open pane."""
+        later picks it up, and the renderer also pushes it to an already-open pane.
+        Also stores a pricing-compatible id by stripping the [1m]-style context-window
+        suffix the Claude CLI appends, which isn't present in the price table."""
         self.model_label = model_label
 
     def _paint_header(self) -> None:
