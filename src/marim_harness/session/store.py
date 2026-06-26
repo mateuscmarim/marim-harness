@@ -206,10 +206,11 @@ class SessionManager:
                 saved = json.loads(path.read_text())
             except (json.JSONDecodeError, OSError):
                 saved = None
+        meta = saved or {}
         if name is None:
-            name = str((saved or {}).get("name") or session_id)
-        auto_named = bool((saved or {}).get("auto", False))
-        model = (saved or {}).get("model")
+            name = str(meta.get("name") or session_id)
+        auto_named = bool(meta.get("auto", False))
+        model = meta.get("model")
         self._reserved.add(session_id)
         return SessionStore(
             path, self.workspace_root, session_id, name,

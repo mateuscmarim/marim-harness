@@ -318,6 +318,13 @@ class CheckpointManager:
             self._pre_restore_commit = None
         return undone
 
+    def _delete_all_refs(self) -> None:
+        """Delete every checkpoint's git ref and clear the list."""
+        for cp in self._checkpoints:
+            if cp.commit is not None:
+                self.snapshotter.delete(self._ref(cp.index))
+        self._checkpoints = []
+
     def invalidate_after_compaction(self) -> None:
         """Drop every checkpoint after a compaction restructured the history.
 
@@ -335,18 +342,12 @@ class CheckpointManager:
         The current turn re-snapshots *after* compaction (see ``run_turn``), so
         this never discards the in-flight turn's rewind point — only the stale
         pre-compaction ones."""
-        for cp in self._checkpoints:
-            if cp.commit is not None:
-                self.snapshotter.delete(self._ref(cp.index))
-        self._checkpoints = []
+        self._delete_all_refs()
         self._save()
 
     def clear(self) -> None:
         """Drop all checkpoints (called on session reset/clear) and their refs."""
-        for cp in self._checkpoints:
-            if cp.commit is not None:
-                self.snapshotter.delete(self._ref(cp.index))
-        self._checkpoints = []
+        self._delete_all_refs()
         path = self._sidecar_path()
         if path is not None:
             try:

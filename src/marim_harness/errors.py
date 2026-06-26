@@ -18,6 +18,19 @@ from pathlib import Path
 from .atomic_io import atomic_write_text
 
 
+def _find_in_chain(exc: BaseException, exc_class):
+    """Walk ``exc``'s ``__cause__``/``__context__`` chain; return the first
+    instance of ``exc_class`` found, or None."""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, exc_class):
+            return cur
+        cur = cur.__cause__ or cur.__context__
+    return None
+
+
 def _find_api_error(exc: BaseException):
     """The first ``openai.APIError`` in ``exc``'s cause/context chain, or None.
     A subagent's provider error reaches the main loop wrapped by the tool layer,
@@ -26,14 +39,7 @@ def _find_api_error(exc: BaseException):
         from openai import APIError
     except Exception:  # openai not importable for some reason — nothing to do
         return None
-    seen: set[int] = set()
-    cur: BaseException | None = exc
-    while cur is not None and id(cur) not in seen:
-        seen.add(id(cur))
-        if isinstance(cur, APIError):
-            return cur
-        cur = cur.__cause__ or cur.__context__
-    return None
+    return _find_in_chain(exc, APIError)
 
 
 def _error_dict(api) -> dict | None:
@@ -133,14 +139,7 @@ def _find_model_http_error(exc: BaseException):
         from pydantic_ai.exceptions import ModelHTTPError
     except Exception:  # pydantic_ai not importable — nothing to classify
         return None
-    seen: set[int] = set()
-    cur: BaseException | None = exc
-    while cur is not None and id(cur) not in seen:
-        seen.add(id(cur))
-        if isinstance(cur, ModelHTTPError):
-            return cur
-        cur = cur.__cause__ or cur.__context__
-    return None
+    return _find_in_chain(exc, ModelHTTPError)
 
 
 def _status_codes_in(obj) -> list[int]:

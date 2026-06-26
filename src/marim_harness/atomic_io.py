@@ -90,6 +90,24 @@ def _sweep_stale_temps(directory: Path, name: str) -> None:
             os.unlink(stale)
 
 
+def _atomic_write_core(path: Path, open_kwargs: dict, write_fn) -> None:
+    """Shared temp-file lifecycle for atomic writes: mkstemp → write → fsync → replace."""
+    directory = path.parent
+    fd, tmp_name = tempfile.mkstemp(dir=directory, prefix=f".{path.name}.", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, **open_kwargs) as f:
+            write_fn(f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)  # don't leave a temp behind on failure
+        raise
+    _fsync_dir(directory)
+    _sweep_stale_temps(directory, path.name)
+
+
 def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
     """Write ``text`` to ``path`` atomically and durably.
 
@@ -99,23 +117,7 @@ def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None
     half-applied. The parent directory is fsynced best-effort so the rename
     itself survives power loss. The target's directory must already exist.
     """
-    path = Path(path)
-    directory = path.parent
-    fd, tmp_name = tempfile.mkstemp(dir=directory, prefix=f".{path.name}.", suffix=".tmp")
-    tmp = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w", encoding=encoding) as f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
-    except BaseException:
-        tmp.unlink(missing_ok=True)  # don't leave a temp behind on failure
-        raise
-    _fsync_dir(directory)
-    # Opportunistically clear temps a previous crash may have orphaned for this
-    # target. After our own replace, so we never remove the temp we just swapped.
-    _sweep_stale_temps(directory, path.name)
+    _atomic_write_core(Path(path), {"mode": "w", "encoding": encoding}, lambda f: f.write(text))
 
 
 def atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -124,22 +126,7 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
     two writers racing on the same target never collide on a shared temp name (the
     bug in the old ``out.with_suffix(".tmp")`` pattern). The target's directory must
     already exist."""
-    path = Path(path)
-    directory = path.parent
-    fd, tmp_name = tempfile.mkstemp(dir=directory, prefix=f".{path.name}.", suffix=".tmp")
-    tmp = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
-    except BaseException:
-        tmp.unlink(missing_ok=True)  # don't leave a temp behind on failure
-        raise
-    _fsync_dir(directory)
-    # See atomic_write_text: clear any temps orphaned by a previous crash.
-    _sweep_stale_temps(directory, path.name)
+    _atomic_write_core(Path(path), {"mode": "wb"}, lambda f: f.write(data))
 
 
 def _fsync_dir(directory: Path) -> None:

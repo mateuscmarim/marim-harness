@@ -296,9 +296,9 @@ async def fetch_url(
     # --- decode ---
     text = raw.decode(encoding or "utf-8", errors="replace")
     body: str
-    if b"html" in content_type.encode() or b"xhtml" in content_type.encode():
+    if "html" in content_type or "xhtml" in content_type:
         body = _html_to_markdown(text)
-    elif b"json" in content_type.encode():
+    elif "json" in content_type:
         # Return pretty-printed JSON — the agent can parse it.
         try:
             import json
