@@ -20,7 +20,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
-from pydantic_ai.messages import ToolReturnPart
 
 from ..config import config_dir
 from ..identifiers import valid_name
@@ -351,6 +350,11 @@ def cap_transcript(messages: list, cap: int) -> list:
     exceeds ``cap`` characters truncated to ``cap`` chars plus a marker. Only tool
     *results* are capped — text, thinking, and tool-call parts (the reasoning and
     the actions) are kept in full. Pure: never mutates the input messages."""
+    # Imported lazily so this module stays free of pydantic_ai at import time: the
+    # CLI router pulls in workspace/ (via config → catalog), and dragging in
+    # pydantic_ai there would cost ~1s on every `marim --help`/config command.
+    from pydantic_ai.messages import ToolReturnPart
+
     out = []
     for message in messages:
         parts = getattr(message, "parts", None)
