@@ -426,3 +426,12 @@ async def test_live_stream_then_open_shows_current_transcript(tmp_path: Path):
         app.refresh_subagents_view()
         await pilot.pause()
         assert w.status == "done"
+
+
+def test_repaint_before_children_mount_is_noop():
+    """A live stream flush tick can call repaint() after SubAgentsView is created
+    but before its compose children mount (observed as a NoMatches crash on a
+    loaded 3.10 CI runner). repaint() must skip that tick, not raise."""
+    view = SubAgentsView()
+    # Bare instance, never mounted -> SubAgentSummary/SubAgentList aren't queryable.
+    view.repaint([], lambda _s: 0.0)  # must not raise NoMatches
