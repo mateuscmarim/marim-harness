@@ -33,6 +33,24 @@ def anyio_backend():
     return "asyncio"
 
 
+@pytest.fixture(autouse=True)
+def _isolated_config(tmp_path_factory, monkeypatch):
+    """Point global config discovery at an empty per-test dir so the developer's
+    real ~/.config/marim/ never leaks into the suite.
+
+    ``config_dir()`` reads ``$XDG_CONFIG_HOME`` at call time, and the harness
+    discovers user-global agents (``$XDG_CONFIG_HOME/marim/agents/*.md``) plus the
+    global ``AGENTS.md`` and ``.env`` from there. A developer who configures global
+    agents would otherwise get those folded into the *main* agent's instructions —
+    e.g. the fan-out tests' fake models gate on ``"sub-agent" in instructions`` to
+    tell the sub-agent context apart, and a global delegation policy mentioning
+    "sub-agents" silently broke that heuristic. Isolating the dir makes every test
+    hermetic. Tests that exercise global config set their own ``XDG_CONFIG_HOME``
+    inside the test body, which runs after this fixture and overrides it."""
+    cfg = tmp_path_factory.mktemp("xdg")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(cfg))
+
+
 def _edit_then_done_model() -> FunctionModel:
     """First model turn: call edit_file. After the tool result: reply 'done'.
     Supports both non-streamed and streamed requests."""
