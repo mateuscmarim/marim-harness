@@ -18,7 +18,7 @@ import json
 import logging
 import os
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from pydantic_ai.messages import (
@@ -107,6 +107,7 @@ class CliResult:
 
     output: str
     usage: RunUsage
+    transcript: list = field(default_factory=list)
 
 
 def resolve_cli_binary() -> str | None:
@@ -407,7 +408,7 @@ class ClaudeCliRunner:
             if not result_seen:
                 detail = stderr_bytes.decode("utf-8", "replace").strip() or f"exit code {code}"
                 raise CliRunError(f"claude produced no result ({detail})")
-            return CliResult(output=output, usage=usage)
+            return CliResult(output=output, usage=usage, transcript=translator.transcript())
         finally:
             # On an exceptional/cancelled exit, reap the child so an auto-mode CLI
             # can't keep editing files after the spawn was abandoned, and never leave

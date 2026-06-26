@@ -560,3 +560,16 @@ async def test_runner_handles_line_larger_than_64kib(tmp_path):
     assert result.output == "done after big line"
     # The oversized tool_result line was parsed and surfaced, not dropped.
     assert "FunctionToolResultEvent" in seen
+
+
+@pytest.mark.anyio
+async def test_runner_returns_transcript(tmp_path):
+    binary = _make_fake_cli(tmp_path)
+    runner = ClaudeCliRunner(None, None)
+    result = await runner.run(
+        binary=binary, prompt="go", system_prompt="s", cwd=str(tmp_path),
+        allow_gated=True, allowed_tools=frozenset({"read_file"}),
+        model=None, stream_id="s1",
+    )
+    assert result.transcript
+    assert any(isinstance(m, ModelResponse) for m in result.transcript)
