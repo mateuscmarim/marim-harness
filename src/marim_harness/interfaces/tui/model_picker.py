@@ -118,7 +118,9 @@ class ModelPickerModal(ModalScreen[str | None]):
         options.clear_options()
         for entry in entries:
             label = entry.id if entry.id == entry.name else f"{entry.id}  —  {entry.name}"
-            options.add_option(Option(label, id=entry.id))
+            if entry.provider:
+                label = f"{label}  · {entry.provider}"
+            options.add_option(Option(label, id=entry.qualified))
         if entries:
             options.highlighted = 0
 

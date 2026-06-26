@@ -147,3 +147,16 @@ async def test_empty_remote_catalog_allows_free_text_after_load():
         await pilot.press("enter")
         await pilot.pause()
     assert app.result == "raw/id"
+
+
+@pytest.mark.anyio
+async def test_picker_option_id_is_qualified_and_label_tags_provider():
+    entries = [ModelEntry(id="anthropic/c", name="Claude", provider="openrouter")]
+    modal = ModelPickerModal(entries=entries, allow_free_text=True)
+    app = _PushHost(modal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        opts = modal.query_one("#model-options", OptionList)
+        opt = opts.get_option_at_index(0)
+        assert opt.id == "openrouter:anthropic/c"
+        assert "· openrouter" in str(opt.prompt)
