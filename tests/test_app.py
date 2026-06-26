@@ -2497,7 +2497,7 @@ async def test_flush_streams_renders_viewed_subagent_text(tmp_path: Path):
         await app.stream.on_subagent_event(
             "s1", PartStartEvent(index=0, part=TextPart(content="nested"))
         )
-        msg = app.stream.sub_assistants["s1"]
+        msg = app.stream._sub_streams["s1"].assistant
         # Show this card's pane in the detail host so its transcript flushes.
         app.stream.detail_host.show("s1")
         # Synchronous append → assert → flush so the interval timer can't interleave.
@@ -3501,3 +3501,35 @@ async def test_detached_card_fills_automatically_when_job_settles(tmp_path: Path
         await pilot.pause()
         assert card.status == "done"
         assert card.report == "AUTO REPORT"
+
+
+@pytest.mark.anyio
+async def test_sub_streams_pruned_after_subagent_finish(tmp_path: Path):
+    """_sub_streams entries are removed at prune_completed so finished sub-agents
+    don't accumulate stream state for the session lifetime."""
+    from pydantic_ai.messages import FunctionToolResultEvent, PartStartEvent, TextPart, ToolReturnPart
+
+    async def gen():
+        yield _spawn_call("s1", "explore the repo")
+        yield FunctionToolResultEvent(
+            part=ToolReturnPart(
+                tool_name="spawn_agent",
+                content="Exploration complete.",
+                tool_call_id="s1",
+            )
+        )
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.stream.on_events(None, gen())
+        await pilot.pause()
+        # Simulate the sub-agent streaming a text event so _sub_streams gets populated.
+        await app.stream.on_subagent_event(
+            "s1", PartStartEvent(index=0, part=TextPart(content="working…"))
+        )
+        assert "s1" in app.stream._sub_streams  # populated by sub-agent stream
+
+        # After the spawn result, prune_completed must drop the finished entry.
+        app.stream.prune_completed()
+        assert "s1" not in app.stream._sub_streams
