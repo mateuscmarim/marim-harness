@@ -13,9 +13,13 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from ..atomic_io import atomic_write_text
+
+if TYPE_CHECKING:
+    from .ctrl import SessionController
+    from .store import SessionStore
 
 
 @dataclass
@@ -96,7 +100,7 @@ class CheckpointManager:
     ``Snapshotter`` (Null by default → conversation-only rewind)."""
 
     def __init__(
-        self, session, snapshotter: Snapshotter | None = None, *, limit: int = 50
+        self, session: SessionController, snapshotter: Snapshotter | None = None, *, limit: int = 50
     ) -> None:
         self.session = session
         self.snapshotter: Snapshotter = snapshotter or NullSnapshotter()
@@ -118,8 +122,11 @@ class CheckpointManager:
 
     # --- persistence -----------------------------------------------------
 
+    def _store(self) -> SessionStore | None:
+        return self.session.store
+
     def _sidecar_path(self) -> Path | None:
-        store = getattr(self.session, "store", None)
+        store = self._store()
         if store is None:
             return None
         return Path(store.path).with_name(f"{store.session_id}.checkpoints.json")
@@ -154,8 +161,8 @@ class CheckpointManager:
     # --- operations ------------------------------------------------------
 
     def _session_id(self) -> str:
-        store = getattr(self.session, "store", None)
-        return getattr(store, "session_id", "anon") if store is not None else "anon"
+        store = self._store()
+        return store.session_id if store is not None else "anon"
 
     def _ref(self, index: int) -> str:
         return f"{_REF_PREFIX}/{self._session_id()}/{index}"
