@@ -52,6 +52,9 @@ class ModelConfig:
     # unbounded; set MARIM_SUBAGENT_CONCURRENCY to bound a fan-out that trips a
     # shared provider route's upstream rate limit.
     subagent_concurrency: int | None = None
+    # Maximum number of tokens' worth of messages kept when a sub-agent
+    # transcript is written to its sidecar. Older messages are dropped first.
+    subagent_transcript_cap: int = 2000
     # Detached fan-out (interactive only): when on, spawn_agent runs detached as a
     # background job so a fan-out doesn't freeze the session; autonomous wake
     # synthesizes the reports. Default on; MARIM_DETACH_FANOUT=0 forces inline.
@@ -94,6 +97,7 @@ def load_config() -> ModelConfig:
     subagent_concurrency = _int_env("MARIM_SUBAGENT_CONCURRENCY", 0) or None
     if subagent_concurrency is not None and subagent_concurrency < 0:
         subagent_concurrency = None
+    subagent_transcript_cap = _int_env("MARIM_SUBAGENT_TRANSCRIPT_CAP", 2000)
     detach_fanout = _bool_env("MARIM_DETACH_FANOUT", True)
     command_denylist = split_patterns(os.getenv("MARIM_COMMAND_DENYLIST", ""))
     command_allowlist = split_patterns(os.getenv("MARIM_COMMAND_ALLOWLIST", ""))
@@ -112,6 +116,7 @@ def load_config() -> ModelConfig:
         autonomous_wake=autonomous_wake,
         wake_depth_cap=wake_depth_cap,
         subagent_concurrency=subagent_concurrency,
+        subagent_transcript_cap=subagent_transcript_cap,
         detach_fanout=detach_fanout,
         command_denylist=command_denylist,
         command_allowlist=command_allowlist,

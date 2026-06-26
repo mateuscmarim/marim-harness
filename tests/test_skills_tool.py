@@ -98,6 +98,39 @@ def test_read_skill_file_reaches_global_skill(tmp_path: Path, monkeypatch):
     assert "global bundled note" in captured["ret"]
 
 
+def test_activate_skill_points_at_read_skill_file(tmp_path: Path):
+    """activate_skill's output must name read_skill_file as the way to load
+    bundled files, so the agent reaches for the right tool instead of blindly
+    read_file-ing a relative link against the absolute skill dir."""
+    _make_skill(tmp_path / ".marim" / "skills", "greet", body="Say hi warmly.")
+    agent = _agent()
+    model, captured = _call_tool("activate_skill", {"name": "greet"})
+    with agent.override(model=model):
+        agent.run_sync("go", deps=Deps(workspace_root=tmp_path))
+    assert "read_skill_file" in captured["ret"]
+
+
+def test_read_file_reaches_global_skill_bundled_file(tmp_path: Path, monkeypatch):
+    """read_file with the absolute path of a global skill's bundled file works:
+    even though the file is outside the workspace, the skill roots are whitelisted
+    for reading (so an agent that reaches for read_file by path still succeeds)."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    _make_skill(
+        tmp_path / "cfg" / "marim" / "skills", "sdd",
+        files={"implementer-prompt.md": "implementer instructions here"},
+    )
+    skill_dir = (tmp_path / "cfg" / "marim" / "skills" / "sdd").resolve()
+    agent = _agent()
+    model, captured = _call_tool(
+        "read_file", {"path": str(skill_dir / "implementer-prompt.md")}
+    )
+    with agent.override(model=model):
+        agent.run_sync("go", deps=Deps(workspace_root=ws))
+    assert "implementer instructions here" in captured["ret"]
+
+
 def test_skill_tools_are_not_approval_gated(tmp_path: Path):
     """activate_skill / read_skill_file only read marim/claude skill dirs, so they
     must run without an approval round (the run completes and echoes the body)."""

@@ -20,6 +20,7 @@ from .widgets import (
     ToolGroupWidget,
     UserMessage,
 )
+from .widgets.subagent_detail import SubAgentDetailHost
 
 
 class SessionView:
@@ -114,6 +115,16 @@ class SessionView:
                             widget.stream_id = part.tool_call_id
                             tool_widgets[part.tool_call_id] = widget
                             await log.mount(widget)
+                            # Create the detail host pane for lazy transcript load on resume
+                            host = self.app.query_one(SubAgentDetailHost)
+                            pane = host.add_pane(
+                                part.tool_call_id,
+                                str(args.get("type", "")),
+                                model_label,
+                                str(args.get("description") or args.get("task", "")),
+                                "",
+                            )
+                            widget.pane = pane
                         elif part.tool_name == "ask_user":
                             # Mirror the live path (intercept_tool): ask_user mounts
                             # standalone and breaks the run, so the question + answer
@@ -151,6 +162,79 @@ class SessionView:
                             ):
                                 status = "failed"
                             widget.finish(content, status=status)
+
+    async def replay_messages_into(self, pane, messages) -> None:
+        """Render resumed sub-agent transcript messages into ``pane``.
+
+        Drives the same per-part widget construction as ``replay_history`` but
+        targets a ``SubAgentPane`` (VerticalScroll) instead of the main log.
+        Sets ``pane.transcript_loaded = True`` when done."""
+        from pydantic_ai.messages import (
+            ModelRequest,
+            ModelResponse,
+            TextPart,
+            ThinkingPart,
+            ToolCallPart,
+            ToolReturnPart,
+        )
+
+        from .widgets import (
+            AssistantMessage,
+            SubAgentWidget,
+            ThinkingWidget,
+            ToolCallWidget,
+            ToolGroupWidget,
+        )
+
+        tool_widgets: dict = {}
+        group: ToolGroupWidget | None = None
+        solo: ToolCallWidget | None = None
+        for message in messages:
+            if isinstance(message, (ModelRequest, ModelResponse)):
+                for part in message.parts:
+                    if isinstance(part, TextPart):
+                        if part.content:
+                            msg = AssistantMessage()
+                            await pane.add(msg)
+                            self.app.stream.append_stream(msg, part.content)
+                    elif isinstance(part, ThinkingPart):
+                        if part.content:
+                            widget = ThinkingWidget()
+                            await pane.add(widget)
+                            self.app.stream.append_stream(widget.body, part.content)
+                            widget.finalize()
+                    elif isinstance(part, ToolCallPart):
+                        args = part.args_as_dict()
+                        if part.tool_name == "spawn_agent" and not args.get("background"):
+                            widget = SubAgentWidget(
+                                str(args.get("type", "")),
+                                str(args.get("description") or args.get("task", "")),
+                                str(args.get("model") or ""),
+                            )
+                            widget.stream_id = part.tool_call_id
+                            tool_widgets[part.tool_call_id] = widget
+                            await pane.add(widget)
+                        else:
+                            widget = ToolCallWidget(
+                                part.tool_name, args,
+                                workspace_root=self.app.harness.deps.workspace_root,
+                            )
+                            tool_widgets[part.tool_call_id] = widget
+                            group, solo = await self.app.stream.add_tool_to_run(
+                                widget, pane, group, solo,
+                            )
+                    elif isinstance(part, ToolReturnPart):
+                        widget = tool_widgets.get(part.tool_call_id)
+                        if widget is not None:
+                            content = str(part.content)
+                            status = status_from_part(part)
+                            if (isinstance(widget, SubAgentWidget)
+                                    and status == "done"
+                                    and subagent_failed(content)):
+                                status = "failed"
+                            widget.finish(content, status=status)
+        self.app.stream.flush_streams()
+        pane.transcript_loaded = True
 
     async def mount_header(self, log: VerticalScroll) -> AssistantMessage:
         """Mount the two-column intro header — the MARIM banner on the left, the

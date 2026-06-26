@@ -9,6 +9,7 @@ import contextlib
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.content import Content
+from textual.css.query import NoMatches
 from textual.widgets import Static
 
 from .subagent_detail import SubAgentDetailHost
@@ -71,9 +72,19 @@ class SubAgentsView(Vertical):
 
     def repaint(self, subagents: list, cost_of, selected: int | None = None) -> None:
         """Repaint the summary + list. ``selected`` None preserves the list cursor
-        (a live stats repaint); an int forces it (open/navigate)."""
-        self.query_one(SubAgentSummary).refresh_totals(aggregate(subagents, cost_of))
-        self.list.refresh_rows(subagents, selected)
+        (a live stats repaint); an int forces it (open/navigate).
+
+        Live stream flush ticks drive this via ``drain_subagents_repaint``, so a
+        tick can land between this view being created and its ``compose`` children
+        mounting — the summary/list aren't queryable yet. Skip that tick (the next
+        one repaints once they exist) rather than crash the live render path."""
+        try:
+            summary = self.query_one(SubAgentSummary)
+            rows = self.list
+        except NoMatches:
+            return
+        summary.refresh_totals(aggregate(subagents, cost_of))
+        rows.refresh_rows(subagents, selected)
 
     def action_focus_next_pane(self) -> None:
         """Toggle focus between the list and the visible transcript pane."""

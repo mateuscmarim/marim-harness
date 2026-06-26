@@ -6,9 +6,12 @@ import pytest
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
+    ModelRequest,
+    ModelResponse,
     PartDeltaEvent,
     PartStartEvent,
     TextPartDelta,
+    ToolCallPart,
     ToolReturnPart,
 )
 from pydantic_ai.usage import RunUsage
@@ -240,6 +243,27 @@ def test_translate_ignores_system_and_result():
     t = CliStreamTranslator()
     assert t.translate({"type": "system", "subtype": "init"}) == []
     assert t.translate({"type": "result", "result": "done"}) == []
+
+
+def test_translator_accumulates_transcript_messages():
+    t = CliStreamTranslator()
+    t.translate({"type": "assistant", "message": {"content": [
+        {"type": "text", "text": "reading"},
+        {"type": "tool_use", "id": "c1", "name": "Read", "input": {"file_path": "x.py"}},
+    ]}})
+    t.translate({"type": "user", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "c1", "content": "file body"},
+    ]}})
+    msgs = t.transcript()
+    assert isinstance(msgs[0], ModelResponse)
+    # tool_use was normalized to the harness name + arg shape.
+    call = [p for p in msgs[0].parts if isinstance(p, ToolCallPart)][0]
+    assert call.tool_name == "read_file"
+    assert call.args_as_dict() == {"path": "x.py"}
+    assert isinstance(msgs[1], ModelRequest)
+    ret = msgs[1].parts[0]
+    assert isinstance(ret, ToolReturnPart)
+    assert ret.tool_name == "read_file" and ret.content == "file body"
 
 
 # ---------------------------------------------------------------------------
@@ -536,3 +560,16 @@ async def test_runner_handles_line_larger_than_64kib(tmp_path):
     assert result.output == "done after big line"
     # The oversized tool_result line was parsed and surfaced, not dropped.
     assert "FunctionToolResultEvent" in seen
+
+
+@pytest.mark.anyio
+async def test_runner_returns_transcript(tmp_path):
+    binary = _make_fake_cli(tmp_path)
+    runner = ClaudeCliRunner(None, None)
+    result = await runner.run(
+        binary=binary, prompt="go", system_prompt="s", cwd=str(tmp_path),
+        allow_gated=True, allowed_tools=frozenset({"read_file"}),
+        model=None, stream_id="s1",
+    )
+    assert result.transcript
+    assert any(isinstance(m, ModelResponse) for m in result.transcript)

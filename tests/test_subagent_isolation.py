@@ -37,7 +37,7 @@ def _capture_deps(h):
     class _StubAgent:
         async def run(self, task, **kwargs):
             cap["workspace_root"] = kwargs["deps"].workspace_root
-            return SimpleNamespace(output="ok", usage=RunUsage())
+            return SimpleNamespace(output="ok", usage=RunUsage(), all_messages=list)
 
     h.subagents.build = lambda type, max_output_chars=None, model=None, \
         workspace_root=None: (_StubAgent(), None)
@@ -78,7 +78,7 @@ async def test_isolated_spawn_commits_changes_and_reports_branch(repo: Path):
         async def run(self, task, **kwargs):
             root = kwargs["deps"].workspace_root
             fs.write_file(root, "new.txt", "from sub-agent\n")
-            return SimpleNamespace(output="wrote new.txt", usage=RunUsage())
+            return SimpleNamespace(output="wrote new.txt", usage=RunUsage(), all_messages=list)
 
     h.subagents.build = lambda type, max_output_chars=None, model=None, \
         workspace_root=None: (_WritingAgent(), None)

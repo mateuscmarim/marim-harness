@@ -18,12 +18,14 @@ import json
 import logging
 import os
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
+    ModelRequest,
+    ModelResponse,
     PartDeltaEvent,
     PartStartEvent,
     TextPart,
@@ -105,6 +107,7 @@ class CliResult:
 
     output: str
     usage: RunUsage
+    transcript: list = field(default_factory=list)
 
 
 def resolve_cli_binary() -> str | None:
@@ -211,6 +214,7 @@ class CliStreamTranslator:
     def __init__(self) -> None:
         self._index = 0
         self._call_names: dict[str, str] = {}
+        self._messages: list = []
 
     def translate(self, obj: dict) -> list:
         kind = obj.get("type")
@@ -222,6 +226,7 @@ class CliStreamTranslator:
 
     def _assistant(self, obj: dict) -> list:
         events: list = []
+        resp_parts = []
         for block in obj.get("message", {}).get("content", []):
             btype = block.get("type")
             if btype == "text":
@@ -232,6 +237,7 @@ class CliStreamTranslator:
                     index=idx,
                     delta=TextPartDelta(content_delta=block.get("text", "")),
                 ))
+                resp_parts.append(TextPart(content=block.get("text", "")))
             elif btype == "tool_use":
                 call_id = block.get("id", "")
                 name, args = normalize_cc_tool(
@@ -243,22 +249,35 @@ class CliStreamTranslator:
                     args=args,
                     tool_call_id=call_id,
                 )))
+                resp_parts.append(ToolCallPart(
+                    tool_name=name, args=args, tool_call_id=call_id))
+        if resp_parts:
+            self._messages.append(ModelResponse(parts=resp_parts))
         return events
 
     def _user(self, obj: dict) -> list:
         events: list = []
+        req_parts = []
         for block in obj.get("message", {}).get("content", []):
             if block.get("type") != "tool_result":
                 continue
             call_id = block.get("tool_use_id", "")
-            events.append(FunctionToolResultEvent(part=ToolReturnPart(
+            part = ToolReturnPart(
                 tool_name=self._call_names.get(call_id, "tool"),
                 content=_flatten_tool_result(block.get("content")),
                 tool_call_id=call_id,
                 timestamp=datetime.now(tz=timezone.utc),
                 outcome="failed" if block.get("is_error") else "success",
-            )))
+            )
+            events.append(FunctionToolResultEvent(part=part))
+            req_parts.append(part)
+        if req_parts:
+            self._messages.append(ModelRequest(parts=req_parts))
         return events
+
+    def transcript(self) -> list:
+        """The run so far as pydantic-ai messages (for transcript persistence)."""
+        return list(self._messages)
 
 
 def _flatten_tool_result(content) -> str:
@@ -389,7 +408,7 @@ class ClaudeCliRunner:
             if not result_seen:
                 detail = stderr_bytes.decode("utf-8", "replace").strip() or f"exit code {code}"
                 raise CliRunError(f"claude produced no result ({detail})")
-            return CliResult(output=output, usage=usage)
+            return CliResult(output=output, usage=usage, transcript=translator.transcript())
         finally:
             # On an exceptional/cancelled exit, reap the child so an auto-mode CLI
             # can't keep editing files after the spawn was abandoned, and never leave

@@ -435,6 +435,37 @@ class HarnessApp(App):
         current = subs[self.subagent_index]
         if current.pane is not None:
             view.host.show(current.stream_id)
+            # Lazy-load the persisted transcript the first time this pane is
+            # shown. The replay awaits a widget mount per message, but this
+            # repaint is sync and fires on every live flush tick — so flip the
+            # guard now and hand the actual replay to a one-shot worker, which
+            # keeps later ticks from relaunching it.
+            if not current.pane.transcript_loaded:
+                current.pane.transcript_loaded = True
+                self.run_worker(
+                    self._load_subagent_transcript(current.pane, current.stream_id)
+                )
+
+    async def _load_subagent_transcript(self, pane, stream_id: str) -> None:
+        """Replay a resumed sub-agent's persisted transcript into ``pane``.
+
+        Runs as a worker off the sync repaint path
+        (``_repaint_subagents_list`` already set ``pane.transcript_loaded``). A
+        missing store or sidecar just renders a fallback note — the guard is
+        already set, so it isn't retried."""
+        store = self.harness.session.store
+        if store is None:
+            return
+        from ...session import TranscriptStore
+        msgs = TranscriptStore(store.path, store.session_id).read(stream_id)
+        if msgs is not None:
+            await self.session.replay_messages_into(pane, msgs)
+        else:
+            from textual.content import Content
+            from textual.widgets import Static
+            await pane.add(
+                Static(Content("transcript unavailable for this resumed sub-agent"))
+            )
 
     def _apply_subagent_view(self) -> None:
         """Open/navigate path: repaint the list AND flush the now-selected

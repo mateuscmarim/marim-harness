@@ -94,7 +94,8 @@ class SubagentRunner:
                  request_limit: int = 50,
                  retry_attempts: int = 2,
                  build_model: Callable[[str], Any] | None = None,
-                 concurrency: int | None = None) -> None:
+                 concurrency: int | None = None,
+                 transcript_cap: int = 2000) -> None:
         self.provider = provider
         self.mcp = mcp
         self.deps = deps
@@ -125,6 +126,7 @@ class SubagentRunner:
         # is built lazily on first use so the runner can be constructed off-loop.
         self._concurrency = concurrency if (concurrency and concurrency > 0) else None
         self._sem: asyncio.Semaphore | None = None
+        self._transcript_cap = transcript_cap
 
     def _open_worktree(self, stream_id: str):
         """Create an isolated git worktree for a spawn off the repo's HEAD.
@@ -308,6 +310,22 @@ class SubagentRunner:
             self._sem = asyncio.Semaphore(self._concurrency)
         return self._sem
 
+    def _transcript_store(self):
+        """A TranscriptStore bound to the *current* session (follows switches)."""
+        store = self.session.store
+        if store is None:
+            return None
+        from .session import TranscriptStore
+        return TranscriptStore(store.path, store.session_id)
+
+    def _save_transcript(self, stream_id: str, messages: list) -> None:
+        try:
+            store = self._transcript_store()
+            if stream_id and messages and store is not None:
+                store.write(stream_id, messages, self._transcript_cap)
+        except Exception as exc:  # noqa: BLE001 - persistence is best-effort
+            logger.warning("Failed to save transcript %s: %s", stream_id, exc)
+
     async def _run_to_completion(self, sub, task, run_deps, granted, handler,
                                  stream_id: str | None = None):
         """Run a built sub-agent to its final result, retrying *transient* model
@@ -457,6 +475,7 @@ class SubagentRunner:
             return f"Sub-agent {type!r} failed: {exc.__class__.__name__}: {exc}"
         self._log_spawn_timing(type, t0, t_built, first_event_at, failed=False)
         await self.hooks.subagent_stop(type, task, result.output)
+        self._save_transcript(stream_id, result.all_messages())
         self.session.usage += result.usage
         if background:
             # A background spawn finishes off-turn, so no run_turn will fold in
@@ -499,6 +518,7 @@ class SubagentRunner:
             await self.hooks.subagent_stop(defn.name, task, f"error: {exc}")
             return f"Sub-agent {defn.name!r} failed: {exc.__class__.__name__}: {exc}"
         await self.hooks.subagent_stop(defn.name, task, result.output)
+        self._save_transcript(stream_id, result.transcript)
         self.session.usage += result.usage
         if background:
             self.session.persist()
