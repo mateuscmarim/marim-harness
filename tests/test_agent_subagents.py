@@ -46,7 +46,7 @@ def _capture_subagent(h, report="report"):
         async def run(self, task, **kwargs):
             cap["task"] = task
             cap["toolsets"] = kwargs.get("toolsets")
-            return SimpleNamespace(output=report, usage=RunUsage())
+            return SimpleNamespace(output=report, usage=RunUsage(), all_messages=lambda: [])
 
     h.subagents.build = lambda type, max_output_chars=None, model=None, workspace_root=None: (
         _StubAgent(), None
@@ -490,7 +490,7 @@ async def test_run_background_isolates_task_list(tmp_path: Path):
     class _StubAgent:
         async def run(self, task, **kwargs):
             cap["deps"] = kwargs.get("deps")
-            return SimpleNamespace(output="report", usage=RunUsage())
+            return SimpleNamespace(output="report", usage=RunUsage(), all_messages=lambda: [])
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     # Give the parent a non-empty checklist so a leak would be visible.

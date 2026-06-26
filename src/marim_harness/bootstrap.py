@@ -99,6 +99,7 @@ def build_harness(
             autonomous_wake=cfg.autonomous_wake,
             wake_depth_cap=cfg.wake_depth_cap,
             subagent_concurrency=cfg.subagent_concurrency,
+            subagent_transcript_cap=cfg.subagent_transcript_cap,
             mcp_servers=mcp_servers,
             mcp_disabled=mcp_disabled,
             notifications=notification_config,

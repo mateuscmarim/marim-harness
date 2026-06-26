@@ -13,6 +13,7 @@ _POSITIVE_INT_KEYS = frozenset(
     {
         "MARIM_MAX_CONTEXT_TOKENS",
         "MARIM_WAKE_DEPTH_CAP",
+        "MARIM_SUBAGENT_TRANSCRIPT_CAP",
     }
 )
 

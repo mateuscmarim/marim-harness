@@ -100,6 +100,9 @@ class HarnessConfig:
     # otherwise fires every request at once, tripping a shared route's upstream
     # rate limit; the cap queues the excess. None ⇒ unbounded (historical default).
     subagent_concurrency: int | None = None
+    # Maximum number of tokens' worth of messages kept when a sub-agent
+    # transcript is written to its sidecar. Older messages are dropped first.
+    subagent_transcript_cap: int = 2000
     # Desktop-notification config. Disabled by default; the TUI and headless
     # runner build a Notifier from this and fire at key event points.
     notifications: NotificationConfig = field(default_factory=NotificationConfig.disabled)
@@ -207,6 +210,7 @@ def build_collaborators(
         request_limit=cfg.subagent_request_limit,
         retry_attempts=cfg.subagent_retry_attempts,
         concurrency=cfg.subagent_concurrency,
+        transcript_cap=cfg.subagent_transcript_cap,
         build_model=(
             # Bind the narrowed (non-None) source as a default so the
             # deferred closure keeps it typed; ``cfg.model_source`` alone
