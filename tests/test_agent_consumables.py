@@ -51,17 +51,17 @@ async def test_failed_turn_re_emits_hook_context_next_turn(tmp_path: Path):
     captured: dict = {}
     harness = _make_harness(_fail_once_then_capture_model(captured), deps)
     # SessionStart injected a one-shot context for the next turn.
-    harness._pending_hook_context = "HOOK-CONTEXT-MARKER"
+    harness.turn_controller._pending_hook_context = "HOOK-CONTEXT-MARKER"
 
     with pytest.raises(RuntimeError):
         await harness.run_turn("first request")
     # The failed turn must not have silently eaten the injected context.
-    assert harness._pending_hook_context == "HOOK-CONTEXT-MARKER"
+    assert harness.turn_controller._pending_hook_context == "HOOK-CONTEXT-MARKER"
 
     await harness.run_turn("second request")
     assert "HOOK-CONTEXT-MARKER" in captured["prompt"]
     # Delivered now — consumed, not carried a third time.
-    assert harness._pending_hook_context is None
+    assert harness.turn_controller._pending_hook_context is None
 
 
 @pytest.mark.anyio
@@ -80,12 +80,12 @@ async def test_failed_turn_re_emits_finished_jobs_digest_next_turn(tmp_path: Pat
     with pytest.raises(RuntimeError):
         await harness.run_turn("first request")
     # The digest was drained from deps.jobs at assembly; it must be re-stashed.
-    assert harness._pending_jobs_digest is not None
-    assert "background jobs finished" in harness._pending_jobs_digest
+    assert harness.turn_controller._pending_jobs_digest is not None
+    assert "background jobs finished" in harness.turn_controller._pending_jobs_digest
 
     await harness.run_turn("second request")
     assert "background jobs finished" in captured["prompt"]
-    assert harness._pending_jobs_digest is None
+    assert harness.turn_controller._pending_jobs_digest is None
 
 
 @pytest.mark.anyio
@@ -102,7 +102,7 @@ async def test_successful_turn_consumes_hook_context(tmp_path: Path):
         return ModelResponse(parts=[TextPart(content="ok")])
 
     harness = _make_harness(FunctionModel(fn), deps)
-    harness._pending_hook_context = "ONE-SHOT"
+    harness.turn_controller._pending_hook_context = "ONE-SHOT"
     await harness.run_turn("hello")
     assert "ONE-SHOT" in captured["prompt"]
-    assert harness._pending_hook_context is None
+    assert harness.turn_controller._pending_hook_context is None

@@ -326,5 +326,5 @@ async def test_run_turn_dumps_provider_error_and_stashes_note(tmp_path):
     dump = tmp_path / ".marim" / "last-provider-error.json"
     assert dump.exists()
     assert "invalid request" in dump.read_text()
-    assert harness._pending_error_note is not None
-    assert "400" in harness._pending_error_note
+    assert harness.turn_controller._pending_error_note is not None
+    assert "400" in harness.turn_controller._pending_error_note
