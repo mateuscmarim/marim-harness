@@ -90,6 +90,9 @@ class ModelConfig:
 def _common_kwargs() -> dict[str, Any]:
     """Provider-independent knobs shared by every ModelConfig (verbatim of the
     former inline ``common`` dict in load_config)."""
+    subagent_concurrency = _int_env("MARIM_SUBAGENT_CONCURRENCY", 0) or None
+    if subagent_concurrency is not None and subagent_concurrency < 0:
+        subagent_concurrency = None
     return dict(
         max_context_tokens=_int_env("MARIM_MAX_CONTEXT_TOKENS", 100_000),
         proactive_memory=_bool_env("MARIM_PROACTIVE_MEMORY", False),
@@ -99,7 +102,7 @@ def _common_kwargs() -> dict[str, Any]:
         job_tool_combined=_bool_env("MARIM_JOB_TOOL_COMBINED", False),
         autonomous_wake=_bool_env("MARIM_AUTONOMOUS_WAKE", True),
         wake_depth_cap=_int_env("MARIM_WAKE_DEPTH_CAP", 8),
-        subagent_concurrency=(_int_env("MARIM_SUBAGENT_CONCURRENCY", 0) or None),
+        subagent_concurrency=subagent_concurrency,
         subagent_transcript_cap=_int_env("MARIM_SUBAGENT_TRANSCRIPT_CAP", 2000),
         detach_fanout=_bool_env("MARIM_DETACH_FANOUT", True),
         command_denylist=split_patterns(os.getenv("MARIM_COMMAND_DENYLIST", "")),
@@ -109,7 +112,7 @@ def _common_kwargs() -> dict[str, Any]:
     )
 
 
-def _provider_config(provider: str, common: dict) -> ModelConfig:
+def _provider_config(provider: str, common: dict[str, Any]) -> ModelConfig:
     """Build the per-provider ModelConfig (model id, base_url, api_key) sharing
     ``common``. Unknown provider falls back to openrouter (historical default)."""
     if provider == "local":
@@ -148,7 +151,7 @@ def _provider_has_creds(provider: str) -> bool:
     return False
 
 
-def detect_active_providers() -> tuple[dict[str, "ModelConfig"], str]:
+def detect_active_providers() -> tuple[dict[str, ModelConfig], str]:
     """Every provider whose creds are present, keyed by name, plus the default
     provider (MARIM_PROVIDER). The default is always included so startup has a
     home even if its creds are absent."""
@@ -162,7 +165,12 @@ def detect_active_providers() -> tuple[dict[str, "ModelConfig"], str]:
 
 
 def load_config() -> ModelConfig:
-    """Build the default-provider ModelConfig from environment variables."""
+    """Build the default-provider ModelConfig from environment variables.
+
+    MARIM_PROVIDER selects the provider; MARIM_MODEL, MARIM_BASE_URL,
+    OPENROUTER_API_KEY / GOOGLE_API_KEY / GEMINI_API_KEY / MARIM_API_KEY supply
+    the model id and credentials. Command allow/deny lists come from
+    MARIM_COMMAND_DENYLIST / MARIM_COMMAND_ALLOWLIST."""
     provider = os.getenv("MARIM_PROVIDER", "openrouter").lower()
     if provider not in _KNOWN_PROVIDERS:
         logger.warning(

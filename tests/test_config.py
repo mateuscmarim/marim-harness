@@ -48,6 +48,11 @@ def test_subagent_concurrency_defaults_to_unbounded(monkeypatch):
     assert load_config().subagent_concurrency is None
 
 
+def test_negative_subagent_concurrency_maps_to_none(monkeypatch):
+    monkeypatch.setenv("MARIM_SUBAGENT_CONCURRENCY", "-5")
+    assert load_config().subagent_concurrency is None
+
+
 def test_detach_fanout_defaults_on(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     monkeypatch.delenv("MARIM_DETACH_FANOUT", raising=False)
