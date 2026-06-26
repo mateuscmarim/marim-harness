@@ -1,7 +1,12 @@
+from __future__ import annotations
+
 import logging
 import time
 from collections.abc import Callable
-from typing import SupportsIndex
+from typing import TYPE_CHECKING, SupportsIndex
+
+if TYPE_CHECKING:
+    from pydantic_ai.models import Model
 
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.usage import RunUsage
@@ -11,6 +16,8 @@ from ..compaction import (
     Titler,
     compact_history,
     compact_history_with_summary,
+    make_summarizer,
+    make_titler,
     will_compact,
 )
 from ..deps import Deps
@@ -33,7 +40,7 @@ class _VersionedHistory(list):
     ``persist()`` would silently drop it. Routing every mutator through
     ``_bump`` closes that trap so ``.append()`` is safe rather than lossy."""
 
-    def __init__(self, iterable, owner: "SessionController") -> None:
+    def __init__(self, iterable, owner: SessionController) -> None:
         super().__init__(iterable)
         self._owner = owner
 
@@ -176,10 +183,23 @@ class SessionController:
             )
             self._last_persisted_version = self.history_version
 
+    @property
+    def saved_model_id(self) -> str | None:
+        """The model id persisted with this session, or None if unavailable."""
+        return self.store.model if self.store is not None else None
+
     def set_model(self, model_id: str) -> None:
         if self.store is not None:
             self.store.model = model_id
             self.persist(force=True)
+
+    def update_model(self, model: Model) -> None:
+        """Rebuild aux agents (summarizer/titler) for a new model. Only
+        replaces those that were originally configured — a None stays None."""
+        if self.summarizer is not None:
+            self.summarizer = make_summarizer(model)
+        if self.titler is not None:
+            self.titler = make_titler(model)
 
     def _load_active_store(self) -> int:
         """Load history/usage/tasks/duration from ``self.store`` (assumed set) into

@@ -205,6 +205,14 @@ class TurnController:
         self._active_run_ctx: RunContext[Deps] | None = None
         self._steer_buffer: list[tuple[str, list[tuple[bytes, str]] | None]] = []
 
+    def apply_session_start_context(self, ctx: str) -> None:
+        """Stash SessionStart-injected context for the next turn's prompt."""
+        self._pending_hook_context = ctx
+
+    def clear_pending_jobs_digest(self) -> None:
+        """Drop any re-stashed jobs digest (conversation context changed)."""
+        self._pending_jobs_digest = None
+
     async def _maybe_compact(self) -> None:
         # When compaction actually shrinks the history, the checkpoints captured
         # against the old (absolute) indices are stale — rewinding to one would

@@ -506,6 +506,72 @@ async def test_no_compaction_does_not_force_a_write(tmp_path):
     assert store.path.read_text() == before  # nothing rewritten
 
 
+# ---------------------------------------------------------------------------
+# saved_model_id and update_model encapsulation tests
+# ---------------------------------------------------------------------------
+
+
+def test_saved_model_id_returns_store_model(tmp_path: Path):
+    mgr = _manager(tmp_path)
+    store = mgr.create("with-model")
+    store.model = "anthropic/claude-3-7"
+    deps = Deps(workspace_root=tmp_path)
+    ctrl = SessionController(store, mgr, deps, 100_000, 20)
+    assert ctrl.saved_model_id == "anthropic/claude-3-7"
+
+
+def test_saved_model_id_none_without_store(tmp_path: Path):
+    deps = Deps(workspace_root=tmp_path)
+    ctrl = SessionController(None, None, deps, 100_000, 20)
+    assert ctrl.saved_model_id is None
+
+
+@pytest.mark.anyio
+async def test_update_model_rebuilds_summarizer_and_titler(tmp_path: Path):
+    """update_model swaps both aux agents when originally configured."""
+    from pydantic_ai.messages import ModelResponse, TextPart
+    from pydantic_ai.models.function import FunctionModel
+
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    model_b = FunctionModel(fn)
+
+    async def _stub_summarizer(mid):
+        return "summary"
+
+    async def _stub_titler(history):
+        return "title"
+
+    deps = Deps(workspace_root=tmp_path)
+    ctrl = SessionController(
+        None, None, deps, 100_000, 20,
+        summarizer=_stub_summarizer,
+        titler=_stub_titler,
+    )
+    original_summarizer = ctrl.summarizer
+    original_titler = ctrl.titler
+    ctrl.update_model(model_b)
+    # The aux agents were replaced (new callable objects).
+    assert ctrl.summarizer is not original_summarizer
+    assert ctrl.titler is not original_titler
+
+
+def test_update_model_leaves_none_aux_agents_as_none(tmp_path: Path):
+    """update_model must not install aux agents that weren't originally configured."""
+    from pydantic_ai.messages import ModelResponse, TextPart
+    from pydantic_ai.models.function import FunctionModel
+
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    deps = Deps(workspace_root=tmp_path)
+    ctrl = SessionController(None, None, deps, 100_000, 20)  # no summarizer/titler
+    ctrl.update_model(FunctionModel(fn))
+    assert ctrl.summarizer is None
+    assert ctrl.titler is None
+
+
 def test_session_save_load_round_trips_image(tmp_path, monkeypatch):
     monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path / "imgs"))
     mgr = SessionManager(tmp_path / "ws", base_dir=tmp_path / "sessions")

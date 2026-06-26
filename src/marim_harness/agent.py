@@ -17,8 +17,8 @@ if TYPE_CHECKING:
 from .compaction import (
     Summarizer,
     Titler,
-    make_summarizer,
-    make_titler,
+    make_summarizer,  # noqa: F401 — re-exported for tests
+    make_titler,  # noqa: F401 — re-exported for tests
 )
 from .deps import Deps, HarnessAgent, HarnessServices
 from .hooks.dispatch import TurnHooks
@@ -344,7 +344,7 @@ class Harness:
         conversation that's no longer active. Running jobs are process-scoped and
         deliberately kept (see JobRegistry.clear_history)."""
         self.deps.jobs.clear_history()
-        self.turn_controller._pending_jobs_digest = None
+        self.turn_controller.clear_pending_jobs_digest()
 
     def reset(self) -> None:
         self.session.reset()
@@ -357,12 +357,9 @@ class Harness:
         self._clear_job_context()
         # Apply the model inherited by SessionManager.create() when it
         # differs from the harness's current model.
-        if (
-            self.session.store is not None
-            and self.session.store.model
-            and self.session.store.model != self.model_id
-        ):
-            self.set_model(self.session.store.model, persist=False)
+        saved = self.session.saved_model_id
+        if saved and saved != self.model_id:
+            self.set_model(saved, persist=False)
 
     def switch_session(self, session_id: str) -> int:
         count = self.session.switch_session(session_id)
@@ -385,10 +382,7 @@ class Harness:
         self.current_model = model
         self.model_id = model_id
         self.model_label = self.model_source.label(model_id)
-        if self.session.summarizer is not None:
-            self.session.summarizer = make_summarizer(model)
-        if self.session.titler is not None:
-            self.session.titler = make_titler(model)
+        self.session.update_model(model)
         if persist:
             self.session.set_model(model_id)
 
@@ -410,13 +404,9 @@ class Harness:
     def _apply_saved_model(self) -> None:
         """Re-point at a session's saved model after loading it, if one differs
         from what's already active."""
-        if (
-            self.session.store is not None
-            and self.session.store.model
-            and self.model_source is not None
-            and self.session.store.model != self.model_id
-        ):
-            self.set_model(self.session.store.model, persist=False)
+        saved = self.session.saved_model_id
+        if saved and self.model_source is not None and saved != self.model_id:
+            self.set_model(saved, persist=False)
 
     # --- MCP lifecycle (connection control; server state and grant resolution
     # live on ``self.mcp`` and are reached directly) ---
@@ -444,7 +434,7 @@ class Harness:
         ``clear``) and stash any returned context for the next turn's prompt."""
         ctx = await self.hooks.session_start(source)
         if ctx:
-            self.turn_controller._pending_hook_context = ctx
+            self.turn_controller.apply_session_start_context(ctx)
 
     async def session_end(self, reason: str = "exit") -> None:
         """Fire the SessionEnd hook on teardown. Observe-only."""
