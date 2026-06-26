@@ -99,6 +99,7 @@ class HarnessApp(App):
             on_subagent_event=self.stream.on_subagent_event,
             on_subagent_notice=self.stream.on_subagent_notice,
             on_subagent_model=self.stream.on_subagent_model,
+            on_subagent_usage=self.stream.on_subagent_usage,
             on_tasks_changed=self._on_tasks_changed,
             on_jobs_changed=self._on_jobs_changed,
             on_compact=self._on_compact,

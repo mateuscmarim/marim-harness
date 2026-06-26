@@ -39,6 +39,10 @@ SubAgentNoticeCb = Callable[[str, str], Awaitable[None]]
 # — e.g. the model a claude-cli spawn reports in its stream — so the spawn card
 # shows it instead of falling back to the harness's own model. None when no UI.
 SubAgentModelCb = Callable[[str, str], Awaitable[None]]
+# (stream_id, usage) -> None. Delivers the final RunUsage for a CLI spawn (which
+# can only report usage once, at the end of its run) so the card and pane show
+# the token total, cache split, and cost. None when no UI.
+SubAgentUsageCb = Callable[[str, object], Awaitable[None]]
 # (type, task, mcp_names, max_output_chars, model, isolation, stream_id) -> the
 # sub-agent's final report. Like SubAgentRunner; when stream_id is set (the spawn's
 # tool_call_id) the detached run also streams its events to the UI (Phase 2).
@@ -108,6 +112,7 @@ class Deps:
     on_subagent_event: SubAgentEventCb | None = None
     on_subagent_notice: SubAgentNoticeCb | None = None
     on_subagent_model: SubAgentModelCb | None = None
+    on_subagent_usage: SubAgentUsageCb | None = None
     # Optional desktop notifier. None when notifications are disabled; the TUI
     # and headless runner fire it at key event points (turn complete, error,
     # approval needed, ask user, background job finished).

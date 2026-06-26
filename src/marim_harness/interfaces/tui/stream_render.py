@@ -644,6 +644,14 @@ class StreamRenderer:
         if isinstance(parent, SubAgentWidget):
             parent.note_retry(message)
 
+    async def on_subagent_usage(self, stream_id: str, usage) -> None:
+        """Surface the final usage from a CLI spawn (which can only report tokens
+        once, at the end) to its card and pane. Queued for the next flush tick —
+        the pricer formats it identically to a live native sub-agent's usage."""
+        parent = self.tool_widgets.get(stream_id)
+        if isinstance(parent, SubAgentWidget) and usage is not None:
+            self.note_subagent_usage(parent, usage)
+
     async def on_subagent_model(self, stream_id: str, model: str) -> None:
         """Relabel a spawn card with the real model the sub-agent reported (e.g. a
         claude-cli spawn's model from its stream), replacing the harness-model
