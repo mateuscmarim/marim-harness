@@ -156,12 +156,12 @@ class SettingsModal(ModalScreen[None]):
                 with Horizontal(classes="row"):
                     yield Label("Desktop notifications")
                     yield Switch(
-                        value=self.env_cfg.notifications_enabled, id="sw-notifications"
+                        value=self.env_cfg.notifications.enabled, id="sw-notifications"
                     )
                 with Horizontal(classes="row"):
                     yield Label("Notification events")
                     yield Input(
-                        value=", ".join(sorted(self.env_cfg.notification_events)),
+                        value=", ".join(sorted(self.env_cfg.notifications.events)),
                         id="notif-events-input",
                     )
                 yield Button("Save to .env", id="save-env", variant="success")

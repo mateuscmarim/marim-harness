@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from pydantic_ai.models.test import TestModel
 
-from marim_harness.deps import Deps
+from marim_harness.deps import Deps, SubAgentCallbacks
 from marim_harness.permissions import Mode
 from tests.conftest import _make_harness, _text_model
 
@@ -45,7 +45,8 @@ async def test_foreground_spawn_times_a_real_ttft(tmp_path: Path, caplog):
     async def _sink(_sid, _event, _usage):  # a UI listener
         return None
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto, on_subagent_event=_sink)
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto,
+                callbacks=SubAgentCallbacks(on_event=_sink))
     runner = _make_harness(TestModel(call_tools=[]), deps).subagents
     with caplog.at_level(logging.DEBUG, logger="marim_harness.subagents"):
         await runner.run("explore", "look around", stream_id="s1")

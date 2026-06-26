@@ -92,8 +92,10 @@ async def test_cli_backend_fires_usage_callback(tmp_path: Path, monkeypatch):
     async def on_usage(stream_id: str, usage) -> None:
         received.append((stream_id, usage))
 
+    from marim_harness.deps import SubAgentCallbacks
+
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
-    deps.on_subagent_usage = on_usage
+    deps.callbacks = SubAgentCallbacks(on_usage=on_usage)
     runner = _make_harness(_dummy_model(), deps).subagents
     await runner.run("cli-worker", "do the thing", stream_id="sg1")
 
@@ -118,8 +120,10 @@ async def test_cli_backend_skips_usage_callback_without_stream_id(
     async def on_usage(stream_id: str, usage) -> None:
         received.append(usage)
 
+    from marim_harness.deps import SubAgentCallbacks
+
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
-    deps.on_subagent_usage = on_usage
+    deps.callbacks = SubAgentCallbacks(on_usage=on_usage)
     runner = _make_harness(_dummy_model(), deps).subagents
     # Empty stream_id → headless/background: no card to address.
     await runner.run("cli-worker", "do the thing", stream_id="")

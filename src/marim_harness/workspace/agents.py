@@ -24,6 +24,7 @@ import yaml
 from ..config import config_dir
 from ..identifiers import valid_name
 from ..tools.names import GATED_TOOLS, NET_TOOLS, READ_TOOLS, SUBAGENT_TOOLS
+from ._discovery import cached_discover
 from ._frontmatter import FRONTMATTER_RE
 
 # What the built-in ``explore`` role may reach: local reads plus network egress
@@ -96,6 +97,13 @@ def agent_roots(workspace_root) -> list[tuple[str, Path]]:
     ]
 
 
+def _opt_str(raw: object, default: str | None) -> str | None:
+    """Return the stripped string value of ``raw`` when non-empty, else ``default``."""
+    if isinstance(raw, str) and (s := raw.strip()):
+        return s
+    return default
+
+
 def _parse_tools(raw) -> frozenset[str]:
     """Read a ``tools:`` frontmatter value (comma string or YAML list) into the
     known sub-agent tools. Unknown names are dropped; an empty/absent value
@@ -138,18 +146,8 @@ def _parse_agent(source: str, path: Path, plugin: str | None = None) -> AgentDef
     description = data.get("description")
     if not isinstance(description, str) or not description.strip():
         return None
-    backend_raw = data.get("backend")
-    backend = (
-        backend_raw.strip()
-        if isinstance(backend_raw, str) and backend_raw.strip()
-        else "native"
-    )
-    model_raw = data.get("model")
-    model = (
-        model_raw.strip()
-        if isinstance(model_raw, str) and model_raw.strip()
-        else None
-    )
+    backend = _opt_str(data.get("backend"), "native") or "native"
+    model = _opt_str(data.get("model"), None)
     return AgentDef(
         name=name,
         description=description.strip(),
@@ -217,26 +215,20 @@ def discover_agents(workspace_root) -> list[AgentDef]:
     Cached per workspace root and reused while the agent files on disk are
     unchanged (by name/mtime/size), so repeated calls within a turn — and across
     turns that didn't touch an agent file — don't re-walk and re-parse them."""
-    roots = _all_roots(workspace_root)
-    sig = _discovery_signature(roots)
     # Resolve the key so different spellings of the same dir (symlinks, trailing
     # slash, relative vs absolute) share one cache entry instead of duplicating.
-    key = str(Path(workspace_root).resolve())
-    cached = _DISCOVERY_CACHE.get(key)
-    if cached is not None and cached[0] == sig:
-        return cached[1]
-
-    seen: dict[str, AgentDef] = {}
-    for source, root, plugin in roots:
-        _collect_agents(seen, source, root, plugin=plugin)
-    for name, agent in _builtins().items():
-        seen.setdefault(name, agent)
-    result = sorted(seen.values(), key=lambda a: a.qualified_name)
-    _DISCOVERY_CACHE[key] = (sig, result)
-    return result
+    roots = _all_roots(workspace_root)
+    return cached_discover(
+        workspace_root, roots,
+        _discovery_signature,
+        _collect_agents,
+        lambda a: a.qualified_name,
+        _DISCOVERY_CACHE,
+        _builtins(),
+    )
 
 
-def _collect_agents(seen: dict, source: str, root: Path, *, plugin: str | None) -> None:
+def _collect_agents(seen: dict, source: str, root: Path, plugin: str | None) -> None:
     try:
         files = sorted(p for p in root.iterdir() if p.is_file() and p.suffix == ".md")
     except OSError:

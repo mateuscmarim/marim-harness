@@ -20,7 +20,7 @@ from .compaction import (
     make_summarizer,  # noqa: F401 — re-exported for tests
     make_titler,  # noqa: F401 — re-exported for tests
 )
-from .deps import Deps, HarnessAgent, HarnessServices
+from .deps import Deps, HarnessAgent, HarnessServices, SubAgentCallbacks
 from .hooks.dispatch import TurnHooks
 from .instructions import register_instructions
 from .lsp.manager import LspManager
@@ -319,10 +319,12 @@ class Harness:
         self.deps.interactive = True
         self.deps.request_approval = request_approval
         self.deps.ask_user = ask_user
-        self.deps.on_subagent_event = on_subagent_event
-        self.deps.on_subagent_notice = on_subagent_notice
-        self.deps.on_subagent_model = on_subagent_model
-        self.deps.on_subagent_usage = on_subagent_usage
+        self.deps.callbacks = SubAgentCallbacks(
+            on_event=on_subagent_event,
+            on_notice=on_subagent_notice,
+            on_model=on_subagent_model,
+            on_usage=on_subagent_usage,
+        )
         self.deps.tasks.on_change = on_tasks_changed
         self.deps.jobs.on_change = on_jobs_changed
         self.session.on_compact = on_compact

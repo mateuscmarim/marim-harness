@@ -213,7 +213,7 @@ class SubagentRunner:
         foreground fan-out spawn forwards to the UI, so it streams and is timed.)
         Returns None only when there's nothing to do: no hooks configured and no
         UI listener (e.g. a headless background run with hooks off)."""
-        cb = self.deps.on_subagent_event
+        cb = self.deps.callbacks.on_event
         hooks_on = self.deps.hooks is not None
         forward = cb is not None and bool(stream_id)
         if not hooks_on and not forward:
@@ -389,7 +389,7 @@ class SubagentRunner:
                             attempt: int) -> None:
         """Surface a transient-error retry on a foreground spawn's card. A no-op for
         a background spawn (no card) or when no UI is listening."""
-        cb = self.deps.on_subagent_notice
+        cb = self.deps.callbacks.on_notice
         if cb is None or not stream_id:
             return
         await cb(
@@ -626,17 +626,15 @@ class SubagentRunner:
         tools = effective_tools(defn, allow_gated=allow_gated)
         cwd = str(work_root or self.deps.workspace_root)
         model_name = model or defn.model or os.environ.get(CLI_MODEL_ENV)
-        runner = ClaudeCliRunner(
-            self.deps.on_subagent_event, self.deps.on_subagent_notice,
-            self.deps.on_subagent_model,
-        )
+        cbs = self.deps.callbacks
+        runner = ClaudeCliRunner(cbs.on_event, cbs.on_notice, cbs.on_model)
         result = await runner.run(
             binary=binary, prompt=task, system_prompt=defn.prompt, cwd=cwd,
             allow_gated=allow_gated, allowed_tools=tools, model=model_name,
             stream_id=stream_id,
         )
-        if stream_id and self.deps.on_subagent_usage is not None:
-            await self.deps.on_subagent_usage(stream_id, result.usage)
+        if stream_id and cbs.on_usage is not None:
+            await cbs.on_usage(stream_id, result.usage)
         return result
 
     def _log_spawn_timing(

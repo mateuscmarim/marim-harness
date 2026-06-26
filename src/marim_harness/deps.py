@@ -58,6 +58,16 @@ AskUserFn = Callable[[list[Question]], Awaitable[dict | None]]
 
 
 @dataclass
+class SubAgentCallbacks:
+    """UI callbacks for sub-agent events, grouped to keep Deps tidy."""
+
+    on_event: SubAgentEventCb | None = None
+    on_notice: SubAgentNoticeCb | None = None
+    on_model: SubAgentModelCb | None = None
+    on_usage: SubAgentUsageCb | None = None
+
+
+@dataclass
 class HarnessServices:
     """Collaborator handles wired by the Harness after construction.
 
@@ -109,10 +119,8 @@ class Deps:
     # Optional Claude-Code-compatible hook engine. None when no hooks.json is
     # configured (every fire-point becomes a cheap ``is None`` no-op).
     hooks: Optional["HookRunner"] = None
-    on_subagent_event: SubAgentEventCb | None = None
-    on_subagent_notice: SubAgentNoticeCb | None = None
-    on_subagent_model: SubAgentModelCb | None = None
-    on_subagent_usage: SubAgentUsageCb | None = None
+    # UI callbacks for sub-agent events; all None when headless.
+    callbacks: SubAgentCallbacks = field(default_factory=SubAgentCallbacks)
     # Optional desktop notifier. None when notifications are disabled; the TUI
     # and headless runner fire it at key event points (turn complete, error,
     # approval needed, ask user, background job finished).

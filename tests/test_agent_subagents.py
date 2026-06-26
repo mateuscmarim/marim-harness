@@ -5,7 +5,7 @@ from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
 from marim_harness.agent import Harness
-from marim_harness.deps import Deps
+from marim_harness.deps import Deps, SubAgentCallbacks
 from marim_harness.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
 from tests.conftest import _edit_then_done_model, _last_instructions, _make_harness, _text_model
@@ -151,7 +151,8 @@ async def test_subagent_handler_forwards_run_usage(tmp_path: Path):
     async def cb(stream_id, event, usage):
         recorded.append((stream_id, event, usage))
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto, on_subagent_event=cb)
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto,
+                callbacks=SubAgentCallbacks(on_event=cb))
     h = _make_harness(_text_model(), deps)
     handler = h.subagents.handler("sid")
 
@@ -318,7 +319,8 @@ async def test_run_background_streams_events_to_listener(tmp_path: Path):
     async def stream_fn(messages, info):
         yield "BG ANSWER"
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto, on_subagent_event=cb)
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto,
+                callbacks=SubAgentCallbacks(on_event=cb))
     h = _make_harness(FunctionModel(fn, stream_function=stream_fn), deps)
     out = await h.subagents.run_background("explore", "scan", stream_id="call_99")
     assert out == "BG ANSWER"
@@ -337,7 +339,8 @@ async def test_run_background_without_stream_id_does_not_forward(tmp_path: Path)
     def fn(messages, info):
         return ModelResponse(parts=[TextPart(content="X")])
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto, on_subagent_event=cb)
+    deps = Deps(workspace_root=tmp_path, mode=Mode.auto,
+                callbacks=SubAgentCallbacks(on_event=cb))
     h = _make_harness(FunctionModel(fn), deps)
     await h.subagents.run_background("explore", "scan")  # no stream_id
     assert recorded == []

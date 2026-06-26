@@ -36,28 +36,28 @@ def test_load_config_reads_command_lists(monkeypatch):
 def test_load_config_reads_subagent_concurrency(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     monkeypatch.setenv("MARIM_SUBAGENT_CONCURRENCY", "3")
-    assert load_config().subagent_concurrency == 3
+    assert load_config().subagent.concurrency == 3
 
 
 def test_subagent_concurrency_defaults_to_unbounded(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     monkeypatch.delenv("MARIM_SUBAGENT_CONCURRENCY", raising=False)
     # Unset (and the explicit 0 "off" sentinel) both mean no cap.
-    assert load_config().subagent_concurrency is None
+    assert load_config().subagent.concurrency is None
     monkeypatch.setenv("MARIM_SUBAGENT_CONCURRENCY", "0")
-    assert load_config().subagent_concurrency is None
+    assert load_config().subagent.concurrency is None
 
 
 def test_detach_fanout_defaults_on(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     monkeypatch.delenv("MARIM_DETACH_FANOUT", raising=False)
-    assert load_config().detach_fanout is True
+    assert load_config().subagent.detach_fanout is True
 
 
 def test_detach_fanout_opt_out(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     monkeypatch.setenv("MARIM_DETACH_FANOUT", "0")
-    assert load_config().detach_fanout is False
+    assert load_config().subagent.detach_fanout is False
 
 
 def test_load_config_command_lists_default_empty(monkeypatch):
@@ -376,26 +376,26 @@ def test_trust_project_hooks_env_truthy(monkeypatch):
 def test_autonomous_wake_defaults_on(monkeypatch):
     monkeypatch.delenv("MARIM_AUTONOMOUS_WAKE", raising=False)
     monkeypatch.setenv("MARIM_PROVIDER", "openrouter")
-    assert load_config().autonomous_wake is True
+    assert load_config().subagent.autonomous_wake is True
 
 
 @pytest.mark.parametrize("raw", ["0", "false", "off", "no"])
 def test_autonomous_wake_falsy_disables(monkeypatch, raw):
     monkeypatch.setenv("MARIM_AUTONOMOUS_WAKE", raw)
     monkeypatch.setenv("MARIM_PROVIDER", "openrouter")
-    assert load_config().autonomous_wake is False
+    assert load_config().subagent.autonomous_wake is False
 
 
 def test_wake_depth_cap_defaults_to_eight(monkeypatch):
     monkeypatch.delenv("MARIM_WAKE_DEPTH_CAP", raising=False)
     monkeypatch.setenv("MARIM_PROVIDER", "openrouter")
-    assert load_config().wake_depth_cap == 8
+    assert load_config().subagent.wake_depth_cap == 8
 
 
 def test_wake_depth_cap_reads_env(monkeypatch):
     monkeypatch.setenv("MARIM_WAKE_DEPTH_CAP", "5")
     monkeypatch.setenv("MARIM_PROVIDER", "openrouter")
-    assert load_config().wake_depth_cap == 5
+    assert load_config().subagent.wake_depth_cap == 5
 
 
 def test_load_environment_survives_malformed_project_env(
