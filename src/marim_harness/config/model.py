@@ -87,60 +87,31 @@ class ModelConfig:
     notification_events: set[str] = field(default_factory=lambda: set(DEFAULT_EVENTS))
 
 
-def load_config() -> ModelConfig:
-    """Build a ModelConfig from environment variables.
-
-    MARIM_PROVIDER (openrouter|local), MARIM_MODEL, MARIM_BASE_URL,
-    OPENROUTER_API_KEY / MARIM_API_KEY. MARIM_COMMAND_DENYLIST /
-    MARIM_COMMAND_ALLOWLIST hold comma- or newline-separated command patterns.
-    """
-    provider = os.getenv("MARIM_PROVIDER", "openrouter").lower()
-    if provider not in _KNOWN_PROVIDERS:
-        logger.warning(
-            "Unknown MARIM_PROVIDER=%r; falling back to 'openrouter' "
-            "(known providers: %s).",
-            provider,
-            ", ".join(sorted(_KNOWN_PROVIDERS)),
-        )
-    max_context_tokens = _int_env("MARIM_MAX_CONTEXT_TOKENS", 100_000)
-    proactive_memory = _bool_env("MARIM_PROACTIVE_MEMORY", False)
-    trust_project_hooks = _bool_env("MARIM_TRUST_PROJECT_HOOKS", False)
-    lsp_enabled = _bool_env("MARIM_LSP", True)
-    lsp_tools_enabled = _bool_env("MARIM_LSP_TOOLS", True)
-    job_tool_combined = _bool_env("MARIM_JOB_TOOL_COMBINED", False)
-    autonomous_wake = _bool_env("MARIM_AUTONOMOUS_WAKE", True)
-    wake_depth_cap = _int_env("MARIM_WAKE_DEPTH_CAP", 8)
-    # 0 (and any non-positive value) is the "no cap" sentinel, mapped to None so
-    # the runner stays unbounded — matching the historical default.
-    subagent_concurrency = _int_env("MARIM_SUBAGENT_CONCURRENCY", 0) or None
-    if subagent_concurrency is not None and subagent_concurrency < 0:
-        subagent_concurrency = None
-    subagent_transcript_cap = _int_env("MARIM_SUBAGENT_TRANSCRIPT_CAP", 2000)
-    detach_fanout = _bool_env("MARIM_DETACH_FANOUT", True)
-    command_denylist = split_patterns(os.getenv("MARIM_COMMAND_DENYLIST", ""))
-    command_allowlist = split_patterns(os.getenv("MARIM_COMMAND_ALLOWLIST", ""))
-    notifications_enabled = _bool_env("MARIM_NOTIFICATIONS", True)
-    notification_events = parse_events(os.getenv("MARIM_NOTIFICATION_EVENTS", ""))
-    # Provider-independent knobs, shared verbatim by every branch below. Keeping
-    # them in one dict means a new ModelConfig field is added here once, not in
-    # three parallel constructor calls that silently drift.
-    common: dict[str, Any] = dict(
-        max_context_tokens=max_context_tokens,
-        proactive_memory=proactive_memory,
-        trust_project_hooks=trust_project_hooks,
-        lsp_enabled=lsp_enabled,
-        lsp_tools_enabled=lsp_tools_enabled,
-        job_tool_combined=job_tool_combined,
-        autonomous_wake=autonomous_wake,
-        wake_depth_cap=wake_depth_cap,
-        subagent_concurrency=subagent_concurrency,
-        subagent_transcript_cap=subagent_transcript_cap,
-        detach_fanout=detach_fanout,
-        command_denylist=command_denylist,
-        command_allowlist=command_allowlist,
-        notifications_enabled=notifications_enabled,
-        notification_events=notification_events,
+def _common_kwargs() -> dict[str, Any]:
+    """Provider-independent knobs shared by every ModelConfig (verbatim of the
+    former inline ``common`` dict in load_config)."""
+    return dict(
+        max_context_tokens=_int_env("MARIM_MAX_CONTEXT_TOKENS", 100_000),
+        proactive_memory=_bool_env("MARIM_PROACTIVE_MEMORY", False),
+        trust_project_hooks=_bool_env("MARIM_TRUST_PROJECT_HOOKS", False),
+        lsp_enabled=_bool_env("MARIM_LSP", True),
+        lsp_tools_enabled=_bool_env("MARIM_LSP_TOOLS", True),
+        job_tool_combined=_bool_env("MARIM_JOB_TOOL_COMBINED", False),
+        autonomous_wake=_bool_env("MARIM_AUTONOMOUS_WAKE", True),
+        wake_depth_cap=_int_env("MARIM_WAKE_DEPTH_CAP", 8),
+        subagent_concurrency=(_int_env("MARIM_SUBAGENT_CONCURRENCY", 0) or None),
+        subagent_transcript_cap=_int_env("MARIM_SUBAGENT_TRANSCRIPT_CAP", 2000),
+        detach_fanout=_bool_env("MARIM_DETACH_FANOUT", True),
+        command_denylist=split_patterns(os.getenv("MARIM_COMMAND_DENYLIST", "")),
+        command_allowlist=split_patterns(os.getenv("MARIM_COMMAND_ALLOWLIST", "")),
+        notifications_enabled=_bool_env("MARIM_NOTIFICATIONS", True),
+        notification_events=parse_events(os.getenv("MARIM_NOTIFICATION_EVENTS", "")),
     )
+
+
+def _provider_config(provider: str, common: dict) -> ModelConfig:
+    """Build the per-provider ModelConfig (model id, base_url, api_key) sharing
+    ``common``. Unknown provider falls back to openrouter (historical default)."""
     if provider == "local":
         return ModelConfig(
             provider="local",
@@ -154,11 +125,8 @@ def load_config() -> ModelConfig:
             provider="google",
             model=os.getenv("MARIM_MODEL", _DEFAULT_GOOGLE_MODEL),
             base_url=None,
-            api_key=(
-                os.getenv("GOOGLE_API_KEY")
-                or os.getenv("GEMINI_API_KEY")
-                or os.getenv("MARIM_API_KEY")
-            ),
+            api_key=(os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+                     or os.getenv("MARIM_API_KEY")),
             **common,
         )
     return ModelConfig(
@@ -168,6 +136,42 @@ def load_config() -> ModelConfig:
         api_key=os.getenv("OPENROUTER_API_KEY") or os.getenv("MARIM_API_KEY"),
         **common,
     )
+
+
+def _provider_has_creds(provider: str) -> bool:
+    if provider == "openrouter":
+        return bool(os.getenv("OPENROUTER_API_KEY"))
+    if provider == "google":
+        return bool(os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
+    if provider == "local":
+        return bool(os.getenv("MARIM_BASE_URL"))
+    return False
+
+
+def detect_active_providers() -> tuple[dict[str, "ModelConfig"], str]:
+    """Every provider whose creds are present, keyed by name, plus the default
+    provider (MARIM_PROVIDER). The default is always included so startup has a
+    home even if its creds are absent."""
+    default = os.getenv("MARIM_PROVIDER", "openrouter").lower()
+    if default not in _KNOWN_PROVIDERS:
+        default = "openrouter"
+    common = _common_kwargs()
+    active = {p for p in _KNOWN_PROVIDERS if _provider_has_creds(p)}
+    active.add(default)
+    return {p: _provider_config(p, common) for p in active}, default
+
+
+def load_config() -> ModelConfig:
+    """Build the default-provider ModelConfig from environment variables."""
+    provider = os.getenv("MARIM_PROVIDER", "openrouter").lower()
+    if provider not in _KNOWN_PROVIDERS:
+        logger.warning(
+            "Unknown MARIM_PROVIDER=%r; falling back to 'openrouter' "
+            "(known providers: %s).",
+            provider, ", ".join(sorted(_KNOWN_PROVIDERS)),
+        )
+        provider = "openrouter"
+    return _provider_config(provider, _common_kwargs())
 
 
 def _int_env(name: str, default: int) -> int:

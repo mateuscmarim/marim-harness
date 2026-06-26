@@ -487,3 +487,27 @@ def test_parse_qualified_unknown_prefix_is_treated_as_bare_id():
     active = {"openrouter", "local"}
     assert parse_qualified("google/gemma-2-9b", active, "openrouter") == (
         "openrouter", "google/gemma-2-9b")
+
+
+def test_detect_active_providers_includes_each_with_creds(monkeypatch):
+    from marim_harness.config.model import detect_active_providers
+    for k in ("MARIM_PROVIDER", "OPENROUTER_API_KEY", "GOOGLE_API_KEY",
+              "GEMINI_API_KEY", "MARIM_BASE_URL", "MARIM_API_KEY", "MARIM_MODEL"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    monkeypatch.setenv("MARIM_BASE_URL", "http://localhost:1234/v1")
+    configs, default = detect_active_providers()
+    assert set(configs) == {"openrouter", "local"}
+    assert default == "openrouter"
+    assert configs["local"].base_url == "http://localhost:1234/v1"
+
+
+def test_detect_active_providers_always_includes_default(monkeypatch):
+    from marim_harness.config.model import detect_active_providers
+    for k in ("OPENROUTER_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
+              "MARIM_BASE_URL", "MARIM_API_KEY", "MARIM_MODEL"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("MARIM_PROVIDER", "google")  # default, but no key set
+    configs, default = detect_active_providers()
+    assert default == "google"
+    assert "google" in configs
