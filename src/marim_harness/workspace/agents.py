@@ -15,10 +15,12 @@ Nothing here raises into a turn: a malformed definition (no frontmatter, bad
 YAML, missing description, name/file mismatch, illegal name) is skipped.
 """
 
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+from pydantic_ai.messages import ToolReturnPart
 
 from ..config import config_dir
 from ..identifiers import valid_name
@@ -342,6 +344,30 @@ def cap_subagent_output(
     note = f"\n\n[output capped at {max_output_chars} chars — full report at {spill_path}]"
     head = output[: max(0, max_output_chars - len(note))]
     return head + note, output
+
+
+def cap_transcript(messages: list, cap: int) -> list:
+    """Return a copy of ``messages`` with every ``ToolReturnPart`` whose content
+    exceeds ``cap`` characters truncated to ``cap`` chars plus a marker. Only tool
+    *results* are capped — text, thinking, and tool-call parts (the reasoning and
+    the actions) are kept in full. Pure: never mutates the input messages."""
+    out = []
+    for message in messages:
+        parts = getattr(message, "parts", None)
+        if not parts:
+            out.append(message)
+            continue
+        new_parts = []
+        for part in parts:
+            if isinstance(part, ToolReturnPart):
+                text = part.content if isinstance(part.content, str) else str(part.content)
+                if len(text) > cap:
+                    marker = f"\n…(truncated, {len(text)} chars)"
+                    head = text[: max(0, cap - len(marker))]
+                    part = dataclasses.replace(part, content=head + marker)
+            new_parts.append(part)
+        out.append(dataclasses.replace(message, parts=new_parts))
+    return out
 
 
 def agents_index_text(defs: list[AgentDef]) -> str:
