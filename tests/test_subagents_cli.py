@@ -120,20 +120,73 @@ def test_translate_assistant_text_emits_start_then_full_delta():
     assert events[0].index == events[1].index
 
 
-def test_translate_tool_use_emits_call_event():
+def test_translate_tool_use_normalizes_to_harness_name():
+    # A Claude Code `Read` (file_path) is normalized to the harness `read_file`
+    # (path) so the TUI renders it with the native read widget.
     t = CliStreamTranslator()
     events = t.translate({
         "type": "assistant",
         "message": {"content": [
-            {"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {"path": "x.py"}},
+            {"type": "tool_use", "id": "toolu_1", "name": "Read",
+             "input": {"file_path": "x.py"}},
         ]},
     })
     assert len(events) == 1
     ev = events[0]
     assert isinstance(ev, FunctionToolCallEvent)
-    assert ev.part.tool_name == "Read"
+    assert ev.part.tool_name == "read_file"
     assert ev.part.tool_call_id == "toolu_1"
     assert ev.part.args_as_dict() == {"path": "x.py"}
+
+
+def test_translate_edit_maps_to_edit_file_with_edits_list():
+    # The crux: a CLI `Edit` must become a harness `edit_file` carrying an
+    # `edits` list of {old_string,new_string,replace_all} so the inline diff
+    # renders instead of a raw-args dump.
+    t = CliStreamTranslator()
+    events = t.translate({
+        "type": "assistant",
+        "message": {"content": [
+            {"type": "tool_use", "id": "toolu_2", "name": "Edit", "input": {
+                "file_path": "a.py", "old_string": "foo",
+                "new_string": "bar", "replace_all": True,
+            }},
+        ]},
+    })
+    ev = events[0]
+    assert ev.part.tool_name == "edit_file"
+    args = ev.part.args_as_dict()
+    assert args["path"] == "a.py"
+    assert args["edits"] == [
+        {"old_string": "foo", "new_string": "bar", "replace_all": True},
+    ]
+
+
+def test_translate_write_maps_to_write_file_path():
+    t = CliStreamTranslator()
+    events = t.translate({
+        "type": "assistant",
+        "message": {"content": [
+            {"type": "tool_use", "id": "toolu_3", "name": "Write",
+             "input": {"file_path": "b.py", "content": "x = 1"}},
+        ]},
+    })
+    ev = events[0]
+    assert ev.part.tool_name == "write_file"
+    assert ev.part.args_as_dict() == {"path": "b.py", "content": "x = 1"}
+
+
+def test_translate_unmapped_tool_passes_through():
+    # A Claude Code tool with no harness equivalent keeps its name + args.
+    t = CliStreamTranslator()
+    events = t.translate({
+        "type": "assistant",
+        "message": {"content": [
+            {"type": "tool_use", "id": "toolu_4", "name": "TodoWrite",
+             "input": {"todos": []}},
+        ]},
+    })
+    assert events[0].part.tool_name == "TodoWrite"
 
 
 def test_translate_tool_result_labels_from_prior_call_and_marks_failure():
@@ -155,7 +208,9 @@ def test_translate_tool_result_labels_from_prior_call_and_marks_failure():
     ev = events[0]
     assert isinstance(ev, FunctionToolResultEvent)
     part = cast(ToolReturnPart, ev.part)
-    assert part.tool_name == "Bash"          # carried from the matching call
+    # The result reuses the call's normalized harness name (Bash → bash) so the
+    # result widget matches the call widget.
+    assert part.tool_name == "bash"
     assert part.tool_call_id == "toolu_9"
     assert part.content == "boom"            # list-of-blocks flattened to text
     assert part.outcome == "failed"          # is_error → failed
