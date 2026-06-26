@@ -43,6 +43,7 @@ class SubAgentPane(VerticalScroll):
     def __init__(self, stream_id: str, agent_type: str, model_label: str,
                  title: str = "", task: str = "") -> None:
         self.stream_id = stream_id
+        self.transcript_loaded = False
         # Kept so set_model can rebuild the header/subtitle when the real model
         # arrives after construction (a claude-cli spawn reports it mid-stream).
         self._agent_type = agent_type

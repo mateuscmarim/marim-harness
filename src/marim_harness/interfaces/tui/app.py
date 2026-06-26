@@ -435,6 +435,25 @@ class HarnessApp(App):
         current = subs[self.subagent_index]
         if current.pane is not None:
             view.host.show(current.stream_id)
+            # Lazy-load transcript on first pane show
+            from ...session import TranscriptStore
+            if not current.pane.transcript_loaded:
+                store = TranscriptStore(
+                    self.harness.session.store.path,
+                    self.harness.session.store.session_id,
+                )
+                msgs = store.read(current.stream_id)
+                if msgs is not None:
+                    await self.replay_messages_into(current.pane, msgs)
+                else:
+                    from textual.content import Content
+                    from textual.widgets import Static
+                    current.pane.add(
+                        Static(Content(
+                            "transcript unavailable for this resumed sub-agent"
+                        ))
+                    )
+                    current.pane.transcript_loaded = True
 
     def _apply_subagent_view(self) -> None:
         """Open/navigate path: repaint the list AND flush the now-selected
