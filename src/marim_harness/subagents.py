@@ -320,8 +320,9 @@ class SubagentRunner:
 
     def _save_transcript(self, stream_id: str, messages: list) -> None:
         try:
-            if stream_id and messages:
-                self._transcript_store().write(stream_id, messages, self._transcript_cap)
+            store = self._transcript_store()
+            if stream_id and messages and store is not None:
+                store.write(stream_id, messages, self._transcript_cap)
         except Exception as exc:  # noqa: BLE001 - persistence is best-effort
             logger.warning("Failed to save transcript %s: %s", stream_id, exc)
 
