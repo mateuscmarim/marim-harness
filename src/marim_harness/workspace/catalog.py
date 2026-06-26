@@ -14,11 +14,18 @@ _GOOGLE_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 @dataclass(frozen=True)
 class ModelEntry:
     """One selectable model: its provider id and a human-readable name.
-    ``supports_images`` is True/False when the catalog states it, else None."""
+    ``supports_images`` is True/False when the catalog states it, else None.
+    ``provider`` is the source provider (stamped by MultiModelSource); None for a
+    raw single-provider catalog. ``qualified`` is the canonical selectable id."""
 
     id: str
     name: str
     supports_images: bool | None = None
+    provider: str | None = None
+
+    @property
+    def qualified(self) -> str:
+        return f"{self.provider}:{self.id}" if self.provider else self.id
 
 
 def parse_models(payload: dict) -> list[ModelEntry]:
@@ -54,7 +61,12 @@ def filter_entries(entries: list[ModelEntry], query: str) -> list[ModelEntry]:
     q = query.strip().lower()
     if not q:
         return entries
-    return [e for e in entries if q in e.id.lower() or q in e.name.lower()]
+    return [
+        e for e in entries
+        if q in e.id.lower()
+        or q in e.name.lower()
+        or (e.provider is not None and q in e.provider.lower())
+    ]
 
 
 def parse_google_models(payload: dict) -> list[ModelEntry]:
