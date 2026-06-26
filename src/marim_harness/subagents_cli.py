@@ -52,6 +52,43 @@ _CC_TOOL_MAP = {
     "bash": "Bash",
 }
 
+# Claude Code tool name → harness tool name (the inverse of _CC_TOOL_MAP). The TUI
+# keys all its rich rendering (the edit diff, write/read highlighting, the tool
+# summary labels) on harness names and arg shapes, so a CLI sub-agent's events are
+# normalized back to those before they reach the renderer — otherwise an `Edit`
+# falls through to a raw-args dump instead of the inline diff a native edit shows.
+_HARNESS_TOOL_MAP = {cc: harness for harness, cc in _CC_TOOL_MAP.items()}
+
+
+def normalize_cc_tool(name: str, args: dict) -> tuple[str, dict]:
+    """Map a Claude Code tool_use (name + ``input``) to the harness tool name and
+    arg shape the TUI widgets expect, so a CLI spawn renders identically to a
+    native call. Unmapped tools (TodoWrite, Task, …) pass through unchanged for
+    generic rendering.
+
+    The harness ``fs.Edit`` model already shares Claude Code's field names
+    (``old_string``/``new_string``/``replace_all``), so an Edit maps to a single
+    such edit wrapped in the ``edits`` list ``edit_file`` renders from. Read/Write
+    just rename ``file_path`` → ``path``; the rest share their arg keys
+    (``pattern``/``command``/``query``)."""
+    harness = _HARNESS_TOOL_MAP.get(name)
+    if harness is None:
+        return name, args
+    if name == "Edit":
+        return harness, {
+            "path": args.get("file_path", ""),
+            "edits": [{
+                "old_string": args.get("old_string", ""),
+                "new_string": args.get("new_string", ""),
+                "replace_all": bool(args.get("replace_all", False)),
+            }],
+        }
+    if name in ("Read", "Write") and "file_path" in args:
+        out = {k: v for k, v in args.items() if k != "file_path"}
+        out["path"] = args["file_path"]
+        return harness, out
+    return harness, args
+
 
 class CliUnavailable(Exception):
     """No `claude` binary could be found to back a claude-cli spawn."""
@@ -183,11 +220,13 @@ class CliStreamTranslator:
                 ))
             elif btype == "tool_use":
                 call_id = block.get("id", "")
-                name = block.get("name", "tool")
-                self._call_names[call_id] = name
+                name, args = normalize_cc_tool(
+                    block.get("name", "tool"), block.get("input", {}) or {},
+                )
+                self._call_names[call_id] = name  # the matching result reuses it
                 events.append(FunctionToolCallEvent(part=ToolCallPart(
                     tool_name=name,
-                    args=block.get("input", {}),
+                    args=args,
                     tool_call_id=call_id,
                 )))
         return events
