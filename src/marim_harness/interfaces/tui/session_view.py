@@ -38,8 +38,6 @@ class SessionView:
         tool_widgets: dict,
         group: ToolGroupWidget | None,
         solo: ToolCallWidget | None,
-        *,
-        build_pane: bool,
     ) -> tuple[ToolGroupWidget | None, ToolCallWidget | None]:
         """Dispatch one message part to the appropriate widget.
 
@@ -47,18 +45,18 @@ class SessionView:
         sub-agent pane replay (replay_messages_into): TextPart, ThinkingPart,
         generic ToolCallPart, and ToolReturnPart.
 
-        Main-log-only arms (UserPromptPart, ask_user standalone mount) are left
+        Main-log-only arms (UserPromptPart, ask_user standalone mount, and
+        SubAgentDetailHost pane creation with model_label fallback) are left
         to the caller.
-
-        ``build_pane`` distinguishes the two call sites:
-        - True  (main log): foreground spawn_agent falls back to
-          harness.model_label and creates a SubAgentDetailHost pane.
-        - False (sub-agent pane): no pane creation, no model_label fallback.
         """
         from pydantic_ai.messages import TextPart, ThinkingPart, ToolCallPart, ToolReturnPart
 
         if isinstance(part, TextPart):
             if part.content:
+                # Text output ends the current tool burst in both the main log and
+                # sub-agent panes. Without this reset, a tool after text would be
+                # incorrectly grouped with tools before it (original
+                # replay_messages_into omitted this reset, which was a bug).
                 group = None
                 solo = None
                 msg = AssistantMessage()
@@ -66,6 +64,7 @@ class SessionView:
                 self.app.stream.append_stream(msg, part.content)
         elif isinstance(part, ThinkingPart):
             if part.content:
+                # Same reasoning as TextPart: thinking output breaks a tool run.
                 group = None
                 solo = None
                 widget = ThinkingWidget()
@@ -85,33 +84,16 @@ class SessionView:
             if part.tool_name == "spawn_agent" and not args.get("background"):
                 group = None
                 solo = None
-                if build_pane:
-                    # Main-log path: fall back to the harness model label when
-                    # the spawn didn't specify one explicitly, and create the
-                    # detail host pane for lazy transcript load on resume.
-                    model_label = str(
-                        args.get("model") or self.app.harness.model_label or ""
-                    )
-                else:
-                    model_label = str(args.get("model") or "")
                 widget = SubAgentWidget(
                     str(args.get("type", "")),
                     str(args.get("description") or args.get("task", "")),
-                    model_label,
+                    str(args.get("model") or ""),
                 )
                 widget.stream_id = part.tool_call_id
                 tool_widgets[part.tool_call_id] = widget
                 await mount_fn(widget)
-                if build_pane:
-                    host = self.app.query_one(SubAgentDetailHost)
-                    pane = host.add_pane(
-                        part.tool_call_id,
-                        str(args.get("type", "")),
-                        model_label,
-                        str(args.get("description") or args.get("task", "")),
-                        "",
-                    )
-                    widget.pane = pane
+                # SubAgentDetailHost pane creation and model_label fallback are
+                # main-log-only; replay_history handles them after this call returns.
             else:
                 widget = ToolCallWidget(
                     part.tool_name, args,
@@ -197,8 +179,32 @@ class SessionView:
                     else:
                         group, solo = await self._replay_parts(
                             part, log, log.mount, tool_widgets, group, solo,
-                            build_pane=True,
                         )
+                        # Main-log-only post-processing: foreground spawn_agent
+                        # needs a SubAgentDetailHost pane for lazy transcript load
+                        # on resume, and falls back to harness.model_label when
+                        # the spawn didn't specify a model explicitly.
+                        if (
+                            isinstance(part, ToolCallPart)
+                            and part.tool_name == "spawn_agent"
+                            and not part.args_as_dict().get("background")
+                        ):
+                            args = part.args_as_dict()
+                            model_label = str(
+                                args.get("model") or self.app.harness.model_label or ""
+                            )
+                            widget = tool_widgets.get(part.tool_call_id)
+                            if isinstance(widget, SubAgentWidget):
+                                widget.model_label = model_label
+                                host = self.app.query_one(SubAgentDetailHost)
+                                pane = host.add_pane(
+                                    part.tool_call_id,
+                                    str(args.get("type", "")),
+                                    model_label,
+                                    str(args.get("description") or args.get("task", "")),
+                                    "",
+                                )
+                                widget.pane = pane
 
     async def replay_messages_into(self, pane, messages) -> None:
         """Render resumed sub-agent transcript messages into ``pane``.
@@ -216,7 +222,6 @@ class SessionView:
                 for part in message.parts:
                     group, solo = await self._replay_parts(
                         part, pane, pane.add, tool_widgets, group, solo,
-                        build_pane=False,
                     )
         self.app.stream.flush_streams()
         pane.transcript_loaded = True
