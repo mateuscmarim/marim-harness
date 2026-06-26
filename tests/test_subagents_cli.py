@@ -84,6 +84,23 @@ def test_synth_usage_maps_token_fields():
     assert u.requests == 3
 
 
+def test_synth_usage_captures_billed_cost():
+    from marim_harness.usage import COST_DETAIL_KEY, exact_cost
+
+    u = synth_usage({"input_tokens": 10, "output_tokens": 5}, num_turns=1,
+                    total_cost_usd=0.001)
+    # Stored as integer micro-USD so exact_cost() returns the billed amount.
+    assert u.details.get(COST_DETAIL_KEY) == 1000
+    assert exact_cost(u) == pytest.approx(0.001, rel=1e-6)
+
+
+def test_synth_usage_omits_cost_key_when_absent():
+    from marim_harness.usage import COST_DETAIL_KEY
+
+    u = synth_usage({"input_tokens": 5, "output_tokens": 2}, num_turns=1)
+    assert COST_DETAIL_KEY not in u.details
+
+
 def test_synth_usage_tolerates_none():
     u = synth_usage(None, num_turns=0)
     assert u.input_tokens == 0 and u.output_tokens == 0

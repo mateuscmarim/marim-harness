@@ -118,17 +118,29 @@ def build_cli_argv(
     return argv
 
 
-def synth_usage(cli_usage: dict | None, num_turns: int) -> RunUsage:
-    """Build a RunUsage from the CLI ``result`` event's ``usage`` block so the
-    turn's token line reflects the spawn. Only tokens are folded — the dollar cost
-    is the CLI account's, not the harness provider's. Missing keys default to 0."""
+def synth_usage(
+    cli_usage: dict | None,
+    num_turns: int,
+    total_cost_usd: float | None = None,
+) -> RunUsage:
+    """Build a RunUsage from the CLI ``result`` event's ``usage`` block.
+    When ``total_cost_usd`` is provided (the CLI's billed amount), it is stored
+    in ``details[COST_DETAIL_KEY]`` as integer micro-USD so ``resolve_cost``
+    surfaces it as the exact cost — no model-id lookup needed. Missing token
+    keys default to 0."""
+    from .usage import COST_DETAIL_KEY
+
     u = cli_usage or {}
+    details: dict = {}
+    if total_cost_usd is not None:
+        details[COST_DETAIL_KEY] = int(total_cost_usd * 1_000_000)
     return RunUsage(
         input_tokens=int(u.get("input_tokens", 0) or 0),
         output_tokens=int(u.get("output_tokens", 0) or 0),
         cache_read_tokens=int(u.get("cache_read_input_tokens", 0) or 0),
         cache_write_tokens=int(u.get("cache_creation_input_tokens", 0) or 0),
         requests=int(num_turns or 0),
+        details=details,
     )
 
 
@@ -277,7 +289,10 @@ class ClaudeCliRunner:
                             await self._on_model(stream_id, str(found))
                 if obj.get("type") == "result":
                     output = obj.get("result", "") or ""
-                    usage = synth_usage(obj.get("usage"), obj.get("num_turns", 0) or 0)
+                    usage = synth_usage(
+                        obj.get("usage"), obj.get("num_turns", 0) or 0,
+                        obj.get("total_cost_usd"),
+                    )
                     result_seen = True
                     continue
                 for event in translator.translate(obj):
