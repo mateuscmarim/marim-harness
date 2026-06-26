@@ -41,10 +41,10 @@ class _FakeCtx:
 def test_steer_enqueues_on_active_ctx(tmp_path):
     h = _harness(tmp_path)
     ctx = _FakeCtx()
-    h._active_run_ctx = ctx
+    h.turn_controller._active_run_ctx = ctx
     h.steer("go left")
     assert ctx.calls == [(("go left",), "asap")]
-    assert h._steer_buffer == []  # flushed
+    assert h.turn_controller._steer_buffer == []  # flushed
 
 
 def test_steer_with_attachments_enqueues_binary_content(tmp_path):
@@ -52,7 +52,7 @@ def test_steer_with_attachments_enqueues_binary_content(tmp_path):
 
     h = _harness(tmp_path)
     ctx = _FakeCtx()
-    h._active_run_ctx = ctx
+    h.turn_controller._active_run_ctx = ctx
     h.steer("look", attachments=[(b"\x89PNG", "image/png")])
     content, priority = ctx.calls[0]
     assert content[0] == "look"
@@ -63,9 +63,9 @@ def test_steer_with_attachments_enqueues_binary_content(tmp_path):
 
 def test_steer_buffers_when_no_active_ctx(tmp_path):
     h = _harness(tmp_path)
-    assert h._active_run_ctx is None
+    assert h.turn_controller._active_run_ctx is None
     h.steer("later")
-    assert h._steer_buffer == [("later", None)]
+    assert h.turn_controller._steer_buffer == [("later", None)]
 
 
 def test_take_buffered_steers_returns_and_clears(tmp_path):
@@ -73,7 +73,7 @@ def test_take_buffered_steers_returns_and_clears(tmp_path):
     h.steer("a")
     h.steer("b")
     assert h.take_buffered_steers() == [("a", None), ("b", None)]
-    assert h._steer_buffer == []
+    assert h.turn_controller._steer_buffer == []
 
 
 @pytest.mark.anyio
@@ -119,7 +119,7 @@ async def test_steer_during_approval_gap_buffers_not_stale_ctx(tmp_path):
     async def approve(_call):
         # Runs between rounds: round 1's run() has returned, so the captured ctx
         # must already be cleared. A steer here must buffer.
-        observed["ctx"] = harness._active_run_ctx
+        observed["ctx"] = harness.turn_controller._active_run_ctx
         harness.steer("mid-approval steer")
         # Drain so the (empty) continuation doesn't enqueue onto a test ctx.
         observed["buffered"] = harness.take_buffered_steers()
@@ -226,7 +226,7 @@ async def test_stranded_steer_goes_to_front_of_queue(tmp_path):
         app._queue.enqueue("existing")
         app._queue.paused = False
         # simulate a steer left buffered on the harness when the turn ended
-        app.harness._steer_buffer = [("stranded", None)]
+        app.harness.turn_controller._steer_buffer = [("stranded", None)]
         started = []
         app._start_turn = lambda text, attachments=None: started.append(text) or _noop()
         await app._after_turn()
@@ -245,7 +245,7 @@ async def test_stranded_steer_kept_on_paused_finish(tmp_path):
         await pilot.pause()
         app._queue.paused = True
         # simulate a steer buffered in the harness when the turn ended
-        app.harness._steer_buffer = [("stranded", None)]
+        app.harness.turn_controller._steer_buffer = [("stranded", None)]
         start_calls = []
         app._start_turn = lambda text, attachments=None: start_calls.append(text) or _noop()
         await app._after_turn()
@@ -299,7 +299,7 @@ async def test_steer_reaches_a_later_model_request(tmp_path):
 
     async def steerer():
         for _ in range(200):
-            if h._active_run_ctx is not None:
+            if h.turn_controller._active_run_ctx is not None:
                 break
             await asyncio.sleep(0.01)
         h.steer("STEER NOW")

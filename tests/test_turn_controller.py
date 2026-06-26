@@ -2,7 +2,7 @@ import pytest
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.function import FunctionModel
 
-from marim_harness.agent import HarnessConfig, build_collaborators
+from marim_harness.agent import Harness, HarnessConfig, build_collaborators
 from marim_harness.deps import Deps
 from marim_harness.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
@@ -106,6 +106,29 @@ async def test_actionable_failure_is_surfaced_to_model_next_turn(tmp_path):
     # One-shot: a third clean turn carries no stale note.
     again = await tc.run_turn("third request")
     assert "did not complete" not in again
+
+
+def _minimal_harness(tmp_path):
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    return Harness(
+        FunctionModel(fn), BuiltinToolProvider(),
+        Deps(workspace_root=tmp_path, mode=Mode.auto),
+        instructions="test",
+    )
+
+
+def test_harness_has_no_turn_state_fields(tmp_path):
+    """Harness no longer owns mutable turn-state — it lives on TurnController."""
+    h = _minimal_harness(tmp_path)
+    assert not hasattr(h, "_pending_error_note")
+    assert not hasattr(h, "_pending_hook_context")
+    assert not hasattr(h, "_pending_jobs_digest")
+    assert not hasattr(h, "_active_run_ctx")
+    assert not hasattr(h, "_steer_buffer")
+    assert hasattr(h, "turn_controller")
+    assert h.turn_controller._pending_error_note is None
 
 
 @pytest.mark.anyio

@@ -103,13 +103,13 @@ async def test_reset_clears_job_history(tmp_path: Path):
             break
         await asyncio.sleep(0.005)
     assert harness.deps.jobs.has_finished_pending() is True
-    harness._pending_jobs_digest = "stale digest"
+    harness.turn_controller._pending_jobs_digest = "stale digest"
 
     harness.reset()
 
     assert harness.deps.jobs.get(jid) is None
     assert harness.deps.jobs.has_finished_pending() is False
-    assert harness._pending_jobs_digest is None
+    assert harness.turn_controller._pending_jobs_digest is None
 
 
 @pytest.mark.anyio
@@ -139,7 +139,7 @@ async def test_new_and_switch_clear_job_history(tmp_path: Path):
                 break
             await asyncio.sleep(0.005)
         assert harness.deps.jobs.has_finished_pending() is True
-        harness._pending_jobs_digest = "stale"
+        harness.turn_controller._pending_jobs_digest = "stale"
         return jid
 
     # /new wipes the finished-job history.
@@ -147,14 +147,14 @@ async def test_new_and_switch_clear_job_history(tmp_path: Path):
     harness.new_session("second")
     assert harness.deps.jobs.get(jid) is None
     assert harness.deps.jobs.has_finished_pending() is False
-    assert harness._pending_jobs_digest is None
+    assert harness.turn_controller._pending_jobs_digest is None
 
     # /switch (back to the first session) wipes it too.
     jid = await _seed_finished_job()
     harness.switch_session(first_id)
     assert harness.deps.jobs.get(jid) is None
     assert harness.deps.jobs.has_finished_pending() is False
-    assert harness._pending_jobs_digest is None
+    assert harness.turn_controller._pending_jobs_digest is None
 
 
 @pytest.mark.anyio

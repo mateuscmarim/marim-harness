@@ -39,7 +39,7 @@ from .turn_context import (
     strip_turn_context,  # noqa: F401  — re-exported for session_view + tests
     wrap_turn_context,  # noqa: F401  — re-exported for tests
 )
-from .turn_controller import (  # noqa: F401 — re-exported for tests and build_collaborators
+from .turn_controller import (  # noqa: F401 — _has_unanswered_tool_calls/_repair_unanswered_tool_calls re-exported for tests; _drop_nameless_tool_calls used locally by build_collaborators
     TurnController,
     _drop_nameless_tool_calls,
     _has_unanswered_tool_calls,
@@ -324,49 +324,6 @@ class Harness:
         self.session.on_compact = on_compact
         self.session.on_compact_start = on_compact_start
         self.session.on_rename = on_rename
-
-    # --- turn-state proxies (the canonical state lives on turn_controller;
-    # these properties keep existing callers and tests working) ---
-
-    @property
-    def _pending_error_note(self) -> str | None:
-        return self.turn_controller._pending_error_note
-
-    @_pending_error_note.setter
-    def _pending_error_note(self, value: str | None) -> None:
-        self.turn_controller._pending_error_note = value
-
-    @property
-    def _pending_hook_context(self) -> str | None:
-        return self.turn_controller._pending_hook_context
-
-    @_pending_hook_context.setter
-    def _pending_hook_context(self, value: str | None) -> None:
-        self.turn_controller._pending_hook_context = value
-
-    @property
-    def _pending_jobs_digest(self) -> str | None:
-        return self.turn_controller._pending_jobs_digest
-
-    @_pending_jobs_digest.setter
-    def _pending_jobs_digest(self, value: str | None) -> None:
-        self.turn_controller._pending_jobs_digest = value
-
-    @property
-    def _active_run_ctx(self) -> Any:
-        return self.turn_controller._active_run_ctx
-
-    @_active_run_ctx.setter
-    def _active_run_ctx(self, value: Any) -> None:
-        self.turn_controller._active_run_ctx = value
-
-    @property
-    def _steer_buffer(self) -> list:
-        return self.turn_controller._steer_buffer
-
-    @_steer_buffer.setter
-    def _steer_buffer(self, value: list) -> None:
-        self.turn_controller._steer_buffer = value
 
     # --- session lifecycle (operations carrying harness-level logic; plain
     # state and persistence live on ``self.session`` and are reached directly) ---
