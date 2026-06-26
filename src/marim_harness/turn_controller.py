@@ -10,8 +10,14 @@ if TYPE_CHECKING:
     from .session.checkpoints import CheckpointManager
 
 
+"""Turn-lifecycle orchestration: the run_turn → approval loop → persist pipeline.
+
+Extracted from Harness to isolate the most complex, highest-cyclomatic-load
+subsystem (approval rounds, overflow retry, resumable flush, one-shot
+consumables, steer buffering) from model/session/MCP lifecycle management.
+"""
+
 class TurnController:
-    """Drives one user turn to completion. Extracted from Harness; logic moves in Task 2."""
 
     def __init__(
         self,
