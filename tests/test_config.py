@@ -369,10 +369,10 @@ def test_autonomous_wake_falsy_disables(monkeypatch, raw):
     assert load_config().autonomous_wake is False
 
 
-def test_wake_depth_cap_defaults_to_three(monkeypatch):
+def test_wake_depth_cap_defaults_to_eight(monkeypatch):
     monkeypatch.delenv("MARIM_WAKE_DEPTH_CAP", raising=False)
     monkeypatch.setenv("MARIM_PROVIDER", "openrouter")
-    assert load_config().wake_depth_cap == 3
+    assert load_config().wake_depth_cap == 8
 
 
 def test_wake_depth_cap_reads_env(monkeypatch):

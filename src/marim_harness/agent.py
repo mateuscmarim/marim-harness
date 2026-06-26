@@ -216,9 +216,9 @@ class HarnessConfig:
     # on the provider (see build_harness), keyed on lsp_enabled and lsp_tools_enabled.
     lsp_enabled: bool = True
     # Autonomous wake-on-completion knobs, surfaced to the TUI app. Defaults
-    # match ModelConfig: wake on, cap 3.
+    # match ModelConfig: wake on, cap 8.
     autonomous_wake: bool = True
-    wake_depth_cap: int = 3
+    wake_depth_cap: int = 8
     # Backstop on a single sub-agent run: the most model requests it may make
     # before pydantic-ai aborts it. A runaway sub-agent (stuck calling tools and
     # never concluding) is bounded rather than blocking the spawning turn forever.

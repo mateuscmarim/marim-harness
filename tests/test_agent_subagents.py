@@ -514,11 +514,11 @@ async def test_run_background_isolates_task_list(tmp_path: Path):
 
 def test_harness_exposes_wake_defaults(tmp_path: Path):
     """The Harness surfaces the wake knobs so the TUI app can seed its scheduler;
-    with no config passed, the defaults are on / cap 3."""
+    with no config passed, the defaults are on / cap 8."""
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(_text_model(), deps)
     assert h.autonomous_wake is True
-    assert h.wake_depth_cap == 3
+    assert h.wake_depth_cap == 8
 
 
 def test_harness_takes_wake_flags_from_config(tmp_path: Path):

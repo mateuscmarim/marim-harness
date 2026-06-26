@@ -45,8 +45,9 @@ class ModelConfig:
     # reacts without waiting for the user. Off ⇒ today's passive behavior.
     autonomous_wake: bool = True
     # Cap on consecutive autonomous turns before one is forced to wait for the
-    # user — a loop guard for wake→spawn→wake chains.
-    wake_depth_cap: int = 3
+    # user — a loop guard for wake→spawn→wake chains. Sized for a multi-task
+    # fan-out (e.g. SDD: each task's spawn→review→resume is a couple of wakes).
+    wake_depth_cap: int = 8
     # Cap on how many spawned sub-agents run their model loop at once. None ⇒
     # unbounded; set MARIM_SUBAGENT_CONCURRENCY to bound a fan-out that trips a
     # shared provider route's upstream rate limit.
@@ -87,7 +88,7 @@ def load_config() -> ModelConfig:
     lsp_tools_enabled = _bool_env("MARIM_LSP_TOOLS", True)
     job_tool_combined = _bool_env("MARIM_JOB_TOOL_COMBINED", False)
     autonomous_wake = _bool_env("MARIM_AUTONOMOUS_WAKE", True)
-    wake_depth_cap = _int_env("MARIM_WAKE_DEPTH_CAP", 3)
+    wake_depth_cap = _int_env("MARIM_WAKE_DEPTH_CAP", 8)
     # 0 (and any non-positive value) is the "no cap" sentinel, mapped to None so
     # the runner stays unbounded — matching the historical default.
     subagent_concurrency = _int_env("MARIM_SUBAGENT_CONCURRENCY", 0) or None
