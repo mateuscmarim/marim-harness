@@ -83,7 +83,13 @@ SubAgentWidget.-hovered .subagent-activity { color: white; text-style: bold; }
 /* Line 1: the agent's description/title (the ◼ headline), clipped to one row. */
 .subagent-bhead { color: $accent; text-style: bold; height: 1; text-wrap: nowrap; text-overflow: ellipsis; }
 /* Line 2: the muted type · model subtitle below the headline. */
-.subagent-bsub { color: $text-muted; height: 1; margin: 0 0 1 0; }
+.subagent-bsub { color: $text-muted; height: 1; }
+/* Collapsible full-task disclosure: a muted '▸ task' toggle and its (hidden)
+   body. The visible one carries the bottom gap that separates the header block
+   from the transcript below. */
+.subagent-task-toggle { color: $text-muted; height: 1; margin: 0 0 1 0; }
+.subagent-task-toggle.-expanded { margin: 0; }
+.subagent-task-body { color: $text-muted; margin: 0 0 1 0; }
 .subagent-usage { color: $text-muted; }
 .subagent-error { color: $error; margin: 1 0 0 0; }
 

@@ -55,6 +55,74 @@ async def test_pane_subtitle_hidden_and_header_falls_back_when_no_title():
 
 
 @pytest.mark.anyio
+async def test_task_disclosure_collapsed_by_default_then_expands():
+    """The full task is hidden behind a collapsed '▸ task' line; toggling reveals
+    the full prompt and flips the marker, and toggling again collapses it."""
+    full = (
+        "Read the plan file and relevant source files before writing any tests "
+        "or moving code. Port the actionable-failure tests, then extract "
+        "turn_controller.py, then update agent.py."
+    )
+    app = _Host()
+    async with app.run_test() as pilot:
+        host = app.query_one(SubAgentDetailHost)
+        pane = host.add_pane("c1", "claude-general", "sonnet", "Task 2", task=full)
+        await pilot.pause()
+        # Collapsed by default: toggle visible with a ▸ marker, body hidden.
+        assert pane._task_toggle.display is True
+        assert "▸" in str(pane._task_toggle.render())
+        assert pane._task_body.display is False
+
+        pane.toggle_task()
+        await pilot.pause()
+        # Expanded: ▾ marker, full task shown verbatim.
+        assert "▾" in str(pane._task_toggle.render())
+        assert pane._task_body.display is True
+        assert full in str(pane._task_body.render())
+
+        pane.toggle_task()
+        await pilot.pause()
+        assert pane._task_body.display is False
+        assert "▸" in str(pane._task_toggle.render())
+
+
+@pytest.mark.anyio
+async def test_task_disclosure_hidden_when_no_task():
+    """No task → no disclosure chrome at all (the line stays hidden)."""
+    app = _Host()
+    async with app.run_test() as pilot:
+        host = app.query_one(SubAgentDetailHost)
+        pane = host.add_pane("c1", "explore", "owl", "Architecture review")
+        await pilot.pause()
+        assert pane._task_toggle.display is False
+        # Toggling a task-less pane is a no-op, not a crash.
+        pane.toggle_task()
+        await pilot.pause()
+        assert pane._task_body.display is False
+
+
+@pytest.mark.anyio
+async def test_task_toggle_click_expands():
+    """Clicking the toggle line expands the task (the pane's click idiom)."""
+    app = _Host()
+    async with app.run_test() as pilot:
+        host = app.query_one(SubAgentDetailHost)
+        pane = host.add_pane("c1", "explore", "owl", "Title", task="do the thing")
+        await pilot.pause()
+        assert pane._task_body.display is False
+        pane.on_click(_FakeClick(pane._task_toggle))
+        await pilot.pause()
+        assert pane._task_body.display is True
+
+
+class _FakeClick:
+    """Minimal stand-in for a Textual Click event carrying the clicked widget."""
+
+    def __init__(self, widget) -> None:
+        self.widget = widget
+
+
+@pytest.mark.anyio
 async def test_set_model_replaces_subtitle_model():
     app = _Host()
     async with app.run_test() as pilot:

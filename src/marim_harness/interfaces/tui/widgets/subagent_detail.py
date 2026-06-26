@@ -41,7 +41,7 @@ class SubAgentPane(VerticalScroll):
     ``SubAgentWidget.body``."""
 
     def __init__(self, stream_id: str, agent_type: str, model_label: str,
-                 title: str = "") -> None:
+                 title: str = "", task: str = "") -> None:
         self.stream_id = stream_id
         # Kept so set_model can rebuild the header/subtitle when the real model
         # arrives after construction (a claude-cli spawn reports it mid-stream).
@@ -59,14 +59,45 @@ class SubAgentPane(VerticalScroll):
         # Widget internal.)
         self._subhead = Static(Content(context), classes="subagent-bsub")
         self._subhead.display = bool(title)
+        # Collapsible disclosure for the full prompt the agent was given (the
+        # headline is only a derived one-line title). A muted ``▸ task`` line that
+        # expands to the full text on click or the screen's ``t`` key, so the
+        # default view stays clean. Hidden entirely when there's no task.
+        # (Named ``_task_text`` — ``_task`` shadows a Textual Widget internal.)
+        self._task_text = task
+        self._task_expanded = False
+        self._task_toggle = Static(Content("▸ task"), classes="subagent-task-toggle")
+        self._task_toggle.display = bool(task)
+        self._task_body = Static(Content(task), classes="subagent-task-body")
+        self._task_body.display = False
         self._usage_line = Static("", classes="subagent-usage")
         self._usage_line.display = False
         self._placeholder = Static(Content(_DETACHED_NOTE), classes="subagent-detached")
         self._placeholder.display = False
         super().__init__(
-            self._header, self._subhead, self._usage_line, self._placeholder,
+            self._header, self._subhead, self._task_toggle, self._task_body,
+            self._usage_line, self._placeholder,
             id=pane_id(stream_id), classes="subagent-pane",
         )
+
+    def toggle_task(self) -> None:
+        """Expand/collapse the full-task disclosure. A no-op when there's no task
+        (the toggle line is hidden in that case)."""
+        if not self._task_text:
+            return
+        self._task_expanded = not self._task_expanded
+        self._task_toggle.update(Content("▾ task" if self._task_expanded else "▸ task"))
+        # When expanded the body below carries the bottom gap, so drop the toggle's
+        # own margin to keep '▾ task' hugging its text (mirrors the card's -expanded).
+        self._task_toggle.set_class(self._task_expanded, "-expanded")
+        self._task_body.display = self._task_expanded
+
+    def on_click(self, event) -> None:
+        """Clicking the ``▸ task`` line toggles the disclosure — the same
+        click-to-expand idiom the failed-spawn card uses. Clicks elsewhere in the
+        pane (the transcript) bubble through untouched."""
+        if getattr(event, "widget", None) is self._task_toggle:
+            self.toggle_task()
 
     def set_model(self, model_label: str) -> None:
         """Replace the model shown in the subtitle (``type · model``) once the real
@@ -102,8 +133,8 @@ class SubAgentDetailHost(ContentSwitcher):
     pane per ``stream_id``; ``current`` selects which is visible."""
 
     def add_pane(self, stream_id: str, agent_type: str, model_label: str,
-                 title: str = "") -> SubAgentPane:
-        pane = SubAgentPane(stream_id, agent_type, model_label, title)
+                 title: str = "", task: str = "") -> SubAgentPane:
+        pane = SubAgentPane(stream_id, agent_type, model_label, title, task)
         # Hide the pane before mounting. ContentSwitcher only hides children present
         # at compose time, and watch_current only toggles the old/new pair on a
         # switch — it never hides the other dynamically-mounted panes. Without this,
