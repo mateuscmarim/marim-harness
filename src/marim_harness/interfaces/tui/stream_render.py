@@ -644,6 +644,18 @@ class StreamRenderer:
         if isinstance(parent, SubAgentWidget):
             parent.note_retry(message)
 
+    async def on_subagent_model(self, stream_id: str, model: str) -> None:
+        """Relabel a spawn card with the real model the sub-agent reported (e.g. a
+        claude-cli spawn's model from its stream), replacing the harness-model
+        fallback chosen at card-creation time. Updates the card's stored label and,
+        if its pane is already open, the pane's subtitle. No-op if the card is gone.
+        Fired on the app's event loop, so direct widget mutation is safe."""
+        parent = self.tool_widgets.get(stream_id)
+        if isinstance(parent, SubAgentWidget):
+            parent.set_model(model)
+            if parent.pane is not None:
+                parent.pane.set_model(model)
+
     async def dispatch_stream_event(self, event, sink: _StreamSink) -> None:
         """Route one streamed event to the right widget via ``sink``, which knows
         where to mount and how to read/write this stream's run-state. The top-level

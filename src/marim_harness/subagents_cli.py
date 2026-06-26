@@ -220,11 +220,14 @@ class ClaudeCliRunner:
     output cap, and worktree handling — see SubagentRunner._execute_cli_spawn.
     """
 
-    def __init__(self, on_event, on_notice) -> None:
+    def __init__(self, on_event, on_notice, on_model=None) -> None:
         self._on_event = on_event      # Deps.on_subagent_event | None
         # Reserved for the spec's low-fidelity on_subagent_notice fallback; not
         # wired in v1 — full-fidelity event translation via _on_event is always used.
         self._on_notice = on_notice    # Deps.on_subagent_notice | None
+        # Surfaces the model the CLI reports (system/init) to the spawn card, which
+        # otherwise shows the harness's own model as a fallback. None when no UI.
+        self._on_model = on_model      # Deps.on_subagent_model | None
 
     async def run(
         self, *, binary: str, prompt: str, system_prompt: str, cwd: str,
@@ -249,6 +252,7 @@ class ClaudeCliRunner:
             output = ""
             usage = RunUsage()
             result_seen = False
+            model_sent = False
             assert proc.stdout is not None
             async for raw in proc.stdout:
                 line = raw.decode("utf-8", "replace").strip()
@@ -258,6 +262,19 @@ class ClaudeCliRunner:
                     obj = json.loads(line)
                 except json.JSONDecodeError:
                     continue  # non-JSON noise on stdout — skip
+                if not model_sent:
+                    # The system/init event carries the session model at top level;
+                    # assistant messages carry it under message.model. Surface the
+                    # first one seen so the card shows the CLI's real model. Guard
+                    # message against a non-dict (malformed/future stream shape).
+                    msg = obj.get("message")
+                    found = obj.get("model") or (
+                        msg.get("model") if isinstance(msg, dict) else None
+                    )
+                    if found:
+                        model_sent = True
+                        if self._on_model is not None and stream_id:
+                            await self._on_model(stream_id, str(found))
                 if obj.get("type") == "result":
                     output = obj.get("result", "") or ""
                     usage = synth_usage(obj.get("usage"), obj.get("num_turns", 0) or 0)

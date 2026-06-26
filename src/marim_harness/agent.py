@@ -434,6 +434,7 @@ class Harness:
         ask_user: Callable[..., Any] | None = None,
         on_subagent_event: Callable[..., Any] | None = None,
         on_subagent_notice: Callable[..., Any] | None = None,
+        on_subagent_model: Callable[..., Any] | None = None,
         on_tasks_changed: Callable[..., Any] | None = None,
         on_jobs_changed: Callable[..., Any] | None = None,
         on_compact: Callable[..., Any] | None = None,
@@ -457,6 +458,7 @@ class Harness:
         self.deps.ask_user = ask_user
         self.deps.on_subagent_event = on_subagent_event
         self.deps.on_subagent_notice = on_subagent_notice
+        self.deps.on_subagent_model = on_subagent_model
         self.deps.tasks.on_change = on_tasks_changed
         self.deps.jobs.on_change = on_jobs_changed
         self.session.on_compact = on_compact

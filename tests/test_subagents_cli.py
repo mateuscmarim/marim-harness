@@ -205,6 +205,58 @@ async def test_runner_streams_events_and_returns_result(tmp_path):
     assert all(sid == "s1" for sid, _ in seen)
 
 
+_FAKE_CLI_WITH_MODEL = '''#!{python}
+import json, sys
+for o in [
+    {{"type": "system", "subtype": "init", "model": "claude-opus-4-8[1m]"}},
+    {{"type": "assistant", "message": {{"model": "claude-opus-4-8",
+        "content": [{{"type": "text", "text": "hi"}}]}}}},
+    {{"type": "result", "subtype": "success", "result": "ok",
+      "num_turns": 1, "usage": {{"input_tokens": 1, "output_tokens": 1}}}},
+]:
+    sys.stdout.write(json.dumps(o) + "\\n")
+'''
+
+
+@pytest.mark.anyio
+async def test_runner_surfaces_real_model_from_init_event(tmp_path):
+    p = tmp_path / "fake_claude_model.py"
+    p.write_text(_FAKE_CLI_WITH_MODEL.format(python=sys.executable), encoding="utf-8")
+    p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IRWXU)
+    models = []
+
+    async def on_model(stream_id, model):
+        models.append((stream_id, model))
+
+    runner = ClaudeCliRunner(None, None, on_model)
+    result = await runner.run(
+        binary=str(p), prompt="go", system_prompt="s", cwd=str(tmp_path),
+        allow_gated=False, allowed_tools=frozenset(), model=None, stream_id="s1",
+    )
+    assert result.output == "ok"
+    # Surfaced exactly once, from the system/init event, tagged with the stream id.
+    assert models == [("s1", "claude-opus-4-8[1m]")]
+
+
+@pytest.mark.anyio
+async def test_runner_skips_model_callback_without_stream_id(tmp_path):
+    p = tmp_path / "fake_claude_model2.py"
+    p.write_text(_FAKE_CLI_WITH_MODEL.format(python=sys.executable), encoding="utf-8")
+    p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IRWXU)
+    models = []
+
+    async def on_model(stream_id, model):
+        models.append(model)
+
+    # No stream_id (headless background) -> nothing to address, so no model push.
+    runner = ClaudeCliRunner(None, None, on_model)
+    await runner.run(
+        binary=str(p), prompt="go", system_prompt="s", cwd=str(tmp_path),
+        allow_gated=False, allowed_tools=frozenset(), model=None, stream_id="",
+    )
+    assert models == []
+
+
 @pytest.mark.anyio
 async def test_runner_raises_when_no_result(tmp_path):
     p = tmp_path / "silent.py"
