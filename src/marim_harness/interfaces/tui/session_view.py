@@ -30,16 +30,121 @@ class SessionView:
     def __init__(self, app) -> None:
         self.app = app
 
+    async def _replay_parts(
+        self,
+        part,
+        container,
+        mount_fn,
+        tool_widgets: dict,
+        group: ToolGroupWidget | None,
+        solo: ToolCallWidget | None,
+        *,
+        build_pane: bool,
+    ) -> tuple[ToolGroupWidget | None, ToolCallWidget | None]:
+        """Dispatch one message part to the appropriate widget.
+
+        Handles the parts shared between main-log replay (replay_history) and
+        sub-agent pane replay (replay_messages_into): TextPart, ThinkingPart,
+        generic ToolCallPart, and ToolReturnPart.
+
+        Main-log-only arms (UserPromptPart, ask_user standalone mount) are left
+        to the caller.
+
+        ``build_pane`` distinguishes the two call sites:
+        - True  (main log): foreground spawn_agent falls back to
+          harness.model_label and creates a SubAgentDetailHost pane.
+        - False (sub-agent pane): no pane creation, no model_label fallback.
+        """
+        from pydantic_ai.messages import TextPart, ThinkingPart, ToolCallPart, ToolReturnPart
+
+        if isinstance(part, TextPart):
+            if part.content:
+                group = None
+                solo = None
+                msg = AssistantMessage()
+                await mount_fn(msg)
+                self.app.stream.append_stream(msg, part.content)
+        elif isinstance(part, ThinkingPart):
+            if part.content:
+                group = None
+                solo = None
+                widget = ThinkingWidget()
+                await mount_fn(widget)
+                self.app.stream.append_stream(widget.body, part.content)
+                # A replayed thought is already complete — cap it to its preview
+                # so a resumed session matches the live resting state (Ctrl+O
+                # still reveals the full text).
+                widget.finalize()
+        elif isinstance(part, ToolCallPart):
+            args = part.args_as_dict()
+            # A foreground spawn_agent rebuilds as its SubAgentWidget card
+            # (mirroring the live path) rather than a generic tool row. Its
+            # nested transcript was never persisted, so the resumed card carries
+            # only the final report. A background spawn returns a job id and
+            # stays a plain tool.
+            if part.tool_name == "spawn_agent" and not args.get("background"):
+                group = None
+                solo = None
+                if build_pane:
+                    # Main-log path: fall back to the harness model label when
+                    # the spawn didn't specify one explicitly, and create the
+                    # detail host pane for lazy transcript load on resume.
+                    model_label = str(
+                        args.get("model") or self.app.harness.model_label or ""
+                    )
+                else:
+                    model_label = str(args.get("model") or "")
+                widget = SubAgentWidget(
+                    str(args.get("type", "")),
+                    str(args.get("description") or args.get("task", "")),
+                    model_label,
+                )
+                widget.stream_id = part.tool_call_id
+                tool_widgets[part.tool_call_id] = widget
+                await mount_fn(widget)
+                if build_pane:
+                    host = self.app.query_one(SubAgentDetailHost)
+                    pane = host.add_pane(
+                        part.tool_call_id,
+                        str(args.get("type", "")),
+                        model_label,
+                        str(args.get("description") or args.get("task", "")),
+                        "",
+                    )
+                    widget.pane = pane
+            else:
+                widget = ToolCallWidget(
+                    part.tool_name, args,
+                    workspace_root=self.app.harness.deps.workspace_root,
+                )
+                tool_widgets[part.tool_call_id] = widget
+                group, solo = await self.app.stream.add_tool_to_run(
+                    widget, container, group, solo,
+                )
+        elif isinstance(part, ToolReturnPart):
+            widget = tool_widgets.get(part.tool_call_id)
+            if widget is not None:
+                content = str(part.content)
+                status = status_from_part(part)
+                # A failed spawn returns its error as a normal tool result;
+                # detect the runner's failure text so the card shows failed,
+                # not a misleading ✓ (mirrors the live path).
+                if (
+                    isinstance(widget, SubAgentWidget)
+                    and status == "done"
+                    and subagent_failed(content)
+                ):
+                    status = "failed"
+                widget.finish(content, status=status)
+        return group, solo
+
     async def replay_history(self, log: VerticalScroll) -> None:
         """Re-render a restored conversation into the log so a resumed session
         looks like where you left off."""
         from pydantic_ai.messages import (
             ModelRequest,
             ModelResponse,
-            TextPart,
-            ThinkingPart,
             ToolCallPart,
-            ToolReturnPart,
             UserPromptPart,
         )
 
@@ -75,93 +180,25 @@ class SessionView:
                         # output, error notes) so the log shows only what the
                         # user typed — as the live path already does.
                         await log.mount(UserMessage(strip_turn_context(text)))
-                    elif isinstance(part, TextPart):
-                        if part.content:
-                            group = None
-                            solo = None
-                            msg = AssistantMessage()
-                            await log.mount(msg)
-                            self.app.stream.append_stream(msg, part.content)
-                    elif isinstance(part, ThinkingPart):
-                        if part.content:
-                            group = None
-                            solo = None
-                            widget = ThinkingWidget()
-                            await log.mount(widget)
-                            self.app.stream.append_stream(widget.body, part.content)
-                            # A replayed thought is already complete — cap it to
-                            # its preview so a resumed session matches the live
-                            # resting state (Ctrl+O still reveals the full text).
-                            widget.finalize()
-                    elif isinstance(part, ToolCallPart):
+                    elif isinstance(part, ToolCallPart) and part.tool_name == "ask_user":
+                        # Mirror the live path (intercept_tool): ask_user mounts
+                        # standalone and breaks the run, so the question + answer
+                        # aren't buried in a collapsed tool group on a resumed
+                        # session.
+                        group = None
+                        solo = None
                         args = part.args_as_dict()
-                        # A foreground spawn_agent rebuilds as its SubAgentWidget
-                        # card (mirroring the live path, which mounts it standalone
-                        # and breaks the run) rather than a generic tool row. Its
-                        # nested transcript was never persisted, so the resumed card
-                        # carries only the final report — its resting state. A
-                        # background spawn returns a job id and stays a plain tool.
-                        if part.tool_name == "spawn_agent" and not args.get("background"):
-                            group = None
-                            solo = None
-                            model_label = str(
-                                args.get("model") or self.app.harness.model_label or ""
-                            )
-                            widget = SubAgentWidget(
-                                str(args.get("type", "")),
-                                str(args.get("description") or args.get("task", "")),
-                                model_label,
-                            )
-                            widget.stream_id = part.tool_call_id
-                            tool_widgets[part.tool_call_id] = widget
-                            await log.mount(widget)
-                            # Create the detail host pane for lazy transcript load on resume
-                            host = self.app.query_one(SubAgentDetailHost)
-                            pane = host.add_pane(
-                                part.tool_call_id,
-                                str(args.get("type", "")),
-                                model_label,
-                                str(args.get("description") or args.get("task", "")),
-                                "",
-                            )
-                            widget.pane = pane
-                        elif part.tool_name == "ask_user":
-                            # Mirror the live path (intercept_tool): ask_user mounts
-                            # standalone and breaks the run, so the question + answer
-                            # aren't buried in a collapsed tool group on a resumed
-                            # session.
-                            group = None
-                            solo = None
-                            widget = ToolCallWidget(
-                                part.tool_name, args,
-                                workspace_root=self.app.harness.deps.workspace_root,
-                            )
-                            tool_widgets[part.tool_call_id] = widget
-                            await log.mount(widget)
-                        else:
-                            widget = ToolCallWidget(
-                                part.tool_name, args,
-                                workspace_root=self.app.harness.deps.workspace_root,
-                            )
-                            tool_widgets[part.tool_call_id] = widget
-                            group, solo = await self.app.stream.add_tool_to_run(
-                                widget, log, group, solo
-                            )
-                    elif isinstance(part, ToolReturnPart):
-                        widget = tool_widgets.get(part.tool_call_id)
-                        if widget is not None:
-                            content = str(part.content)
-                            status = status_from_part(part)
-                            # A failed spawn returns its error as a normal tool
-                            # result; detect the runner's failure text so the card
-                            # shows failed, not a misleading ✓ (mirrors the live path).
-                            if (
-                                isinstance(widget, SubAgentWidget)
-                                and status == "done"
-                                and subagent_failed(content)
-                            ):
-                                status = "failed"
-                            widget.finish(content, status=status)
+                        widget = ToolCallWidget(
+                            part.tool_name, args,
+                            workspace_root=self.app.harness.deps.workspace_root,
+                        )
+                        tool_widgets[part.tool_call_id] = widget
+                        await log.mount(widget)
+                    else:
+                        group, solo = await self._replay_parts(
+                            part, log, log.mount, tool_widgets, group, solo,
+                            build_pane=True,
+                        )
 
     async def replay_messages_into(self, pane, messages) -> None:
         """Render resumed sub-agent transcript messages into ``pane``.
@@ -169,22 +206,7 @@ class SessionView:
         Drives the same per-part widget construction as ``replay_history`` but
         targets a ``SubAgentPane`` (VerticalScroll) instead of the main log.
         Sets ``pane.transcript_loaded = True`` when done."""
-        from pydantic_ai.messages import (
-            ModelRequest,
-            ModelResponse,
-            TextPart,
-            ThinkingPart,
-            ToolCallPart,
-            ToolReturnPart,
-        )
-
-        from .widgets import (
-            AssistantMessage,
-            SubAgentWidget,
-            ThinkingWidget,
-            ToolCallWidget,
-            ToolGroupWidget,
-        )
+        from pydantic_ai.messages import ModelRequest, ModelResponse
 
         tool_widgets: dict = {}
         group: ToolGroupWidget | None = None
@@ -192,47 +214,10 @@ class SessionView:
         for message in messages:
             if isinstance(message, (ModelRequest, ModelResponse)):
                 for part in message.parts:
-                    if isinstance(part, TextPart):
-                        if part.content:
-                            msg = AssistantMessage()
-                            await pane.add(msg)
-                            self.app.stream.append_stream(msg, part.content)
-                    elif isinstance(part, ThinkingPart):
-                        if part.content:
-                            widget = ThinkingWidget()
-                            await pane.add(widget)
-                            self.app.stream.append_stream(widget.body, part.content)
-                            widget.finalize()
-                    elif isinstance(part, ToolCallPart):
-                        args = part.args_as_dict()
-                        if part.tool_name == "spawn_agent" and not args.get("background"):
-                            widget = SubAgentWidget(
-                                str(args.get("type", "")),
-                                str(args.get("description") or args.get("task", "")),
-                                str(args.get("model") or ""),
-                            )
-                            widget.stream_id = part.tool_call_id
-                            tool_widgets[part.tool_call_id] = widget
-                            await pane.add(widget)
-                        else:
-                            widget = ToolCallWidget(
-                                part.tool_name, args,
-                                workspace_root=self.app.harness.deps.workspace_root,
-                            )
-                            tool_widgets[part.tool_call_id] = widget
-                            group, solo = await self.app.stream.add_tool_to_run(
-                                widget, pane, group, solo,
-                            )
-                    elif isinstance(part, ToolReturnPart):
-                        widget = tool_widgets.get(part.tool_call_id)
-                        if widget is not None:
-                            content = str(part.content)
-                            status = status_from_part(part)
-                            if (isinstance(widget, SubAgentWidget)
-                                    and status == "done"
-                                    and subagent_failed(content)):
-                                status = "failed"
-                            widget.finish(content, status=status)
+                    group, solo = await self._replay_parts(
+                        part, pane, pane.add, tool_widgets, group, solo,
+                        build_pane=False,
+                    )
         self.app.stream.flush_streams()
         pane.transcript_loaded = True
 
