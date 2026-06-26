@@ -54,6 +54,38 @@ async def test_pane_subtitle_hidden_and_header_falls_back_when_no_title():
         assert "explore" in str(pane._header.render())
 
 
+@pytest.mark.anyio
+async def test_set_model_replaces_subtitle_model():
+    app = _Host()
+    async with app.run_test() as pilot:
+        host = app.query_one(SubAgentDetailHost)
+        # Created with the harness fallback model (wrong for a claude-cli spawn).
+        pane = host.add_pane("c1", "claude-general", "owl-alpha", "Explore layout")
+        await pilot.pause()
+        assert "owl-alpha" in str(pane._subhead.render())
+        # The CLI reports its real model mid-stream.
+        pane.set_model("claude-opus-4-8")
+        await pilot.pause()
+        subhead = str(pane._subhead.render())
+        assert "claude-opus-4-8" in subhead
+        assert "owl-alpha" not in subhead
+        assert "claude-general" in subhead  # the type prefix is preserved
+
+
+@pytest.mark.anyio
+async def test_set_model_updates_headline_when_no_title():
+    app = _Host()
+    async with app.run_test() as pilot:
+        host = app.query_one(SubAgentDetailHost)
+        pane = host.add_pane("c1", "claude-general", "owl-alpha")  # no title
+        await pilot.pause()
+        pane.set_model("claude-opus-4-8")
+        await pilot.pause()
+        # With no title, the headline shows the type · model context — update it too.
+        assert "claude-opus-4-8" in str(pane._header.render())
+        assert "owl-alpha" not in str(pane._header.render())
+
+
 class _Host(App):
     def compose(self) -> ComposeResult:
         yield SubAgentDetailHost()

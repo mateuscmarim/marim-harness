@@ -403,6 +403,7 @@ def test_bind_ui_wires_all_callbacks(tmp_path):
     def request_approval(_): ...
     def ask_user(_): ...
     async def on_subagent_event(sid, event, usage=None): ...
+    async def on_subagent_model(sid, model): ...
     def on_tasks_changed(): ...
     def on_jobs_changed(): ...
     def on_compact(before, after): ...
@@ -413,6 +414,7 @@ def test_bind_ui_wires_all_callbacks(tmp_path):
         request_approval=request_approval,
         ask_user=ask_user,
         on_subagent_event=on_subagent_event,
+        on_subagent_model=on_subagent_model,
         on_tasks_changed=on_tasks_changed,
         on_jobs_changed=on_jobs_changed,
         on_compact=on_compact,
@@ -423,6 +425,7 @@ def test_bind_ui_wires_all_callbacks(tmp_path):
     assert h.deps.request_approval is request_approval
     assert h.deps.ask_user is ask_user
     assert h.deps.on_subagent_event is on_subagent_event
+    assert h.deps.on_subagent_model is on_subagent_model
     assert h.deps.tasks.on_change is on_tasks_changed
     assert h.deps.jobs.on_change is on_jobs_changed
     assert h.session.on_compact is on_compact

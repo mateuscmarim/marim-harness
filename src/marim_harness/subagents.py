@@ -550,6 +550,7 @@ class SubagentRunner:
         model_name = model or defn.model or os.environ.get(CLI_MODEL_ENV)
         runner = ClaudeCliRunner(
             self.deps.on_subagent_event, self.deps.on_subagent_notice,
+            self.deps.on_subagent_model,
         )
         return await runner.run(
             binary=binary, prompt=task, system_prompt=defn.prompt, cwd=cwd,

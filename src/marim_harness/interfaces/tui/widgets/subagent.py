@@ -204,6 +204,13 @@ class SubAgentWidget(Vertical):
             self._title = derive_title(self.agent_task)
         return self._title
 
+    def set_model(self, model_label: str) -> None:
+        """Record the real model this sub-agent ran on (e.g. the model a claude-cli
+        spawn reported), overriding the harness-model fallback set at creation. The
+        model isn't shown on the card itself; storing it here means a pane created
+        later picks it up, and the renderer also pushes it to an already-open pane."""
+        self.model_label = model_label
+
     def _paint_header(self) -> None:
         # A derived title (not the raw prompt); CSS clips it with an ellipsis to the
         # card width. Content.assemble keeps the (untrusted) title a literal — never

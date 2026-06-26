@@ -43,6 +43,10 @@ class SubAgentPane(VerticalScroll):
     def __init__(self, stream_id: str, agent_type: str, model_label: str,
                  title: str = "") -> None:
         self.stream_id = stream_id
+        # Kept so set_model can rebuild the header/subtitle when the real model
+        # arrives after construction (a claude-cli spawn reports it mid-stream).
+        self._agent_type = agent_type
+        self._title = title
         model = _short_model(model_label)
         context = f"{agent_type} · {model}" if model else agent_type
         # Line 1 (headline): the agent's description/title with the ◼ glyph — the
@@ -63,6 +67,17 @@ class SubAgentPane(VerticalScroll):
             self._header, self._subhead, self._usage_line, self._placeholder,
             id=pane_id(stream_id), classes="subagent-pane",
         )
+
+    def set_model(self, model_label: str) -> None:
+        """Replace the model shown in the subtitle (``type · model``) once the real
+        model is known — e.g. a claude-cli spawn reports its model mid-stream, where
+        the pane was created with the harness's fallback model. Rebuilds the muted
+        subtitle, and the headline too when it has no title to show instead."""
+        model = _short_model(model_label)
+        context = f"{self._agent_type} · {model}" if model else self._agent_type
+        self._subhead.update(Content(context))
+        if not self._title:
+            self._header.update(Content(f"◼ {context}"))
 
     def set_usage_line(self, detail: str) -> None:
         self._usage_line.update(detail)
