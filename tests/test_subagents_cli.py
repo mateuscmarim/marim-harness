@@ -79,9 +79,29 @@ def test_synth_usage_maps_token_fields():
         num_turns=3,
     )
     assert isinstance(u, RunUsage)
-    assert u.input_tokens == 10 and u.output_tokens == 5
+    # input_tokens is made inclusive of cache (10 uncached + 2 read + 1 write = 13),
+    # matching the harness/pydantic-ai convention; the cache buckets stay separate.
+    assert u.input_tokens == 13 and u.output_tokens == 5
     assert u.cache_read_tokens == 2 and u.cache_write_tokens == 1
     assert u.requests == 3
+    # total_tokens now includes cache (13 + 5), not just uncached + output.
+    assert u.total_tokens == 18
+
+
+def test_synth_usage_uncached_split_is_nonzero():
+    """Regression: with cache folded in, split_tokens recovers the real uncached
+    input (the ``↑`` value) instead of underflowing to 0."""
+    from marim_harness.usage import split_tokens
+
+    u = synth_usage(
+        {"input_tokens": 35000, "output_tokens": 15000,
+         "cache_read_input_tokens": 200000, "cache_creation_input_tokens": 48000},
+        num_turns=1,
+    )
+    s = split_tokens(u)
+    assert s.uncached_input == 35000     # the genuine uncached prompt, not 0
+    assert s.cache_read == 200000 and s.cache_write == 48000
+    assert s.output == 15000
 
 
 def test_synth_usage_captures_billed_cost():
@@ -270,7 +290,8 @@ async def test_runner_streams_events_and_returns_result(tmp_path):
         model=None, stream_id="s1",
     )
     assert result.output == "Done: found it"
-    assert result.usage.input_tokens == 10 and result.usage.output_tokens == 5
+    # input_tokens is inclusive of cache (10 uncached + 2 read + 1 write = 13).
+    assert result.usage.input_tokens == 13 and result.usage.output_tokens == 5
     names = [n for _, n in seen]
     assert "FunctionToolCallEvent" in names
     assert "FunctionToolResultEvent" in names
