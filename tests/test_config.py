@@ -168,9 +168,26 @@ def test_model_source_is_local_reflects_provider():
 
 
 @pytest.mark.anyio
-async def test_model_source_list_models_empty_for_local():
-    src = ModelSource(ModelConfig(provider="local", model="x"))
-    assert await src.list_models() == []  # no catalog for local
+async def test_model_source_list_models_empty_for_local_without_base_url():
+    src = ModelSource(ModelConfig(provider="local", model="x"))  # base_url is None
+    assert await src.list_models() == []  # nothing to query without an endpoint
+
+
+@pytest.mark.anyio
+async def test_model_source_list_models_fetches_local_catalog(monkeypatch):
+    """A local provider with a base_url lists models from that server's
+    /v1/models endpoint (LM Studio / Ollama)."""
+    from unittest.mock import AsyncMock
+
+    from marim_harness.workspace import ModelEntry
+
+    fake = AsyncMock(return_value=[ModelEntry(id="qwen2.5-coder", name="qwen2.5-coder")])
+    monkeypatch.setattr("marim_harness.config.model.fetch_local_models", fake)
+    src = ModelSource(ModelConfig(provider="local", model="x", base_url="http://localhost:1234/v1",
+                                  api_key="lmstudio"))
+    entries = await src.list_models()
+    assert [e.id for e in entries] == ["qwen2.5-coder"]
+    fake.assert_awaited_once_with("http://localhost:1234/v1", "lmstudio")
 
 
 @pytest.mark.anyio
