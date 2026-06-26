@@ -408,3 +408,55 @@ async def test_runner_drains_stderr_concurrently_no_deadlock(tmp_path):
         timeout=15,
     )
     assert result.output == "ok after big stderr"
+
+
+# A single NDJSON line carrying a >64 KiB tool_result — what a Read of a large
+# source file produces. `async for line in stream` caps lines at asyncio's 64 KiB
+# StreamReader buffer and raises "Separator is found, but chunk is longer than
+# limit"; the chunked reader removes that cap.
+_FAKE_CLI_HUGE_LINE = '''#!{python}
+import json, sys
+big = "y" * 200_000   # ~200 KB, far past the 64 KiB readline limit
+for o in [
+    {{"type": "assistant", "message": {{"content": [
+        {{"type": "tool_use", "id": "t1", "name": "Read", "input": {{"path": "x"}}}},
+    ]}}}},
+    {{"type": "user", "message": {{"content": [
+        {{"type": "tool_result", "tool_use_id": "t1", "content": big}},
+    ]}}}},
+    {{"type": "result", "subtype": "success", "result": "done after big line",
+      "num_turns": 1, "usage": {{"input_tokens": 1, "output_tokens": 1}}}},
+]:
+    sys.stdout.write(json.dumps(o) + "\\n")
+sys.stdout.flush()
+'''
+
+
+@pytest.mark.anyio
+async def test_runner_handles_line_larger_than_64kib(tmp_path):
+    """Regression: a tool_result line exceeding asyncio's 64 KiB readline limit
+    (a single Read of a large file) must not crash the runner with
+    'Separator is found, but chunk is longer than limit'."""
+    import asyncio
+
+    p = tmp_path / "huge_line.py"
+    p.write_text(_FAKE_CLI_HUGE_LINE.format(python=sys.executable), encoding="utf-8")
+    p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IRWXU)
+
+    seen = []
+
+    async def on_event(stream_id, event, usage):
+        seen.append(type(event).__name__)
+
+    runner = ClaudeCliRunner(on_event, None)
+    result = await asyncio.wait_for(
+        runner.run(
+            binary=str(p), prompt="go", system_prompt="s", cwd=str(tmp_path),
+            allow_gated=True, allowed_tools=frozenset({"read_file"}),
+            model=None, stream_id="s1",
+        ),
+        timeout=15,
+    )
+    assert result.output == "done after big line"
+    # The oversized tool_result line was parsed and surfaced, not dropped.
+    assert "FunctionToolResultEvent" in seen
