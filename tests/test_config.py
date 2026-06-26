@@ -516,3 +516,60 @@ def test_detect_active_providers_always_includes_default(monkeypatch):
     configs, default = detect_active_providers()
     assert default == "google"
     assert "google" in configs
+
+
+@pytest.mark.anyio
+async def test_multi_source_list_models_merges_and_tags(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from marim_harness.config.model import ModelConfig, ModelSource, MultiModelSource
+    from marim_harness.workspace import ModelEntry
+
+    orc = ModelSource(ModelConfig(provider="openrouter", model="x"))
+    loc = ModelSource(ModelConfig(provider="local", model="y", base_url="http://h/v1"))
+    monkeypatch.setattr(orc, "list_models",
+                        AsyncMock(return_value=[ModelEntry(id="anthropic/c", name="C")]))
+    monkeypatch.setattr(loc, "list_models",
+                        AsyncMock(return_value=[ModelEntry(id="qwen", name="Qwen")]))
+    multi = MultiModelSource({"openrouter": orc, "local": loc}, "openrouter")
+    entries = await multi.list_models()
+    tagged = {e.qualified for e in entries}
+    assert tagged == {"openrouter:anthropic/c", "local:qwen"}
+
+
+@pytest.mark.anyio
+async def test_multi_source_list_models_survives_a_failing_provider(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from marim_harness.config.model import ModelConfig, ModelSource, MultiModelSource
+    from marim_harness.workspace import ModelEntry
+
+    ok = ModelSource(ModelConfig(provider="local", model="y", base_url="http://h/v1"))
+    bad = ModelSource(ModelConfig(provider="openrouter", model="x"))
+    monkeypatch.setattr(ok, "list_models",
+                        AsyncMock(return_value=[ModelEntry(id="qwen", name="Q")]))
+    monkeypatch.setattr(bad, "list_models", AsyncMock(side_effect=RuntimeError("down")))
+    multi = MultiModelSource({"local": ok, "openrouter": bad}, "openrouter")
+    entries = await multi.list_models()
+    assert [e.qualified for e in entries] == ["local:qwen"]
+
+
+def test_multi_source_build_routes_by_prefix(monkeypatch):
+    from marim_harness.config.model import ModelConfig, ModelSource, MultiModelSource
+    calls = {}
+    orc = ModelSource(ModelConfig(provider="openrouter", model="x"))
+    loc = ModelSource(ModelConfig(provider="local", model="y", base_url="http://h/v1"))
+    monkeypatch.setattr(orc, "build", lambda mid: calls.setdefault("or", mid))
+    monkeypatch.setattr(loc, "build", lambda mid: calls.setdefault("loc", mid))
+    multi = MultiModelSource({"openrouter": orc, "local": loc}, "openrouter")
+    multi.build("local:qwen2.5-coder")
+    multi.build("anthropic/claude-sonnet-4-6")  # bare -> default (openrouter)
+    assert calls == {"loc": "qwen2.5-coder", "or": "anthropic/claude-sonnet-4-6"}
+
+
+def test_multi_source_label_qualifies():
+    from marim_harness.config.model import ModelConfig, ModelSource, MultiModelSource
+    orc = ModelSource(ModelConfig(provider="openrouter", model="x"))
+    multi = MultiModelSource({"openrouter": orc}, "openrouter")
+    assert multi.label("openrouter:anthropic/c") == "openrouter:anthropic/c"
+    assert multi.label("anthropic/c") == "openrouter:anthropic/c"  # bare gains default prefix

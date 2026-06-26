@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from dataclasses import dataclass, field, replace
@@ -252,3 +253,51 @@ class ModelSource:
         if self.cfg.provider == "local":
             return await fetch_local_models(self.cfg.base_url, self.cfg.api_key)
         return []
+
+
+class MultiModelSource:
+    """A ModelSource over several providers at once. Implements the same
+    interface the Harness/picker use (``list_models``/``build``/``label``/
+    ``is_local``); models are addressed by a colon-qualified ``provider:model_id``.
+    A bare or unknown-prefix id resolves on ``default``."""
+
+    def __init__(self, sources: dict[str, ModelSource], default: str) -> None:
+        self.sources = sources
+        self.default = default
+
+    @classmethod
+    def from_env(cls) -> "MultiModelSource":
+        configs, default = detect_active_providers()
+        return cls({p: ModelSource(c) for p, c in configs.items()}, default)
+
+    @property
+    def is_local(self) -> bool:
+        # The composite is not a single local provider; the picker reads this only
+        # to keep free-text entry available, which we always want here.
+        return False
+
+    def _route(self, qualified: str) -> tuple[ModelSource, str]:
+        provider, bare = parse_qualified(qualified, set(self.sources), self.default)
+        return self.sources.get(provider, self.sources[self.default]), bare
+
+    def label(self, model_id: str) -> str:
+        provider, bare = parse_qualified(model_id, set(self.sources), self.default)
+        return f"{provider}:{bare}"
+
+    def build(self, model_id: str):
+        source, bare = self._route(model_id)
+        return source.build(bare)
+
+    async def list_models(self) -> list[ModelEntry]:
+        async def _one(provider: str, source: ModelSource) -> list[ModelEntry]:
+            try:
+                entries = await source.list_models()
+            except Exception as exc:  # noqa: BLE001 - one provider's failure must not sink the rest
+                logger.warning("model catalog for %s failed: %s", provider, exc)
+                return []
+            return [replace(e, provider=provider) for e in entries]
+
+        results = await asyncio.gather(
+            *[_one(p, s) for p, s in self.sources.items()]
+        )
+        return [e for group in results for e in group]
