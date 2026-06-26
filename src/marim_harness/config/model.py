@@ -24,6 +24,19 @@ _DEFAULT_GOOGLE_MODEL = "gemini-2.5-flash"
 _KNOWN_PROVIDERS = frozenset({"openrouter", "local", "google"})
 
 
+def parse_qualified(qualified, active, default):
+    """Split a ``provider:model_id`` into ``(provider, bare_id)``.
+
+    If the segment before the first ':' is an active provider, route there with
+    the remainder as the bare id. Otherwise the whole string is a bare id on the
+    ``default`` provider — which makes bare ids (old sessions, MARIM_MODEL) and
+    unknown prefixes (e.g. an OpenRouter ``vendor/model`` id) Just Work."""
+    head, sep, rest = qualified.partition(":")
+    if sep and head in active:
+        return head, rest
+    return default, qualified
+
+
 @dataclass
 class ModelConfig:
     provider: str  # "openrouter" | "local" | "google"

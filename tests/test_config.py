@@ -463,3 +463,27 @@ def test_load_environment_invalid_int_falls_back_to_default(isolated_env, monkey
     monkeypatch.setenv("MARIM_MAX_CONTEXT_TOKENS", "-9")
     load_environment()
     assert load_config().max_context_tokens == 100_000
+
+
+def test_parse_qualified_known_prefix_routes_to_provider():
+    from marim_harness.config.model import parse_qualified
+    active = {"openrouter", "local", "google"}
+    assert parse_qualified("openrouter:anthropic/claude-sonnet-4-6", active, "openrouter") == (
+        "openrouter", "anthropic/claude-sonnet-4-6")
+    assert parse_qualified("local:qwen2.5-coder", active, "openrouter") == (
+        "local", "qwen2.5-coder")
+
+
+def test_parse_qualified_bare_id_uses_default():
+    from marim_harness.config.model import parse_qualified
+    active = {"openrouter", "local"}
+    assert parse_qualified("anthropic/claude-sonnet-4-6", active, "openrouter") == (
+        "openrouter", "anthropic/claude-sonnet-4-6")
+
+
+def test_parse_qualified_unknown_prefix_is_treated_as_bare_id():
+    from marim_harness.config.model import parse_qualified
+    # 'google' is NOT active here, so 'google/gemma' is a bare OpenRouter id, not a provider.
+    active = {"openrouter", "local"}
+    assert parse_qualified("google/gemma-2-9b", active, "openrouter") == (
+        "openrouter", "google/gemma-2-9b")
