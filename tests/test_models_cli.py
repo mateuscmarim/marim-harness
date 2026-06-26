@@ -65,10 +65,16 @@ def test_list_json(monkeypatch):
 
 
 def test_list_local_friendly_note(monkeypatch):
+    """An empty local result now means the server was unreachable (local DOES
+    have a catalog when up), so the note should point at the server, not claim
+    local has no catalog."""
     _patch_source(monkeypatch, [], is_local=True)
     out = io.StringIO()
     assert models_cmd.main(["list"], out=out) == 0
-    assert out.getvalue().strip()  # a friendly note, not an empty string
+    note = out.getvalue().strip().lower()
+    assert note
+    assert "no catalog for local" not in note
+    assert "server" in note
 
 
 def test_list_empty(monkeypatch):

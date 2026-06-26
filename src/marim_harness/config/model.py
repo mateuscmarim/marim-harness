@@ -5,7 +5,12 @@ from typing import Any
 
 from ..command_policy import split_patterns
 from ..notifications import DEFAULT_EVENTS, parse_events
-from ..workspace.catalog import ModelEntry, fetch_google_models, fetch_openrouter_models
+from ..workspace.catalog import (
+    ModelEntry,
+    fetch_google_models,
+    fetch_local_models,
+    fetch_openrouter_models,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -219,4 +224,6 @@ class ModelSource:
             return await fetch_openrouter_models(self.cfg.api_key)
         if self.cfg.provider == "google":
             return await fetch_google_models(self.cfg.api_key)
+        if self.cfg.provider == "local":
+            return await fetch_local_models(self.cfg.base_url, self.cfg.api_key)
         return []

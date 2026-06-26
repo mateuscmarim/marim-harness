@@ -120,6 +120,30 @@ async def fetch_openrouter_models(
         return []
 
 
+async def fetch_local_models(
+    base_url: str | None, api_key: str | None = None, timeout: float = 10.0
+) -> list[ModelEntry]:
+    """Fetch the catalog from a local OpenAI-compatible server (LM Studio, Ollama,
+    …) by GETting ``{base_url}/models``. The response is the standard OpenAI
+    ``{"data": [{"id": ...}]}`` shape, so ``parse_models`` handles it. Returns
+    ``[]`` on any failure (or no base_url) so the picker degrades to free-text
+    entry. httpx is imported lazily to keep the import chain light."""
+    if not base_url:
+        return []
+    import httpx
+
+    url = f"{base_url.rstrip('/')}/models"
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            return parse_models(response.json())
+    except Exception as exc:
+        logger.warning("failed to fetch local model catalog from %s: %s", url, exc)
+        return []
+
+
 def model_supports_images(entries: list[ModelEntry], model_id: str) -> bool | None:
     """Whether ``model_id`` accepts image input per the catalog; None if the id
     is not present (capability unknown)."""

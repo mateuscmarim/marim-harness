@@ -29,8 +29,8 @@ def _cmd_list(args, *, out, err) -> int:
     if not entries:
         if getattr(source, "is_local", False):
             print(
-                "No catalog for local providers — set MARIM_MODEL to the model id "
-                "your server exposes.",
+                "No models returned from the local server — is it running at "
+                "MARIM_BASE_URL? You can also set MARIM_MODEL to a model id directly.",
                 file=out,
             )
         else:
