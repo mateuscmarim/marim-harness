@@ -11,10 +11,17 @@ from marim_harness.session import SessionManager
 
 
 def _stub_model_plumbing(monkeypatch):
-    """Keep build_harness off the provider packages and any network."""
+    """Keep build_harness off the provider packages and any network.
+
+    bootstrap no longer calls build_model directly — model construction now
+    flows through MultiModelSource.build → ModelSource.build. Patching
+    ModelSource.build intercepts every provider's model construction without
+    touching provider-specific import paths."""
     from pydantic_ai.models.test import TestModel
 
-    monkeypatch.setattr(bootstrap, "build_model", lambda cfg: TestModel())
+    from marim_harness.config.model import ModelSource
+
+    monkeypatch.setattr(ModelSource, "build", lambda self, mid: TestModel())
     monkeypatch.setattr(bootstrap, "make_summarizer", lambda model: None)
     monkeypatch.setattr(bootstrap, "make_titler", lambda model: None)
 
@@ -174,7 +181,8 @@ def test_fresh_harness_inherits_model_from_latest_session(tmp_path, monkeypatch)
     harness = bootstrap.build_harness(ws, mode=Mode.ask)
 
     assert harness.model_id == "openai/gpt-5.2"
-    assert harness.model_label == "openrouter/openai/gpt-5.2"
+    # MultiModelSource.label uses ':' as provider:model separator (was '/' with ModelSource).
+    assert harness.model_label == "openrouter:openai/gpt-5.2"
 
 
 def test_fresh_harness_falls_back_to_config_default(tmp_path, monkeypatch):
@@ -189,7 +197,8 @@ def test_fresh_harness_falls_back_to_config_default(tmp_path, monkeypatch):
     default_model = bootstrap.load_config().model
     harness = bootstrap.build_harness(tmp_path / "ws", mode=Mode.ask)
 
-    assert harness.model_id == default_model
+    # model_id is now the qualified form "provider:bare_model" produced by MultiModelSource.
+    assert harness.model_id == f"openrouter:{default_model}"
     assert harness.session.store.model is None  # brand-new session, nothing inherited
 
 
@@ -222,6 +231,25 @@ def test_build_harness_hooks_none_without_config(tmp_path, monkeypatch):
 
     harness = build_harness(tmp_path / "ws", mode=Mode.ask)
     assert harness.deps.hooks is None
+
+
+def test_build_harness_uses_multi_model_source(monkeypatch, tmp_path):
+    from pydantic_ai.models.test import TestModel
+
+    import marim_harness.bootstrap as b
+    from marim_harness.config.model import MultiModelSource
+    from marim_harness.permissions import Mode
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    monkeypatch.setenv("MARIM_BASE_URL", "http://localhost:1234/v1")
+    # Avoid constructing real provider models or aux agents in the test:
+    monkeypatch.setattr(MultiModelSource, "build", lambda self, mid: TestModel())
+    monkeypatch.setattr(b, "make_summarizer", lambda model: None)
+    monkeypatch.setattr(b, "make_titler", lambda model: None)
+    h = b.build_harness(tmp_path, mode=Mode.ask)
+    assert isinstance(h.model_source, MultiModelSource)
+    assert set(h.model_source.sources) >= {"openrouter", "local"}
+    assert h.model_id.startswith("openrouter:")  # qualified default
 
 
 def test_resume_reattaches_to_latest_and_replays_history(tmp_path, monkeypatch):
