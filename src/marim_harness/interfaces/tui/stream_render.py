@@ -594,6 +594,13 @@ class StreamRenderer:
             widget.stream_id, widget.agent_type, widget.model_label,
             widget.display_title(), widget.agent_task,
         )
+        # This pane is fed by the live stream, so its transcript is already on
+        # screen — mark it loaded so the resume-time lazy-load never fires on it.
+        # A still-running sub-agent has written no sidecar yet, so that load would
+        # read nothing and wrongly append the "transcript unavailable for this
+        # resumed sub-agent" note over the live content. Only panes rebuilt from a
+        # persisted session (replay_history) stay unloaded so they lazy-load.
+        pane.transcript_loaded = True
         widget.pane = pane
         return pane
 
