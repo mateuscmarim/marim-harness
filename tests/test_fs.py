@@ -234,6 +234,32 @@ def test_path_escape_raises_model_retry(tmp_path: Path):
         fs.read_file(tmp_path, "../escape.txt")
 
 
+def test_read_file_reaches_extra_read_root(tmp_path: Path):
+    # A skill dir outside the workspace: an absolute path into it is normally an
+    # escape, but extra_read_roots whitelists it for reading.
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "prompt.md").write_text("bundled prompt body")
+    out = fs.read_file(ws, str(skill / "prompt.md"), extra_read_roots=(skill,))
+    assert "bundled prompt body" in out
+
+
+def test_read_file_extra_root_does_not_widen_to_other_paths(tmp_path: Path):
+    # A whitelisted skill root must not grant reads of unrelated out-of-workspace
+    # files: escapes that land in neither the workspace nor an extra root still fail.
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    secret = tmp_path / "secret"
+    secret.mkdir()
+    (secret / "key.txt").write_text("top secret")
+    with pytest.raises(ModelRetry):
+        fs.read_file(ws, str(secret / "key.txt"), extra_read_roots=(skill,))
+
+
 def test_glob_escaping_pattern_excludes_outside_files(tmp_path: Path):
     root = tmp_path / "ws"
     root.mkdir()

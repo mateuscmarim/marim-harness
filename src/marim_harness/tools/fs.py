@@ -46,8 +46,28 @@ def _safe(root: Path, path: str) -> Path:
         raise ModelRetry(str(exc)) from exc
 
 
+def _safe_read(root: Path, path: str, extra_read_roots: tuple[Path, ...]) -> Path:
+    """Resolve ``path`` for reading, permitting it if it stays inside ``root`` or
+    inside any of ``extra_read_roots``. The extra roots are read-only escape hatches
+    (e.g. skill directories that live outside the workspace) — they widen reads only,
+    never writes, and only to files genuinely inside one of them."""
+    try:
+        return resolve_in_workspace(root, path)
+    except WorkspaceError as exc:
+        for extra in extra_read_roots:
+            try:
+                return resolve_in_workspace(extra, path)
+            except WorkspaceError:
+                continue
+        raise ModelRetry(str(exc)) from exc
+
+
 def read_file(
-    root: Path, path: str, offset: int = 1, limit: int | None = None
+    root: Path,
+    path: str,
+    offset: int = 1,
+    limit: int | None = None,
+    extra_read_roots: tuple[Path, ...] = (),
 ) -> str:
     """Read a text file relative to the workspace root, returning numbered lines.
 
@@ -57,12 +77,16 @@ def read_file(
     over-long lines are clipped to ``_MAX_LINE_CHARS`` and the read stops once it
     has emitted ``_MAX_READ_CHARS`` worth of text. When the returned window isn't
     the whole file (or a line was clipped), a ``[…]`` footer says so, so the
-    reader knows to page on with ``offset``/``limit``."""
+    reader knows to page on with ``offset``/``limit``.
+
+    ``extra_read_roots`` are additional directories a path may resolve into besides
+    the workspace (read-only) — used to let reads reach skill directories that live
+    outside the workspace."""
     if offset < 1:
         raise ModelRetry("offset must be >= 1 (1-based line number).")
     if limit is not None and limit < 1:
         raise ModelRetry("limit must be >= 1.")
-    p = _safe(root, path)
+    p = _safe_read(root, path, extra_read_roots)
     if not p.is_file():
         raise ModelRetry(f"not a file: {path}")
     lines = p.read_text(errors="replace").splitlines()

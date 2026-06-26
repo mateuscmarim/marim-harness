@@ -12,7 +12,7 @@ from ..jobs import render_jobs
 from ..tasks import Task, summarize
 from ..workspace.agents import compose_subagent_task
 from ..workspace.memory import global_scope, project_scope, read_memory, save_memory
-from ..workspace.skills import find_skill, read_bundled_file, read_skill_body
+from ..workspace.skills import discover_skills, find_skill, read_bundled_file, read_skill_body
 from . import fetch, fs, shell, web
 
 # Re-exported for backward compatibility; defined in the leaf module ``names``
@@ -83,8 +83,18 @@ def read_file(
     For large files, read a window instead of the whole thing: `offset` is the
     1-based line to start at and `limit` caps the line count. Prefer locating
     what you need first (with `grep`/`tree`) and reading a targeted range — a
-    read with no `limit` is capped and will tell you how to page on."""
-    return fs.read_file(ctx.deps.workspace_root, path, offset=offset, limit=limit)
+    read with no `limit` is capped and will tell you how to page on.
+
+    Skill directories (which may live outside the workspace) are also readable by
+    their absolute path, so a skill's bundled files can be read this way too."""
+    # Whitelist every discovered skill's directory for reading, so an agent that
+    # reaches for a skill's bundled file by absolute path succeeds even when the
+    # skill lives outside the workspace (discover_skills is cached per workspace).
+    skill_roots = tuple(s.root for s in discover_skills(ctx.deps.workspace_root))
+    return fs.read_file(
+        ctx.deps.workspace_root, path, offset=offset, limit=limit,
+        extra_read_roots=skill_roots,
+    )
 
 
 def glob(ctx: RunContext[Deps], pattern: str) -> str:
@@ -284,7 +294,13 @@ def activate_skill(ctx: RunContext[Deps], name: str) -> str:
     skill = find_skill(ctx.deps.workspace_root, name)
     if skill is None:
         return f"No skill named {name!r}. See the skills index."
-    return f"Skill directory: {skill.root}\n\n{read_skill_body(skill)}"
+    return (
+        f"Skill directory: {skill.root}\n"
+        f"To read a file the skill points at (e.g. ./foo.md), call "
+        f"read_skill_file({name!r}, <path-relative-to-skill>); read_file with the "
+        f"absolute path under the skill directory also works.\n\n"
+        f"{read_skill_body(skill)}"
+    )
 
 
 def read_skill_file(ctx: RunContext[Deps], name: str, path: str) -> str:
@@ -292,7 +308,7 @@ def read_skill_file(ctx: RunContext[Deps], name: str, path: str) -> str:
     or `scripts/run.py`), where `path` is relative to the skill's
     directory. Use after activate_skill when its instructions point you at
     a bundled file. Works for skills in any scope, including global ones
-    outside the workspace that read_file can't reach."""
+    outside the workspace, and saves you needing the skill's absolute path."""
     skill = find_skill(ctx.deps.workspace_root, name)
     if skill is None:
         return f"No skill named {name!r}. See the skills index."
