@@ -15,7 +15,7 @@ from .subagent_detail import SubAgentDetailHost
 from .subagent_stats import SummaryStats, aggregate
 from .subagent_viewer import SubAgentList
 
-_HINTS = "Esc back · ↑↓ select · Tab switch pane"
+_HINTS = "Esc back · ↑↓ select · Tab switch pane · t task"
 
 
 class SubAgentSummary(Static):
@@ -47,6 +47,7 @@ class SubAgentsView(Vertical):
         Binding("ctrl+x", "app.close_subagents", "Close", show=False),
         Binding("tab", "focus_next_pane", "Switch pane", show=False),
         Binding("shift+tab", "focus_next_pane", "Switch pane", show=False),
+        Binding("t", "toggle_task", "Task", show=False),
     ]
 
     def __init__(self) -> None:
@@ -81,3 +82,13 @@ class SubAgentsView(Vertical):
                 self.host.query_one(f"#{self.host.current}").focus()
         else:
             self.list.focus()
+
+    def action_toggle_task(self) -> None:
+        """Expand/collapse the full-task disclosure on the visible pane (the 't'
+        key). A no-op when no pane is current or it has no task."""
+        sid = self.host.current_sid()
+        if sid is None:
+            return
+        pane = self.host.pane(sid)
+        if pane is not None:
+            pane.toggle_task()

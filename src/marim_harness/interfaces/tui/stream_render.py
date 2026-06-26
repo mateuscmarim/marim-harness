@@ -592,7 +592,7 @@ class StreamRenderer:
             return widget.pane
         pane = self.detail_host.add_pane(
             widget.stream_id, widget.agent_type, widget.model_label,
-            widget.display_title(),
+            widget.display_title(), widget.agent_task,
         )
         widget.pane = pane
         return pane
