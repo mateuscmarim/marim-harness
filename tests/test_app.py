@@ -3507,7 +3507,12 @@ async def test_detached_card_fills_automatically_when_job_settles(tmp_path: Path
 async def test_sub_streams_pruned_after_subagent_finish(tmp_path: Path):
     """_sub_streams entries are removed at prune_completed so finished sub-agents
     don't accumulate stream state for the session lifetime."""
-    from pydantic_ai.messages import FunctionToolResultEvent, PartStartEvent, TextPart, ToolReturnPart
+    from pydantic_ai.messages import (
+        FunctionToolResultEvent,
+        PartStartEvent,
+        TextPart,
+        ToolReturnPart,
+    )
 
     async def gen():
         yield _spawn_call("s1", "explore the repo")

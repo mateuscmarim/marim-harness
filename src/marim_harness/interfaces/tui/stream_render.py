@@ -4,6 +4,7 @@ Turns a turn's (and each sub-agent's) streamed events into the log's live
 AssistantMessage / ToolCallWidget / SubAgentWidget tree. Owns all per-turn stream
 state; reaches the app and the status presenter through ``self.app``."""
 
+import abc
 from dataclasses import dataclass, field
 from typing import cast
 
@@ -135,7 +136,7 @@ class _SubStreamState:
     thinking: "ThinkingWidget | None" = field(default=None)
 
 
-class _StreamSink:
+class _StreamSink(abc.ABC):
     """Where one event stream's widgets land and how its run-state is read/written.
 
     Routing a streamed turn is identical whether the events come from the
@@ -148,31 +149,29 @@ class _StreamSink:
 
     container: Widget  # mount target for assistant text and bare tool widgets
 
+    @abc.abstractmethod
     def get_run(self) -> tuple:
         """This stream's (group, solo) run-of-consecutive-tools state."""
-        raise NotImplementedError
 
-    def set_run(self, group, solo) -> None:
-        raise NotImplementedError
+    @abc.abstractmethod
+    def set_run(self, group, solo) -> None: ...
 
-    def get_assistant(self):
-        """The AssistantMessage currently receiving text deltas, or None."""
-        raise NotImplementedError
+    @abc.abstractmethod
+    def get_assistant(self) -> "AssistantMessage | None": ...
 
-    def set_assistant(self, msg) -> None:
-        raise NotImplementedError
+    @abc.abstractmethod
+    def set_assistant(self, msg) -> None: ...
 
-    def get_thinking(self):
-        """The ThinkingWidget currently receiving thinking deltas, or None."""
-        raise NotImplementedError
+    @abc.abstractmethod
+    def get_thinking(self) -> "ThinkingWidget | None": ...
 
-    def set_thinking(self, widget) -> None:
-        raise NotImplementedError
+    @abc.abstractmethod
+    def set_thinking(self, widget) -> None: ...
 
-    def on_text(self) -> None:
+    def on_text(self) -> None:  # noqa: B027
         """Called when the stream starts a text part (title status, sub only)."""
 
-    def on_tool(self, tool_name: str, args: dict) -> None:
+    def on_tool(self, tool_name: str, args: dict) -> None:  # noqa: B027
         """Called when the stream makes a tool call (card status, sub only)."""
 
     async def intercept_tool(self, event, args: dict) -> bool:
@@ -180,7 +179,7 @@ class _StreamSink:
         skip the default ToolCallWidget path. Default: never intercepts."""
         return False
 
-    def on_result(self, event) -> None:
+    def on_result(self, event) -> None:  # noqa: B027
         """Called after a tool result is rendered (cleanup hook)."""
 
 

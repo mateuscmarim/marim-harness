@@ -199,34 +199,38 @@ class LspManager:
 
     # --- operations ----------------------------------------------------------
 
-    async def goto_definition(self, path: str, line: int, col: int) -> str:
+    async def _require_server(self, path: str, what: str) -> tuple[Any, str | None]:
+        """Return ``(server, None)`` if a server is available for ``path``, or
+        ``(None, error_str)`` with a caller-ready message otherwise."""
         server, _lang, err = await self._server_for(path)
         if err:
-            return err
+            return None, err
         if server is None:
-            return f"goto_definition: no server available for {path!r}."
+            return None, f"{what}: no server available for {path!r}."
+        return server, None
+
+    async def goto_definition(self, path: str, line: int, col: int) -> str:
+        server, err = await self._require_server(path, "goto_definition")
+        if err:
+            return err
         res, err = await self._call(
             server.request_definition(path, line - 1, col - 1), "goto_definition"
         )
         return err or self._format_locations("definitions", res)
 
     async def find_references(self, path: str, line: int, col: int) -> str:
-        server, _lang, err = await self._server_for(path)
+        server, err = await self._require_server(path, "find_references")
         if err:
             return err
-        if server is None:
-            return f"find_references: no server available for {path!r}."
         res, err = await self._call(
             server.request_references(path, line - 1, col - 1), "find_references"
         )
         return err or self._format_locations("references", res)
 
     async def hover(self, path: str, line: int, col: int) -> str:
-        server, _lang, err = await self._server_for(path)
+        server, err = await self._require_server(path, "hover")
         if err:
             return err
-        if server is None:
-            return f"hover: no server available for {path!r}."
         res, err = await self._call(
             server.request_hover(path, line - 1, col - 1), "hover"
         )
@@ -235,11 +239,9 @@ class LspManager:
         return _clamp_hover(_hover_text(res)) or "No hover information."
 
     async def document_symbols(self, path: str) -> str:
-        server, _lang, err = await self._server_for(path)
+        server, err = await self._require_server(path, "document_symbols")
         if err:
             return err
-        if server is None:
-            return f"document_symbols: no server available for {path!r}."
         res, err = await self._call(
             server.request_document_symbols(path), "document_symbols"
         )

@@ -147,17 +147,31 @@ def _read_json(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _resolve_hooks_entries(source) -> dict | None:
+    """Return the ``{event: [entries]}`` dict from a hooks source, or None."""
+    if isinstance(source, dict):
+        hooks = source.get("hooks") if "hooks" in source else source
+    else:
+        hooks = _read_json(source).get("hooks")
+    return hooks if isinstance(hooks, dict) else None
+
+
+def _resolve_mcp_servers(source) -> dict | None:
+    """Return the ``{name: spec}`` dict from an MCP source, or None."""
+    if isinstance(source, dict):
+        servers = source.get("mcpServers") if "mcpServers" in source else source
+    else:
+        servers = _read_json(source).get("mcpServers")
+    return servers if isinstance(servers, dict) else None
+
+
 def plugin_hook_entries(workspace_root) -> dict:
     """Merged ``{event: [entry,...]}`` from enabled+trusted plugins, with
     ``${MARIM_PLUGIN_ROOT}`` substituted in each entry."""
     merged: dict = {}
     for p in _enabled_trusted(workspace_root):
-        source = p.manifest.hooks_source()
-        if isinstance(source, dict):
-            hooks = source.get("hooks") if "hooks" in source else source
-        else:
-            hooks = _read_json(source).get("hooks")
-        if not isinstance(hooks, dict):
+        hooks = _resolve_hooks_entries(p.manifest.hooks_source())
+        if hooks is None:
             continue
         for event, entries in hooks.items():
             if not isinstance(entries, list):
@@ -174,12 +188,8 @@ def plugin_mcp_specs(workspace_root) -> dict:
     a tool prefix. ``${MARIM_PLUGIN_ROOT}`` is substituted in each spec."""
     merged: dict = {}
     for p in _enabled_trusted(workspace_root):
-        source = p.manifest.mcp_source()
-        if isinstance(source, dict):
-            servers = source.get("mcpServers") if "mcpServers" in source else source
-        else:
-            servers = _read_json(source).get("mcpServers")
-        if not isinstance(servers, dict):
+        servers = _resolve_mcp_servers(p.manifest.mcp_source())
+        if servers is None:
             continue
         for server_name, spec in servers.items():
             merged[f"{p.name}_{server_name}"] = substitute_root(spec, p.root)
@@ -215,20 +225,12 @@ def _count_files(root: Path, suffix: str) -> int:
 
 
 def _count_hooks(manifest: PluginManifest) -> int:
-    source = manifest.hooks_source()
-    if isinstance(source, dict):
-        hooks = source.get("hooks", source)
-    else:
-        hooks = _read_json(source).get("hooks")
-    if not isinstance(hooks, dict):
+    hooks = _resolve_hooks_entries(manifest.hooks_source())
+    if hooks is None:
         return 0
     return sum(len(v) for v in hooks.values() if isinstance(v, list))
 
 
 def _count_mcp(manifest: PluginManifest) -> int:
-    source = manifest.mcp_source()
-    if isinstance(source, dict):
-        servers = source.get("mcpServers", source)
-    else:
-        servers = _read_json(source).get("mcpServers")
-    return len(servers) if isinstance(servers, dict) else 0
+    servers = _resolve_mcp_servers(manifest.mcp_source())
+    return len(servers) if servers is not None else 0

@@ -184,8 +184,8 @@ class SettingsModal(ModalScreen[None]):
 
     def _mcp_state(self, name: str) -> str:
         status = self.harness.mcp.mcp_status
-        connected = set(status.get("connected", []))
-        failed = dict(status.get("failed", []))
+        connected = set(status.connected)
+        failed = dict(status.failed)
         if name in self.harness.mcp.disabled:
             return f"{name} — disabled"
         if name in connected:

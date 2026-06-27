@@ -1,10 +1,36 @@
 import logging
 from contextlib import AsyncExitStack
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import persist_server_enabled
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class McpStatus:
+    """Live connection state for all MCP servers in this session."""
+
+    connected: list[str] = field(default_factory=list)
+    failed: list[tuple[str, str]] = field(default_factory=list)
+
+    def add_connected(self, name: str) -> None:
+        if name not in self.connected:
+            self.connected.append(name)
+        self.failed = [(n, e) for n, e in self.failed if n != name]
+
+    def add_failed(self, name: str, err: str) -> None:
+        self.connected = [n for n in self.connected if n != name]
+        self.failed = [(n, e) for n, e in self.failed if n != name]
+        self.failed.append((name, err))
+
+    def remove(self, name: str) -> None:
+        self.connected = [n for n in self.connected if n != name]
+        self.failed = [(n, e) for n, e in self.failed if n != name]
+
+    def to_dict(self) -> dict:
+        return {"connected": list(self.connected), "failed": list(self.failed)}
 
 
 class McpManager:
@@ -16,7 +42,7 @@ class McpManager:
         self._mcp_stack: AsyncExitStack | None = None
         self._connected: bool = False
         self.disabled: set[str] = set(disabled)
-        self.mcp_status: dict = {"connected": [], "failed": []}
+        self.mcp_status: McpStatus = McpStatus()
 
     @staticmethod
     def server_name(server) -> str:
@@ -81,26 +107,22 @@ class McpManager:
 
     async def connect(self) -> dict:
         if self._connected or not self.mcp_servers:
-            return self.mcp_status
-        connected: list[str] = []
-        failed: list[tuple[str, str]] = []
+            return self.mcp_status.to_dict()
         for server in self.mcp_servers:
             name = self.server_name(server)
             if name in self.disabled:
                 continue
             err = await self._connect_one(server)
             if err is None:
-                connected.append(name)
+                self.mcp_status.add_connected(name)
             else:
-                failed.append((name, err))
+                self.mcp_status.add_failed(name, err)
         # Mark connected only after the loop completes. If a cancellation or
         # BaseException interrupts mid-connect, the flag stays False so a later
         # connect() retries (and reaps the servers already in the stack via
         # aclose) instead of early-returning into a half-connected state.
         self._connected = True
-        self.mcp_status["connected"] = connected
-        self.mcp_status["failed"] = failed
-        return self.mcp_status
+        return self.mcp_status.to_dict()
 
     async def aclose(self) -> None:
         # Reset state regardless of whether teardown succeeds: a server whose
@@ -118,7 +140,7 @@ class McpManager:
             self._connected = False
             # Nothing is connected once closed; reset the status so a later
             # reconnect/enable starts from a clean slate (and can't double-list).
-            self.mcp_status = {"connected": [], "failed": []}
+            self.mcp_status = McpStatus()
 
     def disable_server(self, name: str, workspace_root: Path) -> None:
         self.disabled.add(name)
@@ -136,21 +158,11 @@ class McpManager:
             return f"no such server {name!r}"
         err = await self._connect_one(server)
         if err is None:
-            if name not in self.mcp_status["connected"]:
-                self.mcp_status["connected"].append(name)
-            self.mcp_status["failed"] = [
-                f for f in self.mcp_status["failed"] if f[0] != name
-            ]
+            self.mcp_status.add_connected(name)
         else:
             # Mirror connect()'s bookkeeping on the failure path so status stays
             # accurate: a server that failed to (re)connect must not linger in
             # "connected" from an earlier successful session, and the new failure
             # must be recorded (de-duped) so the UI/status reflects it.
-            self.mcp_status["connected"] = [
-                n for n in self.mcp_status["connected"] if n != name
-            ]
-            self.mcp_status["failed"] = [
-                f for f in self.mcp_status["failed"] if f[0] != name
-            ]
-            self.mcp_status["failed"].append((name, err))
+            self.mcp_status.add_failed(name, err)
         return err

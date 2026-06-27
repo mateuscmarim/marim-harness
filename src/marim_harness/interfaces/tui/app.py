@@ -11,6 +11,7 @@ from textual.widgets import Footer, Header, Static
 from ...agent import Harness
 from ...errors import format_provider_error
 from ...history import PromptHistory
+from ...jobs import JobRegistry
 from ...prefs import load_theme, save_theme
 from ...usage import resolve_cost
 from .approval import ApprovalModal
@@ -262,7 +263,7 @@ class HarnessApp(App):
                 self._driver.flush()
             except Exception:
                 pass
-        await self.harness.deps.jobs.cancel_all()
+        await self.jobs.cancel_all()
         await self.harness.session_end("exit")
         await self.harness.aclose()
 
@@ -288,13 +289,13 @@ class HarnessApp(App):
             panel = self.query_one(JobPanel)
         except NoMatches:
             return  # tearing down; nothing to paint
-        panel.show_jobs(self.harness.deps.jobs.list())
+        panel.show_jobs(self.jobs.list())
 
     def _on_jobs_changed(self) -> None:
         """Live callback from the job registry — repaint as jobs launch and
         finish. Each job runs as a task on the app's event loop, so the callback
         fires there and direct widget mutation is safe."""
-        self.stream.fill_finished_detached_cards(self.harness.deps.jobs)
+        self.stream.fill_finished_detached_cards(self.jobs)
         self._render_jobs()
         self._notify_finished_jobs()
         self._maybe_wake()
@@ -325,7 +326,7 @@ class HarnessApp(App):
         when wake is off, a turn is busy, or the depth cap is hit. Cancelled jobs
         are skipped — they're either agent-initiated or shutdown teardown, so a
         ping would be noise (and this keeps ``cancel_all`` on exit silent)."""
-        for job in self._job_notifier.newly_finished(self.harness.deps.jobs.list()):
+        for job in self._job_notifier.newly_finished(self.jobs.list()):
             self._notify(
                 "Background job finished",
                 f"{job.id} ({job.kind}) {job.status}",
@@ -344,8 +345,8 @@ class HarnessApp(App):
         if not self._wake.should_wake(
             enabled=self.autonomous_wake,
             turn_busy=self.turn_busy,
-            has_finished_pending=self.harness.deps.jobs.has_finished_pending(),
-            all_jobs_settled=not self.harness.deps.jobs.any_running(),
+            has_finished_pending=self.jobs.has_finished_pending(),
+            all_jobs_settled=not self.jobs.any_running(),
         ):
             return
         self._wake.record_auto_turn()
@@ -353,6 +354,10 @@ class HarnessApp(App):
         # _on_compact / _on_rename.
         self._append_log(NoticeMessage("⏰ Resumed — background job(s) finished"))
         self._turn_worker = self.run_worker(self._run_turn(""), exclusive=True)
+
+    @property
+    def jobs(self) -> JobRegistry:
+        return self.harness.deps.jobs
 
     @property
     def turn_busy(self) -> bool:

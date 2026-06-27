@@ -125,13 +125,12 @@ class Notifier:
         :meth:`send_async` instead, which runs the same dispatch off the loop.
         """
         if not self._should_fire(event_type):
-            # On a coalesce-window skip the timestamp is unchanged; on a fire it
-            # was already recorded by _should_fire. Roll it back if the dispatch
-            # raises so a later retry isn't suppressed.
             return
         try:
             self._dispatch(title, body)
         except Exception as exc:  # never let notifications break a turn
+            # _should_fire already recorded the timestamp on a fire; roll it back
+            # so a later retry isn't suppressed.
             self._last_fired.pop(event_type, None)
             logger.debug("notification failed (%s): %s", event_type, exc)
 
@@ -207,13 +206,15 @@ class Notifier:
         # Use the BurntToast-free fallback: a balloon tip via the system tray.
         # This avoids any module install; works on Windows 10/11 PowerShell 5+.
         # Pass the script on stdin to avoid shell interpretation.
+        t = title.replace("'", "''")
+        b = body.replace("'", "''")
         ps = (
             "[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms')"
             " | Out-Null;"
             "$n = New-Object System.Windows.Forms.NotifyIcon;"
             "$n.Icon = [System.Drawing.SystemIcons]::Information;"
-            f"$n.BalloonTipTitle = '{title.replace(chr(39), chr(39)*2)}';"
-            f"$n.BalloonTipText = '{body.replace(chr(39), chr(39)*2)}';"
+            f"$n.BalloonTipTitle = '{t}';"
+            f"$n.BalloonTipText = '{b}';"
             "$n.Visible = $true;"
             "$n.ShowBalloonTip(5000);"
             "Start-Sleep -Milliseconds 5500;"
