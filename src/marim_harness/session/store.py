@@ -64,6 +64,7 @@ class SessionInfo:
     message_count: int
     tokens: int
     duration_seconds: float | None = None
+    model: str | None = None
 
 
 class SessionStore:
@@ -189,6 +190,7 @@ class SessionManager:
                     message_count=len(data.get("messages", [])),
                     tokens=_total_tokens(data.get("tokens", {})),
                     duration_seconds=data.get("duration_seconds"),
+                    model=data.get("model"),
                 )
             )
         infos.sort(key=lambda info: info.updated, reverse=True)
@@ -204,10 +206,11 @@ class SessionManager:
                 saved = json.loads(path.read_text())
             except (json.JSONDecodeError, OSError):
                 saved = None
+        meta = saved or {}
         if name is None:
-            name = str((saved or {}).get("name") or session_id)
-        auto_named = bool((saved or {}).get("auto", False))
-        model = (saved or {}).get("model")
+            name = str(meta.get("name") or session_id)
+        auto_named = bool(meta.get("auto", False))
+        model = meta.get("model")
         self._reserved.add(session_id)
         return SessionStore(
             path, self.workspace_root, session_id, name,
@@ -251,15 +254,7 @@ class SessionManager:
     def latest_model(self) -> str | None:
         """Return the model id of the most recent session, or *None*."""
         latest = self.latest()
-        if latest is None:
-            return None
-        path = self._path(latest.id)
-        try:
-            data = json.loads(path.read_text())
-        except (json.JSONDecodeError, OSError) as exc:
-            logger.debug("failed to read latest session for model: %s", exc)
-            return None
-        return data.get("model")
+        return latest.model if latest is not None else None
 
     def delete(self, session_id: str) -> None:
         self._path(session_id).unlink(missing_ok=True)

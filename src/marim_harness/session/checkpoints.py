@@ -13,9 +13,13 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from ..atomic_io import atomic_write_text
+
+if TYPE_CHECKING:
+    from .ctrl import SessionController
+    from .store import SessionStore
 
 
 @dataclass
@@ -96,7 +100,7 @@ class CheckpointManager:
     ``Snapshotter`` (Null by default → conversation-only rewind)."""
 
     def __init__(
-        self, session, snapshotter: Snapshotter | None = None, *, limit: int = 50
+        self, session: SessionController, snapshotter: Snapshotter | None = None, *, limit: int = 50
     ) -> None:
         self.session = session
         self.snapshotter: Snapshotter = snapshotter or NullSnapshotter()
@@ -118,8 +122,11 @@ class CheckpointManager:
 
     # --- persistence -----------------------------------------------------
 
+    def _store(self) -> SessionStore | None:
+        return self.session.store
+
     def _sidecar_path(self) -> Path | None:
-        store = getattr(self.session, "store", None)
+        store = self._store()
         if store is None:
             return None
         return Path(store.path).with_name(f"{store.session_id}.checkpoints.json")
@@ -154,8 +161,8 @@ class CheckpointManager:
     # --- operations ------------------------------------------------------
 
     def _session_id(self) -> str:
-        store = getattr(self.session, "store", None)
-        return getattr(store, "session_id", "anon") if store is not None else "anon"
+        store = self._store()
+        return store.session_id if store is not None else "anon"
 
     def _ref(self, index: int) -> str:
         return f"{_REF_PREFIX}/{self._session_id()}/{index}"
@@ -239,7 +246,7 @@ class CheckpointManager:
             raise KeyError(index)
         restored = False
         restore_failed = False
-        pre: str | None = None
+        pre_restore_commit: str | None = None
         if cp.commit is not None:
             # Safety net: snapshot the current working tree (under a per-session
             # ref) so the file restore is undoable, THEN restore. If that snapshot
@@ -247,11 +254,11 @@ class CheckpointManager:
             # than overwrite the working tree with no recovery path — report it as a
             # failed restore. restore() reports success too, so a failed git restore
             # is never dressed up as a clean one.
-            pre = self.snapshotter.capture(
+            pre_restore_commit = self.snapshotter.capture(
                 self._pre_restore_ref(), "pre-restore safety snapshot"
             )
-            self._pre_restore_commit = pre
-            if pre is None:
+            self._pre_restore_commit = pre_restore_commit
+            if pre_restore_commit is None:
                 restore_failed = True
             else:
                 restored = self.snapshotter.restore(cp.commit)
@@ -273,7 +280,7 @@ class CheckpointManager:
             history_len=cp.history_len,
             restored_files=restored,
             restore_failed=restore_failed,
-            pre_restore_commit=pre,
+            pre_restore_commit=pre_restore_commit,
         )
 
     def undo_rewind(self) -> bool:
@@ -311,6 +318,13 @@ class CheckpointManager:
             self._pre_restore_commit = None
         return undone
 
+    def _delete_all_refs(self) -> None:
+        """Delete every checkpoint's git ref and clear the list."""
+        for cp in self._checkpoints:
+            if cp.commit is not None:
+                self.snapshotter.delete(self._ref(cp.index))
+        self._checkpoints = []
+
     def invalidate_after_compaction(self) -> None:
         """Drop every checkpoint after a compaction restructured the history.
 
@@ -328,18 +342,12 @@ class CheckpointManager:
         The current turn re-snapshots *after* compaction (see ``run_turn``), so
         this never discards the in-flight turn's rewind point — only the stale
         pre-compaction ones."""
-        for cp in self._checkpoints:
-            if cp.commit is not None:
-                self.snapshotter.delete(self._ref(cp.index))
-        self._checkpoints = []
+        self._delete_all_refs()
         self._save()
 
     def clear(self) -> None:
         """Drop all checkpoints (called on session reset/clear) and their refs."""
-        for cp in self._checkpoints:
-            if cp.commit is not None:
-                self.snapshotter.delete(self._ref(cp.index))
-        self._checkpoints = []
+        self._delete_all_refs()
         path = self._sidecar_path()
         if path is not None:
             try:

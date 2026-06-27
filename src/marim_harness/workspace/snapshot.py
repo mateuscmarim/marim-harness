@@ -113,6 +113,26 @@ class GitSnapshotter:
             capture_output=True, text=True,
         )
 
+    def _remove_extra_files(self, target: set[str]) -> list[str]:
+        """Delete files present now but absent in ``target`` (created after the
+        checkpoint). Returns paths that could not be removed. Scoped to the diff
+        — never a blanket clean; git-ignored files are excluded by
+        _present_files and intentionally left untouched."""
+        failed: list[str] = []
+        for rel in self._present_files() - target:
+            try:
+                (self.workspace_root / rel).unlink()
+            except FileNotFoundError:
+                pass  # already gone — that's the goal, not a failure
+            except OSError as exc:
+                # Couldn't delete a file that should be absent after restore.
+                # Don't swallow it: a partial restore left a stale file behind,
+                # so we must not report success (the bug behind the old blanket
+                # suppress(OSError) + unconditional True).
+                failed.append(rel)
+                logger.debug("checkpoint restore could not remove %s: %s", rel, exc)
+        return failed
+
     def restore(self, commit: str) -> bool:
         """Restore the working tree to ``commit``. Returns True on success, False
         when there is no repo or git fails — so the caller never reports a partial
@@ -122,24 +142,8 @@ class GitSnapshotter:
         if self._repo() is None:
             return False
         try:
-            # 1. Remove files that exist now but not in the target snapshot
-            #    (created after the checkpoint). Scoped to the diff — never a
-            #    blanket clean. Git-ignored files are excluded by _present_files
-            #    and intentionally left untouched.
-            target = self._tree_files(commit)
-            failed: list[str] = []
-            for rel in self._present_files() - target:
-                try:
-                    (self.workspace_root / rel).unlink()
-                except FileNotFoundError:
-                    pass  # already gone — that's the goal, not a failure
-                except OSError as exc:
-                    # Couldn't delete a file that should be absent after restore.
-                    # Don't swallow it: a partial restore left a stale file behind,
-                    # so we must not report success (the bug behind the old blanket
-                    # suppress(OSError) + unconditional True).
-                    failed.append(rel)
-                    logger.debug("checkpoint restore could not remove %s: %s", rel, exc)
+            # 1. Remove files that exist now but not in the target snapshot.
+            failed = self._remove_extra_files(self._tree_files(commit))
             # 2. Restore tracked + untracked content via a throwaway index, so
             #    the user's real index/HEAD are untouched.
             with _temp_index() as idx:

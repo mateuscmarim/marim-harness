@@ -508,9 +508,10 @@ async def spawn_agent(
         # For auto-detached spawns, default to _DETACH_OUTPUT_BUDGET when the
         # model did not pass an explicit cap — keeps the synthesis prompt bounded
         # across a wide fan-out while the full report is preserved in the spill file.
-        budget = (
-            max_output_chars if max_output_chars is not None else _DETACH_OUTPUT_BUDGET
-        ) if auto_detached else max_output_chars
+        if auto_detached and max_output_chars is None:
+            budget = _DETACH_OUTPUT_BUDGET
+        else:
+            budget = max_output_chars
         # Prefer the short `description` for the job label (the jobs panel and the
         # wait row read it) — the composed `task` is a full multi-section prompt.
         label = f"{type}: {description or task}"

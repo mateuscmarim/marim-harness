@@ -5,7 +5,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from ..command_policy import split_patterns
-from ..notifications import DEFAULT_EVENTS, parse_events
+from ..notifications import NotificationConfig, parse_events
 from ..workspace.catalog import (
     ModelEntry,
     fetch_google_models,
@@ -41,6 +41,17 @@ def parse_qualified(
 
 
 @dataclass
+class SubagentConfig:
+    """Fan-out and concurrency knobs for spawned sub-agents."""
+
+    concurrency: int | None = None
+    transcript_cap: int = 2000
+    detach_fanout: bool = True
+    autonomous_wake: bool = True
+    wake_depth_cap: int = 8
+
+
+@dataclass
 class ModelConfig:
     provider: str  # "openrouter" | "local" | "google"
     model: str
@@ -61,41 +72,38 @@ class ModelConfig:
     # Prototype: collapse the four job tools (jobs/job_output/wait_for_job/
     # cancel_job) into one job(action, …) tool. Off ⇒ the four separate tools.
     job_tool_combined: bool = False
-    # Autonomous wake-on-completion (interactive TUI only): when a background job
-    # finishes while the turn worker is idle, fire a digest-only turn so the agent
-    # reacts without waiting for the user. Off ⇒ today's passive behavior.
-    autonomous_wake: bool = True
-    # Cap on consecutive autonomous turns before one is forced to wait for the
-    # user — a loop guard for wake→spawn→wake chains. Sized for a multi-task
-    # fan-out (e.g. SDD: each task's spawn→review→resume is a couple of wakes).
-    wake_depth_cap: int = 8
-    # Cap on how many spawned sub-agents run their model loop at once. None ⇒
-    # unbounded; set MARIM_SUBAGENT_CONCURRENCY to bound a fan-out that trips a
-    # shared provider route's upstream rate limit.
-    subagent_concurrency: int | None = None
-    # Maximum number of tokens' worth of messages kept when a sub-agent
-    # transcript is written to its sidecar. Older messages are dropped first.
-    subagent_transcript_cap: int = 2000
-    # Detached fan-out (interactive only): when on, spawn_agent runs detached as a
-    # background job so a fan-out doesn't freeze the session; autonomous wake
-    # synthesizes the reports. Default on; MARIM_DETACH_FANOUT=0 forces inline.
-    detach_fanout: bool = True
     # Shell-command allow/deny patterns (regex), enforced in the bash tool in
     # every mode. Empty lists -> no restriction.
     command_denylist: list[str] = field(default_factory=list)
     command_allowlist: list[str] = field(default_factory=list)
-    # Desktop notifications: on by default. Fires native OS notifications for the
-    # events listed in ``notification_events``; set MARIM_NOTIFICATIONS=0 to mute.
-    notifications_enabled: bool = True
-    notification_events: set[str] = field(default_factory=lambda: set(DEFAULT_EVENTS))
+    # Fan-out and concurrency knobs grouped together.
+    subagent: SubagentConfig = field(default_factory=SubagentConfig)
+    # Desktop notification settings.
+    notifications: NotificationConfig = field(
+        default_factory=lambda: NotificationConfig(enabled=True)
+    )
 
 
 def _common_kwargs() -> dict[str, Any]:
-    """Provider-independent knobs shared by every ModelConfig (verbatim of the
-    former inline ``common`` dict in load_config)."""
-    subagent_concurrency = _int_env("MARIM_SUBAGENT_CONCURRENCY", 0) or None
-    if subagent_concurrency is not None and subagent_concurrency < 0:
-        subagent_concurrency = None
+    """Provider-independent knobs shared by every ModelConfig. Grouped sub-agent
+    and notification knobs are built into their own config objects (see
+    SubagentConfig/NotificationConfig) so every provider branch shares them."""
+    # 0 (and any non-positive value) is the "no cap" sentinel, mapped to None so
+    # the runner stays unbounded — matching the historical default.
+    _concurrency = _int_env("MARIM_SUBAGENT_CONCURRENCY", 0) or None
+    if _concurrency is not None and _concurrency < 0:
+        _concurrency = None
+    subagent = SubagentConfig(
+        concurrency=_concurrency,
+        transcript_cap=_int_env("MARIM_SUBAGENT_TRANSCRIPT_CAP", 2000),
+        detach_fanout=_bool_env("MARIM_DETACH_FANOUT", True),
+        autonomous_wake=_bool_env("MARIM_AUTONOMOUS_WAKE", True),
+        wake_depth_cap=_int_env("MARIM_WAKE_DEPTH_CAP", 8),
+    )
+    notifications = NotificationConfig(
+        enabled=_bool_env("MARIM_NOTIFICATIONS", True),
+        events=parse_events(os.getenv("MARIM_NOTIFICATION_EVENTS", "")),
+    )
     return dict(
         max_context_tokens=_int_env("MARIM_MAX_CONTEXT_TOKENS", 100_000),
         proactive_memory=_bool_env("MARIM_PROACTIVE_MEMORY", False),
@@ -103,15 +111,10 @@ def _common_kwargs() -> dict[str, Any]:
         lsp_enabled=_bool_env("MARIM_LSP", True),
         lsp_tools_enabled=_bool_env("MARIM_LSP_TOOLS", True),
         job_tool_combined=_bool_env("MARIM_JOB_TOOL_COMBINED", False),
-        autonomous_wake=_bool_env("MARIM_AUTONOMOUS_WAKE", True),
-        wake_depth_cap=_int_env("MARIM_WAKE_DEPTH_CAP", 8),
-        subagent_concurrency=subagent_concurrency,
-        subagent_transcript_cap=_int_env("MARIM_SUBAGENT_TRANSCRIPT_CAP", 2000),
-        detach_fanout=_bool_env("MARIM_DETACH_FANOUT", True),
         command_denylist=split_patterns(os.getenv("MARIM_COMMAND_DENYLIST", "")),
         command_allowlist=split_patterns(os.getenv("MARIM_COMMAND_ALLOWLIST", "")),
-        notifications_enabled=_bool_env("MARIM_NOTIFICATIONS", True),
-        notification_events=parse_events(os.getenv("MARIM_NOTIFICATION_EVENTS", "")),
+        subagent=subagent,
+        notifications=notifications,
     )
 
 

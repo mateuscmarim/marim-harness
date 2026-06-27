@@ -201,13 +201,13 @@ async def test_enable_server_connects_on_demand(tmp_path: Path):
     assert "demo" not in h.mcp.disabled
     assert srv.entered is True  # connected on demand
     assert srv in h.mcp._live_servers
-    assert "demo" in h.mcp.mcp_status["connected"]
+    assert "demo" in h.mcp.mcp_status.connected
     await h.aclose()
 
 
 @pytest.mark.anyio
 async def test_enable_after_close_does_not_double_list_connected(tmp_path: Path):
-    """Re-enabling a server whose name is still in mcp_status['connected'] (e.g.
+    """Re-enabling a server whose name is still in mcp_status.connected (e.g.
     after an aclose that cleared the live list but not the status) must not add a
     duplicate entry."""
     srv = _FakeServer("demo")
@@ -215,11 +215,11 @@ async def test_enable_after_close_does_not_double_list_connected(tmp_path: Path)
     h = Harness(model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
                 instructions="x", mcp_servers=[srv])
     await h.connect()
-    assert h.mcp.mcp_status["connected"] == ["demo"]
+    assert h.mcp.mcp_status.connected == ["demo"]
     await h.aclose()
 
     await h.enable_server("demo")
-    assert h.mcp.mcp_status["connected"].count("demo") == 1
+    assert h.mcp.mcp_status.connected.count("demo") == 1
     await h.aclose()
 
 

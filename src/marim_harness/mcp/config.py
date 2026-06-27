@@ -33,6 +33,49 @@ from ..config import config_dir
 from ..permissions import Mode
 from ..tools.offload import _INLINE_CHAR_LIMIT, offload_if_large
 
+# MCPServerStdio/StreamableHTTP/SSE are deprecated in favour of MCPToolset in
+# pydantic-ai 2.x, but they remain the only variants with the simple
+# command/url + tool_prefix kwargs this config maps onto. Suppress import-time
+# and subclass-definition-time DeprecationWarnings here; construction-time
+# suppression lives in build_mcp_servers. Revisit when MCPToolset gains prefix
+# support.
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", DeprecationWarning)
+    from pydantic_ai.mcp import (
+        MCPServerSSE,
+        MCPServerStdio,
+        MCPServerStreamableHTTP,
+    )
+
+
+class _QuietStdioServer(MCPServerStdio):
+    """``MCPServerStdio`` that routes the child's stderr to a log file
+    instead of inheriting the parent terminal. pydantic-ai builds
+    ``stdio_client`` with the default ``errlog=sys.stderr``; we override
+    ``client_streams`` to pass our own so server banners never paint the
+    TUI. Resolves ``stdio_client`` off its module at call time so the
+    errlog destination stays observable/patchable."""
+
+    @asynccontextmanager
+    async def client_streams(self):
+        import mcp.client.stdio as mcp_stdio
+        from mcp.client.stdio import StdioServerParameters
+
+        params = StdioServerParameters(
+            command=self.command,
+            args=list(self.args),
+            env=self.env,
+            cwd=self.cwd,
+        )
+        errlog = _open_mcp_stderr_log()
+        try:
+            async with mcp_stdio.stdio_client(
+                server=params, errlog=errlog
+            ) as streams:
+                yield streams
+        finally:
+            errlog.close()
+
 
 def _bound_tool_result(result, *, label: str, name: str, args: dict | None,
                        workspace_root: Path | None):
@@ -300,49 +343,12 @@ def build_mcp_servers(specs: dict) -> tuple[list, list[str]]:
     Returns ``(servers, warnings)``. A spec that is neither stdio (has
     ``command``) nor HTTP/SSE (has ``url``) is skipped with a warning instead of
     crashing, so one bad entry can't take down the rest."""
-    # MCPServerStdio/StreamableHTTP/SSE are deprecated in favour of MCPToolset in
-    # pydantic-ai 2.x, but they remain the only variants with the simple
-    # command/url + tool_prefix kwargs this config maps onto. Silence the noisy
-    # construction-time DeprecationWarning; revisit when MCPToolset gains prefix
-    # support.
+    servers: list = []
+    notes: list[str] = []
+    # Suppress construction-time DeprecationWarning from the deprecated MCP
+    # server classes (see module-level import comment for the full rationale).
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
-        from pydantic_ai.mcp import (
-            MCPServerSSE,
-            MCPServerStdio,
-            MCPServerStreamableHTTP,
-        )
-
-        class _QuietStdioServer(MCPServerStdio):
-            """``MCPServerStdio`` that routes the child's stderr to a log file
-            instead of inheriting the parent terminal. pydantic-ai builds
-            ``stdio_client`` with the default ``errlog=sys.stderr``; we override
-            ``client_streams`` to pass our own so server banners never paint the
-            TUI. Resolves ``stdio_client`` off its module at call time so the
-            errlog destination stays observable/patchable."""
-
-            @asynccontextmanager
-            async def client_streams(self):
-                import mcp.client.stdio as mcp_stdio
-                from mcp.client.stdio import StdioServerParameters
-
-                params = StdioServerParameters(
-                    command=self.command,
-                    args=list(self.args),
-                    env=self.env,
-                    cwd=self.cwd,
-                )
-                errlog = _open_mcp_stderr_log()
-                try:
-                    async with mcp_stdio.stdio_client(
-                        server=params, errlog=errlog
-                    ) as streams:
-                        yield streams
-                finally:
-                    errlog.close()
-
-        servers: list = []
-        notes: list[str] = []
         for name, spec in specs.items():
             if not isinstance(spec, dict):
                 notes.append(f"MCP server {name!r}: spec must be an object; skipped.")

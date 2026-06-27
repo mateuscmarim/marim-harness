@@ -196,21 +196,21 @@ def test_load_config_notifications_default_on(monkeypatch):
     monkeypatch.delenv("MARIM_NOTIFICATIONS", raising=False)
     monkeypatch.delenv("MARIM_NOTIFICATION_EVENTS", raising=False)
     cfg = load_config()
-    assert cfg.notifications_enabled is True
-    assert cfg.notification_events == set(DEFAULT_EVENTS)
+    assert cfg.notifications.enabled is True
+    assert cfg.notifications.events == set(DEFAULT_EVENTS)
 
 
 def test_load_config_notifications_can_be_disabled(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     monkeypatch.setenv("MARIM_NOTIFICATIONS", "0")
     cfg = load_config()
-    assert cfg.notifications_enabled is False
+    assert cfg.notifications.enabled is False
 
 
 def test_model_config_notifications_default_on():
     from marim_harness.config.model import ModelConfig
 
-    assert ModelConfig(provider="openrouter", model="x").notifications_enabled is True
+    assert ModelConfig(provider="openrouter", model="x").notifications.enabled is True
 
 
 def test_load_config_notifications_enabled(monkeypatch):
@@ -218,8 +218,8 @@ def test_load_config_notifications_enabled(monkeypatch):
     monkeypatch.setenv("MARIM_NOTIFICATIONS", "1")
     monkeypatch.setenv("MARIM_NOTIFICATION_EVENTS", "turn_complete,error")
     cfg = load_config()
-    assert cfg.notifications_enabled is True
-    assert cfg.notification_events == {"turn_complete", "error"}
+    assert cfg.notifications.enabled is True
+    assert cfg.notifications.events == {"turn_complete", "error"}
 
 
 # ---------------------------------------------------------------------------

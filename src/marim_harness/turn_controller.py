@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import DeferredToolRequests, capture_run_messages
@@ -36,6 +36,12 @@ from .turn_context import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _ConsumedContext:
+    hook_context: str | None = None
+    jobs_digest: str | None = None
 
 
 def _has_unanswered_tool_calls(history: list[ModelMessage]) -> bool:
@@ -199,11 +205,19 @@ class TurnController:
         self._pending_error_note: str | None = None
         self._pending_hook_context: str | None = None
         self._pending_jobs_digest: str | None = None
-        self._consumed_this_turn: tuple[str | None, str | None] = (None, None)
+        self._consumed_this_turn: _ConsumedContext = _ConsumedContext()
 
         # Live RunContext for mid-turn steering.
         self._active_run_ctx: RunContext[Deps] | None = None
         self._steer_buffer: list[tuple[str, list[tuple[bytes, str]] | None]] = []
+
+    def apply_session_start_context(self, ctx: str) -> None:
+        """Stash SessionStart-injected context for the next turn's prompt."""
+        self._pending_hook_context = ctx
+
+    def clear_pending_jobs_digest(self) -> None:
+        """Drop any re-stashed jobs digest (conversation context changed)."""
+        self._pending_jobs_digest = None
 
     async def _maybe_compact(self) -> None:
         # When compaction actually shrinks the history, the checkpoints captured
@@ -281,7 +295,9 @@ class TurnController:
         # turn so the run-failure path in run_turn can restore them — they're only
         # truly "delivered" if the run reaches the model successfully. The error
         # note is deliberately excluded (a fresh failure replaces it).
-        self._consumed_this_turn = (hook_context, digest or None)
+        self._consumed_this_turn = _ConsumedContext(
+            hook_context=hook_context, jobs_digest=digest or None
+        )
         # Fire UserPromptSubmit and prepend any context it returns.
         ctx = await self.hooks.user_prompt_submit(prompt)
         if ctx:
@@ -461,7 +477,7 @@ class TurnController:
             # Clear the restore-on-failure stash so a later approval-round failure
             # doesn't re-emit context the model already saw. Idempotent across
             # rounds — only the first success matters.
-            self._consumed_this_turn = (None, None)
+            self._consumed_this_turn = _ConsumedContext()
             self.session.history = result.all_messages()
             self.session.usage += result.usage
             if isinstance(result.output, DeferredToolRequests):
@@ -555,12 +571,12 @@ class TurnController:
             # forever; re-stash them so the next turn re-emits them. After a
             # successful round the stash is already cleared, so a later
             # approval-round failure restores nothing (the model already saw it).
-            hook_context, jobs_digest = self._consumed_this_turn
-            self._consumed_this_turn = (None, None)
-            if hook_context and not self._pending_hook_context:
-                self._pending_hook_context = hook_context
-            if jobs_digest and not self._pending_jobs_digest:
-                self._pending_jobs_digest = jobs_digest
+            consumed = self._consumed_this_turn
+            self._consumed_this_turn = _ConsumedContext()
+            if consumed.hook_context and not self._pending_hook_context:
+                self._pending_hook_context = consumed.hook_context
+            if consumed.jobs_digest and not self._pending_jobs_digest:
+                self._pending_jobs_digest = consumed.jobs_digest
             # Roll back this turn's start-of-turn checkpoint if the turn failed
             # before producing any model response (the resumable flush has already
             # run by now, so the history reflects what survived). Such a checkpoint

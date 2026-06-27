@@ -1,7 +1,12 @@
+from __future__ import annotations
+
 import logging
 import time
 from collections.abc import Callable
-from typing import SupportsIndex
+from typing import TYPE_CHECKING, SupportsIndex
+
+if TYPE_CHECKING:
+    from pydantic_ai.models import Model
 
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.usage import RunUsage
@@ -11,6 +16,8 @@ from ..compaction import (
     Titler,
     compact_history,
     compact_history_with_summary,
+    make_summarizer,
+    make_titler,
     will_compact,
 )
 from ..deps import Deps
@@ -33,7 +40,7 @@ class _VersionedHistory(list):
     ``persist()`` would silently drop it. Routing every mutator through
     ``_bump`` closes that trap so ``.append()`` is safe rather than lossy."""
 
-    def __init__(self, iterable, owner: "SessionController") -> None:
+    def __init__(self, iterable, owner: SessionController) -> None:
         super().__init__(iterable)
         self._owner = owner
 
@@ -176,10 +183,23 @@ class SessionController:
             )
             self._last_persisted_version = self.history_version
 
+    @property
+    def saved_model_id(self) -> str | None:
+        """The model id persisted with this session, or None if unavailable."""
+        return self.store.model if self.store is not None else None
+
     def set_model(self, model_id: str) -> None:
         if self.store is not None:
             self.store.model = model_id
             self.persist(force=True)
+
+    def update_model(self, model: Model) -> None:
+        """Rebuild aux agents (summarizer/titler) for a new model. Only
+        replaces those that were originally configured — a None stays None."""
+        if self.summarizer is not None:
+            self.summarizer = make_summarizer(model)
+        if self.titler is not None:
+            self.titler = make_titler(model)
 
     def _load_active_store(self) -> int:
         """Load history/usage/tasks/duration from ``self.store`` (assumed set) into
@@ -275,21 +295,20 @@ class SessionController:
             )
         # Surface a live "compacting…" indicator before the (possibly slow,
         # summarizer-driven) work begins; the on_compact finish callback clears it.
-        start_cb = self.on_compact_start if going else None
-        indicator_shown = start_cb is not None
-        if start_cb is not None:
-            start_cb()
+        indicator_shown = going and self.on_compact_start is not None
+        if going and self.on_compact_start is not None:
+            self.on_compact_start()
         if self.summarizer is not None:
-            new_history, did = await compact_history_with_summary(
+            new_history, compacted = await compact_history_with_summary(
                 self.history, self.max_context_tokens, self.summarizer,
                 self.keep_last_messages, force=force,
             )
         else:
-            new_history, did = compact_history(
+            new_history, compacted = compact_history(
                 self.history, self.max_context_tokens, self.keep_last_messages,
                 force=force,
             )
-        if did:
+        if compacted:
             self.history = new_history
             # Persist the compacted history now. The post-turn compaction runs
             # after the turn's own persist, so without this the smaller history
@@ -302,9 +321,9 @@ class SessionController:
         # shrank. A forced compaction (post-overflow) can run without shrinking;
         # before == len(history) then signals the UI to just drop the notice
         # instead of leaving a stuck spinner.
-        if self.on_compact is not None and (did or indicator_shown):
+        if self.on_compact is not None and (compacted or indicator_shown):
             self.on_compact(before, len(self.history))
-        return did
+        return compacted
 
     async def maybe_autoname(self) -> None:
         if (

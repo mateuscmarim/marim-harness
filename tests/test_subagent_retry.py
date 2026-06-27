@@ -144,7 +144,9 @@ async def test_retry_emits_a_ui_notice_for_a_foreground_spawn(tmp_path: Path):
     async def _notice(stream_id: str, message: str) -> None:
         notices.append((stream_id, message))
 
-    runner.deps.on_subagent_notice = _notice
+    from marim_harness.deps import SubAgentCallbacks
+
+    runner.deps.callbacks = SubAgentCallbacks(on_notice=_notice)
     sub = _FlakySub(ModelHTTPError(504, "m", body="idle timeout"), fail_times=1)
     await runner._run_to_completion(sub, "task", None, None, None, "sid-1")
     assert len(notices) == 1
@@ -163,7 +165,9 @@ async def test_no_ui_notice_when_there_is_no_stream(tmp_path: Path):
     async def _notice(stream_id: str, message: str) -> None:
         notices.append((stream_id, message))
 
-    runner.deps.on_subagent_notice = _notice
+    from marim_harness.deps import SubAgentCallbacks
+
+    runner.deps.callbacks = SubAgentCallbacks(on_notice=_notice)
     sub = _FlakySub(ModelHTTPError(504, "m", body="idle timeout"), fail_times=1)
     await runner._run_to_completion(sub, "task", None, None, None, None)
     assert notices == []

@@ -22,6 +22,7 @@ import yaml
 
 from ..config import config_dir
 from ..identifiers import valid_name
+from ._discovery import cached_discover
 from ._frontmatter import FRONTMATTER_RE
 from .fs import WorkspaceError, resolve_in_workspace
 
@@ -155,21 +156,16 @@ def discover_skills(workspace_root) -> list[Skill]:
     unchanged (by name/mtime/size), so repeated calls within a turn — and across
     turns that didn't touch a skill — don't re-walk and re-parse them."""
     roots = _all_skill_roots(workspace_root)
-    sig = _discovery_signature(roots)
-    key = str(Path(workspace_root).resolve())
-    cached = _DISCOVERY_CACHE.get(key)
-    if cached is not None and cached[0] == sig:
-        return cached[1]
-
-    seen: dict[str, Skill] = {}
-    for source, root, plugin in roots:
-        _collect_skills(seen, source, root, plugin=plugin)
-    result = sorted(seen.values(), key=lambda s: s.qualified_name)
-    _DISCOVERY_CACHE[key] = (sig, result)
-    return result
+    return cached_discover(
+        workspace_root, roots,
+        _discovery_signature,
+        _collect_skills,
+        lambda s: s.qualified_name,
+        _DISCOVERY_CACHE,
+    )
 
 
-def _collect_skills(seen: dict, source: str, root: Path, *, plugin: str | None) -> None:
+def _collect_skills(seen: dict, source: str, root: Path, plugin: str | None) -> None:
     try:
         entries = sorted(p for p in root.iterdir() if p.is_dir())
     except OSError:

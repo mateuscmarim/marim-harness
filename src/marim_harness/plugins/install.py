@@ -185,11 +185,15 @@ def _mutate(name: str, scope: str, workspace_root, fn) -> bool:
 
 
 def set_enabled(name: str, *, scope: str, workspace_root, enabled: bool) -> bool:
-    return _mutate(name, scope, workspace_root, lambda r: setattr(r, "enabled", enabled))
+    def _apply(r):
+        r.enabled = enabled
+    return _mutate(name, scope, workspace_root, _apply)
 
 
 def set_trusted(name: str, *, scope: str, workspace_root, trusted: bool) -> bool:
-    return _mutate(name, scope, workspace_root, lambda r: setattr(r, "trusted", trusted))
+    def _apply(r):
+        r.trusted = trusted
+    return _mutate(name, scope, workspace_root, _apply)
 
 
 def remove_plugin(name: str, *, scope: str, workspace_root) -> bool:

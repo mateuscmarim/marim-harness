@@ -111,12 +111,12 @@ def register_instructions(
     @agent.instructions
     def _memory_indexes(ctx: RunContext[Deps]) -> str:
         parts = []
-        g = load_index(global_scope())
-        if g:
-            parts.append(f"# User memory (global)\n\n{g}")
-        p = load_index(project_scope(ctx.deps.workspace_root))
-        if p:
-            parts.append(f"# Project memory\n\n{p}")
+        global_index = load_index(global_scope())
+        if global_index:
+            parts.append(f"# User memory (global)\n\n{global_index}")
+        project_index = load_index(project_scope(ctx.deps.workspace_root))
+        if project_index:
+            parts.append(f"# Project memory\n\n{project_index}")
         if not parts:
             return ""
         return (

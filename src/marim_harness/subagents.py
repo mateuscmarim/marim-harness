@@ -16,7 +16,7 @@ import os
 import re
 import time
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import Agent, capture_run_messages
@@ -80,6 +80,20 @@ def _resumable_history(messages: list) -> list | None:
 
     repaired = _repair_unanswered_tool_calls(_drop_nameless_tool_calls(messages))
     return repaired or None
+
+
+@dataclass(frozen=True)
+class _SpawnPrep:
+    """Shared state returned by ``_prepare_spawn``: the built sub-agent and all
+    context the foreground and background tails need to run it and finalize output."""
+    sub: Any
+    granted: Any
+    unknown: list
+    handler: Any
+    iso: dict | None
+    t0: float
+    t_built: float
+    first_event_at: list  # mutable; ``on_first_event`` probe appends during run
 
 
 class SubagentRunner:
@@ -199,7 +213,7 @@ class SubagentRunner:
         foreground fan-out spawn forwards to the UI, so it streams and is timed.)
         Returns None only when there's nothing to do: no hooks configured and no
         UI listener (e.g. a headless background run with hooks off)."""
-        cb = self.deps.on_subagent_event
+        cb = self.deps.callbacks.on_event
         hooks_on = self.deps.hooks is not None
         forward = cb is not None and bool(stream_id)
         if not hooks_on and not forward:
@@ -375,7 +389,7 @@ class SubagentRunner:
                             attempt: int) -> None:
         """Surface a transient-error retry on a foreground spawn's card. A no-op for
         a background spawn (no card) or when no UI is listening."""
-        cb = self.deps.on_subagent_notice
+        cb = self.deps.callbacks.on_notice
         if cb is None or not stream_id:
             return
         await cb(
@@ -389,19 +403,11 @@ class SubagentRunner:
         max_output_chars: int | None, model: str | None, isolation: str | None,
         *, background: bool, stream_id: str,
     ) -> str:
-        """Common lifecycle for foreground and background spawns.
+        """Dispatch a spawn through shared setup then the foreground or background tail.
 
-        Handles: worktree open → build → MCP grant → hooks start → run →
-        hooks stop → usage → cap output → worktree close.
-
-        ``background=False`` (foreground): exceptions are contained and returned
-        as an error string; usage is folded into the session but NOT persisted
-        (the caller's ``run_turn`` persists it). ``stream_id`` names the spill
-        file and is passed to the event handler.
-
-        ``background=True``: exceptions propagate to the job registry; usage is
-        persisted immediately; deps get an isolated ``TaskList()``; the spill
-        file is named after the ``_bg_seq`` counter.
+        Handles worktree open and the CLI early-return inline (both need ``iso``
+        before the branch), then delegates everything else to ``_prepare_spawn``
+        and either ``_execute_foreground_spawn`` or ``_execute_background_spawn``.
         """
         iso = None
         # Phase timing for the spawn (harness setup vs. model time-to-first-token).
@@ -427,6 +433,27 @@ class SubagentRunner:
                 defn, task, work_root, iso, mcp_names, max_output_chars,
                 model, stream_id, background=background,
             )
+        prep = await self._prepare_spawn(
+            type, task, mcp_names, max_output_chars, model,
+            iso, work_root, stream_id, debug=debug, t0=t0,
+        )
+        if isinstance(prep, str):
+            return prep
+        if background:
+            return await self._execute_background_spawn(
+                type, task, stream_id, max_output_chars, prep,
+            )
+        return await self._execute_foreground_spawn(type, task, stream_id, max_output_chars, prep)
+
+    async def _prepare_spawn(
+        self, type: str, task: str, mcp_names: list[str] | None,
+        max_output_chars: int | None, model: str | None,
+        iso: dict | None, work_root, stream_id: str,
+        *, debug: bool, t0: float,
+    ) -> "_SpawnPrep | str":
+        """Build the sub-agent, grant MCP servers, fire the start hook, and wire the
+        event handler. Returns a ``_SpawnPrep`` struct on success, or an error string
+        the caller can return directly. Called after worktree open and CLI early-return."""
         sub, err = self.build(type, max_output_chars, model, work_root)
         if sub is None:
             if iso:
@@ -434,17 +461,6 @@ class SubagentRunner:
             return err or f"Failed to build sub-agent {type!r}."
         t_built = time.perf_counter()
         granted, unknown = self.mcp.granted_servers(mcp_names)
-        if background:
-            # A background sub-agent runs detached and concurrently with the
-            # user's turn. Give it its own empty TaskList so its multi-step work
-            # never mutates — or persists as — the user's session checklist; an
-            # isolated run also redirects its file ops into the worktree. Every
-            # other Deps field (jobs, hooks, lsp, …) stays shared.
-            run_deps = replace(self.deps, tasks=TaskList())
-            if iso:
-                run_deps = replace(run_deps, workspace_root=iso["path"])
-        else:
-            run_deps = replace(self.deps, workspace_root=work_root) if iso else self.deps
         await self.hooks.subagent_start(type, task)
         # Foreground passes its tool_call_id; a background spawn now passes its own
         # stream_id too (Phase 2), so it streams to the UI exactly like foreground.
@@ -453,43 +469,85 @@ class SubagentRunner:
         first_event_at: list[float] = []
         probe = (lambda: first_event_at.append(time.perf_counter())) if debug else None
         handler = self.handler(stream_id, on_first_event=probe)
+        return _SpawnPrep(
+            sub=sub, granted=granted, unknown=unknown, handler=handler,
+            iso=iso, t0=t0, t_built=t_built, first_event_at=first_event_at,
+        )
+
+    async def _execute_foreground_spawn(
+        self, type: str, task: str, stream_id: str,
+        max_output_chars: int | None, prep: "_SpawnPrep",
+    ) -> str:
+        """Run a foreground spawn to completion and return its capped report.
+        Exceptions are contained as an error string so sibling fan-out spawns
+        aren't taken down. Usage is folded into the session but NOT persisted —
+        the caller's ``run_turn`` persists it."""
+        run_deps = replace(self.deps, workspace_root=prep.iso["path"]) if prep.iso else self.deps
         try:
             # Bound concurrent model runs (the part that hits the provider) so a
             # wide fan-out queues instead of slamming a rate-limited route at once.
             async with self._slot():
                 result = await self._run_to_completion(
-                    sub, task, run_deps, granted, handler, stream_id,
+                    prep.sub, task, run_deps, prep.granted, prep.handler, stream_id,
                 )
         except Exception as exc:  # noqa: BLE001
-            self._log_spawn_timing(type, t0, t_built, first_event_at, failed=True)
-            if iso:
-                self._discard_worktree(iso)
-            if background:
-                # A background crash is intentionally NOT contained: it
-                # propagates to the job registry, which marks the job failed.
-                raise
+            self._log_spawn_timing(type, prep.t0, prep.t_built, prep.first_event_at, failed=True)
+            if prep.iso:
+                self._discard_worktree(prep.iso)
             # A foreground spawn runs inside the turn's tool execution; letting
             # its crash propagate would fail the whole turn and take down any
             # sibling spawns fanning out alongside it. Contain it.
             await self.hooks.subagent_stop(type, task, f"error: {exc}")
             return f"Sub-agent {type!r} failed: {exc.__class__.__name__}: {exc}"
-        self._log_spawn_timing(type, t0, t_built, first_event_at, failed=False)
+        self._log_spawn_timing(type, prep.t0, prep.t_built, prep.first_event_at, failed=False)
         await self.hooks.subagent_stop(type, task, result.output)
         self._save_transcript(stream_id, result.all_messages())
         self.session.usage += result.usage
-        if background:
-            # A background spawn finishes off-turn, so no run_turn will fold in
-            # its spend — persist right away so the saved session reflects it
-            # even if the process exits before the next turn.
-            self.session.persist()
-            self._bg_seq += 1
-            spill_ref = f"bg-{self._bg_seq}"
-        else:
-            # A foreground spawn's spend is persisted by run_turn's _persist.
-            spill_ref = stream_id
+        # A foreground spawn's spend is persisted by run_turn's _persist.
+        capped = self._cap_output(result.output, max_output_chars, stream_id)
+        iso_note = self._close_worktree(prep.iso) if prep.iso else ""
+        return self.mcp.grant_note(prep.unknown) + capped + iso_note
+
+    async def _execute_background_spawn(
+        self, type: str, task: str, stream_id: str,
+        max_output_chars: int | None, prep: "_SpawnPrep",
+    ) -> str:
+        """Run a background spawn to completion. Exceptions propagate to the job
+        registry (marking the job failed). Usage is persisted immediately since no
+        ``run_turn`` will fold the spend. Deps get an isolated ``TaskList()`` so
+        multi-step work never mutates the user's session checklist."""
+        # A background sub-agent runs detached and concurrently with the user's
+        # turn. Give it its own empty TaskList so its multi-step work never mutates
+        # — or persists as — the user's session checklist; an isolated run also
+        # redirects its file ops into the worktree. Every other Deps field stays shared.
+        run_deps = replace(self.deps, tasks=TaskList())
+        if prep.iso:
+            run_deps = replace(run_deps, workspace_root=prep.iso["path"])
+        try:
+            async with self._slot():
+                result = await self._run_to_completion(
+                    prep.sub, task, run_deps, prep.granted, prep.handler, stream_id,
+                )
+        except Exception:  # noqa: BLE001
+            self._log_spawn_timing(type, prep.t0, prep.t_built, prep.first_event_at, failed=True)
+            if prep.iso:
+                self._discard_worktree(prep.iso)
+            # A background crash is intentionally NOT contained: it propagates
+            # to the job registry, which marks the job failed.
+            raise
+        self._log_spawn_timing(type, prep.t0, prep.t_built, prep.first_event_at, failed=False)
+        await self.hooks.subagent_stop(type, task, result.output)
+        self._save_transcript(stream_id, result.all_messages())
+        self.session.usage += result.usage
+        # A background spawn finishes off-turn, so no run_turn will fold in its
+        # spend — persist right away so the saved session reflects it even if the
+        # process exits before the next turn.
+        self.session.persist()
+        self._bg_seq += 1
+        spill_ref = f"bg-{self._bg_seq}"
         capped = self._cap_output(result.output, max_output_chars, spill_ref)
-        iso_note = self._close_worktree(iso) if iso else ""
-        return self.mcp.grant_note(unknown) + capped + iso_note
+        iso_note = self._close_worktree(prep.iso) if prep.iso else ""
+        return self.mcp.grant_note(prep.unknown) + capped + iso_note
 
     async def _execute_cli_spawn(
         self, defn, task: str, work_root, iso,
@@ -568,17 +626,15 @@ class SubagentRunner:
         tools = effective_tools(defn, allow_gated=allow_gated)
         cwd = str(work_root or self.deps.workspace_root)
         model_name = model or defn.model or os.environ.get(CLI_MODEL_ENV)
-        runner = ClaudeCliRunner(
-            self.deps.on_subagent_event, self.deps.on_subagent_notice,
-            self.deps.on_subagent_model,
-        )
+        cbs = self.deps.callbacks
+        runner = ClaudeCliRunner(cbs.on_event, cbs.on_notice, cbs.on_model)
         result = await runner.run(
             binary=binary, prompt=task, system_prompt=defn.prompt, cwd=cwd,
             allow_gated=allow_gated, allowed_tools=tools, model=model_name,
             stream_id=stream_id,
         )
-        if stream_id and self.deps.on_subagent_usage is not None:
-            await self.deps.on_subagent_usage(stream_id, result.usage)
+        if stream_id and cbs.on_usage is not None:
+            await cbs.on_usage(stream_id, result.usage)
         return result
 
     def _log_spawn_timing(

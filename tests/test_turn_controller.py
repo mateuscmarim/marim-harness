@@ -153,3 +153,27 @@ async def test_non_actionable_failure_leaves_no_note(tmp_path):
     echoed = await tc.run_turn("second request")
     assert "did not complete" not in echoed
     assert echoed == "second request"
+
+
+# --- new encapsulation methods ---
+
+def test_apply_session_start_context_sets_field(tmp_path):
+    """apply_session_start_context writes the pending hook context."""
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    tc = _make_tc(FunctionModel(fn), tmp_path)
+    assert tc._pending_hook_context is None
+    tc.apply_session_start_context("startup output")
+    assert tc._pending_hook_context == "startup output"
+
+
+def test_clear_pending_jobs_digest_clears_field(tmp_path):
+    """clear_pending_jobs_digest sets _pending_jobs_digest to None."""
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    tc = _make_tc(FunctionModel(fn), tmp_path)
+    tc._pending_jobs_digest = "some digest"
+    tc.clear_pending_jobs_digest()
+    assert tc._pending_jobs_digest is None

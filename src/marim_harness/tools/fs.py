@@ -223,7 +223,7 @@ def tree(root: Path, path: str = ".", depth: int = 2) -> str:
     if not base.is_dir():
         raise ModelRetry(f"not a directory: {path}")
     lines: list[str] = []
-    capped = _walk_tree(base, depth, 0, lines, [0])
+    capped = _walk_tree(base, depth, 0, lines)
     if not lines:
         return "(empty)"
     return offload_if_large(
@@ -232,35 +232,40 @@ def tree(root: Path, path: str = ".", depth: int = 2) -> str:
     )
 
 
-def _walk_tree(directory: Path, depth: int, level: int, lines: list[str],
-               size: list[int]) -> bool:
+def _walk_tree(directory: Path, depth: int, level: int, lines: list[str]) -> bool:
     """Append the entries of ``directory`` to ``lines``, recursing while depth
-    allows. ``size`` is a 1-element running byte total; returns True once the
-    MAX_OUTPUT_CHARS ceiling is reached so callers stop early."""
-    try:
-        entries = list(directory.iterdir())
-    except OSError:
-        return False
-    entries.sort(key=lambda p: (p.is_file(), p.name.lower()))
-    indent = "  " * level
-    for entry in entries:
-        if size[0] >= MAX_OUTPUT_CHARS:
-            return True
-        if entry.is_dir():
-            line = f"{indent}{entry.name}/"
-            lines.append(line)
-            size[0] += len(line) + 1
-            if (
-                entry.name not in _NOISE_DIRS
-                and level + 1 < depth
-                and _walk_tree(entry, depth, level + 1, lines, size)
-            ):
+    allows. Returns True once the MAX_OUTPUT_CHARS ceiling is reached so callers
+    stop early."""
+    size = 0
+
+    def _recurse(directory: Path, level: int) -> bool:
+        nonlocal size
+        try:
+            entries = list(directory.iterdir())
+        except OSError:
+            return False
+        entries.sort(key=lambda p: (p.is_file(), p.name.lower()))
+        indent = "  " * level
+        for entry in entries:
+            if size >= MAX_OUTPUT_CHARS:
                 return True
-        else:
-            line = f"{indent}{entry.name}"
-            lines.append(line)
-            size[0] += len(line) + 1
-    return False
+            if entry.is_dir():
+                line = f"{indent}{entry.name}/"
+                lines.append(line)
+                size += len(line) + 1
+                if (
+                    entry.name not in _NOISE_DIRS
+                    and level + 1 < depth
+                    and _recurse(entry, level + 1)
+                ):
+                    return True
+            else:
+                line = f"{indent}{entry.name}"
+                lines.append(line)
+                size += len(line) + 1
+        return False
+
+    return _recurse(directory, level)
 
 
 def glob_files(root: Path, pattern: str) -> str:
@@ -409,6 +414,26 @@ def _context_ranges(
     return ranges
 
 
+class _OutputCollector:
+    """Accumulates grep output lines while tracking size and limit budgets."""
+
+    def __init__(self, head_limit: int | None) -> None:
+        self.out: list[str] = []
+        self._size = 0
+        self._head_limit = head_limit
+        self.capped = False
+        self.limited = False
+        self.stop = False
+
+    def emit(self, line: str) -> None:
+        self.out.append(line)
+        self._size += len(line) + 1
+        if self._size >= MAX_OUTPUT_CHARS:
+            self.capped = self.stop = True
+        if self._head_limit is not None and len(self.out) >= self._head_limit:
+            self.limited = self.stop = True
+
+
 def grep(
     root: Path,
     pattern: str,
@@ -449,23 +474,10 @@ def grep(
     exts = _type_extensions(file_type) if file_type else None
     before, after = max(0, before_context), max(0, after_context)
 
-    out: list[str] = []
-    size = 0
-    capped = False
-    limited = False
-    stop = False
-
-    def emit(line: str) -> None:
-        nonlocal size, capped, limited, stop
-        out.append(line)
-        size += len(line) + 1
-        if size >= MAX_OUTPUT_CHARS:
-            capped = stop = True
-        if head_limit is not None and len(out) >= head_limit:
-            limited = stop = True
+    col = _OutputCollector(head_limit)
 
     for f in _walk_files(base):
-        if stop:
+        if col.stop:
             break
         # os.walk won't descend symlinked dirs; a symlinked *file* could still
         # point outside the workspace, so gate just that rare case.
@@ -509,30 +521,30 @@ def grep(
         if not match_idx:
             continue
         if output_mode == "files_with_matches":
-            emit(rel)
+            col.emit(rel)
         elif output_mode == "count":
-            emit(f"{rel}:{n_matches}")
+            col.emit(f"{rel}:{n_matches}")
         else:
             match_set = set(match_idx)
             for gi, (lo, hi) in enumerate(
                 _context_ranges(match_idx, before, after, len(lines))
             ):
                 if (before or after) and gi:
-                    emit("--")
-                    if stop:
+                    col.emit("--")
+                    if col.stop:
                         break
                 for i in range(lo, hi + 1):
                     sep = ":" if i in match_set else "-"
-                    emit(f"{rel}{sep}{i + 1}{sep}{lines[i]}")
-                    if stop:
+                    col.emit(f"{rel}{sep}{i + 1}{sep}{lines[i]}")
+                    if col.stop:
                         break
-                if stop:
+                if col.stop:
                     break
 
-    if not out:
+    if not col.out:
         return "(no matches)"
-    body = "\n".join(out)
-    if limited:
+    body = "\n".join(col.out)
+    if col.limited:
         body += f"\n(stopped at head_limit={head_limit})"
     key = f"{pattern}\0{path or ''}\0{output_mode}\0{glob or ''}\0{file_type or ''}"
-    return offload_if_large(body, kind="grep", key=key, workspace_root=root, capped=capped)
+    return offload_if_large(body, kind="grep", key=key, workspace_root=root, capped=col.capped)

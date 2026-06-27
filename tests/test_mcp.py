@@ -293,7 +293,7 @@ async def test_aclose_resets_state_even_if_teardown_raises():
     assert mgr._connected is False
     assert mgr._mcp_stack is None
     assert mgr._live_servers == []
-    assert mgr.mcp_status == {"connected": [], "failed": []}
+    assert mgr.mcp_status.connected == [] and mgr.mcp_status.failed == []
 
 
 @pytest.mark.anyio

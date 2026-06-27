@@ -1,8 +1,9 @@
 import logging
 from pathlib import Path
 
-from .agent import Harness, HarnessConfig, make_summarizer, make_titler
+from .agent import Harness, HarnessConfig
 from .command_policy import CommandPolicy
+from .compaction import make_summarizer, make_titler
 from .config import (
     ModelSource,
     MultiModelSource,
@@ -12,7 +13,7 @@ from .config import (
 from .deps import Deps
 from .hooks import HookRunner, load_hooks_config
 from .mcp import build_mcp_servers, disabled_server_names, load_mcp_config
-from .notifications import NotificationConfig, Notifier
+from .notifications import Notifier
 from .permissions import Mode
 from .session import SessionManager
 from .tools.provider import BuiltinToolProvider
@@ -48,18 +49,14 @@ def build_harness(
     )
     hooks_cfg = load_hooks_config(workspace, trust_project=cfg.trust_project_hooks)
     hook_runner = HookRunner(hooks_cfg) if hooks_cfg else None
-    notification_config = NotificationConfig(
-        enabled=cfg.notifications_enabled,
-        events=cfg.notification_events,
-    )
-    notifier = Notifier(notification_config)
+    notifier = Notifier(cfg.notifications)
     deps = Deps(
         workspace_root=workspace,
         mode=mode,
         command_policy=command_policy,
         hooks=hook_runner,
         notifier=notifier,
-        detach_fanout=cfg.detach_fanout,
+        detach_fanout=cfg.subagent.detach_fanout,
     )
 
     manager = SessionManager(workspace)
@@ -104,13 +101,13 @@ def build_harness(
             model_source=model_source,
             model_id=model_id,
             proactive_memory=cfg.proactive_memory,
-            autonomous_wake=cfg.autonomous_wake,
-            wake_depth_cap=cfg.wake_depth_cap,
-            subagent_concurrency=cfg.subagent_concurrency,
-            subagent_transcript_cap=cfg.subagent_transcript_cap,
+            autonomous_wake=cfg.subagent.autonomous_wake,
+            wake_depth_cap=cfg.subagent.wake_depth_cap,
+            subagent_concurrency=cfg.subagent.concurrency,
+            subagent_transcript_cap=cfg.subagent.transcript_cap,
             mcp_servers=mcp_servers,
             mcp_disabled=mcp_disabled,
-            notifications=notification_config,
+            notifications=cfg.notifications,
         ),
     )
     if resume:

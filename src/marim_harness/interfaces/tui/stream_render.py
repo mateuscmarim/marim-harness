@@ -4,6 +4,8 @@ Turns a turn's (and each sub-agent's) streamed events into the log's live
 AssistantMessage / ToolCallWidget / SubAgentWidget tree. Owns all per-turn stream
 state; reaches the app and the status presenter through ``self.app``."""
 
+import abc
+from dataclasses import dataclass, field
 from typing import cast
 
 from pydantic_ai.messages import (
@@ -125,7 +127,16 @@ def _stream_hidden(widget: Widget, host: "SubAgentDetailHost | None") -> bool:
     return False
 
 
-class _StreamSink:
+@dataclass
+class _SubStreamState:
+    """Per-stream state for one nested sub-agent — replaces four parallel dicts."""
+    group: "ToolGroupWidget | None" = field(default=None)
+    solo: "ToolCallWidget | None" = field(default=None)
+    assistant: "AssistantMessage | None" = field(default=None)
+    thinking: "ThinkingWidget | None" = field(default=None)
+
+
+class _StreamSink(abc.ABC):
     """Where one event stream's widgets land and how its run-state is read/written.
 
     Routing a streamed turn is identical whether the events come from the
@@ -138,31 +149,29 @@ class _StreamSink:
 
     container: Widget  # mount target for assistant text and bare tool widgets
 
+    @abc.abstractmethod
     def get_run(self) -> tuple:
         """This stream's (group, solo) run-of-consecutive-tools state."""
-        raise NotImplementedError
 
-    def set_run(self, group, solo) -> None:
-        raise NotImplementedError
+    @abc.abstractmethod
+    def set_run(self, group, solo) -> None: ...
 
-    def get_assistant(self):
-        """The AssistantMessage currently receiving text deltas, or None."""
-        raise NotImplementedError
+    @abc.abstractmethod
+    def get_assistant(self) -> "AssistantMessage | None": ...
 
-    def set_assistant(self, msg) -> None:
-        raise NotImplementedError
+    @abc.abstractmethod
+    def set_assistant(self, msg) -> None: ...
 
-    def get_thinking(self):
-        """The ThinkingWidget currently receiving thinking deltas, or None."""
-        raise NotImplementedError
+    @abc.abstractmethod
+    def get_thinking(self) -> "ThinkingWidget | None": ...
 
-    def set_thinking(self, widget) -> None:
-        raise NotImplementedError
+    @abc.abstractmethod
+    def set_thinking(self, widget) -> None: ...
 
-    def on_text(self) -> None:
+    def on_text(self) -> None:  # noqa: B027
         """Called when the stream starts a text part (title status, sub only)."""
 
-    def on_tool(self, tool_name: str, args: dict) -> None:
+    def on_tool(self, tool_name: str, args: dict) -> None:  # noqa: B027
         """Called when the stream makes a tool call (card status, sub only)."""
 
     async def intercept_tool(self, event, args: dict) -> bool:
@@ -170,7 +179,7 @@ class _StreamSink:
         skip the default ToolCallWidget path. Default: never intercepts."""
         return False
 
-    def on_result(self, event) -> None:
+    def on_result(self, event) -> None:  # noqa: B027
         """Called after a tool result is rendered (cleanup hook)."""
 
 
@@ -235,9 +244,9 @@ class _TopLevelSink(_StreamSink):
         return False
 
     def on_result(self, event) -> None:
-        # A foreground spawn's stream_id is its tool_call_id; drop its sub-agent
-        # assistant entry once the spawn returns.
-        self._r.sub_assistants.pop(event.tool_call_id, None)
+        # A foreground spawn's stream_id is its tool_call_id; drop its sub-stream
+        # state once the spawn returns.
+        self._r._sub_streams.pop(event.tool_call_id, None)
 
 
 class _SubAgentSink(_StreamSink):
@@ -259,24 +268,27 @@ class _SubAgentSink(_StreamSink):
         self.container = cast(Widget, renderer.ensure_pane(parent))
 
     def get_run(self) -> tuple:
-        return (self._r.sub_tool_groups.get(self._sid),
-                self._r.sub_solo_tools.get(self._sid))
+        state = self._r._sub_streams.get(self._sid)
+        return (state.group, state.solo) if state is not None else (None, None)
 
     def set_run(self, group, solo) -> None:
-        self._r.sub_tool_groups[self._sid] = group
-        self._r.sub_solo_tools[self._sid] = solo
+        state = self._r._sub_streams.setdefault(self._sid, _SubStreamState())
+        state.group = group
+        state.solo = solo
 
     def get_assistant(self):
-        return self._r.sub_assistants.get(self._sid)
+        state = self._r._sub_streams.get(self._sid)
+        return state.assistant if state is not None else None
 
     def set_assistant(self, msg) -> None:
-        self._r.sub_assistants[self._sid] = msg
+        self._r._sub_streams.setdefault(self._sid, _SubStreamState()).assistant = msg
 
     def get_thinking(self):
-        return self._r.sub_thinkings.get(self._sid)
+        state = self._r._sub_streams.get(self._sid)
+        return state.thinking if state is not None else None
 
     def set_thinking(self, widget) -> None:
-        self._r.sub_thinkings[self._sid] = widget
+        self._r._sub_streams.setdefault(self._sid, _SubStreamState()).thinking = widget
 
     def on_text(self) -> None:
         self._parent.note_text()
@@ -297,10 +309,7 @@ class StreamRenderer:
         self.tool_widgets: dict[str, ToolCallWidget | SubAgentWidget] = {}
         self.tool_group: ToolGroupWidget | None = None
         self.solo_tool: ToolCallWidget | None = None
-        self.sub_tool_groups: dict[str, ToolGroupWidget | None] = {}
-        self.sub_solo_tools: dict[str, ToolCallWidget | None] = {}
-        self.sub_assistants: dict[str, AssistantMessage] = {}
-        self.sub_thinkings: dict[str, ThinkingWidget] = {}
+        self._sub_streams: dict[str, _SubStreamState] = {}
         # Every foreground sub-agent spawned this session, in spawn order — the
         # backing list for the sub-agents screen's list/navigation and the
         # summary roll-up.
@@ -341,10 +350,7 @@ class StreamRenderer:
         self.tool_widgets.clear()
         self.tool_group = None
         self.solo_tool = None
-        self.sub_tool_groups.clear()
-        self.sub_solo_tools.clear()
-        self.sub_assistants.clear()
-        self.sub_thinkings.clear()
+        self._sub_streams.clear()
         self.subagents.clear()
         self._detached_cards.clear()
         self.dirty_streams.clear()
@@ -416,6 +422,9 @@ class StreamRenderer:
             tid: w for tid, w in self.tool_widgets.items()
             if getattr(w, "status", None) == "pending"
         }
+        for sid in list(self._sub_streams):
+            if sid not in self.tool_widgets:
+                del self._sub_streams[sid]
 
     def reset_live_tokens(self) -> None:
         self.live_run_tokens = 0
@@ -671,11 +680,97 @@ class StreamRenderer:
             if parent.pane is not None:
                 parent.pane.set_model(model)
 
-    async def dispatch_stream_event(self, event, sink: _StreamSink) -> None:
+    async def _on_text_start(self, event: PartStartEvent, sink: "_StreamSink") -> None:
+        part = cast(TextPart, event.part)
+        sink.set_run(None, None)  # assistant text ends the run of tools
+        sink.on_text()  # live title status, useful while collapsed
+        msg = AssistantMessage()
+        sink.set_assistant(msg)
+        await sink.container.mount(msg)
+        if part.content:
+            self.append_stream(msg, part.content)
+
+    async def _on_text_delta(self, event: PartDeltaEvent, sink: "_StreamSink") -> None:
+        delta = cast(TextPartDelta, event.delta)
+        msg = sink.get_assistant()
+        if msg is not None:
+            self.append_stream(msg, delta.content_delta or "")
+
+    async def _on_thinking_start(self, event: PartStartEvent, sink: "_StreamSink") -> None:
+        # Reasoning streams as its own collapsed block, standalone like
+        # assistant text (so it breaks any open tool run rather than nesting).
+        part = cast(ThinkingPart, event.part)
+        sink.set_run(None, None)
+        widget = ThinkingWidget()
+        sink.set_thinking(widget)
+        await sink.container.mount(widget)
+        if part.content:
+            self.append_stream(widget.body, part.content)
+
+    async def _on_thinking_delta(self, event: PartDeltaEvent, sink: "_StreamSink") -> None:
+        delta = cast(ThinkingPartDelta, event.delta)
+        widget = sink.get_thinking()
+        if widget is not None:
+            self.append_stream(widget.body, delta.content_delta or "")
+
+    async def _on_tool_call(self, event: FunctionToolCallEvent, sink: "_StreamSink") -> None:
+        # A gated tool re-emits its call event on the post-approval execution
+        # pass; reuse the widget already mounted for this id rather than
+        # mounting an orphaned duplicate.
+        if event.part.tool_call_id in self.tool_widgets:
+            return
+        args = event.part.args_as_dict()
+        if await sink.intercept_tool(event, args):
+            return
+        args = self._with_wait_label(event.part.tool_name, args)
+        sink.on_tool(event.part.tool_name, args)  # live card status
+        widget = ToolCallWidget(
+            event.part.tool_name, args,
+            workspace_root=self.app.harness.deps.workspace_root,
+        )
+        self.tool_widgets[event.part.tool_call_id] = widget
+        group, solo = sink.get_run()
+        group, solo = await self.add_tool_to_run(widget, sink.container, group, solo)
+        # Keep the run state in sync; a None value just means "no open group /
+        # no lone call" for this stream.
+        sink.set_run(group, solo)
+
+    async def _on_tool_result(self, event: FunctionToolResultEvent, sink: "_StreamSink") -> None:
+        widget = self.tool_widgets.get(event.tool_call_id)
+        if widget is not None:
+            content = str(getattr(event.part, "content", ""))
+            if isinstance(widget, SubAgentWidget) and self.note_detached_spawn(
+                content, widget, self.app.harness.deps.jobs
+            ):
+                pass  # detached: card stays pending, fills when its job settles
+            else:
+                status = status_from_part(event.part)
+                # A spawn that failed returns its error as a normal (successful)
+                # tool result, so detect the runner's failure text and mark the
+                # card failed rather than letting it render a misleading ✓.
+                if (
+                    isinstance(widget, SubAgentWidget)
+                    and status == "done"
+                    and subagent_failed(content)
+                ):
+                    status = "failed"
+                widget.finish(content, status=status)
+                if isinstance(widget, SubAgentWidget):
+                    # A finished card changes the screen's list/summary scalars.
+                    self.app.refresh_subagents_view()
+                if isinstance(widget, ToolCallWidget):
+                    group = self._group_of(widget)
+                    if group is not None:
+                        # Read widget.status *after* finish() so a bash non-zero
+                        # exit (self-flipped inside finish) is detected.
+                        group.note_child_finished(failed=widget.status == "failed")
+        sink.on_result(event)
+
+    async def dispatch_stream_event(self, event, sink: "_StreamSink") -> None:
         """Route one streamed event to the right widget via ``sink``, which knows
         where to mount and how to read/write this stream's run-state. The top-level
         and sub-agent handlers differ only in that sink (and their own pre/post
-        bookkeeping), so the four event branches live here once."""
+        bookkeeping), so the six event branches live here once."""
         # If the sink has no container (e.g. a sub-agent sink whose pane isn't
         # mounted yet — headless mode or an early race), there's nowhere to mount
         # widgets; skip the event rather than crashing.
@@ -694,86 +789,14 @@ class StreamRenderer:
                 active_thought.finalize()
                 sink.set_thinking(None)
         if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
-            sink.set_run(None, None)  # assistant text ends the run of tools
-            sink.on_text()  # live title status, useful while collapsed
-            msg = AssistantMessage()
-            sink.set_assistant(msg)
-            await sink.container.mount(msg)
-            if event.part.content:
-                self.append_stream(msg, event.part.content)
-        elif isinstance(event, PartDeltaEvent) and isinstance(
-            event.delta, TextPartDelta
-        ):
-            msg = sink.get_assistant()
-            if msg is not None:
-                self.append_stream(msg, event.delta.content_delta or "")
-        elif isinstance(event, PartStartEvent) and isinstance(
-            event.part, ThinkingPart
-        ):
-            # Reasoning streams as its own collapsed block, standalone like
-            # assistant text (so it breaks any open tool run rather than nesting).
-            sink.set_run(None, None)
-            widget = ThinkingWidget()
-            sink.set_thinking(widget)
-            await sink.container.mount(widget)
-            if event.part.content:
-                self.append_stream(widget.body, event.part.content)
-        elif isinstance(event, PartDeltaEvent) and isinstance(
-            event.delta, ThinkingPartDelta
-        ):
-            widget = sink.get_thinking()
-            if widget is not None:
-                self.append_stream(widget.body, event.delta.content_delta or "")
+            await self._on_text_start(event, sink)
+        elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
+            await self._on_text_delta(event, sink)
+        elif isinstance(event, PartStartEvent) and isinstance(event.part, ThinkingPart):
+            await self._on_thinking_start(event, sink)
+        elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, ThinkingPartDelta):
+            await self._on_thinking_delta(event, sink)
         elif isinstance(event, FunctionToolCallEvent):
-            # A gated tool re-emits its call event on the post-approval execution
-            # pass; reuse the widget already mounted for this id rather than
-            # mounting an orphaned duplicate.
-            if event.part.tool_call_id in self.tool_widgets:
-                return
-            args = event.part.args_as_dict()
-            if await sink.intercept_tool(event, args):
-                return
-            args = self._with_wait_label(event.part.tool_name, args)
-            sink.on_tool(event.part.tool_name, args)  # live card status
-            widget = ToolCallWidget(
-                event.part.tool_name, args,
-                workspace_root=self.app.harness.deps.workspace_root,
-            )
-            self.tool_widgets[event.part.tool_call_id] = widget
-            group, solo = sink.get_run()
-            group, solo = await self.add_tool_to_run(
-                widget, sink.container, group, solo
-            )
-            # Keep the run state in sync; a None value just means "no open group /
-            # no lone call" for this stream.
-            sink.set_run(group, solo)
+            await self._on_tool_call(event, sink)
         elif isinstance(event, FunctionToolResultEvent):
-            widget = self.tool_widgets.get(event.tool_call_id)
-            if widget is not None:
-                content = str(getattr(event.part, "content", ""))
-                if isinstance(widget, SubAgentWidget) and self.note_detached_spawn(
-                    content, widget, self.app.harness.deps.jobs
-                ):
-                    pass  # detached: card stays pending, fills when its job settles
-                else:
-                    status = status_from_part(event.part)
-                    # A spawn that failed returns its error as a normal (successful)
-                    # tool result, so detect the runner's failure text and mark the
-                    # card failed rather than letting it render a misleading ✓.
-                    if (
-                        isinstance(widget, SubAgentWidget)
-                        and status == "done"
-                        and subagent_failed(content)
-                    ):
-                        status = "failed"
-                    widget.finish(content, status=status)
-                    if isinstance(widget, SubAgentWidget):
-                        # A finished card changes the screen's list/summary scalars.
-                        self.app.refresh_subagents_view()
-                    if isinstance(widget, ToolCallWidget):
-                        group = self._group_of(widget)
-                        if group is not None:
-                            # Read widget.status *after* finish() so a bash non-zero
-                            # exit (self-flipped inside finish) is detected.
-                            group.note_child_finished(failed=widget.status == "failed")
-            sink.on_result(event)
+            await self._on_tool_result(event, sink)
