@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import logging
+import re
 import socket
 from pathlib import Path
 from urllib.parse import urlparse
@@ -44,6 +45,14 @@ _INLINE_CHAR_LIMIT = 50_000
 # Where offloaded fetch bodies live, relative to the workspace root. Gitignored.
 _FETCH_DIR = (".marim", "fetch")
 _ALLOWED_SCHEMES = frozenset({"http", "https"})
+# A leading "<scheme>://" — the only shape we treat as a real scheme. A bare
+# "host:port/path" has no "//" after the colon, so it isn't mistaken for a
+# "host:" scheme and instead gets https:// assumed (see _normalise_url).
+_SCHEME_RE = re.compile(r"^([a-zA-Z][a-zA-Z0-9+.\-]*)://")
+# How much of an error response body to surface. For API endpoints the useful
+# detail (bad key, validation message, rate-limit reason) is in the body, not
+# the status line — but we don't want to dump a full HTML error page inline.
+_ERROR_BODY_CHARS = 500
 
 # "this host" 0/8 (0.0.0.0 routes to localhost on many stacks) and CGNAT
 # 100.64/10 (RFC 6598, carrier-internal) are not public targets — block both
@@ -169,12 +178,23 @@ _UA = (
 
 
 def _normalise_url(url: str) -> str:
-    """Strip trailing whitespace and reject non-HTTP schemes."""
+    """Strip surrounding whitespace, reject non-HTTP schemes, and assume
+    ``https://`` for a bare host.
+
+    A scheme is recognized only when followed by ``://`` — so ``example.com:8080/p``
+    is read as a schemeless ``host:port`` (→ ``https://example.com:8080/p``) rather
+    than an ``example.com:`` scheme, matching how browsers and Claude Code's
+    WebFetch treat a bare host. A genuine non-HTTP scheme (``file:``, ``ftp:``, …)
+    is still rejected.
+    """
     url = url.strip()
-    scheme = url.split(":", 1)[0].lower() if ":" in url else ""
-    if scheme and scheme not in _ALLOWED_SCHEMES:
-        raise ValueError(f"Unsupported URL scheme: {scheme!r} (only http/https allowed)")
-    return url
+    match = _SCHEME_RE.match(url)
+    if match:
+        scheme = match.group(1).lower()
+        if scheme not in _ALLOWED_SCHEMES:
+            raise ValueError(f"Unsupported URL scheme: {scheme!r} (only http/https allowed)")
+        return url
+    return f"https://{url}"
 
 
 def _html_to_markdown(html: str) -> str:
@@ -289,7 +309,22 @@ async def fetch_url(
                     break
             raw = b"".join(chunks)[:_MAX_BYTES]
     except httpx.HTTPStatusError as exc:
-        return f"Fetch failed: HTTP {exc.response.status_code} — {exc.response.reason_phrase}"
+        msg = f"Fetch failed: HTTP {exc.response.status_code} — {exc.response.reason_phrase}"
+        # Surface a snippet of the error body: for API endpoints that's where the
+        # actionable detail lives. The body wasn't read (we raised on a streamed
+        # response), so pull it now — best-effort, so a read/decode failure just
+        # leaves the status line.
+        try:
+            await exc.response.aread()
+            detail = exc.response.text.strip()
+        except Exception:  # noqa: BLE001 — best-effort; never mask the HTTP error
+            detail = ""
+        if detail:
+            snippet = detail[:_ERROR_BODY_CHARS]
+            if len(detail) > _ERROR_BODY_CHARS:
+                snippet += "…"
+            msg = f"{msg}\n{snippet}"
+        return msg
     except httpx.RequestError as exc:
         return f"Fetch failed: {exc}"
 

@@ -20,12 +20,19 @@ def _mock_response(
     status_code: int = 200,
     raise_for_status_error: bool = False,
     content_length: "int | None" = None,
+    reason_phrase: str = "",
+    error_body: str = "",
 ) -> AsyncMock:
     """Build a fake streamed httpx.Response. ``fetch_url`` reads the body via
     ``aiter_bytes()`` under ``client.stream(...)``, so the body is yielded in
-    chunks. ``content_length`` sets the declared header used by the size guard."""
+    chunks. ``content_length`` sets the declared header used by the size guard.
+    ``error_body`` is what the HTTP-error handler reads via ``aread()``/``.text``."""
     resp = AsyncMock()
     resp.status_code = status_code
+    resp.reason_phrase = reason_phrase
+    # The error handler does ``await resp.aread()`` then reads ``resp.text``; keep
+    # ``.text`` a real str (AsyncMock would otherwise hand back a Mock).
+    resp.text = error_body
     headers = {"content-type": content_type}
     if content_length is not None:
         headers["content-length"] = str(content_length)
@@ -202,6 +209,49 @@ async def test_fetch_server_error():
 
 
 @pytest.mark.anyio
+async def test_fetch_http_error_includes_body_snippet():
+    resp = _mock_response(
+        status_code=401,
+        reason_phrase="Unauthorized",
+        raise_for_status_error=True,
+        error_body='{"error": "invalid api key"}',
+    )
+
+    with _patch_client(resp):
+        result = await fetch_url("https://198.51.100.5/v1/thing")
+
+    assert "Fetch failed: HTTP 401 — Unauthorized" in result
+    assert "invalid api key" in result
+
+
+@pytest.mark.anyio
+async def test_fetch_http_error_body_truncated():
+    resp = _mock_response(
+        status_code=500,
+        raise_for_status_error=True,
+        error_body="x" * 5000,
+    )
+
+    with _patch_client(resp):
+        result = await fetch_url("https://198.51.100.5/boom")
+
+    # Body snippet is capped (500 chars) and ellipsized — never the full 5k.
+    assert "…" in result
+    assert result.count("x") <= 500
+
+
+@pytest.mark.anyio
+async def test_fetch_http_error_without_body_is_just_status():
+    resp = _mock_response(status_code=404, raise_for_status_error=True)
+
+    with _patch_client(resp):
+        result = await fetch_url("https://example.com/missing")
+
+    assert "Fetch failed: HTTP 404" in result
+    assert "\n" not in result.strip()  # no body snippet appended on a second line
+
+
+@pytest.mark.anyio
 async def test_fetch_connection_error():
     client = AsyncMock()
     client.stream = MagicMock(side_effect=httpx.ConnectError("Connection refused"))
@@ -225,6 +275,31 @@ async def test_fetch_rejects_file_scheme():
 async def test_fetch_rejects_ftp_scheme():
     result = await fetch_url("ftp://files.example.com/pub")
     assert "Unsupported URL scheme" in result
+
+
+@pytest.mark.anyio
+async def test_fetch_schemeless_url_assumes_https():
+    resp = _mock_response(text="ok", content_type="text/plain")
+
+    with _patch_client(resp) as client_cls:
+        result = await fetch_url("198.51.100.7/path")
+
+    assert result == "ok"
+    # https:// is prepended before the request is made.
+    called_url = client_cls.return_value.stream.call_args.args[1]
+    assert called_url == "https://198.51.100.7/path"
+
+
+@pytest.mark.anyio
+async def test_fetch_schemeless_host_port_not_mistaken_for_scheme():
+    resp = _mock_response(text="ok", content_type="text/plain")
+
+    with _patch_client(resp) as client_cls:
+        result = await fetch_url("198.51.100.7:8080/path")
+
+    assert result == "ok"
+    called_url = client_cls.return_value.stream.call_args.args[1]
+    assert called_url == "https://198.51.100.7:8080/path"
 
 
 # ---------------------------------------------------------------------------
