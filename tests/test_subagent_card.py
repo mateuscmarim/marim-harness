@@ -23,6 +23,19 @@ def test_display_title_is_derived_once_and_cached(monkeypatch):
     assert calls["n"] == 1
 
 
+def test_description_titles_card_without_displacing_full_task():
+    """A short ``description`` is the title hint, not a replacement for the prompt.
+    The header derives from ``description`` (so several same-type spawns stay
+    distinguishable), but ``agent_task`` must keep the full prompt verbatim — that's
+    what the pane's "▸ task" disclosure reveals. Regression: the card used to store
+    ``description or task`` in one field, so a labelled spawn dropped its real prompt
+    and the disclosure echoed the title."""
+    full = "Research Codex/Agents SDK context. Map every entry point and report back."
+    w = SubAgentWidget("research", full, "sonnet", description="Research Codex SDK")
+    assert w.display_title() == "Research Codex SDK"
+    assert w.agent_task == full
+
+
 def test_card_has_no_body_and_tolerates_no_pane():
     w = SubAgentWidget("research", "Map the codebase. Then summarize.", "sonnet")
     # The transcript body no longer lives on the card.

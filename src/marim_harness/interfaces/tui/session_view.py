@@ -86,8 +86,9 @@ class SessionView:
                 solo = None
                 widget = SubAgentWidget(
                     str(args.get("type", "")),
-                    str(args.get("description") or args.get("task", "")),
+                    str(args.get("task", "")),
                     str(args.get("model") or ""),
+                    description=str(args.get("description") or ""),
                 )
                 widget.stream_id = part.tool_call_id
                 tool_widgets[part.tool_call_id] = widget
@@ -197,12 +198,15 @@ class SessionView:
                             if isinstance(widget, SubAgentWidget):
                                 widget.model_label = model_label
                                 host = self.app.query_one(SubAgentDetailHost)
+                                # Mirror the live path (ensure_pane): the derived
+                                # one-line title on the headline, the full task in
+                                # the "▸ task" disclosure — not the title in both.
                                 pane = host.add_pane(
                                     part.tool_call_id,
                                     str(args.get("type", "")),
                                     model_label,
-                                    str(args.get("description") or args.get("task", "")),
-                                    "",
+                                    widget.display_title(),
+                                    widget.agent_task,
                                 )
                                 widget.pane = pane
 

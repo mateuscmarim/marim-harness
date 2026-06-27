@@ -94,14 +94,21 @@ class SubAgentWidget(Vertical):
     to the ``SubAgentPane`` where the streamed transcript lives."""
 
     def __init__(
-        self, agent_type: str, agent_task: str, model_label: str = ""
+        self, agent_type: str, agent_task: str, model_label: str = "",
+        description: str = "",
     ) -> None:
         self.agent_type = agent_type
+        # The full spawn prompt — feeds the pane's "▸ task" disclosure verbatim.
+        # Kept distinct from ``description`` so a short label never displaces it:
+        # ``description`` is the optional 3-5 word title hint, ``agent_task`` the
+        # real, often multi-paragraph, prompt the disclosure must reveal.
         self.agent_task = agent_task
+        self.description = description
         self.model_label = model_label
-        # Derived lazily from agent_task (which is fixed) and cached: _paint_header
-        # asks for it on every spinner tick just to redraw one glyph, so condensing
-        # the (often multi-paragraph) prompt per frame, ×N running agents, is waste.
+        # Derived lazily from description-or-task (both fixed) and cached:
+        # _paint_header asks for it on every spinner tick just to redraw one glyph,
+        # so condensing the (often multi-paragraph) prompt per frame, ×N running
+        # agents, is waste.
         self._title: str | None = None
         # The owning stream's id (the spawn's tool_call_id); set by the renderer
         # once the widget is registered. The flush tick uses it to skip transcripts
@@ -199,11 +206,12 @@ class SubAgentWidget(Vertical):
         return _SPINNER[self._spin]
 
     def display_title(self) -> str:
-        """A concise one-line title derived from the (often verbose) spawn prompt —
-        used on the card header and in the viewer's side-panel list. Derived once
-        and cached: agent_task is fixed, but this is called per spinner tick."""
+        """A concise one-line title for the card header and the viewer's side-panel
+        list: the caller's short ``description`` when given, else one derived from
+        the (often verbose) spawn prompt. Derived once and cached: both inputs are
+        fixed, but this is called per spinner tick."""
         if self._title is None:
-            self._title = derive_title(self.agent_task)
+            self._title = derive_title(self.description or self.agent_task)
         return self._title
 
     def set_model(self, model_label: str) -> None:

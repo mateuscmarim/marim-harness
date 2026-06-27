@@ -585,8 +585,9 @@ class StreamRenderer:
         model_label = str(args.get("model") or self.app.harness.model_label or "")
         widget = SubAgentWidget(
             str(args.get("type", "")),
-            str(args.get("description") or args.get("task", "")),
+            str(args.get("task", "")),
             model_label,
+            description=str(args.get("description") or ""),
         )
         self.subagents.append(widget)
         return widget
