@@ -23,6 +23,40 @@ def _setup_logging() -> None:
     )
 
 
+def route_logging_to_file():
+    """Swap the root logger's stderr handler for a file handler, returning the
+    log path (or None if it couldn't be opened).
+
+    ``_setup_logging`` (run once at startup) installs a ``StreamHandler`` bound to
+    ``sys.stderr`` *as it exists then* — the real terminal. The TUI launches
+    afterwards and Textual swaps ``sys.stderr`` for its own redirect, but that
+    handler still holds the original terminal stream. So any WARNING+ record (a
+    logged httpx error, an asyncio "task exception was never retrieved", a library
+    warning) writes straight to the real tty, painting over the live Textual
+    screen. Redirecting to a file *before* the screen is taken keeps the logs
+    without corrupting the display. Headless deliberately keeps the stderr handler,
+    where logs-on-stderr is the right behavior."""
+    from ...config import config_dir
+
+    root = logging.getLogger()
+    try:
+        path = config_dir() / "marim.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(path, encoding="utf-8")
+    except OSError:
+        return None  # can't open the file — leave logging as-is rather than crash
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(name)s %(levelname)s: %(message)s")
+    )
+    # Drop the stderr StreamHandler(s) basicConfig installed; closing a
+    # StreamHandler flushes it without closing the underlying sys.stderr.
+    for existing in root.handlers[:]:
+        root.removeHandler(existing)
+        existing.close()
+    root.addHandler(handler)
+    return path
+
+
 def main() -> None:
     load_environment()
     _setup_logging()

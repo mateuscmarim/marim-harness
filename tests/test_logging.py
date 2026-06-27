@@ -33,6 +33,57 @@ def test_setup_logging_debug_level(monkeypatch):
         root.handlers = before_handlers
 
 
+# --- route_logging_to_file ----------------------------------------------------
+
+
+def test_route_logging_to_file_swaps_stderr_for_file(monkeypatch, tmp_path):
+    """The TUI redirect replaces the stderr StreamHandler with a FileHandler so
+    WARNING+ records land in a file instead of painting over the live screen."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    root = logging.getLogger()
+    before_handlers = list(root.handlers)
+    before_level = root.level
+    try:
+        router._setup_logging()
+        assert [type(h).__name__ for h in root.handlers] == ["StreamHandler"]
+
+        path = router.route_logging_to_file()
+
+        assert path == tmp_path / "marim" / "marim.log"
+        assert [type(h).__name__ for h in root.handlers] == ["FileHandler"]
+
+        logging.getLogger("httpx").warning("Client error '400 Bad Request'")
+        for h in root.handlers:
+            h.flush()
+        assert "Client error '400 Bad Request'" in path.read_text()
+    finally:
+        for h in root.handlers[:]:
+            root.removeHandler(h)
+            h.close()
+        for h in before_handlers:
+            root.addHandler(h)
+        root.level = before_level
+
+
+def test_route_logging_to_file_returns_none_on_oserror(monkeypatch):
+    """A log file that can't be opened leaves logging untouched rather than
+    crashing the launch."""
+    root = logging.getLogger()
+    before_handlers = list(root.handlers)
+    try:
+        router._setup_logging()
+
+        def _boom(*args, **kwargs):
+            raise OSError("read-only filesystem")
+
+        monkeypatch.setattr(router.logging, "FileHandler", _boom)
+        assert router.route_logging_to_file() is None
+        # The original stderr handler survives — logging still works.
+        assert [type(h).__name__ for h in root.handlers] == ["StreamHandler"]
+    finally:
+        root.handlers = before_handlers
+
+
 # --- Tier 1: compaction summarizer failure ------------------------------------
 
 

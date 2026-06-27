@@ -112,6 +112,13 @@ def run_default(argv, *, stdin=None, out=None, err=None) -> int:
             run_headless(harness, prompt, args.output_format, out=out, err=err)
         )
 
+    # Route logs to a file before Textual takes the screen — the stderr handler
+    # installed at startup still points at the real tty and would paint WARNING+
+    # records straight over the live TUI (see route_logging_to_file).
+    from .router import route_logging_to_file
+
+    route_logging_to_file()
+
     from ..tui.app import HarnessApp
 
     harness = build_harness(workspace, mode=Mode.ask, resume=args.resume)
