@@ -245,8 +245,14 @@ class _TopLevelSink(_StreamSink):
 
     def on_result(self, event) -> None:
         # A foreground spawn's stream_id is its tool_call_id; drop its sub-stream
-        # state once the spawn returns.
-        self._r._sub_streams.pop(event.tool_call_id, None)
+        # state once the spawn returns. The sub-agent's final text block is the last
+        # thing it streamed, so no later event ever finalized it (the per-event
+        # finalize in dispatch fires on the *next* event) — finalize it here so a
+        # busy-fan-out streaming-duplication is healed to a clean reparse before the
+        # card settles. See AssistantMessage.finalize.
+        state = self._r._sub_streams.pop(event.tool_call_id, None)
+        if state is not None and state.assistant is not None:
+            state.assistant.finalize()
 
 
 class _SubAgentSink(_StreamSink):
@@ -636,6 +642,13 @@ class StreamRenderer:
         if trailing_thought is not None:
             trailing_thought.finalize()
             sink.set_thinking(None)
+        # Likewise a round ending on assistant text never saw a following event to
+        # finalize it; do the clean stream-end reparse now (heals any duplication the
+        # incremental render left behind — see AssistantMessage.finalize). The pointer
+        # is left set as the turn's resting reply (finalize is idempotent).
+        trailing_assistant = sink.get_assistant()
+        if trailing_assistant is not None:
+            trailing_assistant.finalize()
 
     async def on_subagent_event(self, stream_id: str, event, usage=None) -> None:
         """Route a spawned sub-agent's own stream into the SubAgentWidget that owns
@@ -789,6 +802,20 @@ class StreamRenderer:
             if active_thought is not None:
                 active_thought.finalize()
                 sink.set_thinking(None)
+        # Symmetrically, an assistant text block is complete once any event other
+        # than its own text-delta arrives (a tool call, a thought, or the next text
+        # part). Finalize it then so its incremental markdown is replaced by one clean
+        # reparse, healing any blocks the streaming path doubled. We do NOT clear the
+        # current-assistant pointer (finalize is latched/idempotent, so re-finalizing
+        # on later events is a cheap no-op): callers read current_assistant as the
+        # turn's resting reply, and _on_text_start overwrites it for the next part.
+        if not (
+            isinstance(event, PartDeltaEvent)
+            and isinstance(event.delta, TextPartDelta)
+        ):
+            active_assistant = sink.get_assistant()
+            if active_assistant is not None:
+                active_assistant.finalize()
         if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
             await self._on_text_start(event, sink)
         elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):

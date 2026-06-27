@@ -225,6 +225,8 @@ class AssistantMessage(Markdown):
         self._pending = False
         # How many chars of self.text have already been parsed into the document.
         self._rendered_len = 0
+        # Latch so finalize() (the stream-end clean re-render) runs at most once.
+        self._finalized = False
         super().__init__("")
 
     def append(self, delta: str) -> None:  # type: ignore[override]
@@ -250,3 +252,40 @@ class AssistantMessage(Markdown):
         # update() it replaces: the returned AwaitComplete self-schedules.
         super().append(delta)
         return True
+
+    def finalize(self) -> None:
+        """Re-render the whole buffered source once the stream ends, collapsing any
+        block duplication the incremental path can leave behind.
+
+        Textual's ``Markdown.append`` keeps the trailing block "open" and re-parses
+        it on each call, computing its splice point from ``_last_parsed_line`` in the
+        *synchronous* prefix of an otherwise async (``AwaitComplete``) update. When
+        flush ticks fire faster than those updates drain — a busy event loop during a
+        sub-agent fan-out is the usual trigger — successive appends capture stale
+        parse state and re-mount blocks that are already on screen, so a styled line
+        (heading, bold) shows up two or more times. The raw history is fine; only the
+        live incremental render doubles, which is why a reloaded session shows it once.
+
+        Calling ``Markdown.update`` with the full buffered source drops every existing
+        block and reparses from scratch (resetting ``_last_parsed_line``), so the
+        finished message matches a clean parse regardless of what streaming left
+        behind. One reparse per message at completion is the same cost the streaming
+        path was built to defer — paid once, at the end. Idempotent via ``_finalized``;
+        a no-op when nothing was ever streamed."""
+        if self._finalized:
+            return
+        self._finalized = True
+        if self._rendered_len == 0 or not self.text:
+            # Never rendered incrementally — an off-screen sub-agent transcript whose
+            # flushes were deferred, or a message that completed inside one tick. Its
+            # single pending flush parses the whole buffer in one append, which can't
+            # double, so there's nothing to heal; leaving it dirty preserves the
+            # off-screen deferral. (The duplication only arises from *overlapping*
+            # incremental appends, which require ≥2 flushes — hence _rendered_len > 0.)
+            return
+        # Full clean reparse: removes the (possibly duplicated) blocks and re-mounts
+        # the document once from the full buffered source. update() resets the base
+        # parse cursor, so our own _rendered_len bookkeeping is squared with it.
+        self.update(self.text)
+        self._rendered_len = len(self.text)
+        self._pending = False

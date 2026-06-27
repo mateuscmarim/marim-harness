@@ -1580,3 +1580,104 @@ def test_ask_user_widget_cancelled_title():
     assert "cancelled — no answer" in title
     assert "✕" in title
     assert w._render_body() == "Which approach?\n→ (cancelled)"
+
+
+# --- AssistantMessage streaming-duplication healing (finalize) -----------------
+
+# A report shaped like the deep-research verify output the bug surfaced on: prose,
+# then headings, then bold lines, then prose. Headings and bold paragraphs are the
+# blocks Textual's incremental Markdown.append re-mounts on top of themselves when
+# flushes outpace the (async) appends; plain prose merges in place and never doubles.
+_STREAM_DOC = (
+    "Intro prose about the claim under test here.\n\n"
+    "## Verification Report\n\n"
+    "### Claim 4: Aider uses a separate \"weak model\" for summarization.\n\n"
+    "**CONFIRMED** ✓\n\n"
+    "Evidence: plain prose that should never be doubled.\n\n"
+    "### Claim 5: A second styled heading to splice on.\n\n"
+    "**CONFIRMED** ✓\n\n"
+    "Closing prose.\n"
+)
+
+
+class _TwoMessages(App):
+    """A reference message (clean one-shot render) beside a streamed one, so the
+    finished stream can be compared against the clean parse within one event loop."""
+
+    def compose(self) -> ComposeResult:
+        yield AssistantMessage()  # streamed
+        yield AssistantMessage()  # reference
+
+
+def _block_count(msg) -> int:
+    from textual.widgets._markdown import MarkdownBlock
+    return len(list(msg.query(MarkdownBlock)))
+
+
+@pytest.mark.anyio
+async def test_assistant_message_finalize_heals_streaming_duplication():
+    """Streaming with flushes that outpace the async appends (a busy fan-out)
+    re-mounts styled blocks, so the live document carries duplicates. finalize()
+    must collapse it to exactly the clean one-shot parse."""
+    from textual.widgets._markdown import MarkdownBlock, MarkdownHeader
+
+    app = _TwoMessages()
+    async with app.run_test() as pilot:
+        streamed, reference = app.query(AssistantMessage)
+
+        reference.update(_STREAM_DOC)  # the clean full-document render path
+        # Fire flushes without awaiting each append's AwaitComplete — exactly how the
+        # interval tick drives it, and the condition that lets appends overlap.
+        for i in range(0, len(_STREAM_DOC), 5):
+            streamed.append(_STREAM_DOC[i:i + 5])
+            streamed.flush()
+        for _ in range(60):
+            await pilot.pause()
+
+        expected = _block_count(reference)
+        # The race is real but timing-dependent; assert it *can* duplicate without
+        # making the test flaky on a fast machine (>= rather than >).
+        assert _block_count(streamed) >= expected
+
+        streamed.finalize()
+        for _ in range(20):
+            await pilot.pause()
+
+        after_blocks = list(streamed.query(MarkdownBlock))
+        headers = [b for b in after_blocks if isinstance(b, MarkdownHeader)]
+        # Healed to the clean parse: no duplicated blocks, the doc's 3 headings once
+        # each, and the full source preserved.
+        assert len(after_blocks) == expected
+        assert len(headers) == _STREAM_DOC.count("\n#")  # 3 ATX headings
+        assert streamed.source == _STREAM_DOC
+
+
+@pytest.mark.anyio
+async def test_assistant_message_finalize_is_idempotent_and_skips_unrendered():
+    """finalize() is a no-op when nothing rendered incrementally (an off-screen
+    sub-agent transcript whose flushes were deferred) and runs at most once."""
+    app = _TwoMessages()
+    async with app.run_test() as pilot:
+        streamed, reference = app.query(AssistantMessage)
+        reference.update(_STREAM_DOC)
+        for _ in range(10):
+            await pilot.pause()
+        expected = _block_count(reference)
+
+        streamed.append(_STREAM_DOC)  # buffered, never flushed (still off-screen)
+        streamed.finalize()           # _rendered_len == 0 → leaves it for the flush
+        for _ in range(10):
+            await pilot.pause()
+        assert _block_count(streamed) == 0  # nothing rendered yet
+
+        # The deferred flush still renders the whole buffer cleanly in one append.
+        streamed.flush()
+        for _ in range(10):
+            await pilot.pause()
+        assert _block_count(streamed) == expected
+
+        # Second finalize is a no-op (latched); block count is unchanged.
+        streamed.finalize()
+        for _ in range(10):
+            await pilot.pause()
+        assert _block_count(streamed) == expected
