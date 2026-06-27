@@ -21,7 +21,7 @@ from pathlib import Path
 
 import yaml
 
-from ..config import config_dir
+from ..config import builtin_root, config_dir
 from ..tools.names import GATED_TOOLS, NET_TOOLS, READ_TOOLS, SUBAGENT_TOOLS
 from ._discovery import cached_discover
 from ._frontmatter import FRONTMATTER_RE
@@ -89,11 +89,13 @@ def _builtins() -> dict[str, AgentDef]:
 
 
 def agent_roots(workspace_root) -> list[tuple[str, Path]]:
-    """The two discovery roots, highest precedence first: project over global."""
+    """The discovery roots, highest precedence first: project, then global, then
+    marim's bundled built-in agents."""
     ws = Path(workspace_root)
     return [
         ("project", ws / ".marim" / "agents"),
         ("global", config_dir() / "agents"),
+        ("builtin", builtin_root() / "agents"),
     ]
 
 

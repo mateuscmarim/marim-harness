@@ -26,6 +26,13 @@ def config_dir() -> Path:
     return root / "marim"
 
 
+def builtin_root() -> Path:
+    """The package's bundled skills/agents directory
+    (``src/marim_harness/builtin``), shipped inside the wheel. Skills and agents
+    discovered here are marim's own defaults; project/global roots shadow them."""
+    return Path(__file__).resolve().parent.parent / "builtin"
+
+
 def global_config_path() -> Path:
     """The global .env loaded as a fallback when run outside the project."""
     return config_dir() / ".env"

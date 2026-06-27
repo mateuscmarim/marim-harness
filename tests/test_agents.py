@@ -49,16 +49,13 @@ def isolated_home(tmp_path, monkeypatch):
 
 
 def test_agent_roots_order_and_precedence(tmp_path):
-    from marim_harness.config import config_dir
+    from marim_harness.config import builtin_root
 
     ws = tmp_path / "ws"
     roots = agent_roots(ws)
     sources = [s for s, _ in roots]
-    # Only marim's own roots: project before global. No .claude interop roots.
-    assert sources == ["project", "global"]
-    assert roots[0][1] == ws / ".marim" / "agents"
-    assert roots[1][1] == config_dir() / "agents"
-    assert not any(".claude" in str(p) for _, p in roots)
+    assert sources == ["project", "global", "builtin"]
+    assert roots[2][1] == builtin_root() / "agents"
 
 
 def test_ignores_claude_agents_dir(isolated_home):
@@ -280,3 +277,25 @@ def test_discover_agents_reflects_edited_file(isolated_home):
     _make_agent(root, "probe", description="Second.")
     d2 = next(a for a in discover_agents(ws) if a.name == "probe").description
     assert "Second" in d2
+
+
+def test_researcher_is_builtin(isolated_home):
+    ws = isolated_home / "ws"
+    agent = find_agent(ws, "researcher")
+    assert agent is not None
+    assert agent.source == "builtin"
+    assert agent.backend == "native"
+    assert agent.tools == frozenset(
+        {"web_search", "fetch_url", "read_file", "glob", "grep", "tree"}
+    )
+    # Read-only and cannot recurse.
+    assert "spawn_agent" not in agent.tools
+    assert GATED_TOOLS.isdisjoint(agent.tools)
+
+
+def test_project_agent_shadows_builtin_researcher(isolated_home):
+    ws = isolated_home / "ws"
+    _make_agent(ws / ".marim" / "agents", "researcher", description="Custom override.")
+    agent = find_agent(ws, "researcher")
+    assert agent.source == "project"
+    assert agent.description == "Custom override."

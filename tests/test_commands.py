@@ -206,6 +206,10 @@ async def test_skill_no_arg_lists_skills(tmp_path: Path, monkeypatch):
 async def test_skill_no_arg_no_skills(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        "marim_harness.workspace.skills.builtin_root",
+        lambda: tmp_path / "no-builtin",
+    )
     app = _FakeApp(workspace_root=tmp_path / "ws")
     await dispatch(app, "/skill")
     assert app.turn_prompts == []

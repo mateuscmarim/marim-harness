@@ -174,6 +174,10 @@ async def test_skill_index_injected_and_dynamic(tmp_path: Path, monkeypatch):
     # Isolate the global skill roots so the real user's skills don't leak in.
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        "marim_harness.workspace.skills.builtin_root",
+        lambda: tmp_path / "no-builtin",
+    )
 
     captured: dict = {}
 

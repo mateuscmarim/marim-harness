@@ -42,24 +42,47 @@ def _make_skill(
 
 @pytest.fixture
 def isolated_home(tmp_path, monkeypatch):
-    """Point the global root (config dir) at tmp so tests don't see
-    the real user's skills."""
+    """Isolate ALL skill roots so a test sees only the skills it creates: the
+    global root via env, and the bundled built-in root via monkeypatch (it is
+    package-relative, not env-driven). Decouples discovery-logic tests from
+    whatever marim ships as built-ins."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        "marim_harness.workspace.skills.builtin_root",
+        lambda: tmp_path / "no-builtin",
+    )
+    return tmp_path
+
+
+@pytest.fixture
+def isolated_project(tmp_path, monkeypatch):
+    """Isolate the project + global roots (via env) but keep marim's REAL
+    bundled built-in root, so a test can assert on shipped built-in skills."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     return tmp_path
 
 
 def test_skill_roots_order_and_precedence(tmp_path):
-    from marim_harness.config import config_dir
+    from marim_harness.config import builtin_root, config_dir
 
     ws = tmp_path / "ws"
     roots = skill_roots(ws)
     sources = [s for s, _ in roots]
-    # Only marim's own roots: project before global. No .claude interop roots.
-    assert sources == ["project", "global"]
+    # Project before global before the bundled built-in root.
+    assert sources == ["project", "global", "builtin"]
     assert roots[0][1] == ws / ".marim" / "skills"
     assert roots[1][1] == config_dir() / "skills"
-    assert not any(".claude" in str(p) for _, p in roots)
+    assert roots[2][1] == builtin_root() / "skills"
+
+
+def test_builtin_root_is_inside_package():
+    from marim_harness.config import builtin_root
+
+    root = builtin_root()
+    assert root.name == "builtin"
+    assert root.parent.name == "marim_harness"
 
 
 def test_discover_finds_project_marim_skill(isolated_home):
@@ -232,3 +255,25 @@ def test_skill_root_is_absolute_dir(isolated_home):
     skill = find_skill(ws, "abs")
     assert skill.root.is_absolute()
     assert (skill.root / "SKILL.md").is_file()
+
+
+def test_deep_research_is_builtin(isolated_project):
+    ws = isolated_project / "ws"
+    skill = find_skill(ws, "deep-research")
+    assert skill is not None
+    assert skill.source == "builtin"
+    # Appears in the injected index so the model can invoke it.
+    index = skills_index_text(discover_skills(ws))
+    assert "deep-research" in index
+    # Body names the worker type so the main agent fans out, not researches inline.
+    body = read_skill_body(skill)
+    assert "researcher" in body
+    assert "spawn_agent" in body
+
+
+def test_project_skill_shadows_builtin_deep_research(isolated_project):
+    ws = isolated_project / "ws"
+    _make_skill(ws / ".marim" / "skills", "deep-research", description="Custom override.")
+    skill = find_skill(ws, "deep-research")
+    assert skill.source == "project"
+    assert skill.description == "Custom override."
