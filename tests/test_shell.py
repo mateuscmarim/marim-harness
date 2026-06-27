@@ -34,6 +34,45 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def test_bounded_output_keeps_head_and_tail_under_budget():
+    """The running cap keeps a bounded head + sliding tail so a flood never grows
+    memory past ~budget, while both ends (opening + verdict) survive."""
+    acc = shell._BoundedOutput(budget=100)  # head_cap=50, tail_cap=50
+    acc.add(b"HEAD-MARKER\n")  # lands in the head
+    for i in range(1000):
+        acc.add(b"filler-%d\n" % i)
+    acc.add(b"TAIL-VERDICT\n")  # most recent → retained in the sliding tail
+    head, tail = acc.parts(b"")
+    assert head.startswith(b"HEAD-MARKER")
+    assert tail.endswith(b"TAIL-VERDICT\n")
+    # Memory is bounded: head ~head_cap (+ one crossing chunk), tail ~tail_cap.
+    assert len(head) < 50 + 32
+    assert len(tail) < 50 + 32
+    # dropped accounts for exactly what was elided between the two ends.
+    assert acc.dropped == acc._total - len(head) - len(tail)
+    assert acc.dropped > 0
+
+
+def test_bounded_output_no_drop_is_lossless():
+    acc = shell._BoundedOutput(budget=1000)
+    acc.add(b"one\n")
+    acc.add(b"two\n")
+    head, tail = acc.parts(b"")
+    assert acc.dropped == 0
+    assert head + tail == b"one\ntwo\n"
+
+
+def test_bounded_output_single_oversized_chunk_bounded():
+    """A single line larger than the whole budget (no newline) must not blow memory:
+    after the head fills, an oversized chunk is clipped to the last tail_cap."""
+    acc = shell._BoundedOutput(budget=100)
+    acc.add(b"x" * 60)            # fills the head (>= head_cap of 50)
+    acc.add(b"y" * 10_000)        # giant chunk → clipped to tail_cap in the tail
+    head, tail = acc.parts(b"")
+    assert len(head) < 200 and len(tail) <= 50
+    assert acc.dropped > 0
+
+
 @pytest.mark.anyio
 async def test_bash_captures_stdout(tmp_path: Path):
     out = await shell.run_bash(tmp_path, "echo hello")
@@ -236,6 +275,31 @@ async def test_run_bash_offloads_large_output(tmp_path, monkeypatch):
 async def test_run_bash_small_output_inline(tmp_path):
     out = await shell.run_bash(tmp_path, "echo hi")
     assert out == "exit 0\nhi\n"
+
+
+@pytest.mark.anyio
+async def test_run_bash_foreground_caps_running_memory(tmp_path, monkeypatch):
+    """A flood must be middle-truncated to the running budget (not buffered whole):
+    both ends survive, the marker is present, and the saved body stays ~budget-sized."""
+    monkeypatch.setattr(shell, "MAX_OUTPUT_CHARS", 2_000)
+    from marim_harness.tools import offload
+    monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 100)
+    out = await shell.run_bash(
+        tmp_path,
+        "echo HEAD-MARKER; for i in $(seq 1 20000); do echo filler$i; done; "
+        "echo TAIL-VERDICT",
+    )
+    # Offloaded (large), and flagged as having hit the ceiling.
+    assert "full output saved to" in out
+    saved = list((tmp_path / ".marim" / "output").glob("bash-*.txt"))
+    assert len(saved) == 1
+    body = saved[0].read_text()
+    # The body is bounded to ~budget + the exit line + the truncation marker, NOT the
+    # full ~150 KB the command emitted.
+    assert len(body) < 2_000 + 200
+    assert "HEAD-MARKER" in body
+    assert "TAIL-VERDICT" in body
+    assert "chars truncated" in body
 
 
 @pytest.mark.anyio

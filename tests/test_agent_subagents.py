@@ -48,9 +48,7 @@ def _capture_subagent(h, report="report"):
             cap["toolsets"] = kwargs.get("toolsets")
             return SimpleNamespace(output=report, usage=RunUsage(), all_messages=lambda: [])
 
-    h.subagents.build = lambda type, max_output_chars=None, model=None, workspace_root=None: (
-        _StubAgent(), None
-    )
+    h.subagents.build = lambda *a, **k: (_StubAgent(), None)
     return cap
 
 
@@ -499,9 +497,7 @@ async def test_run_background_isolates_task_list(tmp_path: Path):
     # Give the parent a non-empty checklist so a leak would be visible.
     deps.tasks.replace([{"text": "user task", "status": "in_progress"}])
     h = _make_harness(_text_model(), deps)
-    h.subagents.build = lambda type, max_output_chars=None, model=None, workspace_root=None: (
-        _StubAgent(), None
-    )
+    h.subagents.build = lambda *a, **k: (_StubAgent(), None)
 
     await h.subagents.run_background("explore", "scan")
     bg_deps = cap["deps"]

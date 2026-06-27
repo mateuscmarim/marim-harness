@@ -2,12 +2,19 @@ import asyncio
 import contextlib
 import os
 import signal
+from collections import deque
 from pathlib import Path
 
 from .offload import MAX_OUTPUT_CHARS, offload_if_large
 
 _DEFAULT_TIMEOUT = 30
 _DEFAULT_MAX_OUTPUT = 20_000
+# Format the elided-middle marker the same way _truncate_middle does, so the live
+# preview and the final body present a truncation identically. ``unit`` is "chars"
+# for the decoded background buffer and the foreground byte count alike (the latter
+# is bytes, but for the flood case this is a cosmetic count, matching the existing
+# "chars" wording).
+_TRUNC_MARKER = "\n… ({dropped} chars truncated) …\n"
 # Overall wall-clock ceiling for the post-kill drain. The per-readline timeout
 # below bounds a single read, but a process flushing a burst of short lines keeps
 # resetting that window — this caps the whole drain loop so the timeout path can't
@@ -30,6 +37,65 @@ def _truncate_middle(text: str, max_output: int) -> str:
     return f"{text[:head]}\n… ({dropped} chars truncated) …\n{text[-tail:]}"
 
 
+class _BoundedOutput:
+    """Accumulates subprocess output under a RUNNING size budget.
+
+    A flood (``yes``, ``cat hugefile``) would otherwise append every line to a list
+    and only get capped at the end — buffering hundreds of MB first. This keeps a
+    bounded HEAD (the command's opening: setup, first errors) and a bounded sliding
+    TAIL (its verdict: a test summary, a final traceback), the same head+tail split
+    :func:`_truncate_middle` presents, so middle-truncation still has both ends.
+    Memory stays at ~``budget`` regardless of how much the process emits. Callers
+    must keep draining the pipe to EOF (the child deadlocks on a full pipe) — this
+    never rejects a chunk, it just stops *growing* memory past the budget.
+
+    Type-agnostic: works on ``bytes`` (foreground, decoded once at the end) or
+    ``str`` (background, decoded per line). ``parts(empty)`` returns the joined
+    ``(head, tail)`` and ``dropped`` the exact count elided between them."""
+
+    def __init__(self, budget: int) -> None:
+        half = budget // 2
+        self._head_cap = half
+        self._tail_cap = budget - half  # headroom so both ends survive truncation
+        self._head: list = []
+        self._head_len = 0
+        self._tail: deque = deque()
+        self._tail_len = 0
+        self._total = 0
+
+    def add(self, chunk) -> None:
+        n = len(chunk)
+        self._total += n
+        if self._head_len < self._head_cap:
+            # Fill the head with WHOLE chunks (lines) until it reaches the cap; let
+            # the crossing chunk push slightly past it rather than slice mid-line, so
+            # the head always ends on a line boundary (clean to decode, no split
+            # multibyte char). Subsequent chunks feed the sliding tail below.
+            self._head.append(chunk)
+            self._head_len += n
+            return
+        # One oversized chunk (a long line with no newline) could blow the tail by
+        # itself — keep only its last ``tail_cap`` so a single chunk can't exceed it.
+        if n > self._tail_cap:
+            chunk = chunk[n - self._tail_cap:]
+            n = self._tail_cap
+        self._tail.append(chunk)
+        self._tail_len += n
+        # Evict the oldest tail chunks while the most recent still cover ``tail_cap``,
+        # so memory stays bounded but we always retain the freshest tail_cap of output.
+        while self._tail and self._tail_len - len(self._tail[0]) >= self._tail_cap:
+            self._tail_len -= len(self._tail.popleft())
+
+    @property
+    def dropped(self) -> int:
+        """Exact number of units elided between the retained head and tail."""
+        return self._total - self._head_len - self._tail_len
+
+    def parts(self, empty):
+        """Return ``(head, tail)`` joined with ``empty`` (``b""`` or ``""``)."""
+        return empty.join(self._head), empty.join(self._tail)
+
+
 async def run_bash(
     root: Path,
     command: str,
@@ -49,7 +115,10 @@ async def run_bash(
     # Read stdout line-by-line instead of using proc.communicate() so we can
     # retain whatever was read before a timeout kills the process.  communicate()
     # closes its internal reader on cancellation, discarding buffered output.
-    chunks: list[bytes] = []
+    # Bound memory while reading: a flood (``yes``, ``cat hugefile``) must not buffer
+    # hundreds of MB before the final cap applies. The accumulator keeps a bounded
+    # head + sliding tail; we keep draining the pipe to EOF either way (see below).
+    chunks = _BoundedOutput(MAX_OUTPUT_CHARS)
     timed_out = False
     if proc.stdout is not None:
         # ``timeout`` is a TOTAL wall-clock ceiling, not a per-line idle gap. A
@@ -69,7 +138,7 @@ async def run_bash(
                 line = await asyncio.wait_for(proc.stdout.readline(), timeout=remaining)
                 if not line:
                     break  # EOF — process exited
-                chunks.append(line)
+                chunks.add(line)
         except asyncio.TimeoutError:
             timed_out = True
     else:
@@ -100,7 +169,7 @@ async def run_bash(
                                                   timeout=min(1, remaining))
                     if not line:
                         break
-                    chunks.append(line)
+                    chunks.add(line)
             except (asyncio.TimeoutError, OSError):
                 pass
     # Reap the process. After EOF (clean exit) or the SIGKILL above this returns
@@ -110,7 +179,19 @@ async def run_bash(
     # which surfaces as ``exit None`` alongside the timeout marker.
     with contextlib.suppress(asyncio.TimeoutError):
         await asyncio.wait_for(proc.wait(), timeout=_DRAIN_BUDGET)
-    text = b"".join(chunks).decode(errors="replace")
+    head_b, tail_b = chunks.parts(b"")
+    dropped = chunks.dropped
+    if dropped > 0:
+        # Decode the two ends separately (each ends/starts on a line boundary) and
+        # splice in the truncated-middle marker, the same head+tail presentation the
+        # final cap has always produced — but now memory never exceeded the budget.
+        text = (head_b.decode(errors="replace")
+                + _TRUNC_MARKER.format(dropped=dropped)
+                + tail_b.decode(errors="replace"))
+    else:
+        # Nothing dropped: decode the full byte string at once so output is identical
+        # to the pre-cap behavior (no boundary re-decode).
+        text = (head_b + tail_b).decode(errors="replace")
     body = f"exit {proc.returncode}\n{text}"
     if timed_out:
         # Separate the marker from the last line of output so it can't glom onto
@@ -119,7 +200,7 @@ async def run_bash(
             body += "\n"
         body += f"(timed out after {timeout}s)"
     return offload_if_large(body, kind="bash", key=command,
-                            workspace_root=root, capped=False)
+                            workspace_root=root, capped=dropped > 0)
 
 
 class BashProcess:
@@ -134,7 +215,9 @@ class BashProcess:
         self._max_output = max_output
         self._root = root
         self._command = command
-        self._buffer: list[str] = []
+        # Bound memory while the background command runs (see _BoundedOutput): a
+        # detached flood must not grow the buffer without limit before wait() caps it.
+        self._buffer = _BoundedOutput(MAX_OUTPUT_CHARS)
 
     @property
     def returncode(self) -> int | None:
@@ -142,7 +225,8 @@ class BashProcess:
 
     def output(self) -> str:
         """The combined output captured so far, truncated (head+tail) to the cap."""
-        return _truncate_middle("".join(self._buffer), self._max_output)
+        head, tail = self._buffer.parts("")
+        return _truncate_middle(head + tail, self._max_output)
 
     def kill(self) -> None:
         """Kill the process group (best-effort; already-dead is fine)."""
@@ -162,13 +246,19 @@ class BashProcess:
                 chunk = await self._proc.stdout.readline()
                 if not chunk:
                     break
-                self._buffer.append(chunk.decode(errors="replace"))
+                # add() keeps memory bounded; we keep reading to EOF regardless so the
+                # child never deadlocks on a full pipe.
+                self._buffer.add(chunk.decode(errors="replace"))
         await self._proc.wait()
-        text = "".join(self._buffer)
-        if len(text) > MAX_OUTPUT_CHARS:
-            text = text[:MAX_OUTPUT_CHARS]
+        head, tail = self._buffer.parts("")
+        dropped = self._buffer.dropped
+        if dropped > 0:
+            # Present the cap as a truncated middle (head + marker + tail) rather than
+            # a head-only clip, so the command's verdict at the very end survives.
+            text = f"{head}{_TRUNC_MARKER.format(dropped=dropped)}{tail}"
             capped = True
         else:
+            text = head + tail
             capped = False
         body = f"exit {self._proc.returncode}\n{text}"
         return offload_if_large(body, kind="bash", key=self._command,

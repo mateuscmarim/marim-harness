@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
@@ -108,16 +109,40 @@ class McpManager:
     async def connect(self) -> dict:
         if self._connected or not self.mcp_servers:
             return self.mcp_status.to_dict()
-        for server in self.mcp_servers:
-            name = self.server_name(server)
-            if name in self.disabled:
-                continue
-            err = await self._connect_one(server)
-            if err is None:
-                self.mcp_status.add_connected(name)
-            else:
-                self.mcp_status.add_failed(name, err)
-        # Mark connected only after the loop completes. If a cancellation or
+        servers = [s for s in self.mcp_servers if self.server_name(s) not in self.disabled]
+        if servers:
+            # Connect concurrently: startup latency is the slowest server, not the
+            # sum across all of them. Create the shared AsyncExitStack ONCE up front
+            # so the gathered tasks don't race on the lazy ``self._mcp_stack is None``
+            # init inside _connect_one (concurrent coroutines could otherwise each
+            # build a stack and the first would be dropped, leaking its servers).
+            if self._mcp_stack is None:
+                self._mcp_stack = AsyncExitStack()
+            # return_exceptions keeps one server's failure from cancelling the rest;
+            # _connect_one already contains its own errors as a string, but this also
+            # guards against an unexpected raise. Results line up with ``servers`` by
+            # index (gather preserves input order), so status is recorded in config
+            # order exactly as the serial loop did.
+            results = await asyncio.gather(
+                *(self._connect_one(s) for s in servers), return_exceptions=True
+            )
+            for server, result in zip(servers, results, strict=True):
+                name = self.server_name(server)
+                # A BaseException that isn't an Exception (CancelledError,
+                # KeyboardInterrupt, SystemExit) is an interruption, not a server
+                # fault. return_exceptions captures it like any other result; re-raise
+                # so the flag stays False below and a later connect() retries — the
+                # exact contract the serial loop had.
+                if isinstance(result, BaseException) and not isinstance(result, Exception):
+                    raise result
+                if result is None:
+                    self.mcp_status.add_connected(name)
+                else:
+                    # ``result`` is _connect_one's contained error string, or — if it
+                    # raised unexpectedly — an Exception. Either way it's a per-server
+                    # fault: record it so one bad server can't sink the others.
+                    self.mcp_status.add_failed(name, str(result))
+        # Mark connected only after every server resolves. If a cancellation or
         # BaseException interrupts mid-connect, the flag stays False so a later
         # connect() retries (and reaps the servers already in the stack via
         # aclose) instead of early-returning into a half-connected state.

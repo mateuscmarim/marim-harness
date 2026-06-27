@@ -81,7 +81,7 @@ async def test_run_forwards_model_to_build(tmp_path: Path):
     h = _make_harness(_text_model(), deps)
     seen: dict = {}
 
-    def fake_build(type, max_output_chars=None, model=None, workspace_root=None):
+    def fake_build(type, max_output_chars=None, model=None, workspace_root=None, *, defn=None):
         seen["model"] = model
         return None, "stop here"
 

@@ -108,8 +108,15 @@ class SessionStore:
                 "details": usage.details,
             },
             "tasks": tasks or [],
+            # Cheap header field so SessionManager.list() can report the count
+            # without parsing the (potentially multi-MB) messages array. Old
+            # files predate it; list() falls back to len(messages) when absent.
+            "message_count": len(history),
         }
-        messages_json = json.loads(ModelMessagesTypeAdapter.dump_json(history))
+        # dump_python(mode="json") yields the same jsonable structure as
+        # json.loads(dump_json(...)) but skips one full serialize+parse round
+        # trip (we still do a single json.dumps below to write the file).
+        messages_json = ModelMessagesTypeAdapter.dump_python(history, mode="json")
         messages_json = externalize_images(messages_json, self.session_id)
         payload["messages"] = messages_json
         # Serialize same-session saves across processes (TUI + headless, or two
@@ -187,7 +194,11 @@ class SessionManager:
                     id=data.get("id", path.stem),
                     name=data.get("name", path.stem),
                     updated=data.get("updated", ""),
-                    message_count=len(data.get("messages", [])),
+                    # Prefer the cheap header count written by save(); fall back to
+                    # counting the messages array for files written before it.
+                    message_count=data.get(
+                        "message_count", len(data.get("messages", []))
+                    ),
                     tokens=_total_tokens(data.get("tokens", {})),
                     duration_seconds=data.get("duration_seconds"),
                     model=data.get("model"),

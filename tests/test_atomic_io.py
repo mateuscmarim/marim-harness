@@ -103,12 +103,63 @@ def test_file_lock_creates_parent_dir(tmp_path: Path):
 
 def test_atomic_write_sweeps_orphaned_temp_from_prior_crash(tmp_path: Path):
     # A crash between mkstemp and os.replace leaves a uniquely named temp behind.
-    # The next write to the same target should opportunistically clear it.
+    # The next write to the same target should opportunistically clear it — but
+    # only once it's older than the grace window (a real crash leftover is; a
+    # concurrent writer's in-flight temp is not — see the next test).
+    import os
+
     orphan = tmp_path / ".a.json.deadbeef.tmp"
     orphan.write_text("leftover from a crash")
+    old = orphan.stat().st_mtime - 600  # 10 min ago: unambiguously stale
+    os.utime(orphan, (old, old))
     atomic_write_text(tmp_path / "a.json", "fresh")
     assert not orphan.exists()  # swept
     assert (tmp_path / "a.json").read_text() == "fresh"
+
+
+def test_atomic_write_leaves_recent_temp_for_concurrent_writer(tmp_path: Path):
+    # write_file/edit_file now run in worker threads, so two writes to the same
+    # path can race. A freshly-created temp belongs to a live concurrent writer;
+    # the post-replace sweep must NOT unlink it (doing so would make that writer's
+    # os.replace fail with a spurious FileNotFoundError). Only aged temps are swept.
+    inflight = tmp_path / ".a.json.beef.tmp"
+    inflight.write_text("another writer's in-flight temp")
+    atomic_write_text(tmp_path / "a.json", "fresh")
+    assert inflight.exists()  # protected — too recent to be a crash orphan
+    assert (tmp_path / "a.json").read_text() == "fresh"
+
+
+def test_atomic_write_durable_false_skips_fsync_and_sweep(tmp_path: Path, monkeypatch):
+    # Regenerable caches pass durable=False to skip the fsyncs + the stale-temp glob
+    # sweep. The os.replace swap must still run (that's what makes it atomic), so the
+    # content lands; only the durability extras are skipped.
+    import marim_harness.atomic_io as aio
+
+    fsyncs: list[int] = []
+    monkeypatch.setattr(aio.os, "fsync", lambda fd: fsyncs.append(fd))
+    swept: list[tuple] = []
+    monkeypatch.setattr(aio, "_sweep_stale_temps", lambda d, n: swept.append((d, n)))
+
+    p = tmp_path / "cache.txt"
+    atomic_write_text(p, "regenerable", durable=False)
+    assert p.read_text() == "regenerable"  # atomic swap still happened
+    assert fsyncs == []                     # no file/dir fsync
+    assert swept == []                      # no glob sweep
+
+
+def test_atomic_write_durable_true_fsyncs_and_sweeps(tmp_path: Path, monkeypatch):
+    # The default (sessions/checkpoints) keeps full durability: file fsync + dir
+    # fsync + sweep all run.
+    import marim_harness.atomic_io as aio
+
+    fsyncs: list[int] = []
+    monkeypatch.setattr(aio.os, "fsync", lambda fd: fsyncs.append(fd))
+    swept: list[tuple] = []
+    monkeypatch.setattr(aio, "_sweep_stale_temps", lambda d, n: swept.append((d, n)))
+
+    atomic_write_text(tmp_path / "session.json", "durable")
+    assert len(fsyncs) >= 1   # at least the file fsync (dir fsync is best-effort)
+    assert len(swept) == 1
 
 
 def test_atomic_write_sweep_ignores_other_targets_temps(tmp_path: Path):

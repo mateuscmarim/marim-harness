@@ -76,14 +76,32 @@ def _drop_nameless_tool_calls(history: list[ModelMessage]) -> list[ModelMessage]
     redundant persist."""
     from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 
+    # Hot path: this runs as a ProcessHistory capability before EVERY model
+    # request and almost always finds nothing, so do the cheapest possible check
+    # first and bail before building the id set / second rebuild pass.
+    #
+    # Why this still has to look at the *whole* history rather than just the
+    # freshly-appended tail: pydantic-ai hands a history processor a COPY of the
+    # run's messages (``_agent_graph``: ``messages=ctx.state.message_history[:]``)
+    # and uses our return value only for that one request — it never writes the
+    # cleaned list back into ``ctx.state.message_history``. So stripping a
+    # nameless part is ephemeral: the malformed ModelResponse stays in the run's
+    # own history and gets *buried* as later steps append after it, and every
+    # subsequent request must re-strip it from somewhere in the middle. A
+    # tail-only short-circuit would therefore miss a buried nameless call and let
+    # the provider reject the next request — the exact wedge this guards against.
+    if not any(
+        isinstance(part, ToolCallPart) and not part.tool_name
+        for message in history
+        for part in getattr(message, "parts", [])
+    ):
+        return history
     nameless_ids = {
         part.tool_call_id
         for message in history
         for part in getattr(message, "parts", [])
         if isinstance(part, ToolCallPart) and not part.tool_name
     }
-    if not nameless_ids:
-        return history
     cleaned: list = []
     for message in history:
         parts = getattr(message, "parts", None)
@@ -500,11 +518,25 @@ class TurnController:
                     )
                 except BaseException:
                     self.session.history = resumable
-                    self.session.persist()
+                    # Offload the rollback write off the event loop (like the
+                    # failure path above). Safe even when the exception in flight
+                    # is a cancel: `resumable` is the last *cleanly persisted*
+                    # baseline, so if a second cancel interrupts this thread the
+                    # on-disk file is already this exact state — nothing is lost.
+                    # The bare `raise` re-raises the still-active exception across
+                    # the await, so the original error/cancel propagates intact.
+                    await asyncio.to_thread(self.session.persist)
                     raise
                 user_prompt = None  # continuation is driven by deferred_results
                 continue
-            self.session.persist()
+            # Offload the success-path write so a multi-MB serialize+fsync doesn't
+            # stall the event loop (the TUI render/input). The loop is NOT frozen
+            # during the await — other tasks run and the worker thread reads
+            # self.history concurrently. That's safe because nothing mutates the
+            # main session history mid-turn: agent.run() has returned, subagents/
+            # jobs operate on isolated histories, and rewind/reset are between-turn
+            # user actions. The worker therefore serializes a stable snapshot.
+            await asyncio.to_thread(self.session.persist)
             # This round completed cleanly and is persisted — it becomes the new
             # rollback baseline for any subsequent round.
             resumable = list(self.session.history)
@@ -551,7 +583,9 @@ class TurnController:
         repaired = _repair_unanswered_tool_calls(sanitized)
         if repaired is not self.session.history:
             self.session.history = repaired
-            self.session.persist()
+            # Offload the sanitizing write off the event loop, consistent with
+            # the success/rollback sites below.
+            await asyncio.to_thread(self.session.persist)
         # The last persisted, resumable history — guaranteed free of unanswered
         # tool calls. Captured once here and refreshed only after a clean
         # persist; the deferred-approval round below deliberately holds a dirty

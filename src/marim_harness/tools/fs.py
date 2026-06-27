@@ -1,3 +1,4 @@
+import bisect
 import fnmatch
 import os
 import re
@@ -89,27 +90,45 @@ def read_file(
     p = _safe_read(root, path, extra_read_roots)
     if not p.is_file():
         raise ModelRetry(f"not a file: {path}")
-    lines = p.read_text(errors="replace").splitlines()
-    total = len(lines)
+    start = offset - 1
+    span = limit if limit is not None else _DEFAULT_READ_LIMIT
+    end = start + span
+
+    # Stream the file rather than ``read_text().splitlines()``: the old path
+    # materialized the *entire* file (plus a Python list holding every line),
+    # so paging lines 9000-9010 of a 500 MB file dragged all 500 MB into memory.
+    # Here only the requested window [start, end) is retained; the rest of the
+    # file is iterated but discarded, kept solely to count ``total`` for the
+    # "of {total}" footer (no way to know a variable-width file's line count
+    # without reading it, and the output contract requires the total). Memory is
+    # bounded by the window, not the file size. Universal-newline text mode (the
+    # default) folds ``\r\n``/``\r`` into ``\n`` the same way ``splitlines`` does
+    # for the common separators, and we strip the one trailing ``\n`` per line to
+    # match ``splitlines``' terminator-free output; only the exotic separators
+    # (``\v``, ``\f``, U+2028, …) that ``splitlines`` also breaks on are treated
+    # as in-line text here, which never arises for normal-size text files.
+    window: list[str] = []
+    total = 0
+    with p.open("r", errors="replace") as fh:
+        for i, raw in enumerate(fh):
+            if start <= i < end:
+                window.append(raw[:-1] if raw.endswith("\n") else raw)
+            total = i + 1
     if total == 0:
         return ""
     if offset > total:
         raise ModelRetry(f"offset {offset} is past end of file ({total} lines).")
-    start = offset - 1
-    span = limit if limit is not None else _DEFAULT_READ_LIMIT
-    end = min(start + span, total)
 
     rendered: list[str] = []
     used = 0
     clipped = False
-    i = start
-    while i < end:
-        line = lines[i]
+    for idx, line in enumerate(window):
+        lineno = start + idx + 1
         if len(line) > _MAX_LINE_CHARS:
             extra = len(line) - _MAX_LINE_CHARS
             line = f"{line[:_MAX_LINE_CHARS]}… (+{extra} more chars on this line)"
             clipped = True
-        row = f"{i + 1}\t{line}"
+        row = f"{lineno}\t{line}"
         # Stop before the char budget is exceeded, but always emit at least one
         # row so a read never comes back empty (a single wide line still returns,
         # clipped to _MAX_LINE_CHARS).
@@ -117,7 +136,6 @@ def read_file(
             break
         rendered.append(row)
         used += len(row) + 1
-        i += 1
 
     last = start + len(rendered)  # 1-based number of the last line included
     body = "\n".join(rendered)
@@ -282,11 +300,22 @@ def glob_files(root: Path, pattern: str) -> str:
     size = 0
     capped = False
     for p in candidates:
+        # ``Path.glob`` can't be told to prune, so it walks node_modules/.git/.venv
+        # and hands back their files like any other match — unlike grep/tree, which
+        # skip _NOISE_DIRS. Drop noise matches here, *before* the per-candidate
+        # ``is_file`` stat and the ``resolve_in_workspace`` resolve (the dominant
+        # per-file cost): the parts check is pure-path, no syscall. ``.worktrees``
+        # (sibling worktree checkouts) is itself in _NOISE_DIRS, so this also
+        # subsumes the old worktree skip. Only the *directory* components are
+        # checked (``parts[:-1]``) — a regular file literally named ``build`` or
+        # ``dist`` is a legitimate match and must not be pruned, matching how
+        # grep/tree prune on directory descent rather than on the full path.
+        rel_path = p.relative_to(root)
+        if any(part in _NOISE_DIRS for part in rel_path.parts[:-1]):
+            continue
         if not p.is_file():
             continue
-        if ".worktrees" in p.relative_to(root).parts:
-            continue  # skip sibling worktree checkouts
-        rel = str(p.relative_to(root))
+        rel = str(rel_path)
         try:
             resolve_in_workspace(root, rel)
         except WorkspaceError:
@@ -305,14 +334,36 @@ def glob_files(root: Path, pattern: str) -> str:
     )
 
 
-def _is_binary(path: Path) -> bool:
-    """Cheap binary check: a NUL byte in the first 8 KB. Unreadable files are
-    treated as binary (so grep skips them rather than erroring)."""
+# A NUL byte in the first chunk of a file marks it binary (grep skips it). This
+# bounds how much we sniff before deciding — a real text file rarely hides its
+# first NUL past 8 KB, and a binary blob trips the check without our reading the
+# whole thing (see ``_read_text_for_grep``).
+_BINARY_SNIFF_BYTES = 8192
+
+
+def _read_text_for_grep(path: Path) -> str | None:
+    """Read ``path`` for grep in a single open, returning its decoded text or
+    ``None`` if it should be skipped (unreadable, or binary by the NUL-byte
+    sniff). This folds what used to be a separate ``_is_binary`` open+read and a
+    full ``read_text`` into one pass: the head is read first so a binary blob is
+    rejected *without* slurping the rest of the (often huge) file, and only a
+    non-binary file is read to completion. ``read_text(errors="replace")`` decoded
+    UTF-8 under universal newlines, so we replicate both: decode replacing bad
+    bytes, then fold ``\\r\\n``/``\\r`` into ``\\n`` (guarded on the common
+    LF-only case) so carriage returns don't leak into match output or perturb the
+    multiline regex."""
     try:
         with open(path, "rb") as fh:
-            return b"\x00" in fh.read(8192)
+            head = fh.read(_BINARY_SNIFF_BYTES)
+            if b"\x00" in head:
+                return None
+            data = head + fh.read()
     except OSError:
-        return True
+        return None
+    text = data.decode("utf-8", errors="replace")
+    if "\r" in text:
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return text
 
 
 def _walk_files(base: Path) -> Iterator[Path]:
@@ -486,17 +537,18 @@ def grep(
                 resolve_in_workspace(root, str(f.relative_to(root)))
             except (WorkspaceError, ValueError):
                 continue
-        if not f.is_file() or _is_binary(f):
+        if not f.is_file():
             continue
         rel = f.relative_to(root).as_posix()
+        # Apply the cheap, syscall-free glob/type filters *before* opening the
+        # file: a file excluded by name shouldn't pay for a binary sniff + read.
         if globs is not None and not _match_glob(rel, f.name, globs):
             continue
         if exts is not None and f.suffix not in exts:
             continue
-        try:
-            text = f.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
+        text = _read_text_for_grep(f)
+        if text is None:
+            continue  # unreadable or binary (NUL-byte sniff)
 
         lines = text.split("\n")
         if lines and lines[-1] == "":
@@ -509,10 +561,22 @@ def grep(
         if multiline:
             hits = list(rx.finditer(text))
             n_matches = len(hits)
+            # Map each match's char offsets to 0-based line numbers. The old code
+            # did ``text.count("\n", 0, pos)`` per match — O(n) per call, O(n·k)
+            # for k matches. Instead precompute the newline offsets once and bisect:
+            # the line index of ``pos`` is the count of newlines strictly before it,
+            # which is exactly ``bisect_left(nl_offsets, pos)`` (O(log n) per match).
+            # ``str.find`` builds the offset list with C-level scans rather than a
+            # per-character Python loop.
+            nl_offsets: list[int] = []
+            j = text.find("\n")
+            while j != -1:
+                nl_offsets.append(j)
+                j = text.find("\n", j + 1)
             covered: set[int] = set()
             for m in hits:
-                lo = text.count("\n", 0, m.start())
-                hi = min(text.count("\n", 0, m.end()), len(lines) - 1)
+                lo = bisect.bisect_left(nl_offsets, m.start())
+                hi = min(bisect.bisect_left(nl_offsets, m.end()), len(lines) - 1)
                 covered.update(range(lo, hi + 1))
             match_idx = sorted(covered)
         else:

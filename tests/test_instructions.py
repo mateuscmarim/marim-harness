@@ -1,8 +1,10 @@
+import os
 from pathlib import Path
 
 import pytest
 
 from marim_harness.runtime.instructions import (
+    _memory_index_block,
     global_instructions_path,
     load_global_instructions,
     load_project_instructions,
@@ -86,3 +88,104 @@ def test_load_global_instructions_missing_returns_none(
 ):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     assert load_global_instructions() is None
+
+
+# --- mtime-keyed read cache invalidation ------------------------------------
+
+
+def test_project_instructions_cache_invalidates_on_size_change(tmp_path: Path):
+    """A length-changing edit must be reflected: size is in the fingerprint, so
+    the memoized read is recomputed without any mtime trick."""
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text("first\n")
+    assert load_project_instructions(tmp_path) == "first"
+    agents.write_text("a much longer second body\n")
+    assert load_project_instructions(tmp_path) == "a much longer second body"
+
+
+def test_project_instructions_cache_invalidates_on_mtime_change(tmp_path: Path):
+    """A same-size edit is still picked up because mtime is in the fingerprint."""
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text("aaaa\n")
+    assert load_project_instructions(tmp_path) == "aaaa"
+    agents.write_text("bbbb\n")  # identical length, content differs
+    # Force a distinct mtime so the test doesn't depend on write timing/clock res.
+    st = agents.stat()
+    os.utime(agents, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+    assert load_project_instructions(tmp_path) == "bbbb"
+
+
+def test_project_instructions_cache_picks_up_new_higher_priority_file(tmp_path: Path):
+    """Creating AGENTS.md must override a previously-cached CLAUDE.md result —
+    the fingerprint stats every candidate path, not just the one that resolved."""
+    (tmp_path / "CLAUDE.md").write_text("claude\n")
+    assert load_project_instructions(tmp_path) == "claude"
+    (tmp_path / "AGENTS.md").write_text("agents\n")
+    assert load_project_instructions(tmp_path) == "agents"
+
+
+def test_project_instructions_unchanged_read_served_from_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A repeat call with nothing changed on disk must not re-read the file —
+    proves the memoization actually skips I/O, not just returns fresh values."""
+    from marim_harness.runtime import instructions as instr
+
+    (tmp_path / "AGENTS.md").write_text("rules\n")
+    calls = {"n": 0}
+    real = instr._read_first_nonempty
+
+    def counting(paths):
+        calls["n"] += 1
+        return real(paths)
+
+    monkeypatch.setattr(instr, "_read_first_nonempty", counting)
+    assert load_project_instructions(tmp_path) == "rules"
+    first = calls["n"]
+    assert first == 1
+    assert load_project_instructions(tmp_path) == "rules"
+    assert calls["n"] == first  # second call served from cache, no re-read
+
+
+def test_memory_index_block_unchanged_read_served_from_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A repeat memory-index build with an unchanged MEMORY.md is served from
+    cache (no rebuild/re-read)."""
+    from marim_harness.runtime import instructions as instr
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    ws = tmp_path / "ws"
+    mem = ws / ".marim" / "memory"
+    mem.mkdir(parents=True)
+    (mem / "MEMORY.md").write_text("- entry\n")
+
+    calls = {"n": 0}
+    real = instr._build_memory_index
+
+    def counting(*a, **k):
+        calls["n"] += 1
+        return real(*a, **k)
+
+    monkeypatch.setattr(instr, "_build_memory_index", counting)
+    assert "entry" in _memory_index_block(ws)
+    first = calls["n"]
+    assert first == 1
+    assert "entry" in _memory_index_block(ws)
+    assert calls["n"] == first  # second call served from cache
+
+
+def test_memory_index_block_cache_invalidates_on_edit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The memoized memory-index block must reflect edits to MEMORY.md (this also
+    guards the local _MEMORY_INDEX_FILE constant from drifting: a wrong stat
+    target would never invalidate and this would read stale)."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    ws = tmp_path / "ws"
+    mem = ws / ".marim" / "memory"
+    mem.mkdir(parents=True)
+    (mem / "MEMORY.md").write_text("- old entry\n")
+    assert "old entry" in _memory_index_block(ws)
+    (mem / "MEMORY.md").write_text("- a fresh, different entry\n")
+    assert "fresh, different entry" in _memory_index_block(ws)

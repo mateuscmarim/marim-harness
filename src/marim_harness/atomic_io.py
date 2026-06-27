@@ -14,8 +14,14 @@ import contextlib
 import glob
 import os
 import tempfile
+import time
 from collections.abc import Iterator
 from pathlib import Path
+
+# A temp younger than this is assumed to belong to a concurrent in-flight writer,
+# not a crashed one, so the stale sweep leaves it alone. Crash leftovers are
+# always older than this by the time the next write to the same target runs.
+_STALE_TEMP_GRACE_SECONDS = 60.0
 
 # Advisory file locking is POSIX-only via fcntl. Import it guarded so this leaf
 # module still loads on Windows (or any platform without fcntl) — the lock then
@@ -83,15 +89,32 @@ def _sweep_stale_temps(directory: Path, name: str) -> None:
     A crash between ``mkstemp`` and ``os.replace`` leaves a uniquely named temp
     behind (the swap that would have consumed it never happened). These are inert
     but accumulate; sweep them opportunistically on the next write to the same
-    target. Errors are ignored — a sweep that fails must never break the write."""
+    target. Errors are ignored — a sweep that fails must never break the write.
+
+    Only temps older than ``_STALE_TEMP_GRACE_SECONDS`` are removed: a concurrent
+    writer to the same target (now genuinely parallel since write_file/edit_file
+    run in worker threads) holds a freshly-created temp with the same prefix, and
+    unlinking it would make its in-flight ``os.replace`` fail with a spurious
+    ``FileNotFoundError``. A crash leftover is always older than the grace window."""
     pattern = os.path.join(glob.escape(str(directory)), f".{name}.*.tmp")
+    cutoff = time.time() - _STALE_TEMP_GRACE_SECONDS
     for stale in glob.glob(pattern):
         with contextlib.suppress(OSError):
+            if os.stat(stale).st_mtime > cutoff:
+                continue  # too recent — assume a live concurrent writer owns it
             os.unlink(stale)
 
 
-def _atomic_write_core(path: Path, open_kwargs: dict, write_fn) -> None:
-    """Shared temp-file lifecycle for atomic writes: mkstemp → write → fsync → replace."""
+def _atomic_write_core(path: Path, open_kwargs: dict, write_fn, *, durable: bool = True) -> None:
+    """Shared temp-file lifecycle for atomic writes: mkstemp → write → fsync → replace.
+
+    ``durable`` controls only the *durability* extras, never the atomicity: the
+    ``os.replace`` swap is always performed, so a crash can never leave a
+    half-written or clobbered target. When ``durable=False`` the per-write
+    ``os.fsync`` (file), the directory fsync, and the stale-temp glob sweep are
+    skipped — appropriate for regenerable caches (grep/tree/fetch offload spills)
+    where surviving power loss isn't worth a double fsync + a directory scan on
+    every write. Sessions and checkpoints keep the default (``durable=True``)."""
     directory = path.parent
     fd, tmp_name = tempfile.mkstemp(dir=directory, prefix=f".{path.name}.", suffix=".tmp")
     tmp = Path(tmp_name)
@@ -99,16 +122,19 @@ def _atomic_write_core(path: Path, open_kwargs: dict, write_fn) -> None:
         with os.fdopen(fd, **open_kwargs) as f:
             write_fn(f)
             f.flush()
-            os.fsync(f.fileno())
+            if durable:
+                os.fsync(f.fileno())
         os.replace(tmp, path)
     except BaseException:
         tmp.unlink(missing_ok=True)  # don't leave a temp behind on failure
         raise
-    _fsync_dir(directory)
-    _sweep_stale_temps(directory, path.name)
+    if durable:
+        _fsync_dir(directory)
+        _sweep_stale_temps(directory, path.name)
 
 
-def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
+def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8",
+                      durable: bool = True) -> None:
     """Write ``text`` to ``path`` atomically and durably.
 
     Writes to a uniquely named temp file in the same directory (so concurrent
@@ -116,8 +142,13 @@ def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None
     ``os.replace``s it over the target — an atomic swap a crash can't leave
     half-applied. The parent directory is fsynced best-effort so the rename
     itself survives power loss. The target's directory must already exist.
+
+    Pass ``durable=False`` for regenerable files (offload/cache spills): the swap
+    stays atomic, but the fsyncs and the stale-temp sweep are skipped, so a hot
+    write path isn't taxed for durability the caller doesn't need.
     """
-    _atomic_write_core(Path(path), {"mode": "w", "encoding": encoding}, lambda f: f.write(text))
+    _atomic_write_core(Path(path), {"mode": "w", "encoding": encoding},
+                       lambda f: f.write(text), durable=durable)
 
 
 def atomic_write_bytes(path: Path, data: bytes) -> None:

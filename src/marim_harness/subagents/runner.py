@@ -241,7 +241,7 @@ class SubagentRunner:
 
     def build(
         self, type: str, max_output_chars: int | None = None,
-        model: str | None = None, workspace_root=None,
+        model: str | None = None, workspace_root=None, *, defn=None,
     ) -> "tuple[SubAgent | None, str | None]":
         """Build an isolated sub-agent of ``type``, with its reach decided up
         front: gated tools only in auto mode, so a run never needs an approval
@@ -251,9 +251,13 @@ class SubagentRunner:
         spawner set one, is folded into the sub-agent's instructions as a soft
         output budget. ``workspace_root`` overrides the path described in the
         sub-agent's instructions (e.g. a worktree for an isolated spawn); agent
-        *discovery* still reads the main workspace. Returns ``(agent, None)`` or,
+        *discovery* still reads the main workspace. ``defn`` is the already-resolved
+        agent definition when the caller has one (``_execute_spawn`` resolves it once
+        to pick the backend, then threads it through so discovery's filesystem walk
+        isn't repeated); when None we resolve it here. Returns ``(agent, None)`` or,
         for an unknown type or an unresolvable model, ``(None, message)``."""
-        defn = find_agent(self.deps.workspace_root, type)
+        if defn is None:
+            defn = find_agent(self.deps.workspace_root, type)
         if defn is None:
             names = ", ".join(
                 a.qualified_name for a in discover_agents(self.deps.workspace_root)
@@ -427,6 +431,9 @@ class SubagentRunner:
         # bracketing, output cap, worktree, background persist) in
         # _execute_cli_spawn — duplicated deliberately to keep the native flow
         # untouched; both halves are small and evolve independently.
+        # Resolve the agent definition ONCE here (a filesystem discovery walk) and
+        # thread it through to _prepare_spawn/build so a native spawn doesn't pay the
+        # walk a second time — it matters on a fan-out (2N walks → N).
         defn = find_agent(self.deps.workspace_root, type)
         if defn is not None and defn.backend == "claude-cli":
             return await self._execute_cli_spawn(
@@ -435,7 +442,7 @@ class SubagentRunner:
             )
         prep = await self._prepare_spawn(
             type, task, mcp_names, max_output_chars, model,
-            iso, work_root, stream_id, debug=debug, t0=t0,
+            iso, work_root, stream_id, debug=debug, t0=t0, defn=defn,
         )
         if isinstance(prep, str):
             return prep
@@ -449,12 +456,14 @@ class SubagentRunner:
         self, type: str, task: str, mcp_names: list[str] | None,
         max_output_chars: int | None, model: str | None,
         iso: dict | None, work_root, stream_id: str,
-        *, debug: bool, t0: float,
+        *, debug: bool, t0: float, defn=None,
     ) -> "_SpawnPrep | str":
         """Build the sub-agent, grant MCP servers, fire the start hook, and wire the
         event handler. Returns a ``_SpawnPrep`` struct on success, or an error string
-        the caller can return directly. Called after worktree open and CLI early-return."""
-        sub, err = self.build(type, max_output_chars, model, work_root)
+        the caller can return directly. Called after worktree open and CLI early-return.
+        ``defn`` is the definition the caller already resolved, threaded into ``build``
+        so discovery isn't walked twice per spawn."""
+        sub, err = self.build(type, max_output_chars, model, work_root, defn=defn)
         if sub is None:
             if iso:
                 self._discard_worktree(iso)

@@ -316,6 +316,50 @@ async def test_connect_not_marked_connected_when_interrupted():
     assert mgr._connected is False
 
 
+@pytest.mark.anyio
+async def test_connect_runs_concurrently_and_records_all_statuses():
+    """connect() fans servers out concurrently (startup latency is the slowest
+    server, not the sum), a single server's failure never aborts the rest, and
+    every server's status is recorded in config order."""
+    started: list[str] = []
+    all_good_started = asyncio.Event()
+
+    class Good:
+        def __init__(self, name: str):
+            self.id = name
+
+        async def __aenter__(self):
+            started.append(self.id)
+            if len([s for s in started if s != "bad"]) == 3:
+                all_good_started.set()
+            # Block until every Good server has entered. A serial connect would
+            # never start the 2nd before the 1st returns, so this only resolves
+            # when the enters overlap — i.e. when they ran concurrently.
+            await asyncio.wait_for(all_good_started.wait(), timeout=2.0)
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class Bad:
+        id = "bad"
+
+        async def __aenter__(self):
+            raise RuntimeError("nope")
+
+        async def __aexit__(self, *exc):
+            return False
+
+    servers = [Good("a"), Bad(), Good("b"), Good("c")]
+    mgr = McpManager(servers, set())
+    status = await mgr.connect()
+
+    assert status["connected"] == ["a", "b", "c"]  # config order preserved
+    assert [n for n, _ in status["failed"]] == ["bad"]  # the failure recorded
+    assert "nope" in status["failed"][0][1]
+    assert mgr._connected is True
+
+
 # --- approval hook ---------------------------------------------------------
 
 

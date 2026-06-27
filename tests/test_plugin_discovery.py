@@ -129,3 +129,67 @@ def test_registered_plugin_with_missing_dir_is_skipped(tmp_path, monkeypatch):
     _install(gdir, "ghost", enabled=True)  # registry entry, but no plugin dir created
     found = discover_plugins(ws)
     assert all(p.name != "ghost" for p in found)
+
+
+# --- stat-fingerprint discovery cache ---------------------------------------
+
+
+def test_discover_plugins_caches_and_skips_reparse(tmp_path, monkeypatch):
+    """A second discovery with nothing changed on disk is served from cache — the
+    manifest json isn't re-parsed."""
+    from marim_harness.plugins import discovery as discovery_mod
+
+    ws = _ws(tmp_path, monkeypatch)
+    gdir = tmp_path / "cfg" / "marim" / "plugins"
+    _make_plugin(gdir, "p1", manifest={}, files={})
+    _install(gdir, "p1", enabled=True)
+
+    calls = {"n": 0}
+    real = discovery_mod.try_load_manifest
+
+    def counting(*a, **k):
+        calls["n"] += 1
+        return real(*a, **k)
+
+    monkeypatch.setattr(discovery_mod, "try_load_manifest", counting)
+    discover_plugins(ws)
+    first = calls["n"]
+    assert first >= 1
+    discover_plugins(ws)
+    assert calls["n"] == first  # no re-parse on the second call
+
+
+def test_discover_plugins_reflects_manifest_edit(tmp_path, monkeypatch):
+    """Editing a plugin's plugin.json invalidates the cache (mtime/size change)."""
+    ws = _ws(tmp_path, monkeypatch)
+    gdir = tmp_path / "cfg" / "marim" / "plugins"
+    _make_plugin(gdir, "p", manifest={"description": "before"}, files={})
+    _install(gdir, "p", enabled=True)
+    assert discover_plugins(ws)[0].manifest.description == "before"
+    # Rewrite the manifest with a longer description so the stat fingerprint moves.
+    _make_plugin(gdir, "p", manifest={"description": "a clearly different after"}, files={})
+    assert discover_plugins(ws)[0].manifest.description == "a clearly different after"
+
+
+def test_discover_plugins_reflects_registry_change(tmp_path, monkeypatch):
+    """Enabling a new plugin (a plugins.json edit) invalidates the cache even
+    though existing manifests are untouched."""
+    ws = _ws(tmp_path, monkeypatch)
+    gdir = tmp_path / "cfg" / "marim" / "plugins"
+    _make_plugin(gdir, "a", manifest={}, files={})
+    _install(gdir, "a", enabled=True)
+    assert {p.name for p in discover_plugins(ws)} == {"a"}
+    _make_plugin(gdir, "b", manifest={}, files={})
+    _install(gdir, "b", enabled=True)
+    assert {p.name for p in discover_plugins(ws)} == {"a", "b"}
+
+
+def test_instruction_texts_cache_invalidates_on_edit(tmp_path, monkeypatch):
+    """plugin_instruction_texts re-reads a plugin's AGENTS.md when it changes."""
+    ws = _ws(tmp_path, monkeypatch)
+    gdir = tmp_path / "cfg" / "marim" / "plugins"
+    pdir = _make_plugin(gdir, "p", manifest={}, files={"AGENTS.md": "before text"})
+    _install(gdir, "p", enabled=True)
+    assert plugin_instruction_texts(ws) == [("p", "before text")]
+    (pdir / "AGENTS.md").write_text("a longer after text", encoding="utf-8")
+    assert plugin_instruction_texts(ws) == [("p", "a longer after text")]

@@ -11,6 +11,7 @@ coordinates are 1-based; multilspy is 0-based, translated here.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Callable
 from contextlib import AsyncExitStack
@@ -31,6 +32,14 @@ _MAX_RESULTS = 50
 # context; the head carries the signature + first lines of docs, which is the part
 # that matters.
 _MAX_HOVER_CHARS = 4_000
+
+# How long to wait for further diagnostics after a publish before concluding the
+# server has finished. Many language servers publish in phases — tsserver/gopls/
+# rust-analyzer emit an empty set on didOpen, then the real diagnostics once they
+# finish parsing/checking — so returning on the first publish would report a false
+# "no diagnostics". After the first publish we wait out this quiet gap for more
+# (bounded by the overall ``settle`` ceiling) and read whatever landed last.
+_PUBLISH_QUIESCE = 0.2
 
 
 def _default_factory(language: str, root: Path):
@@ -78,6 +87,13 @@ class LspManager:
         self._stack = AsyncExitStack()
         self._servers: dict[str, Any] = {}
         self._collectors: dict[str, DiagnosticsCollector] = {}
+        # Per-URI publish waiters for the diagnostics push path. A diagnostics()
+        # call registers an asyncio.Event under the document URI before it opens the
+        # file; the notification wrapper installed in _start_language sets every
+        # event waiting on that URI the moment the server pushes diagnostics for it,
+        # so the call wakes on the publish instead of sleeping the full settle
+        # window. Keyed by URI → the events currently waiting on it.
+        self._publish_waiters: dict[str, list[asyncio.Event]] = {}
         # In-flight per-language startups, for the single-flight pattern in
         # _ensure_started. Deliberately NOT an asyncio.Lock: a lock would make a
         # slow startup for one language block callers for *every* language (and
@@ -137,7 +153,46 @@ class LspManager:
         collector.attach(server)
         self._servers[language] = server
         self._collectors[language] = collector
+        self._install_publish_signal(server, collector)
         return None
+
+    def _install_publish_signal(self, server: Any, collector: DiagnosticsCollector) -> None:
+        """Layer a wakeup signal over the diagnostics collector's notification
+        handler. ``DiagnosticsCollector`` registers a *single* publishDiagnostics
+        handler on the multilspy server (the underlying ``on_notification`` is a
+        one-slot dict), so to also wake a waiting ``diagnostics()`` call we
+        re-register a wrapper that:
+
+        1. feeds the collector exactly as before — MANDATORY: skip this and
+           ``collector.latest()`` goes permanently stale, so every push-path
+           diagnostics call would report 'no diagnostics'; and
+        2. releases any event waiting on the published URI, so the open-and-wait in
+           ``diagnostics()`` returns the instant diagnostics land.
+
+        Best-effort and guarded the same way the collector is: when the notification
+        surface isn't present (older multilspy, or ``attach`` failed), the collector's
+        own handler is left untouched and ``diagnostics()`` simply waits out the
+        settle ceiling — never worse than the old fixed sleep."""
+        if not collector.enabled:
+            return
+        inner = getattr(server, "server", None)
+        on_notification = getattr(inner, "on_notification", None)
+        if on_notification is None:
+            return
+
+        async def _handler(params, *_rest) -> None:
+            # Keep the collector's per-URI cache current first; diagnostics() reads
+            # it via collector.latest() once woken.
+            collector._on_publish(params)
+            uri = params.get("uri") if isinstance(params, dict) else None
+            if uri is not None:
+                for event in self._publish_waiters.get(uri, ()):
+                    event.set()
+
+        try:
+            on_notification("textDocument/publishDiagnostics", _handler)
+        except Exception as exc:  # noqa: BLE001 — degrade to the settle ceiling
+            logger.debug("failed to install diagnostics wakeup: %s", exc)
 
     async def _server_for(
         self, path: str
@@ -149,11 +204,15 @@ class LspManager:
             return None, None, f"No language server for {path!r} (unsupported file type)."
         if language in self._disabled:
             return None, language, f"LSP is disabled for {language}."
+        # A warm/running server short-circuits *before* the availability probe:
+        # registry.availability() runs shutil.which over the language's probe
+        # binaries (a PATH scan), and there's no point paying that on the hot path
+        # when the server is already up. Availability only gates the cold start.
+        if language in self._servers:
+            return self._servers[language], language, None
         avail = registry.availability(language)
         if not avail.available:
             return None, language, f"No {language} language server available; {avail.hint}."
-        if language in self._servers:
-            return self._servers[language], language, None
         err = await self._ensure_started(language)
         if err:
             return None, language, err
@@ -301,11 +360,53 @@ class LspManager:
             return f"{path}: diagnostics unavailable for this language server."
         uri = _path_to_uri(self.root, path)
 
-        async def _open_and_wait():
-            with server.open_file(path):  # didOpen → server pushes diagnostics
-                await asyncio.sleep(settle)
+        # Register the wakeup BEFORE opening the file: didOpen makes the server push
+        # diagnostics, and we want to catch that publish even if it lands the instant
+        # the open completes (single-threaded loop, so a set() before our wait() is
+        # not missed). ``settle`` is now only a *ceiling* — we return shortly after
+        # the server stops publishing for this URI, instead of always sleeping the
+        # full window.
+        event = asyncio.Event()
+        self._publish_waiters.setdefault(uri, []).append(event)
 
-        _res, err = await self._call(_open_and_wait(), "diagnostics")
+        async def _open_and_wait():
+            # didOpen makes the server push diagnostics; wake on that publish, then
+            # wait out a short quiet gap (_PUBLISH_QUIESCE) for follow-up publishes
+            # before returning — servers that publish empty-then-real would
+            # otherwise have their empty first push read as "no diagnostics". The
+            # whole wait is bounded by ``settle``, and wait_for always returns or
+            # raises TimeoutError, so this can never hang past that ceiling. We read
+            # collector.latest() after returning, so it always reflects the most
+            # recent publish regardless of how many arrived.
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + settle
+            with server.open_file(path):
+                got_publish = False
+                while True:
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        break
+                    # Before the first publish, wait the whole remaining window; once
+                    # one has landed, only wait out the short quiesce gap for more.
+                    timeout = min(_PUBLISH_QUIESCE, remaining) if got_publish else remaining
+                    event.clear()
+                    try:
+                        await asyncio.wait_for(event.wait(), timeout=timeout)
+                    except asyncio.TimeoutError:
+                        # settle elapsed with nothing pushed, or publishes quiesced
+                        # after at least one — either way we're done.
+                        break
+                    got_publish = True
+
+        try:
+            _res, err = await self._call(_open_and_wait(), "diagnostics")
+        finally:
+            waiters = self._publish_waiters.get(uri)
+            if waiters is not None:
+                with contextlib.suppress(ValueError):
+                    waiters.remove(event)
+                if not waiters:
+                    self._publish_waiters.pop(uri, None)
         if err:
             return err
         return format_diagnostics(path, collector.latest(uri))

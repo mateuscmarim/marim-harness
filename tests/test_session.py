@@ -208,6 +208,25 @@ def test_list_reports_counts_and_tokens(tmp_path: Path):
     assert info.tokens == 100
 
 
+def test_save_writes_message_count_header_and_list_prefers_it(tmp_path: Path):
+    """save() records a cheap message_count in the header so list() doesn't have
+    to count the (possibly multi-MB) messages array; the count still matches."""
+    mgr = _manager(tmp_path)
+    store = mgr.create("Counted")
+    history = _history()
+    store.save(history, RunUsage())
+
+    raw = json.loads((mgr.dir / f"{store.session_id}.json").read_text())
+    assert raw["message_count"] == len(history)
+
+    # list() reports the header count even when the messages array is emptied —
+    # proving it reads the header field rather than re-counting the messages.
+    raw["messages"] = []
+    (mgr.dir / f"{store.session_id}.json").write_text(json.dumps(raw))
+    info = next(i for i in mgr.list() if i.id == store.session_id)
+    assert info.message_count == len(history)
+
+
 def test_list_empty_when_no_sessions(tmp_path: Path):
     assert _manager(tmp_path).list() == []
 

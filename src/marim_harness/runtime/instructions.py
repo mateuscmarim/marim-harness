@@ -23,6 +23,57 @@ from .deps import Deps, HarnessAgent
 
 _PROJECT_INSTRUCTIONS_FILE = "AGENTS.md"
 _PROJECT_FALLBACK_FILES = ("AGENTS.md", "CLAUDE.md")
+# The filename memory/ writes its one-line index under (memory._INDEX_FILE). We
+# only need it here to stat the backing file for the cache fingerprint; the read
+# itself still goes through load_index. The memory-index invalidation test guards
+# against this drifting from memory's constant.
+_MEMORY_INDEX_FILE = "MEMORY.md"
+
+
+# --- mtime-keyed read cache -------------------------------------------------
+#
+# pydantic-ai rebuilds every ``@agent.instructions`` closure on *each* model
+# request, not once per turn. Without memoization, the closures below re-read
+# AGENTS.md / CLAUDE.md / MEMORY.md from disk on every request even though their
+# content is stable within (and usually across) turns. We key each memoized
+# value on a cheap stat fingerprint — ``(mtime_ns, size)`` of the backing
+# file(s) — so a cached value is reused while the files are unchanged but is
+# transparently recomputed the moment one is edited, added, or removed. This is
+# *not* a blind once-only cache: editing AGENTS.md mid-session is picked up on
+# the next request because the fingerprint changes. Mirrors the stat-fingerprint
+# discovery cache in ``workspace/_discovery.py``.
+
+_StatKey = tuple[int, int] | None
+
+
+def _stat_key(path: Path) -> _StatKey:
+    """A cheap ``(mtime_ns, size)`` fingerprint of one file, or None if it can't
+    be stat'd (absent/unreadable). Size is included so a same-mtime edit that
+    changes length still invalidates."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def _cached_by_stat(cache: dict, key, paths: list[Path], compute):
+    """Return ``compute()`` memoized in ``cache[key]`` under a stat fingerprint
+    of ``paths``; recompute only when that fingerprint changes. Gating on the
+    cache *entry* (not its value) means a ``None``/empty result is cached too."""
+    sig = tuple(_stat_key(p) for p in paths)
+    hit = cache.get(key)
+    if hit is not None and hit[0] == sig:
+        return hit[1]
+    value = compute()
+    cache[key] = (sig, value)
+    return value
+
+
+# Keyed by (resolved workspace root str, filename-or-None); see _cached_by_stat.
+_PROJECT_INSTRUCTIONS_CACHE: dict = {}
+# Keyed by resolved workspace root str (the per-turn memory index block).
+_MEMORY_INDEX_CACHE: dict = {}
 
 _PROACTIVE_MEMORY_POLICY = (
     "Proactive memory is ON — save durable user preferences, feedback, and "
@@ -45,11 +96,23 @@ def load_project_instructions(
     fallback list (``AGENTS.md``, ``CLAUDE.md``) and return the first
     non-empty result.  Returns ``None`` if no file is found or all are
     empty/unreadable — a broken file must never break a turn.
-    """
-    candidates = [filename] if filename is not None else _PROJECT_FALLBACK_FILES
 
-    for name in candidates:
-        path = Path(workspace_root) / name
+    The read is memoized under a stat fingerprint of all candidate paths, so a
+    closure that calls this on every model request re-reads only when one of the
+    candidate files actually changes on disk (see _cached_by_stat).
+    """
+    candidates = [filename] if filename is not None else list(_PROJECT_FALLBACK_FILES)
+    paths = [Path(workspace_root) / name for name in candidates]
+    key = (str(Path(workspace_root).resolve()), filename)
+    return _cached_by_stat(
+        _PROJECT_INSTRUCTIONS_CACHE, key, paths, lambda: _read_first_nonempty(paths)
+    )
+
+
+def _read_first_nonempty(paths: list[Path]) -> str | None:
+    """First non-empty stripped text across ``paths``, or None. A broken/absent
+    file is skipped, never fatal."""
+    for path in paths:
         try:
             text = path.read_text(encoding="utf-8").strip()
         except (OSError, UnicodeDecodeError):
@@ -70,6 +133,45 @@ def load_global_instructions() -> str | None:
     These apply across every project (unlike the per-project ``AGENTS.md``).
     Same fail-safe semantics as :func:`load_project_instructions`."""
     return load_project_instructions(config_dir())
+
+
+def _memory_index_block(workspace_root) -> str:
+    """The injected memory-index block (global then project), or "" if neither
+    has a ``MEMORY.md``.
+
+    Memoized under a stat fingerprint of the two ``MEMORY.md`` files so the
+    per-request ``_memory_indexes`` closure re-reads them only when one changes.
+    load_index still performs the actual read on a miss; we stat the files here
+    purely to key the cache."""
+    global_scope_ = global_scope()
+    project_scope_ = project_scope(workspace_root)
+    paths = [
+        global_scope_.root / _MEMORY_INDEX_FILE,
+        project_scope_.root / _MEMORY_INDEX_FILE,
+    ]
+    key = str(Path(workspace_root).resolve())
+    return _cached_by_stat(
+        _MEMORY_INDEX_CACHE,
+        key,
+        paths,
+        lambda: _build_memory_index(global_scope_, project_scope_),
+    )
+
+
+def _build_memory_index(global_scope_, project_scope_) -> str:
+    parts = []
+    global_index = load_index(global_scope_)
+    if global_index:
+        parts.append(f"# User memory (global)\n\n{global_index}")
+    project_index = load_index(project_scope_)
+    if project_index:
+        parts.append(f"# Project memory\n\n{project_index}")
+    if not parts:
+        return ""
+    return (
+        "Memory index (use recall for full entries, "
+        "remember to save):\n\n" + "\n\n".join(parts)
+    )
 
 
 def register_instructions(
@@ -110,19 +212,7 @@ def register_instructions(
 
     @agent.instructions
     def _memory_indexes(ctx: RunContext[Deps]) -> str:
-        parts = []
-        global_index = load_index(global_scope())
-        if global_index:
-            parts.append(f"# User memory (global)\n\n{global_index}")
-        project_index = load_index(project_scope(ctx.deps.workspace_root))
-        if project_index:
-            parts.append(f"# Project memory\n\n{project_index}")
-        if not parts:
-            return ""
-        return (
-            "Memory index (use recall for full entries, "
-            "remember to save):\n\n" + "\n\n".join(parts)
-        )
+        return _memory_index_block(ctx.deps.workspace_root)
 
     @agent.instructions
     def _skill_index(ctx: RunContext[Deps]) -> str:

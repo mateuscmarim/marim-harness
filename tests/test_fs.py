@@ -363,6 +363,20 @@ def test_grep_skips_worktrees(tmp_path: Path):
     assert ".worktrees" not in out
 
 
+def test_glob_skips_noise_dirs(tmp_path: Path):
+    # glob must prune _NOISE_DIRS like grep/tree do, not surface node_modules/.git
+    # matches just because Path.glob descended into them.
+    (tmp_path / "a.py").write_text("x")
+    (tmp_path / "node_modules" / "pkg").mkdir(parents=True)
+    (tmp_path / "node_modules" / "pkg" / "b.py").write_text("x")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "hook.py").write_text("x")
+    out = fs.glob_files(tmp_path, "**/*.py")
+    assert out == "a.py"
+    assert "node_modules" not in out
+    assert ".git" not in out
+
+
 def test_glob_skips_worktrees(tmp_path: Path):
     (tmp_path / "a.py").write_text("x")
     wt = tmp_path / ".worktrees" / "feat-x"

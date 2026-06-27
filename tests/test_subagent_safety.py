@@ -85,9 +85,7 @@ async def test_foreground_subagent_error_is_contained(tmp_path: Path):
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = _make_harness(_text_model(), deps)
-    h.subagents.build = lambda type, max_output_chars=None, model=None, workspace_root=None: (
-        _BoomAgent(), None
-    )
+    h.subagents.build = lambda *a, **k: (_BoomAgent(), None)
     assert h.session.total_tokens == 0
 
     out = await h.subagents.run("explore", "do it", "sid")

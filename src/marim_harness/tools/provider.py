@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -564,7 +565,11 @@ async def _with_diagnostics(ctx: RunContext[Deps], path: str, result: str) -> st
 
 async def write_file(ctx: RunContext[Deps], path: str, content: str) -> str:
     """Create or overwrite a file. `path` is relative to the workspace root."""
-    result = fs.write_file(ctx.deps.workspace_root, path, content)
+    # This is ``async def`` so it can ``await _with_diagnostics`` — but that signature
+    # opts out of pydantic-ai's auto thread-offload (it awaits async tools directly on
+    # the event loop). ``fs.write_file`` does a blocking read + atomic write + double
+    # fsync, so run it in a worker thread to keep the loop free for other tool calls.
+    result = await asyncio.to_thread(fs.write_file, ctx.deps.workspace_root, path, content)
     return await _with_diagnostics(ctx, path, result)
 
 
@@ -572,7 +577,10 @@ async def edit_file(ctx: RunContext[Deps], path: str, edits: list[fs.Edit]) -> s
     """Apply one or more find/replace edits to a file, in order and
     all-or-nothing. Each edit is {old_string, new_string, replace_all?};
     old_string must match exactly once unless replace_all is set."""
-    result = fs.edit_file(ctx.deps.workspace_root, path, edits)
+    # Offload the blocking fs work to a thread (see ``write_file`` above): the async
+    # signature exists only to ``await _with_diagnostics``, and would otherwise run the
+    # read + atomic write + fsyncs directly on the event loop.
+    result = await asyncio.to_thread(fs.edit_file, ctx.deps.workspace_root, path, edits)
     return await _with_diagnostics(ctx, path, result)
 
 

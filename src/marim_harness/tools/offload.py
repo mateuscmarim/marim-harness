@@ -43,7 +43,9 @@ def _write_handle(content: str, *, kind: str, key: str,
     # offloads of the same (kind,key) target the *same* filename — a direct
     # write_text would let them clobber each other's partial bytes. The atomic
     # swap (unique temp → os.replace) is exactly what that layer exists to prevent.
-    atomic_write_text(dest, content)
+    # These spills are regenerable (re-run the tool), so skip the durability
+    # fsyncs + stale-temp sweep — the atomic rename is all we need here.
+    atomic_write_text(dest, content, durable=False)
     lines = content.splitlines()
     preview = _make_preview(lines)
     cap_note = (
@@ -66,8 +68,9 @@ def write_preview_file(content: str, *, rel: Path, workspace_root: Path) -> tupl
     dest = workspace_root / rel
     dest.parent.mkdir(parents=True, exist_ok=True)
     # Atomic swap so concurrent writers to the same sha-derived path can't race on
-    # the shared filename (see _write_handle for the same reasoning).
-    atomic_write_text(dest, content)
+    # the shared filename (see _write_handle for the same reasoning). Regenerable
+    # spill (also used by fetch bodies), so durable=False skips the fsyncs + sweep.
+    atomic_write_text(dest, content, durable=False)
     lines = content.splitlines()
     preview = _make_preview(lines)
     return rel.as_posix(), preview, len(lines)

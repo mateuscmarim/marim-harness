@@ -296,3 +296,63 @@ async def test_hover_clamps_huge_docstring(tmp_path):
     assert len(hov) <= _MAX_HOVER_CHARS + 100  # cap + short footer
     assert "truncated" in hov
     await mgr.aclose()
+
+
+@pytest.mark.anyio
+async def test_diagnostics_wakes_on_publish_before_settle(tmp_path):
+    """The non-Python diagnostics push path must return the moment the server
+    publishes for the opened URI, treating ``settle`` as a ceiling rather than a
+    fixed sleep. The fake publishes a diagnostic on didOpen via the registered
+    notification handler; diagnostics() must surface it and return well under a
+    large settle window."""
+    import asyncio
+
+    from marim_harness.lsp.manager import _path_to_uri
+
+    class _PublishServer(_FakeServer):
+        @contextlib.contextmanager
+        def open_file(self, relpath):
+            # didOpen → schedule a publishDiagnostics for this URI. ensure_future
+            # runs the (async) handler once diagnostics() yields to the loop on its
+            # wait_for, exactly as the real LSP endpoint delivers the notification.
+            uri = _path_to_uri(self.root, relpath)
+            rng = {"start": {"line": 4, "character": 2}}
+            params = {
+                "uri": uri,
+                "diagnostics": [{"severity": 1, "message": "boom", "range": rng}],
+            }
+            cb = self.server.handlers.get("textDocument/publishDiagnostics")
+            if cb is not None:
+                asyncio.ensure_future(cb(params))
+            yield
+
+    class _PublishServerFactory(_PublishServer):
+        def __init__(self, root):
+            super().__init__(root)
+
+            class _H:
+                def __init__(self):
+                    self.handlers: dict = {}
+
+                def on_notification(self, method, handler):
+                    self.handlers[method] = handler
+
+            self.server = _H()
+
+    (tmp_path / "x.ts").write_text("let a = 1\n")
+    srv = _PublishServerFactory(tmp_path)
+    mgr = LspManager(tmp_path, server_factory=lambda lang, root: srv)
+    # Warm-start the typescript server directly (bypasses the availability probe,
+    # which would otherwise gate a cold start in CI without a real tsserver).
+    await mgr._start_language("typescript")
+    assert mgr._collectors["typescript"].enabled
+
+    loop = asyncio.get_event_loop()
+    t0 = loop.time()
+    out = await mgr.diagnostics("x.ts", settle=5.0)
+    elapsed = loop.time() - t0
+
+    assert "boom" in out  # the pushed diagnostic surfaced (collector stayed current)
+    assert "x.ts:5:3" in out  # 0-based (4,2) → 1-based (5,3)
+    assert elapsed < 2.0  # woke on the publish, did not sleep the 5s ceiling
+    await mgr.aclose()

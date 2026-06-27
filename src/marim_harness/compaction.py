@@ -14,6 +14,7 @@ Two strategies share the same head/tail split:
 
 import logging
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from pydantic_ai import Agent
 from pydantic_ai.messages import (
@@ -37,6 +38,13 @@ _CHARS_PER_TOKEN = 4
 _IMAGE_TOKEN_ESTIMATE = 1500
 
 Summarizer = Callable[[list[ModelMessage]], Awaitable[str]]
+
+# Sentinel so the compaction entry points can accept an already-computed tail
+# start (None is a valid value — "nothing to drop") and reuse it instead of
+# recomputing _plan_tail_start (which re-runs the whole-history estimate_tokens).
+# Typed ``Any`` so the public params can stay ``int | None`` (the real domain)
+# while still defaulting to this sentinel without widening ``start`` to ``object``.
+_UNSET: Any = object()
 
 
 def estimate_tokens(history: list[ModelMessage]) -> int:
@@ -118,9 +126,19 @@ def compact_history(
     keep_last_messages: int = 20,
     *,
     force: bool = False,
+    tail_start: int | None = _UNSET,
 ) -> tuple[list, bool]:
-    """Return (history, did_compact) by dropping the middle when over budget."""
-    start = _plan_tail_start(history, max_tokens, keep_last_messages, force=force)
+    """Return (history, did_compact) by dropping the middle when over budget.
+
+    ``tail_start`` lets a caller that already ran ``_plan_tail_start`` (e.g.
+    ``SessionController.maybe_compact``, which also needs the decision to gate
+    its PreCompact hook) pass it in so the whole-history token estimate isn't
+    recomputed here. Left unset, it's computed as before."""
+    start = (
+        _plan_tail_start(history, max_tokens, keep_last_messages, force=force)
+        if tail_start is _UNSET
+        else tail_start
+    )
     if start is None:
         return history, False
     return history[:1] + history[start:], True
@@ -192,14 +210,22 @@ async def compact_history_with_summary(
     keep_last_messages: int = 20,
     *,
     force: bool = False,
+    tail_start: int | None = _UNSET,
 ) -> tuple[list, bool]:
     """Like ``compact_history`` but replace the dropped middle with a summary.
 
     Calls ``summarizer`` with the middle messages. If it raises or returns an
     empty string, falls back to plain truncation so a flaky summary model can
     never break a turn.
+
+    ``tail_start`` behaves as in ``compact_history``: pass a precomputed
+    ``_plan_tail_start`` result to avoid recomputing the whole-history estimate.
     """
-    start = _plan_tail_start(history, max_tokens, keep_last_messages, force=force)
+    start = (
+        _plan_tail_start(history, max_tokens, keep_last_messages, force=force)
+        if tail_start is _UNSET
+        else tail_start
+    )
     if start is None:
         return history, False
 

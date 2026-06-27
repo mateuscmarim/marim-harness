@@ -34,6 +34,21 @@ def anyio_backend():
 
 
 @pytest.fixture(autouse=True)
+def _clear_lsp_bin_cache():
+    """The LSP checker-binary lookups (``checks._ruff_bin``/``_pyright_bin``) are
+    process-cached ``lru_cache``s (PATH is stable mid-session). Clear them around
+    every test, suite-wide, so a monkeypatched ``shutil.which`` is honored and a
+    stubbed PATH never leaks a fake binary path across test files."""
+    from marim_harness.lsp import checks
+
+    checks._ruff_bin.cache_clear()
+    checks._pyright_bin.cache_clear()
+    yield
+    checks._ruff_bin.cache_clear()
+    checks._pyright_bin.cache_clear()
+
+
+@pytest.fixture(autouse=True)
 def _isolated_config(tmp_path_factory, monkeypatch):
     """Point global config discovery at an empty per-test dir so the developer's
     real ~/.config/marim/ never leaks into the suite.

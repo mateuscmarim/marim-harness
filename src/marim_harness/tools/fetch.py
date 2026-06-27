@@ -13,8 +13,10 @@ capped at ``_MAX_BYTES``; a response that *declares* a size over
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import ipaddress
+import json
 import logging
 import re
 import socket
@@ -214,6 +216,14 @@ def _html_to_markdown(html: str) -> str:
     return md(cleaned_html, heading_style="ATX", strip=["img", "figure"]).strip()
 
 
+def _json_pretty(text: str) -> str:
+    """Pretty-print a JSON document. Pulled out as a module-level function (rather
+    than inlined) so it can be offloaded to a worker thread via ``run_sync`` — for a
+    multi-megabyte body the parse + re-serialize is CPU-bound and would otherwise
+    block the event loop. Raises on invalid JSON (the caller falls back to raw text)."""
+    return json.dumps(json.loads(text), indent=2, ensure_ascii=False)
+
+
 def _title_of(body: str, url: str) -> str:
     """Best-effort one-line title: the first Markdown heading, else the URL."""
     for line in body.splitlines():
@@ -328,16 +338,20 @@ async def fetch_url(
     except httpx.RequestError as exc:
         return f"Fetch failed: {exc}"
 
-    # --- decode ---
-    text = raw.decode(encoding or "utf-8", errors="replace")
+    # --- decode → markdown/json (CPU-bound; offload off the event loop) ---
+    # The httpx streaming above is async and stays on the loop, but the decode and
+    # the HTML→markdown (BeautifulSoup parse + decompose + markdownify) and JSON
+    # (parse + re-serialize) conversions are CPU-heavy for bodies up to ~5 MB.
+    # Running them inline would block the loop for the whole turn; offload via
+    # ``asyncio.to_thread`` so other tool calls keep progressing.
+    text = await asyncio.to_thread(raw.decode, encoding or "utf-8", "replace")
     body: str
     if "html" in content_type or "xhtml" in content_type:
-        body = _html_to_markdown(text)
+        body = await asyncio.to_thread(_html_to_markdown, text)
     elif "json" in content_type:
         # Return pretty-printed JSON — the agent can parse it.
         try:
-            import json
-            body = json.dumps(json.loads(text), indent=2, ensure_ascii=False)
+            body = await asyncio.to_thread(_json_pretty, text)
         except Exception as exc:
             logger.debug("JSON pretty-print failed, returning raw text: %s", exc)
             body = text

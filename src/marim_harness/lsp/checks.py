@@ -23,6 +23,7 @@ import json
 import logging
 import shutil
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -121,9 +122,22 @@ def _parse_pyright(stdout: str) -> list[Diag]:
     return out
 
 
+# Binary discovery is a PATH scan (``shutil.which``), and PATH doesn't change
+# mid-session — so resolve each checker exactly once and reuse the answer for
+# every subsequent diagnostics call instead of re-probing on the hot path. The
+# caches are process-global; tests that monkeypatch ``shutil.which`` clear them
+# (``_ruff_bin.cache_clear()`` / ``_pyright_bin.cache_clear()``) so a stubbed
+# PATH takes effect.
+@lru_cache(maxsize=1)
+def _ruff_bin() -> str | None:
+    """The ``ruff`` binary path, or None when ruff isn't on PATH. Resolved once."""
+    return shutil.which("ruff")
+
+
+@lru_cache(maxsize=1)
 def _pyright_bin() -> str | None:
     """The pyright CLI to use, preferring the actively-maintained basedpyright
-    fork when present. None when neither is on PATH."""
+    fork when present. None when neither is on PATH. Resolved once."""
     for b in ("basedpyright", "pyright"):
         if shutil.which(b):
             return b
@@ -136,7 +150,7 @@ async def python_diagnostics(root: Path, path: str, *, deep: bool) -> list[Diag]
     independent subprocesses, so this is safe to call concurrently from many
     sub-agents. Results are sorted by position for stable output."""
     diags: list[Diag] = []
-    if shutil.which("ruff"):
+    if _ruff_bin() is not None:
         out = await _run(
             ["ruff", "check", "--output-format=json", "--", path], root, _RUFF_TIMEOUT
         )

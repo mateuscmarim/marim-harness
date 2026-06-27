@@ -11,12 +11,19 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from .manifest import PluginManifest, substitute_root, try_load_manifest
+from .manifest import (
+    MANIFEST_DIR,
+    MANIFEST_FILE,
+    PluginManifest,
+    substitute_root,
+    try_load_manifest,
+)
 from .state import (
     InstalledPlugin,
     global_plugins_dir,
     load_state,
     project_plugins_dir,
+    state_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -49,12 +56,70 @@ def _scope_dirs(workspace_root) -> list[tuple[str, Path]]:
     ]
 
 
+# --- stat-fingerprint discovery cache ---------------------------------------
+#
+# discover_plugins is on the per-turn hot path: skills and sub-agent discovery
+# both call it (via plugin_skill_roots / plugin_agent_roots), and they do so
+# *before* their own stat caches kick in, so without a cache here the registry
+# and every plugin manifest are re-read and re-parsed twice per turn. We mirror
+# the skills/agents stat-fingerprint cache (workspace/_discovery.py): a cheap
+# stat-only signature of the two ``plugins.json`` registries plus every plugin's
+# ``plugin.json`` manifest. A cache hit skips the json parses entirely; a miss
+# (registry edited, plugin installed/removed/enabled, or a manifest changed)
+# rebuilds. Keyed by resolved workspace root, with the scope dir paths folded
+# into the signature so a changed config dir can't return another root's result.
+_DISCOVERY_CACHE: dict[str, tuple[tuple, list[ResolvedPlugin]]] = {}
+
+
+def _stat_key(path: Path) -> tuple[int, int] | None:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def _discovery_signature(scope_dirs: list[tuple[str, Path]]) -> tuple:
+    """A stat-only fingerprint of both scopes: each scope's ``plugins.json`` and
+    every present plugin's ``plugin.json`` (by name/mtime/size). Changes whenever
+    the registry or any manifest is touched, so a cache hit skips the json
+    parses. Stat-only by design — it deliberately does *not* read hooks/MCP
+    sources, so the live-elevation trust guard must keep recomputing those (see
+    _linked_elevation_revokes_trust)."""
+    sig: list = []
+    for scope, plugins_dir in scope_dirs:
+        registry = _stat_key(state_path(plugins_dir))
+        try:
+            subdirs = sorted(p for p in plugins_dir.iterdir() if p.is_dir())
+        except OSError:
+            subdirs = []
+        manifests = []
+        for d in subdirs:
+            st = _stat_key(d / MANIFEST_DIR / MANIFEST_FILE)
+            if st is not None:
+                manifests.append((d.name, st))
+        sig.append((scope, str(plugins_dir), registry, tuple(manifests)))
+    return tuple(sig)
+
+
 def discover_plugins(workspace_root) -> list[ResolvedPlugin]:
     """All installed plugins across both scopes (enabled and disabled), project
     shadowing global by name, sorted by name. Entries whose directory or
-    manifest fails to load are skipped with a warning."""
+    manifest fails to load are skipped with a warning.
+
+    Cached per workspace root and reused while the registries and manifests on
+    disk are unchanged (by name/mtime/size), so the repeated per-turn calls from
+    skills/agents discovery don't re-parse every ``plugins.json`` and
+    ``plugin.json`` each time."""
+    scope_dirs = _scope_dirs(workspace_root)
+    sig = _discovery_signature(scope_dirs)
+    key = str(Path(workspace_root).resolve())
+    cached = _DISCOVERY_CACHE.get(key)
+    if cached is not None and cached[0] == sig:
+        return cached[1]
+
     seen: dict[str, ResolvedPlugin] = {}
-    for scope, plugins_dir in _scope_dirs(workspace_root):
+    for scope, plugins_dir in scope_dirs:
         for name, record in load_state(plugins_dir).items():
             if name in seen:
                 continue
@@ -67,7 +132,9 @@ def discover_plugins(workspace_root) -> list[ResolvedPlugin]:
                 )
                 continue
             seen[name] = ResolvedPlugin(name, scope, root, record, manifest)
-    return sorted(seen.values(), key=lambda p: p.name)
+    result = sorted(seen.values(), key=lambda p: p.name)
+    _DISCOVERY_CACHE[key] = (sig, result)
+    return result
 
 
 def _enabled(workspace_root) -> list[ResolvedPlugin]:
@@ -127,15 +194,32 @@ def plugin_agent_roots(workspace_root) -> list[tuple[str, Path]]:
     return [(p.name, p.manifest.agents_dir()) for p in _enabled(workspace_root)]
 
 
+# Keyed by resolved workspace root. The ``_global_instructions``/plugin closures
+# call this on every model request; without a cache each enabled plugin's
+# AGENTS.md is re-read per request. The signature covers the enabled set (a
+# changed plugins.json reorders/resizes it via the now-cached discover_plugins)
+# and each instructions file's stat, so an enable/disable or an AGENTS.md edit
+# invalidates while an unchanged tree is served from cache.
+_INSTRUCTION_TEXT_CACHE: dict[str, tuple[tuple, list[tuple[str, str]]]] = {}
+
+
 def plugin_instruction_texts(workspace_root) -> list[tuple[str, str]]:
+    items = [(p.name, p.manifest.instructions_path()) for p in _enabled(workspace_root)]
+    sig = tuple((name, _stat_key(path)) for name, path in items)
+    key = str(Path(workspace_root).resolve())
+    cached = _INSTRUCTION_TEXT_CACHE.get(key)
+    if cached is not None and cached[0] == sig:
+        return cached[1]
+
     out: list[tuple[str, str]] = []
-    for p in _enabled(workspace_root):
+    for name, path in items:
         try:
-            text = p.manifest.instructions_path().read_text(encoding="utf-8").strip()
+            text = path.read_text(encoding="utf-8").strip()
         except (OSError, UnicodeDecodeError):
             continue
         if text:
-            out.append((p.name, text))
+            out.append((name, text))
+    _INSTRUCTION_TEXT_CACHE[key] = (sig, out)
     return out
 
 

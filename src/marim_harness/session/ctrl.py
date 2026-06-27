@@ -14,11 +14,11 @@ from pydantic_ai.usage import RunUsage
 from ..compaction import (
     Summarizer,
     Titler,
+    _plan_tail_start,
     compact_history,
     compact_history_with_summary,
     make_summarizer,
     make_titler,
-    will_compact,
 )
 from ..hooks import events as hook_events
 from ..hooks.runner import base_payload
@@ -272,12 +272,20 @@ class SessionController:
         used after a provider context-overflow error where the token estimate
         undershot). Returns True if it actually shrank the history."""
         before = len(self.history)
-        # This predicate mirrors compact_history's own decision exactly, so the
-        # PreCompact hook and the on_compact_start indicator fire iff a compaction
-        # will actually happen. A forced compaction is always "going".
-        going = force or will_compact(
-            self.history, self.max_context_tokens, self.keep_last_messages
+        # Plan the tail boundary exactly once. It both decides whether a
+        # compaction will happen (so the PreCompact hook / on_compact_start
+        # indicator fire iff one actually will) AND is handed to the compaction
+        # call below, so estimate_tokens runs over the whole history once per
+        # maybe_compact instead of twice when a compaction fires. The PreCompact
+        # hook between here and the compaction is observe-only (it can't mutate
+        # the history), so the precomputed boundary stays valid. A forced
+        # compaction is always "going"; _plan_tail_start still returns None when
+        # there is nothing meaningful to drop.
+        tail_start = _plan_tail_start(
+            self.history, self.max_context_tokens, self.keep_last_messages,
+            force=force,
         )
+        going = force or tail_start is not None
         # Fire PreCompact *before* the compaction work, while the transcript is
         # still full — matching Claude Code, where the hook can snapshot the
         # conversation before it's summarized/collapsed.
@@ -301,12 +309,12 @@ class SessionController:
         if self.summarizer is not None:
             new_history, compacted = await compact_history_with_summary(
                 self.history, self.max_context_tokens, self.summarizer,
-                self.keep_last_messages, force=force,
+                self.keep_last_messages, force=force, tail_start=tail_start,
             )
         else:
             new_history, compacted = compact_history(
                 self.history, self.max_context_tokens, self.keep_last_messages,
-                force=force,
+                force=force, tail_start=tail_start,
             )
         if compacted:
             self.history = new_history
