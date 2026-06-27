@@ -104,8 +104,11 @@ tools: web_search, fetch_url, read_file, glob, grep, tree
 ---
 ```
 
-The tool list mirrors `explore`'s reach (`READ_TOOLS | NET_TOOLS`): web egress plus
-local reads, nothing mutating, no `spawn_agent` (so it can't recurse). Body (the
+The tool list is a **minimal web-research set**: web egress plus basic local reads,
+nothing mutating, no `spawn_agent` (so it can't recurse). (As-built note: an earlier
+draft said this "mirrors `explore`'s reach, `READ_TOOLS | NET_TOOLS`". It does not —
+`READ_TOOLS` also includes the six `LSP_TOOLS`, which a web worker has no use for. The
+shipped agent lists exactly the six tools above; see commit `dcfa529`.) Body (the
 worker's system prompt) encodes:
 
 - **Source hierarchy:** systematic reviews / meta-analyses > RCTs > observational >
