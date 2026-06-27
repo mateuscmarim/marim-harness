@@ -277,3 +277,23 @@ def test_discover_agents_reflects_edited_file(isolated_home):
     _make_agent(root, "probe", description="Second.")
     d2 = next(a for a in discover_agents(ws) if a.name == "probe").description
     assert "Second" in d2
+
+
+def test_researcher_is_builtin(isolated_home):
+    ws = isolated_home / "ws"
+    agent = find_agent(ws, "researcher")
+    assert agent is not None
+    assert agent.source == "builtin"
+    assert agent.backend == "native"
+    # Read-only + network only: no gated/mutating tools, cannot recurse.
+    assert agent.tools == (READ_TOOLS | NET_TOOLS)
+    assert "spawn_agent" not in agent.tools
+    assert GATED_TOOLS.isdisjoint(agent.tools)
+
+
+def test_project_agent_shadows_builtin_researcher(isolated_home):
+    ws = isolated_home / "ws"
+    _make_agent(ws / ".marim" / "agents", "researcher", description="Custom override.")
+    agent = find_agent(ws, "researcher")
+    assert agent.source == "project"
+    assert agent.description == "Custom override."
