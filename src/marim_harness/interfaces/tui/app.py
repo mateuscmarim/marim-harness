@@ -21,7 +21,7 @@ from .model_picker import ModelPickerModal
 from .notify import FinishedJobNotifier
 from .queue import TurnQueue
 from .session_view import SessionView
-from .settings import SettingsModal
+from .settings import SettingsScreen
 from .status import (
     _CLOCK_TICK_INTERVAL,
     _SPINNER_TICK_INTERVAL,
@@ -659,12 +659,12 @@ class HarnessApp(App):
             await self.post_system("Nothing to undo — no rewind in this session.")
 
     def open_settings(self) -> None:
-        """Open the settings modal: runtime settings apply live; env-backed
-        settings save to the global .env on demand."""
+        """Open the full-bleed settings screen: runtime settings apply live;
+        env-backed settings save to the global .env on demand."""
         from ...config import load_config
 
         self.push_screen(
-            SettingsModal(
+            SettingsScreen(
                 harness=self.harness,
                 current_theme=self.theme,
                 env_cfg=load_config(),
