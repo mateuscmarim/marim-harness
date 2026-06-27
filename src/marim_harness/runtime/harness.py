@@ -3,13 +3,14 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from pydantic_ai import Agent, DeferredToolRequests
 from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.settings import ModelSettings
 
 if TYPE_CHECKING:
+    from pydantic_ai.agent import EventStreamHandler
     from pydantic_ai.models import Model
 
     from ..config.model import ModelSource, MultiModelSource
@@ -43,7 +44,18 @@ from .controller import (  # noqa: F401 — _has_unanswered_tool_calls/_repair_u
     _has_unanswered_tool_calls,
     _repair_unanswered_tool_calls,
 )
-from .deps import Deps, HarnessAgent, HarnessServices, SubAgentCallbacks
+from .deps import (
+    ApprovalFn,
+    AskUserFn,
+    Deps,
+    HarnessAgent,
+    HarnessServices,
+    SubAgentCallbacks,
+    SubAgentEventCb,
+    SubAgentModelCb,
+    SubAgentNoticeCb,
+    SubAgentUsageCb,
+)
 from .instructions import register_instructions
 from .permissions import Mode
 
@@ -151,7 +163,7 @@ def build_collaborators(
     instructions: str,
     cfg: HarnessConfig,
     *,
-    get_model: Callable[[], Any],
+    get_model: Callable[[], Model],
 ) -> Collaborators:
     """Build and wire the full collaborator graph for a Harness, in dependency
     order, and install the deps<->services binding via ``build_services``.
@@ -233,7 +245,7 @@ class Harness:
     """Owns the Pydantic AI agent and drives one user turn to completion,
     resolving deferred tool approvals by the current mode."""
 
-    def __init__(self, model, provider: ToolProvider, deps: Deps, instructions: str,
+    def __init__(self, model: Model, provider: ToolProvider, deps: Deps, instructions: str,
                  *, config: HarnessConfig | None = None, **kwargs):
         """Create a Harness.
 
@@ -292,17 +304,17 @@ class Harness:
     def bind_ui(
         self,
         *,
-        request_approval: Callable[..., Any] | None = None,
-        ask_user: Callable[..., Any] | None = None,
-        on_subagent_event: Callable[..., Any] | None = None,
-        on_subagent_notice: Callable[..., Any] | None = None,
-        on_subagent_model: Callable[..., Any] | None = None,
-        on_subagent_usage: Callable[..., Any] | None = None,
-        on_tasks_changed: Callable[..., Any] | None = None,
-        on_jobs_changed: Callable[..., Any] | None = None,
-        on_compact: Callable[..., Any] | None = None,
-        on_compact_start: Callable[..., Any] | None = None,
-        on_rename: Callable[..., Any] | None = None,
+        request_approval: ApprovalFn | None = None,
+        ask_user: AskUserFn | None = None,
+        on_subagent_event: SubAgentEventCb | None = None,
+        on_subagent_notice: SubAgentNoticeCb | None = None,
+        on_subagent_model: SubAgentModelCb | None = None,
+        on_subagent_usage: SubAgentUsageCb | None = None,
+        on_tasks_changed: Callable[[], None] | None = None,
+        on_jobs_changed: Callable[[], None] | None = None,
+        on_compact: Callable[[int, int], None] | None = None,
+        on_compact_start: Callable[[], None] | None = None,
+        on_rename: Callable[[str, str], None] | None = None,
     ) -> None:
         """Wire the interactive UI's callbacks into the harness in one place.
 
@@ -453,8 +465,11 @@ class Harness:
         """Delegate to ``turn_controller.take_buffered_steers``."""
         return self.turn_controller.take_buffered_steers()
 
-    async def run_turn(self, prompt: str, event_stream_handler=None,
-                       attachments: list[tuple[bytes, str]] | None = None) -> str:
+    async def run_turn(
+        self, prompt: str,
+        event_stream_handler: EventStreamHandler[Deps] | None = None,
+        attachments: list[tuple[bytes, str]] | None = None,
+    ) -> str:
         """Run the agent until it produces a final text answer, looping through
         any approval rounds. Returns the final text output."""
         return await self.turn_controller.run_turn(prompt, event_stream_handler, attachments)

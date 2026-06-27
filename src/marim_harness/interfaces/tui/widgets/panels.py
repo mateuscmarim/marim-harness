@@ -6,6 +6,7 @@ title row on click."""
 from collections.abc import Callable
 
 from textual import events
+from textual.app import ComposeResult
 from textual.containers import VerticalScroll
 from textual.content import Content
 from textual.message import Message
@@ -62,7 +63,7 @@ class LivePanel(VerticalScroll):
         self._header = PanelHeader(id=f"{name}-header", classes="live-panel-header")
         self._body = Static(id=f"{name}-body", classes="live-panel-body")
 
-    def compose(self):
+    def compose(self) -> ComposeResult:
         yield self._header
         yield self._body
 

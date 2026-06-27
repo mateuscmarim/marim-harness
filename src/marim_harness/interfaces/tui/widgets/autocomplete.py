@@ -7,6 +7,7 @@ Displays a filtered list of commands above the prompt when the user types
 from __future__ import annotations
 
 from textual import on
+from textual.app import ComposeResult
 from textual.message import Message
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
@@ -27,7 +28,7 @@ class CommandAutocomplete(Static):
         self._options: list[tuple[str, str, str]] = []  # (name, display, canonical)
         self.can_focus = False
 
-    def compose(self):
+    def compose(self) -> ComposeResult:
         yield OptionList(id="cmd-options")
 
     def on_mount(self) -> None:

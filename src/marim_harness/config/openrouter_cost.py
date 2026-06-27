@@ -21,9 +21,17 @@ or non-numeric cost simply yields no detail, and callers fall back to the
 genai-prices estimate.
 """
 
+from __future__ import annotations
+
+from collections.abc import Iterator
 from contextlib import asynccontextmanager, suppress
+from typing import TYPE_CHECKING
 
 from ..usage import COST_DETAIL_KEY
+
+if TYPE_CHECKING:
+    from pydantic_ai.messages import ModelResponseStreamEvent
+    from pydantic_ai.usage import RequestUsage
 
 # MiniMax M3 emits its chain-of-thought wrapped in these native tags. OpenRouter
 # normally extracts that into the structured ``reasoning`` field, but its
@@ -77,7 +85,7 @@ def read_cost_micro_usd(response) -> int | None:
         return None
 
 
-def _with_cost(response, mapped):
+def _with_cost(response, mapped: RequestUsage) -> RequestUsage:
     """Re-inject the billed cost (if any) into a freshly mapped RequestUsage."""
     micro = read_cost_micro_usd(response)
     if micro is not None:
@@ -115,10 +123,10 @@ def build_openrouter_model(model_id: str, api_key: str | None):
     class _CostStreamedResponse(OpenRouterStreamedResponse):
         # Subclass the OpenRouter streamed response (not the plain OpenAI one)
         # so super()._map_usage still maps cache_read/cache_write tokens.
-        def _map_usage(self, response):
+        def _map_usage(self, response) -> RequestUsage:
             return _with_cost(response, super()._map_usage(response))
 
-        def _map_text_delta(self, choice):
+        def _map_text_delta(self, choice) -> Iterator[ModelResponseStreamEvent]:
             # Only active for MiniMax (the sole profile carrying these tags):
             # scrub orphan thinking tags the base splitter couldn't pair. Real
             # pairs are already routed to ThinkingParts upstream, so anything
@@ -150,7 +158,7 @@ def build_openrouter_model(model_id: str, api_key: str | None):
 
     class _CostOpenRouterModel(OpenRouterModel):
         # Non-streaming path (e.g. the summarizer/titler agents).
-        def _map_usage(self, response):
+        def _map_usage(self, response) -> RequestUsage:
             return _with_cost(response, super()._map_usage(response))
 
         # Streaming path (every interactive/headless turn): swap the live

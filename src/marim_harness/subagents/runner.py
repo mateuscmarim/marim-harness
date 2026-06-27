@@ -24,6 +24,10 @@ from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import UsageLimits
 
 if TYPE_CHECKING:
+    from pydantic_ai.agent import EventStreamHandler
+    from pydantic_ai.models import Model
+    from pydantic_ai.run import AgentRunResult
+
     from ..mcp.manager import McpManager
     from ..session.ctrl import SessionController
     from ..tools.provider import ToolProvider
@@ -86,14 +90,14 @@ def _resumable_history(messages: list) -> list | None:
 class _SpawnPrep:
     """Shared state returned by ``_prepare_spawn``: the built sub-agent and all
     context the foreground and background tails need to run it and finalize output."""
-    sub: Any
-    granted: Any
-    unknown: list
-    handler: Any
+    sub: SubAgent
+    granted: list[object]
+    unknown: list[str]
+    handler: EventStreamHandler[Deps] | None
     iso: dict | None
     t0: float
     t_built: float
-    first_event_at: list  # mutable; ``on_first_event`` probe appends during run
+    first_event_at: list[float]  # mutable; ``on_first_event`` probe appends during run
 
 
 class SubagentRunner:
@@ -103,11 +107,11 @@ class SubagentRunner:
 
     def __init__(self, provider: "ToolProvider", mcp: "McpManager", deps: Deps,
                  hooks: TurnHooks, session: "SessionController",
-                 get_model: Callable[[], Any],
+                 get_model: Callable[[], Model],
                  model_settings: ModelSettings | None = None,
                  request_limit: int = 50,
                  retry_attempts: int = 2,
-                 build_model: Callable[[str], Any] | None = None,
+                 build_model: Callable[[str], Model] | None = None,
                  concurrency: int | None = None,
                  transcript_cap: int = 2000) -> None:
         self.provider = provider
@@ -197,8 +201,11 @@ class SubagentRunner:
             with contextlib.suppress(WorktreeError):
                 delete_branch(iso["repo"], iso["branch"])
 
-    def handler(self, stream_id: str | None,
-                on_first_event: Callable[[], None] | None = None):
+    def handler(
+        self,
+        stream_id: str | None,
+        on_first_event: Callable[[], None] | None = None,
+    ) -> EventStreamHandler[Deps] | None:
         """An event_stream_handler for a sub-agent run. For each streamed event it
         fires the Pre/PostToolUse hooks (so a sub-agent's autonomous tool calls run
         under the same hooks engine as the main agent's — guardrails apply to
@@ -344,8 +351,9 @@ class SubagentRunner:
         except Exception as exc:  # noqa: BLE001 - persistence is best-effort
             logger.warning("Failed to save transcript %s: %s", stream_id, exc)
 
-    async def _run_to_completion(self, sub, task, run_deps, granted, handler,
-                                 stream_id: str | None = None):
+    async def _run_to_completion(self, sub: SubAgent, task: str, run_deps: Deps,
+                                 granted: list[Any], handler: EventStreamHandler[Deps] | None,
+                                 stream_id: str | None = None) -> AgentRunResult[str]:
         """Run a built sub-agent to its final result, retrying *transient* model
         errors (gateway/server hiccups, timeouts, rate limits) with backoff. A
         permanent error, or exhausting the retry budget, re-raises for the caller's

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import AsyncIterable, Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
@@ -18,6 +18,11 @@ from pydantic_ai.usage import RunUsage
 
 if TYPE_CHECKING:
     from pydantic_ai import RunContext
+    from pydantic_ai.agent import EventStreamHandler
+    from pydantic_ai.messages import AgentStreamEvent
+    from pydantic_ai.models import Model
+    from pydantic_ai.tools import DeferredToolResults
+    from pydantic_ai.toolsets import AbstractToolset
 
     from ..hooks.dispatch import TurnHooks
     from ..mcp import McpManager
@@ -51,8 +56,8 @@ def _has_unanswered_tool_calls(history: list[ModelMessage]) -> bool:
     session unresumable until it's manually cleared."""
     from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 
-    calls: set = set()
-    returns: set = set()
+    calls: set[str] = set()
+    returns: set[str] = set()
     for message in history:
         for part in getattr(message, "parts", []):
             if isinstance(part, ToolCallPart):
@@ -102,7 +107,7 @@ def _drop_nameless_tool_calls(history: list[ModelMessage]) -> list[ModelMessage]
         for part in getattr(message, "parts", [])
         if isinstance(part, ToolCallPart) and not part.tool_name
     }
-    cleaned: list = []
+    cleaned: list[ModelMessage] = []
     for message in history:
         parts = getattr(message, "parts", None)
         if parts is None:
@@ -163,7 +168,7 @@ def _repair_unanswered_tool_calls(history: list[ModelMessage]) -> list[ModelMess
         for part in getattr(message, "parts", [])
         if isinstance(part, ToolReturnPart)
     }
-    repaired: list = []
+    repaired: list[ModelMessage] = []
     changed = False
     for message in history:
         repaired.append(message)
@@ -209,7 +214,7 @@ class TurnController:
         hooks: TurnHooks,
         mcp: McpManager,
         deps: Deps,
-        get_model: Callable[[], Any],
+        get_model: Callable[[], Model],
     ) -> None:
         self.agent = agent
         self.session = session
@@ -249,7 +254,9 @@ class TurnController:
     async def _maybe_autoname(self) -> None:
         await self.session.maybe_autoname()
 
-    async def _flush_resumable(self, captured, resumable) -> None:
+    async def _flush_resumable(
+        self, captured: list[ModelMessage], resumable: list[ModelMessage]
+    ) -> None:
         """Best-effort: repair any tool call the abort left unanswered and
         persist. Tolerates a slow disk with a short deadline so Ctrl-C remains
         snappy. Swallows ordinary failures (a flush failure must never mask the
@@ -360,16 +367,21 @@ class TurnController:
         buffered, self._steer_buffer = self._steer_buffer, []
         return buffered
 
-    def _build_hooked_handler(self, base_handler: Any) -> Any:
+    def _build_hooked_handler(
+        self, base_handler: EventStreamHandler[Deps] | None
+    ) -> EventStreamHandler[Deps] | None:
         """Wrap the event-stream handler to (1) capture the live RunContext for
         steering and (2) fire Pre/PostToolUse hooks on tool events. Returns
         ``None`` when there's neither a base handler nor hooks, so headless runs
         don't stream just to capture a ctx nobody steers."""
         if base_handler is None and self.deps.hooks is None:
             return None
-        _call_inputs: dict = {}
+        _call_inputs: dict[str, Any] = {}
 
-        async def _wrapped(stream_ctx, events):
+        async def _wrapped(
+            stream_ctx: RunContext[Deps],
+            events: AsyncIterable[AgentStreamEvent],
+        ) -> None:
             # Capture the live RunContext so steer() can enqueue onto it. Set on
             # every streamed node, so it stays current within the run.
             self._active_run_ctx = stream_ctx
@@ -391,10 +403,10 @@ class TurnController:
 
     async def _run_with_approval(
         self,
-        user_prompt: Any,
-        deferred_results: Any,
-        toolsets: Any,
-        event_stream_handler: Any,
+        user_prompt: str | list[str | BinaryContent] | None,
+        deferred_results: DeferredToolResults | None,
+        toolsets: Sequence[AbstractToolset[Any]] | None,
+        event_stream_handler: EventStreamHandler[Deps] | None,
         resumable: list[ModelMessage],
     ) -> str:
         """Drive the agent.run loop, handling DeferredToolRequests approval rounds,
@@ -552,7 +564,7 @@ class TurnController:
     async def run_turn(
         self,
         prompt: str,
-        event_stream_handler: Any = None,
+        event_stream_handler: EventStreamHandler[Deps] | None = None,
         attachments: list[tuple[bytes, str]] | None = None,
     ) -> str:
         """Run the agent until it produces a final text answer, looping through

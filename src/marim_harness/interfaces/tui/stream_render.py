@@ -200,13 +200,13 @@ class _TopLevelSink(_StreamSink):
         self._r.tool_group = group
         self._r.solo_tool = solo
 
-    def get_assistant(self):
+    def get_assistant(self) -> AssistantMessage | None:
         return self._r.current_assistant
 
     def set_assistant(self, msg) -> None:
         self._r.current_assistant = msg
 
-    def get_thinking(self):
+    def get_thinking(self) -> ThinkingWidget | None:
         return self._r.current_thinking
 
     def set_thinking(self, widget) -> None:
@@ -282,14 +282,14 @@ class _SubAgentSink(_StreamSink):
         state.group = group
         state.solo = solo
 
-    def get_assistant(self):
+    def get_assistant(self) -> AssistantMessage | None:
         state = self._r._sub_streams.get(self._sid)
         return state.assistant if state is not None else None
 
     def set_assistant(self, msg) -> None:
         self._r._sub_streams.setdefault(self._sid, _SubStreamState()).assistant = msg
 
-    def get_thinking(self):
+    def get_thinking(self) -> ThinkingWidget | None:
         state = self._r._sub_streams.get(self._sid)
         return state.thinking if state is not None else None
 
@@ -590,7 +590,7 @@ class StreamRenderer:
         label = _wait_subagent_label(args, self.app.harness.deps.jobs)
         return {**args, "_wait_label": label} if label else args
 
-    def mount_spawn_widget(self, args: dict):
+    def mount_spawn_widget(self, args: dict) -> SubAgentWidget:
         """Build the compact card for a foreground spawn_agent and register it in the
         ordered ``subagents`` list (the viewer's navigation backing). The transcript
         streams into the card's hidden body; the full view reveals it on demand, so

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import contextlib
 
+from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.content import Content
@@ -55,7 +56,7 @@ class SubAgentsView(Vertical):
         super().__init__(id="subagents-view")
         self.display = False
 
-    def compose(self):
+    def compose(self) -> ComposeResult:
         yield SubAgentSummary()
         with Horizontal(id="subagents-body"):
             yield SubAgentList()
