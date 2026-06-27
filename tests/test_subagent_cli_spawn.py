@@ -6,8 +6,8 @@ import pytest
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.function import FunctionModel
 
-from marim_harness.deps import Deps
-from marim_harness.permissions import Mode
+from marim_harness.runtime.deps import Deps
+from marim_harness.runtime.permissions import Mode
 from tests.conftest import _make_harness
 
 _FAKE_CLI = '''#!{python}
@@ -92,7 +92,7 @@ async def test_cli_backend_fires_usage_callback(tmp_path: Path, monkeypatch):
     async def on_usage(stream_id: str, usage) -> None:
         received.append((stream_id, usage))
 
-    from marim_harness.deps import SubAgentCallbacks
+    from marim_harness.runtime.deps import SubAgentCallbacks
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     deps.callbacks = SubAgentCallbacks(on_usage=on_usage)
@@ -120,7 +120,7 @@ async def test_cli_backend_skips_usage_callback_without_stream_id(
     async def on_usage(stream_id: str, usage) -> None:
         received.append(usage)
 
-    from marim_harness.deps import SubAgentCallbacks
+    from marim_harness.runtime.deps import SubAgentCallbacks
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     deps.callbacks = SubAgentCallbacks(on_usage=on_usage)

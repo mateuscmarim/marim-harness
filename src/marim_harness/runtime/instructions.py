@@ -6,12 +6,11 @@ from typing import TYPE_CHECKING
 from pydantic_ai import RunContext
 
 if TYPE_CHECKING:
-    from .mcp import McpManager
+    from ..mcp import McpManager
 
-from .config import config_dir
-from .deps import Deps, HarnessAgent
-from .plugins import plugin_instruction_texts
-from .workspace import (
+from ..config import config_dir
+from ..plugins import plugin_instruction_texts
+from ..workspace import (
     agents_index_text,
     discover_agents,
     discover_skills,
@@ -20,6 +19,7 @@ from .workspace import (
     project_scope,
     skills_index_text,
 )
+from .deps import Deps, HarnessAgent
 
 _PROJECT_INSTRUCTIONS_FILE = "AGENTS.md"
 _PROJECT_FALLBACK_FILES = ("AGENTS.md", "CLAUDE.md")

@@ -8,9 +8,9 @@ from pydantic_ai.messages import BinaryContent, ModelRequest, UserPromptPart
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
-from marim_harness.deps import Deps
 from marim_harness.hooks import events as hook_events
 from marim_harness.hooks.runner import HookRunner
+from marim_harness.runtime.deps import Deps
 from marim_harness.session import SessionManager, SessionStore
 from marim_harness.session.ctrl import SessionController
 

@@ -17,12 +17,12 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, RadioButton, RadioSet, Static, Switch
 
 from ...config import ModelConfig, global_config_path, save_env_settings
-from ...permissions import Mode
+from ...runtime.permissions import Mode
 from .model_picker import ModelPickerModal
 from .themes import THEME_NAMES
 
 if TYPE_CHECKING:
-    from ...agent import Harness
+    from ...runtime.harness import Harness
 
 _MODES = ("ask", "auto", "plan")
 

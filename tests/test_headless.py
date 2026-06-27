@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from marim_harness.deps import Deps
-from marim_harness.permissions import Mode
+from marim_harness.runtime.deps import Deps
+from marim_harness.runtime.permissions import Mode
 
 
 def _hook_script(tmp_path: Path, name: str, body: str) -> str:
@@ -19,7 +19,7 @@ def _hook_script(tmp_path: Path, name: str, body: str) -> str:
 def _harness(tmp_path: Path, output_text: str = "hello from the model", *, hooks=None):
     from pydantic_ai.models.test import TestModel
 
-    from marim_harness.agent import Harness
+    from marim_harness.runtime.harness import Harness
     from marim_harness.session import SessionManager
     from marim_harness.tools.provider import BuiltinToolProvider
 
@@ -27,7 +27,7 @@ def _harness(tmp_path: Path, output_text: str = "hello from the model", *, hooks
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     store = manager.create("headless")
     model = TestModel(call_tools=[], custom_output_text=output_text)
-    from marim_harness.agent import HarnessConfig
+    from marim_harness.runtime.harness import HarnessConfig
 
     return Harness(
         model, BuiltinToolProvider(), deps,

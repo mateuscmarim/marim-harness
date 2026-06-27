@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from marim_harness.deps import Deps
-from marim_harness.permissions import Mode
+from marim_harness.runtime.deps import Deps
+from marim_harness.runtime.permissions import Mode
 
 
 def test_deps_defaults_to_ask_mode(tmp_path: Path):
@@ -17,7 +17,7 @@ def test_mode_is_mutable(tmp_path: Path):
 
 
 def test_deps_has_services_container_defaulting_to_none():
-    from marim_harness.deps import HarnessServices
+    from marim_harness.runtime.deps import HarnessServices
 
     d = Deps(workspace_root=Path("."))
     assert isinstance(d.services, HarnessServices)
@@ -34,7 +34,7 @@ def test_each_deps_gets_its_own_services_container():
 
 
 def test_lsp_handle_lives_on_services():
-    from marim_harness.deps import HarnessServices
+    from marim_harness.runtime.deps import HarnessServices
 
     sentinel = object()
     d = Deps(workspace_root=Path("."), services=HarnessServices(lsp=sentinel))
@@ -44,8 +44,8 @@ def test_lsp_handle_lives_on_services():
 
 
 def test_build_services_populates_and_assigns(tmp_path):
-    from marim_harness.agent import build_services
-    from marim_harness.deps import Deps, HarnessServices
+    from marim_harness.runtime.deps import Deps, HarnessServices
+    from marim_harness.runtime.harness import build_services
 
     deps = Deps(workspace_root=tmp_path)
     lsp = object()

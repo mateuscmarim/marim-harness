@@ -9,7 +9,7 @@ wraps an awaitable that yields the final text, tracks status around it
 a running job comes from an optional ``output_fn`` (a bash job's growing buffer);
 agent jobs have none and read ``(still running)`` until done.
 
-State lives on :class:`~marim_harness.deps.Deps` next to the task checklist:
+State lives on :class:`~marim_harness.runtime.deps.Deps` next to the task checklist:
 tools mutate it via ``ctx.deps.jobs``, and the TUI subscribes to ``on_change`` to
 repaint a live panel. Nothing is persisted — jobs belong to the running process
 and are cancelled on exit. The agent reaches results by *pulling*

@@ -4,9 +4,9 @@ import pytest
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.function import FunctionModel
 
-from marim_harness.agent import Harness
-from marim_harness.deps import Deps
-from marim_harness.permissions import Mode
+from marim_harness.runtime.deps import Deps
+from marim_harness.runtime.harness import Harness
+from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
 from tests.conftest import _make_harness, _text_model
 
@@ -62,7 +62,7 @@ def _named_model(model_id: str) -> FunctionModel:
 
 
 def _switch_harness(tmp_path, *, source=None, summarizer=None, titler=None):
-    from marim_harness.agent import HarnessConfig
+    from marim_harness.runtime.harness import HarnessConfig
     from marim_harness.session import SessionManager
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)

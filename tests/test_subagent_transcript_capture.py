@@ -6,8 +6,8 @@ import pytest
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.function import FunctionModel
 
-from marim_harness.deps import Deps
-from marim_harness.permissions import Mode
+from marim_harness.runtime.deps import Deps
+from marim_harness.runtime.permissions import Mode
 from marim_harness.session import SessionStore, TranscriptStore
 from tests.conftest import _make_harness
 

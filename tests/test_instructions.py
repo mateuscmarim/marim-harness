@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from marim_harness.instructions import (
+from marim_harness.runtime.instructions import (
     global_instructions_path,
     load_global_instructions,
     load_project_instructions,

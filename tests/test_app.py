@@ -2,16 +2,16 @@ from pathlib import Path
 
 import pytest
 
-from marim_harness.deps import Deps
 from marim_harness.interfaces.tui.app import HarnessApp
 from marim_harness.interfaces.tui.widgets import NoticeMessage
-from marim_harness.permissions import Mode
+from marim_harness.runtime.deps import Deps
+from marim_harness.runtime.permissions import Mode
 
 
 def _app(tmp_path: Path) -> HarnessApp:
     from pydantic_ai.models.test import TestModel
 
-    from marim_harness.agent import Harness
+    from marim_harness.runtime.harness import Harness
     from marim_harness.tools.provider import BuiltinToolProvider
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
@@ -493,8 +493,8 @@ def _submit(app, text):
 async def test_submitting_records_prompt_history(tmp_path: Path):
     from pydantic_ai.models.test import TestModel
 
-    from marim_harness.agent import Harness
     from marim_harness.history import PromptHistory
+    from marim_harness.runtime.harness import Harness
     from marim_harness.tools.provider import BuiltinToolProvider
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
@@ -576,7 +576,7 @@ async def test_slash_unknown_command_reports_error(tmp_path: Path):
 @pytest.mark.anyio
 @pytest.mark.parametrize("arg,expected", [("plan", "plan"), ("auto", "auto")])
 async def test_slash_mode_sets_mode(tmp_path: Path, arg: str, expected: str):
-    from marim_harness.permissions import Mode
+    from marim_harness.runtime.permissions import Mode
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:
@@ -899,8 +899,8 @@ async def test_resume_hides_injected_turn_context(tmp_path: Path):
     user typed in the log — not the injected context."""
     from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 
-    from marim_harness.agent import wrap_turn_context
     from marim_harness.interfaces.tui.widgets import UserMessage
+    from marim_harness.runtime.harness import wrap_turn_context
 
     wrapped = wrap_turn_context(
         "<agentmemory-context>pinned slots, files, …</agentmemory-context>",
@@ -928,8 +928,8 @@ async def test_gated_tool_renders_one_widget_not_two(tmp_path: Path):
     not an orphaned 'pending' entry plus a finished one."""
     from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
-    from marim_harness.agent import Harness
     from marim_harness.interfaces.tui.widgets import ToolCallWidget
+    from marim_harness.runtime.harness import Harness
     from marim_harness.tools.provider import BuiltinToolProvider
 
     state = {"n": 0}
@@ -1769,7 +1769,7 @@ async def test_subagent_event_usage_populates_total_and_body_split(tmp_path: Pat
 def _app_with_manager(tmp_path: Path) -> HarnessApp:
     from pydantic_ai.models.test import TestModel
 
-    from marim_harness.agent import Harness
+    from marim_harness.runtime.harness import Harness
     from marim_harness.session import SessionManager
     from marim_harness.tools.provider import BuiltinToolProvider
 
@@ -1844,7 +1844,7 @@ async def test_switch_unknown_reports_error(tmp_path: Path):
 def _autoname_app(tmp_path: Path) -> HarnessApp:
     from pydantic_ai.models.test import TestModel
 
-    from marim_harness.agent import Harness
+    from marim_harness.runtime.harness import Harness
     from marim_harness.session import SessionManager
     from marim_harness.tools.provider import BuiltinToolProvider
 
@@ -1925,7 +1925,7 @@ class _FakeSource:
 def _switch_app(tmp_path: Path, source) -> HarnessApp:
     from pydantic_ai.models.test import TestModel
 
-    from marim_harness.agent import Harness
+    from marim_harness.runtime.harness import Harness
     from marim_harness.session import SessionManager
     from marim_harness.tools.provider import BuiltinToolProvider
 

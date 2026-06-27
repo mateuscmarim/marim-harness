@@ -20,14 +20,14 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
-from marim_harness.agent import (
+from marim_harness.runtime.deps import Deps
+from marim_harness.runtime.harness import (
     Harness,
     _drop_nameless_tool_calls,
     _has_unanswered_tool_calls,
     _repair_unanswered_tool_calls,
 )
-from marim_harness.deps import Deps
-from marim_harness.permissions import Mode
+from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
 
 pytestmark = pytest.mark.anyio
@@ -343,7 +343,7 @@ async def test_compaction_during_turn_invalidates_checkpoints(tmp_path):
     """A compaction restructures history, so the checkpoints captured against the
     pre-compaction (absolute) indices are stale and must be dropped — otherwise a
     later rewind slices at the wrong boundary and corrupts the conversation."""
-    from marim_harness.agent import HarnessConfig
+    from marim_harness.runtime.harness import HarnessConfig
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
 

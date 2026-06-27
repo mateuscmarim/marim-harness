@@ -8,10 +8,10 @@ import pytest
 from pydantic_ai.messages import ModelResponse, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
-from marim_harness.agent import Harness, HarnessConfig
-from marim_harness.deps import Deps
 from marim_harness.hooks import events as hook_events
-from marim_harness.permissions import Mode
+from marim_harness.runtime.deps import Deps
+from marim_harness.runtime.harness import Harness, HarnessConfig
+from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
 from tests.conftest import _make_harness, _text_model
 

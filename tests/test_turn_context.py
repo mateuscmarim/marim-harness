@@ -7,7 +7,7 @@ itself -- e.g. a SessionStart hook that echoes a prior persisted prompt -- so th
 strip must anchor on the LAST occurrence, not the first.
 """
 
-from marim_harness.turn_context import strip_turn_context, wrap_turn_context
+from marim_harness.runtime.context import strip_turn_context, wrap_turn_context
 
 
 def test_roundtrip_plain():

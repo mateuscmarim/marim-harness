@@ -5,8 +5,8 @@ from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
-from marim_harness import bootstrap
-from marim_harness.permissions import Mode
+from marim_harness.runtime import bootstrap
+from marim_harness.runtime.permissions import Mode
 from marim_harness.session import SessionManager
 
 
@@ -38,7 +38,7 @@ def _isolate_sessions(monkeypatch, tmp_path: Path) -> Path:
 def _stub_model_source_build(monkeypatch):
     """ModelSource.build(model_id) is hit when a fresh session inherits a model;
     keep it off provider packages by returning a TestModel that reports the id."""
-    from marim_harness import bootstrap as _b
+    from marim_harness.runtime import bootstrap as _b
 
     monkeypatch.setattr(
         _b.ModelSource, "build", lambda self, model_id: TestModel()
@@ -130,7 +130,7 @@ def test_build_harness_logs_malformed_mcp_spec(tmp_path: Path, monkeypatch, capl
         encoding="utf-8",
     )
 
-    with caplog.at_level(logging.WARNING, logger="marim_harness.bootstrap"):
+    with caplog.at_level(logging.WARNING, logger="marim_harness.runtime.bootstrap"):
         harness = bootstrap.build_harness(ws, mode=Mode.ask)
 
     assert harness.mcp.mcp_servers == []  # the bad spec was dropped
@@ -205,8 +205,8 @@ def test_fresh_harness_falls_back_to_config_default(tmp_path, monkeypatch):
 def test_build_harness_sets_hooks_when_global_config_present(tmp_path, monkeypatch):
     import json
 
-    from marim_harness.bootstrap import build_harness
-    from marim_harness.permissions import Mode
+    from marim_harness.runtime.bootstrap import build_harness
+    from marim_harness.runtime.permissions import Mode
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
@@ -221,8 +221,8 @@ def test_build_harness_sets_hooks_when_global_config_present(tmp_path, monkeypat
 
 
 def test_build_harness_hooks_none_without_config(tmp_path, monkeypatch):
-    from marim_harness.bootstrap import build_harness
-    from marim_harness.permissions import Mode
+    from marim_harness.runtime.bootstrap import build_harness
+    from marim_harness.runtime.permissions import Mode
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
@@ -236,9 +236,9 @@ def test_build_harness_hooks_none_without_config(tmp_path, monkeypatch):
 def test_build_harness_uses_multi_model_source(monkeypatch, tmp_path):
     from pydantic_ai.models.test import TestModel
 
-    import marim_harness.bootstrap as b
+    import marim_harness.runtime.bootstrap as b
     from marim_harness.config.model import MultiModelSource
-    from marim_harness.permissions import Mode
+    from marim_harness.runtime.permissions import Mode
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
     monkeypatch.setenv("MARIM_BASE_URL", "http://localhost:1234/v1")

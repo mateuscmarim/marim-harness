@@ -6,14 +6,14 @@ import pytest
 
 from marim_harness.interfaces.cli import default_cmd, router
 from marim_harness.interfaces.cli.default_cmd import _build_parser, _enter_worktree
-from marim_harness.permissions import Mode
+from marim_harness.runtime.permissions import Mode
 
 
 def _cli_harness(tmp_path: Path, output_text: str = "ok"):
     from pydantic_ai.models.test import TestModel
 
-    from marim_harness.agent import Harness, HarnessConfig
-    from marim_harness.deps import Deps
+    from marim_harness.runtime.deps import Deps
+    from marim_harness.runtime.harness import Harness, HarnessConfig
     from marim_harness.session import SessionManager
     from marim_harness.tools.provider import BuiltinToolProvider
 
@@ -99,7 +99,7 @@ def test_router_falls_through_to_default(monkeypatch):
 
 
 def test_run_default_headless_uses_auto_mode(monkeypatch, tmp_path: Path):
-    import marim_harness.bootstrap as bootstrap
+    import marim_harness.runtime.bootstrap as bootstrap
 
     captured = {}
 
@@ -118,7 +118,7 @@ def test_run_default_headless_uses_auto_mode(monkeypatch, tmp_path: Path):
 
 
 def test_run_default_respects_mode_override(monkeypatch, tmp_path: Path):
-    import marim_harness.bootstrap as bootstrap
+    import marim_harness.runtime.bootstrap as bootstrap
 
     captured = {}
 
@@ -134,7 +134,7 @@ def test_run_default_respects_mode_override(monkeypatch, tmp_path: Path):
 
 
 def test_piped_stdin_triggers_headless(monkeypatch, tmp_path: Path):
-    import marim_harness.bootstrap as bootstrap
+    import marim_harness.runtime.bootstrap as bootstrap
 
     monkeypatch.setattr(
         bootstrap, "build_harness",
@@ -149,8 +149,8 @@ def test_piped_stdin_triggers_headless(monkeypatch, tmp_path: Path):
 
 
 def test_run_default_tui_uses_ask_mode(monkeypatch, tmp_path: Path):
-    import marim_harness.bootstrap as bootstrap
     import marim_harness.interfaces.tui.app as tui_app
+    import marim_harness.runtime.bootstrap as bootstrap
 
     captured = {}
 

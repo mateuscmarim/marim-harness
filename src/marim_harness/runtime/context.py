@@ -14,8 +14,8 @@ existing call sites/tests that import them from there."""
 
 from __future__ import annotations
 
+from ..tasks import Task, render_tasks
 from .errors import provider_error_status
-from .tasks import Task, render_tasks
 
 # Envelope wrapped around any context injected into a turn's prompt — job
 # digests, error notes, and SessionStart/UserPromptSubmit hook output. It is

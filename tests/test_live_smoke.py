@@ -15,10 +15,10 @@ import os
 
 import pytest
 
-from marim_harness.agent import Harness
 from marim_harness.config.openrouter_cost import build_openrouter_model
-from marim_harness.deps import Deps
-from marim_harness.permissions import Mode
+from marim_harness.runtime.deps import Deps
+from marim_harness.runtime.harness import Harness
+from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
 
 pytestmark = [

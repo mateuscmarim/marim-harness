@@ -19,8 +19,8 @@ from pydantic_ai.messages import (
     ThinkingPartDelta,
 )
 
-from ...agent import Harness
-from ...errors import format_provider_error
+from ...runtime.errors import format_provider_error
+from ...runtime.harness import Harness
 from ...usage import usage_summary
 
 logger = logging.getLogger(__name__)

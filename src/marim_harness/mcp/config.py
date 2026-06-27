@@ -2,7 +2,7 @@
 config, build pydantic-ai MCP server toolsets, and gate their tool calls behind
 marim's approval flow.
 
-This module is TUI-free and testable on its own. The :class:`~marim_harness.agent.Harness`
+This module is TUI-free and testable on its own. The :class:`~marim_harness.runtime.harness.Harness`
 owns the live connections (open with ``connect``, close with ``aclose``) and the
 wiring lives in ``bootstrap`` (load + build) and the TUI app (connect on mount).
 
@@ -30,7 +30,7 @@ from pathlib import Path
 
 from ..atomic_io import atomic_write_text
 from ..config import config_dir
-from ..permissions import Mode
+from ..runtime.permissions import Mode
 from ..tools.offload import _INLINE_CHAR_LIMIT, offload_if_large
 
 # MCPServerStdio/StreamableHTTP/SSE are deprecated in favour of MCPToolset in

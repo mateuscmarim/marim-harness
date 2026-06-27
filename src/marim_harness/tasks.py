@@ -3,7 +3,7 @@ for the current multi-step job.
 
 The model calls the ``update_tasks`` tool with the *whole* list each time, which
 replaces the previous one — no id bookkeeping on the model's side. State lives on
-:class:`~marim_harness.deps.Deps` as a :class:`TaskList` (the handle every tool
+:class:`~marim_harness.runtime.deps.Deps` as a :class:`TaskList` (the handle every tool
 already receives), so the tool mutates it directly, the Harness persists it into
 the session file, and the TUI refreshes a live panel through the ``on_change``
 callback. Nothing here does I/O; persistence and rendering live with their owners.

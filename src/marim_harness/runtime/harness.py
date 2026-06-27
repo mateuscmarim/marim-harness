@@ -12,40 +12,40 @@ from pydantic_ai.settings import ModelSettings
 if TYPE_CHECKING:
     from pydantic_ai.models import Model
 
-    from .config.model import ModelSource, MultiModelSource
+    from ..config.model import ModelSource, MultiModelSource
 
-from .compaction import (
+from ..compaction import (
     Summarizer,
     Titler,
     make_summarizer,  # noqa: F401 — re-exported for tests
     make_titler,  # noqa: F401 — re-exported for tests
 )
-from .deps import Deps, HarnessAgent, HarnessServices, SubAgentCallbacks
-from .hooks.dispatch import TurnHooks
-from .instructions import register_instructions
-from .lsp.manager import LspManager
-from .mcp import McpManager
-from .notifications import NotificationConfig
-from .permissions import Mode
-from .session import SessionController, SessionManager, SessionStore
-from .session.checkpoints import CheckpointManager
-from .subagents import SubagentRunner
-from .tools.provider import ToolProvider
-from .tools.suggest import suggest_unknown_tool_retry
-from .turn_context import (
+from ..hooks.dispatch import TurnHooks
+from ..lsp.manager import LspManager
+from ..mcp import McpManager
+from ..notifications import NotificationConfig
+from ..session import SessionController, SessionManager, SessionStore
+from ..session.checkpoints import CheckpointManager
+from ..subagents import SubagentRunner
+from ..tools.provider import ToolProvider
+from ..tools.suggest import suggest_unknown_tool_retry
+from ..workspace.snapshot import GitSnapshotter
+from .context import (
     actionable_error_note as _actionable_error_note,  # noqa: F401 — re-exported for tests
 )
-from .turn_context import (
+from .context import (
     strip_turn_context,  # noqa: F401  — re-exported for session_view + tests
     wrap_turn_context,  # noqa: F401  — re-exported for tests
 )
-from .turn_controller import (  # noqa: F401 — _has_unanswered_tool_calls/_repair_unanswered_tool_calls re-exported for tests; _drop_nameless_tool_calls used locally by build_collaborators
+from .controller import (  # noqa: F401 — _has_unanswered_tool_calls/_repair_unanswered_tool_calls re-exported for tests; _drop_nameless_tool_calls used locally by build_collaborators
     TurnController,
     _drop_nameless_tool_calls,
     _has_unanswered_tool_calls,
     _repair_unanswered_tool_calls,
 )
-from .workspace.snapshot import GitSnapshotter
+from .deps import Deps, HarnessAgent, HarnessServices, SubAgentCallbacks
+from .instructions import register_instructions
+from .permissions import Mode
 
 logger = logging.getLogger(__name__)
 

@@ -6,9 +6,9 @@ from typing import Any
 
 import pytest
 
-from marim_harness.instructions import register_instructions
 from marim_harness.plugins import InstalledPlugin, save_state
 from marim_harness.plugins.discovery import plugin_instruction_texts
+from marim_harness.runtime.instructions import register_instructions
 
 # ---------------------------------------------------------------------------
 # Helper: build a minimal plugin directory with a manifest + AGENTS.md

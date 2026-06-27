@@ -13,7 +13,7 @@ from marim_harness.mcp import (
     persist_server_enabled,
 )
 from marim_harness.mcp.manager import McpManager
-from marim_harness.permissions import Mode
+from marim_harness.runtime.permissions import Mode
 
 # --- config loading & merging ---------------------------------------------
 

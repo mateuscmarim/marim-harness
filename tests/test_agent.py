@@ -5,10 +5,10 @@ import pytest
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.function import FunctionModel
 
-from marim_harness.agent import Harness
-from marim_harness.deps import Deps
 from marim_harness.lsp.manager import LspManager
-from marim_harness.permissions import Mode
+from marim_harness.runtime.deps import Deps
+from marim_harness.runtime.harness import Harness
+from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
 from tests.conftest import _edit_then_done_model, _make_harness
 
@@ -53,7 +53,7 @@ def test_actionable_error_note_surfaces_only_model_fixable_failures():
     )
     from textual.markup import MarkupError
 
-    from marim_harness.agent import _actionable_error_note
+    from marim_harness.runtime.harness import _actionable_error_note
 
     # Not the model's to fix.
     assert _actionable_error_note(MarkupError("bad markup")) is None
@@ -210,7 +210,7 @@ def test_harness_rejects_config_mixed_with_legacy_kwargs(tmp_path: Path):
     """Passing both config= and legacy kwargs silently dropped the kwargs (the
     `config or HarnessConfig(**kwargs)` short-circuit). Reject it loudly instead
     of pretending to 'merge' them as the old docstring claimed."""
-    from marim_harness.agent import HarnessConfig
+    from marim_harness.runtime.harness import HarnessConfig
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     with pytest.raises(TypeError):
@@ -222,7 +222,7 @@ def test_harness_rejects_config_mixed_with_legacy_kwargs(tmp_path: Path):
 
 
 def test_harness_accepts_config_alone(tmp_path: Path):
-    from marim_harness.agent import HarnessConfig
+    from marim_harness.runtime.harness import HarnessConfig
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = Harness(
@@ -263,7 +263,7 @@ class _FakeSource:
 
 
 def _switch_harness(tmp_path, *, source=None, summarizer=None, titler=None):
-    from marim_harness.agent import HarnessConfig
+    from marim_harness.runtime.harness import HarnessConfig
     from marim_harness.session import SessionManager
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
@@ -351,8 +351,8 @@ async def test_switch_session_restores_its_model(tmp_path: Path):
 def test_build_collaborators_wires_full_graph(tmp_path):
     from pydantic_ai.models.function import FunctionModel
 
-    from marim_harness.agent import Collaborators, HarnessConfig, build_collaborators
-    from marim_harness.deps import Deps
+    from marim_harness.runtime.deps import Deps
+    from marim_harness.runtime.harness import Collaborators, HarnessConfig, build_collaborators
     from marim_harness.tools.provider import BuiltinToolProvider
 
     deps = Deps(workspace_root=tmp_path)
@@ -383,8 +383,8 @@ def test_build_collaborators_wires_full_graph(tmp_path):
 def test_build_collaborators_respects_lsp_disabled(tmp_path):
     from pydantic_ai.models.function import FunctionModel
 
-    from marim_harness.agent import HarnessConfig, build_collaborators
-    from marim_harness.deps import Deps
+    from marim_harness.runtime.deps import Deps
+    from marim_harness.runtime.harness import HarnessConfig, build_collaborators
     from marim_harness.tools.provider import BuiltinToolProvider
 
     deps = Deps(workspace_root=tmp_path)

@@ -10,7 +10,7 @@ canonical reason phrase) and a standalone digit token, while distinctive phrases
 
 from pydantic_ai.exceptions import ModelHTTPError
 
-from marim_harness.errors import is_transient_model_error
+from marim_harness.runtime.errors import is_transient_model_error
 
 
 def _http_error(status: int, body=None) -> ModelHTTPError:

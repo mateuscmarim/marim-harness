@@ -2,7 +2,7 @@
 folded into ``duration_seconds`` exactly once at shutdown — neither lost to a
 cache-skipped persist nor double-counted by persist recomputing its own elapsed."""
 
-from marim_harness.deps import Deps
+from marim_harness.runtime.deps import Deps
 from marim_harness.session import SessionController, SessionManager
 from marim_harness.session import ctrl as ctrl_mod
 

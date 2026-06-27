@@ -16,8 +16,8 @@ from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
-from marim_harness.deps import Deps
-from marim_harness.permissions import Mode
+from marim_harness.runtime.deps import Deps
+from marim_harness.runtime.permissions import Mode
 from tests.conftest import _make_harness, _text_model
 
 
@@ -144,7 +144,7 @@ async def test_retry_emits_a_ui_notice_for_a_foreground_spawn(tmp_path: Path):
     async def _notice(stream_id: str, message: str) -> None:
         notices.append((stream_id, message))
 
-    from marim_harness.deps import SubAgentCallbacks
+    from marim_harness.runtime.deps import SubAgentCallbacks
 
     runner.deps.callbacks = SubAgentCallbacks(on_notice=_notice)
     sub = _FlakySub(ModelHTTPError(504, "m", body="idle timeout"), fail_times=1)
@@ -165,7 +165,7 @@ async def test_no_ui_notice_when_there_is_no_stream(tmp_path: Path):
     async def _notice(stream_id: str, message: str) -> None:
         notices.append((stream_id, message))
 
-    from marim_harness.deps import SubAgentCallbacks
+    from marim_harness.runtime.deps import SubAgentCallbacks
 
     runner.deps.callbacks = SubAgentCallbacks(on_notice=_notice)
     sub = _FlakySub(ModelHTTPError(504, "m", body="idle timeout"), fail_times=1)

@@ -6,7 +6,7 @@ provider failed and its raw error — rides on ``exc.body`` under ``error`` /
 ``error.metadata``. The default ``f"{type(exc).__name__}: {exc}"`` rendering
 throws that away. These helpers dig the structured error back out for the screen
 (:func:`format_provider_error`), a debug file (:func:`dump_provider_error`), and
-the model-actionable note in :mod:`marim_harness.agent`.
+the model-actionable note in :mod:`marim_harness.runtime.harness`.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import json
 import re
 from pathlib import Path
 
-from .atomic_io import atomic_write_text
+from ..atomic_io import atomic_write_text
 
 
 def _find_in_chain(exc: BaseException, exc_class):

@@ -2,11 +2,11 @@ import pytest
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.function import FunctionModel
 
-from marim_harness.agent import Harness, HarnessConfig, build_collaborators
-from marim_harness.deps import Deps
-from marim_harness.permissions import Mode
+from marim_harness.runtime.controller import TurnController
+from marim_harness.runtime.deps import Deps
+from marim_harness.runtime.harness import Harness, HarnessConfig, build_collaborators
+from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
-from marim_harness.turn_controller import TurnController
 
 
 def test_turn_controller_accepts_collaborators(tmp_path):

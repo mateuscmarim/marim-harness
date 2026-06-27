@@ -7,7 +7,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from marim_harness.config import load_config
-from marim_harness.deps import Deps
 from marim_harness.notifications import (
     ALL_EVENTS,
     DEFAULT_EVENTS,
@@ -19,6 +18,7 @@ from marim_harness.notifications import (
     Notifier,
     parse_events,
 )
+from marim_harness.runtime.deps import Deps
 
 # ---------------------------------------------------------------------------
 # NotificationConfig / parse_events

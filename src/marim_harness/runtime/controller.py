@@ -19,21 +19,21 @@ from pydantic_ai.usage import RunUsage
 if TYPE_CHECKING:
     from pydantic_ai import RunContext
 
+    from ..hooks.dispatch import TurnHooks
+    from ..mcp import McpManager
+    from ..session import SessionController
+    from ..session.checkpoints import CheckpointManager
     from .deps import Deps, HarnessAgent
-    from .hooks.dispatch import TurnHooks
-    from .mcp import McpManager
-    from .session import SessionController
-    from .session.checkpoints import CheckpointManager
 
-from .errors import dump_provider_error, is_context_overflow_error
-from .permissions import Mode, resolve_approvals
-from .turn_context import (
+from .context import (
     actionable_error_note as _actionable_error_note,
 )
-from .turn_context import (
+from .context import (
     render_checklist_block,
     wrap_turn_context,
 )
+from .errors import dump_provider_error, is_context_overflow_error
+from .permissions import Mode, resolve_approvals
 
 logger = logging.getLogger(__name__)
 

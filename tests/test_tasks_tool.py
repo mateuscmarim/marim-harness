@@ -3,7 +3,7 @@ from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 
-from marim_harness.deps import Deps
+from marim_harness.runtime.deps import Deps
 from marim_harness.tools.provider import BuiltinToolProvider
 
 

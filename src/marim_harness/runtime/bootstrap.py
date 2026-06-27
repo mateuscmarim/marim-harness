@@ -1,22 +1,22 @@
 import logging
 from pathlib import Path
 
-from .agent import Harness, HarnessConfig
-from .command_policy import CommandPolicy
-from .compaction import make_summarizer, make_titler
-from .config import (
+from ..command_policy import CommandPolicy
+from ..compaction import make_summarizer, make_titler
+from ..config import (
     ModelSource,
     MultiModelSource,
     detect_active_providers,
     load_config,
 )
+from ..hooks import HookRunner, load_hooks_config
+from ..mcp import build_mcp_servers, disabled_server_names, load_mcp_config
+from ..notifications import Notifier
+from ..session import SessionManager
+from ..tools.provider import BuiltinToolProvider
 from .deps import Deps
-from .hooks import HookRunner, load_hooks_config
-from .mcp import build_mcp_servers, disabled_server_names, load_mcp_config
-from .notifications import Notifier
+from .harness import Harness, HarnessConfig
 from .permissions import Mode
-from .session import SessionManager
-from .tools.provider import BuiltinToolProvider
 
 logger = logging.getLogger(__name__)
 

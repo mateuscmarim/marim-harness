@@ -7,8 +7,8 @@ import pytest
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
-from marim_harness.deps import Deps
-from marim_harness.permissions import Mode
+from marim_harness.runtime.deps import Deps
+from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import _DETACH_OUTPUT_BUDGET
 from tests.conftest import _last_instructions, _make_harness
 

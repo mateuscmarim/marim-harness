@@ -6,7 +6,7 @@ import pytest
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
-from marim_harness.agent import Harness
+from marim_harness.runtime.harness import Harness
 from marim_harness.tools.provider import BuiltinToolProvider
 
 

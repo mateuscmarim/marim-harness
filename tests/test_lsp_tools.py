@@ -1,7 +1,7 @@
 # tests/test_lsp_tools.py
 import pytest
 
-from marim_harness.deps import Deps, HarnessServices
+from marim_harness.runtime.deps import Deps, HarnessServices
 from marim_harness.tools import names, provider
 
 

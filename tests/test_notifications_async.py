@@ -10,13 +10,13 @@ from unittest.mock import patch
 
 import pytest
 
-from marim_harness.deps import Deps
 from marim_harness.notifications import (
     EVENT_TURN_COMPLETE,
     NotificationConfig,
     Notifier,
 )
-from marim_harness.permissions import Mode
+from marim_harness.runtime.deps import Deps
+from marim_harness.runtime.permissions import Mode
 
 # ---------------------------------------------------------------------------
 # Notifier.send_async — non-blocking dispatch
@@ -99,8 +99,8 @@ async def test_send_async_unknown_platform_is_noop():
 def _app(tmp_path: Path):
     from pydantic_ai.models.test import TestModel
 
-    from marim_harness.agent import Harness
     from marim_harness.interfaces.tui.app import HarnessApp
+    from marim_harness.runtime.harness import Harness
     from marim_harness.tools.provider import BuiltinToolProvider
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)

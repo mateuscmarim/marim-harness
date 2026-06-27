@@ -6,18 +6,18 @@ from typing import TYPE_CHECKING, Optional
 from pydantic_ai import Agent, DeferredToolRequests
 from pydantic_ai.tools import DeferredToolApprovalResult
 
-from .command_policy import CommandPolicy
+from ..command_policy import CommandPolicy
 
 if TYPE_CHECKING:
-    from .hooks.dispatch import TurnHooks
-    from .hooks.runner import HookRunner
-    from .lsp.manager import LspManager
-    from .notifications import Notifier
+    from ..hooks.dispatch import TurnHooks
+    from ..hooks.runner import HookRunner
+    from ..lsp.manager import LspManager
+    from ..notifications import Notifier
 
-from .ask_user import Question
-from .jobs import JobRegistry
+from ..ask_user import Question
+from ..jobs import JobRegistry
+from ..tasks import TaskList
 from .permissions import Mode
-from .tasks import TaskList
 
 ApprovalFn = Callable[[object], Awaitable[DeferredToolApprovalResult | bool]]
 # (type, task, stream_id, mcp_names, max_output_chars, model, isolation) -> the

@@ -8,11 +8,11 @@ from textual.containers import VerticalScroll
 from textual.css.query import NoMatches
 from textual.widgets import Footer, Header, Static
 
-from ...agent import Harness
-from ...errors import format_provider_error
 from ...history import PromptHistory
 from ...jobs import JobRegistry
 from ...prefs import load_theme, save_theme
+from ...runtime.errors import format_provider_error
+from ...runtime.harness import Harness
 from ...usage import resolve_cost
 from .approval import ApprovalModal
 from .ask_user import AskUserModal

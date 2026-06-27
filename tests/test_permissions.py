@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from marim_harness.permissions import Mode, resolve_approvals
+from marim_harness.runtime.permissions import Mode, resolve_approvals
 
 
 @dataclass

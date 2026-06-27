@@ -28,7 +28,7 @@ async def test_make_titler_returns_clean_title():
     from pydantic_ai import Agent
     from pydantic_ai.models.test import TestModel
 
-    from marim_harness.agent import make_titler
+    from marim_harness.runtime.harness import make_titler
 
     run = await Agent(TestModel(), instructions="x").run("do a thing")
     history = run.all_messages()

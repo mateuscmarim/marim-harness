@@ -3,10 +3,10 @@ from pathlib import Path
 
 import pytest
 
-from marim_harness.deps import Deps
 from marim_harness.interfaces.tui.app import HarnessApp
 from marim_harness.interfaces.tui.widgets.prompt import PromptInput
-from marim_harness.permissions import Mode
+from marim_harness.runtime.deps import Deps
+from marim_harness.runtime.permissions import Mode
 
 
 @pytest.fixture
@@ -21,7 +21,7 @@ async def _noop():
 def _harness(tmp_path: Path):
     from pydantic_ai.models.test import TestModel
 
-    from marim_harness.agent import Harness
+    from marim_harness.runtime.harness import Harness
     from marim_harness.tools.provider import BuiltinToolProvider
 
     return Harness(
@@ -87,7 +87,7 @@ async def test_steer_during_approval_gap_buffers_not_stale_ctx(tmp_path):
     from pydantic_ai.messages import ModelResponse, TextPart
     from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
-    from marim_harness.agent import Harness
+    from marim_harness.runtime.harness import Harness
     from marim_harness.tools.provider import BuiltinToolProvider
 
     (tmp_path / "a.txt").write_text("foo")
@@ -171,7 +171,7 @@ async def test_alt_enter_posts_steer_message(tmp_path):
 def _tui_app(tmp_path):
     from pydantic_ai.models.test import TestModel
 
-    from marim_harness.agent import Harness
+    from marim_harness.runtime.harness import Harness
     from marim_harness.tools.provider import BuiltinToolProvider
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
@@ -265,7 +265,7 @@ def _recording_streaming_harness(tmp_path, calls):
         FunctionModel,
     )
 
-    from marim_harness.agent import Harness
+    from marim_harness.runtime.harness import Harness
     from marim_harness.tools.provider import BuiltinToolProvider
 
     async def stream_fn(messages: list[ModelMessage], info: AgentInfo) -> AsyncIterator:

@@ -95,8 +95,8 @@ def run_default(argv, *, stdin=None, out=None, err=None) -> int:
 
     # Heavy imports (pydantic_ai) deferred to here so `--help` and arg errors stay
     # fast; only an actual launch pays for the agent.
-    from ...bootstrap import build_harness
-    from ...permissions import Mode
+    from ...runtime.bootstrap import build_harness
+    from ...runtime.permissions import Mode
 
     if _is_headless(args.prompt, stdin_isatty=stdin.isatty()):
         prompt = args.prompt if isinstance(args.prompt, str) else stdin.read()

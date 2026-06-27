@@ -11,10 +11,10 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import FunctionModel
 
-from marim_harness.deps import Deps
 from marim_harness.hooks import events as hook_events
 from marim_harness.hooks.runner import HookRunner
-from marim_harness.permissions import Mode
+from marim_harness.runtime.deps import Deps
+from marim_harness.runtime.permissions import Mode
 from tests.conftest import (
     _capture_script,
     _edit_then_done_model,
@@ -134,7 +134,7 @@ async def test_no_hooks_runs_turn_normally(tmp_path):
 
 
 def test_strip_turn_context_recovers_typed_text():
-    from marim_harness.agent import strip_turn_context, wrap_turn_context
+    from marim_harness.runtime.harness import strip_turn_context, wrap_turn_context
 
     wrapped = wrap_turn_context("<agentmemory-context>stuff</agentmemory-context>",
                                 "implement a fetch tool")
@@ -145,7 +145,7 @@ def test_strip_turn_context_recovers_typed_text():
 
 
 def test_strip_turn_context_passes_through_plain_prompt():
-    from marim_harness.agent import strip_turn_context
+    from marim_harness.runtime.harness import strip_turn_context
 
     # No envelope -> returned unchanged, even if it mentions the tag in prose.
     assert strip_turn_context("just a normal prompt") == "just a normal prompt"
@@ -160,7 +160,7 @@ async def test_injected_context_is_wrapped_so_replay_can_recover_typed_text(tmp_
     The persisted UserPromptPart must wrap it in a turn-context envelope so a
     resumed session can recover just what the user typed, while the model still
     sees the injected context."""
-    from marim_harness.agent import strip_turn_context
+    from marim_harness.runtime.harness import strip_turn_context
 
     cmd = _hook_script(tmp_path, "ss.sh", "echo SESSION_CTX\n")
     hooks = HookRunner(
@@ -190,7 +190,7 @@ async def test_injected_context_is_wrapped_so_replay_can_recover_typed_text(tmp_
 async def test_plain_turn_is_not_wrapped(tmp_path):
     """With nothing injected, the persisted prompt is the typed text verbatim —
     no envelope — so existing sessions and output are unaffected."""
-    from marim_harness.agent import strip_turn_context
+    from marim_harness.runtime.harness import strip_turn_context
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)  # no hooks
     sink: list = []

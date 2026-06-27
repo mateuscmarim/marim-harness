@@ -15,8 +15,8 @@ from pathlib import Path
 import pytest
 from pydantic_ai.models.test import TestModel
 
-from marim_harness.deps import Deps, SubAgentCallbacks
-from marim_harness.permissions import Mode
+from marim_harness.runtime.deps import Deps, SubAgentCallbacks
+from marim_harness.runtime.permissions import Mode
 from tests.conftest import _make_harness, _text_model
 
 _SETUP_TOTAL_RE = re.compile(r"spawn 'explore' timing: setup=\d+ms ttft=(.+?) total=\d+ms")

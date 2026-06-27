@@ -20,9 +20,9 @@ from ..compaction import (
     make_titler,
     will_compact,
 )
-from ..deps import Deps
 from ..hooks import events as hook_events
 from ..hooks.runner import base_payload
+from ..runtime.deps import Deps
 from .store import SessionInfo, SessionManager, SessionStore
 
 logger = logging.getLogger(__name__)

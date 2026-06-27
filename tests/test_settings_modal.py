@@ -5,7 +5,7 @@ from textual.app import App
 
 from marim_harness.config import ModelConfig
 from marim_harness.interfaces.tui.settings import SettingsModal
-from marim_harness.permissions import Mode
+from marim_harness.runtime.permissions import Mode
 
 
 @pytest.fixture

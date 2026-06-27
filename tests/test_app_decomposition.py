@@ -8,9 +8,9 @@ from marim_harness.interfaces.tui.status import StatusPresenter
 def _app(tmp_path):
     from pydantic_ai.models.test import TestModel
 
-    from marim_harness.agent import Harness
-    from marim_harness.deps import Deps
-    from marim_harness.permissions import Mode
+    from marim_harness.runtime.deps import Deps
+    from marim_harness.runtime.harness import Harness
+    from marim_harness.runtime.permissions import Mode
     from marim_harness.tools.provider import BuiltinToolProvider
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)

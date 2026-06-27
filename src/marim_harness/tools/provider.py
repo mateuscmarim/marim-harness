@@ -7,8 +7,8 @@ from typing import Literal, Protocol
 from pydantic_ai import ModelRetry, RunContext
 
 from ..ask_user import Question, answers_to_json, coerce_questions
-from ..deps import Deps, HarnessAgent, SubAgent
 from ..jobs import render_jobs
+from ..runtime.deps import Deps, HarnessAgent, SubAgent
 from ..tasks import Task, summarize
 from ..workspace.agents import compose_subagent_task
 from ..workspace.memory import global_scope, project_scope, read_memory, save_memory

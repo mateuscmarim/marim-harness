@@ -7,8 +7,8 @@ it reaches the app, status presenter, and stream renderer through ``self.app``."
 from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Static
 
-from ...agent import strip_turn_context
 from ...compaction import summary_text
+from ...runtime.harness import strip_turn_context
 from .stream_render import status_from_part, subagent_failed
 from .widgets import (
     AssistantMessage,

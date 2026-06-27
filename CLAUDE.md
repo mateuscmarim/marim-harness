@@ -34,11 +34,19 @@ Set `MARIM_DEBUG=1` for DEBUG logging. Provider config lives in env vars / `.env
 ## Architecture
 
 The dependency flow is **`__main__` → `interfaces/cli/router` → `default_cmd` →
-`bootstrap.build_harness` → `Harness`**. The two front-ends (TUI and headless) both
-go through `build_harness`, so they wire up models, sessions, MCP, hooks, and LSP
-identically — keep new wiring there, not duplicated per interface.
+`runtime/bootstrap.py`'s `build_harness` → `Harness`**. The two front-ends (TUI and
+headless) both go through `build_harness`, so they wire up models, sessions, MCP,
+hooks, and LSP identically — keep new wiring there, not duplicated per interface.
 
-### The core turn loop (`agent.py`)
+The turn-execution engine lives in the **`runtime/`** package: `harness.py`
+(`Harness`, `build_collaborators`, `build_services`), `controller.py`
+(`TurnController`, the approval/persist loop), `context.py` (per-turn context
+helpers), `deps.py`, `permissions.py` (`Mode`), `errors.py`, `instructions.py`, and
+`bootstrap.py`. Imports target submodules directly (`from .deps import Deps`); the
+package root deliberately re-exports nothing, keeping the deps/services cycle below
+from leaking through `__init__` at import time.
+
+### The core turn loop (`runtime/harness.py`)
 
 `Harness` owns the Pydantic AI `Agent` and drives one user turn to completion.
 `Harness.run_turn` → `_run_with_approval` is the heart of the system. Key invariants
@@ -66,15 +74,15 @@ encoded there (read the docstrings before touching):
 
 ### Construction & the deps/services cycle
 
-`build_collaborators` builds the whole collaborator graph (agent, MCP, LSP, session,
-checkpoints, hooks, subagents) in dependency order. There is one unavoidable late
-binding: `Deps` and `HarnessServices` form a reference cycle — `TurnHooks` and the
+`build_collaborators` (in `runtime/harness.py`) builds the whole collaborator graph
+(agent, MCP, LSP, session, checkpoints, hooks, subagents) in dependency order. There
+is one unavoidable late binding: `Deps` and `HarnessServices` form a reference cycle — `TurnHooks` and the
 sub-agent runners hold `deps`, while tools reach back through `ctx.deps.services`.
 `build_services` performs that single binding. `HarnessConfig` bundles all optional
 knobs; `Harness.__init__` still accepts legacy `**kwargs` as a shorthand for
 building one (pass `config=` *or* kwargs, not both — mixing raises `TypeError`).
 
-`Deps` (`deps.py`) is the `RunContext` payload threaded through every tool. All
+`Deps` (`runtime/deps.py`) is the `RunContext` payload threaded through every tool. All
 UI-facing collaboration is **optional callbacks** that headless leaves as `None`
 (each reader guards with `is None`). The TUI wires them in one place via
 `Harness.bind_ui` — don't poke `harness.deps`/`harness.session` field-by-field from

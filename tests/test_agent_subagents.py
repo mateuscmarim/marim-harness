@@ -4,9 +4,9 @@ import pytest
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
-from marim_harness.agent import Harness
-from marim_harness.deps import Deps, SubAgentCallbacks
-from marim_harness.permissions import Mode
+from marim_harness.runtime.deps import Deps, SubAgentCallbacks
+from marim_harness.runtime.harness import Harness
+from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
 from tests.conftest import _edit_then_done_model, _last_instructions, _make_harness, _text_model
 
@@ -525,7 +525,7 @@ def test_harness_exposes_wake_defaults(tmp_path: Path):
 
 
 def test_harness_takes_wake_flags_from_config(tmp_path: Path):
-    from marim_harness.agent import HarnessConfig
+    from marim_harness.runtime.harness import HarnessConfig
 
     deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
     h = Harness(

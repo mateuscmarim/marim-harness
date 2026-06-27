@@ -29,10 +29,10 @@ if TYPE_CHECKING:
     from ..tools.provider import ToolProvider
     from .cli_backend import CliResult
 
-from ..deps import Deps, SubAgent
-from ..errors import is_transient_model_error
 from ..hooks.dispatch import TurnHooks
-from ..permissions import Mode
+from ..runtime.deps import Deps, SubAgent
+from ..runtime.errors import is_transient_model_error
+from ..runtime.permissions import Mode
 from ..tasks import TaskList
 from ..tools import fs
 from ..workspace import (
@@ -76,7 +76,7 @@ def _resumable_history(messages: list) -> list | None:
     because ``agent`` imports this module — a top-level import would cycle."""
     if not messages:
         return None
-    from ..agent import _drop_nameless_tool_calls, _repair_unanswered_tool_calls
+    from ..runtime.harness import _drop_nameless_tool_calls, _repair_unanswered_tool_calls
 
     repaired = _repair_unanswered_tool_calls(_drop_nameless_tool_calls(messages))
     return repaired or None

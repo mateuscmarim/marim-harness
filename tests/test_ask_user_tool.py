@@ -3,7 +3,7 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
-from marim_harness.deps import Deps
+from marim_harness.runtime.deps import Deps
 from marim_harness.tools.provider import BuiltinToolProvider
 
 _QUESTIONS = [
@@ -94,7 +94,7 @@ def test_ask_user_empty_questions_returns_error(tmp_path):
 
 
 def test_ask_user_fires_notification(tmp_path):
-    from marim_harness.deps import Deps
+    from marim_harness.runtime.deps import Deps
 
     class _Spy:
         def __init__(self):

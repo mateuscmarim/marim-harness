@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from ...permissions import Mode
+from ...runtime.permissions import Mode
 from ...workspace import discover_skills
 from .themes import THEME_NAMES
 
