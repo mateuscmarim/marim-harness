@@ -133,8 +133,8 @@ async def test_mcp_toggle_disables_server():
         await pilot.pause()
         await pilot.press("down", "down")  # Runtime -> Theme -> MCP
         await pilot.pause()
-        await pilot.click("#mcp-btn-0")
-        await app.workers.wait_for_complete()
+        await pilot.click("#mcp-toggle-0")  # turn the [x] toggle off
+        await pilot.pause()
         await pilot.pause()
     assert "agentmemory" in h.mcp.disabled
 
