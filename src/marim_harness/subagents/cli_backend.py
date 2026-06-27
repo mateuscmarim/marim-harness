@@ -179,7 +179,7 @@ def synth_usage(
     ``input_tokens`` here, exactly as genai-prices does for a native Anthropic
     response. Without this the uncached split underflowed to 0 (the reported ``↑``
     was always zero) and the token total omitted all cached tokens."""
-    from .usage import COST_DETAIL_KEY
+    from ..usage import COST_DETAIL_KEY
 
     u = cli_usage or {}
     details: dict = {}

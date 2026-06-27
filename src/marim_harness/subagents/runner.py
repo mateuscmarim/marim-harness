@@ -24,25 +24,25 @@ from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import UsageLimits
 
 if TYPE_CHECKING:
-    from .mcp.manager import McpManager
-    from .session.ctrl import SessionController
-    from .subagents_cli import CliResult
-    from .tools.provider import ToolProvider
+    from ..mcp.manager import McpManager
+    from ..session.ctrl import SessionController
+    from ..tools.provider import ToolProvider
+    from .cli_backend import CliResult
 
-from .deps import Deps, SubAgent
-from .errors import is_transient_model_error
-from .hooks.dispatch import TurnHooks
-from .permissions import Mode
-from .tasks import TaskList
-from .tools import fs
-from .workspace import (
+from ..deps import Deps, SubAgent
+from ..errors import is_transient_model_error
+from ..hooks.dispatch import TurnHooks
+from ..permissions import Mode
+from ..tasks import TaskList
+from ..tools import fs
+from ..workspace import (
     cap_subagent_output,
     discover_agents,
     effective_tools,
     find_agent,
     subagent_instructions,
 )
-from .workspace.worktree import (
+from ..workspace.worktree import (
     WorktreeError,
     commit_worktree,
     create_or_reuse_worktree,
@@ -76,7 +76,7 @@ def _resumable_history(messages: list) -> list | None:
     because ``agent`` imports this module — a top-level import would cycle."""
     if not messages:
         return None
-    from .agent import _drop_nameless_tool_calls, _repair_unanswered_tool_calls
+    from ..agent import _drop_nameless_tool_calls, _repair_unanswered_tool_calls
 
     repaired = _repair_unanswered_tool_calls(_drop_nameless_tool_calls(messages))
     return repaired or None
@@ -329,7 +329,7 @@ class SubagentRunner:
         store = self.session.store
         if store is None:
             return None
-        from .session import TranscriptStore
+        from ..session import TranscriptStore
         return TranscriptStore(store.path, store.session_id)
 
     def _save_transcript(self, stream_id: str, messages: list) -> None:
@@ -609,7 +609,7 @@ class SubagentRunner:
         tools only in auto mode. Model precedence: per-spawn override, then the
         agent's frontmatter model, then $MARIM_CLAUDE_CLI_MODEL, then the CLI's
         own default."""
-        from .subagents_cli import (
+        from .cli_backend import (
             CLI_MODEL_ENV,
             ClaudeCliRunner,
             CliUnavailable,

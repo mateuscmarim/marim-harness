@@ -16,7 +16,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.usage import RunUsage
 
-from marim_harness.subagents_cli import (
+from marim_harness.subagents.cli_backend import (
     CLI_BINARY_ENV,
     ClaudeCliRunner,
     CliStreamTranslator,

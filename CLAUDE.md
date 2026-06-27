@@ -109,7 +109,11 @@ to avoid import cycles.
 - `plugins/` — bundles skills + sub-agents + hooks + MCP + `AGENTS.md`; hooks/MCP load
   only for *trusted* plugins. Namespaced `plugin:item`. See `docs/plugins.md`.
 - `workspace/` — fs primitives, memory (`remember`/`recall`), skills, sub-agent specs,
-  git worktrees, snapshots. `compaction.py` builds summarizer/titler aux agents.
+  git worktrees, snapshots. (The root-level `compaction.py` builds the
+  summarizer/titler aux agents and the token-budget compaction helpers.)
+- `subagents/` — `runner.py` (`SubagentRunner`: spawns and drives isolated
+  sub-agents) and `cli_backend.py` (the optional `claude -p` CLI backend it
+  delegates to). Re-exported as `marim_harness.subagents.SubagentRunner`.
 - `interfaces/tui/` — Textual app, widgets, `styles.tcss`, approval/ask-user modals,
   streaming render. `interfaces/cli/` — router + per-command modules (lazily imported
   so `config`/`models` don't pay for `pydantic_ai`).
