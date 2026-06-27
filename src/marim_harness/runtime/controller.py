@@ -562,7 +562,14 @@ class TurnController:
         # the history stood and which checkpoint this is, so a turn that fails
         # without producing any model output can roll its (dead) checkpoint back.
         pre_turn_len = len(self.session.history)
-        checkpoint_index = self.checkpoints.snapshot(prompt)
+        # snapshot() shells out to git (``git add -A`` over the whole working tree,
+        # then write-tree/commit-tree) — synchronous subprocess work whose cost
+        # scales with the tree size. run_turn is an async worker on the TUI's event
+        # loop, so running it inline froze the UI at the start of *every* turn. Offload
+        # it like persist() below. No deadline: this is the turn's rewind point, not a
+        # best-effort flush, so it must complete — and a thread can't block the loop
+        # however long git takes.
+        checkpoint_index = await asyncio.to_thread(self.checkpoints.snapshot, prompt)
         user_prompt: str | list[str | BinaryContent] | None = await self._assemble_prompt(prompt)
         if attachments and user_prompt is not None:
             user_prompt = [user_prompt, *(BinaryContent(data=d, media_type=m)

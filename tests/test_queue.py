@@ -76,7 +76,12 @@ async def test_idle_submit_runs_immediately(tmp_path):
         app._turn_worker = None
         await app.on_prompt_input_submitted(PromptInput.Submitted("hello", []))
         assert app._queue.items == []
-        assert app._turn_worker is not None  # a worker was spawned
+        worker = app._turn_worker
+        assert worker is not None  # a worker was spawned
+        # Drain the turn while #log is still mounted: the turn yields early now (its
+        # rewind snapshot is offloaded to a thread), so an un-awaited worker would
+        # resume mid-stream after run_test teardown removed #log and fail querying it.
+        await worker.wait()
 
 
 @pytest.mark.anyio

@@ -93,7 +93,14 @@ async def test_start_turn_clears_latch_on_success(tmp_path: Path):
         # Latch cleared on the success path; the worker (created inside) carries the
         # busy flag from here on.
         assert app._turn_starting is False
-        assert app._turn_worker is not None
+        worker = app._turn_worker
+        assert worker is not None
+        # Drain the turn while the screen (and #log) is still mounted: the turn now
+        # yields early (the rewind snapshot is offloaded to a thread), so without this
+        # the un-awaited worker would resume mid-stream after the run_test teardown
+        # has already torn #log down and fail querying it — a teardown race, not a
+        # latch regression.
+        await worker.wait()
 
 
 @pytest.mark.anyio
