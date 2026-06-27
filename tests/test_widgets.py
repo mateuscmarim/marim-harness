@@ -1256,6 +1256,8 @@ async def test_finish_loads_real_file_and_renders_gutter_diff(tmp_path):
     async with app.run_test() as pilot:
         w = app.query_one(ToolCallWidget)
         w.finish("edited g.py (1 edit)")
+        # finish() loads the diff in a worker thread (off the UI loop); wait for it.
+        await app.workers.wait_for_complete()
         await pilot.pause()
         assert w._old_text == "a\nb\nc\n"  # reconstructed pre-edit text
         body = "\n".join(_render_lines(w._render_body()))
@@ -1274,6 +1276,7 @@ async def test_finish_falls_back_when_file_unreadable(tmp_path):
     async with app.run_test() as pilot:
         w = app.query_one(ToolCallWidget)
         w.finish("edited gone.py")  # file does not exist
+        await app.workers.wait_for_complete()  # the diff-load worker (a no-op here)
         await pilot.pause()
         assert w._old_text is None  # no reconstruction
         assert "+ X" in _plain(w._render_body())  # simple diff still shows

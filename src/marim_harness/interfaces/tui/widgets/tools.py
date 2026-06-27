@@ -62,6 +62,12 @@ class ToolCallWidget(Collapsible):
         # bands). None until then ⇒ the simple old/new-string diff is the fallback.
         self._old_text: str | None = None
         self._new_text: str | None = None
+        # Memoized (added, removed) line counts for the title's "+N -M" (see
+        # _diff_stat). None forces a first compute; the bool tracks whether the
+        # cached counts reflect the loaded before/after file diff vs the simple
+        # edit-string diff, so the cache recomputes once when the file text loads.
+        self._diff_counts: tuple[int, int] | None = None
+        self._diff_counts_loaded = False
         # markup=False: tool args/results are arbitrary text (commands, file
         # content, output) that may contain Rich markup syntax like `[/]`.
         self._body = Static(self._render_body(), id="tool-body", markup=False)
@@ -128,7 +134,7 @@ class ToolCallWidget(Collapsible):
         target = s.target
         # edit_file appends a +N -M line stat to its path (the diff is the body).
         if self.tool_name == "edit_file":
-            _, added, removed = self._edit_diff(cap=None)
+            added, removed = self._diff_stat()
             target = f"{target} +{added} -{removed}" if target else f"+{added} -{removed}"
         head = f"{s.label} · {target}" if target else s.label
         # Glyph carries the status colour; the (untrusted) head is a literal span so
@@ -218,6 +224,25 @@ class ToolCallWidget(Collapsible):
             )
         return None
 
+    def _diff_stat(self) -> tuple[int, int]:
+        """The (added, removed) line counts for the title's "+N -M", memoized.
+
+        The counts are a pure function of immutable inputs — the edit strings while
+        pending, plus the loaded before/after file text once available — so they're
+        computed once per state and reused. _summary() rebuilds the whole title on
+        every 10Hz spinner tick while the call is pending; without this each tick
+        would re-run _edit_diff(cap=None), which builds (and throws away) the entire
+        diff renderable just to recover two numbers that never change. The cache key
+        is whether the file text is loaded, so the counts recompute exactly once when
+        finish() swaps the simple edit-string diff for the richer file diff (whose
+        difflib counts can differ from the raw edit-line counts)."""
+        loaded = self._old_text is not None and self._new_text is not None
+        if self._diff_counts is None or self._diff_counts_loaded != loaded:
+            _, added, removed = self._edit_diff(cap=None)
+            self._diff_counts = (added, removed)
+            self._diff_counts_loaded = loaded
+        return self._diff_counts
+
     def _edit_diff(self, *, cap):
         """The edit_file diff renderable + (added, removed) counts: a real
         before/after file diff once the file text is loaded, else the simple
@@ -229,24 +254,53 @@ class ToolCallWidget(Collapsible):
             )
         return render_edit_diff(self.args.get("edits", []), cap=cap)
 
-    def _load_diff(self) -> None:
-        """Read the just-edited file and reconstruct its pre-edit text so the body
-        can render a real diff. Best-effort: any failure (no workspace root,
-        unreadable file, ambiguous reversal) leaves ``_old_text``/``_new_text``
-        None and the simple diff in place."""
+    def _reversed_file_text(self) -> "tuple[str, str] | None":
+        """The blocking half of the diff load: read the just-edited file and
+        reconstruct its pre-edit text by reverse-applying the edits. Returns
+        ``(old_text, new_text)``, or None on any failure (no workspace root,
+        unreadable file, ambiguous reversal). Pure I/O + CPU with no widget mutation,
+        so it's safe to run in a worker thread (see ``_load_diff_async``)."""
         root = self._workspace_root
         if root is None:
-            return
+            return None
         from ....workspace.fs import resolve_in_workspace
 
         try:
             path = resolve_in_workspace(root, str(self.args.get("path", "")))
             new_text = path.read_text(encoding="utf-8")
         except Exception:
-            return
+            return None
         old_text = _reverse_edits(new_text, self.args.get("edits", []))
-        if old_text is not None:
-            self._old_text, self._new_text = old_text, new_text
+        if old_text is None:
+            return None
+        return old_text, new_text
+
+    def _load_diff(self) -> None:
+        """Synchronous diff load — used only on the unmounted path (a direct
+        unit-test construction with no event loop to host a worker). The mounted
+        path goes through ``_load_diff_async`` so a large file's read can't stall the
+        UI. Best-effort: a failure leaves ``_old_text``/``_new_text`` None and the
+        simple diff in place."""
+        loaded = self._reversed_file_text()
+        if loaded is not None:
+            self._old_text, self._new_text = loaded
+
+    async def _load_diff_async(self) -> None:
+        """Load the real before/after diff off the UI thread, then swap it in. The
+        read + reversal (unbounded by file size) runs in a worker thread so a large
+        edited file can't block the event loop; the simple old/new-string diff is
+        already on screen and is replaced in place once the file text is available.
+        Best-effort — a failed/ambiguous load leaves the simple diff untouched."""
+        import asyncio
+
+        loaded = await asyncio.to_thread(self._reversed_file_text)
+        if loaded is None:
+            return
+        self._old_text, self._new_text = loaded
+        # _summary/_render_body now take the richer file-diff branch; rebuilding the
+        # title also refreshes the cached +N -M counts (the load flips _diff_stat's key).
+        self.title = self._summary()
+        self._body.update(self._render_body())
 
     def _render_body(self) -> RenderableType:
         from rich.console import Group
@@ -288,7 +342,14 @@ class ToolCallWidget(Collapsible):
         self.status = status
         self.result_text = result_text
         if self.tool_name == "edit_file" and status == "done":
-            self._load_diff()
+            if self.is_mounted:
+                # Read + reverse off the UI thread; the simple diff rendered below
+                # shows immediately and the worker swaps in the richer file diff.
+                self.run_worker(self._load_diff_async(), name="load-diff")
+            else:
+                # Unmounted (a direct unit-test construction): no event loop to host
+                # a worker, so load inline before the body renders below.
+                self._load_diff()
         # A bash command that exited non-zero is a failure: flag it (red ✗ in the
         # title, red output) and keep it expanded so the error is visible.
         if status == "done" and self._bash_failed():

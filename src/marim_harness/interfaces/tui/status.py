@@ -40,6 +40,10 @@ class StatusPresenter:
         # compute; 0 is a legitimate cached value for an empty history.
         self._ctx_tokens_key = -1
         self._ctx_tokens = 0
+        # Memoized committed-cost estimate (see _session_cost). A sentinel key no
+        # real (total, model) pair can equal forces the first compute.
+        self._cost_key: object = None
+        self._cost: float | None = None
 
     def _context_tokens(self) -> int:
         """The context-size estimate for the status bar, memoized on history length.
@@ -58,6 +62,24 @@ class StatusPresenter:
             self._ctx_tokens = estimate_tokens(history)
         return self._ctx_tokens
 
+    def _session_cost(self) -> float | None:
+        """The committed session cost for the status bar, memoized on (token total,
+        model). resolve_cost → estimate_cost is a genai-prices table lookup, but the
+        status bar repaints once a second while idle and ~12.5x/s while a turn
+        streams — and ``session.usage`` only changes when a turn commits (the
+        in-flight tally rides on ``live_run_tokens``, not here). Re-pricing every
+        frame re-runs the lookup for an identical number; the committed total moves
+        only on commit, so it's an exact change key — same rationale as
+        _context_tokens above. The model is part of the key so a /model switch
+        re-prices the same totals at the new rate."""
+        usage = self.app.harness.session.usage
+        model_id = self.app.harness.model_id
+        key = (usage.total_tokens, model_id)
+        if key != self._cost_key:
+            self._cost_key = key
+            self._cost, _ = resolve_cost(usage, model_id)
+        return self._cost
+
     def status_text(self) -> Content:
         cfg = getattr(self.app.harness, "model_label", "model")
         used = self._context_tokens()
@@ -71,7 +93,7 @@ class StatusPresenter:
         tokens_text = format_token_split(self.app.harness.session.usage)
         if self.app.stream.live_run_tokens:
             tokens_text += f" +{human_tokens(self.app.stream.live_run_tokens)}"
-        cost, _ = resolve_cost(self.app.harness.session.usage, self.app.harness.model_id)
+        cost = self._session_cost()
         if cost is not None:
             tokens_text += f" · {format_cost(cost)}"
         mode = self.app.harness.deps.mode.value

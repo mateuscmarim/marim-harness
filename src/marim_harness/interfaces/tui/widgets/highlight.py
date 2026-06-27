@@ -5,6 +5,7 @@ write_file bodies), so they live here rather than in either consumer.
 """
 
 import re
+from functools import lru_cache
 
 from rich.style import Style
 from rich.syntax import Syntax
@@ -59,10 +60,22 @@ def _strip_bg(style):
     )
 
 
+@lru_cache(maxsize=256)
 def _highlight_lines(text: str, lexer: "str | None") -> list[Text]:
     """Syntax-highlight ``text`` and split it into one ``Text`` per source line,
     aligned 1:1 with ``text.split("\\n")`` so a line number indexes its row. Plain
-    ``Text`` per line when there's no lexer or highlighting fails or mis-aligns."""
+    ``Text`` per line when there's no lexer or highlighting fails or mis-aligns.
+
+    Memoized on ``(text, lexer)`` because the cost here is real — instantiating a
+    ``Syntax`` loads a Pygments lexer and tokenizes the whole text — and the inputs
+    are immutable file content highlighted repeatedly: a diff highlights the same
+    old/new text on every body re-render (finish, reveal toggle), and Ctrl+O
+    reveal-all re-renders *every* tool body in the session at once. With the cache
+    each distinct (file text, lexer) is tokenized once; reveal-all becomes pure
+    cache hits instead of N synchronous tokenizations that would freeze the UI.
+    The returned list is shared, so callers must treat its ``Text`` items as
+    read-only (copy before mutating) — both current consumers already do
+    (``EditDiff._render_row`` copies; ``_highlight`` only appends from them)."""
     plain = text.split("\n")
     if not lexer:
         return [Text(line) for line in plain]
