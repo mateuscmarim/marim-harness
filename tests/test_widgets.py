@@ -634,7 +634,7 @@ def _history_host(hist):
 
 @pytest.mark.anyio
 async def test_prompt_input_up_recalls_previous_entries():
-    from marim_harness.history import PromptHistory
+    from marim_harness.interfaces.history import PromptHistory
 
     hist = PromptHistory()
     for p in ("one", "two", "three"):
@@ -657,7 +657,7 @@ async def test_prompt_input_up_recalls_previous_entries():
 
 @pytest.mark.anyio
 async def test_prompt_input_down_restores_in_progress_draft():
-    from marim_harness.history import PromptHistory
+    from marim_harness.interfaces.history import PromptHistory
 
     hist = PromptHistory()
     hist.add("one")
@@ -683,7 +683,7 @@ async def test_prompt_input_down_restores_in_progress_draft():
 async def test_prompt_input_arrows_move_within_multiline_before_history():
     """Up only recalls history at the first line; inside a multi-line draft the
     arrows move the cursor normally and leave the text untouched."""
-    from marim_harness.history import PromptHistory
+    from marim_harness.interfaces.history import PromptHistory
 
     hist = PromptHistory()
     hist.add("recalled")
@@ -705,7 +705,7 @@ async def test_prompt_input_arrows_move_within_multiline_before_history():
 
 @pytest.mark.anyio
 async def test_prompt_input_submit_resets_navigation():
-    from marim_harness.history import PromptHistory
+    from marim_harness.interfaces.history import PromptHistory
 
     hist = PromptHistory()
     hist.add("one")

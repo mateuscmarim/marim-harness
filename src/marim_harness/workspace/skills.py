@@ -21,10 +21,10 @@ from pathlib import Path
 import yaml
 
 from ..config import config_dir
-from ..identifiers import valid_name
 from ._discovery import cached_discover
 from ._frontmatter import FRONTMATTER_RE
 from .fs import WorkspaceError, resolve_in_workspace
+from .identifiers import valid_name
 
 logger = logging.getLogger(__name__)
 

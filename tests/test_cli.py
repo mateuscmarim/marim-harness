@@ -175,7 +175,7 @@ def test_run_default_tui_uses_ask_mode(monkeypatch, tmp_path: Path):
     assert captured["mode"] is Mode.ask
     assert captured["ran"] is True
     # The TUI is given a persistent prompt history.
-    from marim_harness.history import PromptHistory
+    from marim_harness.interfaces.history import PromptHistory
 
     assert isinstance(captured["history"], PromptHistory)
 

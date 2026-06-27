@@ -55,7 +55,7 @@ class PromptInput(TextArea):
             super().__init__()
 
     def __init__(self, history=None) -> None:
-        from ....history import PromptHistory
+        from ...history import PromptHistory
 
         # NB: TextArea.history is its own undo stack — keep prompt history apart.
         self.prompt_history = history if history is not None else PromptHistory()

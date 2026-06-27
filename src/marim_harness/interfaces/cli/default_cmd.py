@@ -7,7 +7,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-from ...history import PromptHistory, default_history_path
+from ..history import PromptHistory, default_history_path
 
 
 def _version() -> str:

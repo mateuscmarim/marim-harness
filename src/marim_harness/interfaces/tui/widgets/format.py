@@ -3,7 +3,7 @@
 # format_duration lives in the top-level ``durations`` leaf (stdlib only) so the
 # CLI can format durations without importing this Textual-laden package; re-export
 # it here to keep the TUI's ``from .format import format_duration`` paths working.
-from ....durations import format_duration  # noqa: F401  (re-export)
+from ...durations import format_duration  # noqa: F401  (re-export)
 
 # Spinner characters and tick interval — defined here (a leaf module) so that
 # tools.py can import them without pulling in status.py, breaking the circular

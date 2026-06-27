@@ -5,8 +5,8 @@ import json
 import sys
 from pathlib import Path
 
-from ...durations import format_duration
 from ...session import SessionManager
+from ..durations import format_duration
 
 _COLUMNS = ("ID", "NAME", "UPDATED", "MESSAGES", "TOKENS", "DURATION")
 

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from marim_harness.history import PromptHistory, default_history_path
+from marim_harness.interfaces.history import PromptHistory, default_history_path
 
 
 def test_add_keeps_order_oldest_to_newest():

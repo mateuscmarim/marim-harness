@@ -493,7 +493,7 @@ def _submit(app, text):
 async def test_submitting_records_prompt_history(tmp_path: Path):
     from pydantic_ai.models.test import TestModel
 
-    from marim_harness.history import PromptHistory
+    from marim_harness.interfaces.history import PromptHistory
     from marim_harness.runtime.harness import Harness
     from marim_harness.tools.provider import BuiltinToolProvider
 
@@ -2652,7 +2652,7 @@ async def test_stream_does_not_yank_when_scrolled_up(tmp_path: Path):
 async def test_app_starts_on_saved_marim_theme(tmp_path, monkeypatch):
     """The app registers the marim themes and starts on the persisted one."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    from marim_harness import prefs
+    from marim_harness.interfaces import prefs
 
     prefs.save_theme("marim-violet")
 

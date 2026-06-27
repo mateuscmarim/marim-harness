@@ -1,6 +1,6 @@
 import pytest
 
-from marim_harness import prefs
+from marim_harness.interfaces import prefs
 
 
 @pytest.fixture

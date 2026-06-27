@@ -210,7 +210,7 @@ async def test_recalling_command_from_history_does_not_trap_scrolling():
     the menu owns Up/Down while open, so popping it would trap the user on that
     entry, unable to keep scrolling. Regression for 'scrolling history onto a
     command shows the autocomplete and blocks further scrolling'."""
-    from marim_harness.history import PromptHistory
+    from marim_harness.interfaces.history import PromptHistory
 
     hist = PromptHistory()
     for p in ("first thing", "/help", "third thing"):
@@ -239,7 +239,7 @@ async def test_recalling_command_from_history_does_not_trap_scrolling():
 async def test_editing_a_recalled_command_reopens_menu():
     """Suppression is only for the recall itself — once the user edits the recalled
     command, the menu opens again so completion still works."""
-    from marim_harness.history import PromptHistory
+    from marim_harness.interfaces.history import PromptHistory
 
     hist = PromptHistory()
     hist.add("/help")

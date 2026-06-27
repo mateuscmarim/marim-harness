@@ -10,7 +10,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..identifiers import valid_name
+from ..workspace.identifiers import valid_name
 
 logger = logging.getLogger(__name__)
 
