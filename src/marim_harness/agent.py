@@ -12,7 +12,7 @@ from pydantic_ai.settings import ModelSettings
 if TYPE_CHECKING:
     from pydantic_ai.models import Model
 
-    from .config.model import ModelSource
+    from .config.model import ModelSource, MultiModelSource
 
 from .compaction import (
     Summarizer,
@@ -75,7 +75,7 @@ class HarnessConfig:
     keep_last_messages: int = 20
     summarizer: Summarizer | None = None
     titler: Titler | None = None
-    model_source: ModelSource | None = None
+    model_source: ModelSource | MultiModelSource | None = None
     model_id: str | None = None
     proactive_memory: bool = False
     mcp_servers: list[object] = field(default_factory=list)

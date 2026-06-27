@@ -4,7 +4,12 @@ from pathlib import Path
 from .agent import Harness, HarnessConfig
 from .command_policy import CommandPolicy
 from .compaction import make_summarizer, make_titler
-from .config import ModelSource, build_model, load_config
+from .config import (
+    ModelSource,
+    MultiModelSource,
+    detect_active_providers,
+    load_config,
+)
 from .deps import Deps
 from .hooks import HookRunner, load_hooks_config
 from .mcp import build_mcp_servers, disabled_server_names, load_mcp_config
@@ -33,9 +38,12 @@ def build_harness(
     identically. When ``resume`` is set, reattaches to the latest saved session
     and replays its history."""
     cfg = load_config()
-    model_source = ModelSource(cfg)
-    model = build_model(cfg)
-    model_id = cfg.model
+    configs, default_provider = detect_active_providers()
+    model_source = MultiModelSource(
+        {p: ModelSource(c) for p, c in configs.items()}, default_provider
+    )
+    model_id = f"{default_provider}:{configs[default_provider].model}"
+    model = model_source.build(model_id)
     command_policy = CommandPolicy(
         denylist=cfg.command_denylist, allowlist=cfg.command_allowlist
     )

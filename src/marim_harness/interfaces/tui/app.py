@@ -833,7 +833,7 @@ class HarnessApp(App):
             entries = await fetch()
         except Exception:
             return  # unknown stays unknown; never blocks submit
-        self._vision_caps = {e.id: e.supports_images for e in entries}
+        self._vision_caps = {e.qualified: e.supports_images for e in entries}
 
     def _on_model_chosen(self, chosen: str | None) -> None:
         """Apply a model selected in the picker. Invoked by push_screen when the

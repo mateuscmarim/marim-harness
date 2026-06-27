@@ -99,8 +99,9 @@ def estimate_cost(usage: RunUsage, model_ref: str | None) -> float | None:
     missing data). Cache reads/writes are priced at their own rates, not the
     full input rate.
 
-    ``model_ref`` may be a bare id (``claude-sonnet-4-6``) or the
-    ``provider/model`` slug OpenRouter uses (``anthropic/claude-sonnet-4-6``);
+    ``model_ref`` may be a bare id (``claude-sonnet-4-6``), a
+    ``provider/model`` slug OpenRouter uses (``anthropic/claude-sonnet-4-6``),
+    or a ``provider:model`` qualified form (``google:gemini-2.5-flash``);
     the leading provider segment is split off into a provider hint. The price is
     the upstream provider's list price — a close estimate for OpenRouter, which
     generally bills at provider rates. Never raises."""
@@ -108,6 +109,12 @@ def estimate_cost(usage: RunUsage, model_ref: str | None) -> float | None:
         return None
     provider_id: str | None = None
     ref = model_ref
+    # Strip a leading provider: qualifier (model ids contain no colon, per the
+    # multi-provider id scheme) so colon-qualified ids like
+    # "google:gemini-2.5-flash" price correctly; an OpenRouter-style
+    # "openrouter:anthropic/claude-..." then still splits on '/' below.
+    if ":" in ref:
+        ref = ref.split(":", 1)[1]
     if "/" in ref:
         provider_id, ref = ref.split("/", 1)
     try:

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from dataclasses import dataclass, field, replace
@@ -22,6 +23,21 @@ _DEFAULT_GOOGLE_MODEL = "gemini-2.5-flash"
 # the OpenRouter branch (the historical default), but we warn first so a typo
 # like MARIM_PROVIDER=azure doesn't masquerade as a confusing "missing API key".
 _KNOWN_PROVIDERS = frozenset({"openrouter", "local", "google"})
+
+
+def parse_qualified(
+    qualified: str, active: set[str] | frozenset[str], default: str
+) -> tuple[str, str]:
+    """Split a ``provider:model_id`` into ``(provider, bare_id)``.
+
+    If the segment before the first ':' is an active provider, route there with
+    the remainder as the bare id. Otherwise the whole string is a bare id on the
+    ``default`` provider — which makes bare ids (old sessions, MARIM_MODEL) and
+    unknown prefixes (e.g. an OpenRouter ``vendor/model`` id) Just Work."""
+    head, sep, rest = qualified.partition(":")
+    if sep and head in active:
+        return head, rest
+    return default, qualified
 
 
 @dataclass
@@ -68,29 +84,10 @@ class ModelConfig:
     )
 
 
-def load_config() -> ModelConfig:
-    """Build a ModelConfig from environment variables.
-
-    MARIM_PROVIDER (openrouter|local), MARIM_MODEL, MARIM_BASE_URL,
-    OPENROUTER_API_KEY / MARIM_API_KEY. MARIM_COMMAND_DENYLIST /
-    MARIM_COMMAND_ALLOWLIST hold comma- or newline-separated command patterns.
-    """
-    provider = os.getenv("MARIM_PROVIDER", "openrouter").lower()
-    if provider not in _KNOWN_PROVIDERS:
-        logger.warning(
-            "Unknown MARIM_PROVIDER=%r; falling back to 'openrouter' "
-            "(known providers: %s).",
-            provider,
-            ", ".join(sorted(_KNOWN_PROVIDERS)),
-        )
-    max_context_tokens = _int_env("MARIM_MAX_CONTEXT_TOKENS", 100_000)
-    proactive_memory = _bool_env("MARIM_PROACTIVE_MEMORY", False)
-    trust_project_hooks = _bool_env("MARIM_TRUST_PROJECT_HOOKS", False)
-    lsp_enabled = _bool_env("MARIM_LSP", True)
-    lsp_tools_enabled = _bool_env("MARIM_LSP_TOOLS", True)
-    job_tool_combined = _bool_env("MARIM_JOB_TOOL_COMBINED", False)
-    command_denylist = split_patterns(os.getenv("MARIM_COMMAND_DENYLIST", ""))
-    command_allowlist = split_patterns(os.getenv("MARIM_COMMAND_ALLOWLIST", ""))
+def _common_kwargs() -> dict[str, Any]:
+    """Provider-independent knobs shared by every ModelConfig. Grouped sub-agent
+    and notification knobs are built into their own config objects (see
+    SubagentConfig/NotificationConfig) so every provider branch shares them."""
     # 0 (and any non-positive value) is the "no cap" sentinel, mapped to None so
     # the runner stays unbounded — matching the historical default.
     _concurrency = _int_env("MARIM_SUBAGENT_CONCURRENCY", 0) or None
@@ -107,21 +104,23 @@ def load_config() -> ModelConfig:
         enabled=_bool_env("MARIM_NOTIFICATIONS", True),
         events=parse_events(os.getenv("MARIM_NOTIFICATION_EVENTS", "")),
     )
-    # Provider-independent knobs, shared verbatim by every branch below. Keeping
-    # them in one dict means a new ModelConfig field is added here once, not in
-    # three parallel constructor calls that silently drift.
-    common: dict[str, Any] = dict(
-        max_context_tokens=max_context_tokens,
-        proactive_memory=proactive_memory,
-        trust_project_hooks=trust_project_hooks,
-        lsp_enabled=lsp_enabled,
-        lsp_tools_enabled=lsp_tools_enabled,
-        job_tool_combined=job_tool_combined,
-        command_denylist=command_denylist,
-        command_allowlist=command_allowlist,
+    return dict(
+        max_context_tokens=_int_env("MARIM_MAX_CONTEXT_TOKENS", 100_000),
+        proactive_memory=_bool_env("MARIM_PROACTIVE_MEMORY", False),
+        trust_project_hooks=_bool_env("MARIM_TRUST_PROJECT_HOOKS", False),
+        lsp_enabled=_bool_env("MARIM_LSP", True),
+        lsp_tools_enabled=_bool_env("MARIM_LSP_TOOLS", True),
+        job_tool_combined=_bool_env("MARIM_JOB_TOOL_COMBINED", False),
+        command_denylist=split_patterns(os.getenv("MARIM_COMMAND_DENYLIST", "")),
+        command_allowlist=split_patterns(os.getenv("MARIM_COMMAND_ALLOWLIST", "")),
         subagent=subagent,
         notifications=notifications,
     )
+
+
+def _provider_config(provider: str, common: dict[str, Any]) -> ModelConfig:
+    """Build the per-provider ModelConfig (model id, base_url, api_key) sharing
+    ``common``. Unknown provider falls back to openrouter (historical default)."""
     if provider == "local":
         return ModelConfig(
             provider="local",
@@ -135,11 +134,8 @@ def load_config() -> ModelConfig:
             provider="google",
             model=os.getenv("MARIM_MODEL", _DEFAULT_GOOGLE_MODEL),
             base_url=None,
-            api_key=(
-                os.getenv("GOOGLE_API_KEY")
-                or os.getenv("GEMINI_API_KEY")
-                or os.getenv("MARIM_API_KEY")
-            ),
+            api_key=(os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+                     or os.getenv("MARIM_API_KEY")),
             **common,
         )
     return ModelConfig(
@@ -149,6 +145,47 @@ def load_config() -> ModelConfig:
         api_key=os.getenv("OPENROUTER_API_KEY") or os.getenv("MARIM_API_KEY"),
         **common,
     )
+
+
+def _provider_has_creds(provider: str) -> bool:
+    if provider == "openrouter":
+        return bool(os.getenv("OPENROUTER_API_KEY"))
+    if provider == "google":
+        return bool(os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
+    if provider == "local":
+        return bool(os.getenv("MARIM_BASE_URL"))
+    return False
+
+
+def detect_active_providers() -> tuple[dict[str, ModelConfig], str]:
+    """Every provider whose creds are present, keyed by name, plus the default
+    provider (MARIM_PROVIDER). The default is always included so startup has a
+    home even if its creds are absent."""
+    default = os.getenv("MARIM_PROVIDER", "openrouter").lower()
+    if default not in _KNOWN_PROVIDERS:
+        default = "openrouter"
+    common = _common_kwargs()
+    active = {p for p in _KNOWN_PROVIDERS if _provider_has_creds(p)}
+    active.add(default)
+    return {p: _provider_config(p, common) for p in active}, default
+
+
+def load_config() -> ModelConfig:
+    """Build the default-provider ModelConfig from environment variables.
+
+    MARIM_PROVIDER selects the provider; MARIM_MODEL, MARIM_BASE_URL,
+    OPENROUTER_API_KEY / GOOGLE_API_KEY / GEMINI_API_KEY / MARIM_API_KEY supply
+    the model id and credentials. Command allow/deny lists come from
+    MARIM_COMMAND_DENYLIST / MARIM_COMMAND_ALLOWLIST."""
+    provider = os.getenv("MARIM_PROVIDER", "openrouter").lower()
+    if provider not in _KNOWN_PROVIDERS:
+        logger.warning(
+            "Unknown MARIM_PROVIDER=%r; falling back to 'openrouter' "
+            "(known providers: %s).",
+            provider, ", ".join(sorted(_KNOWN_PROVIDERS)),
+        )
+        provider = "openrouter"
+    return _provider_config(provider, _common_kwargs())
 
 
 def _int_env(name: str, default: int) -> int:
@@ -221,3 +258,54 @@ class ModelSource:
         if self.cfg.provider == "local":
             return await fetch_local_models(self.cfg.base_url, self.cfg.api_key)
         return []
+
+
+class MultiModelSource:
+    """A ModelSource over several providers at once. Implements the same
+    interface the Harness/picker use (``list_models``/``build``/``label``/
+    ``is_local``); models are addressed by a colon-qualified ``provider:model_id``.
+    A bare or unknown-prefix id resolves on ``default``."""
+
+    def __init__(self, sources: dict[str, ModelSource], default: str) -> None:
+        self.sources = sources
+        self.default = default
+
+    @classmethod
+    def from_env(cls) -> "MultiModelSource":
+        configs, default = detect_active_providers()
+        return cls({p: ModelSource(c) for p, c in configs.items()}, default)
+
+    @property
+    def is_local(self) -> bool:
+        # The picker reads is_local only to decide whether to keep free-text entry
+        # available after a catalog loads. The composite always wants free-text on
+        # so a user can type a qualified `provider:model_id` even when catalogs are
+        # populated — so report True. (This flag does not assert "local provider"
+        # for the composite; nothing else consumes it on this type.)
+        return True
+
+    def _route(self, qualified: str) -> tuple[ModelSource, str]:
+        provider, bare = parse_qualified(qualified, set(self.sources), self.default)
+        return self.sources.get(provider, self.sources[self.default]), bare
+
+    def label(self, model_id: str) -> str:
+        provider, bare = parse_qualified(model_id, set(self.sources), self.default)
+        return f"{provider}:{bare}"
+
+    def build(self, model_id: str):
+        source, bare = self._route(model_id)
+        return source.build(bare)
+
+    async def list_models(self) -> list[ModelEntry]:
+        async def _one(provider: str, source: ModelSource) -> list[ModelEntry]:
+            try:
+                entries = await source.list_models()
+            except Exception as exc:  # noqa: BLE001 - one provider's failure must not sink the rest
+                logger.warning("model catalog for %s failed: %s", provider, exc)
+                return []
+            return [replace(e, provider=provider) for e in entries]
+
+        results = await asyncio.gather(
+            *[_one(p, s) for p, s in self.sources.items()]
+        )
+        return [e for group in results for e in group]

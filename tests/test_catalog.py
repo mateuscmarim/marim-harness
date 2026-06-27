@@ -147,3 +147,21 @@ def test_model_supports_images_lookup():
     ]})
     assert model_supports_images(entries, "a/vision") is True
     assert model_supports_images(entries, "missing/model") is None
+
+
+def test_model_entry_qualified_uses_colon_when_provider_set():
+    entry = ModelEntry(id="qwen2.5-coder", name="Qwen", provider="local")
+    assert entry.qualified == "local:qwen2.5-coder"
+
+
+def test_model_entry_qualified_is_bare_without_provider():
+    entry = ModelEntry(id="anthropic/claude-sonnet-4-6", name="Sonnet")
+    assert entry.qualified == "anthropic/claude-sonnet-4-6"
+
+
+def test_filter_entries_matches_provider():
+    entries = [
+        ModelEntry(id="x", name="X", provider="openrouter"),
+        ModelEntry(id="y", name="Y", provider="local"),
+    ]
+    assert [e.id for e in filter_entries(entries, "local")] == ["y"]

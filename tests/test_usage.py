@@ -151,6 +151,14 @@ def test_estimate_cost_reflects_cache_discount():
     )
 
 
+def test_estimate_cost_strips_colon_provider_qualifier():
+    u = RunUsage(input_tokens=1000, output_tokens=1000)
+    bare = estimate_cost(u, "gemini-2.5-flash")
+    qualified = estimate_cost(u, "google:gemini-2.5-flash")
+    assert bare is not None
+    assert qualified == bare
+
+
 def test_estimate_cost_unknown_model_is_none():
     u = RunUsage(input_tokens=1000, output_tokens=100)
     assert estimate_cost(u, "totally-made-up-model-zzz") is None
