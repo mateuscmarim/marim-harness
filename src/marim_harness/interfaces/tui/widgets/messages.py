@@ -220,6 +220,19 @@ class AssistantMessage(Markdown):
     buffered source (the renderer reads it on replay/inspection); ``_rendered_len``
     marks how much of it has been handed to the document."""
 
+    # Cap the markdown actually rendered into the document. Textual's Markdown mounts
+    # one child widget per block and costs ~130 ms/KB, so a single large assistant
+    # message — a researcher's final synthesis, say — parsed in one shot freezes the
+    # UI for tens of seconds (a measured 61 s for ~1 MB) with a core pinned at 100%.
+    # The two one-shot render paths (the deferred catch-up flush when an off-screen
+    # sub-agent pane is first shown, and finalize()'s clean reparse on stream end)
+    # render only the trailing _MAX_RENDER chars when the source is larger, prefixed
+    # with an elision marker. self.text keeps the full source (replay/inspection reads
+    # it; the persisted transcript on disk is the complete record); only the live
+    # widget is bounded. Normal incremental streaming (small per-tick deltas) is
+    # untouched — it never parses the whole buffer at once.
+    _MAX_RENDER = 16_384
+
     def __init__(self) -> None:
         self.text = ""
         self._pending = False
@@ -228,6 +241,16 @@ class AssistantMessage(Markdown):
         # Latch so finalize() (the stream-end clean re-render) runs at most once.
         self._finalized = False
         super().__init__("")
+
+    def _bounded_source(self) -> str:
+        """The source to hand a one-shot render: the full buffer when it's small
+        enough, else an elision marker + the trailing _MAX_RENDER chars. Bounds the
+        cost of rendering a large message in a single parse (see _MAX_RENDER)."""
+        if len(self.text) <= self._MAX_RENDER:
+            return self.text
+        elided = len(self.text) - self._MAX_RENDER
+        marker = f"*[… {elided // 1024} KB of earlier output elided …]*\n\n"
+        return marker + self.text[-self._MAX_RENDER :]
 
     def append(self, delta: str) -> None:  # type: ignore[override]
         self.text += delta
@@ -251,6 +274,14 @@ class AssistantMessage(Markdown):
         self._pending = False
         if not delta:
             return False
+        # The wholesale catch-up case: an off-screen sub-agent pane deferred every
+        # flush, so the first flush once it's shown would parse the entire buffer in
+        # one append (_rendered_len == 0). For a large transcript that's the freeze —
+        # render a bounded tail instead of the whole backlog.
+        if self._rendered_len == 0 and len(self.text) > self._MAX_RENDER:
+            self._rendered_len = len(self.text)
+            self.update(self._bounded_source())
+            return True
         self._rendered_len = len(self.text)
         # Markdown.append (the base method this class shadows) takes only the new
         # fragment and appends it to the live document. Fire-and-forget like the
@@ -291,8 +322,10 @@ class AssistantMessage(Markdown):
             # session reset mid-stream) can't take update()'s remount either.
             return
         # Full clean reparse: removes the (possibly duplicated) blocks and re-mounts
-        # the document once from the full buffered source. update() resets the base
-        # parse cursor, so our own _rendered_len bookkeeping is squared with it.
-        self.update(self.text)
+        # the document once from the (bounded) buffered source. update() resets the
+        # base parse cursor, so our own _rendered_len bookkeeping is squared with it.
+        # _bounded_source caps a large message to a trailing window so this stream-end
+        # reparse can't re-introduce the multi-second freeze the cap exists to avoid.
+        self.update(self._bounded_source())
         self._rendered_len = len(self.text)
         self._pending = False

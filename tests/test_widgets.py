@@ -292,6 +292,33 @@ async def test_read_file_result_is_syntax_highlighted():
 
 
 @pytest.mark.anyio
+async def test_file_body_highlight_is_deferred_off_the_loop():
+    """Syntax highlighting is CPU-heavy and must not run synchronously on the UI
+    loop (a fan-out of file tools would tokenize serially and freeze it). The first
+    body render is plain; the highlighted one is swapped in by an off-thread worker."""
+    from rich.text import Text
+
+    class H(App):
+        def compose(self) -> ComposeResult:
+            yield ToolCallWidget(
+                "write_file", {"path": "app.py", "content": "def greet():\n    return 1\n"}
+            )
+
+    app = H()
+    async with app.run_test() as pilot:
+        w = app.query_one(ToolCallWidget)
+        # The first-render contract: highlight=False yields the plain content (no
+        # tokenization), so construction/result-time renders never block the loop.
+        plain = w._render_body(highlight=False)
+        assert isinstance(plain, str) and "def greet" in plain
+        # The worker swaps the highlighted body in once it lands.
+        await pilot.pause()
+        assert w._highlight_ready
+        primary = w._primary_renderable()
+        assert isinstance(primary, Text) and primary.spans
+
+
+@pytest.mark.anyio
 async def test_user_message_has_user_class():
     class H(App):
         def compose(self) -> ComposeResult:
@@ -1681,3 +1708,42 @@ async def test_assistant_message_finalize_is_idempotent_and_skips_unrendered():
         for _ in range(10):
             await pilot.pause()
         assert _block_count(streamed) == expected
+
+
+@pytest.mark.anyio
+async def test_large_assistant_message_render_is_capped():
+    """A large assistant message (a researcher's final synthesis, say) must render a
+    bounded trailing window, not parse the whole buffer in one shot — the whole-buffer
+    parse mounts one widget per block and pins a core for tens of seconds (measured
+    ~61 s for ~1 MB). Both one-shot render paths (the deferred catch-up flush and
+    finalize) cap it; self.text keeps the full source."""
+    cap = AssistantMessage._MAX_RENDER
+    block = "## Section\n\nProse with **bold** and a [link](https://example.com).\n\n"
+    big = block * 4000  # ~280 KB, ~8000 blocks if rendered whole
+
+    # The pure cap helper: small stays whole; large becomes an elision marker + tail.
+    m = AssistantMessage()
+    m.text = "small body"
+    assert m._bounded_source() == "small body"
+    m.text = big
+    bounded = m._bounded_source()
+    assert bounded.startswith("*[") and "elided" in bounded  # marker present
+    assert len(bounded) <= cap + 64                          # bounded to the tail
+
+    class H(App):
+        def compose(self) -> ComposeResult:
+            yield AssistantMessage()
+
+    app = H()
+    async with app.run_test() as pilot:
+        msg = app.query_one(AssistantMessage)
+        # An off-screen pane's deferred backlog: buffered, never flushed until shown.
+        msg.text = big
+        msg._pending = True
+        msg._rendered_len = 0
+        msg.flush()  # deferred catch-up -> capped tail, not the 8000-block whole doc
+        for _ in range(10):
+            await pilot.pause()
+        # Far fewer blocks than a whole-document parse (~8000) — the cap held.
+        assert 0 < _block_count(msg) < 600
+        assert msg.text == big  # full source preserved for replay/inspection

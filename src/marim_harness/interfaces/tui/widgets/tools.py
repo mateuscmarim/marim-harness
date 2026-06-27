@@ -68,9 +68,19 @@ class ToolCallWidget(Collapsible):
         # edit-string diff, so the cache recomputes once when the file text loads.
         self._diff_counts: tuple[int, int] | None = None
         self._diff_counts_loaded = False
+        # Syntax highlighting (Pygments tokenization) for a write_file/read_file body
+        # is CPU-heavy and synchronous. Doing it inline — at construction for
+        # write_file, at result time for read_file — meant a fan-out of N file tools
+        # tokenized serially on the single event loop and froze the UI. So the first
+        # body render is plain (highlight=False) and the highlighted one is computed
+        # off-thread and swapped in (see _schedule_highlight / _highlight_async).
+        # ``_ready`` latches once that swap lands; ``_scheduled`` guards against arming
+        # the worker twice (on_mount + finish).
+        self._highlight_ready = False
+        self._highlight_scheduled = False
         # markup=False: tool args/results are arbitrary text (commands, file
         # content, output) that may contain Rich markup syntax like `[/]`.
-        self._body = Static(self._render_body(), id="tool-body", markup=False)
+        self._body = Static(self._render_body(highlight=False), id="tool-body", markup=False)
         # edit_file auto-expands so its diff shows inline; everything else stays
         # collapsed and click-to-expand.
         # title is a Content (not str) on purpose — see _summary; Textual renders
@@ -168,6 +178,10 @@ class ToolCallWidget(Collapsible):
         # Animate the working glyph while pending; the timer is stopped at finish so
         # a finished session isn't left with hundreds of 10Hz no-op ticks.
         self._spinner_timer = self.set_interval(_SPINNER_TICK_INTERVAL, self._tick)
+        # write_file's content is known now, so highlight it off-thread post-mount
+        # rather than synchronously at construction. (read_file has no result yet —
+        # finish() arms it.)
+        self._schedule_highlight()
 
     def _tick(self) -> None:
         if self.status != "pending":
@@ -203,25 +217,31 @@ class ToolCallWidget(Collapsible):
             out.append_text(line)
         return out
 
-    def _result_renderable(self) -> RenderableType:
-        """The result body, syntax-highlighted when it is file source."""
+    def _result_renderable(self, *, highlight: bool = True) -> RenderableType:
+        """The result body, syntax-highlighted when it is file source. ``highlight``
+        is False for the first (plain) render before the off-thread highlight lands."""
         if self.tool_name == "read_file" and self.result_text:
-            return self._highlight(
-                strip_line_numbers(self.result_text), str(self.args.get("path", ""))
-            )
+            stripped = strip_line_numbers(self.result_text)
+            if not highlight:
+                return stripped
+            return self._highlight(stripped, str(self.args.get("path", "")))
         return self.result_text
 
-    def _primary_renderable(self) -> "RenderableType | None":
+    def _primary_renderable(self, *, highlight: bool = True) -> "RenderableType | None":
         """The per-tool body that replaces the raw arg repr: a diff for edit_file,
-        highlighted content for write_file. None for tools rendered generically."""
+        highlighted content for write_file. None for tools rendered generically.
+        ``highlight`` is False for the first (plain) render before the off-thread
+        highlight lands; it gates only write_file content (edit_file's diff has its
+        own deferral via _load_diff_async)."""
         if self.tool_name == "edit_file":
             cap = None if self.reveal else _DIFF_CAP
             diff, _, _ = self._edit_diff(cap=cap)
             return diff
         if self.tool_name == "write_file":
-            return self._highlight(
-                str(self.args.get("content", "")), str(self.args.get("path", ""))
-            )
+            content = str(self.args.get("content", ""))
+            if not highlight:
+                return content
+            return self._highlight(content, str(self.args.get("path", "")))
         return None
 
     def _diff_stat(self) -> tuple[int, int]:
@@ -300,9 +320,57 @@ class ToolCallWidget(Collapsible):
         # _summary/_render_body now take the richer file-diff branch; rebuilding the
         # title also refreshes the cached +N -M counts (the load flips _diff_stat's key).
         self.title = self._summary()
-        self._body.update(self._render_body())
+        self._refresh_body()
 
-    def _render_body(self) -> RenderableType:
+    def _highlights_a_body(self) -> bool:
+        """Whether this tool renders a syntax-highlighted file body worth deferring:
+        write_file content (known at construction) or a read_file result (known at
+        finish). edit_file highlights its diff through its own _load_diff_async, so
+        it's intentionally excluded here."""
+        if self.tool_name == "write_file":
+            return bool(self.args.get("content"))
+        if self.tool_name == "read_file":
+            return bool(self.result_text)
+        return False
+
+    def _schedule_highlight(self) -> None:
+        """Arm the off-thread highlight once the body that needs it exists. The plain
+        body is already on screen; this swaps in the highlighted one when ready (see
+        _highlight_async). Mounted → a worker; unmounted (a direct unit-test
+        construction with no loop to host one) → render synchronously, mirroring
+        _load_diff's fallback. Guarded so on_mount + finish can both call it but the
+        worker arms at most once."""
+        if self._highlight_ready or self._highlight_scheduled or not self._highlights_a_body():
+            return
+        self._highlight_scheduled = True
+        if self.is_mounted:
+            self.run_worker(self._highlight_async(), name="highlight")
+        else:
+            self._highlight_ready = True
+            self._body.update(self._render_body())
+
+    async def _highlight_async(self) -> None:
+        """Build the highlighted body off the UI thread, then swap it in. Pygments
+        tokenization (unbounded by file size) runs in a worker thread so a fan-out of
+        file tools can't tokenize serially on the event loop; the plain body rendered
+        first stays up until this lands. Best-effort — a failure leaves the plain body
+        in place."""
+        import asyncio
+
+        try:
+            body = await asyncio.to_thread(self._render_body, highlight=True)
+        except Exception:
+            return
+        self._highlight_ready = True
+        self._body.update(body)
+
+    def _refresh_body(self) -> None:
+        """Re-render the body for display, highlighting only once the off-thread pass
+        has landed (else plain, with a swap pending). Keeps every display-path render
+        — finish, reveal, diff-load — from re-tokenizing on the loop."""
+        self._body.update(self._render_body(highlight=self._highlight_ready))
+
+    def _render_body(self, *, highlight: bool = True) -> RenderableType:
         from rich.console import Group
 
         # The breadcrumb is title-only — the checklist lives in the TaskPanel.
@@ -310,7 +378,7 @@ class ToolCallWidget(Collapsible):
             return ""
         if self.tool_name == "ask_user":
             return ask_user_body(parse_ask_user(self.args, self.result_text, self.status))
-        primary = self._primary_renderable()
+        primary = self._primary_renderable(highlight=highlight)
         if primary is not None:
             if not self.result_text:
                 return primary
@@ -320,7 +388,7 @@ class ToolCallWidget(Collapsible):
         arg_lines = "\n".join(f"{k}: {v!r}" for k, v in self.args.items())
         if not self.result_text:
             return arg_lines or "(no arguments)"
-        result = self._result_renderable()
+        result = self._result_renderable(highlight=highlight)
         # A failed command's output is shown red so the error stands out.
         if self.status == "failed" and isinstance(result, str):
             red = Text(result, style=_FAIL_FG)
@@ -336,7 +404,7 @@ class ToolCallWidget(Collapsible):
         capped/collapsed state. Driven by the app's Ctrl+O reveal-all toggle."""
         self.reveal = value
         self.collapsed = False if value else self._default_collapsed()
-        self._body.update(self._render_body())
+        self._refresh_body()
 
     def finish(self, result_text: str, status: str = "done") -> None:
         self.status = status
@@ -356,7 +424,10 @@ class ToolCallWidget(Collapsible):
             self.status = "failed"
             self.collapsed = False
         self.title = self._summary()
-        self._body.update(self._render_body())
+        self._refresh_body()
+        # read_file's result is known now — highlight it off-thread (no-op for tools
+        # without a highlighted body, or if already armed at mount).
+        self._schedule_highlight()
         timer = getattr(self, "_spinner_timer", None)
         if timer is not None:
             timer.stop()
