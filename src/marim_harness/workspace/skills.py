@@ -20,7 +20,7 @@ from pathlib import Path
 
 import yaml
 
-from ..config import config_dir
+from ..config import builtin_root, config_dir
 from ..identifiers import valid_name
 from ._discovery import cached_discover
 from ._frontmatter import FRONTMATTER_RE
@@ -55,11 +55,13 @@ class Skill:
 
 
 def skill_roots(workspace_root) -> list[tuple[str, Path]]:
-    """The two discovery roots, highest precedence first: project over global."""
+    """The discovery roots, highest precedence first: project, then global, then
+    marim's bundled built-in skills."""
     ws = Path(workspace_root)
     return [
         ("project", ws / ".marim" / "skills"),
         ("global", config_dir() / "skills"),
+        ("builtin", builtin_root() / "skills"),
     ]
 
 

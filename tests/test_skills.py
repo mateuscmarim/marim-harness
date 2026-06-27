@@ -50,16 +50,24 @@ def isolated_home(tmp_path, monkeypatch):
 
 
 def test_skill_roots_order_and_precedence(tmp_path):
-    from marim_harness.config import config_dir
+    from marim_harness.config import builtin_root, config_dir
 
     ws = tmp_path / "ws"
     roots = skill_roots(ws)
     sources = [s for s, _ in roots]
-    # Only marim's own roots: project before global. No .claude interop roots.
-    assert sources == ["project", "global"]
+    # Project before global before the bundled built-in root.
+    assert sources == ["project", "global", "builtin"]
     assert roots[0][1] == ws / ".marim" / "skills"
     assert roots[1][1] == config_dir() / "skills"
-    assert not any(".claude" in str(p) for _, p in roots)
+    assert roots[2][1] == builtin_root() / "skills"
+
+
+def test_builtin_root_is_inside_package():
+    from marim_harness.config import builtin_root
+
+    root = builtin_root()
+    assert root.name == "builtin"
+    assert root.parent.name == "marim_harness"
 
 
 def test_discover_finds_project_marim_skill(isolated_home):

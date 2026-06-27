@@ -1,4 +1,4 @@
-from .env import config_dir, global_config_path, load_environment
+from .env import builtin_root, config_dir, global_config_path, load_environment
 from .model import (
     ModelConfig,
     ModelSource,
@@ -16,6 +16,7 @@ __all__ = [
     "MultiModelSource",
     "SubagentConfig",
     "build_model",
+    "builtin_root",
     "config_dir",
     "detect_active_providers",
     "global_config_path",
