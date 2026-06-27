@@ -168,10 +168,10 @@ async def test_parity_replay_history_and_replay_messages_into(tmp_path: Path):
     dispatch would surface here as a type mismatch.
     """
     from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
+    from textual.containers import VerticalScroll
 
     from marim_harness.interfaces.tui.widgets import AssistantMessage, ToolCallWidget
     from marim_harness.interfaces.tui.widgets.subagent_detail import SubAgentDetailHost
-    from textual.containers import VerticalScroll
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:

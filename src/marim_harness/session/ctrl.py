@@ -295,21 +295,20 @@ class SessionController:
             )
         # Surface a live "compacting…" indicator before the (possibly slow,
         # summarizer-driven) work begins; the on_compact finish callback clears it.
-        start_cb = self.on_compact_start if going else None
-        indicator_shown = start_cb is not None
-        if start_cb is not None:
-            start_cb()
+        indicator_shown = going and self.on_compact_start is not None
+        if going and self.on_compact_start is not None:
+            self.on_compact_start()
         if self.summarizer is not None:
-            new_history, did = await compact_history_with_summary(
+            new_history, compacted = await compact_history_with_summary(
                 self.history, self.max_context_tokens, self.summarizer,
                 self.keep_last_messages, force=force,
             )
         else:
-            new_history, did = compact_history(
+            new_history, compacted = compact_history(
                 self.history, self.max_context_tokens, self.keep_last_messages,
                 force=force,
             )
-        if did:
+        if compacted:
             self.history = new_history
             # Persist the compacted history now. The post-turn compaction runs
             # after the turn's own persist, so without this the smaller history
@@ -322,9 +321,9 @@ class SessionController:
         # shrank. A forced compaction (post-overflow) can run without shrinking;
         # before == len(history) then signals the UI to just drop the notice
         # instead of leaving a stuck spinner.
-        if self.on_compact is not None and (did or indicator_shown):
+        if self.on_compact is not None and (compacted or indicator_shown):
             self.on_compact(before, len(self.history))
-        return did
+        return compacted
 
     async def maybe_autoname(self) -> None:
         if (

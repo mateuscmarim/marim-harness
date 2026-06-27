@@ -223,7 +223,7 @@ def tree(root: Path, path: str = ".", depth: int = 2) -> str:
     if not base.is_dir():
         raise ModelRetry(f"not a directory: {path}")
     lines: list[str] = []
-    capped = _walk_tree(base, depth, 0, lines, [0])
+    capped = _walk_tree(base, depth, 0, lines)
     if not lines:
         return "(empty)"
     return offload_if_large(
@@ -232,35 +232,40 @@ def tree(root: Path, path: str = ".", depth: int = 2) -> str:
     )
 
 
-def _walk_tree(directory: Path, depth: int, level: int, lines: list[str],
-               size: list[int]) -> bool:
+def _walk_tree(directory: Path, depth: int, level: int, lines: list[str]) -> bool:
     """Append the entries of ``directory`` to ``lines``, recursing while depth
-    allows. ``size`` is a 1-element running byte total; returns True once the
-    MAX_OUTPUT_CHARS ceiling is reached so callers stop early."""
-    try:
-        entries = list(directory.iterdir())
-    except OSError:
-        return False
-    entries.sort(key=lambda p: (p.is_file(), p.name.lower()))
-    indent = "  " * level
-    for entry in entries:
-        if size[0] >= MAX_OUTPUT_CHARS:
-            return True
-        if entry.is_dir():
-            line = f"{indent}{entry.name}/"
-            lines.append(line)
-            size[0] += len(line) + 1
-            if (
-                entry.name not in _NOISE_DIRS
-                and level + 1 < depth
-                and _walk_tree(entry, depth, level + 1, lines, size)
-            ):
+    allows. Returns True once the MAX_OUTPUT_CHARS ceiling is reached so callers
+    stop early."""
+    size = 0
+
+    def _recurse(directory: Path, level: int) -> bool:
+        nonlocal size
+        try:
+            entries = list(directory.iterdir())
+        except OSError:
+            return False
+        entries.sort(key=lambda p: (p.is_file(), p.name.lower()))
+        indent = "  " * level
+        for entry in entries:
+            if size >= MAX_OUTPUT_CHARS:
                 return True
-        else:
-            line = f"{indent}{entry.name}"
-            lines.append(line)
-            size[0] += len(line) + 1
-    return False
+            if entry.is_dir():
+                line = f"{indent}{entry.name}/"
+                lines.append(line)
+                size += len(line) + 1
+                if (
+                    entry.name not in _NOISE_DIRS
+                    and level + 1 < depth
+                    and _recurse(entry, level + 1)
+                ):
+                    return True
+            else:
+                line = f"{indent}{entry.name}"
+                lines.append(line)
+                size += len(line) + 1
+        return False
+
+    return _recurse(directory, level)
 
 
 def glob_files(root: Path, pattern: str) -> str:

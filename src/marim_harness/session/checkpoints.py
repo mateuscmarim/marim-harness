@@ -246,7 +246,7 @@ class CheckpointManager:
             raise KeyError(index)
         restored = False
         restore_failed = False
-        pre: str | None = None
+        pre_restore_commit: str | None = None
         if cp.commit is not None:
             # Safety net: snapshot the current working tree (under a per-session
             # ref) so the file restore is undoable, THEN restore. If that snapshot
@@ -254,11 +254,11 @@ class CheckpointManager:
             # than overwrite the working tree with no recovery path — report it as a
             # failed restore. restore() reports success too, so a failed git restore
             # is never dressed up as a clean one.
-            pre = self.snapshotter.capture(
+            pre_restore_commit = self.snapshotter.capture(
                 self._pre_restore_ref(), "pre-restore safety snapshot"
             )
-            self._pre_restore_commit = pre
-            if pre is None:
+            self._pre_restore_commit = pre_restore_commit
+            if pre_restore_commit is None:
                 restore_failed = True
             else:
                 restored = self.snapshotter.restore(cp.commit)
@@ -280,7 +280,7 @@ class CheckpointManager:
             history_len=cp.history_len,
             restored_files=restored,
             restore_failed=restore_failed,
-            pre_restore_commit=pre,
+            pre_restore_commit=pre_restore_commit,
         )
 
     def undo_rewind(self) -> bool:
