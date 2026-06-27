@@ -26,7 +26,7 @@ Spawn them together so they run concurrently. Do NOT research inline.
 
 ## 3. Verify (adversarial)
 Collect the workers' findings. For each load-bearing claim — the ones your conclusion
-depends on — call `spawn_agent` `type=explore` with a task to REFUTE it: find
+depends on — call `spawn_agent` with `type`: `explore` and a task to REFUTE it: find
 counter-evidence and confirm the cited source actually supports the claim. Drop or
 downgrade any claim that does not survive.
 
