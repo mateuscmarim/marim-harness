@@ -400,7 +400,7 @@ class StreamRenderer:
             self._fill_detached_card(job_id, jobs)
         # A settling background job changes a card's status/stats; repaint the
         # open screen so its list/summary tick live.
-        self.app.refresh_subagents_view()
+        self.app.subagents.refresh()
 
     def prune_completed(self) -> None:
         """Drop finished entries from ``tool_widgets`` at a turn boundary so the
@@ -471,7 +471,7 @@ class StreamRenderer:
         # dirty rather than repainting inline (a per-event DataTable rebuild + flush
         # pins a core during a fan-out); drain that here, once per frame, after the
         # visible pane's transcript has been flushed above.
-        self.app.drain_subagents_repaint()
+        self.app.subagents.drain_repaint()
         # Piggyback on the same per-frame tick to repaint the status bar while a
         # turn is running, so the live token counter advances as the run streams.
         if self.app.status.busy:
@@ -650,7 +650,7 @@ class StreamRenderer:
         if usage is not None and usage.total_tokens:
             self.note_subagent_usage(parent, usage)
         await self.dispatch_stream_event(event, _SubAgentSink(self, parent, stream_id))
-        self.app.refresh_subagents_view()  # list/summary tick live while open
+        self.app.subagents.refresh()  # list/summary tick live while open
 
     async def on_subagent_notice(self, stream_id: str, message: str) -> None:
         """Show an out-of-band status line (e.g. a transient-error retry) on the
@@ -757,7 +757,7 @@ class StreamRenderer:
                 widget.finish(content, status=status)
                 if isinstance(widget, SubAgentWidget):
                     # A finished card changes the screen's list/summary scalars.
-                    self.app.refresh_subagents_view()
+                    self.app.subagents.refresh()
                 if isinstance(widget, ToolCallWidget):
                     group = self._group_of(widget)
                     if group is not None:

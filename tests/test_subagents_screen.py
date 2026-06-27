@@ -133,7 +133,7 @@ async def test_clicking_card_opens_screen_at_that_agent(tmp_path):
         w.on_click(None)  # click-to-open
         await pilot.pause()
         view = app.query_one(SubAgentsView)
-        assert app.subagent_viewer_open is True
+        assert app.subagents.open is True
         assert view.display is True
         assert view.host.current_sid() == "call_1"
 
@@ -194,10 +194,10 @@ async def test_refresh_subagents_view_ticks_list_live_while_open(tmp_path):
         await pilot.pause()
 
         # Closed: a no-op (no crash, screen stays hidden).
-        app.refresh_subagents_view()
-        assert app.subagent_viewer_open is False
+        app.subagents.refresh()
+        assert app.subagents.open is False
 
-        app.open_subagents_at("call_1")
+        app.subagents.open_at("call_1")
         await pilot.pause()
         view = app.query_one(SubAgentsView)
         assert view.list.row_count == 1
@@ -208,7 +208,7 @@ async def test_refresh_subagents_view_ticks_list_live_while_open(tmp_path):
         w2.stream_id = "call_2"
         r.tool_widgets["call_2"] = w2
         r.ensure_pane(w2)
-        app.refresh_subagents_view()
+        app.subagents.refresh()
         r.flush_streams()  # the tick drains the dirty repaint
         await pilot.pause()
         assert view.list.row_count == 2
@@ -227,7 +227,7 @@ async def test_streamed_events_coalesce_list_repaint_to_flush_tick(tmp_path):
         r.tool_widgets["call_1"] = w
         r.ensure_pane(w)
         await app.query_one("#log").mount(w)
-        app.open_subagents_at("call_1")
+        app.subagents.open_at("call_1")
         await pilot.pause()
 
         # Spy on the list rebuild after the initial open paint.
@@ -244,14 +244,14 @@ async def test_streamed_events_coalesce_list_repaint_to_flush_tick(tmp_path):
         # Many per-event repaint requests do not rebuild the table; they only mark
         # it dirty.
         for _ in range(10):
-            app.refresh_subagents_view()
+            app.subagents.refresh()
         assert n["c"] == 0
-        assert app._subagents_view_dirty is True
+        assert app.subagents.dirty is True
 
         # The flush tick repaints exactly once and clears the dirty flag.
         r.flush_streams()
         assert n["c"] == 1
-        assert app._subagents_view_dirty is False
+        assert app.subagents.dirty is False
 
         # A tick with no new events does not repaint again.
         r.flush_streams()
@@ -334,20 +334,20 @@ async def test_live_repaint_preserves_user_selection(tmp_path):
             r.ensure_pane(w)
             await app.query_one("#log").mount(w)
         await pilot.pause()
-        app.open_subagents_at("c0")
+        app.subagents.open_at("c0")
         await pilot.pause()
 
         lst = app.query_one(SubAgentList)
         # Move the cursor (cursor updates now; its RowHighlighted is still queued)…
         lst.move_cursor(row=2)
         # …and a live event repaints the list before that message is processed.
-        app.refresh_subagents_view()
+        app.subagents.refresh()
         r.flush_streams()
         await pilot.pause()
         await pilot.pause()
 
         assert lst.cursor_row == 2
-        assert app.subagent_index == 2
+        assert app.subagents.index == 2
         assert app.query_one(SubAgentsView).host.current_sid() == "c2"
 
 
@@ -358,9 +358,9 @@ async def test_refresh_subagents_view_is_noop_when_closed(tmp_path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert app.subagent_viewer_open is False
-        app.refresh_subagents_view()
-        assert app._subagents_view_dirty is False
+        assert app.subagents.open is False
+        app.subagents.refresh()
+        assert app.subagents.dirty is False
 
 
 @pytest.mark.anyio
@@ -380,7 +380,7 @@ async def test_open_screen_fits_viewport_no_double_scrollbar(tmp_path):
         for i in range(60):  # overflow the pane so it (and only it) scrolls
             await w.pane.add(Static(f"line {i}"))
         await pilot.pause()
-        app.open_subagents_at("call_1")
+        app.subagents.open_at("call_1")
         await pilot.pause()
         # The root Screen must not show a scrollbar (no double scrollbar).
         assert app.screen.show_vertical_scrollbar is False
@@ -423,7 +423,7 @@ async def test_live_stream_then_open_shows_current_transcript(tmp_path: Path):
         assert len(w.pane.query(Static)) >= 2  # body header + streamed line
         # Finish updates the row glyph live while open.
         w.finish("ok", status="done")
-        app.refresh_subagents_view()
+        app.subagents.refresh()
         await pilot.pause()
         assert w.status == "done"
 

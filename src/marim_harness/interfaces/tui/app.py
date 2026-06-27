@@ -30,6 +30,7 @@ from .status import (
     osc_title,
 )
 from .stream_render import StreamRenderer
+from .subagents_viewer import SubAgentsViewer
 from .themes import MARIM_THEMES
 from .wake import WakeController
 from .widgets import (
@@ -135,15 +136,9 @@ class HarnessApp(App):
         # the autonomous-wake path.
         self._job_notifier = FinishedJobNotifier()
         self._autocomplete: CommandAutocomplete | None = None
-        # Full-bleed sub-agents screen state: whether it's open and which spawned
-        # sub-agent (index into stream.subagents) is on screen.
-        self.subagent_viewer_open = False
-        self.subagent_index = 0
-        # Set by a streamed sub-agent event to ask for a list/summary repaint; the
-        # flush tick drains it once per frame. Coalescing here (rather than
-        # repainting inline per event) is what keeps a fan-out from pinning a core —
-        # see refresh_subagents_view / drain_subagents_repaint.
-        self._subagents_view_dirty = False
+        # Full-bleed sub-agents screen (ctrl+x): its open/navigate/close lifecycle
+        # and the per-frame repaint coalescing live in this collaborator.
+        self.subagents = SubAgentsViewer(self)
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -378,144 +373,17 @@ class HarnessApp(App):
         diffs), or restore the default view on a second press."""
         self.stream.toggle_reveal_all()
 
-    # --- Sub-agents screen (ctrl+x) ---
+    # --- Sub-agents screen (ctrl+x) — driven by the SubAgentsViewer collaborator ---
 
     def action_toggle_subagents(self) -> None:
-        """Ctrl+X: open the full-bleed sub-agents screen (or close it if open)."""
-        if self.subagent_viewer_open:
-            self._close_subagents()
-        else:
-            self.open_subagents_at(None)
+        self.subagents.toggle()
 
     def action_close_subagents(self) -> None:
-        self._close_subagents()
-
-    def open_subagents_at(self, stream_id: str | None) -> None:
-        """Open the screen, selecting ``stream_id`` (or the most recent spawn when
-        None — the one you most likely just watched)."""
-        subs = self.stream.subagents
-        if not subs:
-            self.query_one("#log", VerticalScroll).mount(
-                NoticeMessage("No sub-agents spawned yet — nothing to view.")
-            )
-            return
-        index = len(subs) - 1
-        if stream_id is not None:
-            index = next(
-                (i for i, w in enumerate(subs) if w.stream_id == stream_id), index
-            )
-        self.subagent_viewer_open = True
-        self.subagent_index = index
-        view = self.query_one(SubAgentsView)
-        self.query_one("#log", VerticalScroll).display = False
-        view.display = True
-        self._apply_subagent_view()
-        view.list.focus()
-
-    def _close_subagents(self) -> None:
-        self.subagent_viewer_open = False
-        self.query_one(SubAgentsView).display = False
-        self.query_one("#log", VerticalScroll).display = True
-        self.query_one(PromptInput).focus()
-
-    def _repaint_subagents_list(self, select: int | None = None) -> None:
-        """Repaint the list/summary scalars and show the selected agent's pane.
-        Closes the screen if the list emptied. Does NOT flush transcripts — the
-        flush tick owns that — so this is safe to call from within the tick without
-        re-entering it.
-
-        ``select`` forces the cursor (open/navigate); None preserves it (a live
-        stats repaint). The DataTable cursor is the source of truth for the
-        selection: we sync ``subagent_index`` FROM it after the repaint, so a
-        per-frame repaint during a fan-out follows the user's cursor instead of
-        snapping it back to a stale stored index (the lag between a key press moving
-        the cursor and its async RowHighlighted updating subagent_index)."""
-        subs = self.stream.subagents
-        if not subs:
-            self._close_subagents()
-            return
-        view = self.query_one(SubAgentsView)
-        view.repaint(subs, self.subagent_cost, selected=select)
-        self.subagent_index = max(0, min(view.list.cursor_row, len(subs) - 1))
-        current = subs[self.subagent_index]
-        if current.pane is not None:
-            view.host.show(current.stream_id)
-            # Lazy-load the persisted transcript the first time this pane is
-            # shown. The replay awaits a widget mount per message, but this
-            # repaint is sync and fires on every live flush tick — so flip the
-            # guard now and hand the actual replay to a one-shot worker, which
-            # keeps later ticks from relaunching it.
-            if not current.pane.transcript_loaded:
-                current.pane.transcript_loaded = True
-                self.run_worker(
-                    self._load_subagent_transcript(current.pane, current.stream_id)
-                )
-
-    async def _load_subagent_transcript(self, pane, stream_id: str) -> None:
-        """Replay a resumed sub-agent's persisted transcript into ``pane``.
-
-        Runs as a worker off the sync repaint path
-        (``_repaint_subagents_list`` already set ``pane.transcript_loaded``). A
-        missing store or sidecar just renders a fallback note — the guard is
-        already set, so it isn't retried."""
-        store = self.harness.session.store
-        if store is None:
-            return
-        from ...session import TranscriptStore
-        msgs = TranscriptStore(store.path, store.session_id).read(stream_id)
-        if msgs is not None:
-            await self.session.replay_messages_into(pane, msgs)
-        else:
-            from textual.content import Content
-            from textual.widgets import Static
-            await pane.add(
-                Static(Content("transcript unavailable for this resumed sub-agent"))
-            )
-
-    def _apply_subagent_view(self) -> None:
-        """Open/navigate path: repaint the list AND flush the now-selected
-        transcript immediately (its stream is skipped while it isn't the host's
-        current pane, so it needs a one-off render on selection). Driven by user
-        actions (open, cursor move), which are infrequent — unlike the live
-        streaming path, which coalesces via refresh_subagents_view."""
-        self._repaint_subagents_list(select=self.subagent_index)
-        if self.subagent_viewer_open:  # still open (not closed by an emptied list)
-            self.stream.flush_streams()
-
-    def refresh_subagents_view(self) -> None:
-        """Mark the open screen for a repaint on the next flush tick. Called from
-        the renderer on every streamed sub-agent event; repainting inline per event
-        — a full DataTable rebuild plus a transcript flush — pins a core during a
-        fan-out, so the actual repaint is coalesced to the ~12.5Hz flush tick
-        (drain_subagents_repaint). A no-op when closed, so streaming pays nothing
-        for a hidden screen."""
-        if self.subagent_viewer_open:
-            self._subagents_view_dirty = True
-
-    def drain_subagents_repaint(self) -> None:
-        """Repaint the open screen's list once if a streamed event marked it dirty
-        since the last frame. Called from the flush tick so per-event repaint
-        requests collapse into one repaint per frame. No transcript flush here: the
-        tick already flushed the visible pane before draining."""
-        if self.subagent_viewer_open and self._subagents_view_dirty:
-            self._subagents_view_dirty = False
-            self._repaint_subagents_list()
-
-    def subagent_cost(self, widget) -> float:
-        """The dollar cost of one sub-agent for the summary roll-up — the numeric
-        cost the renderer already computed via resolve_cost and stored on the card
-        (cost_value). 0.0 until metered. No re-costing here: resolve_cost needs the
-        full RunUsage split, which the card doesn't keep."""
-        return widget.cost_value or 0.0
+        self.subagents.close()
 
     def on_data_table_row_highlighted(self, event) -> None:
-        """Moving the list cursor selects that agent's transcript."""
-        if self.subagent_viewer_open and event.cursor_row is not None:
-            self.subagent_index = event.cursor_row
-            current = self.stream.subagents[self.subagent_index]
-            if current.pane is not None:
-                self.query_one(SubAgentsView).host.show(current.stream_id)
-            self.stream.flush_streams()
+        # Textual bubbles the DataTable message to the App; forward to the viewer.
+        self.subagents.on_row_highlighted(event)
 
     def watch_theme(self, theme: str) -> None:
         """Persist the active theme so it's the startup theme next run. Only the

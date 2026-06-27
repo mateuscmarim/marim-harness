@@ -185,9 +185,11 @@ class SubAgentWidget(Vertical):
             self._paint_activity()
             return
         # Otherwise, a click jumps into the sub-agents screen focused on this card.
-        opener = getattr(self.app, "open_subagents_at", None)
-        if opener is not None:
-            opener(self.stream_id)
+        # Guarded with getattr so bare-App test harnesses (no HarnessApp.subagents)
+        # treat a click as a no-op.
+        viewer = getattr(self.app, "subagents", None)
+        if viewer is not None:
+            viewer.open_at(self.stream_id)
 
     def _glyph(self) -> str:
         if self.status == "done":

@@ -2282,8 +2282,8 @@ async def test_subagent_viewer_opens_navigates_and_closes(tmp_path: Path):
         app.action_toggle_subagents()
         await pilot.pause()
         view = app.query_one(SubAgentsView)
-        assert app.subagent_viewer_open is True
-        assert app.subagent_index == 2
+        assert app.subagents.open is True
+        assert app.subagents.index == 2
         assert view.display is True
         assert app.query_one("#log").display is False
         assert view.host.current_sid() == "s3"
@@ -2291,19 +2291,19 @@ async def test_subagent_viewer_opens_navigates_and_closes(tmp_path: Path):
         # Moving the list cursor up selects s2; the shown transcript follows.
         view.list.move_cursor(row=1)
         await pilot.pause()
-        assert app.subagent_index == 1
+        assert app.subagents.index == 1
         assert view.host.current_sid() == "s2"
 
         # Driving the opener directly jumps to a specific card.
-        app.open_subagents_at("s1")
+        app.subagents.open_at("s1")
         await pilot.pause()
-        assert app.subagent_index == 0
+        assert app.subagents.index == 0
         assert view.host.current_sid() == "s1"
 
         # Close: screen hidden, log restored.
         app.action_toggle_subagents()
         await pilot.pause()
-        assert app.subagent_viewer_open is False
+        assert app.subagents.open is False
         assert view.display is False
         assert app.query_one("#log").display is True
 
@@ -2316,7 +2316,7 @@ async def test_subagent_viewer_noop_without_subagents(tmp_path: Path):
         await pilot.pause()
         app.action_toggle_subagents()
         await pilot.pause()
-        assert app.subagent_viewer_open is False
+        assert app.subagents.open is False
         assert "no sub-agents" in _log_text(app).lower()
 
 
