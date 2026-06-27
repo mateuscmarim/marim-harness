@@ -285,8 +285,10 @@ def test_researcher_is_builtin(isolated_home):
     assert agent is not None
     assert agent.source == "builtin"
     assert agent.backend == "native"
-    # Read-only + network only: no gated/mutating tools, cannot recurse.
-    assert agent.tools == (READ_TOOLS | NET_TOOLS)
+    assert agent.tools == frozenset(
+        {"web_search", "fetch_url", "read_file", "glob", "grep", "tree"}
+    )
+    # Read-only and cannot recurse.
     assert "spawn_agent" not in agent.tools
     assert GATED_TOOLS.isdisjoint(agent.tools)
 
