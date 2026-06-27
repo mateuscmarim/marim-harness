@@ -1609,12 +1609,13 @@ def test_ask_user_widget_cancelled_title():
     assert w._render_body() == "Which approach?\n→ (cancelled)"
 
 
-# --- AssistantMessage streaming-duplication healing (finalize) -----------------
+# --- AssistantMessage incremental streaming: no duplication, bounded finalize ---
 
 # A report shaped like the deep-research verify output the bug surfaced on: prose,
 # then headings, then bold lines, then prose. Headings and bold paragraphs are the
-# blocks Textual's incremental Markdown.append re-mounts on top of themselves when
-# flushes outpace the (async) appends; plain prose merges in place and never doubles.
+# blocks Textual's incremental Markdown.append re-mounts on top of themselves when a
+# second append is issued before the prior one drains; AssistantMessage serializes its
+# appends so that can't happen, and the live document matches a clean one-shot parse.
 _STREAM_DOC = (
     "Intro prose about the claim under test here.\n\n"
     "## Verification Report\n\n"
@@ -1642,37 +1643,54 @@ def _block_count(msg) -> int:
 
 
 @pytest.mark.anyio
-async def test_assistant_message_finalize_heals_streaming_duplication():
-    """Streaming with flushes that outpace the async appends (a busy fan-out)
-    re-mounts styled blocks, so the live document carries duplicates. finalize()
-    must collapse it to exactly the clean one-shot parse."""
+async def test_assistant_message_streaming_never_duplicates_blocks():
+    """Driving the widget like the renderer — deltas arriving faster than appends
+    drain, with flush_streams' re-arm — must produce exactly the clean one-shot
+    parse. Serialized appends never overlap Textual's parse cursor, so no block is
+    mounted twice (the fan-out duplication bug). Pre-serialization this same drive
+    produced 150+ blocks for an ~8-block document."""
     from textual.widgets._markdown import MarkdownBlock, MarkdownHeader
 
     app = _TwoMessages()
     async with app.run_test() as pilot:
         streamed, reference = app.query(AssistantMessage)
-
         reference.update(_STREAM_DOC)  # the clean full-document render path
-        # Fire flushes without awaiting each append's AwaitComplete — exactly how the
-        # interval tick drives it, and the condition that lets appends overlap.
-        for i in range(0, len(_STREAM_DOC), 5):
-            streamed.append(_STREAM_DOC[i:i + 5])
-            streamed.flush()
-        for _ in range(60):
+        for _ in range(20):
             await pilot.pause()
-
         expected = _block_count(reference)
-        # The race is real but timing-dependent; assert it *can* duplicate without
-        # making the test flaky on a fast machine (>= rather than >).
-        assert _block_count(streamed) >= expected
 
+        # Mimic flush_streams: flush each dirty stream and re-arm any left _pending
+        # (one holding off while a prior incremental append is still in flight).
+        dirty: set = set()
+
+        def flush_tick() -> None:
+            nonlocal dirty
+            cur, dirty = dirty, set()
+            for m in cur:
+                m.flush()
+                if getattr(m, "_pending", False):
+                    dirty.add(m)
+
+        # Feed small deltas, ticking after each but only yielding to the loop
+        # occasionally, so appends are still in flight when later flushes fire — the
+        # overlap condition that used to mount blocks twice.
+        for idx, i in enumerate(range(0, len(_STREAM_DOC), 5)):
+            streamed.append(_STREAM_DOC[i:i + 5])
+            dirty.add(streamed)
+            flush_tick()
+            if idx % 4 == 0:
+                await pilot.pause()
+        for _ in range(80):  # drain, as the permanent flush interval would
+            flush_tick()
+            await pilot.pause()
         streamed.finalize()
         for _ in range(20):
+            flush_tick()
             await pilot.pause()
 
         after_blocks = list(streamed.query(MarkdownBlock))
         headers = [b for b in after_blocks if isinstance(b, MarkdownHeader)]
-        # Healed to the clean parse: no duplicated blocks, the doc's 3 headings once
+        # Exactly the clean parse: no duplicated blocks, the doc's 3 headings once
         # each, and the full source preserved.
         assert len(after_blocks) == expected
         assert len(headers) == _STREAM_DOC.count("\n#")  # 3 ATX headings
@@ -1708,6 +1726,35 @@ async def test_assistant_message_finalize_is_idempotent_and_skips_unrendered():
         for _ in range(10):
             await pilot.pause()
         assert _block_count(streamed) == expected
+
+
+@pytest.mark.anyio
+async def test_finalize_bounds_large_streamed_message():
+    """A large message streams every block in (incremental append is never bounded,
+    so it never freezes), then finalize collapses the live DOM to a trailing window —
+    capping the mount count while self.text keeps the full source."""
+    block = "## Section\n\nProse with **bold** and a [link](https://example.com).\n\n"
+    big = block * 1000  # ~70 KB, well over _MAX_RENDER; ~2000 blocks if parsed whole
+
+    app = _TwoMessages()
+    async with app.run_test() as pilot:
+        streamed, _ = app.query(AssistantMessage)
+        # Some incremental rendering happened (rendered_len > 0), then the full large
+        # buffer is in hand at stream end — the state finalize must bound.
+        streamed.append(big[:300])
+        streamed.flush()
+        for _ in range(10):
+            await pilot.pause()
+        streamed.text = big
+        streamed._rendered_len = 300
+
+        streamed.finalize()  # schedules the bounding worker (run_worker)
+        for _ in range(30):
+            await pilot.pause()
+        # Collapsed to the bounded tail — far fewer than the ~6000 blocks a whole
+        # parse would mount — and the full source is preserved.
+        assert 0 < _block_count(streamed) < 600
+        assert streamed.text == big
 
 
 @pytest.mark.anyio

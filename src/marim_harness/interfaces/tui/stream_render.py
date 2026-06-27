@@ -471,6 +471,13 @@ class StreamRenderer:
                 self.dirty_streams.add(m)
                 continue
             m.flush()
+            # A stream that couldn't render this tick stays _pending — an
+            # AssistantMessage holding off while a prior incremental append drains (so
+            # it doesn't overlap Textual's parse cursor and double blocks), or a widget
+            # not yet attached. Re-arm it so a later tick retries rather than stranding
+            # the un-flushed tail until the next delta happens to re-add it.
+            if getattr(m, "_pending", False):
+                self.dirty_streams.add(m)
         self._drain_subagent_usage()
         self._anchor_on_overflow()
         # Coalesced sub-agents-screen repaint: streamed events mark the screen

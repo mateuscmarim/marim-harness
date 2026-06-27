@@ -261,8 +261,19 @@ async def test_flush_only_touches_buffered_messages(tmp_path: Path):
         await pilot.pause()
 
         flushed: list[str] = []
-        clean.flush = lambda: flushed.append("clean")  # type: ignore[assignment]
-        dirty.flush = lambda: flushed.append("dirty")  # type: ignore[assignment]
+
+        def _stub(widget, name):
+            # Model a real successful flush: render and clear _pending, so
+            # flush_streams' re-arm (which retries a stream still _pending, e.g. one
+            # holding off mid-append) doesn't keep it in the dirty set.
+            def _flush() -> bool:
+                flushed.append(name)
+                widget._pending = False
+                return True
+            return _flush
+
+        clean.flush = _stub(clean, "clean")  # type: ignore[assignment]
+        dirty.flush = _stub(dirty, "dirty")  # type: ignore[assignment]
 
         app.stream.append_stream(dirty, "hello")  # buffers a delta and marks it dirty
         app.stream.flush_streams()

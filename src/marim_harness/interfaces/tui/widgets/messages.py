@@ -8,6 +8,8 @@ CSS classes, not inline markup, so an unescaped bracket can't raise a MarkupErro
 that crashes the app during layout.
 """
 
+import contextlib
+
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.content import Content
@@ -238,7 +240,11 @@ class AssistantMessage(Markdown):
         self._pending = False
         # How many chars of self.text have already been parsed into the document.
         self._rendered_len = 0
-        # Latch so finalize() (the stream-end clean re-render) runs at most once.
+        # The AwaitComplete of the incremental append/update currently draining, or
+        # None. flush() refuses to issue the next one until this is_done, so appends
+        # never overlap (see flush). Update/append both return an AwaitComplete.
+        self._inflight = None
+        # Latch so finalize()'s stream-end pass runs at most once.
         self._finalized = False
         super().__init__("")
 
@@ -270,6 +276,17 @@ class AssistantMessage(Markdown):
         # only guards stray ticks; ThinkingWidget.flush guards the same way.
         if not self._pending or not self.is_mounted:
             return False
+        # Serialize incremental appends. Markdown.append reads its parse cursor
+        # (_last_parsed_line) in a synchronous prefix but commits it only inside the
+        # async AwaitComplete tail it returns; a second append issued before the first
+        # drains reads a *stale* cursor and re-mounts blocks already on screen — the
+        # streaming-duplication seen under a busy sub-agent fan-out, where flush ticks
+        # outpace the appends. Hold off while one is in flight: the delta stays
+        # buffered (we don't clear _pending), deltas keep accumulating in self.text,
+        # and flush_streams re-arms us, so the next tick sends the backlog coalesced in
+        # a single append. Awaiting is_done is what guarantees the cursor is committed.
+        if self._inflight is not None and not self._inflight.is_done:
+            return False
         delta = self.text[self._rendered_len :]
         self._pending = False
         if not delta:
@@ -280,52 +297,51 @@ class AssistantMessage(Markdown):
         # render a bounded tail instead of the whole backlog.
         if self._rendered_len == 0 and len(self.text) > self._MAX_RENDER:
             self._rendered_len = len(self.text)
-            self.update(self._bounded_source())
+            self._inflight = self.update(self._bounded_source())
             return True
         self._rendered_len = len(self.text)
         # Markdown.append (the base method this class shadows) takes only the new
-        # fragment and appends it to the live document. Fire-and-forget like the
-        # update() it replaces: the returned AwaitComplete self-schedules.
-        super().append(delta)
+        # fragment and appends it to the live document; track its AwaitComplete so the
+        # next flush waits for it rather than overlapping.
+        self._inflight = super().append(delta)
         return True
 
     def finalize(self) -> None:
-        """Re-render the whole buffered source once the stream ends, collapsing any
-        block duplication the incremental path can leave behind.
+        """Stream-end pass: collapse a *large* finished message to its bounded tail.
 
-        Textual's ``Markdown.append`` keeps the trailing block "open" and re-parses
-        it on each call, computing its splice point from ``_last_parsed_line`` in the
-        *synchronous* prefix of an otherwise async (``AwaitComplete``) update. When
-        flush ticks fire faster than those updates drain — a busy event loop during a
-        sub-agent fan-out is the usual trigger — successive appends capture stale
-        parse state and re-mount blocks that are already on screen, so a styled line
-        (heading, bold) shows up two or more times. The raw history is fine; only the
-        live incremental render doubles, which is why a reloaded session shows it once.
+        Serialized appends (see flush) never duplicate, and flush_streams re-arms a
+        message whose final delta landed mid-append, so the permanent flush interval
+        drains the tail even after the turn ends — the live document is already correct
+        and complete when the stream finishes. Nothing to heal. The lone exception is
+        size: a large message streams every block in (incremental append is never
+        bounded, so it doesn't freeze), and we then collapse the live DOM to a trailing
+        _MAX_RENDER window to cap its mount count (see _MAX_RENDER).
 
-        Calling ``Markdown.update`` with the full buffered source drops every existing
-        block and reparses from scratch (resetting ``_last_parsed_line``), so the
-        finished message matches a clean parse regardless of what streaming left
-        behind. One reparse per message at completion is the same cost the streaming
-        path was built to defer — paid once, at the end. Idempotent via ``_finalized``;
-        a no-op when nothing was ever streamed."""
+        Idempotent via _finalized; a no-op for small messages, for off-screen
+        transcripts that never rendered (_rendered_len == 0 — left for their first
+        flush, which bounds them itself), and for unmounted widgets."""
         if self._finalized:
             return
         self._finalized = True
-        if self._rendered_len == 0 or not self.text or not self.is_mounted:
-            # Nothing to heal, or nowhere to render. A widget that never rendered
-            # incrementally (_rendered_len == 0) — an off-screen sub-agent transcript
-            # whose flushes were deferred, or a message that completed inside one tick
-            # — has no duplication: its single pending flush parses the whole buffer in
-            # one append, which can't double, and leaving it dirty preserves the
-            # off-screen deferral. (Duplication needs *overlapping* appends, i.e. ≥2
-            # flushes — hence _rendered_len > 0.) An unmounted widget (removed by a
-            # session reset mid-stream) can't take update()'s remount either.
+        if (
+            not self.is_mounted
+            or self._rendered_len == 0
+            or len(self.text) <= self._MAX_RENDER
+        ):
             return
-        # Full clean reparse: removes the (possibly duplicated) blocks and re-mounts
-        # the document once from the (bounded) buffered source. update() resets the
-        # base parse cursor, so our own _rendered_len bookkeeping is squared with it.
-        # _bounded_source caps a large message to a trailing window so this stream-end
-        # reparse can't re-introduce the multi-second freeze the cap exists to avoid.
-        self.update(self._bounded_source())
+        # Run the collapse off the sync stream-dispatch path: it must wait for the
+        # in-flight append before re-rendering, which we can only do in a coroutine.
+        self.run_worker(self._finalize_render(), group="md-finalize")
+
+    async def _finalize_render(self) -> None:
+        """Re-render a large finished message bounded to its trailing window, after
+        any in-flight incremental append drains so the update can't race it (an append
+        landing after the update would re-double the tail)."""
+        inflight = self._inflight
+        if inflight is not None and not inflight.is_done:
+            # A failed/cancelled append shouldn't block the final clean render.
+            with contextlib.suppress(Exception):
+                await inflight
         self._rendered_len = len(self.text)
         self._pending = False
+        self._inflight = self.update(self._bounded_source())
