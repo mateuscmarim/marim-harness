@@ -240,7 +240,12 @@ class AssistantMessage(Markdown):
         Only the new tail is parsed: Markdown.append re-parses from its last parsed
         line, keeping each flush proportional to the delta rather than the whole
         document."""
-        if not self._pending:
+        # Don't render before the widget is attached: Markdown.append mounts its
+        # parsed blocks as children, which raises MountError off the DOM. Keep the
+        # delta buffered (stay _pending) so the first flush after mount renders it.
+        # The live/replay paths always mount before the first append_stream, so this
+        # only guards stray ticks; ThinkingWidget.flush guards the same way.
+        if not self._pending or not self.is_mounted:
             return False
         delta = self.text[self._rendered_len :]
         self._pending = False
@@ -275,13 +280,15 @@ class AssistantMessage(Markdown):
         if self._finalized:
             return
         self._finalized = True
-        if self._rendered_len == 0 or not self.text:
-            # Never rendered incrementally — an off-screen sub-agent transcript whose
-            # flushes were deferred, or a message that completed inside one tick. Its
-            # single pending flush parses the whole buffer in one append, which can't
-            # double, so there's nothing to heal; leaving it dirty preserves the
-            # off-screen deferral. (The duplication only arises from *overlapping*
-            # incremental appends, which require ≥2 flushes — hence _rendered_len > 0.)
+        if self._rendered_len == 0 or not self.text or not self.is_mounted:
+            # Nothing to heal, or nowhere to render. A widget that never rendered
+            # incrementally (_rendered_len == 0) — an off-screen sub-agent transcript
+            # whose flushes were deferred, or a message that completed inside one tick
+            # — has no duplication: its single pending flush parses the whole buffer in
+            # one append, which can't double, and leaving it dirty preserves the
+            # off-screen deferral. (Duplication needs *overlapping* appends, i.e. ≥2
+            # flushes — hence _rendered_len > 0.) An unmounted widget (removed by a
+            # session reset mid-stream) can't take update()'s remount either.
             return
         # Full clean reparse: removes the (possibly duplicated) blocks and re-mounts
         # the document once from the full buffered source. update() resets the base

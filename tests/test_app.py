@@ -116,7 +116,11 @@ async def test_resumed_spawn_card_label_prefers_description(tmp_path: Path):
         await pilot.pause()
         cards = list(app.query(SubAgentWidget))
         assert len(cards) == 1
-        assert cards[0].agent_task == "review core loop"
+        # The card *label* prefers the short description; agent_task stays the full
+        # spawn prompt (the two were split so a short label never displaces the
+        # disclosure's verbatim task — see SubAgentWidget).
+        assert cards[0].display_title() == "review core loop"
+        assert cards[0].agent_task == "a long task body"
 
 
 @pytest.mark.anyio
