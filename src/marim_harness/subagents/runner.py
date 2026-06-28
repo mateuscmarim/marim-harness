@@ -100,6 +100,7 @@ class _SpawnPrep:
     t0: float
     t_built: float
     first_event_at: list[float]  # mutable; ``on_first_event`` probe appends during run
+    depth: int  # depth of the spawned sub-agent
 
 
 class SubagentRunner:
@@ -467,9 +468,10 @@ class SubagentRunner:
                 defn, task, work_root, iso, mcp_names, max_output_chars,
                 model, stream_id, background=background,
             )
+        depth = self.deps.subagent_depth + 1
         prep = await self._prepare_spawn(
             type, task, mcp_names, max_output_chars, model,
-            iso, work_root, stream_id, debug=debug, t0=t0, defn=defn,
+            iso, work_root, stream_id, debug=debug, t0=t0, defn=defn, depth=depth,
         )
         if isinstance(prep, str):
             return prep
@@ -483,14 +485,15 @@ class SubagentRunner:
         self, type: str, task: str, mcp_names: list[str] | None,
         max_output_chars: int | None, model: str | None,
         iso: dict | None, work_root, stream_id: str,
-        *, debug: bool, t0: float, defn=None,
+        *, debug: bool, t0: float, defn=None, depth: int = 0,
     ) -> _SpawnPrep | str:
         """Build the sub-agent, grant MCP servers, fire the start hook, and wire the
         event handler. Returns a ``_SpawnPrep`` struct on success, or an error string
         the caller can return directly. Called after worktree open and CLI early-return.
         ``defn`` is the definition the caller already resolved, threaded into ``build``
         so discovery isn't walked twice per spawn."""
-        sub, err = self.build(type, max_output_chars, model, work_root, defn=defn)
+        sub, err = self.build(type, max_output_chars, model, work_root, defn=defn,
+                              depth=depth)
         if sub is None:
             if iso:
                 self._discard_worktree(iso)
@@ -508,6 +511,7 @@ class SubagentRunner:
         return _SpawnPrep(
             sub=sub, granted=granted, unknown=unknown, handler=handler,
             iso=iso, t0=t0, t_built=t_built, first_event_at=first_event_at,
+            depth=depth,
         )
 
     async def _execute_foreground_spawn(
@@ -524,6 +528,8 @@ class SubagentRunner:
             )
         else:
             run_deps = self.deps
+        if prep.depth > 0:
+            run_deps = replace(run_deps, subagent_depth=prep.depth)
         try:
             # Bound concurrent model runs (the part that hits the provider) so a
             # wide fan-out queues instead of slamming a rate-limited route at once.
@@ -562,6 +568,8 @@ class SubagentRunner:
         # — or persists as — the user's session checklist; an isolated run also
         # redirects its file ops into the worktree. Every other Deps field stays shared.
         run_deps = replace(self.deps, tasks=TaskList())
+        if prep.depth > 0:
+            run_deps = replace(run_deps, subagent_depth=prep.depth)
         if prep.iso:
             run_deps = replace(
                 run_deps, workspace=replace(run_deps.workspace, root=prep.iso["path"])

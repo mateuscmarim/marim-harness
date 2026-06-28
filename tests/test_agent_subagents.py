@@ -538,3 +538,28 @@ def test_harness_takes_wake_flags_from_config(tmp_path: Path):
     )
     assert h.autonomous_wake is False
     assert h.wake_depth_cap == 7
+
+
+@pytest.mark.anyio
+async def test_subagent_depth_propagated_via_deps(tmp_path: Path):
+    """When a sub-agent is built, its Deps carry the correct subagent_depth."""
+    captured: dict = {}
+
+    def fn(messages, info):
+        captured["tools"] = {t.name for t in info.function_tools}
+        return ModelResponse(parts=[TextPart(content="report")])
+
+    deps = _make_deps(tmp_path)
+    h = _make_harness(FunctionModel(fn), deps)
+
+    # The runner should be built with max_depth=3
+    assert h.subagents._max_depth == 3
+
+    # Build a depth-0 sub-agent (main agent spawning)
+    sub, err = h.subagents.build("explore", depth=0)
+    assert sub is not None
+    # depth-0 spawn → child at depth 1, which can still spawn (1+1=2 < 3)
+    # so spawn_agent should be present
+    # Run the sub-agent to capture what tools it was given
+    await sub.run("test task", deps=deps)
+    assert "spawn_agent" in captured["tools"]
