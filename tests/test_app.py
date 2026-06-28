@@ -2187,6 +2187,63 @@ async def test_job_panel_collapsed_by_default(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_input_snaps_back_to_focus_on_main_screen(tmp_path: Path):
+    """Focus landing on a non-input main-screen widget (here a panel header)
+    bounces straight back to the prompt, so the user can always just type."""
+    import asyncio
+
+    from marim_harness.interfaces.tui.widgets import PromptInput
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        prompt = app.query_one(PromptInput)
+        assert prompt.has_focus  # on_mount lands focus here
+
+        # A visible, focusable non-input widget to steal focus to.
+        async def slow() -> str:
+            await asyncio.sleep(5)
+            return "done"
+
+        app.harness.deps.jobs.register("bash", "sleep 5", slow())
+        await pilot.pause()
+        header = app.query_one("#job-header")
+        header.focus()
+        await pilot.pause()
+        assert prompt.has_focus  # snapped back
+        assert not header.has_focus
+        await app.harness.deps.jobs.cancel_all()
+
+
+@pytest.mark.anyio
+async def test_input_does_not_steal_focus_while_subagents_screen_open(tmp_path: Path):
+    """The snap-back must not fight the sub-agents screen, which owns its own
+    list/pane focus while open."""
+    import asyncio
+
+    from marim_harness.interfaces.tui.widgets import PromptInput
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one(PromptInput)
+
+        async def slow() -> str:
+            await asyncio.sleep(5)
+            return "done"
+
+        app.harness.deps.jobs.register("bash", "sleep 5", slow())
+        await pilot.pause()
+        app.subagents.open = True  # pretend the ctrl+x screen is up
+        header = app.query_one("#job-header")
+        header.focus()
+        await pilot.pause()
+        assert header.has_focus  # not bounced while the sub-agents screen owns focus
+        app.subagents.open = False
+        await app.harness.deps.jobs.cancel_all()
+
+
+@pytest.mark.anyio
 async def test_background_spawn_renders_a_card_held_pending(tmp_path: Path):
     """A background spawn_agent now renders a SubAgentWidget (not a plain tool
     row). With no live job behind it, the card holds pending rather than showing a

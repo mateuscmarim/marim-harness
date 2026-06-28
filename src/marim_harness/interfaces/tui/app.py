@@ -3,6 +3,7 @@ from asyncio import CancelledError
 
 from pydantic_ai import ToolDenied
 from pydantic_ai.tools import DeferredToolApprovalResult
+from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.css.query import NoMatches
@@ -214,6 +215,24 @@ class HarnessApp(App):
         await self.harness.session_start(
             "resume" if self.harness.session.history else "startup"
         )
+
+    def on_descendant_focus(self, event: events.DescendantFocus) -> None:
+        """Keep the prompt focused. When focus lands on a non-input main-screen
+        widget — the conversation transcript or a panel header, reachable by a
+        click or Tab — snap it straight back to the prompt so a keystroke always
+        lands in the input. Two scopes are deliberately left alone: a pushed
+        modal/overlay (it's a separate screen, ``screen_stack > 1``, and owns its
+        own focus) and the ctrl+x sub-agents screen (``subagents.open``, which
+        drives its list/pane focus). Refocusing the prompt re-fires this for the
+        prompt itself, which the identity check below makes a no-op — no loop."""
+        if len(self.screen_stack) > 1 or self.subagents.open:
+            return
+        try:
+            prompt = self.query_one(PromptInput)
+        except NoMatches:
+            return
+        if event.widget is not prompt:
+            prompt.focus()
 
     async def _connect_mcp(self, log: VerticalScroll) -> None:
         """Open the configured MCP servers and note the outcome. Connection
