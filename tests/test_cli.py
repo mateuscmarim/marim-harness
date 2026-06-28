@@ -156,7 +156,10 @@ def test_piped_stdin_triggers_headless(monkeypatch, tmp_path: Path):
     assert out.getvalue().strip() == "piped-ok"
 
 
-def test_run_default_tui_uses_ask_mode(monkeypatch, tmp_path: Path):
+def test_run_default_tui_omits_mode_for_configured_default(monkeypatch, tmp_path: Path):
+    # The interactive TUI no longer hardcodes a mode: it omits it so build_harness
+    # resolves the configured default (MARIM_DEFAULT_MODE, default "ask"). The
+    # mock therefore receives mode=None and accepts it as optional.
     import marim_harness.interfaces.tui.app as tui_app
     import marim_harness.runtime.bootstrap as bootstrap
 
@@ -173,14 +176,14 @@ def test_run_default_tui_uses_ask_mode(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))  # keep off the real file
     monkeypatch.setattr(
         bootstrap, "build_harness",
-        lambda workspace, *, mode, resume: captured.update(mode=mode) or object(),
+        lambda workspace, *, mode=None, resume: captured.update(mode=mode) or object(),
     )
     monkeypatch.setattr(tui_app, "HarnessApp", FakeApp)
     stdin = io.StringIO()
     stdin.isatty = lambda: True  # interactive
     code = default_cmd.run_default([], stdin=stdin)
     assert code == 0
-    assert captured["mode"] is Mode.ask
+    assert captured["mode"] is None  # delegated to build_harness's config default
     assert captured["ran"] is True
     # The TUI is given a persistent prompt history.
     from marim_harness.interfaces.history import PromptHistory
