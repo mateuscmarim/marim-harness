@@ -205,7 +205,7 @@ async def _cmd_remember(app: HarnessApp, arg: str) -> None:
 async def _cmd_skill(app: HarnessApp, arg: str) -> None:
     arg = arg.strip()
     if not arg:
-        skills = discover_skills(app.harness.deps.workspace_root)
+        skills = discover_skills(app.harness.deps.workspace.root)
         if not skills:
             await app.post_system(
                 "No skills found. Drop a skill directory under `.marim/skills/` "
@@ -337,7 +337,7 @@ async def _cmd_worktree(app: HarnessApp, arg: str) -> None:
         repo_root,
     )
 
-    ws = app.harness.deps.workspace_root
+    ws = app.harness.deps.workspace.root
     root = repo_root(ws)
     if root is None:
         await app.post_system("Not a git repository.")
@@ -425,7 +425,7 @@ async def _cmd_jobs(app: HarnessApp, arg: str) -> None:
 async def _cmd_plugin(app: HarnessApp, arg: str) -> None:
     from ...plugins import discover_plugins, set_enabled
 
-    ws = app.harness.deps.workspace_root
+    ws = app.harness.deps.workspace.root
     sub, _, rest = arg.partition(" ")
     sub = sub.strip().lower()
     name = rest.strip()

@@ -245,7 +245,7 @@ class _TopLevelSink(_StreamSink):
         if event.part.tool_name == "ask_user":
             widget = ToolCallWidget(
                 event.part.tool_name, args,
-                workspace_root=self._r.app.harness.deps.workspace_root,
+                workspace_root=self._r.app.harness.deps.workspace.root,
             )
             self._r.tool_widgets[event.part.tool_call_id] = widget
             self.set_run(None, None)
@@ -763,7 +763,7 @@ class StreamRenderer:
         sink.on_tool(event.part.tool_name, args)  # live card status
         widget = ToolCallWidget(
             event.part.tool_name, args,
-            workspace_root=self.app.harness.deps.workspace_root,
+            workspace_root=self.app.harness.deps.workspace.root,
         )
         self.tool_widgets[event.part.tool_call_id] = widget
         group, solo = sink.get_run()

@@ -160,7 +160,7 @@ class HarnessApp(App):
         for theme in MARIM_THEMES:
             self.register_theme(theme)
         self.theme = load_theme()
-        self.sub_title = str(self.harness.deps.workspace_root)
+        self.sub_title = str(self.harness.deps.workspace.root)
         self.status.refresh_title()
         log = self.query_one("#log", VerticalScroll)
         # Hand the renderer the persistent transcript host so spawns create their
@@ -306,7 +306,7 @@ class HarnessApp(App):
         callbacks — would freeze the whole UI. We schedule the async send path,
         which spawns the subprocess via asyncio and awaits it without blocking
         other tasks. Failures stay swallowed inside the notifier."""
-        notifier = self.harness.deps.notifier
+        notifier = self.harness.deps.ui.notifier
         if notifier is not None:
             self.run_worker(
                 notifier.send_async(title, body, event_type),

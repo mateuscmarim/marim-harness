@@ -161,7 +161,7 @@ class SettingsScreen(Screen[None]):
     def _rail_badge(self, key: str) -> str:
         """The current value shown to the right of a rail row (mode / theme / count)."""
         if key == "runtime":
-            return self.harness.deps.mode.value
+            return self.harness.deps.workspace.mode.value
         if key == "theme":
             return _short_theme(self.current_theme)
         if key == "mcp":
@@ -175,7 +175,7 @@ class SettingsScreen(Screen[None]):
             for name in _MODES:
                 yield RadioButton(
                     name,
-                    value=(name == self.harness.deps.mode.value),
+                    value=(name == self.harness.deps.workspace.mode.value),
                     id=f"mode-{name}",
                 )
         with Horizontal(classes="srow"):
@@ -324,7 +324,7 @@ class SettingsScreen(Screen[None]):
         if event.index is None or event.radio_set.id != "mode-set":
             return
         self.harness.set_mode(Mode(_MODES[event.index]))
-        self.query_one("#badge-runtime", Static).update(self.harness.deps.mode.value)
+        self.query_one("#badge-runtime", Static).update(self.harness.deps.workspace.mode.value)
         self.app.status.refresh_status()  # type: ignore[attr-defined]
 
     def on_button_pressed(self, event: Button.Pressed) -> None:

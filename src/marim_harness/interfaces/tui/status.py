@@ -96,7 +96,7 @@ class StatusPresenter:
         cost = self._session_cost()
         if cost is not None:
             tokens_text += f" · {format_cost(cost)}"
-        mode = self.app.harness.deps.mode.value
+        mode = self.app.harness.deps.workspace.mode.value
         # The session name now lives in the terminal title (see refresh_title);
         # the status-bar head is just the permission mode.
         session_text = f"session {format_duration(time.monotonic() - self.session_start)}"

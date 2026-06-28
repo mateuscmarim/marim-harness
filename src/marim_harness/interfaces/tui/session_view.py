@@ -98,7 +98,7 @@ class SessionView:
             else:
                 widget = ToolCallWidget(
                     part.tool_name, args,
-                    workspace_root=self.app.harness.deps.workspace_root,
+                    workspace_root=self.app.harness.deps.workspace.root,
                 )
                 tool_widgets[part.tool_call_id] = widget
                 group, solo = await self.app.stream.add_tool_to_run(
@@ -173,7 +173,7 @@ class SessionView:
                         args = part.args_as_dict()
                         widget = ToolCallWidget(
                             part.tool_name, args,
-                            workspace_root=self.app.harness.deps.workspace_root,
+                            workspace_root=self.app.harness.deps.workspace.root,
                         )
                         tool_widgets[part.tool_call_id] = widget
                         await log.mount(widget)

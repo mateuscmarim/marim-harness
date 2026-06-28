@@ -48,7 +48,7 @@ async def _safe_async(fn: Callable[[], Awaitable[_T]]) -> None:
 
 def _notify(harness: Harness, title: str, body: str, event_type: str) -> None:
     """Fire a desktop notification if one is wired on deps. Best-effort."""
-    notifier = harness.deps.notifier
+    notifier = harness.deps.ui.notifier
     if notifier is not None:
         notifier.send(title, body, event_type)
 
