@@ -152,7 +152,7 @@ async def _cmd_mode(app: HarnessApp, arg: str) -> None:
         except ValueError:
             await app.post_system(f"Unknown mode: `{arg}`. Use ask, auto, or plan.")
             return
-    app.status.refresh_status()
+    app._refresh_mode_display()
     await app.post_system(f"Mode: **{app.harness.mode.value}**")
 
 

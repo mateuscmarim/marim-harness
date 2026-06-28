@@ -87,6 +87,11 @@ class HarnessServices:
     run_subagent: SubAgentRunner | None = None
     # Lets spawn_agent(background=True) run a sub-agent as a detached job.
     run_background_agent: BackgroundAgentRunner | None = None
+    # Returns the active session's id live (it changes on session switch), or None
+    # when no session is active. Lets a tool stamp session-scoped artifacts (e.g.
+    # plan files) without reaching into the session controller. None in headless /
+    # tests, where callers fall back to a workspace-derived id.
+    get_session_id: Callable[[], str | None] | None = None
 
 
 @dataclass
@@ -113,6 +118,7 @@ class UIHooks:
     on_subagent_notice: SubAgentNoticeCb | None = None
     on_subagent_model: SubAgentModelCb | None = None
     on_subagent_usage: SubAgentUsageCb | None = None
+    on_mode_change: "Callable[[], None] | None" = None
     detach_fanout: bool = False
     interactive: bool = False
     notifier: "Notifier | None" = None

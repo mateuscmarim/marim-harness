@@ -126,15 +126,19 @@ def build_services(
     lsp: LspManager | None,
     turn_hooks: TurnHooks,
     subagents: SubagentRunner,
+    get_session_id: Callable[[], str | None] | None = None,
 ) -> HarnessServices:
     """Assemble the Harness-wired collaborator container and install it on
     ``deps``. Centralises the one late binding the deps<->services cycle
-    requires (see HarnessServices)."""
+    requires (see HarnessServices). ``get_session_id`` is a live getter (the
+    caller closes over the session controller) so tools can read the active
+    session id without holding the controller; None in tests/headless."""
     services = HarnessServices(
         lsp=lsp,
         turn_hooks=turn_hooks,
         run_subagent=subagents.run,
         run_background_agent=subagents.run_background,
+        get_session_id=get_session_id,
     )
     deps.services = services
     return services
@@ -235,7 +239,15 @@ def build_collaborators(
     # One cohesive late binding for the collaborator cycle: TurnHooks and the
     # sub-agent runners hold this deps object, and tools reach them back
     # through ctx.deps.services.
-    build_services(deps, lsp=lsp, turn_hooks=hooks, subagents=subagents)
+    build_services(
+        deps,
+        lsp=lsp,
+        turn_hooks=hooks,
+        subagents=subagents,
+        # Live getter: closes over the controller so a session switch (which swaps
+        # ``session.store``) is reflected without rewiring services.
+        get_session_id=lambda: session.store.session_id if session.store is not None else None,
+    )
     return Collaborators(
         agent=agent, mcp=mcp, lsp=lsp, session=session,
         checkpoints=checkpoints, hooks=hooks, subagents=subagents,
@@ -311,6 +323,7 @@ class Harness:
         on_subagent_notice: SubAgentNoticeCb | None = None,
         on_subagent_model: SubAgentModelCb | None = None,
         on_subagent_usage: SubAgentUsageCb | None = None,
+        on_mode_change: Callable[[], None] | None = None,
         on_tasks_changed: Callable[[], None] | None = None,
         on_jobs_changed: Callable[[], None] | None = None,
         on_compact: Callable[[int, int], None] | None = None,
@@ -336,6 +349,7 @@ class Harness:
         self.deps.ui.on_subagent_notice = on_subagent_notice
         self.deps.ui.on_subagent_model = on_subagent_model
         self.deps.ui.on_subagent_usage = on_subagent_usage
+        self.deps.ui.on_mode_change = on_mode_change
         self.deps.tasks.on_change = on_tasks_changed
         self.deps.jobs.on_change = on_jobs_changed
         self.session.on_compact = on_compact

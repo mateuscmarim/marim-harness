@@ -9,7 +9,7 @@ from marim_harness.runtime.permissions import Mode, resolve_approvals
 class FakeCall:
     tool_call_id: str
     tool_name: str
-    args: dict = field(default_factory=dict)
+    args: object = field(default_factory=dict)
 
 
 @dataclass
@@ -62,4 +62,49 @@ async def test_ask_mode_uses_callback(requests):
 
     results = await resolve_approvals(requests, Mode.ask, approve)
     assert seen == ["edit_file"]
+    assert results.approvals["c1"] is True
+
+
+@pytest.mark.anyio
+async def test_plan_mode_allows_read_only_bash():
+    from marim_harness.runtime.permissions import resolve_approvals
+
+    reqs = FakeRequests(approvals=[FakeCall("c1", "bash", {"command": "git status"})])
+
+    async def never(_call):  # pragma: no cover
+        raise AssertionError("request_approval must not be called in plan mode")
+
+    results = await resolve_approvals(reqs, Mode.plan, never)
+    assert results.approvals["c1"] is True
+
+
+@pytest.mark.anyio
+async def test_plan_mode_denies_mutating_bash():
+    from pydantic_ai import ToolDenied
+
+    from marim_harness.runtime.permissions import resolve_approvals
+
+    reqs = FakeRequests(approvals=[FakeCall("c1", "bash", {"command": "rm -rf x"})])
+    results = await resolve_approvals(reqs, Mode.plan, None)
+    assert isinstance(results.approvals["c1"], ToolDenied)
+
+
+@pytest.mark.anyio
+async def test_plan_mode_still_denies_edits():
+    from pydantic_ai import ToolDenied
+
+    from marim_harness.runtime.permissions import resolve_approvals
+
+    reqs = FakeRequests(approvals=[FakeCall("c1", "edit_file", {"path": "a.txt"})])
+    results = await resolve_approvals(reqs, Mode.plan, None)
+    assert isinstance(results.approvals["c1"], ToolDenied)
+
+
+@pytest.mark.anyio
+async def test_plan_mode_handles_json_string_args():
+    """Some providers serialize tool args as a JSON string, not a dict."""
+    from marim_harness.runtime.permissions import resolve_approvals
+
+    reqs = FakeRequests(approvals=[FakeCall("c1", "bash", '{"command": "ls -la"}')])
+    results = await resolve_approvals(reqs, Mode.plan, None)
     assert results.approvals["c1"] is True

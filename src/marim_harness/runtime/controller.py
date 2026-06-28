@@ -34,6 +34,7 @@ from .context import (
     actionable_error_note as _actionable_error_note,
 )
 from .context import (
+    plan_mode_preamble,
     render_checklist_block,
     wrap_turn_context,
 )
@@ -290,6 +291,11 @@ class TurnController:
         so a resumed session can recover just the typed text. The one-shot notes
         and the digest are consumed here."""
         prompt = typed
+        # Plan mode: tell the model it is planning so it researches deliberately
+        # and ends by calling present_plan, rather than flailing into denials.
+        # Prepended first so it sits just above the user's typed request.
+        if self.deps.workspace.mode is Mode.plan:
+            prompt = f"{plan_mode_preamble()}\n\n{prompt}"
         # Current task checklist as turn-state (not consumed) — see
         # render_checklist_block for why it rides in the per-turn envelope rather
         # than the (cache-stable) system prompt.

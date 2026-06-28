@@ -103,6 +103,7 @@ class HarnessApp(App):
             on_subagent_notice=self.stream.on_subagent_notice,
             on_subagent_model=self.stream.on_subagent_model,
             on_subagent_usage=self.stream.on_subagent_usage,
+            on_mode_change=self._refresh_mode_display,
             on_tasks_changed=self._on_tasks_changed,
             on_jobs_changed=self._on_jobs_changed,
             on_compact=self._on_compact,
@@ -383,9 +384,22 @@ class HarnessApp(App):
         before ``_start_turn`` has set ``_turn_worker``."""
         return self._turn_worker is not None or self._turn_starting
 
+    def _refresh_mode_display(self) -> None:
+        """Redraw the status bar to reflect the current mode.
+
+        Called from action_cycle_mode, the /mode command (via its own
+        app.status.refresh_status() call in commands.py), and via the
+        on_mode_change UIHooks callback so a tool that flips workspace.mode
+        mid-turn (e.g. present_plan) can nudge the status bar to redraw.
+        Runs on the event-loop thread: the exclusive turn worker is an asyncio
+        task, so no call_from_thread marshalling is needed — Textual widget
+        mutations from asyncio tasks are safe.
+        """
+        self.status.refresh_status()
+
     def action_cycle_mode(self) -> None:
         self.harness.cycle_mode()
-        self.status.refresh_status()
+        self._refresh_mode_display()
 
     def action_toggle_outputs(self) -> None:
         """Ctrl+O: reveal every tool output in full (expand groups, uncap edit

@@ -149,6 +149,103 @@ def test_register_combined_job_tool_replaces_the_four():
     assert not (_JOB_FOUR & names)  # the four are gone
 
 
+@pytest.mark.anyio
+async def test_present_plan_auto_flips_mode_and_writes_artifact(tmp_path):
+    from types import SimpleNamespace
+
+    from marim_harness.runtime.permissions import Mode
+    from marim_harness.tools import provider
+    from marim_harness.workspace.plans import plans_dir
+
+    deps = _make_deps(tmp_path, mode=Mode.plan)
+
+    async def fake_ask(questions):
+        return {questions[0].header: "Execute hands-off (auto)"}
+
+    deps.ui.ask_user = fake_ask
+    ctx = SimpleNamespace(deps=deps)
+
+    out = await provider.present_plan(ctx, "Refactor the parser", ["step one", "step two"])
+
+    assert deps.workspace.mode is Mode.auto
+    assert len(deps.tasks.items) == 2
+    assert deps.tasks.items[0].text == "step one"
+    files = list(plans_dir(tmp_path).glob("*.md"))
+    assert len(files) == 1
+    assert "approved" in out.lower() or "auto" in out.lower()
+
+
+@pytest.mark.anyio
+async def test_present_plan_keep_planning_stays_in_plan_mode(tmp_path):
+    from types import SimpleNamespace
+
+    from marim_harness.runtime.permissions import Mode
+    from marim_harness.tools import provider
+
+    deps = _make_deps(tmp_path, mode=Mode.plan)
+
+    async def fake_ask(questions):
+        return {questions[0].header: "Keep planning"}
+
+    deps.ui.ask_user = fake_ask
+    ctx = SimpleNamespace(deps=deps)
+
+    await provider.present_plan(ctx, "Refactor", ["a"])
+    assert deps.workspace.mode is Mode.plan
+
+
+@pytest.mark.anyio
+async def test_present_plan_headless_defaults_to_keep_planning(tmp_path):
+    from types import SimpleNamespace
+
+    from marim_harness.runtime.permissions import Mode
+    from marim_harness.tools import provider
+    from marim_harness.workspace.plans import plans_dir
+
+    deps = _make_deps(tmp_path, mode=Mode.plan)
+    deps.ui.ask_user = None  # no interactive UI
+    ctx = SimpleNamespace(deps=deps)
+
+    out = await provider.present_plan(ctx, "Refactor", ["a"])
+    assert deps.workspace.mode is Mode.plan  # never auto-executes headless
+    assert list(plans_dir(tmp_path).glob("*.md"))  # artifact still written
+    assert "plan" in out.lower()
+
+
+@pytest.mark.anyio
+async def test_present_plan_empty_steps_asks_for_retry(tmp_path):
+    from types import SimpleNamespace
+
+    from pydantic_ai import ModelRetry
+
+    from marim_harness.runtime.permissions import Mode
+    from marim_harness.tools import provider
+
+    deps = _make_deps(tmp_path, mode=Mode.plan)
+    ctx = SimpleNamespace(deps=deps)
+    with pytest.raises(ModelRetry):
+        await provider.present_plan(ctx, "Refactor", [])
+
+
+@pytest.mark.anyio
+async def test_present_plan_ask_flips_to_ask_mode(tmp_path):
+    from types import SimpleNamespace
+
+    from marim_harness.runtime.permissions import Mode
+    from marim_harness.tools import provider
+
+    deps = _make_deps(tmp_path, mode=Mode.plan)
+
+    async def fake_ask(questions):
+        return {questions[0].header: "Execute step-by-step (ask)"}
+
+    deps.ui.ask_user = fake_ask
+    ctx = SimpleNamespace(deps=deps)
+
+    await provider.present_plan(ctx, "Refactor", ["a"])
+    assert deps.workspace.mode is Mode.ask
+
+
 def _job_ctx(tmp_path):
     from types import SimpleNamespace
 
@@ -582,3 +679,28 @@ def test_array_arg_malformed_string_still_errors():
     schema = agent._function_toolset.tools["edit_file"].function_schema
     with pytest.raises(ValidationError):
         schema.validator.validate_python({"path": "x.py", "edits": "not json at all"})
+
+
+@pytest.mark.anyio
+async def test_present_plan_uses_threaded_session_id_for_filename(tmp_path):
+    from types import SimpleNamespace
+
+    from marim_harness.runtime.permissions import Mode
+    from marim_harness.tools import provider
+    from marim_harness.workspace.plans import plans_dir
+
+    deps = _make_deps(tmp_path, mode=Mode.plan)
+    deps.services.get_session_id = lambda: "sess-XYZ"
+
+    async def fake_ask(questions):
+        return {questions[0].header: "Keep planning"}
+
+    deps.ui.ask_user = fake_ask
+    ctx = SimpleNamespace(deps=deps)
+
+    await provider.present_plan(ctx, "Refactor X", ["a"])
+
+    files = list(plans_dir(tmp_path).glob("*.md"))
+    assert len(files) == 1
+    assert files[0].name.startswith("sess-xyz-")  # slug of the real session id
+    assert "session: sess-XYZ" in files[0].read_text()
