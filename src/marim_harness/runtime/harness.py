@@ -311,7 +311,7 @@ class Harness:
         on_subagent_notice: SubAgentNoticeCb | None = None,
         on_subagent_model: SubAgentModelCb | None = None,
         on_subagent_usage: SubAgentUsageCb | None = None,
-        on_mode_change: "Callable[[], None] | None" = None,
+        on_mode_change: Callable[[], None] | None = None,
         on_tasks_changed: Callable[[], None] | None = None,
         on_jobs_changed: Callable[[], None] | None = None,
         on_compact: Callable[[int, int], None] | None = None,
