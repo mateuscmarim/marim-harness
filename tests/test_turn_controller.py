@@ -222,3 +222,65 @@ def test_session_id_getter_reads_live_store(tmp_path):
     assert getter() == "sess-live-1"
     tc.session.store = None
     assert getter() is None
+
+
+@pytest.mark.anyio
+async def test_run_turn_defers_mcp_when_policy_on(tmp_path, monkeypatch):
+    from pydantic_ai import DeferredLoadingToolset
+    from pydantic_ai.messages import ModelResponse, TextPart
+    from pydantic_ai.models.function import FunctionModel
+
+    captured = {}
+
+    model = FunctionModel(lambda m, i: ModelResponse(parts=[TextPart(content="ok")]))
+    tc = _make_tc(model, tmp_path)
+    tc.deps.workspace.tool_search = "on"
+
+    # Stand in two fake MCP servers so deferral has something to wrap.
+    class _Srv:
+        def __init__(self, name):
+            self.id = name
+
+        async def list_tools(self):
+            return [1, 2, 3]
+
+    tc.mcp._live_servers = [_Srv("a"), _Srv("b")]
+    tc.mcp.disabled = set()
+
+    async def spy(prompt, deferred_results, toolsets, event_stream_handler, resumable):
+        captured["toolsets"] = toolsets
+        return "ok"
+
+    monkeypatch.setattr(tc, "_run_with_approval", spy)
+    await tc.run_turn("hi")
+    assert len(captured["toolsets"]) == 1
+    assert isinstance(captured["toolsets"][0], DeferredLoadingToolset)
+
+
+@pytest.mark.anyio
+async def test_run_turn_passes_plain_toolsets_when_off(tmp_path, monkeypatch):
+    from pydantic_ai.messages import ModelResponse, TextPart
+    from pydantic_ai.models.function import FunctionModel
+
+    captured = {}
+    model = FunctionModel(lambda m, i: ModelResponse(parts=[TextPart(content="ok")]))
+    tc = _make_tc(model, tmp_path)
+    tc.deps.workspace.tool_search = "off"
+
+    class _Srv:
+        id = "a"
+
+        async def list_tools(self):
+            return [1, 2, 3]
+
+    servers = [_Srv()]
+    tc.mcp._live_servers = servers
+    tc.mcp.disabled = set()
+
+    async def spy(prompt, deferred_results, toolsets, event_stream_handler, resumable):
+        captured["toolsets"] = toolsets
+        return "ok"
+
+    monkeypatch.setattr(tc, "_run_with_approval", spy)
+    await tc.run_turn("hi")
+    assert captured["toolsets"] == servers  # unwrapped, unchanged

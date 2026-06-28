@@ -608,9 +608,13 @@ class TurnController:
         if attachments and user_prompt is not None:
             user_prompt = [user_prompt, *(BinaryContent(data=d, media_type=m)
                                           for d, m in attachments)]
-        # Offer only the live servers that aren't disabled — a server muted at
-        # runtime stays connected but its tools are withheld from the model.
-        toolsets = self.mcp.live_toolsets()
+        # Tool-search policy: defer the MCP/plugin surface behind Pydantic AI's
+        # auto-injected ToolSearch when the policy/threshold call for it, else load
+        # the live MCP toolsets as before. Builtins (on the Agent) are unaffected.
+        toolsets = await self.mcp.toolsets_for(
+            self.deps.workspace.tool_search,
+            self.deps.workspace.tool_search_threshold,
+        )
         # When hooks are configured, intercept each streamed tool event to fire
         # Pre/PostToolUse, then forward to the original handler (or drain if none).
         event_stream_handler = self._build_hooked_handler(event_stream_handler)
