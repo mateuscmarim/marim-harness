@@ -3,12 +3,16 @@
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+from pydantic_ai.messages import ModelResponse, TextPart
+from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 
 from marim_harness.runtime.deps import Deps, WorkspaceConfig
 from marim_harness.runtime.permissions import Mode
 from marim_harness.subagents.runner import SubagentRunner
 from marim_harness.tools.provider import BuiltinToolProvider
+from tests.conftest import _make_harness
 
 
 def _make_deps(tmp_path: Path, **kw) -> Deps:
@@ -122,3 +126,38 @@ def test_spawn_agent_allows_below_depth_limit():
     # Should NOT contain "Cannot spawn" — it should fail for another reason
     # (no subagent runner wired in test context)
     assert "Cannot spawn" not in result
+
+
+@pytest.mark.anyio
+async def test_nested_spawn_integration(tmp_path: Path):
+    """End-to-end: main → sub → grandchild chain works.
+
+    The main agent spawns a sub-agent (depth 1). The sub-agent spawns
+    a grandchild (depth 2). The grandchild cannot spawn further.
+    """
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    deps = _make_deps(tmp_path)
+    h = _make_harness(FunctionModel(fn), deps)
+
+    # Verify runner has max_depth
+    assert h.subagents._max_depth == 3
+
+    # Build depth-0 sub-agent → should have spawn_agent
+    sub, _ = h.subagents.build("explore", depth=0)
+    assert sub is not None
+    tool_names = set(sub._function_toolset.tools.keys())
+    assert "spawn_agent" in tool_names
+
+    # Build depth-1 sub-agent → should have spawn_agent (can spawn depth-2)
+    sub2, _ = h.subagents.build("explore", depth=1)
+    assert sub2 is not None
+    tool_names_2 = set(sub2._function_toolset.tools.keys())
+    assert "spawn_agent" in tool_names_2
+
+    # Build depth-2 sub-agent → should NOT have spawn_agent (leaf)
+    sub3, _ = h.subagents.build("explore", depth=2)
+    assert sub3 is not None
+    tool_names_3 = set(sub3._function_toolset.tools.keys())
+    assert "spawn_agent" not in tool_names_3

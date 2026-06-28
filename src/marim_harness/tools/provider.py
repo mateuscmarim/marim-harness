@@ -476,7 +476,9 @@ async def spawn_agent(
     focused sub-task autonomously) — or a custom agent by name, as listed in the
     sub-agents index. The sub-agent starts with a clean context, does `task`, and
     its final message becomes this tool's result. Spawn several in one turn to
-    fan out independent work; sub-agents cannot spawn further sub-agents.
+    fan out independent work. Sub-agents can spawn deeper sub-agents, but are
+    limited by a maximum nesting depth — attempts to spawn beyond that limit are
+    refused.
 
     Leave `background` unset for a normal spawn or fan-out — that is almost always
     right. When detached-fanout mode is on, an unset spawn auto-detaches: it shows a
@@ -529,7 +531,12 @@ async def spawn_agent(
     tree. Its changes are committed to a branch (named in the report) and the
     worktree is removed — merge or review the branch afterward. The worktree
     branches from the last commit, so it won't see uncommitted changes in your
-    tree. Only needed when spawns write in parallel; omit for read-only work."""
+    tree. Only needed when spawns write in parallel; omit for read-only work.
+
+    `max_depth` is the depth ceiling for nested spawning. The main agent starts
+    at depth 0. Each spawn increments depth by 1. When `depth + 1 >= max_depth`,
+    the tool refuses. This parameter is pre-filled by the harness — callers should
+    omit it."""
     mcp_names = _coerce_mcp(mcp)
     # Depth enforcement: refuse spawns that would exceed the depth ceiling.
     # max_depth is None for the main agent (defaults to SUBAGENT_MAX_DEPTH).
