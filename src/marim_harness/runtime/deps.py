@@ -113,6 +113,7 @@ class UIHooks:
     on_subagent_notice: SubAgentNoticeCb | None = None
     on_subagent_model: SubAgentModelCb | None = None
     on_subagent_usage: SubAgentUsageCb | None = None
+    on_mode_change: "Callable[[], None] | None" = None
     detach_fanout: bool = False
     interactive: bool = False
     notifier: "Notifier | None" = None
