@@ -4,9 +4,22 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from pydantic_ai import CombinedToolset, DeferredLoadingToolset
+
 from .config import persist_server_enabled
 
 logger = logging.getLogger(__name__)
+
+
+def should_defer(policy: str, count: int, threshold: int) -> bool:
+    """Whether to defer the MCP tool surface behind tool search. ``on`` always
+    defers; ``auto`` defers only when ``count`` strictly exceeds ``threshold``;
+    anything else (``off`` or an unknown value) never defers."""
+    if policy == "on":
+        return True
+    if policy == "auto":
+        return count > threshold
+    return False
 
 
 @dataclass
@@ -63,6 +76,38 @@ class McpManager:
             s for s in self._live_servers
             if self.server_name(s) not in self.disabled
         ]
+
+    async def live_tool_count(self) -> int:
+        """Best-effort count of tools across non-disabled live MCP servers. Uses
+        each server's cached ``list_tools()``; a server that can't list contributes
+        0 rather than failing the count."""
+        total = 0
+        for s in self.live_toolsets():
+            lister = getattr(s, "list_tools", None)
+            if lister is None:
+                continue
+            try:
+                total += len(await lister())
+            except Exception:  # noqa: BLE001 - one server's failure must not sink the count
+                logger.debug("tool count failed for %s", self.server_name(s), exc_info=True)
+        return total
+
+    def deferred_toolsets(self) -> list:
+        """The live MCP toolsets combined and marked deferred, so Pydantic AI's
+        auto-injected ToolSearch capability hides them until the model searches.
+        Empty when there are no live servers."""
+        live = self.live_toolsets()
+        if not live:
+            return []
+        return [DeferredLoadingToolset(CombinedToolset(live))]
+
+    async def toolsets_for(self, policy: str, threshold: int) -> list:
+        """The toolsets to pass to ``agent.run`` for this turn: the plain live MCP
+        toolsets, or — when policy/threshold say so — a single deferred+combined
+        toolset behind tool search."""
+        if should_defer(policy, await self.live_tool_count(), threshold):
+            return self.deferred_toolsets()
+        return self.live_toolsets()
 
     def mcp_index_text(self) -> str:
         names = self.enabled_names()
