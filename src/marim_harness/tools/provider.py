@@ -72,7 +72,7 @@ async def fetch_url(
     under the workspace and you get a handle + preview back — read_file/grep that
     path to page through it — so it doesn't flood context."""
     return await fetch.fetch_url(
-        url, prompt=prompt, workspace_root=ctx.deps.workspace_root
+        url, prompt=prompt, workspace_root=ctx.deps.workspace.root
     )
 
 
@@ -91,22 +91,22 @@ def read_file(
     # Whitelist every discovered skill's directory for reading, so an agent that
     # reaches for a skill's bundled file by absolute path succeeds even when the
     # skill lives outside the workspace (discover_skills is cached per workspace).
-    skill_roots = tuple(s.root for s in discover_skills(ctx.deps.workspace_root))
+    skill_roots = tuple(s.root for s in discover_skills(ctx.deps.workspace.root))
     return fs.read_file(
-        ctx.deps.workspace_root, path, offset=offset, limit=limit,
+        ctx.deps.workspace.root, path, offset=offset, limit=limit,
         extra_read_roots=skill_roots,
     )
 
 
 def glob(ctx: RunContext[Deps], pattern: str) -> str:
     """List files matching a glob pattern (e.g. `**/*.py`)."""
-    return fs.glob_files(ctx.deps.workspace_root, pattern)
+    return fs.glob_files(ctx.deps.workspace.root, pattern)
 
 
 def tree(ctx: RunContext[Deps], path: str = ".", depth: int = 2) -> str:
     """Show a directory tree. `depth=1` lists one level (like ls); higher
     descends further. Noise dirs (.git, node_modules, …) aren't expanded."""
-    return fs.tree(ctx.deps.workspace_root, path, depth)
+    return fs.tree(ctx.deps.workspace.root, path, depth)
 
 
 def _grep_int_flag(key: str, val: object) -> int:
@@ -166,7 +166,7 @@ def grep(
                 "type, output_mode, head_limit, multiline, -i, -n, -A, -B, -C."
             )
     return fs.grep(
-        ctx.deps.workspace_root,
+        ctx.deps.workspace.root,
         pattern,
         path,
         glob=glob,
@@ -259,7 +259,7 @@ def remember(
     sc = (
         global_scope()
         if scope == "global"
-        else project_scope(ctx.deps.workspace_root)
+        else project_scope(ctx.deps.workspace.root)
     )
     path = save_memory(
         sc, name=title, description=description,
@@ -280,7 +280,7 @@ def recall(
     sc = (
         global_scope()
         if scope == "global"
-        else project_scope(ctx.deps.workspace_root)
+        else project_scope(ctx.deps.workspace.root)
     )
     return read_memory(sc, name)
 
@@ -292,7 +292,7 @@ def activate_skill(ctx: RunContext[Deps], name: str) -> str:
     run any scripts with bash using that absolute path. Activate a skill
     when the task matches its one-line description, then follow what it
     says."""
-    skill = find_skill(ctx.deps.workspace_root, name)
+    skill = find_skill(ctx.deps.workspace.root, name)
     if skill is None:
         return f"No skill named {name!r}. See the skills index."
     return (
@@ -310,7 +310,7 @@ def read_skill_file(ctx: RunContext[Deps], name: str, path: str) -> str:
     directory. Use after activate_skill when its instructions point you at
     a bundled file. Works for skills in any scope, including global ones
     outside the workspace, and saves you needing the skill's absolute path."""
-    skill = find_skill(ctx.deps.workspace_root, name)
+    skill = find_skill(ctx.deps.workspace.root, name)
     if skill is None:
         return f"No skill named {name!r}. See the skills index."
     return read_bundled_file(skill, path)
@@ -353,14 +353,14 @@ async def ask_user(ctx: RunContext[Deps], questions: list[Question]) -> str:
     coerced = coerce_questions(questions)
     if not coerced:
         return _ASK_USER_EMPTY
-    if ctx.deps.ask_user is None:
+    if ctx.deps.ui.ask_user is None:
         return _ASK_USER_NO_UI
     th = ctx.deps.services.turn_hooks
     if th is not None:
         await th.notification(
             "ask_user", "Question from agent", coerced[0].question
         )
-    answers = await ctx.deps.ask_user(coerced)
+    answers = await ctx.deps.ui.ask_user(coerced)
     if not answers:
         return _ASK_USER_CANCELLED
     return answers_to_json(answers)
@@ -501,7 +501,7 @@ async def spawn_agent(
         task, returns=returns, constraints=constraints, context=context
     )
     auto_detached = (
-        background is None and ctx.deps.detach_fanout and ctx.deps.interactive
+        background is None and ctx.deps.ui.detach_fanout and ctx.deps.ui.interactive
     )
     if background or auto_detached:
         if ctx.deps.services.run_background_agent is None:
@@ -569,7 +569,7 @@ async def write_file(ctx: RunContext[Deps], path: str, content: str) -> str:
     # opts out of pydantic-ai's auto thread-offload (it awaits async tools directly on
     # the event loop). ``fs.write_file`` does a blocking read + atomic write + double
     # fsync, so run it in a worker thread to keep the loop free for other tool calls.
-    result = await asyncio.to_thread(fs.write_file, ctx.deps.workspace_root, path, content)
+    result = await asyncio.to_thread(fs.write_file, ctx.deps.workspace.root, path, content)
     return await _with_diagnostics(ctx, path, result)
 
 
@@ -580,7 +580,7 @@ async def edit_file(ctx: RunContext[Deps], path: str, edits: list[fs.Edit]) -> s
     # Offload the blocking fs work to a thread (see ``write_file`` above): the async
     # signature exists only to ``await _with_diagnostics``, and would otherwise run the
     # read + atomic write + fsyncs directly on the event loop.
-    result = await asyncio.to_thread(fs.edit_file, ctx.deps.workspace_root, path, edits)
+    result = await asyncio.to_thread(fs.edit_file, ctx.deps.workspace.root, path, edits)
     return await _with_diagnostics(ctx, path, result)
 
 
@@ -609,17 +609,17 @@ async def bash(
     wait_for_job, or stop it with cancel_job. A foreground run (the default) waits
     for the command and is subject to a timeout, so use background for anything
     that won't finish promptly."""
-    reason = ctx.deps.command_policy.check(command)
+    reason = ctx.deps.workspace.command_policy.check(command)
     if reason is not None:
         return f"Blocked by command policy: {reason}"
     if background:
-        bp = await shell.start_bash(ctx.deps.workspace_root, command)
+        bp = await shell.start_bash(ctx.deps.workspace.root, command)
         job_id = ctx.deps.jobs.register(
             "bash", command, bp.wait(), kill=bp.kill, output_fn=bp.output
         )
         return f"Started {job_id} (bash) — {command[:60]}"
     timeout_s = _resolve_bash_timeout_seconds(timeout)
-    return await shell.run_bash(ctx.deps.workspace_root, command, timeout=timeout_s)
+    return await shell.run_bash(ctx.deps.workspace.root, command, timeout=timeout_s)
 
 
 def jobs(ctx: RunContext[Deps]) -> str:
