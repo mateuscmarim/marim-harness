@@ -184,3 +184,39 @@ def test_show_includes_default_mode(monkeypatch, tmp_path):
     assert config_cmd.main(["show"], out=out) == 0
     text = out.getvalue()
     assert "default_mode" in text and "plan" in text
+
+
+def test_set_rejects_invalid_tool_search(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    err = io.StringIO()
+    assert config_cmd.main(["set", "MARIM_TOOL_SEARCH", "maybe"], err=err) == 2
+    assert "off" in err.getvalue() and "auto" in err.getvalue() and "on" in err.getvalue()
+
+
+def test_set_accepts_tool_search(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert config_cmd.main(["set", "MARIM_TOOL_SEARCH", "On"], out=io.StringIO()) == 0
+    assert "MARIM_TOOL_SEARCH=on" in (tmp_path / "marim" / ".env").read_text()
+
+
+def test_set_rejects_non_positive_threshold(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    err = io.StringIO()
+    assert config_cmd.main(["set", "MARIM_TOOL_SEARCH_THRESHOLD", "0"], err=err) == 2
+    assert "positive" in err.getvalue().lower()
+
+
+def test_set_accepts_threshold(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert config_cmd.main(["set", "MARIM_TOOL_SEARCH_THRESHOLD", "25"], out=io.StringIO()) == 0
+    assert "MARIM_TOOL_SEARCH_THRESHOLD=25" in (tmp_path / "marim" / ".env").read_text()
+
+
+def test_show_includes_tool_search(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    _clear_marim_env(monkeypatch)
+    monkeypatch.setenv("MARIM_TOOL_SEARCH", "on")
+    out = io.StringIO()
+    assert config_cmd.main(["show"], out=out) == 0
+    text = out.getvalue()
+    assert "tool_search" in text and "on" in text

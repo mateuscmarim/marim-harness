@@ -18,11 +18,19 @@ _ALLOWED_KEYS = (
     "MARIM_MAX_CONTEXT_TOKENS",
     "MARIM_PROACTIVE_MEMORY",
     "MARIM_DEFAULT_MODE",
+    "MARIM_TOOL_SEARCH",
+    "MARIM_TOOL_SEARCH_THRESHOLD",
 )
 
 # Keys whose value is constrained to a fixed set, validated before persisting so a
 # typo can't write a value the loader will silently reject at startup.
-_ENUM_KEYS = {"MARIM_DEFAULT_MODE": ("ask", "auto", "plan")}
+_ENUM_KEYS = {
+    "MARIM_DEFAULT_MODE": ("ask", "auto", "plan"),
+    "MARIM_TOOL_SEARCH": ("off", "auto", "on"),
+}
+
+# Keys whose value must be a positive integer (> 0).
+_POSITIVE_INT_KEYS_CLI = {"MARIM_TOOL_SEARCH_THRESHOLD"}
 
 
 def _is_secret(key: str) -> bool:
@@ -55,6 +63,8 @@ def _cmd_show(args, *, out, err) -> int:
             "max_context_tokens": cfg.max_context_tokens,
             "proactive_memory": cfg.proactive_memory,
             "default_mode": cfg.default_mode,
+            "tool_search": cfg.tool_search,
+            "tool_search_threshold": cfg.tool_search_threshold,
             "api_key_set": api_key_set,
             "global_config_path": str(path),
         }
@@ -67,6 +77,8 @@ def _cmd_show(args, *, out, err) -> int:
     print(f"max_context_tokens:  {cfg.max_context_tokens}", file=out)
     print(f"proactive_memory:    {'on' if cfg.proactive_memory else 'off'}", file=out)
     print(f"default_mode:        {cfg.default_mode}", file=out)
+    print(f"tool_search:         {cfg.tool_search}", file=out)
+    print(f"tool_search_thresh:  {cfg.tool_search_threshold}", file=out)
     print(f"api_key:             {'set' if api_key_set else 'not set'}", file=out)
     print(f"global_config_path:  {path}", file=out)
     print(f"  exists:            {'yes' if path.exists() else 'no'}", file=out)
@@ -99,6 +111,16 @@ def _cmd_set(args, *, out, err) -> int:
                 file=err,
             )
             return 2
+    if key in _POSITIVE_INT_KEYS_CLI:
+        try:
+            n = int(value)
+        except ValueError:
+            print(f"error: {key} must be a positive integer", file=err)
+            return 2
+        if n <= 0:
+            print(f"error: {key} must be a positive integer", file=err)
+            return 2
+        value = str(n)
     _persist(key, value)
     shown = "***" if _is_secret(key) else value
     print(f"set {key}={shown} in {global_config_path()}", file=out)
