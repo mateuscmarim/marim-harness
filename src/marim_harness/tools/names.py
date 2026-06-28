@@ -5,6 +5,11 @@ read the sets without importing ``provider``, which itself imports ``workspace``
 That would otherwise form an import cycle whenever ``provider`` is imported
 first."""
 
+# Hard ceiling for nested sub-agent spawning. Main agent is depth 0,
+# sub-agents depth 1, grandchildren depth 2. Spawning at depth 2 is
+# refused (would produce depth 3).
+SUBAGENT_MAX_DEPTH = 3
+
 # Tool reach for sub-agents, split by trust boundary:
 #   READ_TOOLS  — local, side-effect-free reads of the workspace; always safe.
 #   NET_TOOLS   — outbound network egress (search/fetch). Not workspace-mutating,

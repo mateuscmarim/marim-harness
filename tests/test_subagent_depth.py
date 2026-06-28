@@ -84,3 +84,41 @@ def test_build_at_depth_0_registers_spawn_agent(tmp_path: Path):
     assert sub is not None
     tool_names = set(sub._function_toolset.tools.keys())
     assert "spawn_agent" in tool_names
+
+
+def test_spawn_agent_refuses_at_depth_limit():
+    """At depth 2 with max_depth=3, spawning would produce depth 3 → refused."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from marim_harness.tools.provider import spawn_agent
+
+    deps = _make_deps(Path("/tmp"), subagent_depth=2)
+    ctx = SimpleNamespace(deps=deps, tool_call_id="tc1")
+
+    result = asyncio.run(spawn_agent(
+        ctx, type="explore", task="do thing", max_depth=3
+    ))
+    assert "Cannot spawn" in result
+    assert "depth 2" in result
+
+
+def test_spawn_agent_allows_below_depth_limit():
+    """At depth 1 with max_depth=3, spawning produces depth 2 → allowed."""
+    # This test verifies the depth check passes; the actual spawn
+    # will fail because services.run_subagent is None in the test context,
+    # but the depth check should not be the thing that blocks it.
+    import asyncio
+    from types import SimpleNamespace
+
+    from marim_harness.tools.provider import spawn_agent
+
+    deps = _make_deps(Path("/tmp"), subagent_depth=1)
+    ctx = SimpleNamespace(deps=deps, tool_call_id="tc1")
+
+    result = asyncio.run(spawn_agent(
+        ctx, type="explore", task="do thing", max_depth=3
+    ))
+    # Should NOT contain "Cannot spawn" — it should fail for another reason
+    # (no subagent runner wired in test context)
+    assert "Cannot spawn" not in result

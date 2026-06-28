@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import json
 import logging
 import re
@@ -20,7 +21,14 @@ from . import fetch, fs, shell, web
 # Re-exported for backward compatibility; defined in the leaf module ``names``
 # so importers (e.g. workspace.agents) don't pull in all of ``provider`` and
 # form an import cycle.
-from .names import GATED_TOOLS, LSP_TOOLS, NET_TOOLS, READ_TOOLS, SUBAGENT_TOOLS  # noqa: F401
+from .names import (  # noqa: F401
+    GATED_TOOLS,
+    LSP_TOOLS,
+    NET_TOOLS,
+    READ_TOOLS,
+    SUBAGENT_MAX_DEPTH,
+    SUBAGENT_TOOLS,
+)
 
 _T = TypeVar("_T")
 
@@ -523,6 +531,16 @@ async def spawn_agent(
     branches from the last commit, so it won't see uncommitted changes in your
     tree. Only needed when spawns write in parallel; omit for read-only work."""
     mcp_names = _coerce_mcp(mcp)
+    # Depth enforcement: refuse spawns that would exceed the depth ceiling.
+    # max_depth is None for the main agent (defaults to SUBAGENT_MAX_DEPTH).
+    # Sub-agents get it bound via functools.partial by SubagentRunner.build().
+    from .names import SUBAGENT_MAX_DEPTH
+    effective_max = max_depth if max_depth is not None else SUBAGENT_MAX_DEPTH
+    if ctx.deps.subagent_depth + 1 >= effective_max:
+        return (
+            f"Cannot spawn sub-agent: already at depth "
+            f"{ctx.deps.subagent_depth}, max depth is {effective_max}."
+        )
     task = compose_subagent_task(
         task, returns=returns, constraints=constraints, context=context
     )
@@ -784,7 +802,10 @@ class BuiltinToolProvider:
         agent.tool(read_skill_file)
         agent.tool(update_tasks)
         agent.tool(ask_user)
-        agent.tool(spawn_agent)
+        bound_spawn = functools.partial(spawn_agent, max_depth=SUBAGENT_MAX_DEPTH)
+        bound_spawn.__name__ = "spawn_agent"
+        bound_spawn.__qualname__ = "spawn_agent"
+        agent.tool(bound_spawn)
         if self._combined_job_tool:
             agent.tool(job)
         else:
