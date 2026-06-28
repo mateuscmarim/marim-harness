@@ -40,6 +40,10 @@ def test_read_only_commands_allowed(command):
         "",
         "   ",
         "mv a b",
+        "find . -delete",
+        "find . -name x -exec rm {} +",
+        "env rm -rf x",
+        "find . -execdir rm {} +",
     ],
 )
 def test_mutating_or_unknown_commands_denied(command):

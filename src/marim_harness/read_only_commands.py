@@ -20,10 +20,18 @@ _UNSAFE = re.compile(r"[;&|<>`\n]|\$\(")
 # (a write needs a redirection, which ``_UNSAFE`` already rejects).
 _ALLOWED_PROGRAMS = frozenset(
     {
-        "ls", "cat", "head", "tail", "wc", "file", "stat", "tree", "pwd", "env",
+        "ls", "cat", "head", "tail", "wc", "file", "stat", "tree", "pwd",
         "date", "whoami", "hostname", "uname", "which", "type", "rg", "grep",
         "find", "fd", "ack", "echo", "printf",
     }
+)
+
+# find primaries that execute a program or write to disk. `-exec ... \;` is
+# already caught by the `;` in _UNSAFE, but the `+` terminator and -delete are
+# not — so screen find's arguments explicitly. Conservative by design.
+_FIND_MUTATING = frozenset(
+    {"-delete", "-exec", "-execdir", "-ok", "-okdir",
+     "-fprint", "-fprint0", "-fls", "-fprintf"}
 )
 
 # ``git`` is read-only only for these subcommands.
@@ -47,4 +55,6 @@ def is_read_only(command: str) -> bool:
     program = parts[0]
     if program == "git":
         return len(parts) >= 2 and parts[1] in _ALLOWED_GIT_SUBCMDS
+    if program == "find":
+        return not any(tok in _FIND_MUTATING for tok in parts[1:])
     return program in _ALLOWED_PROGRAMS

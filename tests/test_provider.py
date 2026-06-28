@@ -227,6 +227,25 @@ async def test_present_plan_empty_steps_asks_for_retry(tmp_path):
         await provider.present_plan(ctx, "Refactor", [])
 
 
+@pytest.mark.anyio
+async def test_present_plan_ask_flips_to_ask_mode(tmp_path):
+    from types import SimpleNamespace
+
+    from marim_harness.runtime.permissions import Mode
+    from marim_harness.tools import provider
+
+    deps = _make_deps(tmp_path, mode=Mode.plan)
+
+    async def fake_ask(questions):
+        return {questions[0].header: "Execute step-by-step (ask)"}
+
+    deps.ui.ask_user = fake_ask
+    ctx = SimpleNamespace(deps=deps)
+
+    await provider.present_plan(ctx, "Refactor", ["a"])
+    assert deps.workspace.mode is Mode.ask
+
+
 def _job_ctx(tmp_path):
     from types import SimpleNamespace
 

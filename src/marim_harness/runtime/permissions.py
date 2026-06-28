@@ -50,7 +50,8 @@ async def resolve_approvals(
 ) -> DeferredToolResults:
     """Turn pending tool-approval requests into results based on the current mode.
 
-    auto -> approve all. plan -> deny all (read-only). ask -> delegate to callback,
+    auto -> approve all. plan -> deny mutations; read-only bash is approved
+    (see _plan_decision). ask -> delegate to callback,
     which returns True (approve) or a ToolDenied (reject). In ask mode with no
     callback wired (e.g. a non-interactive run), deny rather than crash — nothing
     can grant approval, so the safe answer is to refuse.

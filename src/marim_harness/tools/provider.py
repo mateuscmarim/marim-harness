@@ -468,6 +468,9 @@ async def present_plan(
 
     new_mode = _PLAN_EXEC_MODES.get(choice if isinstance(choice, str) else "")
     if new_mode is not None:
+        # Tools hold only ctx.deps (not the Harness), so set mode directly; the
+        # on_mode_change hook below performs the UI refresh that Harness.set_mode
+        # would otherwise trigger.
         ctx.deps.workspace.mode = new_mode
         if ctx.deps.ui.on_mode_change is not None:
             ctx.deps.ui.on_mode_change()
