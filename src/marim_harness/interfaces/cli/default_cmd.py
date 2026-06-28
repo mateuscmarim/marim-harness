@@ -4,6 +4,7 @@ headlessly and print the result."""
 
 import argparse
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -55,9 +56,19 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _is_headless(prompt, *, stdin_isatty: bool) -> bool:
-    """Headless when an explicit prompt/flag was given, or stdin is piped."""
-    return prompt is not None or not stdin_isatty
+def _is_headless(prompt, *, stdin_isatty: bool, textual_driver: bool = False) -> bool:
+    """Headless when an explicit prompt/flag was given, or stdin is piped.
+
+    Exception: a Textual driver (``textual serve`` / ``textual run --dev``) wires
+    the app's stdio through pipes rather than a tty and signals itself via the
+    ``TEXTUAL_DRIVER`` env var. ``isatty()`` is then False even though the full
+    TUI is wanted (rendered through the web driver), so a set driver overrides the
+    piped-stdin heuristic. An explicit prompt still forces a headless one-shot."""
+    if prompt is not None:
+        return True
+    if textual_driver:
+        return False
+    return not stdin_isatty
 
 
 def _enter_worktree(workspace, branch, err):
@@ -98,7 +109,11 @@ def run_default(argv, *, stdin=None, out=None, err=None) -> int:
     from ...runtime.bootstrap import build_harness
     from ...runtime.permissions import Mode
 
-    if _is_headless(args.prompt, stdin_isatty=stdin.isatty()):
+    if _is_headless(
+        args.prompt,
+        stdin_isatty=stdin.isatty(),
+        textual_driver=bool(os.environ.get("TEXTUAL_DRIVER")),
+    ):
         prompt = args.prompt if isinstance(args.prompt, str) else stdin.read()
         prompt = (prompt or "").strip()
         if not prompt:

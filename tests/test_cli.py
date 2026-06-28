@@ -35,6 +35,14 @@ def test_is_headless_logic():
     assert _is_headless(True, stdin_isatty=True) is True    # -p flag alone
     assert _is_headless(None, stdin_isatty=False) is True   # piped stdin
     assert _is_headless(None, stdin_isatty=True) is False   # tty, no -p -> TUI
+    # `textual serve` drives the TUI over pipes (stdin is NOT a tty) and signals
+    # the web driver via TEXTUAL_DRIVER. That still wants the full TUI, so the
+    # piped-stdin heuristic must not pull it into headless.
+    assert _is_headless(None, stdin_isatty=False, textual_driver=True) is False
+    # An explicit prompt is still a headless one-shot, even under a driver.
+    assert _is_headless("hi", stdin_isatty=False, textual_driver=True) is True
+    # Default (no driver) keeps the original behavior.
+    assert _is_headless(None, stdin_isatty=False, textual_driver=False) is True
 
 
 def test_parser_defaults_and_flags():
