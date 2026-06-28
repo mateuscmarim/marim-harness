@@ -492,7 +492,7 @@ class TurnController:
                     try:
                         await asyncio.wait_for(
                             asyncio.to_thread(
-                                dump_provider_error, self.deps.workspace_root, exc
+                                dump_provider_error, self.deps.workspace.root, exc
                             ),
                             timeout=0.25,
                         )
@@ -519,7 +519,7 @@ class TurnController:
                 # failure during approval would otherwise leave the session
                 # ending in a dangling tool_use — unresumable. Roll back to the
                 # last clean state if the approval round is interrupted.
-                if self.deps.mode is Mode.ask and result.output.approvals:
+                if self.deps.workspace.mode is Mode.ask and result.output.approvals:
                     names = ", ".join(
                         getattr(c, "tool_name", None) or "(unknown)"
                         for c in result.output.approvals
@@ -536,7 +536,7 @@ class TurnController:
                         logger.warning("approval-needed notification hook failed", exc_info=True)
                 try:
                     deferred_results = await resolve_approvals(
-                        result.output, self.deps.mode, self.deps.request_approval
+                        result.output, self.deps.workspace.mode, self.deps.ui.request_approval
                     )
                 except BaseException:
                     self.session.history = resumable

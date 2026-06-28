@@ -194,14 +194,14 @@ def register_instructions(
 
     @agent.instructions
     def _project_instructions(ctx: RunContext[Deps]) -> str:
-        text = load_project_instructions(ctx.deps.workspace_root)
+        text = load_project_instructions(ctx.deps.workspace.root)
         if not text:
             return ""
         return f"Project-specific instructions:\n\n{text}"
 
     @agent.instructions
     def _plugin_instructions(ctx: RunContext[Deps]) -> str:
-        texts = plugin_instruction_texts(ctx.deps.workspace_root)
+        texts = plugin_instruction_texts(ctx.deps.workspace.root)
         if not texts:
             return ""
         blocks = [f"## From plugin '{name}'\n\n{text}" for name, text in texts]
@@ -212,11 +212,11 @@ def register_instructions(
 
     @agent.instructions
     def _memory_indexes(ctx: RunContext[Deps]) -> str:
-        return _memory_index_block(ctx.deps.workspace_root)
+        return _memory_index_block(ctx.deps.workspace.root)
 
     @agent.instructions
     def _skill_index(ctx: RunContext[Deps]) -> str:
-        text = skills_index_text(discover_skills(ctx.deps.workspace_root))
+        text = skills_index_text(discover_skills(ctx.deps.workspace.root))
         if not text:
             return ""
         return (
@@ -227,7 +227,7 @@ def register_instructions(
 
     @agent.instructions
     def _agent_index(ctx: RunContext[Deps]) -> str:
-        text = agents_index_text(discover_agents(ctx.deps.workspace_root))
+        text = agents_index_text(discover_agents(ctx.deps.workspace.root))
         if not text:
             return ""
         return (

@@ -50,11 +50,11 @@ from .deps import (
     Deps,
     HarnessAgent,
     HarnessServices,
-    SubAgentCallbacks,
     SubAgentEventCb,
-    SubAgentModelCb,
     SubAgentNoticeCb,
+    SubAgentModelCb,
     SubAgentUsageCb,
+    WorkspaceConfig,
 )
 from .instructions import register_instructions
 from .permissions import Mode
@@ -202,7 +202,7 @@ def build_collaborators(
     register_instructions(agent, mcp, cfg.proactive_memory)
     # Session-scoped LSP server pool, reachable by the navigation/diagnostics
     # tools through deps. Subagents share this deps object, so they get LSP too.
-    lsp = LspManager(deps.workspace_root) if cfg.lsp_enabled else None
+    lsp = LspManager(deps.workspace.root) if cfg.lsp_enabled else None
     session = SessionController(
         cfg.store, cfg.manager, deps,
         cfg.max_context_tokens, cfg.keep_last_messages,
@@ -210,7 +210,7 @@ def build_collaborators(
     )
     # Per-session checkpoints. Wire the real GitSnapshotter so rewind
     # restores working-tree files end-to-end.
-    checkpoints = CheckpointManager(session, GitSnapshotter(deps.workspace_root))
+    checkpoints = CheckpointManager(session, GitSnapshotter(deps.workspace.root))
     hooks = TurnHooks(deps, session)
     # The spawn_agent tool reaches the runner through Deps, the same way
     # other tools reach shared state. The runner reads the current model via
@@ -328,15 +328,13 @@ class Harness:
         """
         # A UI is attached → this session has a wake loop, so detached fan-out is
         # safe to activate (headless never calls bind_ui and stays inline).
-        self.deps.interactive = True
-        self.deps.request_approval = request_approval
-        self.deps.ask_user = ask_user
-        self.deps.callbacks = SubAgentCallbacks(
-            on_event=on_subagent_event,
-            on_notice=on_subagent_notice,
-            on_model=on_subagent_model,
-            on_usage=on_subagent_usage,
-        )
+        self.deps.ui.interactive = True
+        self.deps.ui.request_approval = request_approval
+        self.deps.ui.ask_user = ask_user
+        self.deps.ui.on_subagent_event = on_subagent_event
+        self.deps.ui.on_subagent_notice = on_subagent_notice
+        self.deps.ui.on_subagent_model = on_subagent_model
+        self.deps.ui.on_subagent_usage = on_subagent_usage
         self.deps.tasks.on_change = on_tasks_changed
         self.deps.jobs.on_change = on_jobs_changed
         self.session.on_compact = on_compact
@@ -403,17 +401,17 @@ class Harness:
     @property
     def mode(self) -> Mode:
         """The current approval mode (auto/ask/plan)."""
-        return self.deps.mode
+        return self.deps.workspace.mode
 
     def set_mode(self, mode: Mode) -> None:
         """Set the approval mode. The single write point for ``deps.mode`` so the
         interface layer doesn't poke ``harness.deps`` field-by-field."""
-        self.deps.mode = mode
+        self.deps.workspace.mode = mode
 
     def cycle_mode(self) -> Mode:
         """Advance to the next approval mode and return it."""
-        self.deps.mode = self.deps.mode.cycle()
-        return self.deps.mode
+        self.deps.workspace.mode = self.deps.workspace.mode.cycle()
+        return self.deps.workspace.mode
 
     def _apply_saved_model(self) -> None:
         """Re-point at a session's saved model after loading it, if one differs
@@ -435,10 +433,10 @@ class Harness:
             await lsp.aclose()
 
     async def disable_server(self, name: str) -> None:
-        self.mcp.disable_server(name, self.deps.workspace_root)
+        self.mcp.disable_server(name, self.deps.workspace.root)
 
     async def enable_server(self, name: str) -> str | None:
-        return await self.mcp.enable_server(name, self.deps.workspace_root)
+        return await self.mcp.enable_server(name, self.deps.workspace.root)
 
     # --- hooks (observe-only except session_start, which injects context into
     # the next turn; dispatch + payload assembly live on ``self.hooks``) ---

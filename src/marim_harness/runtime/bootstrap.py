@@ -14,7 +14,7 @@ from ..mcp import build_mcp_servers, disabled_server_names, load_mcp_config
 from ..notifications import Notifier
 from ..session import SessionManager
 from ..tools.provider import BuiltinToolProvider
-from .deps import Deps
+from .deps import Deps, UIHooks, WorkspaceConfig
 from .harness import Harness, HarnessConfig
 from .permissions import Mode
 
@@ -51,12 +51,13 @@ def build_harness(
     hook_runner = HookRunner(hooks_cfg) if hooks_cfg else None
     notifier = Notifier(cfg.notifications)
     deps = Deps(
-        workspace_root=workspace,
-        mode=mode,
-        command_policy=command_policy,
+        workspace=WorkspaceConfig(
+            root=workspace,
+            mode=mode,
+            command_policy=command_policy,
+        ),
         hooks=hook_runner,
-        notifier=notifier,
-        detach_fanout=cfg.subagent.detach_fanout,
+        ui=UIHooks(detach_fanout=cfg.subagent.detach_fanout, notifier=notifier),
     )
 
     manager = SessionManager(workspace)
