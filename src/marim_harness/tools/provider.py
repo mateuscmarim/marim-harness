@@ -823,8 +823,10 @@ class BuiltinToolProvider:
         agent.tool(update_tasks)
         agent.tool(ask_user)
         bound_spawn = functools.partial(spawn_agent, max_depth=SUBAGENT_MAX_DEPTH)
-        bound_spawn.__name__ = "spawn_agent"
-        bound_spawn.__qualname__ = "spawn_agent"
+        # functools.partial accepts arbitrary attributes at runtime, but its type
+        # stub doesn't declare __name__/__qualname__ — hence the ignores.
+        bound_spawn.__name__ = "spawn_agent"  # type: ignore[attr-defined]
+        bound_spawn.__qualname__ = "spawn_agent"  # type: ignore[attr-defined]
         agent.tool(bound_spawn)
         if self._combined_job_tool:
             agent.tool(job)

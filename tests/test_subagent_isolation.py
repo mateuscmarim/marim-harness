@@ -197,3 +197,27 @@ async def test_isolated_spawn_crash_cleans_up_worktree_and_branch(repo: Path):
     assert "boom" in out  # contained, not raised
     assert not _branch_exists(repo, "subagent/tc1")
     assert not (repo / ".worktrees" / "subagent" / "tc1").exists()
+
+
+@pytest.mark.anyio
+async def test_isolated_spawn_cancel_cleans_up_worktree_and_branch(repo: Path):
+    """A cancelled isolated spawn (CancelledError is a BaseException, e.g. shutdown
+    tearing down a running job) must still discard its worktree + branch — and let
+    the cancellation propagate rather than contain it as an error string."""
+    import asyncio
+
+    deps = _make_deps(repo)
+    h = _make_harness(_text_model(), deps)
+
+    class _CancelAgent:
+        async def run(self, task, **kwargs):
+            fs.write_file(kwargs["deps"].workspace.root, "partial.txt", "half\n")
+            raise asyncio.CancelledError
+
+    h.subagents.build = lambda type, max_output_chars=None, model=None, \
+        workspace_root=None, defn=None, depth=0: (_CancelAgent(), None)
+
+    with pytest.raises(asyncio.CancelledError):
+        await h.subagents.run("general", "do it", "tc1", isolation="worktree")
+    assert not _branch_exists(repo, "subagent/tc1")
+    assert not (repo / ".worktrees" / "subagent" / "tc1").exists()

@@ -321,8 +321,10 @@ class SubagentRunner:
             # every level — a "remaining" count would shrink as depth grows and make
             # the check refuse spawns that are still within the limit.
             bound = partial(spawn_agent, max_depth=self._max_depth)
-            bound.__name__ = "spawn_agent"
-            bound.__qualname__ = "spawn_agent"
+            # functools.partial accepts arbitrary attributes at runtime, but its
+            # type stub doesn't declare __name__/__qualname__ — hence the ignores.
+            bound.__name__ = "spawn_agent"  # type: ignore[attr-defined]
+            bound.__qualname__ = "spawn_agent"  # type: ignore[attr-defined]
             sub.tool(bound)
         return sub, None
 
@@ -556,6 +558,14 @@ class SubagentRunner:
             # sibling spawns fanning out alongside it. Contain it.
             await self.hooks.subagent_stop(type, task, f"error: {exc}")
             return f"Sub-agent {type!r} failed: {exc.__class__.__name__}: {exc}"
+        except BaseException:
+            # Cancellation/interrupt (e.g. shutdown tearing down a running job) is
+            # a BaseException, so it slips past the contain-as-error handler above.
+            # Discard the worktree before it propagates — otherwise an isolated
+            # spawn leaks its worktree + branch on every cancel.
+            if prep.iso:
+                self._discard_worktree(prep.iso)
+            raise
         self._log_spawn_timing(type, prep.t0, prep.t_built, prep.first_event_at, failed=False)
         await self.hooks.subagent_stop(type, task, result.output)
         self._save_transcript(stream_id, result.all_messages())
@@ -595,6 +605,13 @@ class SubagentRunner:
                 self._discard_worktree(prep.iso)
             # A background crash is intentionally NOT contained: it propagates
             # to the job registry, which marks the job failed.
+            raise
+        except BaseException:
+            # Cancellation (e.g. cancel_all() tearing down jobs on shutdown) is a
+            # BaseException and skips the handler above; discard the isolated
+            # worktree before it propagates so a cancelled spawn leaves none behind.
+            if prep.iso:
+                self._discard_worktree(prep.iso)
             raise
         self._log_spawn_timing(type, prep.t0, prep.t_built, prep.first_event_at, failed=False)
         await self.hooks.subagent_stop(type, task, result.output)
@@ -636,6 +653,13 @@ class SubagentRunner:
                 raise
             await self.hooks.subagent_stop(defn.name, task, f"error: {exc}")
             return f"Sub-agent {defn.name!r} failed: {exc.__class__.__name__}: {exc}"
+        except BaseException:
+            # Cancellation/interrupt slips past the contain-as-error handler above
+            # (it's a BaseException). Discard the worktree before it propagates so
+            # a cancelled isolated CLI spawn doesn't leak its worktree + branch.
+            if iso:
+                self._discard_worktree(iso)
+            raise
         await self.hooks.subagent_stop(defn.name, task, result.output)
         self._save_transcript(stream_id, result.transcript)
         self.session.usage += result.usage
