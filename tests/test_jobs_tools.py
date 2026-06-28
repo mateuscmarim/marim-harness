@@ -97,7 +97,8 @@ async def test_bash_foreground_does_not_register_job(tmp_path):
 @pytest.mark.anyio
 async def test_spawn_agent_background_registers_job(tmp_path):
     async def fake_bg(type: str, task: str, mcp_names=None, max_output_chars=None,
-                      model=None, isolation=None, stream_id: str = "") -> str:
+                      model=None, isolation=None, stream_id: str = "",
+                      caller_depth: int = 0) -> str:
         return f"report for {type}"
 
     deps = Deps(workspace=WorkspaceConfig(root=tmp_path),

@@ -38,7 +38,7 @@ def _capture_deps(h):
             return SimpleNamespace(output="ok", usage=RunUsage(), all_messages=list)
 
     h.subagents.build = lambda type, max_output_chars=None, model=None, \
-        workspace_root=None, defn=None: (_StubAgent(), None)
+        workspace_root=None, defn=None, depth=0: (_StubAgent(), None)
     return cap
 
 
@@ -79,7 +79,7 @@ async def test_isolated_spawn_commits_changes_and_reports_branch(repo: Path):
             return SimpleNamespace(output="wrote new.txt", usage=RunUsage(), all_messages=list)
 
     h.subagents.build = lambda type, max_output_chars=None, model=None, \
-        workspace_root=None, defn=None: (_WritingAgent(), None)
+        workspace_root=None, defn=None, depth=0: (_WritingAgent(), None)
 
     out = await h.subagents.run("general", "add a file", "tc1", isolation="worktree")
     assert "wrote new.txt" in out
@@ -135,7 +135,8 @@ async def test_spawn_agent_tool_forwards_isolation(repo: Path):
     captured: dict = {}
 
     async def fake_run(type, task, stream_id, mcp_names=None,
-                       max_output_chars=None, model=None, isolation=None):
+                       max_output_chars=None, model=None, isolation=None,
+                       caller_depth: int = 0):
         captured["isolation"] = isolation
         return "REPORT"
 
@@ -190,7 +191,7 @@ async def test_isolated_spawn_crash_cleans_up_worktree_and_branch(repo: Path):
             raise RuntimeError("boom mid-run")
 
     h.subagents.build = lambda type, max_output_chars=None, model=None, \
-        workspace_root=None, defn=None: (_CrashAgent(), None)
+        workspace_root=None, defn=None, depth=0: (_CrashAgent(), None)
 
     out = await h.subagents.run("general", "do it", "tc1", isolation="worktree")
     assert "boom" in out  # contained, not raised
