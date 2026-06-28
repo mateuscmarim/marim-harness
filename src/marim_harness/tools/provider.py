@@ -4,17 +4,20 @@ import json
 import logging
 import re
 from collections.abc import Iterable
+from datetime import datetime, timezone
 from typing import Annotated, Literal, Protocol, TypeVar
 
 from pydantic import BeforeValidator
 from pydantic_ai import ModelRetry, RunContext
 
-from ..ask_user import Question, answers_to_json, coerce_questions
+from ..ask_user import Choice, Question, answers_to_json, coerce_questions
 from ..jobs import render_jobs
 from ..runtime.deps import Deps, HarnessAgent, SubAgent
+from ..runtime.permissions import Mode
 from ..tasks import Task, summarize
 from ..workspace.agents import compose_subagent_task
 from ..workspace.memory import global_scope, project_scope, read_memory, save_memory
+from ..workspace.plans import write_plan
 from ..workspace.skills import discover_skills, find_skill, read_bundled_file, read_skill_body
 from . import fetch, fs, shell, web
 
@@ -29,6 +32,8 @@ from .names import (  # noqa: F401
     SUBAGENT_MAX_DEPTH,
     SUBAGENT_TOOLS,
 )
+
+logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
 
@@ -397,6 +402,89 @@ async def ask_user(ctx: RunContext[Deps], questions: LenientList[Question]) -> s
     if not answers:
         return _ASK_USER_CANCELLED
     return answers_to_json(answers)
+
+
+_PLAN_CHOICES = [
+    Choice("Execute hands-off (auto)", "Run the whole plan without further prompts."),
+    Choice("Execute step-by-step (ask)", "Run the plan, approving each change."),
+    Choice("Hand off to sub-agent", "Spawn a sub-agent to implement the plan file."),
+    Choice("Keep planning", "Save the plan as a draft and keep refining."),
+]
+_PLAN_EXEC_MODES = {
+    "Execute hands-off (auto)": Mode.auto,
+    "Execute step-by-step (ask)": Mode.ask,
+}
+
+
+async def present_plan(
+    ctx: RunContext[Deps], summary: str, steps: LenientList[str]
+) -> str:
+    """Present your finished plan and let the user choose how to execute it. Call
+    this at the END of a planning turn, once you have researched the task and have
+    a concrete, ordered plan.
+
+    `summary` is a short paragraph describing the approach; `steps` is the ordered
+    list of concrete steps. The plan is saved to `.marim/plans/`, mirrored into
+    your task checklist, and the user is asked whether to execute it hands-off,
+    step-by-step, hand it to a sub-agent, or keep planning. If they approve
+    execution, the approval mode switches and you should begin carrying out the
+    plan starting at step one. If there is no interactive UI, the plan is saved
+    and you stay in plan mode."""
+    clean = [s.strip() for s in (steps or []) if s and s.strip()]
+    if not clean:
+        raise ModelRetry("present_plan needs at least one concrete step.")
+
+    created = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    # The session id is scoped to the workspace root name so plan filenames are
+    # stable per-workspace (e.g. "<workspace-name>-<summary-prefix>.md").
+    # HarnessServices has no session_id field, so we derive the slug from the
+    # workspace root rather than adding new plumbing out of scope for this task.
+    session_id = ctx.deps.workspace.root.name or "session"
+    try:
+        path = write_plan(
+            ctx.deps.workspace.root,
+            session_id=session_id,
+            summary=summary,
+            steps=clean,
+            created=created,
+        )
+    except OSError:
+        logger.warning("failed to write plan artifact", exc_info=True)
+        path = None
+
+    ctx.deps.tasks.replace([Task(text=s) for s in clean])
+
+    if ctx.deps.ui.ask_user is None:
+        return (
+            f"Plan saved{f' to {path}' if path else ''}. No interactive UI, so "
+            "staying in plan mode — share the plan and await direction."
+        )
+
+    answers = await ctx.deps.ui.ask_user(
+        [Question(question="How should I execute this plan?", header="execution",
+                  options=_PLAN_CHOICES)]
+    )
+    choice = (answers or {}).get("execution", "Keep planning")
+
+    new_mode = _PLAN_EXEC_MODES.get(choice if isinstance(choice, str) else "")
+    if new_mode is not None:
+        ctx.deps.workspace.mode = new_mode
+        if ctx.deps.ui.on_mode_change is not None:
+            ctx.deps.ui.on_mode_change()
+        return (
+            f"Plan approved. Approval mode is now {new_mode.value}. Begin executing "
+            "the plan now, starting with step one."
+        )
+    if choice == "Hand off to sub-agent" and path is not None:
+        return (
+            f"Plan saved to {path}. To execute, call spawn_agent (type 'general') "
+            f"with instructions to implement the steps in {path} in order, then "
+            "report back. You remain in plan mode meanwhile."
+        )
+    return (
+        f"Plan saved{f' to {path}' if path else ''} as a draft. Still in plan mode "
+        "— refine it and call present_plan again when ready."
+    )
 
 
 async def web_search(
@@ -822,6 +910,7 @@ class BuiltinToolProvider:
         agent.tool(read_skill_file)
         agent.tool(update_tasks)
         agent.tool(ask_user)
+        agent.tool(present_plan)
         bound_spawn = functools.partial(spawn_agent, max_depth=SUBAGENT_MAX_DEPTH)
         # functools.partial accepts arbitrary attributes at runtime, but its type
         # stub doesn't declare __name__/__qualname__ — hence the ignores.
