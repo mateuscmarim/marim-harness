@@ -153,7 +153,7 @@ class SubagentRunner:
         Returns ``(info, None)`` where ``info`` is a dict with ``repo``,
         ``branch`` and ``path``, or ``(None, message)`` when the workspace isn't a
         git repo or git refuses (the message is surfaced to the orchestrator)."""
-        repo = repo_root(self.deps.workspace_root)
+        repo = repo_root(self.deps.workspace.root)
         if repo is None:
             return None, (
                 "Isolated spawn needs a git repo, but this workspace isn't one. "
@@ -222,7 +222,7 @@ class SubagentRunner:
         foreground fan-out spawn forwards to the UI, so it streams and is timed.)
         Returns None only when there's nothing to do: no hooks configured and no
         UI listener (e.g. a headless background run with hooks off)."""
-        cb = self.deps.callbacks.on_event
+        cb = self.deps.ui.on_subagent_event
         hooks_on = self.deps.hooks is not None
         forward = cb is not None and bool(stream_id)
         if not hooks_on and not forward:
@@ -266,14 +266,14 @@ class SubagentRunner:
         isn't repeated); when None we resolve it here. Returns ``(agent, None)`` or,
         for an unknown type or an unresolvable model, ``(None, message)``."""
         if defn is None:
-            defn = find_agent(self.deps.workspace_root, type)
+            defn = find_agent(self.deps.workspace.root, type)
         if defn is None:
             names = ", ".join(
-                a.qualified_name for a in discover_agents(self.deps.workspace_root)
+                a.qualified_name for a in discover_agents(self.deps.workspace.root)
             )
             return None, f"No sub-agent type {type!r}. Available: {names}."
         instr_root = (
-            workspace_root if workspace_root is not None else self.deps.workspace_root
+            workspace_root if workspace_root is not None else self.deps.workspace.root
         )
         if model is None:
             model_obj = self._get_model()
@@ -284,7 +284,7 @@ class SubagentRunner:
             )
         else:
             model_obj = self._build_model(model)
-        allow_gated = self.deps.mode is Mode.auto
+        allow_gated = self.deps.workspace.mode is Mode.auto
         sub = Agent(
             model_obj,
             deps_type=Deps,
@@ -312,7 +312,7 @@ class SubagentRunner:
         rel = f".marim/subagent-output/{ref}.md"
         text, spill = cap_subagent_output(output, max_output_chars, rel)
         if spill is not None:
-            fs.write_file(self.deps.workspace_root, rel, spill)
+            fs.write_file(self.deps.workspace.root, rel, spill)
         return text
 
     # Backoff before a transient-error retry: exponential from a small base, capped,
@@ -403,7 +403,7 @@ class SubagentRunner:
                             attempt: int) -> None:
         """Surface a transient-error retry on a foreground spawn's card. A no-op for
         a background spawn (no card) or when no UI is listening."""
-        cb = self.deps.callbacks.on_notice
+        cb = self.deps.ui.on_subagent_notice
         if cb is None or not stream_id:
             return
         await cb(
@@ -444,7 +444,7 @@ class SubagentRunner:
         # Resolve the agent definition ONCE here (a filesystem discovery walk) and
         # thread it through to _prepare_spawn/build so a native spawn doesn't pay the
         # walk a second time — it matters on a fan-out (2N walks → N).
-        defn = find_agent(self.deps.workspace_root, type)
+        defn = find_agent(self.deps.workspace.root, type)
         if defn is not None and defn.backend == "claude-cli":
             return await self._execute_cli_spawn(
                 defn, task, work_root, iso, mcp_names, max_output_chars,
@@ -501,7 +501,7 @@ class SubagentRunner:
         Exceptions are contained as an error string so sibling fan-out spawns
         aren't taken down. Usage is folded into the session but NOT persisted —
         the caller's ``run_turn`` persists it."""
-        run_deps = replace(self.deps, workspace_root=prep.iso["path"]) if prep.iso else self.deps
+        run_deps = replace(self.deps, workspace=replace(self.deps.workspace, root=prep.iso["path"])) if prep.iso else self.deps
         try:
             # Bound concurrent model runs (the part that hits the provider) so a
             # wide fan-out queues instead of slamming a rate-limited route at once.
@@ -541,7 +541,7 @@ class SubagentRunner:
         # redirects its file ops into the worktree. Every other Deps field stays shared.
         run_deps = replace(self.deps, tasks=TaskList())
         if prep.iso:
-            run_deps = replace(run_deps, workspace_root=prep.iso["path"])
+            run_deps = replace(run_deps, workspace=replace(run_deps.workspace, root=prep.iso["path"]))
         try:
             async with self._slot():
                 result = await self._run_to_completion(
@@ -641,19 +641,19 @@ class SubagentRunner:
                 "no `claude` binary found (set MARIM_CLAUDE_CLI_BIN or install "
                 "Claude Code)"
             )
-        allow_gated = self.deps.mode is Mode.auto
+        allow_gated = self.deps.workspace.mode is Mode.auto
         tools = effective_tools(defn, allow_gated=allow_gated)
-        cwd = str(work_root or self.deps.workspace_root)
+        cwd = str(work_root or self.deps.workspace.root)
         model_name = model or defn.model or os.environ.get(CLI_MODEL_ENV)
-        cbs = self.deps.callbacks
-        runner = ClaudeCliRunner(cbs.on_event, cbs.on_notice, cbs.on_model)
+        cbs = self.deps.ui
+        runner = ClaudeCliRunner(cbs.on_subagent_event, cbs.on_subagent_notice, cbs.on_subagent_model)
         result = await runner.run(
             binary=binary, prompt=task, system_prompt=defn.prompt, cwd=cwd,
             allow_gated=allow_gated, allowed_tools=tools, model=model_name,
             stream_id=stream_id,
         )
-        if stream_id and cbs.on_usage is not None:
-            await cbs.on_usage(stream_id, result.usage)
+        if stream_id and cbs.on_subagent_usage is not None:
+            await cbs.on_subagent_usage(stream_id, result.usage)
         return result
 
     def _log_spawn_timing(
