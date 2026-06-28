@@ -65,6 +65,12 @@ class ModelConfig:
     # default; opting into "auto" is a conscious choice. (The headless one-shot has
     # its own --mode flag and does not consult this.)
     default_mode: str = "ask"
+    # Tool search: defer the MCP/plugin tool surface behind Pydantic AI's native
+    # tool search. "off" = load all MCP tools every request (today's behavior);
+    # "on" = always defer; "auto" = defer only when the live MCP tool count exceeds
+    # tool_search_threshold. Builtins are never deferred.
+    tool_search: str = "auto"
+    tool_search_threshold: int = 15
     # When true, project-local .marim/hooks.json hooks are honored; otherwise
     # only the global hooks config runs (supply-chain guard for cloned repos).
     trust_project_hooks: bool = False
@@ -114,6 +120,8 @@ def _common_kwargs() -> dict[str, Any]:
         max_context_tokens=_int_env("MARIM_MAX_CONTEXT_TOKENS", 100_000),
         proactive_memory=_bool_env("MARIM_PROACTIVE_MEMORY", False),
         default_mode=_mode_env("MARIM_DEFAULT_MODE", "ask"),
+        tool_search=_enum_env("MARIM_TOOL_SEARCH", "auto", _VALID_TOOL_SEARCH),
+        tool_search_threshold=_int_env("MARIM_TOOL_SEARCH_THRESHOLD", 15),
         trust_project_hooks=_bool_env("MARIM_TRUST_PROJECT_HOOKS", False),
         lsp_enabled=_bool_env("MARIM_LSP", True),
         lsp_tools_enabled=_bool_env("MARIM_LSP_TOOLS", True),
@@ -200,32 +208,41 @@ def _int_env(name: str, default: int) -> int:
     if not raw:
         return default
     try:
-        return int(raw)
+        parsed = int(raw)
     except ValueError:
         logger.debug("Ignoring invalid %s=%r (not an integer); using %d.", name, raw, default)
         return default
+    if parsed <= 0:
+        logger.debug("Ignoring invalid %s=%r (must be positive); using %d.", name, raw, default)
+        return default
+    return parsed
 
 
 _TRUTHY = {"1", "true", "on", "yes"}
 
 _VALID_MODES = frozenset({"ask", "auto", "plan"})
+_VALID_TOOL_SEARCH = frozenset({"off", "auto", "on"})
 
 
-def _mode_env(name: str, default: str) -> str:
-    """Read an approval-mode env var, validating it against ask/auto/plan. An
-    unknown value falls back to ``default`` (warned, not raised) so a typo can't
-    leave the harness in an undefined mode."""
+def _enum_env(name: str, default: str, valid: frozenset[str]) -> str:
+    """Read a string env var validated against ``valid`` (case-insensitive). An
+    unknown value falls back to ``default`` (warned, not raised)."""
     raw = os.getenv(name)
     if raw is None:
         return default
     value = raw.strip().lower()
-    if value not in _VALID_MODES:
+    if value not in valid:
         logger.warning(
             "Ignoring invalid %s=%r (expected one of %s); using %r.",
-            name, raw, ", ".join(sorted(_VALID_MODES)), default,
+            name, raw, ", ".join(sorted(valid)), default,
         )
         return default
     return value
+
+
+def _mode_env(name: str, default: str) -> str:
+    """Approval-mode env var, validated against ask/auto/plan."""
+    return _enum_env(name, default, _VALID_MODES)
 
 
 def _bool_env(name: str, default: bool) -> bool:

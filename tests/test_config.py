@@ -623,3 +623,34 @@ def test_load_environment_project_env_cannot_set_default_mode(
 
     assert "MARIM_DEFAULT_MODE" not in os.environ
     assert load_config().default_mode == "ask"
+
+
+def test_tool_search_defaults_to_auto(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.delenv("MARIM_TOOL_SEARCH", raising=False)
+    cfg = load_config()
+    assert cfg.tool_search == "auto"
+    assert cfg.tool_search_threshold == 15
+
+
+def test_tool_search_reads_valid_env(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setenv("MARIM_TOOL_SEARCH", "On")
+    monkeypatch.setenv("MARIM_TOOL_SEARCH_THRESHOLD", "30")
+    cfg = load_config()
+    assert cfg.tool_search == "on"
+    assert cfg.tool_search_threshold == 30
+
+
+def test_tool_search_invalid_falls_back_to_auto(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setenv("MARIM_TOOL_SEARCH", "sometimes")
+    assert load_config().tool_search == "auto"
+
+
+def test_tool_search_threshold_garbage_falls_back(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setenv("MARIM_TOOL_SEARCH_THRESHOLD", "-3")
+    # _POSITIVE_INT_KEYS sanitization only runs in load_environment(); _int_env
+    # itself returns the default for a non-positive/garbage value at read time.
+    assert load_config().tool_search_threshold == 15
