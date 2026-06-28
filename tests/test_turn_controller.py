@@ -176,3 +176,30 @@ def test_clear_pending_jobs_digest_clears_field(tmp_path):
     tc._pending_jobs_digest = "some digest"
     tc.clear_pending_jobs_digest()
     assert tc._pending_jobs_digest is None
+
+
+@pytest.mark.anyio
+async def test_assemble_prompt_injects_plan_preamble_in_plan_mode(tmp_path):
+    from marim_harness.runtime.permissions import Mode
+
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    tc = _make_tc(FunctionModel(fn), tmp_path)
+    tc.deps.workspace.mode = Mode.plan
+    prompt = await tc._assemble_prompt("refactor the parser")
+    assert "PLAN MODE" in prompt
+    assert prompt.endswith("refactor the parser")
+
+
+@pytest.mark.anyio
+async def test_assemble_prompt_no_preamble_outside_plan_mode(tmp_path):
+    from marim_harness.runtime.permissions import Mode
+
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    tc = _make_tc(FunctionModel(fn), tmp_path)
+    tc.deps.workspace.mode = Mode.ask
+    prompt = await tc._assemble_prompt("refactor the parser")
+    assert "PLAN MODE" not in prompt

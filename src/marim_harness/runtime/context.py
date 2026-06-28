@@ -53,6 +53,22 @@ def strip_turn_context(content: str) -> str:
     return content[idx + len(_TURN_CONTEXT_SEP):]
 
 
+_PLAN_MODE_PREAMBLE = (
+    "You are in PLAN MODE. Research the task read-only — read files, search, and "
+    "use read-only shell commands (git status/log/diff, ls, grep). Do NOT write, "
+    "edit, or run mutating commands; they will be denied. When you have a concrete "
+    "plan, call `present_plan` with a one-paragraph summary and the ordered steps. "
+    "Do not start implementing until the user approves."
+)
+
+
+def plan_mode_preamble() -> str:
+    """The planning instruction injected into a turn's context when the session is
+    in plan mode. Lives in the per-turn envelope (not the system prompt) so the
+    cached system/tool prefix stays stable across turns."""
+    return _PLAN_MODE_PREAMBLE
+
+
 def render_checklist_block(items: list[Task]) -> str:
     """The task-checklist block prepended to a turn's prompt as turn-state, or
     ``""`` when there are no tasks. It lives in the per-turn envelope rather than
