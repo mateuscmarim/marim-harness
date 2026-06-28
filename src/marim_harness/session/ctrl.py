@@ -295,7 +295,7 @@ class SessionController:
                 base_payload(
                     hook_events.PRE_COMPACT,
                     session_id=self.store.session_id if self.store is not None else "",
-                    cwd=str(self.deps.workspace_root),
+                    cwd=str(self.deps.workspace.root),
                     transcript_path=str(self.store.path) if self.store is not None else "",
                     trigger="auto",
                     custom_instructions="",

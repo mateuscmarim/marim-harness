@@ -12,10 +12,8 @@ from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.usage import RunUsage
 
-from marim_harness.runtime.deps import Deps
-from marim_harness.runtime.permissions import Mode
 from marim_harness.tools import fs
-from tests.conftest import _last_instructions, _make_harness, _text_model, _make_deps
+from tests.conftest import _last_instructions, _make_deps, _make_harness, _text_model
 
 
 @pytest.fixture
@@ -36,7 +34,7 @@ def _capture_deps(h):
 
     class _StubAgent:
         async def run(self, task, **kwargs):
-            cap["workspace_root"] = kwargs["deps"].workspace_root
+            cap["workspace_root"] = kwargs["deps"].workspace.root
             return SimpleNamespace(output="ok", usage=RunUsage(), all_messages=list)
 
     h.subagents.build = lambda type, max_output_chars=None, model=None, \
@@ -76,7 +74,7 @@ async def test_isolated_spawn_commits_changes_and_reports_branch(repo: Path):
 
     class _WritingAgent:
         async def run(self, task, **kwargs):
-            root = kwargs["deps"].workspace_root
+            root = kwargs["deps"].workspace.root
             fs.write_file(root, "new.txt", "from sub-agent\n")
             return SimpleNamespace(output="wrote new.txt", usage=RunUsage(), all_messages=list)
 
@@ -188,7 +186,7 @@ async def test_isolated_spawn_crash_cleans_up_worktree_and_branch(repo: Path):
 
     class _CrashAgent:
         async def run(self, task, **kwargs):
-            fs.write_file(kwargs["deps"].workspace_root, "partial.txt", "half\n")
+            fs.write_file(kwargs["deps"].workspace.root, "partial.txt", "half\n")
             raise RuntimeError("boom mid-run")
 
     h.subagents.build = lambda type, max_output_chars=None, model=None, \

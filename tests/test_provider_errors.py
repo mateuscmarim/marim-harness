@@ -23,7 +23,6 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import FunctionModel
 
-from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.errors import (
     dump_provider_error,
     format_provider_error,
@@ -32,7 +31,6 @@ from marim_harness.runtime.errors import (
     provider_error_payload,
 )
 from marim_harness.runtime.harness import Harness, HarnessConfig, _actionable_error_note
-from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
 from tests.conftest import _make_deps
 

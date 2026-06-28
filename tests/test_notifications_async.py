@@ -15,8 +15,6 @@ from marim_harness.notifications import (
     NotificationConfig,
     Notifier,
 )
-from marim_harness.runtime.deps import Deps
-from marim_harness.runtime.permissions import Mode
 from tests.conftest import _make_deps
 
 # ---------------------------------------------------------------------------
@@ -117,7 +115,7 @@ async def test_notify_does_not_call_blocking_send_synchronously(tmp_path: Path):
     blocking ``Notifier.send`` directly — it must schedule the async path."""
     app = _app(tmp_path)
     notifier = Notifier(NotificationConfig(enabled=True, events={"turn_complete"}))
-    app.harness.deps.notifier = notifier
+    app.harness.deps.ui.notifier = notifier
 
     async with app.run_test():
         with patch.object(notifier, "send") as blocking_send, patch.object(
@@ -133,7 +131,7 @@ async def test_notify_does_not_call_blocking_send_synchronously(tmp_path: Path):
 @pytest.mark.anyio
 async def test_notify_noop_when_notifier_absent(tmp_path: Path):
     app = _app(tmp_path)
-    app.harness.deps.notifier = None
+    app.harness.deps.ui.notifier = None
     async with app.run_test():
         # Must not raise when no notifier is wired.
         app._notify("Turn complete", "done", EVENT_TURN_COMPLETE)

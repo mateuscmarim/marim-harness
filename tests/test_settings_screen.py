@@ -29,7 +29,7 @@ def _fake_harness():
     from types import SimpleNamespace
 
     h = SimpleNamespace(
-        deps=SimpleNamespace(mode=Mode.auto),
+        deps=SimpleNamespace(workspace=SimpleNamespace(mode=Mode.auto)),
         model_label="openrouter/x",
         model_id="x",
         model_source=None,  # disables the model-change picker path
@@ -40,7 +40,7 @@ def _fake_harness():
             mcp_status=SimpleNamespace(connected=[], failed={}),
         ),
     )
-    h.set_mode = lambda mode: setattr(h.deps, "mode", mode)
+    h.set_mode = lambda mode: setattr(h.deps.workspace, "mode", mode)
     return h
 
 
@@ -121,7 +121,7 @@ async def test_mode_radio_applies_live():
         await pilot.pause()
         await pilot.click("#mode-plan")
         await pilot.pause()
-    assert harness.deps.mode == Mode.plan
+    assert harness.deps.workspace.mode == Mode.plan
 
 
 @pytest.mark.anyio

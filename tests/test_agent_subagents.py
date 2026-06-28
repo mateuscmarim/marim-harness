@@ -4,11 +4,16 @@ import pytest
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
-from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.harness import Harness
 from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
-from tests.conftest import _edit_then_done_model, _last_instructions, _make_harness, _text_model, _make_deps
+from tests.conftest import (
+    _edit_then_done_model,
+    _last_instructions,
+    _make_deps,
+    _make_harness,
+    _text_model,
+)
 
 
 def _spawn_then_done_model() -> FunctionModel:
@@ -132,7 +137,7 @@ async def test_run_subagent_restricts_tools_by_mode(tmp_path: Path):
     assert captured["tools"] == set(READ_TOOLS | NET_TOOLS)
 
     # auto mode: the full set, including write/edit/bash.
-    deps.mode = Mode.auto
+    deps.workspace.mode = Mode.auto
     await h.subagents.run("general", "do it", "sid")
     assert captured["tools"] == set(SUBAGENT_TOOLS)
 
@@ -297,7 +302,7 @@ async def test_run_background_subagent_respects_mode(tmp_path: Path):
     h = _make_harness(FunctionModel(fn), deps)
     await h.subagents.run_background("general", "x")
     assert captured["tools"] == set(READ_TOOLS | NET_TOOLS)
-    deps.mode = Mode.auto
+    deps.workspace.mode = Mode.auto
     await h.subagents.run_background("general", "x")
     assert captured["tools"] == set(SUBAGENT_TOOLS)
 

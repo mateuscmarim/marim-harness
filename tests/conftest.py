@@ -6,7 +6,7 @@ import pytest
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
-from marim_harness.runtime.deps import Deps, WorkspaceConfig
+from marim_harness.runtime.deps import Deps, UIHooks, WorkspaceConfig
 from marim_harness.runtime.harness import Harness
 from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
@@ -30,9 +30,25 @@ def _read_hits(outfile) -> list:
     return [_json_capture.loads(ln) for ln in text.splitlines() if ln.strip()]
 
 
+_UI_HOOK_FIELDS = {
+    "request_approval", "ask_user", "on_subagent_event", "on_subagent_notice",
+    "on_subagent_model", "on_subagent_usage", "detach_fanout", "interactive",
+    "notifier",
+}
+
+
 def _make_deps(root: Path, mode: Mode = Mode.auto, **kw) -> Deps:
-    """Shorthand for Deps construction in tests."""
-    return Deps(workspace=WorkspaceConfig(root=root, mode=mode), **kw)
+    """Shorthand for Deps construction in tests.
+
+    UI-hook kwargs (request_approval, ask_user, etc.) are automatically routed
+    into a ``UIHooks`` sub-object; everything else goes to ``Deps`` directly.
+    """
+    ui_kw = {k: kw.pop(k) for k in list(kw) if k in _UI_HOOK_FIELDS}
+    return Deps(
+        workspace=WorkspaceConfig(root=root, mode=mode),
+        ui=UIHooks(**ui_kw) if ui_kw else UIHooks(),
+        **kw,
+    )
 
 
 @pytest.fixture

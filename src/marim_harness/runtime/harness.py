@@ -51,10 +51,9 @@ from .deps import (
     HarnessAgent,
     HarnessServices,
     SubAgentEventCb,
-    SubAgentNoticeCb,
     SubAgentModelCb,
+    SubAgentNoticeCb,
     SubAgentUsageCb,
-    WorkspaceConfig,
 )
 from .instructions import register_instructions
 from .permissions import Mode

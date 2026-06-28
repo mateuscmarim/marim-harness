@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 import json
 from pathlib import Path
 
@@ -8,7 +9,7 @@ from marim_harness.plugins import InstalledPlugin, load_state, save_state
 
 class _FakeDeps:
     def __init__(self, ws):
-        self.workspace_root = ws
+        self.workspace = SimpleNamespace(root=ws)
 
 
 class _FakeHarness:

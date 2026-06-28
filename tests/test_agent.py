@@ -6,11 +6,10 @@ from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.function import FunctionModel
 
 from marim_harness.lsp.manager import LspManager
-from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.harness import Harness
 from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
-from tests.conftest import _edit_then_done_model, _make_harness, _make_deps
+from tests.conftest import _edit_then_done_model, _make_deps, _make_harness
 
 
 def _raising_model() -> FunctionModel:
@@ -351,7 +350,6 @@ async def test_switch_session_restores_its_model(tmp_path: Path):
 def test_build_collaborators_wires_full_graph(tmp_path):
     from pydantic_ai.models.function import FunctionModel
 
-    from marim_harness.runtime.deps import Deps
     from marim_harness.runtime.harness import Collaborators, HarnessConfig, build_collaborators
     from marim_harness.tools.provider import BuiltinToolProvider
 
@@ -383,7 +381,6 @@ def test_build_collaborators_wires_full_graph(tmp_path):
 def test_build_collaborators_respects_lsp_disabled(tmp_path):
     from pydantic_ai.models.function import FunctionModel
 
-    from marim_harness.runtime.deps import Deps
     from marim_harness.runtime.harness import HarnessConfig, build_collaborators
     from marim_harness.tools.provider import BuiltinToolProvider
 

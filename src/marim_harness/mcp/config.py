@@ -312,8 +312,9 @@ def make_approval_hook(label: str, trusted: bool):
         display = f"{label}_{name}"
         # Read the workspace root at call time, like mode/request_approval below,
         # so a large result can be offloaded under the project rather than inline.
-        root = getattr(deps, "workspace_root", None)
-        mode = getattr(deps, "mode", None)
+        ws = getattr(deps, "workspace", None)
+        root = getattr(ws, "root", None) if ws is not None else None
+        mode = getattr(ws, "mode", None) if ws is not None else None
         if mode is Mode.plan:
             return f"Denied: {display} is blocked in read-only plan mode."
         if mode is Mode.auto or trusted:
@@ -322,7 +323,8 @@ def make_approval_hook(label: str, trusted: bool):
                 result, label=label, name=name, args=args, workspace_root=root
             )
         # ask mode against an untrusted server: prompt the user.
-        approve = getattr(deps, "request_approval", None)
+        ui = getattr(deps, "ui", None)
+        approve = getattr(ui, "request_approval", None) if ui is not None else None
         if approve is None:
             return f"Denied: {display} needs approval but none is available here."
         decision = await approve(_McpApprovalCall(display, args or {}))

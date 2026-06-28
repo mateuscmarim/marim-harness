@@ -7,14 +7,14 @@ from tests.conftest import _make_deps
 
 def test_deps_defaults_to_ask_mode(tmp_path: Path):
     deps = _make_deps(tmp_path, mode=Mode.ask)
-    assert deps.mode is Mode.ask
-    assert deps.request_approval is None
+    assert deps.workspace.mode is Mode.ask
+    assert deps.ui.request_approval is None
 
 
 def test_mode_is_mutable(tmp_path: Path):
     deps = _make_deps(tmp_path, mode=Mode.ask)
-    deps.mode = Mode.auto
-    assert deps.mode is Mode.auto
+    deps.workspace.mode = Mode.auto
+    assert deps.workspace.mode is Mode.auto
 
 
 def test_deps_has_services_container_defaulting_to_none():
@@ -45,7 +45,7 @@ def test_lsp_handle_lives_on_services():
 
 
 def test_build_services_populates_and_assigns(tmp_path):
-    from marim_harness.runtime.deps import Deps, WorkspaceConfig, HarnessServices
+    from marim_harness.runtime.deps import HarnessServices
     from marim_harness.runtime.harness import build_services
 
     deps = _make_deps(tmp_path, mode=Mode.ask)

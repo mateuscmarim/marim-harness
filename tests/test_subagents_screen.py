@@ -15,9 +15,7 @@ def _app(tmp_path: Path):
     from pydantic_ai.models.test import TestModel
 
     from marim_harness.interfaces.tui.app import HarnessApp
-    from marim_harness.runtime.deps import Deps
     from marim_harness.runtime.harness import Harness
-    from marim_harness.runtime.permissions import Mode
     from marim_harness.tools.provider import BuiltinToolProvider
 
     deps = _make_deps(tmp_path)

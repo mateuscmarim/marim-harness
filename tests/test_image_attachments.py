@@ -2,9 +2,7 @@
 import pytest
 from pydantic_ai.messages import BinaryContent, UserPromptPart
 
-from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.harness import Harness
-from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
 from tests.conftest import _make_deps
 

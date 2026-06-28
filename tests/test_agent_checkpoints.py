@@ -7,9 +7,7 @@ import subprocess
 
 import pytest
 
-from marim_harness.runtime.deps import Deps
-from marim_harness.runtime.permissions import Mode
-from tests.conftest import _make_harness, _text_model, _make_deps
+from tests.conftest import _make_deps, _make_harness, _text_model
 
 pytestmark = pytest.mark.anyio
 

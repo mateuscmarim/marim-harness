@@ -8,7 +8,7 @@ from pydantic_ai.models.function import FunctionModel
 from marim_harness.runtime.deps import Deps, UIHooks, WorkspaceConfig
 from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
-from tests.conftest import _edit_then_done_model, _make_harness, _text_model, _make_deps
+from tests.conftest import _edit_then_done_model, _make_deps, _make_harness, _text_model
 
 
 def _raising_model() -> FunctionModel:
@@ -68,7 +68,6 @@ def _capture_prompt_model(captured: dict) -> FunctionModel:
 
 
 def _autoname_harness(tmp_path, titler, *, name=None):
-    from marim_harness.runtime.deps import Deps, UIHooks, WorkspaceConfig
     from marim_harness.runtime.harness import Harness, HarnessConfig
     from marim_harness.session import SessionManager
 
@@ -537,7 +536,6 @@ async def test_finished_digest_consumed_once(tmp_path: Path):
 
 def test_lsp_manager_built_by_default(tmp_path: Path):
     from marim_harness.lsp.manager import LspManager
-    from marim_harness.runtime.deps import Deps, UIHooks, WorkspaceConfig
 
     deps = _make_deps(tmp_path)
     harness = _make_harness(_edit_then_done_model(), deps)
@@ -546,7 +544,6 @@ def test_lsp_manager_built_by_default(tmp_path: Path):
 
 
 def test_lsp_disabled_builds_no_manager(tmp_path: Path):
-    from marim_harness.runtime.deps import Deps, UIHooks, WorkspaceConfig
     from marim_harness.runtime.harness import Harness, HarnessConfig
 
     deps = _make_deps(tmp_path)

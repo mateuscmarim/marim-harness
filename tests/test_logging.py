@@ -149,8 +149,6 @@ async def test_compaction_logs_on_summarizer_failure(caplog):
 
 @pytest.mark.anyio
 async def test_autoname_logs_on_titler_failure(caplog, tmp_path):
-    from marim_harness.runtime.deps import Deps
-    from marim_harness.runtime.permissions import Mode
     from marim_harness.session.ctrl import SessionController
     from marim_harness.session.store import SessionManager
 
@@ -180,7 +178,6 @@ async def test_autoname_logs_on_titler_failure(caplog, tmp_path):
 
 @pytest.mark.anyio
 async def test_rename_logs_on_titler_failure(caplog, tmp_path):
-    from marim_harness.runtime.deps import Deps
     from marim_harness.session.ctrl import SessionController
     from marim_harness.session.store import SessionManager
 

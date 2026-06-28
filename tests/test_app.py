@@ -4,7 +4,6 @@ import pytest
 
 from marim_harness.interfaces.tui.app import HarnessApp
 from marim_harness.interfaces.tui.widgets import NoticeMessage
-from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.permissions import Mode
 from tests.conftest import _make_deps
 
@@ -592,14 +591,13 @@ async def test_slash_unknown_command_reports_error(tmp_path: Path):
 @pytest.mark.anyio
 @pytest.mark.parametrize("arg,expected", [("plan", "plan"), ("auto", "auto")])
 async def test_slash_mode_sets_mode(tmp_path: Path, arg: str, expected: str):
-    from marim_harness.runtime.permissions import Mode
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
         await _submit(app, f"/mode {arg}")
         await pilot.pause()
-        assert app.harness.deps.mode is Mode(expected)
+        assert app.harness.deps.workspace.mode is Mode(expected)
 
 
 @pytest.mark.anyio
@@ -607,10 +605,10 @@ async def test_slash_mode_no_arg_cycles(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        start = app.harness.deps.mode
+        start = app.harness.deps.workspace.mode
         await _submit(app, "/mode")
         await pilot.pause()
-        assert app.harness.deps.mode is start.cycle()
+        assert app.harness.deps.workspace.mode is start.cycle()
 
 
 @pytest.mark.anyio
@@ -1014,10 +1012,10 @@ async def test_mode_keybinding_cycles(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        start = app.harness.deps.mode
+        start = app.harness.deps.workspace.mode
         await pilot.press("ctrl+t")
         await pilot.pause()
-        assert app.harness.deps.mode is not start
+        assert app.harness.deps.workspace.mode is not start
 
 
 @pytest.mark.anyio
@@ -3002,7 +3000,7 @@ async def test_ask_user_callback_is_wired(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert app.harness.deps.ask_user == app._ask_user
+        assert app.harness.deps.ui.ask_user == app._ask_user
 
 
 @pytest.mark.anyio
@@ -3244,7 +3242,7 @@ async def test_finished_job_notifies_even_when_wake_disabled(tmp_path: Path):
         return "result"
 
     app = _app(tmp_path)
-    app.harness.deps.notifier = _Notifier()
+    app.harness.deps.ui.notifier = _Notifier()
     app.autonomous_wake = False  # wake off — notification must still fire
     async with app.run_test() as pilot:
         await pilot.pause()

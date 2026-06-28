@@ -55,7 +55,7 @@ def test_ask_user_cancelled_returns_note(tmp_path):
         return None
 
     deps = _make_deps(tmp_path, mode=Mode.ask)
-    deps.ask_user = cancel
+    deps.ui.ask_user = cancel
     agent = _agent()
     model, captured = _call_tool("ask_user", {"questions": _QUESTIONS})
     with agent.override(model=model):
@@ -70,7 +70,7 @@ def test_ask_user_returns_header_keyed_json(tmp_path):
         return {"DB": "Postgres"}
 
     deps = _make_deps(tmp_path, mode=Mode.ask)
-    deps.ask_user = answer
+    deps.ui.ask_user = answer
     agent = _agent()
     model, captured = _call_tool("ask_user", {"questions": _QUESTIONS})
     with agent.override(model=model):
@@ -83,7 +83,7 @@ def test_ask_user_empty_questions_returns_error(tmp_path):
         raise AssertionError("callback must not run for empty input")
 
     deps = _make_deps(tmp_path, mode=Mode.ask)
-    deps.ask_user = answer
+    deps.ui.ask_user = answer
     agent = _agent()
     # a question whose only option has a blank label normalizes away to nothing
     model, captured = _call_tool(
@@ -96,7 +96,6 @@ def test_ask_user_empty_questions_returns_error(tmp_path):
 
 
 def test_ask_user_fires_notification(tmp_path):
-    from marim_harness.runtime.deps import Deps
 
     class _Spy:
         def __init__(self):

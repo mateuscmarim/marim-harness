@@ -3,7 +3,6 @@ history hasn't changed between calls — saves several MB per turn on long
 sessions."""
 from pydantic_ai.usage import RunUsage
 
-from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.permissions import Mode
 from marim_harness.session import SessionController, SessionManager
 from tests.conftest import _make_deps

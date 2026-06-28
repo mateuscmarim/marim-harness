@@ -146,8 +146,8 @@ def test_build_harness_wires_command_policy(tmp_path: Path, monkeypatch):
     _stub_model_plumbing(monkeypatch)
 
     harness = bootstrap.build_harness(tmp_path / "ws", mode=Mode.auto)
-    assert harness.deps.command_policy.check("rm -rf /") is not None
-    assert harness.deps.command_policy.check("ls") is None
+    assert harness.deps.workspace.command_policy.check("rm -rf /") is not None
+    assert harness.deps.workspace.command_policy.check("ls") is None
 
 
 def test_build_harness_no_mcp_config_is_empty(tmp_path: Path, monkeypatch):

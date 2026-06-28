@@ -13,7 +13,6 @@ from tests.conftest import _make_deps
 def _cli_harness(tmp_path: Path, output_text: str = "ok"):
     from pydantic_ai.models.test import TestModel
 
-    from marim_harness.runtime.deps import Deps
     from marim_harness.runtime.harness import Harness, HarnessConfig
     from marim_harness.session import SessionManager
     from marim_harness.tools.provider import BuiltinToolProvider

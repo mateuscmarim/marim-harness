@@ -38,7 +38,7 @@ class TurnHooks:
         return base_payload(
             event,
             session_id=store.session_id if store is not None else "",
-            cwd=str(self.deps.workspace_root),
+            cwd=str(self.deps.workspace.root),
             transcript_path=str(store.path) if store is not None else "",
             **extra,
         )

@@ -3,9 +3,7 @@ from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.function import FunctionModel
 
 from marim_harness.runtime.controller import TurnController
-from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.harness import Harness, HarnessConfig, build_collaborators
-from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
 from tests.conftest import _make_deps
 

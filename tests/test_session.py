@@ -9,9 +9,9 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
 from marim_harness.hooks import events as hook_events
-from marim_harness.runtime.permissions import Mode
 from marim_harness.hooks.runner import HookRunner
 from marim_harness.runtime.deps import Deps, WorkspaceConfig
+from marim_harness.runtime.permissions import Mode
 from marim_harness.session import SessionManager, SessionStore
 from marim_harness.session.ctrl import SessionController
 from tests.conftest import _make_deps

@@ -5,7 +5,6 @@ import pytest
 
 from marim_harness.interfaces.tui.app import HarnessApp
 from marim_harness.interfaces.tui.widgets.prompt import PromptInput
-from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.permissions import Mode
 from tests.conftest import _make_deps
 

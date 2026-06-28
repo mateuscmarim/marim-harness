@@ -65,7 +65,7 @@ class _FakeMcpManager:
 
 def _make_ctx(workspace_root: Path):
     """Build a minimal ctx-like object with ctx.deps.workspace_root."""
-    deps = SimpleNamespace(workspace_root=workspace_root)
+    deps = SimpleNamespace(workspace=SimpleNamespace(root=workspace_root))
     return SimpleNamespace(deps=deps)
 
 

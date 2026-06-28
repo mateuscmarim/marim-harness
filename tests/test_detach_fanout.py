@@ -7,10 +7,8 @@ import pytest
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
-from marim_harness.runtime.deps import Deps
-from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import _DETACH_OUTPUT_BUDGET
-from tests.conftest import _last_instructions, _make_harness, _make_deps
+from tests.conftest import _last_instructions, _make_deps, _make_harness
 
 
 def _spawn_once_model() -> FunctionModel:
@@ -32,8 +30,8 @@ def _spawn_once_model() -> FunctionModel:
 async def test_detach_mode_routes_spawn_to_background(tmp_path: Path):
     deps = _make_deps(tmp_path)
     harness = _make_harness(_spawn_once_model(), deps)
-    harness.deps.detach_fanout = True
-    harness.deps.interactive = True
+    harness.deps.ui.detach_fanout = True
+    harness.deps.ui.interactive = True
     await harness.run_turn("go")
     # A background job was registered (not run inline) ...
     assert len(harness.deps.jobs.list()) == 1
@@ -52,8 +50,8 @@ async def test_inline_when_not_interactive(tmp_path: Path):
     """detach_fanout on but no UI attached (headless) → spawn runs inline."""
     deps = _make_deps(tmp_path)
     harness = _make_harness(_spawn_once_model(), deps)
-    harness.deps.detach_fanout = True
-    harness.deps.interactive = False
+    harness.deps.ui.detach_fanout = True
+    harness.deps.ui.interactive = False
     await harness.run_turn("go")
     assert harness.deps.jobs.list() == []
 
@@ -74,8 +72,8 @@ async def test_auto_detach_defaults_output_budget(tmp_path: Path):
 
     deps = _make_deps(tmp_path)
     harness = _make_harness(_spawn_once_model(), deps)
-    harness.deps.detach_fanout = True
-    harness.deps.interactive = True
+    harness.deps.ui.detach_fanout = True
+    harness.deps.ui.interactive = True
     harness.deps.services.run_background_agent = _stub_background
 
     await harness.run_turn("go")

@@ -20,7 +20,6 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
-from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.harness import (
     Harness,
     _drop_nameless_tool_calls,

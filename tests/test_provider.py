@@ -207,8 +207,6 @@ async def test_job_requires_id_for_targeted_actions(tmp_path):
 async def test_spawn_agent_forwards_mcp_foreground(tmp_path):
     from types import SimpleNamespace
 
-    from marim_harness.runtime.deps import Deps
-    from marim_harness.runtime.permissions import Mode
     from marim_harness.tools.provider import spawn_agent
 
     calls = {}
@@ -235,7 +233,6 @@ async def test_spawn_agent_composes_structured_task(tmp_path):
     the sub-agent gets the spawner's output contract, boundaries, and context."""
     from types import SimpleNamespace
 
-    from marim_harness.runtime.deps import Deps
     from marim_harness.tools.provider import spawn_agent
 
     calls = {}
@@ -265,7 +262,6 @@ async def test_spawn_agent_composes_structured_task(tmp_path):
 async def test_spawn_agent_without_structured_fields_passes_task_verbatim(tmp_path):
     from types import SimpleNamespace
 
-    from marim_harness.runtime.deps import Deps
     from marim_harness.tools.provider import spawn_agent
 
     calls = {}
@@ -288,7 +284,6 @@ async def test_spawn_agent_without_structured_fields_passes_task_verbatim(tmp_pa
 async def test_spawn_agent_forwards_mcp_background(tmp_path):
     from types import SimpleNamespace
 
-    from marim_harness.runtime.deps import Deps
     from marim_harness.tools.provider import spawn_agent
 
     captured = {}
@@ -315,7 +310,6 @@ async def test_spawn_agent_forwards_mcp_background(tmp_path):
 async def test_spawn_agent_default_mcp_is_none(tmp_path):
     from types import SimpleNamespace
 
-    from marim_harness.runtime.deps import Deps
     from marim_harness.tools.provider import spawn_agent
 
     calls = {}
@@ -363,7 +357,6 @@ async def test_spawn_agent_coerces_stringified_mcp(tmp_path):
     server, not fail the turn on schema validation."""
     from types import SimpleNamespace
 
-    from marim_harness.runtime.deps import Deps
     from marim_harness.tools.provider import spawn_agent
 
     calls = {}
@@ -386,7 +379,6 @@ async def test_spawn_agent_coerces_stringified_mcp(tmp_path):
 async def test_spawn_agent_coerces_comma_separated_mcp_background(tmp_path):
     from types import SimpleNamespace
 
-    from marim_harness.runtime.deps import Deps
     from marim_harness.tools.provider import spawn_agent
 
     captured = {}
@@ -423,8 +415,9 @@ async def test_bash_blocks_denylisted_command(tmp_path: Path):
 
     sentinel = tmp_path / "ran.txt"
     deps = Deps(
-        workspace=WorkspaceConfig(root=tmp_path,
-        command_policy=CommandPolicy(denylist=["touch"]),
+        workspace=WorkspaceConfig(
+            root=tmp_path, command_policy=CommandPolicy(denylist=["touch"])
+        ),
     )
     ctx = SimpleNamespace(deps=deps)
     out = await provider.bash(ctx, f"touch {sentinel}")

@@ -501,7 +501,12 @@ class SubagentRunner:
         Exceptions are contained as an error string so sibling fan-out spawns
         aren't taken down. Usage is folded into the session but NOT persisted —
         the caller's ``run_turn`` persists it."""
-        run_deps = replace(self.deps, workspace=replace(self.deps.workspace, root=prep.iso["path"])) if prep.iso else self.deps
+        if prep.iso:
+            run_deps = replace(
+                self.deps, workspace=replace(self.deps.workspace, root=prep.iso["path"])
+            )
+        else:
+            run_deps = self.deps
         try:
             # Bound concurrent model runs (the part that hits the provider) so a
             # wide fan-out queues instead of slamming a rate-limited route at once.
@@ -541,7 +546,9 @@ class SubagentRunner:
         # redirects its file ops into the worktree. Every other Deps field stays shared.
         run_deps = replace(self.deps, tasks=TaskList())
         if prep.iso:
-            run_deps = replace(run_deps, workspace=replace(run_deps.workspace, root=prep.iso["path"]))
+            run_deps = replace(
+                run_deps, workspace=replace(run_deps.workspace, root=prep.iso["path"])
+            )
         try:
             async with self._slot():
                 result = await self._run_to_completion(
@@ -646,7 +653,9 @@ class SubagentRunner:
         cwd = str(work_root or self.deps.workspace.root)
         model_name = model or defn.model or os.environ.get(CLI_MODEL_ENV)
         cbs = self.deps.ui
-        runner = ClaudeCliRunner(cbs.on_subagent_event, cbs.on_subagent_notice, cbs.on_subagent_model)
+        runner = ClaudeCliRunner(
+            cbs.on_subagent_event, cbs.on_subagent_notice, cbs.on_subagent_model
+        )
         result = await runner.run(
             binary=binary, prompt=task, system_prompt=defn.prompt, cwd=cwd,
             allow_gated=allow_gated, allowed_tools=tools, model=model_name,

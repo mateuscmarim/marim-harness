@@ -5,8 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from marim_harness.runtime.deps import Deps
-from marim_harness.runtime.permissions import Mode
 from tests.conftest import _make_deps
 
 
@@ -64,7 +62,7 @@ async def test_headless_command_policy_denylist_blocks_bash(tmp_path: Path, monk
     harness = _harness(tmp_path)
     # Mirror what bootstrap.py does — the env var is loaded into config, then
     # wrapped in CommandPolicy and attached to deps.
-    harness.deps.command_policy = CommandPolicy(denylist=["dangerous"])
+    harness.deps.workspace.command_policy = CommandPolicy(denylist=["dangerous"])
     ctx = SimpleNamespace(deps=harness.deps)
 
     # A bare call to the bash tool with the denylisted command must be blocked.
