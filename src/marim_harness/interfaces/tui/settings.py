@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from ...runtime.harness import Harness
 
 _MODES = ("ask", "auto", "plan")
+_TOOL_SEARCH_MODES = ("off", "auto", "on")
 
 # The full-bleed settings screen's rail sections, in order: (key, label).
 _SECTIONS = (
@@ -246,6 +247,21 @@ class SettingsScreen(Screen[None]):
                     value=(name == self.env_cfg.default_mode),
                     id=f"defmode-{name}",
                 )
+        yield Label("Tool search (MCP/plugin tools)")
+        with RadioSet(id="toolsearch-set"):
+            for name in _TOOL_SEARCH_MODES:
+                yield RadioButton(
+                    name,
+                    value=(name == self.env_cfg.tool_search),
+                    id=f"toolsearch-{name}",
+                )
+        with Horizontal(classes="frow"):
+            yield Label("Tool-search threshold")
+            yield Input(
+                value=str(self.env_cfg.tool_search_threshold),
+                id="toolsearch-threshold",
+                type="integer",
+            )
         with Horizontal(classes="frow"):
             yield Label("Context budget (tokens)")
             yield Input(
@@ -391,8 +407,26 @@ class SettingsScreen(Screen[None]):
         dm = self.query_one("#default-mode-set", RadioSet)
         idx = dm.pressed_index
         default_mode = _MODES[idx] if 0 <= idx < len(_MODES) else self.env_cfg.default_mode
+        ts = self.query_one("#toolsearch-set", RadioSet)
+        ts_idx = ts.pressed_index
+        tool_search = (
+            _TOOL_SEARCH_MODES[ts_idx]
+            if 0 <= ts_idx < len(_TOOL_SEARCH_MODES)
+            else self.env_cfg.tool_search
+        )
+        ts_raw = self.query_one("#toolsearch-threshold", Input).value.strip()
+        try:
+            ts_threshold = int(ts_raw)
+        except ValueError:
+            status.update("Tool-search threshold must be a positive integer.")
+            return
+        if ts_threshold <= 0:
+            status.update("Tool-search threshold must be a positive integer.")
+            return
         values = {
             "MARIM_DEFAULT_MODE": default_mode,
+            "MARIM_TOOL_SEARCH": tool_search,
+            "MARIM_TOOL_SEARCH_THRESHOLD": str(ts_threshold),
             "MARIM_LSP": _b(self.query_one("#sw-lsp", BoxCheckbox).value),
             "MARIM_LSP_TOOLS": _b(self.query_one("#sw-lsp-tools", BoxCheckbox).value),
             "MARIM_JOB_TOOL_COMBINED": _b(self.query_one("#sw-job", BoxCheckbox).value),

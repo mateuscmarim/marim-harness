@@ -237,3 +237,25 @@ async def test_default_mode_radio_reflects_config_and_saves(isolated_env, monkey
         screen._save_env()
         await pilot.pause()
     assert os.environ.get("MARIM_DEFAULT_MODE") == "plan"
+
+
+@pytest.mark.anyio
+async def test_tool_search_selector_saves(isolated_env, monkeypatch, tmp_path):
+    from textual.widgets import Input, RadioButton
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("MARIM_TOOL_SEARCH", raising=False)
+    app = _Host(_fake_harness(), _env_cfg())  # env_cfg.tool_search == "auto"
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert screen.query_one("#toolsearch-auto", RadioButton).value is True
+        screen.active_section = "config"
+        await pilot.pause()
+        screen.query_one("#toolsearch-on", RadioButton).value = True
+        screen.query_one("#toolsearch-threshold", Input).value = "20"
+        await pilot.pause()
+        screen._save_env()
+        await pilot.pause()
+    assert os.environ.get("MARIM_TOOL_SEARCH") == "on"
+    assert os.environ.get("MARIM_TOOL_SEARCH_THRESHOLD") == "20"
