@@ -315,8 +315,12 @@ class SubagentRunner:
             from functools import partial
 
             from ..tools.provider import spawn_agent
-            remaining = self._max_depth - depth - 1
-            bound = partial(spawn_agent, max_depth=remaining)
+            # Bind the *absolute* ceiling, not a decrementing remainder. The tool
+            # body compares ``ctx.deps.subagent_depth + 1 >= effective_max`` against
+            # the child's own (correct) depth, so it needs the same fixed ceiling at
+            # every level — a "remaining" count would shrink as depth grows and make
+            # the check refuse spawns that are still within the limit.
+            bound = partial(spawn_agent, max_depth=self._max_depth)
             bound.__name__ = "spawn_agent"
             bound.__qualname__ = "spawn_agent"
             sub.tool(bound)
@@ -433,13 +437,19 @@ class SubagentRunner:
     async def _execute_spawn(
         self, type: str, task: str, mcp_names: list[str] | None,
         max_output_chars: int | None, model: str | None, isolation: str | None,
-        *, background: bool, stream_id: str,
+        *, background: bool, stream_id: str, caller_depth: int = 0,
     ) -> str:
         """Dispatch a spawn through shared setup then the foreground or background tail.
 
         Handles worktree open and the CLI early-return inline (both need ``iso``
         before the branch), then delegates everything else to ``_prepare_spawn``
         and either ``_execute_foreground_spawn`` or ``_execute_background_spawn``.
+
+        ``caller_depth`` is the depth of the agent that called spawn_agent; the
+        child runs at ``caller_depth + 1``. It comes from the caller's deps, NOT
+        ``self.deps`` — the runner belongs to the main harness and its deps are
+        pinned at depth 0, so reading depth off it would mis-size every spawn made
+        from a nested sub-agent.
         """
         iso = None
         # Phase timing for the spawn (harness setup vs. model time-to-first-token).
@@ -468,7 +478,7 @@ class SubagentRunner:
                 defn, task, work_root, iso, mcp_names, max_output_chars,
                 model, stream_id, background=background,
             )
-        depth = self.deps.subagent_depth + 1
+        depth = caller_depth + 1
         prep = await self._prepare_spawn(
             type, task, mcp_names, max_output_chars, model,
             iso, work_root, stream_id, debug=debug, t0=t0, defn=defn, depth=depth,
@@ -717,6 +727,7 @@ class SubagentRunner:
         self, type: str, task: str, stream_id: str,
         mcp_names: list[str] | None = None, max_output_chars: int | None = None,
         model: str | None = None, isolation: str | None = None,
+        caller_depth: int = 0,
     ) -> str:
         """Spawn one isolated sub-agent of ``type``, run it to completion on
         ``task``, and return its final report — streaming its events to the UI
@@ -731,16 +742,19 @@ class SubagentRunner:
         model this spawn runs on. ``isolation="worktree"`` runs the spawn in its
         own git worktree (branched from HEAD) so parallel mutating spawns can't
         clobber each other or the main tree; its changes are committed to a
-        branch named in the report and the worktree is torn down."""
+        branch named in the report and the worktree is torn down. ``caller_depth``
+        is the nesting depth of the agent that issued the spawn (0 for the main
+        agent); the spawned sub-agent runs at ``caller_depth + 1``."""
         return await self._execute_spawn(
             type, task, mcp_names, max_output_chars, model, isolation,
-            background=False, stream_id=stream_id,
+            background=False, stream_id=stream_id, caller_depth=caller_depth,
         )
 
     async def run_background(
         self, type: str, task: str, mcp_names: list[str] | None = None,
         max_output_chars: int | None = None, model: str | None = None,
         isolation: str | None = None, stream_id: str = "",
+        caller_depth: int = 0,
     ) -> str:
         """Run a sub-agent as a detached background job: same isolation, mode-based
         reach, and MCP grant as a foreground spawn. When ``stream_id`` is set (the
@@ -754,8 +768,12 @@ class SubagentRunner:
         remainder spilled to a workspace file the same way a foreground one is.
         ``model`` optionally overrides the model this spawn runs on.
         ``isolation="worktree"`` runs it in its own git worktree, committing its
-        changes to a branch named in the report."""
+        changes to a branch named in the report. ``caller_depth`` is the nesting
+        depth of the agent that issued the spawn (0 for the main agent); the
+        detached sub-agent runs at ``caller_depth + 1``, so a background spawn from
+        a nested sub-agent is sized — and depth-limited — the same as a foreground
+        one."""
         return await self._execute_spawn(
             type, task, mcp_names, max_output_chars, model, isolation,
-            background=True, stream_id=stream_id,
+            background=True, stream_id=stream_id, caller_depth=caller_depth,
         )

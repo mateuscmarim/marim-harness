@@ -161,3 +161,79 @@ async def test_nested_spawn_integration(tmp_path: Path):
     assert sub3 is not None
     tool_names_3 = set(sub3._function_toolset.tools.keys())
     assert "spawn_agent" not in tool_names_3
+
+
+def _depth_spy(runner):
+    """Replace ``runner._run_to_completion`` with a spy that records the
+    ``subagent_depth`` of every sub-agent actually run, then delegates to the
+    real implementation. Returns the list the spy appends to. Drives the *real*
+    run() → _execute_spawn → _prepare_spawn → _execute_*_spawn path (not just
+    build()), so it catches a depth mis-wire that only shows up at runtime."""
+    depths: list[int] = []
+    orig = runner._run_to_completion
+
+    async def spy(sub, task, run_deps, granted, handler, stream_id=None):
+        depths.append(run_deps.subagent_depth)
+        return await orig(sub, task, run_deps, granted, handler, stream_id)
+
+    runner._run_to_completion = spy
+    return depths
+
+
+@pytest.mark.anyio
+async def test_run_uses_caller_depth_not_runner_deps(tmp_path: Path):
+    """C1 regression: run() must size the child off the *caller's* depth, not the
+    runner's own deps (which are pinned at the main agent's depth 0).
+
+    A depth-1 sub-agent spawning means caller_depth=1, so the child must run at
+    subagent_depth == 2. Before the fix run() read self.deps.subagent_depth (0)
+    and produced depth 1 — silently collapsing the chain by a level."""
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content="done")])
+
+    deps = _make_deps(tmp_path)
+    h = _make_harness(FunctionModel(fn), deps)
+    depths = _depth_spy(h.subagents)
+
+    await h.subagents.run("explore", "do it", "sid", caller_depth=1)
+
+    assert depths == [2]
+
+
+@pytest.mark.anyio
+async def test_nested_spawn_runtime_chain_propagates_depth(tmp_path: Path):
+    """C1/C2 regression, true runtime chain: main → sub → grandchild.
+
+    The model emits a spawn_agent call whenever it has that tool (a depth-1
+    sub-agent does; the depth-2 grandchild does not, so it just replies). Driving
+    run() for real, the sub must land at depth 1 and the grandchild it spawns at
+    depth 2 — proving both that the caller's depth threads through (C1) and that
+    the child's bound spawn_agent ceiling is the absolute max, so the nested
+    spawn isn't wrongly refused (C2)."""
+    from pydantic_ai.messages import ToolCallPart, ToolReturnPart
+
+    def fn(messages, info):
+        tool_names = {t.name for t in info.function_tools}
+        already_spawned = any(
+            isinstance(part, ToolReturnPart) and part.tool_name == "spawn_agent"
+            for m in messages
+            for part in getattr(m, "parts", [])
+        )
+        if "spawn_agent" in tool_names and not already_spawned:
+            return ModelResponse(
+                parts=[ToolCallPart(
+                    tool_name="spawn_agent",
+                    args={"type": "explore", "task": "nested work"},
+                )]
+            )
+        return ModelResponse(parts=[TextPart(content="done")])
+
+    deps = _make_deps(tmp_path)
+    h = _make_harness(FunctionModel(fn), deps)
+    depths = _depth_spy(h.subagents)
+
+    # Main agent (depth 0) spawns: caller_depth=0 → sub at depth 1, which spawns
+    # a grandchild at depth 2. The grandchild has no spawn_agent, so it stops.
+    await h.subagents.run("explore", "top task", "sid", caller_depth=0)
+
+    assert depths == [1, 2]

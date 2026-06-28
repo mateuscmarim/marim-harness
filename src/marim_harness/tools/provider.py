@@ -571,7 +571,7 @@ async def spawn_agent(
             "agent", label,
             ctx.deps.services.run_background_agent(
                 type, task, mcp_names, budget, model, isolation,
-                ctx.tool_call_id or "",
+                ctx.tool_call_id or "", ctx.deps.subagent_depth,
             ),
         )
         if auto_detached:
@@ -579,9 +579,12 @@ async def spawn_agent(
         return f"Started {job_id} (agent) — {label[:60]}"
     if ctx.deps.services.run_subagent is None:
         return "Sub-agents are not available in this context."
+    # Pass the *caller's* depth so the runner builds the child at caller_depth + 1.
+    # The runner can't read this off its own deps — those are fixed at the main
+    # agent's depth (0), so a depth-1 sub-agent's spawn would otherwise be mis-sized.
     return await ctx.deps.services.run_subagent(
         type, task, ctx.tool_call_id or "", mcp_names, max_output_chars, model,
-        isolation,
+        isolation, ctx.deps.subagent_depth,
     )
 
 
