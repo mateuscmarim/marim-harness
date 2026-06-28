@@ -1,7 +1,7 @@
 import asyncio
-from types import SimpleNamespace
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from marim_harness.interfaces.tui.commands import _cmd_plugin
 from marim_harness.plugins import InstalledPlugin, load_state, save_state
