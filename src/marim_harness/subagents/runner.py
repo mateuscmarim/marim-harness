@@ -115,7 +115,8 @@ class SubagentRunner:
                  retry_attempts: int = 2,
                  build_model: Callable[[str], Model] | None = None,
                  concurrency: int | None = None,
-                 transcript_cap: int = 2000) -> None:
+                 transcript_cap: int = 2000,
+                 max_depth: int = 3) -> None:
         self.provider = provider
         self.mcp = mcp
         self.deps = deps
@@ -147,6 +148,9 @@ class SubagentRunner:
         self._concurrency = concurrency if (concurrency and concurrency > 0) else None
         self._sem: asyncio.Semaphore | None = None
         self._transcript_cap = transcript_cap
+        # Hard depth ceiling. Spawns that would produce a sub-agent at
+        # depth >= max_depth are refused. Default 3: main → sub → grandchild.
+        self._max_depth = max_depth
 
     def _open_worktree(self, stream_id: str):
         """Create an isolated git worktree for a spawn off the repo's HEAD.
@@ -251,6 +255,7 @@ class SubagentRunner:
     def build(
         self, type: str, max_output_chars: int | None = None,
         model: str | None = None, workspace_root=None, *, defn=None,
+        depth: int = 0,
     ) -> tuple[SubAgent | None, str | None]:
         """Build an isolated sub-agent of ``type``, with its reach decided up
         front: gated tools only in auto mode, so a run never needs an approval
@@ -302,6 +307,18 @@ class SubagentRunner:
             model_settings=self._model_settings,
         )
         self.provider.register_subagent(sub, effective_tools(defn, allow_gated=allow_gated))
+        # Nested spawning: only register spawn_agent if the child would be
+        # able to spawn (depth+1 < max_depth). At the leaf depth, the tool
+        # is absent — the grandchild simply cannot recurse.
+        if depth + 1 < self._max_depth:
+            from functools import partial
+
+            from ..tools.provider import spawn_agent
+            remaining = self._max_depth - depth - 1
+            bound = partial(spawn_agent, max_depth=remaining)
+            bound.__name__ = "spawn_agent"
+            bound.__qualname__ = "spawn_agent"
+            sub.tool(bound)
         return sub, None
 
     def _cap_output(self, output: str, max_output_chars: int | None, ref: str) -> str:

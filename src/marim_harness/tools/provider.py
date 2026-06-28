@@ -460,6 +460,7 @@ async def spawn_agent(
     context: str | None = None,
     model: str | None = None,
     isolation: str | None = None,
+    max_depth: int | None = None,
 ) -> str:
     """Delegate a sub-task to an isolated sub-agent that runs on the same model
     and reports back. `type` is a built-in — `explore` (read-only investigation;
