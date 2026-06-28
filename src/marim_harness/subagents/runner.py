@@ -9,6 +9,8 @@ immediately. The harness wires ``run``/``run_background`` onto ``Deps`` so the
 ``spawn_agent`` tool reaches them the same way other tools reach shared state.
 """
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import logging
@@ -105,8 +107,8 @@ class SubagentRunner:
     through ``get_model`` each spawn, so a runtime ``/model`` switch is picked
     up without rewiring."""
 
-    def __init__(self, provider: "ToolProvider", mcp: "McpManager", deps: Deps,
-                 hooks: TurnHooks, session: "SessionController",
+    def __init__(self, provider: ToolProvider, mcp: McpManager, deps: Deps,
+                 hooks: TurnHooks, session: SessionController,
                  get_model: Callable[[], Model],
                  model_settings: ModelSettings | None = None,
                  request_limit: int = 50,
@@ -249,7 +251,7 @@ class SubagentRunner:
     def build(
         self, type: str, max_output_chars: int | None = None,
         model: str | None = None, workspace_root=None, *, defn=None,
-    ) -> "tuple[SubAgent | None, str | None]":
+    ) -> tuple[SubAgent | None, str | None]:
         """Build an isolated sub-agent of ``type``, with its reach decided up
         front: gated tools only in auto mode, so a run never needs an approval
         round. Runs on the harness's current model unless ``model`` overrides it
@@ -465,7 +467,7 @@ class SubagentRunner:
         max_output_chars: int | None, model: str | None,
         iso: dict | None, work_root, stream_id: str,
         *, debug: bool, t0: float, defn=None,
-    ) -> "_SpawnPrep | str":
+    ) -> _SpawnPrep | str:
         """Build the sub-agent, grant MCP servers, fire the start hook, and wire the
         event handler. Returns a ``_SpawnPrep`` struct on success, or an error string
         the caller can return directly. Called after worktree open and CLI early-return.
@@ -493,7 +495,7 @@ class SubagentRunner:
 
     async def _execute_foreground_spawn(
         self, type: str, task: str, stream_id: str,
-        max_output_chars: int | None, prep: "_SpawnPrep",
+        max_output_chars: int | None, prep: _SpawnPrep,
     ) -> str:
         """Run a foreground spawn to completion and return its capped report.
         Exceptions are contained as an error string so sibling fan-out spawns
@@ -527,7 +529,7 @@ class SubagentRunner:
 
     async def _execute_background_spawn(
         self, type: str, task: str, stream_id: str,
-        max_output_chars: int | None, prep: "_SpawnPrep",
+        max_output_chars: int | None, prep: _SpawnPrep,
     ) -> str:
         """Run a background spawn to completion. Exceptions propagate to the job
         registry (marking the job failed). Usage is persisted immediately since no
@@ -619,7 +621,7 @@ class SubagentRunner:
         )
 
     async def _run_cli(self, defn, task: str, work_root, model: str | None,
-                       stream_id: str) -> "CliResult":
+                       stream_id: str) -> CliResult:
         """Resolve binary, tool reach, model, and cwd for a CLI spawn, then run it.
         Raises CliUnavailable when no `claude` binary is found so the caller's
         contained-error path reports it. Reach mirrors the native gate — gated

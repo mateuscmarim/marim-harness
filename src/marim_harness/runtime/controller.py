@@ -333,9 +333,12 @@ class TurnController:
         if prompt != typed:
             # Every prepend above follows `f"{block}\n\n{prompt}"`, so `typed` is
             # always an intact suffix and the injected prefix is recoverable by
-            # length. Guard the invariant: if a future prepend ever breaks it, the
-            # silent alternative is shipping a corrupted prompt to the model.
-            assert prompt.endswith(typed), "turn-context injection must keep `typed` as a suffix"
+            # length. Guard the invariant with a real raise, not an `assert`:
+            # under `python -O` assertions are stripped, so a future prepend that
+            # broke the suffix would silently slice the envelope at the wrong
+            # offset and persist a corrupted, unrecoverable turn — fail loudly.
+            if not prompt.endswith(typed):
+                raise RuntimeError("turn-context injection must keep `typed` as a suffix")
             injected = prompt[: len(prompt) - len(typed)].rstrip("\n")
             prompt = wrap_turn_context(injected, typed)
         return prompt
@@ -521,9 +524,16 @@ class TurnController:
                         getattr(c, "tool_name", None) or "(unknown)"
                         for c in result.output.approvals
                     )
-                    await self.hooks.notification(
-                        "approval_needed", "Approval needed", names
-                    )
+                    # Belt-and-suspenders: the hook engine is already best-effort
+                    # (runner.dispatch never raises), but a payload-assembly bug or
+                    # a future non-observe-only hook must never abort the turn and
+                    # lose the model's in-flight work. Degrade to a logged warning.
+                    try:
+                        await self.hooks.notification(
+                            "approval_needed", "Approval needed", names
+                        )
+                    except Exception:  # noqa: BLE001 — a notification must never crash a turn
+                        logger.warning("approval-needed notification hook failed", exc_info=True)
                 try:
                     deferred_results = await resolve_approvals(
                         result.output, self.deps.mode, self.deps.request_approval
@@ -557,7 +567,13 @@ class TurnController:
             # than waiting for the next turn's start-of-turn check.
             await self._maybe_compact()
             output = result.output
-            await self.hooks.stop()
+            # The turn has already succeeded and persisted; a failing Stop hook
+            # must not turn that into a turn-level exception. Degrade like the
+            # approval notification above.
+            try:
+                await self.hooks.stop()
+            except Exception:  # noqa: BLE001 — a Stop hook must never crash a completed turn
+                logger.warning("stop hook failed", exc_info=True)
             await self._maybe_autoname()
             return output
 

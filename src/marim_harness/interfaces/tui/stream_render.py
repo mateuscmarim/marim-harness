@@ -147,7 +147,12 @@ class _StreamSink(abc.ABC):
     (:meth:`StreamRenderer.dispatch_stream_event`) serves both. Hooks default to
     no-ops; sub-classes override only what their scope needs."""
 
-    container: Widget  # mount target for assistant text and bare tool widgets
+    # Mount target for assistant text and bare tool widgets. Honestly Optional: a
+    # sub-agent sink whose detail pane isn't mounted (headless, or an early race)
+    # has no container. ``dispatch_stream_event`` guards on None once at entry and
+    # threads the narrowed Widget into the handlers that mount, so the None case
+    # is handled at the boundary rather than papered over with a cast.
+    container: Widget | None
 
     @abc.abstractmethod
     def get_run(self) -> tuple:
@@ -174,9 +179,10 @@ class _StreamSink(abc.ABC):
     def on_tool(self, tool_name: str, args: dict) -> None:  # noqa: B027
         """Called when the stream makes a tool call (card status, sub only)."""
 
-    async def intercept_tool(self, event, args: dict) -> bool:
+    async def intercept_tool(self, event, args: dict, container: Widget) -> bool:
         """Give the scope first refusal on a tool call; return True to claim it and
-        skip the default ToolCallWidget path. Default: never intercepts."""
+        skip the default ToolCallWidget path. ``container`` is the dispatch-narrowed
+        (non-None) mount target. Default: never intercepts."""
         return False
 
     def on_result(self, event) -> None:  # noqa: B027
@@ -189,7 +195,11 @@ class _TopLevelSink(_StreamSink):
     spawn_agent calls so they render as a live SubAgentWidget instead of a generic
     tool."""
 
-    def __init__(self, renderer: "StreamRenderer", container) -> None:
+    # The main log is always mounted, so the top-level sink's container is never
+    # None in practice; the mount sites still receive the dispatch-narrowed Widget
+    # by parameter rather than relying on a covariant attribute override (which a
+    # mutable attribute can't express).
+    def __init__(self, renderer: "StreamRenderer", container: Widget) -> None:
         self._r = renderer
         self.container = container
 
@@ -212,7 +222,7 @@ class _TopLevelSink(_StreamSink):
     def set_thinking(self, widget) -> None:
         self._r.current_thinking = widget
 
-    async def intercept_tool(self, event, args: dict) -> bool:
+    async def intercept_tool(self, event, args: dict, container: Widget) -> bool:
         # Every spawn_agent gets a live SubAgentWidget, mounted standalone so it
         # isn't buried in a tool group. A foreground spawn streams its steps into
         # the card; a background/detached spawn (auto or explicit background=True)
@@ -225,7 +235,7 @@ class _TopLevelSink(_StreamSink):
             self._r.tool_widgets[event.part.tool_call_id] = widget
             self._r.ensure_pane(widget)          # build + attach the pane
             self.set_run(None, None)
-            await self.container.mount(widget)
+            await container.mount(widget)
             return True
         # ask_user is a user-facing Q&A, not mechanical work — keep it out of the
         # collapsed tool group, where the question and the user's answer would be
@@ -239,7 +249,7 @@ class _TopLevelSink(_StreamSink):
             )
             self._r.tool_widgets[event.part.tool_call_id] = widget
             self.set_run(None, None)
-            await self.container.mount(widget)
+            await container.mount(widget)
             return True
         return False
 
@@ -268,10 +278,10 @@ class _SubAgentSink(_StreamSink):
         self._sid = stream_id
         # Mount transcript widgets into the agent's pane in the detail host. The
         # pane is created at spawn; ensure_pane is idempotent and covers the rare
-        # race where the sink runs before intercept_tool attached it. None when the
-        # host isn't mounted (headless); dispatch_stream_event guards on None and
-        # skips — cast satisfies the base-class Widget annotation at the type level.
-        self.container = cast(Widget, renderer.ensure_pane(parent))
+        # race where the sink runs before intercept_tool attached it. Genuinely
+        # None when the host isn't mounted (headless); dispatch_stream_event guards
+        # on None and skips, so the Optional rides through honestly (no cast).
+        self.container = renderer.ensure_pane(parent)
 
     def get_run(self) -> tuple:
         state = self._r._sub_streams.get(self._sid)
@@ -701,13 +711,15 @@ class StreamRenderer:
             if parent.pane is not None:
                 parent.pane.set_model(model)
 
-    async def _on_text_start(self, event: PartStartEvent, sink: "_StreamSink") -> None:
+    async def _on_text_start(
+        self, event: PartStartEvent, sink: "_StreamSink", container: Widget
+    ) -> None:
         part = cast(TextPart, event.part)
         sink.set_run(None, None)  # assistant text ends the run of tools
         sink.on_text()  # live title status, useful while collapsed
         msg = AssistantMessage()
         sink.set_assistant(msg)
-        await sink.container.mount(msg)
+        await container.mount(msg)
         if part.content:
             self.append_stream(msg, part.content)
 
@@ -717,14 +729,16 @@ class StreamRenderer:
         if msg is not None:
             self.append_stream(msg, delta.content_delta or "")
 
-    async def _on_thinking_start(self, event: PartStartEvent, sink: "_StreamSink") -> None:
+    async def _on_thinking_start(
+        self, event: PartStartEvent, sink: "_StreamSink", container: Widget
+    ) -> None:
         # Reasoning streams as its own collapsed block, standalone like
         # assistant text (so it breaks any open tool run rather than nesting).
         part = cast(ThinkingPart, event.part)
         sink.set_run(None, None)
         widget = ThinkingWidget()
         sink.set_thinking(widget)
-        await sink.container.mount(widget)
+        await container.mount(widget)
         if part.content:
             self.append_stream(widget.body, part.content)
 
@@ -734,14 +748,16 @@ class StreamRenderer:
         if widget is not None:
             self.append_stream(widget.body, delta.content_delta or "")
 
-    async def _on_tool_call(self, event: FunctionToolCallEvent, sink: "_StreamSink") -> None:
+    async def _on_tool_call(
+        self, event: FunctionToolCallEvent, sink: "_StreamSink", container: Widget
+    ) -> None:
         # A gated tool re-emits its call event on the post-approval execution
         # pass; reuse the widget already mounted for this id rather than
         # mounting an orphaned duplicate.
         if event.part.tool_call_id in self.tool_widgets:
             return
         args = event.part.args_as_dict()
-        if await sink.intercept_tool(event, args):
+        if await sink.intercept_tool(event, args, container):
             return
         args = self._with_wait_label(event.part.tool_name, args)
         sink.on_tool(event.part.tool_name, args)  # live card status
@@ -751,7 +767,7 @@ class StreamRenderer:
         )
         self.tool_widgets[event.part.tool_call_id] = widget
         group, solo = sink.get_run()
-        group, solo = await self.add_tool_to_run(widget, sink.container, group, solo)
+        group, solo = await self.add_tool_to_run(widget, container, group, solo)
         # Keep the run state in sync; a None value just means "no open group /
         # no lone call" for this stream.
         sink.set_run(group, solo)
@@ -797,6 +813,10 @@ class StreamRenderer:
         # widgets; skip the event rather than crashing.
         if sink.container is None:
             return
+        # Narrowed once here (non-None past the guard) and threaded into the
+        # handlers that mount, so the base's ``container: Widget | None`` stays
+        # honest without each handler re-checking.
+        container: Widget = sink.container
         # A reasoning block is complete the moment any event other than its own
         # thinking-delta arrives — the next part has started, so cap the thought
         # to its preview now (Ctrl+O still reveals it). A thought that's still
@@ -824,14 +844,14 @@ class StreamRenderer:
             if active_assistant is not None:
                 active_assistant.finalize()
         if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
-            await self._on_text_start(event, sink)
+            await self._on_text_start(event, sink, container)
         elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
             await self._on_text_delta(event, sink)
         elif isinstance(event, PartStartEvent) and isinstance(event.part, ThinkingPart):
-            await self._on_thinking_start(event, sink)
+            await self._on_thinking_start(event, sink, container)
         elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, ThinkingPartDelta):
             await self._on_thinking_delta(event, sink)
         elif isinstance(event, FunctionToolCallEvent):
-            await self._on_tool_call(event, sink)
+            await self._on_tool_call(event, sink, container)
         elif isinstance(event, FunctionToolResultEvent):
             await self._on_tool_result(event, sink)

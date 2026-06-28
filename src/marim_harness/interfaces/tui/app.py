@@ -432,8 +432,23 @@ class HarnessApp(App):
                 )
             )
             return False
-        self.stream.current_assistant = None
-        self._turn_worker = self.run_worker(self._run_turn(prompt), exclusive=True)
+        # Mirror _start_turn's discipline: keep the spawn exception-safe. This path
+        # has no awaits (so no concurrent submit can interleave, hence no
+        # _turn_starting latch is needed), but resetting the stream or creating the
+        # worker could still raise if Textual is mid-teardown. If it does, leave no
+        # half-set busy state behind (_turn_worker stays/returns to None so
+        # turn_busy doesn't wedge) and report failure rather than letting the
+        # exception escape into the slash-command dispatcher.
+        try:
+            self.stream.current_assistant = None
+            self._turn_worker = self.run_worker(self._run_turn(prompt), exclusive=True)
+        except Exception:  # noqa: BLE001 — a failed spawn must not wedge the UI
+            self._turn_worker = None
+            self.log.error("failed to start system turn")
+            self._append_log(
+                NoticeMessage("Couldn't start the command — please try again.")
+            )
+            return False
         return True
 
     def _enqueue(
