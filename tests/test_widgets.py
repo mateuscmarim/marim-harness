@@ -478,6 +478,11 @@ async def test_live_panel_keeps_title_visible_and_toggles_when_collapsed(kind):
     async with app.run_test(size=(80, 24)) as pilot:
         panel = app.query_one(panel_cls)
         panel._render_items(items)
+        # Normalize to an expanded baseline so the collapse/expand toggle below
+        # holds regardless of the panel's default state (JobPanel starts
+        # collapsed; its default is covered by test_job_panel_collapsed_by_default).
+        if panel._collapsed:
+            panel.on_panel_header_clicked(PanelHeader.Clicked())
         await pilot.pause()
         assert panel.size.height > 1  # expanded shows header + body
 

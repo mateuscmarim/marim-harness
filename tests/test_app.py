@@ -2154,6 +2154,39 @@ async def test_job_panel_reflects_jobs_on_mount(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_job_panel_collapsed_by_default(tmp_path: Path):
+    import asyncio
+
+    from marim_harness.interfaces.tui.widgets import JobPanel, TaskPanel
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.query_one(JobPanel)
+
+        async def slow() -> str:
+            await asyncio.sleep(5)
+            return "done"
+
+        app.harness.deps.jobs.register("bash", "sleep 5", slow())
+        await pilot.pause()
+        # The panel appears, but starts collapsed: body hidden, collapsed glyph,
+        # and only the title row is shown.
+        assert panel.display is True
+        assert panel._collapsed is True
+        assert app.query_one("#job-body").display is False
+        assert "▸" in str(app.query_one("#job-header").render())
+        # The task panel is unaffected — still expanded by default.
+        assert app.query_one(TaskPanel)._collapsed is False
+        # Clicking the header expands the jobs body.
+        panel.on_panel_header_clicked(None)
+        await pilot.pause()
+        assert panel._collapsed is False
+        assert app.query_one("#job-body").display is True
+        await app.harness.deps.jobs.cancel_all()
+
+
+@pytest.mark.anyio
 async def test_background_spawn_renders_a_card_held_pending(tmp_path: Path):
     """A background spawn_agent now renders a SubAgentWidget (not a plain tool
     row). With no live job behind it, the card holds pending rather than showing a

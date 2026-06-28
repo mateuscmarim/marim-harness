@@ -52,16 +52,22 @@ class LivePanel(VerticalScroll):
     """
 
     def __init__(self, *, name: str, title: str, renderer: Callable[[list], str],
-                 markup: bool = False) -> None:
+                 markup: bool = False, collapsed: bool = False) -> None:
         super().__init__(id=f"{name}-panel")
         self.display = False
         self._title = title
         self._renderer = renderer
         self._markup = markup
-        self._collapsed = False
+        self._collapsed = collapsed
         self._count = 0
         self._header = PanelHeader(id=f"{name}-header", classes="live-panel-header")
         self._body = Static(id=f"{name}-body", classes="live-panel-body")
+        # Start collapsed when asked: hide the body and pin the title-row height,
+        # mirroring the collapsed branch of on_panel_header_clicked so the panel
+        # opens to just its title until the user expands it.
+        if collapsed:
+            self._body.display = False
+            self.styles.height = 2
 
     def compose(self) -> ComposeResult:
         yield self._header
@@ -120,7 +126,7 @@ class JobPanel(LivePanel):
     def __init__(self) -> None:
         from ....jobs import render_jobs
 
-        super().__init__(name="job", title="Jobs", renderer=render_jobs)
+        super().__init__(name="job", title="Jobs", renderer=render_jobs, collapsed=True)
 
     def show_jobs(self, jobs: list) -> None:
         self._render_items(jobs)
