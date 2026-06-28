@@ -1,5 +1,6 @@
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from dataclasses import replace as dataclass_replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -125,6 +126,13 @@ class Deps:
     # Shared with sub-agents through ``replace(deps, …)``; it's keyed by resolved
     # path, so an isolated worktree spawn still must read its own copies first.
     reads: ReadLedger = field(default_factory=ReadLedger)
+    # Zero-indexed nesting depth: 0 for the main agent, 1 for its sub-agents,
+    # 2 for grandchildren. Used by spawn_agent to enforce the depth limit.
+    subagent_depth: int = 0
+
+    def replace(self, **kw) -> "Deps":
+        """Return a shallow copy with specified fields replaced."""
+        return dataclass_replace(self, **kw)
 
 
 # The main agent's concrete generic type: deps are ``Deps`` and a turn yields
