@@ -128,6 +128,40 @@ def test_spawn_agent_allows_below_depth_limit():
     assert "Cannot spawn" not in result
 
 
+def test_spawn_agent_refuses_background_at_depth():
+    """Background spawning is main-agent-only: sub-agents get a clear refusal."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from marim_harness.tools.provider import spawn_agent
+
+    deps = _make_deps(Path("/tmp"), subagent_depth=1)
+    ctx = SimpleNamespace(deps=deps, tool_call_id="tc1")
+
+    result = asyncio.run(spawn_agent(
+        ctx, type="explore", task="do thing", background=True, max_depth=3
+    ))
+    assert "Background spawning is only available to the top-level agent" in result
+
+
+def test_spawn_agent_allows_background_at_depth_zero():
+    """Main agent (depth 0) can still spawn background children."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from marim_harness.tools.provider import spawn_agent
+
+    deps = _make_deps(Path("/tmp"), subagent_depth=0)
+    ctx = SimpleNamespace(deps=deps, tool_call_id="tc1")
+
+    result = asyncio.run(spawn_agent(
+        ctx, type="explore", task="do thing", background=True, max_depth=3
+    ))
+    # Should NOT be refused — it should either succeed or fail for infra reasons
+    # (no run_background_agent wired), but NOT because of the depth guard.
+    assert "Background spawning is only available" not in result
+
+
 @pytest.mark.anyio
 async def test_nested_spawn_integration(tmp_path: Path):
     """End-to-end: main → sub → grandchild chain works.

@@ -548,6 +548,16 @@ async def spawn_agent(
             f"Cannot spawn sub-agent: already at depth "
             f"{ctx.deps.subagent_depth}, max depth is {effective_max}."
         )
+    # Background spawning is main-agent-only: a sub-agent's turn ends before its
+    # background child finishes, so the child's report would always be orphaned
+    # (owned by the job registry, never seen by the spawner). Sub-agents should
+    # fan out foreground children instead — results return to the caller.
+    if background and ctx.deps.subagent_depth > 0:
+        return (
+            "Background spawning is only available to the top-level agent. "
+            "Spawn this child in the foreground, or have the main agent "
+            "spawn it as a background job with background=True."
+        )
     task = compose_subagent_task(
         task, returns=returns, constraints=constraints, context=context
     )
