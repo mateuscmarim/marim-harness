@@ -58,16 +58,6 @@ AskUserFn = Callable[[list[Question]], Awaitable[dict | None]]
 
 
 @dataclass
-class SubAgentCallbacks:
-    """UI callbacks for sub-agent events, grouped to keep Deps tidy."""
-
-    on_event: SubAgentEventCb | None = None
-    on_notice: SubAgentNoticeCb | None = None
-    on_model: SubAgentModelCb | None = None
-    on_usage: SubAgentUsageCb | None = None
-
-
-@dataclass
 class HarnessServices:
     """Collaborator handles wired by the Harness after construction.
 
@@ -92,39 +82,42 @@ class HarnessServices:
 
 
 @dataclass
-class Deps:
-    workspace_root: Path
+class WorkspaceConfig:
+    """Immutable workspace identity. Set once at construction, never mutated."""
+
+    root: Path
     mode: Mode = Mode.ask
-    # Detached fan-out routing. detach_fanout is the config knob; interactive is
-    # set True only when a UI is attached (bind_ui) — both required before
-    # spawn_agent auto-detaches, since headless has no wake loop to synthesize.
+    command_policy: CommandPolicy = field(default_factory=CommandPolicy)
+
+
+@dataclass
+class UIHooks:
+    """UI callbacks wired by bind_ui(). All None when headless.
+
+    SubAgentCallbacks fields are absorbed here -- they are UI-layer concerns
+    (streaming sub-agent events to the TUI) and don't belong on the core
+    runtime object.
+    """
+
+    request_approval: ApprovalFn | None = None
+    ask_user: AskUserFn | None = None
+    on_subagent_event: SubAgentEventCb | None = None
+    on_subagent_notice: SubAgentNoticeCb | None = None
+    on_subagent_model: SubAgentModelCb | None = None
+    on_subagent_usage: SubAgentUsageCb | None = None
     detach_fanout: bool = False
     interactive: bool = False
-    request_approval: ApprovalFn | None = None
-    # Lets the ask_user tool put a structured question to the user mid-turn. None
-    # when headless (the tool then returns a graceful note).
-    ask_user: AskUserFn | None = None
-    # The session's live checklist. Tools mutate it via ctx.deps; the Harness
-    # persists it and the TUI renders it. Every Deps gets its own.
-    tasks: TaskList = field(default_factory=TaskList)
-    # The session's live background jobs. Tools launch/inspect via ctx.deps; the
-    # TUI renders a live panel. Not persisted — process-scoped.
-    jobs: JobRegistry = field(default_factory=JobRegistry)
-    # Allow/deny policy for shell commands, enforced inside the bash tool in
-    # every mode. The default (empty) policy permits everything.
-    command_policy: CommandPolicy = field(default_factory=CommandPolicy)
-    # Collaborator handles wired by the Harness after construction. Its own
-    # container so the late-bound services are separated from caller inputs.
-    services: HarnessServices = field(default_factory=HarnessServices)
-    # Optional Claude-Code-compatible hook engine. None when no hooks.json is
-    # configured (every fire-point becomes a cheap ``is None`` no-op).
-    hooks: Optional["HookRunner"] = None
-    # UI callbacks for sub-agent events; all None when headless.
-    callbacks: SubAgentCallbacks = field(default_factory=SubAgentCallbacks)
-    # Optional desktop notifier. None when notifications are disabled; the TUI
-    # and headless runner fire it at key event points (turn complete, error,
-    # approval needed, ask user, background job finished).
     notifier: "Notifier | None" = None
+
+
+@dataclass
+class Deps:
+    workspace: WorkspaceConfig
+    ui: UIHooks = field(default_factory=UIHooks)
+    tasks: TaskList = field(default_factory=TaskList)
+    jobs: JobRegistry = field(default_factory=JobRegistry)
+    services: HarnessServices = field(default_factory=HarnessServices)
+    hooks: "HookRunner | None" = None
 
 
 # The main agent's concrete generic type: deps are ``Deps`` and a turn yields
