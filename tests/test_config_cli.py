@@ -157,3 +157,30 @@ def test_set_masks_secret_value_in_confirmation(monkeypatch, tmp_path):
     # but the real value is written to disk
     env_file = tmp_path / "marim" / ".env"
     assert "MARIM_API_KEY=sk-supersecret" in env_file.read_text()
+
+
+def test_set_rejects_invalid_default_mode(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    err = io.StringIO()
+    code = config_cmd.main(["set", "MARIM_DEFAULT_MODE", "yolo"], err=err)
+    assert code == 2
+    assert "ask" in err.getvalue() and "auto" in err.getvalue()
+
+
+def test_set_accepts_and_normalizes_default_mode(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    out = io.StringIO()
+    code = config_cmd.main(["set", "MARIM_DEFAULT_MODE", "Auto"], out=out)
+    assert code == 0
+    env_text = (tmp_path / "marim" / ".env").read_text()
+    assert "MARIM_DEFAULT_MODE=auto" in env_text
+
+
+def test_show_includes_default_mode(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    _clear_marim_env(monkeypatch)
+    monkeypatch.setenv("MARIM_DEFAULT_MODE", "plan")
+    out = io.StringIO()
+    assert config_cmd.main(["show"], out=out) == 0
+    text = out.getvalue()
+    assert "default_mode" in text and "plan" in text

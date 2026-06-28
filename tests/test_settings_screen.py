@@ -214,3 +214,26 @@ async def test_down_arrow_switches_section():
         assert screen.active_section == "theme"
         assert screen.query_one("#section-theme").display is True
         assert screen.query_one("#section-runtime").display is False
+
+
+@pytest.mark.anyio
+async def test_default_mode_radio_reflects_config_and_saves(isolated_env, monkeypatch, tmp_path):
+    """The Config section's default-mode radio shows the configured value and,
+    on save, persists MARIM_DEFAULT_MODE to the .env (mirrored to os.environ)."""
+    from textual.widgets import RadioButton
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("MARIM_DEFAULT_MODE", raising=False)
+    app = _Host(_fake_harness(), _env_cfg())  # env_cfg.default_mode == "ask"
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        # config default is "ask" -> that radio starts pressed
+        assert screen.query_one("#defmode-ask", RadioButton).value is True
+        screen.active_section = "config"
+        await pilot.pause()
+        screen.query_one("#defmode-plan", RadioButton).value = True
+        await pilot.pause()
+        screen._save_env()
+        await pilot.pause()
+    assert os.environ.get("MARIM_DEFAULT_MODE") == "plan"

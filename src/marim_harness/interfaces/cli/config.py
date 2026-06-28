@@ -17,7 +17,12 @@ _ALLOWED_KEYS = (
     "OPENROUTER_API_KEY",
     "MARIM_MAX_CONTEXT_TOKENS",
     "MARIM_PROACTIVE_MEMORY",
+    "MARIM_DEFAULT_MODE",
 )
+
+# Keys whose value is constrained to a fixed set, validated before persisting so a
+# typo can't write a value the loader will silently reject at startup.
+_ENUM_KEYS = {"MARIM_DEFAULT_MODE": ("ask", "auto", "plan")}
 
 
 def _is_secret(key: str) -> bool:
@@ -49,6 +54,7 @@ def _cmd_show(args, *, out, err) -> int:
             "base_url": cfg.base_url,
             "max_context_tokens": cfg.max_context_tokens,
             "proactive_memory": cfg.proactive_memory,
+            "default_mode": cfg.default_mode,
             "api_key_set": api_key_set,
             "global_config_path": str(path),
         }
@@ -60,6 +66,7 @@ def _cmd_show(args, *, out, err) -> int:
     print(f"base_url:            {cfg.base_url}", file=out)
     print(f"max_context_tokens:  {cfg.max_context_tokens}", file=out)
     print(f"proactive_memory:    {'on' if cfg.proactive_memory else 'off'}", file=out)
+    print(f"default_mode:        {cfg.default_mode}", file=out)
     print(f"api_key:             {'set' if api_key_set else 'not set'}", file=out)
     print(f"global_config_path:  {path}", file=out)
     print(f"  exists:            {'yes' if path.exists() else 'no'}", file=out)
@@ -82,8 +89,18 @@ def _cmd_set(args, *, out, err) -> int:
             file=err,
         )
         return 2
-    _persist(key, args.value)
-    shown = "***" if _is_secret(key) else args.value
+    value = args.value
+    allowed = _ENUM_KEYS.get(key)
+    if allowed is not None:
+        value = value.strip().lower()
+        if value not in allowed:
+            print(
+                f"error: {key} must be one of: {', '.join(allowed)}",
+                file=err,
+            )
+            return 2
+    _persist(key, value)
+    shown = "***" if _is_secret(key) else value
     print(f"set {key}={shown} in {global_config_path()}", file=out)
     return 0
 

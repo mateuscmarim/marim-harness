@@ -30,14 +30,21 @@ INSTRUCTIONS = (
 def build_harness(
     workspace: Path,
     *,
-    mode: Mode,
+    mode: Mode | None = None,
     resume: bool = False,
 ) -> Harness:
     """Construct a ready-to-run Harness for ``workspace``. Shared by the TUI and
     the headless CLI so both wire up the model, session store, and aux agents
     identically. When ``resume`` is set, reattaches to the latest saved session
-    and replays its history."""
+    and replays its history.
+
+    ``mode`` is the initial approval mode. Pass it explicitly to force a mode
+    (the headless ``--mode`` flag does this); leave it ``None`` to use the
+    configured default (``MARIM_DEFAULT_MODE``, falling back to ``ask``) — the
+    interactive TUI takes this path."""
     cfg = load_config()
+    if mode is None:
+        mode = Mode(cfg.default_mode)
     configs, default_provider = detect_active_providers()
     model_source = MultiModelSource(
         {p: ModelSource(c) for p, c in configs.items()}, default_provider

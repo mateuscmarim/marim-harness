@@ -49,6 +49,11 @@ _PROJECT_ENV_BLOCKLIST = frozenset(
         "MARIM_TRUST_PROJECT_HOOKS",
         "MARIM_COMMAND_DENYLIST",
         "MARIM_COMMAND_ALLOWLIST",
+        # A cloned repo's .env shipping MARIM_DEFAULT_MODE=auto would silently make
+        # your sessions auto-approve every mutation/command in that repo — a
+        # supply-chain footgun. The startup approval posture comes only from the
+        # shell env or the trusted global config, never a project file.
+        "MARIM_DEFAULT_MODE",
     }
 )
 

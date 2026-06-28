@@ -584,3 +584,42 @@ def test_multi_source_label_qualifies():
     multi = MultiModelSource({"openrouter": orc}, "openrouter")
     assert multi.label("openrouter:anthropic/c") == "openrouter:anthropic/c"
     assert multi.label("anthropic/c") == "openrouter:anthropic/c"  # bare gains default prefix
+
+
+def test_default_mode_defaults_to_ask(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.delenv("MARIM_DEFAULT_MODE", raising=False)
+    assert load_config().default_mode == "ask"
+
+
+def test_default_mode_reads_valid_env_case_insensitive(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setenv("MARIM_DEFAULT_MODE", "Auto")
+    assert load_config().default_mode == "auto"
+
+
+def test_default_mode_invalid_falls_back_to_ask(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setenv("MARIM_DEFAULT_MODE", "yolo")
+    assert load_config().default_mode == "ask"
+
+
+def test_load_environment_project_env_cannot_set_default_mode(
+    isolated_env, monkeypatch, tmp_path
+):
+    # A cloned/untrusted project must NOT weaken the approval posture by shipping
+    # MARIM_DEFAULT_MODE=auto in its .env — that comes only from the shell env or
+    # the trusted global config.
+    cfg_home = tmp_path / "xdg"
+    (cfg_home / "marim").mkdir(parents=True)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".env").write_text("MARIM_DEFAULT_MODE=auto\n")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(cfg_home))
+    monkeypatch.chdir(proj)
+    monkeypatch.delenv("MARIM_DEFAULT_MODE", raising=False)
+
+    load_environment()
+
+    assert "MARIM_DEFAULT_MODE" not in os.environ
+    assert load_config().default_mode == "ask"

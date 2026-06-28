@@ -275,3 +275,28 @@ def test_resume_reattaches_to_latest_and_replays_history(tmp_path, monkeypatch):
     assert len(harness.session.history) == len(history) > 0
     # The saved model was applied on resume.
     assert harness.model_id == "openai/gpt-5.2"
+
+
+def test_build_harness_uses_configured_default_mode(monkeypatch, tmp_path):
+    """No explicit mode -> the interactive default from MARIM_DEFAULT_MODE."""
+    _stub_model_plumbing(monkeypatch)
+    _isolate_sessions(monkeypatch, tmp_path)
+    monkeypatch.setenv("MARIM_DEFAULT_MODE", "auto")
+    harness = bootstrap.build_harness(tmp_path / "ws")
+    assert harness.deps.workspace.mode is Mode.auto
+
+
+def test_build_harness_defaults_to_ask_without_config(monkeypatch, tmp_path):
+    _stub_model_plumbing(monkeypatch)
+    _isolate_sessions(monkeypatch, tmp_path)
+    monkeypatch.delenv("MARIM_DEFAULT_MODE", raising=False)
+    harness = bootstrap.build_harness(tmp_path / "ws")
+    assert harness.deps.workspace.mode is Mode.ask
+
+
+def test_build_harness_explicit_mode_overrides_config_default(monkeypatch, tmp_path):
+    _stub_model_plumbing(monkeypatch)
+    _isolate_sessions(monkeypatch, tmp_path)
+    monkeypatch.setenv("MARIM_DEFAULT_MODE", "auto")
+    harness = bootstrap.build_harness(tmp_path / "ws", mode=Mode.plan)
+    assert harness.deps.workspace.mode is Mode.plan

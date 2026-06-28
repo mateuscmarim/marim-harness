@@ -136,6 +136,8 @@ def run_default(argv, *, stdin=None, out=None, err=None) -> int:
 
     from ..tui.app import HarnessApp
 
-    harness = build_harness(workspace, mode=Mode.ask, resume=args.resume)
+    # No explicit mode: the interactive session starts in the configured default
+    # (MARIM_DEFAULT_MODE, default "ask"), resolved inside build_harness.
+    harness = build_harness(workspace, resume=args.resume)
     HarnessApp(harness, history=PromptHistory(default_history_path())).run()
     return 0

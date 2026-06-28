@@ -59,6 +59,12 @@ class ModelConfig:
     api_key: str | None = None
     max_context_tokens: int = 100_000
     proactive_memory: bool = False
+    # Default approval mode for a fresh interactive (TUI) session: "ask" | "auto"
+    # | "plan". A durable, explicit preference — distinct from silently carrying
+    # over whatever mode the last session happened to end in. "ask" stays the safe
+    # default; opting into "auto" is a conscious choice. (The headless one-shot has
+    # its own --mode flag and does not consult this.)
+    default_mode: str = "ask"
     # When true, project-local .marim/hooks.json hooks are honored; otherwise
     # only the global hooks config runs (supply-chain guard for cloned repos).
     trust_project_hooks: bool = False
@@ -107,6 +113,7 @@ def _common_kwargs() -> dict[str, Any]:
     return dict(
         max_context_tokens=_int_env("MARIM_MAX_CONTEXT_TOKENS", 100_000),
         proactive_memory=_bool_env("MARIM_PROACTIVE_MEMORY", False),
+        default_mode=_mode_env("MARIM_DEFAULT_MODE", "ask"),
         trust_project_hooks=_bool_env("MARIM_TRUST_PROJECT_HOOKS", False),
         lsp_enabled=_bool_env("MARIM_LSP", True),
         lsp_tools_enabled=_bool_env("MARIM_LSP_TOOLS", True),
@@ -200,6 +207,25 @@ def _int_env(name: str, default: int) -> int:
 
 
 _TRUTHY = {"1", "true", "on", "yes"}
+
+_VALID_MODES = frozenset({"ask", "auto", "plan"})
+
+
+def _mode_env(name: str, default: str) -> str:
+    """Read an approval-mode env var, validating it against ask/auto/plan. An
+    unknown value falls back to ``default`` (warned, not raised) so a typo can't
+    leave the harness in an undefined mode."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value not in _VALID_MODES:
+        logger.warning(
+            "Ignoring invalid %s=%r (expected one of %s); using %r.",
+            name, raw, ", ".join(sorted(_VALID_MODES)), default,
+        )
+        return default
+    return value
 
 
 def _bool_env(name: str, default: bool) -> bool:

@@ -238,6 +238,14 @@ class SettingsScreen(Screen[None]):
             value=self.env_cfg.notifications.enabled,
             id="sw-notifications",
         )
+        yield Label("Default mode (new sessions)")
+        with RadioSet(id="default-mode-set"):
+            for name in _MODES:
+                yield RadioButton(
+                    name,
+                    value=(name == self.env_cfg.default_mode),
+                    id=f"defmode-{name}",
+                )
         with Horizontal(classes="frow"):
             yield Label("Context budget (tokens)")
             yield Input(
@@ -380,7 +388,11 @@ class SettingsScreen(Screen[None]):
         if ctx <= 0:
             status.update("Context budget must be a positive integer.")
             return
+        dm = self.query_one("#default-mode-set", RadioSet)
+        idx = dm.pressed_index
+        default_mode = _MODES[idx] if 0 <= idx < len(_MODES) else self.env_cfg.default_mode
         values = {
+            "MARIM_DEFAULT_MODE": default_mode,
             "MARIM_LSP": _b(self.query_one("#sw-lsp", BoxCheckbox).value),
             "MARIM_LSP_TOOLS": _b(self.query_one("#sw-lsp-tools", BoxCheckbox).value),
             "MARIM_JOB_TOOL_COMBINED": _b(self.query_one("#sw-job", BoxCheckbox).value),
