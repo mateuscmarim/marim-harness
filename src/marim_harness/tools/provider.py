@@ -3,8 +3,9 @@ import json
 import logging
 import re
 from collections.abc import Iterable
-from typing import Literal, Protocol
+from typing import Annotated, Literal, Protocol, TypeVar
 
+from pydantic import BeforeValidator
 from pydantic_ai import ModelRetry, RunContext
 
 from ..ask_user import Question, answers_to_json, coerce_questions
@@ -20,6 +21,30 @@ from . import fetch, fs, shell, web
 # so importers (e.g. workspace.agents) don't pull in all of ``provider`` and
 # form an import cycle.
 from .names import GATED_TOOLS, LSP_TOOLS, NET_TOOLS, READ_TOOLS, SUBAGENT_TOOLS  # noqa: F401
+
+_T = TypeVar("_T")
+
+
+def _decode_json_list(value: object) -> object:
+    """Before-validator for an array tool argument: some models serialize a list
+    argument as a JSON *string* (e.g. ``'[{"old_string": …}]'``) rather than a
+    real array. Decode such a string to the list it represents; pass anything
+    else through untouched, so a genuine list validates normally and a non-JSON
+    string still surfaces the real validation error instead of being swallowed."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (ValueError, TypeError):
+            return value
+    return value
+
+
+# A ``list[T]`` tool argument that also tolerates a JSON-stringified list. The
+# before-validator runs ahead of list validation; the JSON schema advertised to
+# the model stays ``array`` (BeforeValidator leaves it unchanged), so a
+# well-behaved model is unaffected while a lenient one doesn't fail the turn on a
+# stringified array. Applied to every array-typed tool arg (edits/todos/questions).
+LenientList = Annotated[list[_T], BeforeValidator(_decode_json_list)]
 
 # Foreground bash timeout, expressed in milliseconds to match the convention the
 # model already uses (Claude Code's Bash tool is ms; models reliably pass ms even
@@ -94,7 +119,7 @@ def read_file(
     skill_roots = tuple(s.root for s in discover_skills(ctx.deps.workspace.root))
     return fs.read_file(
         ctx.deps.workspace.root, path, offset=offset, limit=limit,
-        extra_read_roots=skill_roots,
+        extra_read_roots=skill_roots, ledger=ctx.deps.reads,
     )
 
 
@@ -316,7 +341,7 @@ def read_skill_file(ctx: RunContext[Deps], name: str, path: str) -> str:
     return read_bundled_file(skill, path)
 
 
-async def update_tasks(ctx: RunContext[Deps], todos: list[Task]) -> str:
+async def update_tasks(ctx: RunContext[Deps], todos: LenientList[Task]) -> str:
     """Maintain your checklist for the current multi-step task. Pass the
     FULL list every time — it replaces the previous one. Each item is
     {text, status} where status is pending, in_progress, or done. Keep
@@ -333,7 +358,7 @@ async def update_tasks(ctx: RunContext[Deps], todos: list[Task]) -> str:
     return summarize(ctx.deps.tasks.items)
 
 
-async def ask_user(ctx: RunContext[Deps], questions: list[Question]) -> str:
+async def ask_user(ctx: RunContext[Deps], questions: LenientList[Question]) -> str:
     """Ask the user to choose between concrete options, pausing your turn until
     they answer. Use this only when the user's decision changes what you do next
     and you can't settle it yourself or from the code — not for things you can
@@ -569,18 +594,22 @@ async def write_file(ctx: RunContext[Deps], path: str, content: str) -> str:
     # opts out of pydantic-ai's auto thread-offload (it awaits async tools directly on
     # the event loop). ``fs.write_file`` does a blocking read + atomic write + double
     # fsync, so run it in a worker thread to keep the loop free for other tool calls.
-    result = await asyncio.to_thread(fs.write_file, ctx.deps.workspace.root, path, content)
+    result = await asyncio.to_thread(
+        fs.write_file, ctx.deps.workspace.root, path, content, ctx.deps.reads
+    )
     return await _with_diagnostics(ctx, path, result)
 
 
-async def edit_file(ctx: RunContext[Deps], path: str, edits: list[fs.Edit]) -> str:
+async def edit_file(ctx: RunContext[Deps], path: str, edits: LenientList[fs.Edit]) -> str:
     """Apply one or more find/replace edits to a file, in order and
     all-or-nothing. Each edit is {old_string, new_string, replace_all?};
     old_string must match exactly once unless replace_all is set."""
     # Offload the blocking fs work to a thread (see ``write_file`` above): the async
     # signature exists only to ``await _with_diagnostics``, and would otherwise run the
     # read + atomic write + fsyncs directly on the event loop.
-    result = await asyncio.to_thread(fs.edit_file, ctx.deps.workspace.root, path, edits)
+    result = await asyncio.to_thread(
+        fs.edit_file, ctx.deps.workspace.root, path, edits, ctx.deps.reads
+    )
     return await _with_diagnostics(ctx, path, result)
 
 

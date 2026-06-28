@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 from ..ask_user import Question
 from ..jobs import JobRegistry
 from ..tasks import TaskList
+from ..workspace.fs import ReadLedger
 from .permissions import Mode
 
 ApprovalFn = Callable[[object], Awaitable[DeferredToolApprovalResult | bool]]
@@ -118,6 +119,12 @@ class Deps:
     jobs: JobRegistry = field(default_factory=JobRegistry)
     services: HarnessServices = field(default_factory=HarnessServices)
     hooks: "HookRunner | None" = None
+    # Per-session read-before-edit ledger: which files have been read (and their
+    # fingerprint at read time) so edit_file/write_file can refuse to modify a
+    # file the agent hasn't seen, or that changed on disk since it was read.
+    # Shared with sub-agents through ``replace(deps, …)``; it's keyed by resolved
+    # path, so an isolated worktree spawn still must read its own copies first.
+    reads: ReadLedger = field(default_factory=ReadLedger)
 
 
 # The main agent's concrete generic type: deps are ``Deps`` and a turn yields

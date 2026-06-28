@@ -365,7 +365,10 @@ async def test_connect_runs_concurrently_and_records_all_statuses():
 
 def _ctx(mode, request_approval=None):
     return SimpleNamespace(
-        deps=SimpleNamespace(workspace=SimpleNamespace(mode=mode), ui=SimpleNamespace(request_approval=request_approval))
+        deps=SimpleNamespace(
+            workspace=SimpleNamespace(mode=mode),
+            ui=SimpleNamespace(request_approval=request_approval),
+        )
     )
 
 
@@ -507,7 +510,10 @@ async def test_hook_offloads_large_result(tmp_path: Path):
         return "Z" * 60_000
 
     ctx = SimpleNamespace(
-        deps=SimpleNamespace(workspace=SimpleNamespace(mode=Mode.auto, root=tmp_path), ui=SimpleNamespace(request_approval=None))
+        deps=SimpleNamespace(
+            workspace=SimpleNamespace(mode=Mode.auto, root=tmp_path),
+            ui=SimpleNamespace(request_approval=None),
+        )
     )
     hook = make_approval_hook("files", trusted=True)
     out = await hook(ctx, call_tool, "read", {})

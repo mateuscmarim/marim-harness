@@ -90,7 +90,10 @@ def _isolated_config(tmp_path_factory, monkeypatch):
 
 
 def _edit_then_done_model() -> FunctionModel:
-    """First model turn: call edit_file. After the tool result: reply 'done'.
+    """Read a.txt, then edit it, then reply 'done'. The read step satisfies the
+    read-before-edit guard (edit_file refuses to modify a file the agent hasn't
+    read), mirroring how a real agent works. read_file isn't an approval-gated
+    tool, so it runs without a callback — only the edit reaches the approval path.
     Supports both non-streamed and streamed requests."""
     import json as _json
 
@@ -102,6 +105,10 @@ def _edit_then_done_model() -> FunctionModel:
     def fn(messages, info):
         state["n"] += 1
         if state["n"] == 1:
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name="read_file", args={"path": "a.txt"})]
+            )
+        if state["n"] == 2:
             return ModelResponse(
                 parts=[
                     ToolCallPart(
@@ -118,6 +125,14 @@ def _edit_then_done_model() -> FunctionModel:
     async def stream_fn(messages, info):
         stream_state["n"] += 1
         if stream_state["n"] == 1:
+            yield {
+                0: DeltaToolCall(
+                    name="read_file",
+                    json_args=_json.dumps({"path": "a.txt"}),
+                    tool_call_id="tc-read-1",
+                )
+            }
+        elif stream_state["n"] == 2:
             yield {
                 0: DeltaToolCall(
                     name="edit_file",

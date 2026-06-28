@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from pydantic_ai import ModelRetry
 
 from ..atomic_io import atomic_write_text
-from ..workspace.fs import WorkspaceError, resolve_in_workspace
+from ..workspace.fs import ReadLedger, WorkspaceError, resolve_in_workspace
 from .offload import MAX_OUTPUT_CHARS, offload_if_large
 
 # When no explicit ``limit`` is given, a read is capped at this many lines so a
@@ -47,6 +47,28 @@ def _safe(root: Path, path: str) -> Path:
         raise ModelRetry(str(exc)) from exc
 
 
+def _require_read_before_write(ledger: ReadLedger | None, p: Path, path: str) -> None:
+    """Raise a model-facing ModelRetry if ``p`` may not be modified yet: it was
+    never read this session, or it changed on disk since it was read. A ``None``
+    ledger disables the guard (direct callers / tests that opt out). The reason
+    code from the framework-free ``ReadLedger`` is turned into the guidance the
+    model needs — the wording references ``read_file`` because the tool layer,
+    not ``workspace.fs``, owns tool-name-specific messaging."""
+    if ledger is None:
+        return
+    reason = ledger.staleness(p)
+    if reason == "unread":
+        raise ModelRetry(
+            f"{path}: read the file before editing it (call read_file first). This "
+            f"guards against modifying a file you haven't seen this session."
+        )
+    if reason == "changed":
+        raise ModelRetry(
+            f"{path} changed on disk since you read it — read it again before "
+            f"editing, as its current content may differ from what you saw."
+        )
+
+
 def _safe_read(root: Path, path: str, extra_read_roots: tuple[Path, ...]) -> Path:
     """Resolve ``path`` for reading, permitting it if it stays inside ``root`` or
     inside any of ``extra_read_roots``. The extra roots are read-only escape hatches
@@ -69,6 +91,7 @@ def read_file(
     offset: int = 1,
     limit: int | None = None,
     extra_read_roots: tuple[Path, ...] = (),
+    ledger: ReadLedger | None = None,
 ) -> str:
     """Read a text file relative to the workspace root, returning numbered lines.
 
@@ -90,6 +113,12 @@ def read_file(
     p = _safe_read(root, path, extra_read_roots)
     if not p.is_file():
         raise ModelRetry(f"not a file: {path}")
+    # Mark the file seen for the read-before-edit guard. Fingerprinted now,
+    # regardless of which window is returned: the agent has observed this file,
+    # which is what edit_file/write_file require — they don't demand the exact
+    # region was read.
+    if ledger is not None:
+        ledger.record(p)
     start = offset - 1
     span = limit if limit is not None else _DEFAULT_READ_LIMIT
     end = start + span
@@ -173,14 +202,25 @@ def _atomic_write_preserving_mode(p: Path, content: str) -> None:
         os.chmod(p, 0o666 & ~umask)
 
 
-def write_file(root: Path, path: str, content: str) -> str:
+def write_file(
+    root: Path, path: str, content: str, ledger: ReadLedger | None = None
+) -> str:
     """Create or overwrite a file relative to the workspace root."""
     p = _safe(root, path)
+    # Read-before-edit applies only to *overwriting* an existing file (clobbering
+    # content the agent may not have seen). Creating a brand-new file needs no
+    # prior read — there's nothing to clobber.
+    if p.exists():
+        _require_read_before_write(ledger, p, path)
     p.parent.mkdir(parents=True, exist_ok=True)
     # Atomic, like the session/checkpoint persistence layer: a crash mid-write
     # leaves the old file intact rather than a truncated one, and a parallel
     # sub-agent writing the same path can't interleave a half-written result.
     _atomic_write_preserving_mode(p, content)
+    # Refresh the fingerprint so a follow-up write/edit this turn isn't flagged
+    # as stale against the pre-write content.
+    if ledger is not None:
+        ledger.record(p)
     return f"wrote {path} ({len(content.encode('utf-8'))} bytes, {len(content)} chars)"
 
 
@@ -210,7 +250,9 @@ def _apply_edit(text: str, edit: Edit, path: str, index: int) -> str:
     return text.replace(edit.old_string, edit.new_string)
 
 
-def edit_file(root: Path, path: str, edits: list[Edit]) -> str:
+def edit_file(
+    root: Path, path: str, edits: list[Edit], ledger: ReadLedger | None = None
+) -> str:
     """Apply a list of edits to one file, in order and all-or-nothing. Each edit
     sees the result of the previous one; the file is written only if all succeed."""
     if not edits:
@@ -218,6 +260,9 @@ def edit_file(root: Path, path: str, edits: list[Edit]) -> str:
     p = _safe(root, path)
     if not p.is_file():
         raise ModelRetry(f"not a file: {path}")
+    # Editing always modifies existing content, so the read-before-edit guard
+    # always applies (unlike write_file, which exempts brand-new files).
+    _require_read_before_write(ledger, p, path)
     # Strict decode: unlike read_file (display-only, errors="replace"), edit_file
     # reads-modifies-writes, so a lossy decode would round-trip the undecodable
     # bytes back as U+FFFD and corrupt regions the edit never touched. Refuse
@@ -229,6 +274,9 @@ def edit_file(root: Path, path: str, edits: list[Edit]) -> str:
     for i, edit in enumerate(edits, 1):
         text = _apply_edit(text, edit, path, i)
     _atomic_write_preserving_mode(p, text)  # all-or-nothing on disk too — see write_file
+    # Refresh the fingerprint so a follow-up edit this turn isn't seen as stale.
+    if ledger is not None:
+        ledger.record(p)
     n = len(edits)
     return f"edited {path} ({n} edit{'s' if n != 1 else ''})"
 

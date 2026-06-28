@@ -106,6 +106,7 @@ async def test_edit_appends_diagnostics(tmp_path):
     lsp = _DiagLsp("m.py:1:1: error: bad")
     ctx = _Ctx(_make_deps(tmp_path, mode=Mode.ask, services=HarnessServices(lsp=lsp)))
     from marim_harness.tools import fs
+    provider.read_file(ctx, "m.py")  # read-before-edit guard
     out = await provider.edit_file(ctx, "m.py", [fs.Edit(old_string="x = 1", new_string="y = 2")])
     assert "edited m.py" in out
     assert "m.py:1:1: error: bad" in out
@@ -128,6 +129,7 @@ async def test_edit_no_diagnostics_block_when_clean(tmp_path):
     lsp = _DiagLsp("m.py: no diagnostics")
     ctx = _Ctx(_make_deps(tmp_path, mode=Mode.ask, services=HarnessServices(lsp=lsp)))
     from marim_harness.tools import fs
+    provider.read_file(ctx, "m.py")  # read-before-edit guard
     out = await provider.edit_file(ctx, "m.py", [fs.Edit(old_string="x = 1", new_string="y = 2")])
     # A clean file adds no noise.
     assert "no diagnostics" not in out
