@@ -62,6 +62,8 @@ def build_harness(
             root=workspace,
             mode=mode,
             command_policy=command_policy,
+            tool_search=cfg.tool_search,
+            tool_search_threshold=cfg.tool_search_threshold,
         ),
         hooks=hook_runner,
         ui=UIHooks(detach_fanout=cfg.subagent.detach_fanout, notifier=notifier),

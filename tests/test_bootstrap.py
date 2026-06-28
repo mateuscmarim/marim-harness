@@ -300,3 +300,13 @@ def test_build_harness_explicit_mode_overrides_config_default(monkeypatch, tmp_p
     monkeypatch.setenv("MARIM_DEFAULT_MODE", "auto")
     harness = bootstrap.build_harness(tmp_path / "ws", mode=Mode.plan)
     assert harness.deps.workspace.mode is Mode.plan
+
+
+def test_build_harness_threads_tool_search_policy(monkeypatch, tmp_path):
+    _stub_model_plumbing(monkeypatch)
+    _isolate_sessions(monkeypatch, tmp_path)
+    monkeypatch.setenv("MARIM_TOOL_SEARCH", "on")
+    monkeypatch.setenv("MARIM_TOOL_SEARCH_THRESHOLD", "7")
+    harness = bootstrap.build_harness(tmp_path / "ws")
+    assert harness.deps.workspace.tool_search == "on"
+    assert harness.deps.workspace.tool_search_threshold == 7

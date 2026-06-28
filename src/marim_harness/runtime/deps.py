@@ -101,6 +101,8 @@ class WorkspaceConfig:
     root: Path
     mode: Mode = Mode.ask
     command_policy: CommandPolicy = field(default_factory=CommandPolicy)
+    tool_search: str = "auto"
+    tool_search_threshold: int = 15
 
 
 @dataclass
