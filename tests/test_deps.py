@@ -81,3 +81,33 @@ def test_uihooks_has_optional_on_mode_change():
     assert hooks2.on_mode_change is not None
     hooks2.on_mode_change()
     assert called == [True]
+
+
+def test_services_has_optional_get_session_id():
+    from marim_harness.runtime.deps import HarnessServices
+
+    s = HarnessServices()
+    assert s.get_session_id is None
+
+    s2 = HarnessServices(get_session_id=lambda: "sess-1")
+    assert s2.get_session_id is not None
+    assert s2.get_session_id() == "sess-1"
+
+
+def test_build_services_threads_get_session_id(tmp_path):
+    from marim_harness.runtime.harness import build_services
+
+    class _Subs:
+        async def run(self, *a, **k): ...
+        async def run_background(self, *a, **k): ...
+
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+    services = build_services(
+        deps,
+        lsp=None,
+        turn_hooks=object(),
+        subagents=_Subs(),
+        get_session_id=lambda: "sess-XYZ",
+    )
+    assert services.get_session_id is not None
+    assert services.get_session_id() == "sess-XYZ"

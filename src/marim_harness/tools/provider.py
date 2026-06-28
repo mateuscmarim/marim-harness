@@ -435,11 +435,13 @@ async def present_plan(
         raise ModelRetry("present_plan needs at least one concrete step.")
 
     created = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    # The session id is scoped to the workspace root name so plan filenames are
-    # stable per-workspace (e.g. "<workspace-name>-<summary-prefix>.md").
-    # HarnessServices has no session_id field, so we derive the slug from the
-    # workspace root rather than adding new plumbing out of scope for this task.
-    session_id = ctx.deps.workspace.root.name or "session"
+    # Stamp the plan with the active session id so filenames are stable per session
+    # (one file per plan per session, re-presenting overwrites). The getter is wired
+    # by the Harness; it is None in headless/tests, where we fall back to the
+    # workspace root name so the slug is still stable and non-empty.
+    get_sid = ctx.deps.services.get_session_id
+    sid = get_sid() if get_sid is not None else None
+    session_id = sid or ctx.deps.workspace.root.name or "session"
     try:
         path = write_plan(
             ctx.deps.workspace.root,

@@ -679,3 +679,28 @@ def test_array_arg_malformed_string_still_errors():
     schema = agent._function_toolset.tools["edit_file"].function_schema
     with pytest.raises(ValidationError):
         schema.validator.validate_python({"path": "x.py", "edits": "not json at all"})
+
+
+@pytest.mark.anyio
+async def test_present_plan_uses_threaded_session_id_for_filename(tmp_path):
+    from types import SimpleNamespace
+
+    from marim_harness.runtime.permissions import Mode
+    from marim_harness.tools import provider
+    from marim_harness.workspace.plans import plans_dir
+
+    deps = _make_deps(tmp_path, mode=Mode.plan)
+    deps.services.get_session_id = lambda: "sess-XYZ"
+
+    async def fake_ask(questions):
+        return {questions[0].header: "Keep planning"}
+
+    deps.ui.ask_user = fake_ask
+    ctx = SimpleNamespace(deps=deps)
+
+    await provider.present_plan(ctx, "Refactor X", ["a"])
+
+    files = list(plans_dir(tmp_path).glob("*.md"))
+    assert len(files) == 1
+    assert files[0].name.startswith("sess-xyz-")  # slug of the real session id
+    assert "session: sess-XYZ" in files[0].read_text()

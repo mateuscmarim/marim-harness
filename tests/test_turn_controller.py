@@ -203,3 +203,22 @@ async def test_assemble_prompt_no_preamble_outside_plan_mode(tmp_path):
     tc.deps.workspace.mode = Mode.ask
     prompt = await tc._assemble_prompt("refactor the parser")
     assert "PLAN MODE" not in prompt
+
+
+def test_session_id_getter_reads_live_store(tmp_path):
+    """build_services threads a getter that reads the session controller's store
+    live, so a session switch is reflected without rewiring."""
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    tc = _make_tc(FunctionModel(fn), tmp_path)
+    getter = tc.deps.services.get_session_id
+    assert getter is not None
+
+    class _Store:
+        session_id = "sess-live-1"
+
+    tc.session.store = _Store()
+    assert getter() == "sess-live-1"
+    tc.session.store = None
+    assert getter() is None
