@@ -15,9 +15,9 @@ from pathlib import Path
 import pytest
 from pydantic_ai.models.test import TestModel
 
-from marim_harness.runtime.deps import Deps, SubAgentCallbacks
+from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.permissions import Mode
-from tests.conftest import _make_harness, _text_model
+from tests.conftest import _make_harness, _text_model, _make_deps
 
 _SETUP_TOTAL_RE = re.compile(r"spawn 'explore' timing: setup=\d+ms ttft=(.+?) total=\d+ms")
 
@@ -27,7 +27,7 @@ async def test_headless_spawn_emits_timing_with_na_ttft(tmp_path: Path, caplog):
     """No UI listener and no hooks → the spawn isn't streamed, so there's no
     first-event to time: the line still emits with ttft=n/a, and the spawn
     succeeds (the probe must not force a streamed request)."""
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     runner = _make_harness(_text_model(), deps).subagents
     with caplog.at_level(logging.DEBUG, logger="marim_harness.subagents"):
         out = await runner.run("explore", "look around", stream_id="s1")
@@ -45,8 +45,8 @@ async def test_foreground_spawn_times_a_real_ttft(tmp_path: Path, caplog):
     async def _sink(_sid, _event, _usage):  # a UI listener
         return None
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto,
-                callbacks=SubAgentCallbacks(on_event=_sink))
+    deps = _make_deps(tmp_path)
+    deps.ui.on_subagent_event = _sink
     runner = _make_harness(TestModel(call_tools=[]), deps).subagents
     with caplog.at_level(logging.DEBUG, logger="marim_harness.subagents"):
         await runner.run("explore", "look around", stream_id="s1")
@@ -58,7 +58,7 @@ async def test_foreground_spawn_times_a_real_ttft(tmp_path: Path, caplog):
 
 @pytest.mark.anyio
 async def test_no_timing_line_when_debug_is_off(tmp_path: Path, caplog):
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     runner = _make_harness(_text_model(), deps).subagents
     with caplog.at_level(logging.INFO, logger="marim_harness.subagents"):
         await runner.run("explore", "look around", stream_id="s1")

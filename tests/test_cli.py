@@ -7,6 +7,7 @@ import pytest
 from marim_harness.interfaces.cli import default_cmd, router
 from marim_harness.interfaces.cli.default_cmd import _build_parser, _enter_worktree
 from marim_harness.runtime.permissions import Mode
+from tests.conftest import _make_deps
 
 
 def _cli_harness(tmp_path: Path, output_text: str = "ok"):
@@ -17,7 +18,7 @@ def _cli_harness(tmp_path: Path, output_text: str = "ok"):
     from marim_harness.session import SessionManager
     from marim_harness.tools.provider import BuiltinToolProvider
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     store = manager.create("cli")
     model = TestModel(call_tools=[], custom_output_text=output_text)

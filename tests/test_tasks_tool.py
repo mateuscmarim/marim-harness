@@ -4,7 +4,9 @@ from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 
 from marim_harness.runtime.deps import Deps
+from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
+from tests.conftest import _make_deps
 
 
 def _agent() -> Agent:
@@ -32,7 +34,7 @@ def _call_tool(tool_name: str, args: dict):
 
 
 def test_update_tasks_mutates_deps(tmp_path):
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     agent = _agent()
     model, captured = _call_tool(
         "update_tasks",
@@ -49,7 +51,7 @@ def test_update_tasks_mutates_deps(tmp_path):
 
 
 def test_update_tasks_returns_summary(tmp_path):
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     agent = _agent()
     model, captured = _call_tool(
         "update_tasks",
@@ -62,7 +64,7 @@ def test_update_tasks_returns_summary(tmp_path):
 
 
 def test_update_tasks_replaces_previous_list(tmp_path):
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     deps.tasks.replace([{"text": "old", "status": "pending"}])
     agent = _agent()
     model, _ = _call_tool("update_tasks", {"todos": [{"text": "new"}]})
@@ -74,7 +76,7 @@ def test_update_tasks_replaces_previous_list(tmp_path):
 def test_update_tasks_is_not_approval_gated(tmp_path):
     """It only mutates in-memory session state, so it must run with no approval
     round (the run completes and echoes the summary)."""
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     agent = _agent()
     model, captured = _call_tool("update_tasks", {"todos": [{"text": "x"}]})
     with agent.override(model=model):
@@ -91,7 +93,7 @@ class _TaskSpy:
 
 
 def test_update_tasks_fires_task_completed_for_newly_done(tmp_path):
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     spy = _TaskSpy()
     deps.services.turn_hooks = spy
     agent = _agent()
@@ -107,7 +109,7 @@ def test_update_tasks_fires_task_completed_for_newly_done(tmp_path):
 
 
 def test_update_tasks_does_not_refire_already_done(tmp_path):
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     deps.tasks.replace([{"text": "a", "status": "done"}])
     spy = _TaskSpy()
     deps.services.turn_hooks = spy
@@ -123,7 +125,7 @@ def test_update_tasks_does_not_refire_already_done(tmp_path):
 
 
 def test_update_tasks_no_hooks_is_safe(tmp_path):
-    deps = Deps(workspace_root=tmp_path)  # turn_hooks defaults None
+    deps = _make_deps(tmp_path, mode=Mode.ask)  # turn_hooks defaults None
     agent = _agent()
     model, _ = _call_tool("update_tasks", {"todos": [{"text": "x", "status": "done"}]})
     with agent.override(model=model):

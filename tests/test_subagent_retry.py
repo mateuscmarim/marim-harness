@@ -18,7 +18,7 @@ from pydantic_ai.models.function import FunctionModel
 
 from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.permissions import Mode
-from tests.conftest import _make_harness, _text_model
+from tests.conftest import _make_harness, _text_model, _make_deps
 
 
 class _Result:
@@ -44,7 +44,7 @@ class _FlakySub:
 def _runner(tmp_path: Path):
     """A real SubagentRunner with its backoff replaced by a recorder, so retries
     don't actually sleep. Returns ``(runner, sleeps)``."""
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     runner = _make_harness(_text_model(), deps).subagents
     sleeps: list[int] = []
 
@@ -144,9 +144,7 @@ async def test_retry_emits_a_ui_notice_for_a_foreground_spawn(tmp_path: Path):
     async def _notice(stream_id: str, message: str) -> None:
         notices.append((stream_id, message))
 
-    from marim_harness.runtime.deps import SubAgentCallbacks
-
-    runner.deps.callbacks = SubAgentCallbacks(on_notice=_notice)
+    runner.deps.ui.on_subagent_notice = _notice
     sub = _FlakySub(ModelHTTPError(504, "m", body="idle timeout"), fail_times=1)
     await runner._run_to_completion(sub, "task", None, None, None, "sid-1")
     assert len(notices) == 1
@@ -165,9 +163,7 @@ async def test_no_ui_notice_when_there_is_no_stream(tmp_path: Path):
     async def _notice(stream_id: str, message: str) -> None:
         notices.append((stream_id, message))
 
-    from marim_harness.runtime.deps import SubAgentCallbacks
-
-    runner.deps.callbacks = SubAgentCallbacks(on_notice=_notice)
+    runner.deps.ui.on_subagent_notice = _notice
     sub = _FlakySub(ModelHTTPError(504, "m", body="idle timeout"), fail_times=1)
     await runner._run_to_completion(sub, "task", None, None, None, None)
     assert notices == []

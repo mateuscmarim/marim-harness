@@ -4,7 +4,9 @@ sessions."""
 from pydantic_ai.usage import RunUsage
 
 from marim_harness.runtime.deps import Deps
+from marim_harness.runtime.permissions import Mode
 from marim_harness.session import SessionController, SessionManager
+from tests.conftest import _make_deps
 
 
 def test_persist_skips_save_when_history_unchanged(tmp_path):
@@ -13,7 +15,7 @@ def test_persist_skips_save_when_history_unchanged(tmp_path):
     workspace = tmp_path
     manager = SessionManager(workspace)
     store = manager.create("s1")
-    deps = Deps(workspace_root=workspace)
+    deps = _make_deps(workspace, mode=Mode.ask)
 
     save_calls = []
     original_save = store.save
@@ -48,7 +50,7 @@ def test_persist_runs_when_history_changes(tmp_path):
     workspace = tmp_path
     manager = SessionManager(workspace)
     store = manager.create("s2")
-    deps = Deps(workspace_root=workspace)
+    deps = _make_deps(workspace, mode=Mode.ask)
 
     save_calls = []
     original_save = store.save
@@ -75,7 +77,7 @@ def test_assign_directly_to_history_invalidates_cache(tmp_path):
     workspace = tmp_path
     manager = SessionManager(workspace)
     store = manager.create("s3")
-    deps = Deps(workspace_root=workspace)
+    deps = _make_deps(workspace, mode=Mode.ask)
 
     save_calls = []
     original_save = store.save
@@ -103,7 +105,7 @@ def test_in_place_history_mutation_invalidates_cache(tmp_path):
     workspace = tmp_path
     manager = SessionManager(workspace)
     store = manager.create("s4")
-    deps = Deps(workspace_root=workspace)
+    deps = _make_deps(workspace, mode=Mode.ask)
 
     save_calls = []
     original_save = store.save

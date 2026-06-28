@@ -6,7 +6,9 @@ from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 
 from marim_harness.runtime.deps import Deps
+from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
+from tests.conftest import _make_deps
 
 
 def _agent() -> Agent:
@@ -53,7 +55,7 @@ def test_activate_skill_returns_body_and_dir(tmp_path: Path):
     agent = _agent()
     model, captured = _call_tool("activate_skill", {"name": "greet"})
     with agent.override(model=model):
-        agent.run_sync("go", deps=Deps(workspace_root=tmp_path))
+        agent.run_sync("go", deps=_make_deps(tmp_path, mode=Mode.ask))
     assert "Say hi warmly." in captured["ret"]
     assert "Skill directory:" in captured["ret"]
     assert str((tmp_path / ".marim" / "skills" / "greet").resolve()) in captured["ret"]
@@ -63,7 +65,7 @@ def test_activate_skill_unknown_name(tmp_path: Path):
     agent = _agent()
     model, captured = _call_tool("activate_skill", {"name": "missing"})
     with agent.override(model=model):
-        agent.run_sync("go", deps=Deps(workspace_root=tmp_path))
+        agent.run_sync("go", deps=_make_deps(tmp_path, mode=Mode.ask))
     assert "No skill named" in captured["ret"]
 
 
@@ -77,7 +79,7 @@ def test_read_skill_file_returns_bundled_content(tmp_path: Path):
         "read_skill_file", {"name": "withref", "path": "references/REFERENCE.md"}
     )
     with agent.override(model=model):
-        agent.run_sync("go", deps=Deps(workspace_root=tmp_path))
+        agent.run_sync("go", deps=_make_deps(tmp_path, mode=Mode.ask))
     assert "the deep detail" in captured["ret"]
 
 
@@ -94,7 +96,7 @@ def test_read_skill_file_reaches_global_skill(tmp_path: Path, monkeypatch):
         "read_skill_file", {"name": "glob-skill", "path": "references/N.md"}
     )
     with agent.override(model=model):
-        agent.run_sync("go", deps=Deps(workspace_root=tmp_path))
+        agent.run_sync("go", deps=_make_deps(tmp_path, mode=Mode.ask))
     assert "global bundled note" in captured["ret"]
 
 
@@ -106,7 +108,7 @@ def test_activate_skill_points_at_read_skill_file(tmp_path: Path):
     agent = _agent()
     model, captured = _call_tool("activate_skill", {"name": "greet"})
     with agent.override(model=model):
-        agent.run_sync("go", deps=Deps(workspace_root=tmp_path))
+        agent.run_sync("go", deps=_make_deps(tmp_path, mode=Mode.ask))
     assert "read_skill_file" in captured["ret"]
 
 
@@ -127,7 +129,7 @@ def test_read_file_reaches_global_skill_bundled_file(tmp_path: Path, monkeypatch
         "read_file", {"path": str(skill_dir / "implementer-prompt.md")}
     )
     with agent.override(model=model):
-        agent.run_sync("go", deps=Deps(workspace_root=ws))
+        agent.run_sync("go", deps=_make_deps(ws, mode=Mode.ask))
     assert "implementer instructions here" in captured["ret"]
 
 
@@ -138,5 +140,5 @@ def test_skill_tools_are_not_approval_gated(tmp_path: Path):
     agent = _agent()
     model, captured = _call_tool("activate_skill", {"name": "noapprove"})
     with agent.override(model=model):
-        agent.run_sync("go", deps=Deps(workspace_root=tmp_path))
+        agent.run_sync("go", deps=_make_deps(tmp_path, mode=Mode.ask))
     assert "ungated body" in captured["ret"]

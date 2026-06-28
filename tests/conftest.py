@@ -6,7 +6,9 @@ import pytest
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
+from marim_harness.runtime.deps import Deps, WorkspaceConfig
 from marim_harness.runtime.harness import Harness
+from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
 
 
@@ -26,6 +28,11 @@ def _read_hits(outfile) -> list:
     """Parse the payloads a _capture_script recorded (one JSON object per line)."""
     text = Path(outfile).read_text(encoding="utf-8") if Path(outfile).exists() else ""
     return [_json_capture.loads(ln) for ln in text.splitlines() if ln.strip()]
+
+
+def _make_deps(root: Path, mode: Mode = Mode.auto, **kw) -> Deps:
+    """Shorthand for Deps construction in tests."""
+    return Deps(workspace=WorkspaceConfig(root=root, mode=mode), **kw)
 
 
 @pytest.fixture

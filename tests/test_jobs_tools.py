@@ -6,8 +6,10 @@ from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 
-from marim_harness.runtime.deps import Deps, HarnessServices
+from marim_harness.runtime.deps import Deps, WorkspaceConfig, HarnessServices
+from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
+from tests.conftest import _make_deps
 
 # Management tools and the background flag are main-agent only.
 _MANAGEMENT_TOOLS = {"jobs", "job_output", "wait_for_job", "cancel_job"}
@@ -45,7 +47,7 @@ def _main_agent() -> Agent:
 
 
 def test_management_tools_on_main_agent(tmp_path):
-    names = _tool_names(_main_agent(), Deps(workspace_root=tmp_path))
+    names = _tool_names(_main_agent(), _make_deps(tmp_path, mode=Mode.ask))
     assert names >= _MANAGEMENT_TOOLS
 
 
@@ -54,7 +56,7 @@ def test_management_tools_absent_on_subagent(tmp_path):
     BuiltinToolProvider().register_subagent(
         agent, _MANAGEMENT_TOOLS | {"read_file", "bash"}
     )
-    names = _tool_names(agent, Deps(workspace_root=tmp_path))
+    names = _tool_names(agent, _make_deps(tmp_path, mode=Mode.ask))
     assert names == {"read_file", "bash"}
 
 
@@ -68,7 +70,7 @@ def _bash_agent() -> Agent:
 
 @pytest.mark.anyio
 async def test_bash_background_registers_job(tmp_path):
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     agent = _bash_agent()
     model, captured = _call_once("bash", {"command": "echo hi", "background": True})
     with agent.override(model=model):
@@ -83,7 +85,7 @@ async def test_bash_background_registers_job(tmp_path):
 
 @pytest.mark.anyio
 async def test_bash_foreground_does_not_register_job(tmp_path):
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     agent = _bash_agent()
     model, captured = _call_once("bash", {"command": "echo hi", "background": False})
     with agent.override(model=model):
@@ -98,7 +100,7 @@ async def test_spawn_agent_background_registers_job(tmp_path):
                       model=None, isolation=None, stream_id: str = "") -> str:
         return f"report for {type}"
 
-    deps = Deps(workspace_root=tmp_path,
+    deps = Deps(workspace=WorkspaceConfig(root=tmp_path),
                 services=HarnessServices(run_background_agent=fake_bg))
     agent = _main_agent()
     model, captured = _call_once(
@@ -116,7 +118,7 @@ async def test_spawn_agent_background_registers_job(tmp_path):
 
 @pytest.mark.anyio
 async def test_spawn_agent_background_unavailable(tmp_path):
-    deps = Deps(workspace_root=tmp_path)  # no run_background_agent
+    deps = _make_deps(tmp_path, mode=Mode.ask)  # no run_background_agent
     agent = _main_agent()
     model, captured = _call_once(
         "spawn_agent", {"type": "explore", "task": "x", "background": True}
@@ -129,7 +131,7 @@ async def test_spawn_agent_background_unavailable(tmp_path):
 
 @pytest.mark.anyio
 async def test_jobs_tool_lists_jobs(tmp_path):
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
 
     async def slow() -> str:
         await asyncio.sleep(5)
@@ -146,7 +148,7 @@ async def test_jobs_tool_lists_jobs(tmp_path):
 
 @pytest.mark.anyio
 async def test_jobs_tool_empty(tmp_path):
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     agent = _main_agent()
     model, captured = _call_once("jobs", {})
     with agent.override(model=model):
@@ -156,7 +158,7 @@ async def test_jobs_tool_empty(tmp_path):
 
 @pytest.mark.anyio
 async def test_job_output_tool(tmp_path):
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
 
     async def quick() -> str:
         return "the result"
@@ -172,7 +174,7 @@ async def test_job_output_tool(tmp_path):
 
 @pytest.mark.anyio
 async def test_wait_for_job_tool(tmp_path):
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
 
     async def quick() -> str:
         return "waited result"
@@ -187,7 +189,7 @@ async def test_wait_for_job_tool(tmp_path):
 
 @pytest.mark.anyio
 async def test_cancel_job_tool(tmp_path):
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
 
     async def slow() -> str:
         await asyncio.sleep(5)

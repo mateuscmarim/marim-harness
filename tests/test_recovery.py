@@ -29,6 +29,7 @@ from marim_harness.runtime.harness import (
 )
 from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
+from tests.conftest import _make_deps
 
 pytestmark = pytest.mark.anyio
 
@@ -202,7 +203,7 @@ async def test_resume_strips_nameless_tool_call_then_runs(tmp_path):
     """End-to-end: a persisted history carrying a nameless tool call must resume
     on the next prompt — the malformed call is stripped before the request, so
     the provider never sees the 'missing a function name' 400."""
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
 
     def reply(messages, info):
         return ModelResponse(parts=[TextPart(content="resumed")])
@@ -240,7 +241,7 @@ async def test_nameless_call_stripped_before_every_request_not_just_resume(tmp_p
     ProcessHistory capability that runs before every request. Reproduces the
     reported timeline: after a rewind cleared the old garbage, a fresh 'continue'
     proceeded and then the flaky model emitted another nameless call that 400'd."""
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     calls = {"n": 0}
     seen: dict = {}
 
@@ -275,7 +276,7 @@ async def test_resume_heals_dangling_tool_call_then_runs(tmp_path):
     """The reported symptom: a session whose persisted history ends in an
     unanswered tool call must resume on the next prompt, not raise pydantic-ai's
     'Cannot provide a new user prompt ... unprocessed tool calls' UserError."""
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
 
     def reply(messages, info):
         return ModelResponse(parts=[TextPart(content="resumed")])
@@ -298,7 +299,7 @@ async def test_failed_turn_with_no_model_output_drops_its_checkpoint(tmp_path):
     lands right before a turn that did nothing. The start-of-turn checkpoint is
     rolled back (the bare prompt still persists for resumability; only the useless
     checkpoint goes), so /rewind lands on real assistant states."""
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
 
     def fn(messages, info):
         raise RuntimeError("model boom")  # fails before any response
@@ -316,7 +317,7 @@ async def test_failed_turn_after_a_model_response_keeps_its_checkpoint(tmp_path)
     """A turn that DID produce model output (a tool call) before failing keeps its
     checkpoint — there is real work to rewind to."""
     (tmp_path / "a.txt").write_text("hello")
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     calls = {"n": 0}
 
     def fn(messages, info):
@@ -345,7 +346,7 @@ async def test_compaction_during_turn_invalidates_checkpoints(tmp_path):
     later rewind slices at the wrong boundary and corrupts the conversation."""
     from marim_harness.runtime.harness import HarnessConfig
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
 
     def reply(messages, info):
         return ModelResponse(parts=[TextPart(content="ok")])
@@ -428,7 +429,7 @@ async def test_failed_continuation_after_approval_persists_resumable(tmp_path):
     async def approve(_call):
         return True
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.ask, request_approval=approve)
+    deps = _make_deps(tmp_path, mode=Mode.ask, request_approval=approve)
     harness = _harness(model, deps)
 
     aborted = {"done": False}

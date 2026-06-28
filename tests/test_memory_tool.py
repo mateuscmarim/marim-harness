@@ -5,8 +5,10 @@ from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 
-from marim_harness.runtime.deps import Deps
+from marim_harness.runtime.deps import Deps, WorkspaceConfig
+from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
+from tests.conftest import _make_deps
 
 
 def _agent() -> Agent:
@@ -37,7 +39,7 @@ def test_remember_saves_to_project_scope(tmp_path: Path):
         "type": "project",
     }
     with agent.override(model=_call_remember(args)):
-        agent.run_sync("remember this", deps=Deps(workspace_root=tmp_path))
+        agent.run_sync("remember this", deps=_make_deps(tmp_path, mode=Mode.ask))
     saved = tmp_path / ".marim" / "memory" / "build-tool.md"
     assert saved.exists()
     assert "Run uv for everything." in saved.read_text()
@@ -55,7 +57,7 @@ def test_remember_saves_to_global_scope(tmp_path: Path, monkeypatch):
         "type": "user",
     }
     with agent.override(model=_call_remember(args)):
-        agent.run_sync("remember this", deps=Deps(workspace_root=tmp_path))
+        agent.run_sync("remember this", deps=_make_deps(tmp_path, mode=Mode.ask))
     saved = tmp_path / "cfg" / "marim" / "memory" / "my-name.md"
     assert saved.exists()
     # global save must not have touched the project dir
@@ -86,7 +88,7 @@ def _tool_schema(tool_name: str) -> dict:
     agent = _agent()
     m = TestModel(call_tools=[])
     with agent.override(model=m):
-        agent.run_sync("hi", deps=Deps(workspace_root=Path(".")))
+        agent.run_sync("hi", deps=Deps(workspace=WorkspaceConfig(root=Path("."))))
     tools = {t.name: t for t in m.last_model_request_parameters.function_tools}
     return tools[tool_name].parameters_json_schema
 
@@ -113,7 +115,7 @@ def test_recall_reads_project_memory_body(tmp_path: Path):
     agent = _agent()
     model, captured = _call_recall({"name": "My name", "scope": "project"})
     with agent.override(model=model):
-        agent.run_sync("recall", deps=Deps(workspace_root=tmp_path))
+        agent.run_sync("recall", deps=_make_deps(tmp_path, mode=Mode.ask))
     assert "The user is Mateus." in captured["ret"]
 
 
@@ -128,7 +130,7 @@ def test_recall_reads_global_memory_outside_workspace(tmp_path: Path, monkeypatc
     agent = _agent()
     model, captured = _call_recall({"name": "My name", "scope": "global"})
     with agent.override(model=model):
-        agent.run_sync("recall", deps=Deps(workspace_root=tmp_path))
+        agent.run_sync("recall", deps=_make_deps(tmp_path, mode=Mode.ask))
     # Global memory lives outside the workspace; recall must still reach it.
     assert "The user is Mateus." in captured["ret"]
 
@@ -141,5 +143,5 @@ def test_remember_is_not_an_approval_gated_tool(tmp_path: Path):
     # No DeferredToolRequests handling here; if it required approval the run
     # would not complete the save.
     with agent.override(model=_call_remember(args)):
-        agent.run_sync("go", deps=Deps(workspace_root=tmp_path))
+        agent.run_sync("go", deps=_make_deps(tmp_path, mode=Mode.ask))
     assert (tmp_path / ".marim" / "memory" / "x.md").exists()

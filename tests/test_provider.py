@@ -4,8 +4,10 @@ import pytest
 from pydantic_ai import Agent, ModelRetry
 from pydantic_ai.models.test import TestModel
 
-from marim_harness.runtime.deps import Deps
+from marim_harness.runtime.deps import Deps, WorkspaceConfig
+from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
+from tests.conftest import _make_deps
 
 
 def _build_agent() -> Agent:
@@ -50,7 +52,7 @@ def test_register_subagent_omits_lsp_tools_when_disabled():
 def test_registers_all_tools(tmp_path: Path):
     agent = _build_agent()
     with agent.override(model=TestModel(call_tools=[])):
-        result = agent.run_sync("hi", deps=Deps(workspace_root=tmp_path))
+        result = agent.run_sync("hi", deps=_make_deps(tmp_path, mode=Mode.ask))
     assert result is not None  # smoke: agent builds and runs without error
 
 
@@ -73,7 +75,7 @@ def test_tree_tool_executes_via_agent(tmp_path: Path):
     from pydantic_ai.models.function import FunctionModel
 
     with agent.override(model=FunctionModel(call_tree)):
-        result = agent.run_sync("tree it", deps=Deps(workspace_root=tmp_path))
+        result = agent.run_sync("tree it", deps=_make_deps(tmp_path, mode=Mode.ask))
     # the tree tool ran and returned the directory listing to the model
     returns = [
         str(getattr(p, "content", ""))
@@ -94,7 +96,7 @@ async def test_bash_tool_accepts_description_arg(tmp_path: Path):
 
     from marim_harness.tools.provider import bash
 
-    ctx = SimpleNamespace(deps=Deps(workspace_root=tmp_path))
+    ctx = SimpleNamespace(deps=_make_deps(tmp_path, mode=Mode.ask))
     out = await bash(ctx, "echo hi", description="Say hi")
     assert "hi" in out
 
@@ -108,7 +110,7 @@ async def test_bash_tool_accepts_timeout_arg(tmp_path: Path):
 
     from marim_harness.tools.provider import bash
 
-    ctx = SimpleNamespace(deps=Deps(workspace_root=tmp_path))
+    ctx = SimpleNamespace(deps=_make_deps(tmp_path, mode=Mode.ask))
     out = await bash(ctx, "echo quick", timeout=5)
     assert "quick" in out
 
@@ -124,7 +126,7 @@ def test_read_tool_executes_via_agent(tmp_path: Path):
     # documented fallback, use call_tools=[] — registration is still proven by
     # the agent building and running. Behavioral guarantees live in Task 9.
     with agent.override(model=TestModel(call_tools=[])):
-        result = agent.run_sync("read it", deps=Deps(workspace_root=tmp_path))
+        result = agent.run_sync("read it", deps=_make_deps(tmp_path, mode=Mode.ask))
     assert result is not None
 
 
@@ -170,7 +172,7 @@ def _job_ctx(tmp_path):
             calls["cancel"] = id
             return f"cancelled:{id}"
 
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     deps.jobs = FakeJobs()
     return SimpleNamespace(deps=deps), calls
 
@@ -217,7 +219,7 @@ async def test_spawn_agent_forwards_mcp_foreground(tmp_path):
         calls["args"] = (type, task, tool_call_id, mcp_names, max_output_chars)
         return "ok"
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     deps.services.run_subagent = fake_runner
     ctx = SimpleNamespace(deps=deps, tool_call_id="tc1")
 
@@ -234,7 +236,6 @@ async def test_spawn_agent_composes_structured_task(tmp_path):
     from types import SimpleNamespace
 
     from marim_harness.runtime.deps import Deps
-    from marim_harness.runtime.permissions import Mode
     from marim_harness.tools.provider import spawn_agent
 
     calls = {}
@@ -245,7 +246,7 @@ async def test_spawn_agent_composes_structured_task(tmp_path):
         calls["task"] = task
         return "ok"
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     deps.services.run_subagent = fake_runner
     ctx = SimpleNamespace(deps=deps, tool_call_id="tc1")
 
@@ -265,7 +266,6 @@ async def test_spawn_agent_without_structured_fields_passes_task_verbatim(tmp_pa
     from types import SimpleNamespace
 
     from marim_harness.runtime.deps import Deps
-    from marim_harness.runtime.permissions import Mode
     from marim_harness.tools.provider import spawn_agent
 
     calls = {}
@@ -276,7 +276,7 @@ async def test_spawn_agent_without_structured_fields_passes_task_verbatim(tmp_pa
         calls["task"] = task
         return "ok"
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     deps.services.run_subagent = fake_runner
     ctx = SimpleNamespace(deps=deps, tool_call_id="tc1")
 
@@ -289,7 +289,6 @@ async def test_spawn_agent_forwards_mcp_background(tmp_path):
     from types import SimpleNamespace
 
     from marim_harness.runtime.deps import Deps
-    from marim_harness.runtime.permissions import Mode
     from marim_harness.tools.provider import spawn_agent
 
     captured = {}
@@ -301,7 +300,7 @@ async def test_spawn_agent_forwards_mcp_background(tmp_path):
             return "bg-report"
         return _coro()
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     deps.services.run_background_agent = fake_bg
     # Close the coroutine in the stub to prevent "coroutine was never awaited" warning.
     deps.jobs = SimpleNamespace(register=lambda kind, label, coro: (coro.close(), "job-1")[1])
@@ -317,7 +316,6 @@ async def test_spawn_agent_default_mcp_is_none(tmp_path):
     from types import SimpleNamespace
 
     from marim_harness.runtime.deps import Deps
-    from marim_harness.runtime.permissions import Mode
     from marim_harness.tools.provider import spawn_agent
 
     calls = {}
@@ -328,7 +326,7 @@ async def test_spawn_agent_default_mcp_is_none(tmp_path):
         calls["mcp_names"] = mcp_names
         return "ok"
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     deps.services.run_subagent = fake_runner
     ctx = SimpleNamespace(deps=deps, tool_call_id="tc3")
 
@@ -366,7 +364,6 @@ async def test_spawn_agent_coerces_stringified_mcp(tmp_path):
     from types import SimpleNamespace
 
     from marim_harness.runtime.deps import Deps
-    from marim_harness.runtime.permissions import Mode
     from marim_harness.tools.provider import spawn_agent
 
     calls = {}
@@ -377,7 +374,7 @@ async def test_spawn_agent_coerces_stringified_mcp(tmp_path):
         calls["mcp_names"] = mcp_names
         return "ok"
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     deps.services.run_subagent = fake_runner
     ctx = SimpleNamespace(deps=deps, tool_call_id="tc4")
 
@@ -390,7 +387,6 @@ async def test_spawn_agent_coerces_comma_separated_mcp_background(tmp_path):
     from types import SimpleNamespace
 
     from marim_harness.runtime.deps import Deps
-    from marim_harness.runtime.permissions import Mode
     from marim_harness.tools.provider import spawn_agent
 
     captured = {}
@@ -404,7 +400,7 @@ async def test_spawn_agent_coerces_comma_separated_mcp_background(tmp_path):
 
         return _coro()
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     deps.services.run_background_agent = fake_bg
     deps.jobs = SimpleNamespace(
         register=lambda kind, label, coro: (coro.close(), "job-1")[1]
@@ -427,7 +423,7 @@ async def test_bash_blocks_denylisted_command(tmp_path: Path):
 
     sentinel = tmp_path / "ran.txt"
     deps = Deps(
-        workspace_root=tmp_path,
+        workspace=WorkspaceConfig(root=tmp_path,
         command_policy=CommandPolicy(denylist=["touch"]),
     )
     ctx = SimpleNamespace(deps=deps)
@@ -458,7 +454,7 @@ async def test_bash_timeout_is_milliseconds(tmp_path: Path):
 
     from marim_harness.tools import provider
 
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     ctx = SimpleNamespace(deps=deps)
     out = await provider.bash(ctx, "sleep 2", timeout=500)
     assert "timed out" in out
@@ -472,7 +468,7 @@ def test_grep_dash_i_flag_is_case_insensitive(tmp_path: Path):
     from marim_harness.tools import provider
 
     (tmp_path / "a.txt").write_text("Alpha\n")
-    ctx = SimpleNamespace(deps=Deps(workspace_root=tmp_path))
+    ctx = SimpleNamespace(deps=_make_deps(tmp_path, mode=Mode.ask))
     assert provider.grep(ctx, "alpha") == "(no matches)"
     assert "a.txt:1:Alpha" in provider.grep(ctx, "alpha", **{"-i": True})
 
@@ -483,7 +479,7 @@ def test_grep_context_flags_map_to_before_after(tmp_path: Path):
     from marim_harness.tools import provider
 
     (tmp_path / "a.txt").write_text("one\ntwo\nMATCH\nfour\n")
-    ctx = SimpleNamespace(deps=Deps(workspace_root=tmp_path))
+    ctx = SimpleNamespace(deps=_make_deps(tmp_path, mode=Mode.ask))
     out = provider.grep(ctx, "MATCH", **{"-C": 1})
     assert "a.txt-2-two" in out
     assert "a.txt:3:MATCH" in out
@@ -497,7 +493,7 @@ def test_grep_unknown_flag_raises_model_retry(tmp_path: Path):
 
     from marim_harness.tools import provider
 
-    ctx = SimpleNamespace(deps=Deps(workspace_root=tmp_path))
+    ctx = SimpleNamespace(deps=_make_deps(tmp_path, mode=Mode.ask))
     with pytest.raises(ModelRetry):
         provider.grep(ctx, "x", **{"--nonsense": True})
 
@@ -508,7 +504,7 @@ async def test_bash_allows_permitted_command(tmp_path: Path):
 
     from marim_harness.tools import provider
 
-    deps = Deps(workspace_root=tmp_path)  # empty policy -> allow all
+    deps = _make_deps(tmp_path, mode=Mode.ask)  # empty policy -> allow all
     ctx = SimpleNamespace(deps=deps)
     out = await provider.bash(ctx, "echo hello")
     assert "hello" in out
@@ -525,7 +521,7 @@ async def test_diagnostics_failure_is_logged_at_debug(caplog, tmp_path):
 
     from marim_harness.tools.provider import _with_diagnostics
 
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     fake_lsp = MagicMock()
     fake_lsp.diagnostics = MagicMock(side_effect=RuntimeError("boom"))
     deps.services.lsp = fake_lsp
@@ -538,3 +534,53 @@ async def test_diagnostics_failure_is_logged_at_debug(caplog, tmp_path):
         r.name == "marim_harness.tools.provider" and r.levelno == logging.DEBUG
         for r in caplog.records
     ), f"no DEBUG record from provider: {[(r.name, r.levelname) for r in caplog.records]}"
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "param", "extra", "stringified"),
+    [
+        (
+            "edit_file",
+            "edits",
+            {"path": "x.py"},
+            '[{"old_string": "a", "new_string": "b", "replace_all": true}]',
+        ),
+        ("update_tasks", "todos", {}, '[{"text": "do it", "status": "pending"}]'),
+        (
+            "ask_user",
+            "questions",
+            {},
+            '[{"question": "ok?", "header": "h", "options": [{"label": "yes"}]}]',
+        ),
+    ],
+)
+def test_array_arg_accepts_json_stringified_list(tool_name, param, extra, stringified):
+    """Some models serialize array tool arguments as a JSON *string* instead of a real
+    array. The LenientList before-validator must unwrap such a string, while the schema
+    advertised to the model stays an ``array`` (so well-behaved models are unaffected)."""
+    agent = _build_agent()
+    schema = agent._function_toolset.tools[tool_name].function_schema
+    assert schema.json_schema["properties"][param]["type"] == "array"
+    out = schema.validator.validate_python({param: stringified, **extra})
+    assert isinstance(out[param], list) and out[param], "stringified array was not decoded"
+
+
+def test_array_arg_still_accepts_real_list():
+    """A genuine array must validate unchanged — the coercion only touches strings."""
+    agent = _build_agent()
+    schema = agent._function_toolset.tools["edit_file"].function_schema
+    out = schema.validator.validate_python(
+        {"path": "x.py", "edits": [{"old_string": "a", "new_string": "b"}]}
+    )
+    assert out["edits"][0].old_string == "a"
+
+
+def test_array_arg_malformed_string_still_errors():
+    """A non-JSON string is passed through untouched, surfacing the real validation
+    error rather than being silently swallowed."""
+    from pydantic import ValidationError
+
+    agent = _build_agent()
+    schema = agent._function_toolset.tools["edit_file"].function_schema
+    with pytest.raises(ValidationError):
+        schema.validator.validate_python({"path": "x.py", "edits": "not json at all"})

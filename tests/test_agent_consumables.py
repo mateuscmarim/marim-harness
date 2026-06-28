@@ -18,7 +18,7 @@ from pydantic_ai.models.function import FunctionModel
 
 from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.permissions import Mode
-from tests.conftest import _make_harness
+from tests.conftest import _make_harness, _make_deps
 
 
 @pytest.fixture
@@ -47,7 +47,7 @@ def _fail_once_then_capture_model(captured: dict) -> FunctionModel:
 
 @pytest.mark.anyio
 async def test_failed_turn_re_emits_hook_context_next_turn(tmp_path: Path):
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     captured: dict = {}
     harness = _make_harness(_fail_once_then_capture_model(captured), deps)
     # SessionStart injected a one-shot context for the next turn.
@@ -66,7 +66,7 @@ async def test_failed_turn_re_emits_hook_context_next_turn(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_failed_turn_re_emits_finished_jobs_digest_next_turn(tmp_path: Path):
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
 
     async def quick() -> str:
         return "job-result"
@@ -91,7 +91,7 @@ async def test_failed_turn_re_emits_finished_jobs_digest_next_turn(tmp_path: Pat
 @pytest.mark.anyio
 async def test_successful_turn_consumes_hook_context(tmp_path: Path):
     """A clean turn delivers and clears the hook context (no regression)."""
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     captured: dict = {}
 
     def fn(messages, info):

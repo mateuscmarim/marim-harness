@@ -2,6 +2,7 @@
 import pytest
 
 from marim_harness.interfaces.tui.app import HarnessApp
+from tests.conftest import _make_deps
 
 
 def _app(tmp_path):
@@ -12,7 +13,7 @@ def _app(tmp_path):
     from marim_harness.runtime.permissions import Mode
     from marim_harness.tools.provider import BuiltinToolProvider
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = Harness(
         TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test"
     )

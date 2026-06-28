@@ -15,7 +15,7 @@ from pydantic_ai.usage import RunUsage
 from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.permissions import Mode
 from marim_harness.tools import fs
-from tests.conftest import _last_instructions, _make_harness, _text_model
+from tests.conftest import _last_instructions, _make_harness, _text_model, _make_deps
 
 
 @pytest.fixture
@@ -46,7 +46,7 @@ def _capture_deps(h):
 
 @pytest.mark.anyio
 async def test_isolated_spawn_runs_in_a_worktree(repo: Path):
-    deps = Deps(workspace_root=repo, mode=Mode.auto)
+    deps = _make_deps(repo)
     h = _make_harness(_text_model(), deps)
     cap = _capture_deps(h)
 
@@ -58,7 +58,7 @@ async def test_isolated_spawn_runs_in_a_worktree(repo: Path):
 
 @pytest.mark.anyio
 async def test_non_isolated_spawn_runs_in_main_workspace(repo: Path):
-    deps = Deps(workspace_root=repo, mode=Mode.auto)
+    deps = _make_deps(repo)
     h = _make_harness(_text_model(), deps)
     cap = _capture_deps(h)
 
@@ -71,7 +71,7 @@ async def test_non_isolated_spawn_runs_in_main_workspace(repo: Path):
 async def test_isolated_spawn_commits_changes_and_reports_branch(repo: Path):
     """A sub-agent that writes a file in its worktree gets that change committed
     to a branch; the report names the branch and the worktree is torn down."""
-    deps = Deps(workspace_root=repo, mode=Mode.auto)
+    deps = _make_deps(repo)
     h = _make_harness(_text_model(), deps)
 
     class _WritingAgent:
@@ -101,7 +101,7 @@ async def test_isolated_spawn_commits_changes_and_reports_branch(repo: Path):
 async def test_isolation_requires_a_git_repo(tmp_path: Path):
     """Outside a git repo, an isolated spawn fails fast with a clear message and
     never runs the sub-agent."""
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(_text_model(), deps)
 
     def _no_build(*a, **k):
@@ -122,7 +122,7 @@ async def test_isolated_spawn_instructions_point_at_worktree(repo: Path):
         captured["instructions"] = _last_instructions(messages)
         return ModelResponse(parts=[TextPart(content="done")])
 
-    deps = Deps(workspace_root=repo, mode=Mode.auto)
+    deps = _make_deps(repo)
     h = _make_harness(FunctionModel(fn), deps)
 
     await h.subagents.run("general", "do it", "tc1", isolation="worktree")
@@ -152,7 +152,7 @@ async def test_spawn_agent_tool_forwards_isolation(repo: Path):
             args={"type": "general", "task": "x", "isolation": "worktree"},
         )])
 
-    deps = Deps(workspace_root=repo, mode=Mode.auto)
+    deps = _make_deps(repo)
     h = _make_harness(FunctionModel(main), deps)
     h.deps.services.run_subagent = fake_run
     await h.run_turn("go")
@@ -169,7 +169,7 @@ def _branch_exists(repo: Path, branch: str) -> bool:
 async def test_isolated_spawn_no_changes_drops_branch(repo: Path):
     """An isolated spawn that changes no files leaves nothing behind — its empty
     branch is deleted and the worktree removed, so spawns don't accrete branches."""
-    deps = Deps(workspace_root=repo, mode=Mode.auto)
+    deps = _make_deps(repo)
     h = _make_harness(_text_model(), deps)
     _capture_deps(h)  # stub agent writes nothing
 
@@ -183,7 +183,7 @@ async def test_isolated_spawn_no_changes_drops_branch(repo: Path):
 async def test_isolated_spawn_crash_cleans_up_worktree_and_branch(repo: Path):
     """A crashed isolated spawn discards its partial work: the (dirty) worktree is
     force-removed and the branch deleted, while the crash stays contained."""
-    deps = Deps(workspace_root=repo, mode=Mode.auto)
+    deps = _make_deps(repo)
     h = _make_harness(_text_model(), deps)
 
     class _CrashAgent:

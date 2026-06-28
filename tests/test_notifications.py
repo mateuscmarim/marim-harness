@@ -19,6 +19,8 @@ from marim_harness.notifications import (
     parse_events,
 )
 from marim_harness.runtime.deps import Deps
+from marim_harness.runtime.permissions import Mode
+from tests.conftest import _make_deps
 
 # ---------------------------------------------------------------------------
 # NotificationConfig / parse_events
@@ -227,12 +229,12 @@ def test_load_config_notifications_enabled(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_deps_notifier_defaults_to_none(tmp_path: Path):
-    d = Deps(workspace_root=tmp_path)
+    d = _make_deps(tmp_path, mode=Mode.ask)
     assert d.notifier is None
 
 
 def test_deps_notifier_can_be_set(tmp_path: Path):
-    d = Deps(workspace_root=tmp_path)
+    d = _make_deps(tmp_path, mode=Mode.ask)
     n = Notifier(NotificationConfig.disabled())
     d.notifier = n
     assert d.notifier is n

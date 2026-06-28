@@ -17,6 +17,7 @@ from marim_harness.notifications import (
 )
 from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.permissions import Mode
+from tests.conftest import _make_deps
 
 # ---------------------------------------------------------------------------
 # Notifier.send_async — non-blocking dispatch
@@ -103,7 +104,7 @@ def _app(tmp_path: Path):
     from marim_harness.runtime.harness import Harness
     from marim_harness.tools.provider import BuiltinToolProvider
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = Harness(
         TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test"
     )

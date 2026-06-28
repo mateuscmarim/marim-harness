@@ -6,12 +6,13 @@ from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.harness import Harness
 from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
+from tests.conftest import _make_deps
 
 
 def _harness(tmp_path):
     from pydantic_ai.models.test import TestModel
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     return Harness(TestModel(call_tools=[]), BuiltinToolProvider(), deps,
                    instructions="test")
 

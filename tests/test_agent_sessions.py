@@ -5,10 +5,10 @@ import pytest
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.function import FunctionModel
 
-from marim_harness.runtime.deps import Deps
+from marim_harness.runtime.deps import Deps, UIHooks, WorkspaceConfig
 from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
-from tests.conftest import _edit_then_done_model, _make_harness, _text_model
+from tests.conftest import _edit_then_done_model, _make_harness, _text_model, _make_deps
 
 
 def _raising_model() -> FunctionModel:
@@ -68,11 +68,11 @@ def _capture_prompt_model(captured: dict) -> FunctionModel:
 
 
 def _autoname_harness(tmp_path, titler, *, name=None):
-    from marim_harness.runtime.deps import Deps
+    from marim_harness.runtime.deps import Deps, UIHooks, WorkspaceConfig
     from marim_harness.runtime.harness import Harness, HarnessConfig
     from marim_harness.session import SessionManager
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     store = manager.create(name)
     return Harness(
@@ -90,7 +90,7 @@ async def _fake_titler(messages) -> str:
 async def test_reset_clears_job_history(tmp_path: Path):
     """/clear (harness.reset) drops finished-job history and any re-stashed jobs
     digest so the wiped conversation starts with a clean jobs slate."""
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = _make_harness(_text_model(), deps)
 
     async def _quick():
@@ -119,7 +119,7 @@ async def test_new_and_switch_clear_job_history(tmp_path: Path):
     from marim_harness.runtime.harness import Harness, HarnessConfig
     from marim_harness.session import SessionManager
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     store = manager.create("first")
     first_id = store.session_id
@@ -160,7 +160,7 @@ async def test_new_and_switch_clear_job_history(tmp_path: Path):
 @pytest.mark.anyio
 async def test_auto_mode_applies_edit(tmp_path: Path):
     (tmp_path / "a.txt").write_text("foo")
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = _make_harness(_edit_then_done_model(), deps)
     output = await harness.run_turn("change foo to bar")
     assert output == "done"
@@ -170,7 +170,7 @@ async def test_auto_mode_applies_edit(tmp_path: Path):
 @pytest.mark.anyio
 async def test_plan_mode_denies_edit(tmp_path: Path):
     (tmp_path / "a.txt").write_text("foo")
-    deps = Deps(workspace_root=tmp_path, mode=Mode.plan)
+    deps = _make_deps(tmp_path, mode=Mode.plan)
     harness = _make_harness(_edit_then_done_model(), deps)
     output = await harness.run_turn("change foo to bar")
     assert output == "done"
@@ -180,7 +180,7 @@ async def test_plan_mode_denies_edit(tmp_path: Path):
 @pytest.mark.anyio
 async def test_run_turn_accumulates_token_usage(tmp_path: Path):
     (tmp_path / "a.txt").write_text("foo")
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = _make_harness(_edit_then_done_model(), deps)
     assert harness.session.total_tokens == 0
     await harness.run_turn("change foo to bar")
@@ -196,7 +196,7 @@ async def test_run_turn_persists_to_store(tmp_path: Path):
     from marim_harness.session import SessionManager
 
     (tmp_path / "a.txt").write_text("foo")
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     store = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data").create()
     harness = Harness(
         model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
@@ -214,7 +214,7 @@ async def test_resume_restores_history_and_tokens(tmp_path: Path):
     from marim_harness.session import SessionManager
 
     (tmp_path / "a.txt").write_text("foo")
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     store = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data").create()
     first = Harness(
         model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
@@ -243,7 +243,7 @@ async def test_session_switch_preserves_each_conversation(tmp_path: Path):
     from marim_harness.runtime.harness import Harness
     from marim_harness.session import SessionManager
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     harness = Harness(
         model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
@@ -277,7 +277,7 @@ async def test_tasks_persist_and_restore_across_sessions(tmp_path: Path):
     def fn(messages, info):
         return ModelResponse(parts=[TextPart(content="ok")])
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     harness = Harness(
         model=FunctionModel(fn), provider=BuiltinToolProvider(), deps=deps,
@@ -309,7 +309,7 @@ async def test_run_turn_compacts_when_over_budget(tmp_path: Path):
     from marim_harness.runtime.harness import Harness
 
     (tmp_path / "a.txt").write_text("foo")
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     # Tiny budget forces compaction; keep_last small so a tail survives.
     harness = Harness(
         model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
@@ -347,7 +347,7 @@ async def test_run_turn_summarizes_when_over_budget(tmp_path: Path):
     from marim_harness.runtime.harness import Harness
 
     (tmp_path / "a.txt").write_text("foo")
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
 
     async def summarizer(messages):
         return "CONDENSED RECAP"
@@ -391,7 +391,7 @@ async def test_run_turn_does_not_compact_under_budget(tmp_path: Path):
     from marim_harness.runtime.harness import Harness
 
     (tmp_path / "a.txt").write_text("foo")
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = Harness(
         model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
         instructions="x", max_context_tokens=1_000_000,
@@ -415,8 +415,8 @@ async def test_cancel_during_approval_keeps_session_resumable(tmp_path: Path):
     async def cancel_at_approval(call):
         raise asyncio.CancelledError()
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.ask,
-                request_approval=cancel_at_approval)
+    deps = Deps(workspace=WorkspaceConfig(root=tmp_path, mode=Mode.ask),
+                ui=UIHooks(request_approval=cancel_at_approval))
     store = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data").create()
     harness = Harness(
         model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
@@ -441,7 +441,7 @@ async def test_ask_mode_calls_back(tmp_path: Path):
         asked.append(call.tool_name)
         return True
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.ask, request_approval=approve)
+    deps = _make_deps(tmp_path, mode=Mode.ask, request_approval=approve)
     harness = _make_harness(_edit_then_done_model(), deps)
     await harness.run_turn("change foo to bar")
     assert asked == ["edit_file"]
@@ -458,7 +458,7 @@ async def test_memory_policy_flips_with_toggle(tmp_path: Path):
         captured["instructions"] = _last_instructions_fn(messages)
         return ModelResponse(parts=[TextPart(content="ok")])
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
 
     # Off (default): a restraint block that forbids proactive saves.
     off = Harness(model=FunctionModel(fn), provider=BuiltinToolProvider(),
@@ -491,7 +491,7 @@ def _last_instructions_fn(messages) -> str:
 
 @pytest.mark.anyio
 async def test_run_turn_prepends_finished_job_digest(tmp_path: Path):
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     captured: dict = {}
     h = _make_harness(_capture_prompt_model(captured), deps)
 
@@ -509,7 +509,7 @@ async def test_run_turn_prepends_finished_job_digest(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_run_turn_no_digest_when_nothing_finished(tmp_path: Path):
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     captured: dict = {}
     h = _make_harness(_capture_prompt_model(captured), deps)
     await h.run_turn("hello")
@@ -518,7 +518,7 @@ async def test_run_turn_no_digest_when_nothing_finished(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_finished_digest_consumed_once(tmp_path: Path):
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
 
     async def quick() -> str:
         return "r"
@@ -537,19 +537,19 @@ async def test_finished_digest_consumed_once(tmp_path: Path):
 
 def test_lsp_manager_built_by_default(tmp_path: Path):
     from marim_harness.lsp.manager import LspManager
-    from marim_harness.runtime.deps import Deps
+    from marim_harness.runtime.deps import Deps, UIHooks, WorkspaceConfig
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = _make_harness(_edit_then_done_model(), deps)
     assert isinstance(harness.lsp, LspManager)
     assert deps.services.lsp is harness.lsp
 
 
 def test_lsp_disabled_builds_no_manager(tmp_path: Path):
-    from marim_harness.runtime.deps import Deps
+    from marim_harness.runtime.deps import Deps, UIHooks, WorkspaceConfig
     from marim_harness.runtime.harness import Harness, HarnessConfig
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = Harness(
         model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
         instructions="You are a coding agent.",
@@ -569,7 +569,7 @@ async def test_cancel_does_not_block_on_slow_persist(tmp_path: Path):
     from marim_harness.runtime.harness import Harness
     from marim_harness.session import SessionManager
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     store = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data").create()
 
     harness = Harness(

@@ -17,7 +17,7 @@ from pydantic_ai.models.function import FunctionModel
 from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.permissions import Mode
 from marim_harness.subagents import SubagentRunner
-from tests.conftest import _make_harness
+from tests.conftest import _make_harness, _make_deps
 
 
 def _tracking_model(active: dict) -> FunctionModel:
@@ -32,7 +32,7 @@ def _tracking_model(active: dict) -> FunctionModel:
 
 
 def _runner_with_concurrency(tmp_path: Path, model, concurrency: int | None):
-    base = _make_harness(model, Deps(workspace_root=tmp_path, mode=Mode.auto)).subagents
+    base = _make_harness(model, _make_deps(tmp_path)).subagents
     return SubagentRunner(
         base.provider, base.mcp, base.deps, base.hooks, base.session,
         get_model=base._get_model, concurrency=concurrency,
@@ -61,7 +61,7 @@ async def test_unbounded_by_default(tmp_path: Path):
 
 def test_harness_config_threads_concurrency_to_the_runner(tmp_path: Path):
     """The HarnessConfig knob reaches the runner that enforces it."""
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = _make_harness(_tracking_model({"now": 0, "max": 0}), deps,
                             subagent_concurrency=4)
     assert harness.subagents._concurrency == 4

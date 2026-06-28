@@ -8,7 +8,7 @@ from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.harness import Harness
 from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
-from tests.conftest import _make_harness, _text_model
+from tests.conftest import _make_harness, _text_model, _make_deps
 
 
 class _FakeServer:
@@ -65,7 +65,7 @@ def _switch_harness(tmp_path, *, source=None, summarizer=None, titler=None):
     from marim_harness.runtime.harness import HarnessConfig
     from marim_harness.session import SessionManager
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     return Harness(
         model=_named_model("startup"), provider=BuiltinToolProvider(), deps=deps,
@@ -82,7 +82,7 @@ def _switch_harness(tmp_path, *, source=None, summarizer=None, titler=None):
 async def test_connect_degrades_past_failing_server(tmp_path: Path):
     bad = _FakeServer("bad", fail=True)
     good = _FakeServer("good")
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = Harness(model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
                 instructions="x", mcp_servers=[bad, good])
 
@@ -101,7 +101,7 @@ async def test_connect_degrades_past_failing_server(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_connect_noop_without_servers(tmp_path: Path):
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(_text_model(), deps)  # no mcp_servers
     status = await h.connect()
     assert status == {"connected": [], "failed": []}
@@ -114,7 +114,7 @@ async def test_run_turn_forwards_live_toolsets(tmp_path: Path):
 
     from pydantic_ai.usage import RunUsage
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(_text_model(), deps)
     sentinel = object()
     h.mcp._live_servers = [sentinel]
@@ -137,7 +137,7 @@ async def test_run_turn_forwards_live_toolsets(tmp_path: Path):
 async def test_connect_skips_disabled_servers(tmp_path: Path):
     off = _FakeServer("off")
     on = _FakeServer("on")
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = Harness(model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
                 instructions="x", mcp_servers=[off, on], mcp_disabled=["off"])
 
@@ -155,7 +155,7 @@ async def test_run_turn_omits_disabled_from_toolsets(tmp_path: Path):
 
     from pydantic_ai.usage import RunUsage
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(_text_model(), deps)
     live_on, live_off = _FakeServer("on"), _FakeServer("off")
     h.mcp._live_servers = [live_on, live_off]
@@ -175,7 +175,7 @@ async def test_run_turn_omits_disabled_from_toolsets(tmp_path: Path):
 @pytest.mark.anyio
 async def test_disable_server_keeps_connection_but_mutes(tmp_path: Path):
     srv = _FakeServer("demo")
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = Harness(model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
                 instructions="x", mcp_servers=[srv])
     await h.connect()
@@ -190,7 +190,7 @@ async def test_disable_server_keeps_connection_but_mutes(tmp_path: Path):
 @pytest.mark.anyio
 async def test_enable_server_connects_on_demand(tmp_path: Path):
     srv = _FakeServer("demo")
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = Harness(model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
                 instructions="x", mcp_servers=[srv], mcp_disabled=["demo"])
     await h.connect()
@@ -211,7 +211,7 @@ async def test_enable_after_close_does_not_double_list_connected(tmp_path: Path)
     after an aclose that cleared the live list but not the status) must not add a
     duplicate entry."""
     srv = _FakeServer("demo")
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = Harness(model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
                 instructions="x", mcp_servers=[srv])
     await h.connect()
@@ -233,7 +233,7 @@ async def test_toggle_persists_to_config_across_the_session(tmp_path: Path):
         _json.dumps({"mcpServers": {"demo": {"command": "x"}}}), encoding="utf-8"
     )
     srv = _FakeServer("demo")
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = Harness(model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
                 instructions="x", mcp_servers=[srv])
     await h.connect()
@@ -249,7 +249,7 @@ async def test_toggle_persists_to_config_across_the_session(tmp_path: Path):
 @pytest.mark.anyio
 async def test_enable_server_reports_connection_failure(tmp_path: Path):
     srv = _FakeServer("demo", fail=True)
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = Harness(model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
                 instructions="x", mcp_servers=[srv], mcp_disabled=["demo"])
     await h.connect()
@@ -263,7 +263,7 @@ async def test_enable_server_reports_connection_failure(tmp_path: Path):
 def test_resume_restores_saved_model(tmp_path: Path):
     from marim_harness.session import SessionManager
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     store = manager.create()
     first = Harness(model=_named_model("startup"), provider=BuiltinToolProvider(),
@@ -283,7 +283,7 @@ def test_granted_servers_resolves_named(tmp_path: Path):
 
     from pydantic_ai.models.test import TestModel
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
     a = SimpleNamespace(tool_prefix="mddocs")
     b = SimpleNamespace(tool_prefix="sentry")
@@ -299,7 +299,7 @@ def test_granted_servers_none_grants_nothing(tmp_path: Path):
 
     from pydantic_ai.models.test import TestModel
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
     h.mcp._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
 
@@ -312,7 +312,7 @@ def test_granted_servers_reports_unknown(tmp_path: Path):
 
     from pydantic_ai.models.test import TestModel
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
     h.mcp._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
 
@@ -326,7 +326,7 @@ def test_granted_servers_excludes_disabled(tmp_path: Path):
 
     from pydantic_ai.models.test import TestModel
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
     h.mcp._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
     h.mcp.disabled = {"mddocs"}
@@ -341,7 +341,7 @@ def test_granted_servers_dedupes(tmp_path: Path):
 
     from pydantic_ai.models.test import TestModel
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
     a = SimpleNamespace(tool_prefix="mddocs")
     h.mcp._live_servers = [a]
@@ -354,7 +354,7 @@ def test_granted_servers_dedupes(tmp_path: Path):
 def test_granted_servers_dedupes_unknown(tmp_path: Path):
     from pydantic_ai.models.test import TestModel
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
     h.mcp._live_servers = []
 
@@ -368,7 +368,7 @@ def test_mcp_grant_note_lists_unknown_and_enabled(tmp_path: Path):
 
     from pydantic_ai.models.test import TestModel
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
     h.mcp._live_servers = [
         SimpleNamespace(tool_prefix="mddocs"),
@@ -384,7 +384,7 @@ def test_mcp_grant_note_lists_unknown_and_enabled(tmp_path: Path):
 def test_mcp_grant_note_empty_when_nothing_unknown(tmp_path: Path):
     from pydantic_ai.models.test import TestModel
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
     assert h.mcp.grant_note([]) == ""
 
@@ -392,7 +392,7 @@ def test_mcp_grant_note_empty_when_nothing_unknown(tmp_path: Path):
 def test_mcp_grant_note_handles_no_enabled_servers(tmp_path: Path):
     from pydantic_ai.models.test import TestModel
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
     h.mcp._live_servers = []  # nothing enabled
 
@@ -406,7 +406,7 @@ def test_mcp_index_text_lists_enabled(tmp_path: Path):
 
     from pydantic_ai.models.test import TestModel
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
     h.mcp._live_servers = [
         SimpleNamespace(tool_prefix="mddocs"),
@@ -420,7 +420,7 @@ def test_mcp_index_text_lists_enabled(tmp_path: Path):
 def test_mcp_index_text_silent_when_none(tmp_path: Path):
     from pydantic_ai.models.test import TestModel
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
     h.mcp._live_servers = []
     assert h.mcp.mcp_index_text() == ""
@@ -431,7 +431,7 @@ def test_mcp_index_text_excludes_disabled(tmp_path: Path):
 
     from pydantic_ai.models.test import TestModel
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
     h.mcp._live_servers = [
         SimpleNamespace(tool_prefix="mddocs"),

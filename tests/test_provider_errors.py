@@ -34,6 +34,7 @@ from marim_harness.runtime.errors import (
 from marim_harness.runtime.harness import Harness, HarnessConfig, _actionable_error_note
 from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
+from tests.conftest import _make_deps
 
 
 def _api_error(body):
@@ -226,7 +227,7 @@ async def test_run_turn_force_compacts_and_retries_on_context_overflow(tmp_path)
     harness = Harness(
         model=FunctionModel(fn),
         provider=BuiltinToolProvider(),
-        deps=Deps(workspace_root=tmp_path, mode=Mode.auto),
+        deps=_make_deps(tmp_path),
         instructions="x",
         config=HarnessConfig(keep_last_messages=1),
     )
@@ -259,7 +260,7 @@ async def test_run_turn_overflow_retries_only_once(tmp_path):
     harness = Harness(
         model=FunctionModel(fn),
         provider=BuiltinToolProvider(),
-        deps=Deps(workspace_root=tmp_path, mode=Mode.auto),
+        deps=_make_deps(tmp_path),
         instructions="x",
         config=HarnessConfig(keep_last_messages=1),
     )
@@ -296,7 +297,7 @@ async def test_run_turn_accumulates_partial_usage_on_provider_error(tmp_path):
     harness = Harness(
         model=FunctionModel(fn),
         provider=BuiltinToolProvider(),
-        deps=Deps(workspace_root=tmp_path, mode=Mode.auto),
+        deps=_make_deps(tmp_path),
         instructions="x",
     )
     with pytest.raises(APIError):
@@ -317,7 +318,7 @@ async def test_run_turn_dumps_provider_error_and_stashes_note(tmp_path):
     harness = Harness(
         model=FunctionModel(fn),
         provider=BuiltinToolProvider(),
-        deps=Deps(workspace_root=tmp_path, mode=Mode.auto),
+        deps=_make_deps(tmp_path),
         instructions="You are a coding agent.",
     )
     with pytest.raises(APIError):

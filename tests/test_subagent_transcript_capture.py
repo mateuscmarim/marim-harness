@@ -9,7 +9,7 @@ from pydantic_ai.models.function import FunctionModel
 from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.permissions import Mode
 from marim_harness.session import SessionStore, TranscriptStore
-from tests.conftest import _make_harness
+from tests.conftest import _make_harness, _make_deps
 
 _FAKE_CLI = '''#!{python}
 import json, sys
@@ -55,7 +55,7 @@ async def test_cli_spawn_writes_transcript_sidecar(tmp_path, monkeypatch):
     )
     harness = _make_harness(
         FunctionModel(lambda m, i: ModelResponse(parts=[TextPart(content="x")])),
-        Deps(workspace_root=tmp_path, mode=Mode.auto),
+        _make_deps(tmp_path),
         store=session_store,
     )
     await harness.subagents.run("cli-worker", "do it", stream_id="sg1")

@@ -4,11 +4,11 @@ import pytest
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
-from marim_harness.runtime.deps import Deps, SubAgentCallbacks
+from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.harness import Harness
 from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
-from tests.conftest import _edit_then_done_model, _last_instructions, _make_harness, _text_model
+from tests.conftest import _edit_then_done_model, _last_instructions, _make_harness, _text_model, _make_deps
 
 
 def _spawn_then_done_model() -> FunctionModel:
@@ -62,7 +62,7 @@ async def test_subagent_output_cap_spills_full_and_returns_pointer(tmp_path: Pat
     def fn(messages, info):
         return ModelResponse(parts=[TextPart(content=long)])
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = _make_harness(FunctionModel(fn), deps)
     result = await harness.subagents.run("explore", "go", "tc-1", None, 200)
 
@@ -82,7 +82,7 @@ async def test_subagent_no_cap_returns_full_output(tmp_path: Path):
     def fn(messages, info):
         return ModelResponse(parts=[TextPart(content=long)])
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = _make_harness(FunctionModel(fn), deps)
     result = await harness.subagents.run("explore", "go", "tc-2", None, None)
 
@@ -94,7 +94,7 @@ async def test_subagent_no_cap_returns_full_output(tmp_path: Path):
 async def test_run_subagent_returns_output(tmp_path: Path):
     from pydantic_ai.models.test import TestModel
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(call_tools=[], custom_output_text="FINDINGS"), deps)
     out = await h.subagents.run("explore", "find the parser", "sid")
     assert out == "FINDINGS"
@@ -106,7 +106,7 @@ async def test_run_subagent_counts_usage_in_session_total(tmp_path: Path):
     its returned report — counted immediately as the run completes."""
     from pydantic_ai.models.test import TestModel
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(call_tools=[], custom_output_text="FINDINGS"), deps)
     assert h.session.total_tokens == 0
     await h.subagents.run("explore", "find the parser", "sid")
@@ -123,7 +123,7 @@ async def test_run_subagent_restricts_tools_by_mode(tmp_path: Path):
         captured["tools"] = {t.name for t in info.function_tools}
         return ModelResponse(parts=[TextPart(content="report")])
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.ask)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     h = _make_harness(FunctionModel(fn), deps)
 
     # ask mode: general drops its gated tools, keeping local reads + net tools.
@@ -149,8 +149,8 @@ async def test_subagent_handler_forwards_run_usage(tmp_path: Path):
     async def cb(stream_id, event, usage):
         recorded.append((stream_id, event, usage))
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto,
-                callbacks=SubAgentCallbacks(on_event=cb))
+    deps = _make_deps(tmp_path)
+    deps.ui.on_subagent_event = cb
     h = _make_harness(_text_model(), deps)
     handler = h.subagents.handler("sid")
 
@@ -171,14 +171,14 @@ async def test_subagent_handler_forwards_run_usage(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_subagent_handler_none_without_listener(tmp_path: Path):
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)  # no on_subagent_event
+    deps = _make_deps(tmp_path)  # no on_subagent_event
     h = _make_harness(_text_model(), deps)
     assert h.subagents.handler("sid") is None
 
 
 @pytest.mark.anyio
 async def test_run_subagent_unknown_type(tmp_path: Path):
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(_text_model(), deps)
     out = await h.subagents.run("ghost", "do it", "sid")
     assert "No sub-agent type 'ghost'" in out
@@ -195,7 +195,7 @@ async def test_agent_index_injected(tmp_path: Path, monkeypatch):
         captured["instructions"] = _last_instructions(messages)
         return ModelResponse(parts=[TextPart(content="ok")])
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = Harness(model=FunctionModel(fn), provider=BuiltinToolProvider(), deps=deps,
                 instructions="BASE PROMPT")
     await h.run_turn("hi")
@@ -209,7 +209,7 @@ async def test_agent_index_injected(tmp_path: Path, monkeypatch):
 async def test_run_background_subagent_returns_output(tmp_path: Path):
     from pydantic_ai.models.test import TestModel
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(call_tools=[], custom_output_text="BG REPORT"), deps)
     out = await h.subagents.run_background("explore", "scan the repo")
     assert out == "BG REPORT"
@@ -225,7 +225,7 @@ async def test_run_background_output_cap_spills_full_and_returns_pointer(tmp_pat
     def fn(messages, info):
         return ModelResponse(parts=[TextPart(content=long)])
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = _make_harness(FunctionModel(fn), deps)
     result = await harness.subagents.run_background("explore", "go", None, 200)
 
@@ -246,7 +246,7 @@ async def test_run_background_no_cap_returns_full_output(tmp_path: Path):
     def fn(messages, info):
         return ModelResponse(parts=[TextPart(content=long)])
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = _make_harness(FunctionModel(fn), deps)
     result = await harness.subagents.run_background("explore", "go")
     assert result == long
@@ -261,7 +261,7 @@ async def test_run_background_subagent_counts_and_persists_usage(tmp_path: Path)
 
     from marim_harness.session import SessionManager
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     store = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data").create()
     h = Harness(
         model=TestModel(call_tools=[], custom_output_text="BG"),
@@ -277,7 +277,7 @@ async def test_run_background_subagent_counts_and_persists_usage(tmp_path: Path)
 
 @pytest.mark.anyio
 async def test_run_background_subagent_unknown_type(tmp_path: Path):
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(_text_model(), deps)
     out = await h.subagents.run_background("ghost", "do it")
     assert "No sub-agent type 'ghost'" in out
@@ -293,7 +293,7 @@ async def test_run_background_subagent_respects_mode(tmp_path: Path):
         captured["tools"] = {t.name for t in info.function_tools}
         return ModelResponse(parts=[TextPart(content="r")])
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.ask)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     h = _make_harness(FunctionModel(fn), deps)
     await h.subagents.run_background("general", "x")
     assert captured["tools"] == set(READ_TOOLS | NET_TOOLS)
@@ -317,8 +317,8 @@ async def test_run_background_streams_events_to_listener(tmp_path: Path):
     async def stream_fn(messages, info):
         yield "BG ANSWER"
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto,
-                callbacks=SubAgentCallbacks(on_event=cb))
+    deps = _make_deps(tmp_path)
+    deps.ui.on_subagent_event = cb
     h = _make_harness(FunctionModel(fn, stream_function=stream_fn), deps)
     out = await h.subagents.run_background("explore", "scan", stream_id="call_99")
     assert out == "BG ANSWER"
@@ -337,22 +337,22 @@ async def test_run_background_without_stream_id_does_not_forward(tmp_path: Path)
     def fn(messages, info):
         return ModelResponse(parts=[TextPart(content="X")])
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto,
-                callbacks=SubAgentCallbacks(on_event=cb))
+    deps = _make_deps(tmp_path)
+    deps.ui.on_subagent_event = cb
     h = _make_harness(FunctionModel(fn), deps)
     await h.subagents.run_background("explore", "scan")  # no stream_id
     assert recorded == []
 
 
 def test_background_agent_runner_wired(tmp_path: Path):
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(_text_model(), deps)
     assert deps.services.run_background_agent == h.subagents.run_background
 
 
 @pytest.mark.anyio
 async def test_spawn_agent_tool_runs_subagent_end_to_end(tmp_path: Path):
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(_spawn_then_done_model(), deps)
     out = await h.run_turn("investigate")
     assert out == "done: SUBREPORT"
@@ -362,7 +362,7 @@ def test_parallel_tool_calls_enabled_on_main_agent(tmp_path):
     """The main agent forces parallel tool calls on, so providers that support
     it (Anthropic, OpenAI, Groq, xAI, …) run same-turn tool calls concurrently
     rather than relying on a provider default that may be off."""
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = _make_harness(_edit_then_done_model(), deps)
     assert harness.agent.model_settings is not None
     assert harness.agent.model_settings.get("parallel_tool_calls") is True
@@ -371,7 +371,7 @@ def test_parallel_tool_calls_enabled_on_main_agent(tmp_path):
 def test_parallel_tool_calls_enabled_on_subagent(tmp_path):
     """Spawned sub-agents inherit the same setting — fan-out work should be as
     parallel as the main agent's."""
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = _make_harness(_edit_then_done_model(), deps)
     sub, err = harness.subagents.build("explore")
     assert err is None
@@ -385,7 +385,7 @@ async def test_run_subagent_grants_named_server(tmp_path: Path):
 
     from pydantic_ai.models.test import TestModel
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
     server = SimpleNamespace(tool_prefix="mddocs")
     h.mcp._live_servers = [server]
@@ -404,7 +404,7 @@ async def test_run_subagent_default_grants_no_servers(tmp_path: Path):
 
     from pydantic_ai.models.test import TestModel
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
     h.mcp._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
     cap = _capture_subagent(h)
@@ -417,7 +417,7 @@ async def test_run_subagent_default_grants_no_servers(tmp_path: Path):
 async def test_run_subagent_prepends_unknown_note(tmp_path: Path):
     from pydantic_ai.models.test import TestModel
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
     h.mcp._live_servers = []
     _capture_subagent(h, report="FINDINGS")
@@ -433,7 +433,7 @@ async def test_run_background_subagent_grants_named_server(tmp_path: Path):
 
     from pydantic_ai.models.test import TestModel
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
     server = SimpleNamespace(tool_prefix="mddocs")
     h.mcp._live_servers = [server]
@@ -450,7 +450,7 @@ async def test_run_background_subagent_grants_named_server(tmp_path: Path):
 async def test_run_background_subagent_prepends_unknown_note(tmp_path: Path):
     from pydantic_ai.models.test import TestModel
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
     h.mcp._live_servers = []
     _capture_subagent(h, report="DONE")
@@ -466,7 +466,7 @@ async def test_run_background_subagent_default_grants_no_servers(tmp_path: Path)
 
     from pydantic_ai.models.test import TestModel
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
     h.mcp._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
     cap = _capture_subagent(h)
@@ -493,7 +493,7 @@ async def test_run_background_isolates_task_list(tmp_path: Path):
             cap["deps"] = kwargs.get("deps")
             return SimpleNamespace(output="report", usage=RunUsage(), all_messages=lambda: [])
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     # Give the parent a non-empty checklist so a leak would be visible.
     deps.tasks.replace([{"text": "user task", "status": "in_progress"}])
     h = _make_harness(_text_model(), deps)
@@ -514,7 +514,7 @@ async def test_run_background_isolates_task_list(tmp_path: Path):
 def test_harness_exposes_wake_defaults(tmp_path: Path):
     """The Harness surfaces the wake knobs so the TUI app can seed its scheduler;
     with no config passed, the defaults are on / cap 8."""
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(_text_model(), deps)
     assert h.autonomous_wake is True
     assert h.wake_depth_cap == 8
@@ -523,7 +523,7 @@ def test_harness_exposes_wake_defaults(tmp_path: Path):
 def test_harness_takes_wake_flags_from_config(tmp_path: Path):
     from marim_harness.runtime.harness import HarnessConfig
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = Harness(
         model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
         instructions="x",

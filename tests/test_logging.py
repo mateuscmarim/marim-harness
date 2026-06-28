@@ -5,6 +5,7 @@ import logging
 import pytest
 
 from marim_harness.interfaces.cli import router
+from tests.conftest import _make_deps
 
 # --- _setup_logging -----------------------------------------------------------
 
@@ -155,7 +156,7 @@ async def test_autoname_logs_on_titler_failure(caplog, tmp_path):
 
     manager = SessionManager(tmp_path)
     store = manager.create("test")
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
 
     async def boom(history):
         raise RuntimeError("titler broken")
@@ -180,13 +181,12 @@ async def test_autoname_logs_on_titler_failure(caplog, tmp_path):
 @pytest.mark.anyio
 async def test_rename_logs_on_titler_failure(caplog, tmp_path):
     from marim_harness.runtime.deps import Deps
-    from marim_harness.runtime.permissions import Mode
     from marim_harness.session.ctrl import SessionController
     from marim_harness.session.store import SessionManager
 
     manager = SessionManager(tmp_path)
     store = manager.create("test")
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
 
     async def boom(history):
         raise RuntimeError("titler broken")

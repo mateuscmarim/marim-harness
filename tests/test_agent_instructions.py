@@ -8,7 +8,7 @@ from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.harness import Harness
 from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
-from tests.conftest import _last_instructions
+from tests.conftest import _last_instructions, _make_deps
 
 
 def _last_user_prompt(messages) -> str:
@@ -37,7 +37,7 @@ async def test_project_instructions_injected_and_dynamic(
     # Isolate the global config dir so a real ~/.config/marim/AGENTS.md on the
     # host can't leak its instructions into this project-scoped assertion.
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = Harness(
         model=FunctionModel(fn), provider=BuiltinToolProvider(), deps=deps,
         instructions="BASE PROMPT",
@@ -68,7 +68,7 @@ async def test_claude_md_fallback_injected(tmp_path: Path, monkeypatch: pytest.M
         return ModelResponse(parts=[TextPart(content="ok")])
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = Harness(
         model=FunctionModel(fn), provider=BuiltinToolProvider(), deps=deps,
         instructions="BASE PROMPT",
@@ -111,7 +111,7 @@ async def test_global_instructions_injected_and_dynamic(
     workspace = tmp_path / "ws"
     workspace.mkdir()
 
-    deps = Deps(workspace_root=workspace, mode=Mode.auto)
+    deps = _make_deps(workspace)
     harness = Harness(
         model=FunctionModel(fn), provider=BuiltinToolProvider(), deps=deps,
         instructions="BASE PROMPT",
@@ -147,7 +147,7 @@ async def test_memory_indexes_injected_and_dynamic(tmp_path: Path):
         captured["instructions"] = _last_instructions(messages)
         return ModelResponse(parts=[TextPart(content="ok")])
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = Harness(
         model=FunctionModel(fn), provider=BuiltinToolProvider(), deps=deps,
         instructions="BASE PROMPT",
@@ -185,7 +185,7 @@ async def test_skill_index_injected_and_dynamic(tmp_path: Path, monkeypatch):
         captured["instructions"] = _last_instructions(messages)
         return ModelResponse(parts=[TextPart(content="ok")])
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = Harness(
         model=FunctionModel(fn), provider=BuiltinToolProvider(), deps=deps,
         instructions="BASE PROMPT",
@@ -219,7 +219,7 @@ async def test_task_checklist_rides_in_turn_context_not_instructions(tmp_path: P
         captured["prompt"] = _last_user_prompt(messages)
         return ModelResponse(parts=[TextPart(content="ok")])
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = Harness(
         model=FunctionModel(fn), provider=BuiltinToolProvider(), deps=deps,
         instructions="BASE PROMPT",

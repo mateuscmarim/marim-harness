@@ -4,7 +4,9 @@ from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
 from marim_harness.runtime.deps import Deps
+from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
+from tests.conftest import _make_deps
 
 _QUESTIONS = [
     {
@@ -40,7 +42,7 @@ def _call_tool(tool_name: str, args: dict):
 
 
 def test_ask_user_headless_returns_note(tmp_path):
-    deps = Deps(workspace_root=tmp_path)  # ask_user is None
+    deps = _make_deps(tmp_path, mode=Mode.ask)  # ask_user is None
     agent = _agent()
     model, captured = _call_tool("ask_user", {"questions": _QUESTIONS})
     with agent.override(model=model):
@@ -52,7 +54,7 @@ def test_ask_user_cancelled_returns_note(tmp_path):
     async def cancel(questions):
         return None
 
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     deps.ask_user = cancel
     agent = _agent()
     model, captured = _call_tool("ask_user", {"questions": _QUESTIONS})
@@ -67,7 +69,7 @@ def test_ask_user_returns_header_keyed_json(tmp_path):
     async def answer(questions):
         return {"DB": "Postgres"}
 
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     deps.ask_user = answer
     agent = _agent()
     model, captured = _call_tool("ask_user", {"questions": _QUESTIONS})
@@ -80,7 +82,7 @@ def test_ask_user_empty_questions_returns_error(tmp_path):
     async def answer(questions):
         raise AssertionError("callback must not run for empty input")
 
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     deps.ask_user = answer
     agent = _agent()
     # a question whose only option has a blank label normalizes away to nothing
@@ -108,7 +110,7 @@ def test_ask_user_fires_notification(tmp_path):
     async def _answer(questions):
         return {questions[0].header or "q": "yes"}
 
-    deps = Deps(workspace_root=tmp_path, ask_user=_answer)
+    deps = _make_deps(tmp_path, mode=Mode.ask, ask_user=_answer)
     deps.services.turn_hooks = spy
     agent = _agent()
     model, _ = _call_tool(

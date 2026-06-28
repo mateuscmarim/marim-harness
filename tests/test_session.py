@@ -9,10 +9,12 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
 from marim_harness.hooks import events as hook_events
+from marim_harness.runtime.permissions import Mode
 from marim_harness.hooks.runner import HookRunner
-from marim_harness.runtime.deps import Deps
+from marim_harness.runtime.deps import Deps, WorkspaceConfig
 from marim_harness.session import SessionManager, SessionStore
 from marim_harness.session.ctrl import SessionController
+from tests.conftest import _make_deps
 
 
 def _history() -> list:
@@ -372,7 +374,7 @@ async def test_pre_compact_fires_when_compaction_runs(tmp_path):
     log = tmp_path / "pc.log"
     cmd = _hook_cmd(tmp_path, log)
     deps = Deps(
-        workspace_root=tmp_path,
+        workspace=WorkspaceConfig(root=tmp_path),
         hooks=HookRunner(
             {hook_events.PRE_COMPACT: [{"hooks": [{"type": "command", "command": cmd}]}]}
         ),
@@ -407,7 +409,7 @@ async def test_pre_compact_fires_before_compaction_work(tmp_path):
         order.append("summarizer")
         return "SUMMARY"
 
-    deps = Deps(workspace_root=tmp_path, hooks=_RecordingHooks())
+    deps = _make_deps(tmp_path, mode=Mode.ask, hooks=_RecordingHooks())
     ctrl = SessionController(
         None, None, deps, max_context_tokens=1, keep_last_messages=1,
         summarizer=_summarizer,
@@ -426,7 +428,7 @@ async def test_pre_compact_does_not_fire_without_compaction(tmp_path):
     log = tmp_path / "pc.log"
     cmd = _hook_cmd(tmp_path, log)
     deps = Deps(
-        workspace_root=tmp_path,
+        workspace=WorkspaceConfig(root=tmp_path),
         hooks=HookRunner(
             {hook_events.PRE_COMPACT: [{"hooks": [{"type": "command", "command": cmd}]}]}
         ),
@@ -439,7 +441,7 @@ async def test_pre_compact_does_not_fire_without_compaction(tmp_path):
 
 @pytest.mark.anyio
 async def test_on_compact_start_fires_before_finish_when_compacting(tmp_path):
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     ctrl = SessionController(None, None, deps, max_context_tokens=1, keep_last_messages=1)
     ctrl.history = [
         ModelRequest(parts=[UserPromptPart(content="x" * 5000)]),
@@ -455,7 +457,7 @@ async def test_on_compact_start_fires_before_finish_when_compacting(tmp_path):
 
 @pytest.mark.anyio
 async def test_on_compact_start_not_fired_without_compaction(tmp_path):
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     ctrl = SessionController(None, None, deps, max_context_tokens=100_000, keep_last_messages=20)
     ctrl.history = []  # nothing to compact
     fired: list[int] = []
@@ -470,7 +472,7 @@ async def test_forced_compaction_clears_indicator_even_without_shrink(tmp_path):
     # estimate undershot) can run yet not shrink history. The "compacting…"
     # indicator must still be cleared: on_compact fires with before == after so
     # the UI just drops the notice instead of leaving a stuck spinner.
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     ctrl = SessionController(
         None, None, deps, max_context_tokens=100_000, keep_last_messages=20
     )
@@ -492,7 +494,7 @@ async def test_compaction_persists_the_compacted_history(tmp_path):
     doesn't lose it (and the on-disk file matches the in-memory history)."""
     mgr = _manager(tmp_path)
     store = mgr.create("compact me")
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     ctrl = SessionController(
         store, mgr, deps, max_context_tokens=1, keep_last_messages=1
     )
@@ -514,7 +516,7 @@ async def test_no_compaction_does_not_force_a_write(tmp_path):
     """When nothing compacts, maybe_compact must not bump persistence work."""
     mgr = _manager(tmp_path)
     store = mgr.create("untouched")
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     ctrl = SessionController(
         store, mgr, deps, max_context_tokens=100_000, keep_last_messages=20
     )
@@ -534,13 +536,13 @@ def test_saved_model_id_returns_store_model(tmp_path: Path):
     mgr = _manager(tmp_path)
     store = mgr.create("with-model")
     store.model = "anthropic/claude-3-7"
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     ctrl = SessionController(store, mgr, deps, 100_000, 20)
     assert ctrl.saved_model_id == "anthropic/claude-3-7"
 
 
 def test_saved_model_id_none_without_store(tmp_path: Path):
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     ctrl = SessionController(None, None, deps, 100_000, 20)
     assert ctrl.saved_model_id is None
 
@@ -562,7 +564,7 @@ async def test_update_model_rebuilds_summarizer_and_titler(tmp_path: Path):
     async def _stub_titler(history):
         return "title"
 
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     ctrl = SessionController(
         None, None, deps, 100_000, 20,
         summarizer=_stub_summarizer,
@@ -584,7 +586,7 @@ def test_update_model_leaves_none_aux_agents_as_none(tmp_path: Path):
     def fn(messages, info):
         return ModelResponse(parts=[TextPart(content="ok")])
 
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     ctrl = SessionController(None, None, deps, 100_000, 20)  # no summarizer/titler
     ctrl.update_model(FunctionModel(fn))
     assert ctrl.summarizer is None

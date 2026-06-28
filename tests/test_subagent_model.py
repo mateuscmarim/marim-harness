@@ -10,7 +10,7 @@ from pydantic_ai.models.function import FunctionModel
 
 from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.permissions import Mode
-from tests.conftest import _make_harness, _text_model
+from tests.conftest import _make_harness, _text_model, _make_deps
 
 
 def _spawn_with_model_model() -> FunctionModel:
@@ -32,7 +32,7 @@ def _spawn_with_model_model() -> FunctionModel:
 def test_build_uses_current_model_by_default(tmp_path: Path):
     """With no override, build() uses the harness's current model and never calls
     the per-spawn resolver."""
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(_text_model(), deps)
     h.subagents._build_model = lambda mid: pytest.fail("resolver must not run")
 
@@ -44,7 +44,7 @@ def test_build_uses_current_model_by_default(tmp_path: Path):
 def test_build_resolves_model_override(tmp_path: Path):
     """With an override, build() resolves it through the injected resolver and the
     sub-agent runs on the resolved model, not the current one."""
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(_text_model(), deps)
     other = _text_model()
     seen: dict = {}
@@ -64,7 +64,7 @@ def test_build_resolves_model_override(tmp_path: Path):
 def test_build_model_override_unavailable_without_resolver(tmp_path: Path):
     """When no resolver is wired (no model source), an override can't be honored —
     build() returns a clear error rather than silently ignoring the request."""
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(_text_model(), deps)
     assert h.subagents._build_model is None  # default: no model source in tests
 
@@ -77,7 +77,7 @@ def test_build_model_override_unavailable_without_resolver(tmp_path: Path):
 @pytest.mark.anyio
 async def test_run_forwards_model_to_build(tmp_path: Path):
     """run() threads its model argument into build()."""
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(_text_model(), deps)
     seen: dict = {}
 
@@ -101,7 +101,7 @@ async def test_spawn_agent_tool_forwards_model(tmp_path: Path):
         captured["model"] = model
         return "REPORT"
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(_spawn_with_model_model(), deps)
     h.deps.services.run_subagent = fake_run
     out = await h.run_turn("investigate")

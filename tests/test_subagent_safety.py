@@ -13,7 +13,7 @@ from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.harness import Harness, HarnessConfig
 from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
-from tests.conftest import _make_harness, _text_model
+from tests.conftest import _make_harness, _text_model, _make_deps
 
 
 class _RecordingHooks:
@@ -46,7 +46,7 @@ async def test_foreground_subagent_tool_calls_fire_hooks(tmp_path: Path):
     from pydantic_ai.models.test import TestModel
 
     _probe_agent(tmp_path)
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     recorder = _RecordingHooks()
     deps.hooks = recorder
     h = _make_harness(TestModel(), deps)
@@ -63,7 +63,7 @@ async def test_background_subagent_tool_calls_fire_hooks(tmp_path: Path):
     from pydantic_ai.models.test import TestModel
 
     _probe_agent(tmp_path)
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     recorder = _RecordingHooks()
     deps.hooks = recorder
     h = _make_harness(TestModel(), deps)
@@ -83,7 +83,7 @@ async def test_foreground_subagent_error_is_contained(tmp_path: Path):
         async def run(self, task, **kwargs):
             raise RuntimeError("boom")
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(_text_model(), deps)
     h.subagents.build = lambda *a, **k: (_BoomAgent(), None)
     assert h.session.total_tokens == 0
@@ -102,7 +102,7 @@ async def test_subagent_request_limit_bounds_runaway(tmp_path: Path):
     def fn(messages, info):  # never produces a final text — always calls a tool
         return ModelResponse(parts=[ToolCallPart(tool_name="glob", args={"pattern": "*"})])
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = Harness(
         model=FunctionModel(fn), provider=BuiltinToolProvider(), deps=deps,
         instructions="x", config=HarnessConfig(subagent_request_limit=2),
@@ -118,7 +118,7 @@ async def test_build_returns_exactly_one_of_sub_or_err(tmp_path: Path):
     (None, None) and never (sub, err). The XOR contract is what the runners'
     cleanup logic relies on; a future change that violates it would silently
     leave worktrees orphaned."""
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = _make_harness(_text_model(), deps)
 
     # Unknown type → (None, err)

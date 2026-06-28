@@ -3,14 +3,16 @@ folded into ``duration_seconds`` exactly once at shutdown — neither lost to a
 cache-skipped persist nor double-counted by persist recomputing its own elapsed."""
 
 from marim_harness.runtime.deps import Deps
+from marim_harness.runtime.permissions import Mode
 from marim_harness.session import SessionController, SessionManager
 from marim_harness.session import ctrl as ctrl_mod
+from tests.conftest import _make_deps
 
 
 def _ctrl_with_tracked_store(tmp_path, name):
     manager = SessionManager(tmp_path)
     store = manager.create(name)
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     saved_durations: list = []
     original_save = store.save
 

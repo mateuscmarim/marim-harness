@@ -6,6 +6,7 @@ from marim_harness.interfaces.tui.app import HarnessApp
 from marim_harness.interfaces.tui.widgets import NoticeMessage
 from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.permissions import Mode
+from tests.conftest import _make_deps
 
 
 def _app(tmp_path: Path) -> HarnessApp:
@@ -14,7 +15,7 @@ def _app(tmp_path: Path) -> HarnessApp:
     from marim_harness.runtime.harness import Harness
     from marim_harness.tools.provider import BuiltinToolProvider
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = Harness(
         TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test"
     )
@@ -512,7 +513,7 @@ async def test_submitting_records_prompt_history(tmp_path: Path):
     from marim_harness.runtime.harness import Harness
     from marim_harness.tools.provider import BuiltinToolProvider
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = Harness(
         TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test"
     )
@@ -957,7 +958,7 @@ async def test_gated_tool_renders_one_widget_not_two(tmp_path: Path):
         else:
             yield "done"
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = Harness(FunctionModel(stream_function=stream_fn),
                       BuiltinToolProvider(), deps, instructions="test")
     app = HarnessApp(harness)
@@ -1788,7 +1789,7 @@ def _app_with_manager(tmp_path: Path) -> HarnessApp:
     from marim_harness.session import SessionManager
     from marim_harness.tools.provider import BuiltinToolProvider
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     store = manager.create("main")
     harness = Harness(
@@ -1866,7 +1867,7 @@ def _autoname_app(tmp_path: Path) -> HarnessApp:
     async def titler(messages):
         return "Auto Title"
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     harness = Harness(
         TestModel(call_tools=[]), BuiltinToolProvider(), deps,
@@ -1944,7 +1945,7 @@ def _switch_app(tmp_path: Path, source) -> HarnessApp:
     from marim_harness.session import SessionManager
     from marim_harness.tools.provider import BuiltinToolProvider
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     harness = Harness(
         TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test",

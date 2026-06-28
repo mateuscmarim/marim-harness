@@ -7,6 +7,7 @@ from marim_harness.interfaces.tui.app import HarnessApp
 from marim_harness.interfaces.tui.widgets.prompt import PromptInput
 from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.permissions import Mode
+from tests.conftest import _make_deps
 
 
 @pytest.fixture
@@ -26,7 +27,7 @@ def _harness(tmp_path: Path):
 
     return Harness(
         TestModel(call_tools=[]), BuiltinToolProvider(),
-        Deps(workspace_root=tmp_path, mode=Mode.auto), instructions="test",
+        _make_deps(tmp_path), instructions="test",
     )
 
 
@@ -125,7 +126,7 @@ async def test_steer_during_approval_gap_buffers_not_stale_ctx(tmp_path):
         observed["buffered"] = harness.take_buffered_steers()
         return True
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.ask, request_approval=approve)
+    deps = _make_deps(tmp_path, mode=Mode.ask, request_approval=approve)
     harness = Harness(
         model=FunctionModel(fn, stream_function=stream_fn),
         provider=BuiltinToolProvider(),
@@ -174,7 +175,7 @@ def _tui_app(tmp_path):
     from marim_harness.runtime.harness import Harness
     from marim_harness.tools.provider import BuiltinToolProvider
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = Harness(TestModel(call_tools=[]), BuiltinToolProvider(), deps,
                       instructions="test")
     return HarnessApp(harness)
@@ -281,7 +282,7 @@ def _recording_streaming_harness(tmp_path, calls):
 
     h = Harness(
         FunctionModel(stream_function=stream_fn), BuiltinToolProvider(),
-        Deps(workspace_root=tmp_path, mode=Mode.auto), instructions="test",
+        _make_deps(tmp_path), instructions="test",
     )
 
     @h.agent.tool_plain

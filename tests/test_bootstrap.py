@@ -222,7 +222,6 @@ def test_build_harness_sets_hooks_when_global_config_present(tmp_path, monkeypat
 
 def test_build_harness_hooks_none_without_config(tmp_path, monkeypatch):
     from marim_harness.runtime.bootstrap import build_harness
-    from marim_harness.runtime.permissions import Mode
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
@@ -238,7 +237,6 @@ def test_build_harness_uses_multi_model_source(monkeypatch, tmp_path):
 
     import marim_harness.runtime.bootstrap as b
     from marim_harness.config.model import MultiModelSource
-    from marim_harness.runtime.permissions import Mode
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
     monkeypatch.setenv("MARIM_BASE_URL", "http://localhost:1234/v1")

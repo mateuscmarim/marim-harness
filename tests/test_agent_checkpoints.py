@@ -9,13 +9,13 @@ import pytest
 
 from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.permissions import Mode
-from tests.conftest import _make_harness, _text_model
+from tests.conftest import _make_harness, _text_model, _make_deps
 
 pytestmark = pytest.mark.anyio
 
 
 async def test_turn_creates_a_checkpoint(tmp_path):
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = _make_harness(_text_model(), deps)
     assert harness.checkpoints.list() == []
     await harness.run_turn("first user message")
@@ -26,7 +26,7 @@ async def test_turn_creates_a_checkpoint(tmp_path):
 
 
 async def test_rewind_truncates_to_before_a_turn(tmp_path):
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = _make_harness(_text_model(), deps)
     await harness.run_turn("turn one")
     after_one = list(harness.session.history)
@@ -45,7 +45,7 @@ async def test_rewind_restores_workspace_files(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.email", "t@t"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path, check=True)
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = _make_harness(_text_model(), deps)
 
     (tmp_path / "sentinel.txt").write_text("before\n")

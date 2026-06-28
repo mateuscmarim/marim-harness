@@ -13,11 +13,12 @@ from pydantic_ai.models.function import FunctionModel
 
 from marim_harness.hooks import events as hook_events
 from marim_harness.hooks.runner import HookRunner
-from marim_harness.runtime.deps import Deps
+from marim_harness.runtime.deps import Deps, WorkspaceConfig
 from marim_harness.runtime.permissions import Mode
 from tests.conftest import (
     _capture_script,
     _edit_then_done_model,
+    _make_deps,
     _make_harness,
     _make_subagent_def,
     _read_hits,
@@ -26,7 +27,7 @@ from tests.conftest import (
 
 @pytest.mark.anyio
 async def test_harness_wires_turn_hooks_onto_deps(tmp_path):
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = _make_harness(_edit_then_done_model(), deps)
     assert deps.services.turn_hooks is harness.hooks
 
@@ -74,7 +75,7 @@ def _prompt_capturing_model(sink: list) -> FunctionModel:
 async def test_session_start_context_is_prepended_once(tmp_path):
     cmd = _hook_script(tmp_path, "ss.sh", "echo SESSION_CTX\n")
     deps = Deps(
-        workspace_root=tmp_path, mode=Mode.auto,
+        workspace=WorkspaceConfig(root=tmp_path, mode=Mode.auto),
         hooks=HookRunner(
             {hook_events.SESSION_START: [{"hooks": [{"type": "command", "command": cmd}]}]}
         ),
@@ -92,7 +93,7 @@ async def test_session_start_context_is_prepended_once(tmp_path):
 async def test_user_prompt_submit_context_is_prepended(tmp_path):
     cmd = _hook_script(tmp_path, "ups.sh", "echo PROMPT_CTX\n")
     deps = Deps(
-        workspace_root=tmp_path, mode=Mode.auto,
+        workspace=WorkspaceConfig(root=tmp_path, mode=Mode.auto),
         hooks=HookRunner(
             {hook_events.USER_PROMPT_SUBMIT: [{"hooks": [{"type": "command", "command": cmd}]}]}
         ),
@@ -110,7 +111,7 @@ async def test_user_prompt_submit_fires_on_every_turn(tmp_path):
     context is prepended to each turn's prompt, proving repeated activation."""
     cmd = _hook_script(tmp_path, "ups_every.sh", "echo PROMPT_CTX\n")
     deps = Deps(
-        workspace_root=tmp_path, mode=Mode.auto,
+        workspace=WorkspaceConfig(root=tmp_path, mode=Mode.auto),
         hooks=HookRunner(
             {hook_events.USER_PROMPT_SUBMIT: [{"hooks": [{"type": "command", "command": cmd}]}]}
         ),
@@ -125,7 +126,7 @@ async def test_user_prompt_submit_fires_on_every_turn(tmp_path):
 
 @pytest.mark.anyio
 async def test_no_hooks_runs_turn_normally(tmp_path):
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)  # hooks=None
+    deps = _make_deps(tmp_path)  # hooks=None
     sink: list = []
     harness = _make_harness(_prompt_capturing_model(sink), deps)
     out = await harness.run_turn("hello")
@@ -166,7 +167,7 @@ async def test_injected_context_is_wrapped_so_replay_can_recover_typed_text(tmp_
     hooks = HookRunner(
         {hook_events.SESSION_START: [{"hooks": [{"type": "command", "command": cmd}]}]}
     )
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto, hooks=hooks)
+    deps = _make_deps(tmp_path, hooks=hooks)
     sink: list = []
     harness = _make_harness(_prompt_capturing_model(sink), deps)
     await harness.session_start("startup")
@@ -192,7 +193,7 @@ async def test_plain_turn_is_not_wrapped(tmp_path):
     no envelope — so existing sessions and output are unaffected."""
     from marim_harness.runtime.harness import strip_turn_context
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)  # no hooks
+    deps = _make_deps(tmp_path)  # no hooks
     sink: list = []
     harness = _make_harness(_prompt_capturing_model(sink), deps)
     await harness.run_turn("hello")
@@ -232,7 +233,7 @@ async def test_pre_and_post_tool_use_fire(tmp_path):
             {"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}
         ],
     })
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto, hooks=runner)
+    deps = _make_deps(tmp_path, hooks=runner)
     harness = _make_harness(_edit_then_done_model(), deps)
     await harness.run_turn("change foo to bar")
     lines = log.read_text().splitlines()
@@ -268,7 +269,7 @@ async def test_post_tool_use_includes_tool_input(tmp_path):
             {"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}
         ],
     })
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto, hooks=runner)
+    deps = _make_deps(tmp_path, hooks=runner)
     harness = _make_harness(_edit_then_done_model(), deps)
     await harness.run_turn("change foo to bar")
 
@@ -312,7 +313,7 @@ async def test_subagent_start_and_stop_fire(tmp_path):
         hook_events.SUBAGENT_START: [{"hooks": [{"type": "command", "command": cmd}]}],
         hook_events.SUBAGENT_STOP: [{"hooks": [{"type": "command", "command": cmd}]}],
     })
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto, hooks=runner)
+    deps = _make_deps(tmp_path, hooks=runner)
     # A streaming-capable model the sub-agent will run: just reply 'sub-done'.
     # Hooks make the sub-agent run stream (so its tool calls hit the engine), so
     # a non-streaming FunctionModel can't back it — same discipline as the main
@@ -332,7 +333,7 @@ async def test_subagent_start_and_stop_fire(tmp_path):
 async def test_stop_fires_at_turn_end(tmp_path):
     log = tmp_path / "stop.log"
     cmd = _hook_script(tmp_path, "stop.sh", f"cat >> {log}\n")
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto,
+    deps = Deps(workspace=WorkspaceConfig(root=tmp_path, mode=Mode.auto),
                 hooks=HookRunner(
                     {hook_events.STOP: [{"hooks": [{"type": "command", "command": cmd}]}]}
                 ))
@@ -349,7 +350,7 @@ async def test_stop_fires_at_turn_end(tmp_path):
 async def test_session_end_fires(tmp_path):
     log = tmp_path / "end.log"
     cmd = _hook_script(tmp_path, "end.sh", f"cat >> {log}\n")
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto,
+    deps = Deps(workspace=WorkspaceConfig(root=tmp_path, mode=Mode.auto),
                 hooks=HookRunner(
                     {hook_events.SESSION_END: [{"hooks": [{"type": "command", "command": cmd}]}]}
                 ))
@@ -382,7 +383,7 @@ async def test_background_subagent_start_and_stop_fire(tmp_path):
         hook_events.SUBAGENT_START: [{"hooks": [{"type": "command", "command": cmd}]}],
         hook_events.SUBAGENT_STOP: [{"hooks": [{"type": "command", "command": cmd}]}],
     })
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto, hooks=runner)
+    deps = _make_deps(tmp_path, hooks=runner)
     # A streaming-capable model the sub-agent will run: just reply 'bg-done'.
     # (See the foreground test above — hooks force the sub-agent run to stream.)
     from pydantic_ai.models.test import TestModel
@@ -401,7 +402,7 @@ async def test_tool_failure_fires_post_tool_use_failure(tmp_path):
     out = tmp_path / "hits.jsonl"
     cmd = _capture_script(tmp_path, "fail.sh", out)
     deps = Deps(
-        workspace_root=tmp_path, mode=Mode.auto,
+        workspace=WorkspaceConfig(root=tmp_path, mode=Mode.auto),
         hooks=HookRunner(
             {hook_events.POST_TOOL_USE_FAILURE: [{"hooks": [{"type": "command", "command": cmd}]}]}
         ),
@@ -425,7 +426,7 @@ async def test_notification_dispatch_payload(tmp_path):
     out = tmp_path / "hits.jsonl"
     cmd = _capture_script(tmp_path, "n.sh", out)
     deps = Deps(
-        workspace_root=tmp_path, mode=Mode.auto,
+        workspace=WorkspaceConfig(root=tmp_path, mode=Mode.auto),
         hooks=HookRunner(
             {hook_events.NOTIFICATION: [{"hooks": [{"type": "command", "command": cmd}]}]}
         ),
@@ -445,7 +446,7 @@ async def test_approval_round_fires_notification_in_ask_mode(tmp_path):
     out = tmp_path / "hits.jsonl"
     cmd = _capture_script(tmp_path, "appr.sh", out)
     deps = Deps(
-        workspace_root=tmp_path, mode=Mode.ask,
+        workspace=WorkspaceConfig(root=tmp_path, mode=Mode.ask),
         hooks=HookRunner(
             {hook_events.NOTIFICATION: [{"hooks": [{"type": "command", "command": cmd}]}]}
         ),
@@ -454,7 +455,7 @@ async def test_approval_round_fires_notification_in_ask_mode(tmp_path):
     async def _approve(call):
         return True
 
-    deps.request_approval = _approve
+    deps.ui.request_approval = _approve
     harness = _make_harness(_edit_then_done_model(), deps)
     await harness.session_start("startup")
     await harness.run_turn("edit it")
@@ -468,7 +469,7 @@ async def test_auto_mode_does_not_fire_approval_notification(tmp_path):
     out = tmp_path / "hits.jsonl"
     cmd = _capture_script(tmp_path, "noappr.sh", out)
     deps = Deps(
-        workspace_root=tmp_path, mode=Mode.auto,
+        workspace=WorkspaceConfig(root=tmp_path, mode=Mode.auto),
         hooks=HookRunner(
             {hook_events.NOTIFICATION: [{"hooks": [{"type": "command", "command": cmd}]}]}
         ),
@@ -486,7 +487,7 @@ async def test_tool_success_fires_post_tool_use_not_failure(tmp_path):
     out = tmp_path / "hits.jsonl"
     cmd = _capture_script(tmp_path, "ok.sh", out)
     deps = Deps(
-        workspace_root=tmp_path, mode=Mode.auto,
+        workspace=WorkspaceConfig(root=tmp_path, mode=Mode.auto),
         hooks=HookRunner({
             hook_events.POST_TOOL_USE: [{"hooks": [{"type": "command", "command": cmd}]}],
             hook_events.POST_TOOL_USE_FAILURE: [{"hooks": [{"type": "command", "command": cmd}]}],
@@ -508,7 +509,7 @@ async def test_task_completed_dispatch_payload(tmp_path):
     out = tmp_path / "hits.jsonl"
     cmd = _capture_script(tmp_path, "tc.sh", out)
     deps = Deps(
-        workspace_root=tmp_path, mode=Mode.auto,
+        workspace=WorkspaceConfig(root=tmp_path, mode=Mode.auto),
         hooks=HookRunner(
             {hook_events.TASK_COMPLETED: [{"hooks": [{"type": "command", "command": cmd}]}]}
         ),

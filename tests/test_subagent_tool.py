@@ -4,6 +4,7 @@ from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 
 from marim_harness.runtime.deps import Deps
+from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import (
     GATED_TOOLS,
     READ_TOOLS,
@@ -16,6 +17,7 @@ from marim_harness.workspace.agents import (
     compose_subagent_task,
     subagent_instructions,
 )
+from tests.conftest import _make_deps
 
 
 def test_compose_task_without_extras_is_unchanged():
@@ -119,13 +121,13 @@ def _tool_names(agent: Agent, deps: Deps) -> set[str]:
 def test_register_subagent_read_only(tmp_path):
     agent = Agent(TestModel(), deps_type=Deps)
     BuiltinToolProvider().register_subagent(agent, READ_TOOLS)
-    assert _tool_names(agent, Deps(workspace_root=tmp_path)) == set(READ_TOOLS)
+    assert _tool_names(agent, _make_deps(tmp_path, mode=Mode.ask)) == set(READ_TOOLS)
 
 
 def test_register_subagent_full_set(tmp_path):
     agent = Agent(TestModel(), deps_type=Deps)
     BuiltinToolProvider().register_subagent(agent, SUBAGENT_TOOLS)
-    names = _tool_names(agent, Deps(workspace_root=tmp_path))
+    names = _tool_names(agent, _make_deps(tmp_path, mode=Mode.ask))
     assert names == set(SUBAGENT_TOOLS)
     assert names >= GATED_TOOLS
 
@@ -137,7 +139,7 @@ def test_register_subagent_ignores_unknown_and_spawn(tmp_path):
     BuiltinToolProvider().register_subagent(
         agent, {"read_file", "spawn_agent", "update_tasks", "bogus"}
     )
-    assert _tool_names(agent, Deps(workspace_root=tmp_path)) == {"read_file"}
+    assert _tool_names(agent, _make_deps(tmp_path, mode=Mode.ask)) == {"read_file"}
 
 
 def _call_once(tool_name: str, args: dict):
@@ -167,7 +169,7 @@ def test_subagent_gated_tools_run_without_approval(tmp_path):
         "write_file", {"path": "out.txt", "content": "hello sub"}
     )
     with agent.override(model=model):
-        result = agent.run_sync("go", deps=Deps(workspace_root=tmp_path))
+        result = agent.run_sync("go", deps=_make_deps(tmp_path, mode=Mode.ask))
     assert (tmp_path / "out.txt").read_text() == "hello sub"
     # The run produced a plain string output, not a DeferredToolRequests.
     assert isinstance(result.output, str)

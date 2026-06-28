@@ -8,6 +8,7 @@ from marim_harness.interfaces.tui.queue import QueuedMessage, render_queue
 from marim_harness.interfaces.tui.widgets.prompt import PromptInput
 from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.permissions import Mode
+from tests.conftest import _make_deps
 
 
 def test_queued_message_holds_text_attachments_id():
@@ -49,7 +50,7 @@ def _app(tmp_path: Path) -> HarnessApp:
     from marim_harness.runtime.harness import Harness
     from marim_harness.tools.provider import BuiltinToolProvider
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = Harness(
         TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test"
     )

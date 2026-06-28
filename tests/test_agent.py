@@ -10,7 +10,7 @@ from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.harness import Harness
 from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
-from tests.conftest import _edit_then_done_model, _make_harness
+from tests.conftest import _edit_then_done_model, _make_harness, _make_deps
 
 
 def _raising_model() -> FunctionModel:
@@ -82,7 +82,7 @@ async def test_actionable_failure_is_surfaced_to_model_next_turn(tmp_path: Path)
     so the model knows the prior turn did not complete and can adjust."""
     from pydantic_ai.exceptions import UnexpectedModelBehavior
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = _make_harness(
         _fail_once_then_echo_model(UnexpectedModelBehavior("Exceeded max retries")),
         deps,
@@ -101,7 +101,7 @@ async def test_actionable_failure_is_surfaced_to_model_next_turn(tmp_path: Path)
 async def test_non_actionable_failure_leaves_no_note(tmp_path: Path):
     """A plain harness/render failure must not pollute the next prompt — the
     model can't fix it, so surfacing it would only mislead."""
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = _make_harness(_fail_once_then_echo_model(RuntimeError("render boom")), deps)
     with pytest.raises(RuntimeError):
         await harness.run_turn("first request")
@@ -114,7 +114,7 @@ async def test_non_actionable_failure_leaves_no_note(tmp_path: Path):
 async def test_failed_turn_preserves_user_prompt_in_history(tmp_path: Path):
     """When a turn raises, the user's prompt must survive in history so the
     session can continue instead of forgetting the request entirely."""
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = _make_harness(_raising_model(), deps)
     with pytest.raises(RuntimeError):
         await harness.run_turn("please remember this request")
@@ -133,7 +133,7 @@ async def test_failed_turn_persists_so_a_new_harness_can_resume(tmp_path: Path):
     session sees the lost prompt rather than starting blank."""
     from marim_harness.session import SessionManager
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     store = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data").create()
     harness = Harness(
         model=_raising_model(), provider=BuiltinToolProvider(), deps=deps,
@@ -168,7 +168,7 @@ def _minimal_harness(tmp_path: Path):
     return Harness(
         TestModel(),
         BuiltinToolProvider(),
-        Deps(workspace_root=tmp_path),
+        _make_deps(tmp_path, mode=Mode.ask),
         instructions="test",
     )
 
@@ -212,7 +212,7 @@ def test_harness_rejects_config_mixed_with_legacy_kwargs(tmp_path: Path):
     of pretending to 'merge' them as the old docstring claimed."""
     from marim_harness.runtime.harness import HarnessConfig
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     with pytest.raises(TypeError):
         Harness(
             _named_model("m"), BuiltinToolProvider(), deps, "i",
@@ -224,7 +224,7 @@ def test_harness_rejects_config_mixed_with_legacy_kwargs(tmp_path: Path):
 def test_harness_accepts_config_alone(tmp_path: Path):
     from marim_harness.runtime.harness import HarnessConfig
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = Harness(
         _named_model("m"), BuiltinToolProvider(), deps, "i",
         config=HarnessConfig(model_label="from-config"),
@@ -233,7 +233,7 @@ def test_harness_accepts_config_alone(tmp_path: Path):
 
 
 def test_harness_accepts_legacy_kwargs_alone(tmp_path: Path):
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = Harness(
         _named_model("m"), BuiltinToolProvider(), deps, "i",
         model_label="from-kwargs",
@@ -266,7 +266,7 @@ def _switch_harness(tmp_path, *, source=None, summarizer=None, titler=None):
     from marim_harness.runtime.harness import HarnessConfig
     from marim_harness.session import SessionManager
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     return Harness(
         model=_named_model("startup"), provider=BuiltinToolProvider(), deps=deps,
@@ -317,7 +317,7 @@ async def test_set_model_leaves_unconfigured_aux_alone(tmp_path: Path):
 
 
 def test_set_model_without_source_is_noop(tmp_path: Path):
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     h = Harness(model=_named_model("startup"), provider=BuiltinToolProvider(),
                 deps=deps, instructions="x", model_id="startup")
     h.set_model("openai/gpt-5.2")  # no source -> nothing changes
@@ -355,7 +355,7 @@ def test_build_collaborators_wires_full_graph(tmp_path):
     from marim_harness.runtime.harness import Collaborators, HarnessConfig, build_collaborators
     from marim_harness.tools.provider import BuiltinToolProvider
 
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     provider = BuiltinToolProvider()
     model = FunctionModel(lambda messages, info: None)
 
@@ -387,7 +387,7 @@ def test_build_collaborators_respects_lsp_disabled(tmp_path):
     from marim_harness.runtime.harness import HarnessConfig, build_collaborators
     from marim_harness.tools.provider import BuiltinToolProvider
 
-    deps = Deps(workspace_root=tmp_path)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
     model = FunctionModel(lambda messages, info: None)
     collab = build_collaborators(
         model, BuiltinToolProvider(), deps, "i", HarnessConfig(lsp_enabled=False),
@@ -400,16 +400,26 @@ def test_build_collaborators_respects_lsp_disabled(tmp_path):
 def test_bind_ui_wires_all_callbacks(tmp_path):
     h = _minimal_harness(tmp_path)
 
-    def request_approval(_): ...
-    def ask_user(_): ...
-    async def on_subagent_event(sid, event, usage=None): ...
-    async def on_subagent_model(sid, model): ...
-    async def on_subagent_usage(sid, usage): ...
-    def on_tasks_changed(): ...
-    def on_jobs_changed(): ...
-    def on_compact(before, after): ...
-    def on_compact_start(): ...
-    def on_rename(old, new): ...
+    async def request_approval(_):
+        return True
+    async def ask_user(_):
+        return None
+    async def on_subagent_event(sid, event, usage=None):
+        pass
+    async def on_subagent_model(sid, model):
+        pass
+    async def on_subagent_usage(sid, usage):
+        pass
+    def on_tasks_changed():
+        pass
+    def on_jobs_changed():
+        pass
+    async def on_compact(before, after):
+        pass
+    async def on_compact_start(n):
+        pass
+    async def on_rename(old, new):
+        return new
 
     h.bind_ui(
         request_approval=request_approval,
@@ -424,11 +434,11 @@ def test_bind_ui_wires_all_callbacks(tmp_path):
         on_rename=on_rename,
     )
 
-    assert h.deps.request_approval is request_approval
-    assert h.deps.ask_user is ask_user
-    assert h.deps.callbacks.on_event is on_subagent_event
-    assert h.deps.callbacks.on_model is on_subagent_model
-    assert h.deps.callbacks.on_usage is on_subagent_usage
+    assert h.deps.ui.request_approval is request_approval
+    assert h.deps.ui.ask_user is ask_user
+    assert h.deps.ui.on_subagent_event is on_subagent_event
+    assert h.deps.ui.on_subagent_model is on_subagent_model
+    assert h.deps.ui.on_subagent_usage is on_subagent_usage
     assert h.deps.tasks.on_change is on_tasks_changed
     assert h.deps.jobs.on_change is on_jobs_changed
     assert h.session.on_compact is on_compact

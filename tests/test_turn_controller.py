@@ -7,6 +7,7 @@ from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.harness import Harness, HarnessConfig, build_collaborators
 from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
+from tests.conftest import _make_deps
 
 
 def test_turn_controller_accepts_collaborators(tmp_path):
@@ -14,7 +15,7 @@ def test_turn_controller_accepts_collaborators(tmp_path):
         return ModelResponse(parts=[TextPart(content="ok")])
 
     model = FunctionModel(fn)
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     collabs = build_collaborators(
         model,
         BuiltinToolProvider(),
@@ -39,7 +40,7 @@ def test_turn_controller_accepts_collaborators(tmp_path):
 
 def _make_tc(model, tmp_path):
     """Build a minimal TurnController backed by real collaborators."""
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     collabs = build_collaborators(
         model,
         BuiltinToolProvider(),
@@ -114,7 +115,7 @@ def _minimal_harness(tmp_path):
 
     return Harness(
         FunctionModel(fn), BuiltinToolProvider(),
-        Deps(workspace_root=tmp_path, mode=Mode.auto),
+        _make_deps(tmp_path),
         instructions="test",
     )
 

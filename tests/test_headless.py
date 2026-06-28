@@ -7,6 +7,7 @@ import pytest
 
 from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.permissions import Mode
+from tests.conftest import _make_deps
 
 
 def _hook_script(tmp_path: Path, name: str, body: str) -> str:
@@ -23,7 +24,7 @@ def _harness(tmp_path: Path, output_text: str = "hello from the model", *, hooks
     from marim_harness.session import SessionManager
     from marim_harness.tools.provider import BuiltinToolProvider
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto, hooks=hooks)
+    deps = _make_deps(tmp_path, hooks=hooks)
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     store = manager.create("headless")
     model = TestModel(call_tools=[], custom_output_text=output_text)

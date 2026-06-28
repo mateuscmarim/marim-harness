@@ -10,7 +10,7 @@ from pydantic_ai.models.function import FunctionModel
 from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import _DETACH_OUTPUT_BUDGET
-from tests.conftest import _last_instructions, _make_harness
+from tests.conftest import _last_instructions, _make_harness, _make_deps
 
 
 def _spawn_once_model() -> FunctionModel:
@@ -30,7 +30,7 @@ def _spawn_once_model() -> FunctionModel:
 
 @pytest.mark.anyio
 async def test_detach_mode_routes_spawn_to_background(tmp_path: Path):
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = _make_harness(_spawn_once_model(), deps)
     harness.deps.detach_fanout = True
     harness.deps.interactive = True
@@ -50,7 +50,7 @@ async def test_detach_mode_routes_spawn_to_background(tmp_path: Path):
 @pytest.mark.anyio
 async def test_inline_when_not_interactive(tmp_path: Path):
     """detach_fanout on but no UI attached (headless) → spawn runs inline."""
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = _make_harness(_spawn_once_model(), deps)
     harness.deps.detach_fanout = True
     harness.deps.interactive = False
@@ -72,7 +72,7 @@ async def test_auto_detach_defaults_output_budget(tmp_path: Path):
         recorded.append(max_output_chars)
         return "ok"
 
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = _make_harness(_spawn_once_model(), deps)
     harness.deps.detach_fanout = True
     harness.deps.interactive = True
@@ -120,7 +120,7 @@ def _bg_described_spawn_model() -> FunctionModel:
 async def test_background_job_label_uses_description_not_full_task(tmp_path: Path):
     """A background spawn's job label is the short `description` (so the jobs panel
     reads `explore: Review TUI subsystem`), not the full composed task prompt."""
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
+    deps = _make_deps(tmp_path)
     harness = _make_harness(_bg_described_spawn_model(), deps)
     await harness.run_turn("go")
     jobs = harness.deps.jobs.list()

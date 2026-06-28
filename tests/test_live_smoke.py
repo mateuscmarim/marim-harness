@@ -20,6 +20,7 @@ from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.harness import Harness
 from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
+from tests.conftest import _make_deps
 
 pytestmark = [
     pytest.mark.live,
@@ -38,7 +39,7 @@ async def test_run_turn_returns_real_model_output(tmp_path):
     harness = Harness(
         model=model,
         provider=BuiltinToolProvider(),
-        deps=Deps(workspace_root=tmp_path, mode=Mode.auto),
+        deps=_make_deps(tmp_path),
         instructions="You are a terse coding agent.",
     )
 

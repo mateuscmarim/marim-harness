@@ -8,7 +8,7 @@ from pydantic_ai.models.function import FunctionModel
 
 from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.permissions import Mode
-from tests.conftest import _make_harness
+from tests.conftest import _make_harness, _make_deps
 
 _FAKE_CLI = '''#!{python}
 import json, sys
@@ -49,7 +49,7 @@ async def test_cli_backend_spawn_returns_report(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", _fake_cli(tmp_path))
     _write_cli_agent(tmp_path)
     runner = _make_harness(
-        _dummy_model(), Deps(workspace_root=tmp_path, mode=Mode.auto)
+        _dummy_model(), _make_deps(tmp_path)
     ).subagents
     out = await runner.run("cli-worker", "do the thing", stream_id="s1")
     assert "Done: report body" in out
@@ -61,7 +61,7 @@ async def test_cli_backend_missing_binary_is_contained(tmp_path: Path, monkeypat
     monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", "no-such-claude-binary")
     _write_cli_agent(tmp_path)
     runner = _make_harness(
-        _dummy_model(), Deps(workspace_root=tmp_path, mode=Mode.auto)
+        _dummy_model(), _make_deps(tmp_path)
     ).subagents
     out = await runner.run("cli-worker", "do the thing", stream_id="s1")
     assert "failed" in out.lower()  # contained, not raised
@@ -72,7 +72,7 @@ async def test_cli_backend_notes_unforwarded_mcp(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", _fake_cli(tmp_path))
     _write_cli_agent(tmp_path)
     runner = _make_harness(
-        _dummy_model(), Deps(workspace_root=tmp_path, mode=Mode.auto)
+        _dummy_model(), _make_deps(tmp_path)
     ).subagents
     out = await runner.run("cli-worker", "t", stream_id="s1", mcp_names=["mddocs"])
     assert "mddocs" in out and "not forwarded" in out.lower()
@@ -92,10 +92,8 @@ async def test_cli_backend_fires_usage_callback(tmp_path: Path, monkeypatch):
     async def on_usage(stream_id: str, usage) -> None:
         received.append((stream_id, usage))
 
-    from marim_harness.runtime.deps import SubAgentCallbacks
-
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
-    deps.callbacks = SubAgentCallbacks(on_usage=on_usage)
+    deps = _make_deps(tmp_path)
+    deps.ui.on_subagent_usage = on_usage
     runner = _make_harness(_dummy_model(), deps).subagents
     await runner.run("cli-worker", "do the thing", stream_id="sg1")
 
@@ -120,10 +118,8 @@ async def test_cli_backend_skips_usage_callback_without_stream_id(
     async def on_usage(stream_id: str, usage) -> None:
         received.append(usage)
 
-    from marim_harness.runtime.deps import SubAgentCallbacks
-
-    deps = Deps(workspace_root=tmp_path, mode=Mode.auto)
-    deps.callbacks = SubAgentCallbacks(on_usage=on_usage)
+    deps = _make_deps(tmp_path)
+    deps.ui.on_subagent_usage = on_usage
     runner = _make_harness(_dummy_model(), deps).subagents
     # Empty stream_id → headless/background: no card to address.
     await runner.run("cli-worker", "do the thing", stream_id="")
