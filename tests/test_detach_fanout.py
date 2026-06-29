@@ -84,6 +84,47 @@ async def test_auto_detach_defaults_output_budget(tmp_path: Path):
     )
 
 
+@pytest.mark.anyio
+async def test_subagent_unset_spawn_runs_inline_not_detached(tmp_path: Path):
+    """Auto-detach (detach-fanout) is top-level-only, just like explicit
+    background. A sub-agent (depth > 0) that spawns a child with `background`
+    unset must run it INLINE, even with detach_fanout + interactive on — a
+    detached child of a sub-agent would be orphaned when the sub-agent's turn
+    ends (the job registry, never the spawner, owns the report)."""
+    from types import SimpleNamespace
+
+    from marim_harness.tools.provider import spawn_agent
+
+    calls = {"inline": False, "bg": False}
+
+    async def fake_runner(
+        type, task, tool_call_id, mcp_names, max_output_chars=None, model=None,
+        isolation=None, caller_depth: int = 0,
+    ):
+        calls["inline"] = True
+        return "inline-ok"
+
+    def fake_bg(*a, **k):
+        calls["bg"] = True
+
+        async def _coro():
+            return "bg"
+
+        return _coro()
+
+    deps = _make_deps(tmp_path, subagent_depth=1, detach_fanout=True, interactive=True)
+    deps.services.run_subagent = fake_runner
+    deps.services.run_background_agent = fake_bg
+    ctx = SimpleNamespace(deps=deps, tool_call_id="tc")
+
+    out = await spawn_agent(ctx, "general", "do child work")
+
+    assert out == "inline-ok"
+    assert calls["inline"] is True, "sub-agent's unset spawn should run inline"
+    assert calls["bg"] is False, "sub-agent's unset spawn must not auto-detach"
+    assert deps.jobs.list() == []
+
+
 def test_spawn_agent_accepts_a_description_param():
     """The model habitually passes a `description` (Claude Code's Task tool has
     one); spawn_agent must accept it so a fan-out doesn't fail validation."""

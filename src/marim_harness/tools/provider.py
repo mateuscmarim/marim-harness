@@ -654,8 +654,16 @@ async def spawn_agent(
     task = compose_subagent_task(
         task, returns=returns, constraints=constraints, context=context
     )
+    # Auto-detach (detached fan-out) is top-level-only, for the same reason the
+    # explicit-background guard above is: a sub-agent's turn ends before a
+    # detached child finishes, so the child's report — owned by the job registry —
+    # would never reach the spawner. A depth>0 spawn with `background` unset runs
+    # inline instead.
     auto_detached = (
-        background is None and ctx.deps.ui.detach_fanout and ctx.deps.ui.interactive
+        background is None
+        and ctx.deps.subagent_depth == 0
+        and ctx.deps.ui.detach_fanout
+        and ctx.deps.ui.interactive
     )
     if background or auto_detached:
         if ctx.deps.services.run_background_agent is None:
