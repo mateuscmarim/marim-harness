@@ -495,10 +495,12 @@ def test_parse_qualified_unknown_prefix_is_treated_as_bare_id():
 
 
 def test_detect_active_providers_includes_each_with_creds(monkeypatch):
+    from marim_harness.config import model as _m
     from marim_harness.config.model import detect_active_providers
     for k in ("MARIM_PROVIDER", "OPENROUTER_API_KEY", "GOOGLE_API_KEY",
               "GEMINI_API_KEY", "MARIM_BASE_URL", "MARIM_API_KEY", "MARIM_MODEL"):
         monkeypatch.delenv(k, raising=False)
+    monkeypatch.setattr(_m, "_claude_cli_available", lambda: False)
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
     monkeypatch.setenv("MARIM_BASE_URL", "http://localhost:1234/v1")
     configs, default = detect_active_providers()
@@ -654,3 +656,48 @@ def test_tool_search_threshold_garbage_falls_back(monkeypatch):
     # _POSITIVE_INT_KEYS sanitization only runs in load_environment(); _int_env
     # itself returns the default for a non-positive/garbage value at read time.
     assert load_config().tool_search_threshold == 15
+
+
+# ---------------------------------------------------------------------------
+# claude-cli provider
+# ---------------------------------------------------------------------------
+
+from marim_harness.config import model as model_mod  # noqa: E402
+
+
+def test_claude_cli_is_a_known_provider():
+    assert "claude-cli" in model_mod._KNOWN_PROVIDERS
+
+
+def test_provider_config_claude_cli(monkeypatch):
+    monkeypatch.setenv("MARIM_PROVIDER", "claude-cli")
+    monkeypatch.delenv("MARIM_MODEL", raising=False)
+    cfg = model_mod.load_config()
+    assert cfg.provider == "claude-cli"
+    assert cfg.model is None or isinstance(cfg.model, str)
+    assert cfg.api_key is None
+    assert cfg.base_url is None
+
+
+def test_provider_config_claude_cli_model_override(monkeypatch):
+    monkeypatch.setenv("MARIM_PROVIDER", "claude-cli")
+    monkeypatch.setenv("MARIM_MODEL", "opus")
+    assert model_mod.load_config().model == "opus"
+
+
+def test_has_creds_follows_binary(monkeypatch):
+    monkeypatch.setattr(model_mod, "_claude_cli_available", lambda: True)
+    assert model_mod._provider_has_creds("claude-cli") is True
+    monkeypatch.setattr(model_mod, "_claude_cli_available", lambda: False)
+    assert model_mod._provider_has_creds("claude-cli") is False
+
+
+def test_build_model_claude_cli(monkeypatch):
+    from dataclasses import replace
+
+    cfg = replace(model_mod.load_config(), provider="claude-cli", model="sonnet")
+    m = model_mod.build_model(cfg)
+    from marim_harness.config.claude_cli_model import ClaudeCliModel
+
+    assert isinstance(m, ClaudeCliModel)
+    assert m.model_name == "sonnet"

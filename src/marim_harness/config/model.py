@@ -18,11 +18,13 @@ logger = logging.getLogger(__name__)
 _DEFAULT_OPENROUTER_MODEL = "anthropic/claude-sonnet-4-6"
 _DEFAULT_LOCAL_MODEL = "qwen2.5-coder"
 _DEFAULT_GOOGLE_MODEL = "gemini-2.5-flash"
+# None ⇒ let the claude CLI use its own configured default model.
+_DEFAULT_CLAUDE_CLI_MODEL: str | None = None
 
 # Every provider load_config knows how to wire. An unknown value falls through to
 # the OpenRouter branch (the historical default), but we warn first so a typo
 # like MARIM_PROVIDER=azure doesn't masquerade as a confusing "missing API key".
-_KNOWN_PROVIDERS = frozenset({"openrouter", "local", "google"})
+_KNOWN_PROVIDERS = frozenset({"openrouter", "local", "google", "claude-cli"})
 
 
 def parse_qualified(
@@ -53,8 +55,8 @@ class SubagentConfig:
 
 @dataclass
 class ModelConfig:
-    provider: str  # "openrouter" | "local" | "google"
-    model: str
+    provider: str  # "openrouter" | "local" | "google" | "claude-cli"
+    model: str | None  # None ⇒ claude-cli uses its own configured default
     base_url: str | None = None
     api_key: str | None = None
     max_context_tokens: int = 100_000
@@ -153,6 +155,14 @@ def _provider_config(provider: str, common: dict[str, Any]) -> ModelConfig:
                      or os.getenv("MARIM_API_KEY")),
             **common,
         )
+    if provider == "claude-cli":
+        return ModelConfig(
+            provider="claude-cli",
+            model=os.getenv("MARIM_MODEL", _DEFAULT_CLAUDE_CLI_MODEL),
+            base_url=None,
+            api_key=None,  # the CLI owns auth (the Claude subscription)
+            **common,
+        )
     return ModelConfig(
         provider="openrouter",
         model=os.getenv("MARIM_MODEL", _DEFAULT_OPENROUTER_MODEL),
@@ -162,6 +172,14 @@ def _provider_config(provider: str, common: dict[str, Any]) -> ModelConfig:
     )
 
 
+def _claude_cli_available() -> bool:
+    """True when a ``claude`` binary can be resolved (the only 'cred' this provider
+    needs; a not-logged-in CLI fails clearly at first use)."""
+    from ..subagents.cli_backend import resolve_cli_binary
+
+    return resolve_cli_binary() is not None
+
+
 def _provider_has_creds(provider: str) -> bool:
     if provider == "openrouter":
         return bool(os.getenv("OPENROUTER_API_KEY"))
@@ -169,6 +187,8 @@ def _provider_has_creds(provider: str) -> bool:
         return bool(os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
     if provider == "local":
         return bool(os.getenv("MARIM_BASE_URL"))
+    if provider == "claude-cli":
+        return _claude_cli_available()
     return False
 
 
@@ -259,6 +279,7 @@ def build_model(cfg: ModelConfig):
     from pydantic_ai.providers.openai import OpenAIProvider
 
     if cfg.provider == "local":
+        assert cfg.model is not None  # local always has a model id
         provider = OpenAIProvider(base_url=cfg.base_url, api_key=cfg.api_key)
         return OpenAIChatModel(cfg.model, provider=provider)
 
@@ -266,10 +287,17 @@ def build_model(cfg: ModelConfig):
         from pydantic_ai.models.google import GoogleModel
         from pydantic_ai.providers.google import GoogleProvider
 
+        assert cfg.model is not None  # google always has a model id
         return GoogleModel(cfg.model, provider=GoogleProvider(api_key=cfg.api_key))
+
+    if cfg.provider == "claude-cli":
+        from .claude_cli_model import ClaudeCliModel
+
+        return ClaudeCliModel(cfg.model)
 
     from .openrouter_cost import build_openrouter_model
 
+    assert cfg.model is not None  # openrouter always has a model id
     return build_openrouter_model(cfg.model, cfg.api_key)
 
 
@@ -300,6 +328,12 @@ class ModelSource:
             return await fetch_google_models(self.cfg.api_key)
         if self.cfg.provider == "local":
             return await fetch_local_models(self.cfg.base_url, self.cfg.api_key)
+        if self.cfg.provider == "claude-cli":
+            return [
+                ModelEntry(id="sonnet", name="sonnet", provider="claude-cli"),
+                ModelEntry(id="opus", name="opus", provider="claude-cli"),
+                ModelEntry(id="haiku", name="haiku", provider="claude-cli"),
+            ]
         return []
 
 
