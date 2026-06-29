@@ -16,6 +16,8 @@ argv build, ndjson reader) and only depends on ``pydantic_ai`` + ``..usage``, so
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from pydantic_ai.usage import RequestUsage
@@ -127,4 +129,90 @@ def request_usage_from_cli(
         cache_read_tokens=cache_read,
         cache_write_tokens=cache_write,
         details=details,
+    )
+
+
+# Claude tool_use -> the single arg worth showing on the activity line. Tools not
+# listed render as the bare name. Mirrors the TUI's native label keys.
+_ACTIVITY_ARG = {
+    "Read": "file_path",
+    "Write": "file_path",
+    "Edit": "file_path",
+    "Bash": "command",
+    "Grep": "pattern",
+    "Glob": "pattern",
+    "WebSearch": "query",
+    "WebFetch": "url",
+}
+
+
+def format_activity_line(name: str, tool_input: dict) -> str:
+    """A compact ``⏺ <Tool> <summary>`` line for one Claude tool_use, folded into
+    the streamed text so the user sees progress (we cannot surface real tool-call
+    parts — pydantic_ai would try to execute them)."""
+    key = _ACTIVITY_ARG.get(name)
+    summary = ""
+    if key:
+        raw = tool_input.get(key, "")
+        summary = " " + str(raw).strip().splitlines()[0] if str(raw).strip() else ""
+    return f"⏺ {name}{summary}"
+
+
+@dataclass
+class TextChunk:
+    """A piece of visible text (assistant prose or a folded activity line)."""
+
+    delta: str
+
+
+@dataclass
+class DoneChunk:
+    """Terminal chunk: the full text, Claude's session id, usage, and whether a
+    proper ``result`` event was seen (``complete=False`` ⇒ crash/bad output)."""
+
+    text: str
+    session_id: str | None
+    usage: RequestUsage
+    complete: bool
+
+
+async def consume_cli_stream(objs: AsyncIterator[dict]) -> AsyncIterator:
+    """Turn parsed stream-json objects into ``TextChunk``s then one ``DoneChunk``.
+
+    Assistant ``text`` blocks stream as-is; ``tool_use`` blocks are folded into the
+    text as ``format_activity_line`` output. The terminal ``result`` event yields a
+    ``DoneChunk`` carrying usage + session id. If the stream ends without a
+    ``result``, the final ``DoneChunk`` has ``complete=False``."""
+    text_parts: list[str] = []
+    session_id: str | None = None
+    async for obj in objs:
+        kind = obj.get("type")
+        if kind == "system":
+            session_id = session_id or obj.get("session_id")
+        elif kind == "assistant":
+            message = obj.get("message") or {}
+            for block in message.get("content") or []:
+                btype = block.get("type")
+                if btype == "text":
+                    delta = block.get("text", "") or ""
+                    if delta:
+                        text_parts.append(delta)
+                        yield TextChunk(delta)
+                elif btype == "tool_use":
+                    line = "\n" + format_activity_line(
+                        block.get("name", "tool"), block.get("input") or {}
+                    )
+                    text_parts.append(line)
+                    yield TextChunk(line)
+        elif kind == "result":
+            session_id = session_id or obj.get("session_id")
+            yield DoneChunk(
+                text="".join(text_parts),
+                session_id=session_id,
+                usage=request_usage_from_cli(obj.get("usage"), obj.get("total_cost_usd")),
+                complete=True,
+            )
+            return
+    yield DoneChunk(
+        text="".join(text_parts), session_id=session_id, usage=RequestUsage(), complete=False
     )
