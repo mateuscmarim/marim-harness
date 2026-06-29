@@ -1,0 +1,8 @@
+{
+  "name": "playwright",
+  "version": "0.1.0",
+  "description": "Playwright test agents (planner, generator, healer) driven by the Playwright run-test MCP server.",
+  "author": {"name": "marim"},
+  "license": "MIT",
+  "keywords": ["playwright", "testing", "e2e", "browser"]
+}
