@@ -7,6 +7,7 @@ from pathlib import Path
 from marim_harness.plugins.discovery import _resolve_mcp_servers
 from marim_harness.plugins.manifest import load_manifest
 from marim_harness.workspace.agents import _parse_agent
+from marim_harness.workspace.skills import _parse_skill
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1] / "examples" / "playwright"
 
@@ -31,6 +32,18 @@ def test_three_agents_parse_with_expected_tools():
         assert defn is not None, f"{name}.md failed to parse"
         assert defn.qualified_name == f"playwright:{name}"
         assert set(defn.tools) == tools
+
+
+def test_e2e_tests_skill_parses():
+    # The workflow lives in a lazy-loaded skill (not always-on AGENTS.md); its
+    # description must mention browser/e2e/playwright so the model triggers it.
+    skill = _parse_skill(
+        "plugin:playwright", PLUGIN_ROOT / "skills" / "e2e-tests", plugin="playwright"
+    )
+    assert skill is not None
+    assert skill.qualified_name == "playwright:e2e-tests"
+    desc = skill.description.lower()
+    assert any(kw in desc for kw in ("playwright", "browser", "end-to-end", "e2e"))
 
 
 def test_mcp_server_resolves_to_playwright_test():
