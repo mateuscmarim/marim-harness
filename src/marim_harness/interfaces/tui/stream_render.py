@@ -683,6 +683,20 @@ class StreamRenderer:
         await self.dispatch_stream_event(event, _SubAgentSink(self, parent, stream_id))
         self.app.subagents.refresh()  # list/summary tick live while open
 
+    async def on_cli_activity(self, events: list) -> None:
+        """Render a claude-cli model's own tool_use/tool_result as native tool cards
+        in the MAIN transcript. That provider delegates the turn to ``claude -p`` and
+        returns text only (Claude runs its own tools), so these display-only events
+        arrive via this side-channel instead of pydantic_ai's stream — keeping them
+        out of the agent graph (no double-execution). A ``_TopLevelSink`` shares the
+        renderer's current-assistant/run state with ``on_events``, so a card mounted
+        here finalizes the in-flight assistant text and the model's next text part
+        opens a fresh message below it — preserving interleaving. Fired on the app's
+        event loop during the live turn, so direct widget mutation is safe."""
+        sink = _TopLevelSink(self, self.app.query_one("#log", VerticalScroll))
+        for event in events:
+            await self.dispatch_stream_event(event, sink)
+
     async def on_subagent_notice(self, stream_id: str, message: str) -> None:
         """Show an out-of-band status line (e.g. a transient-error retry) on the
         SubAgentWidget that owns ``stream_id``. A no-op if the card is gone. Fired on

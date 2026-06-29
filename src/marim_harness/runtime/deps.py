@@ -64,6 +64,13 @@ BackgroundAgentRunner = Callable[
 # when there's no interactive UI (headless), so the tool degrades gracefully.
 AskUserFn = Callable[[list[Question]], Awaitable[dict | None]]
 
+# (events) -> None. Renders a claude-cli model's own tool_use/tool_result as
+# display-only native tool cards in the MAIN transcript. The claude-cli provider
+# delegates a turn to `claude -p` and returns text only (Claude runs its own
+# tools), so this side-channel is how that activity reaches the UI WITHOUT passing
+# through pydantic_ai's agent graph. None when headless (activity folds to ▸ text).
+CliActivityCb = Callable[[list], Awaitable[None]]
+
 
 @dataclass
 class HarnessServices:
@@ -120,6 +127,7 @@ class UIHooks:
     on_subagent_notice: SubAgentNoticeCb | None = None
     on_subagent_model: SubAgentModelCb | None = None
     on_subagent_usage: SubAgentUsageCb | None = None
+    on_cli_activity: CliActivityCb | None = None
     on_mode_change: "Callable[[], None] | None" = None
     detach_fanout: bool = False
     interactive: bool = False

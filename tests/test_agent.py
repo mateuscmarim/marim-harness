@@ -407,6 +407,8 @@ def test_bind_ui_wires_all_callbacks(tmp_path):
         pass
     async def on_subagent_usage(sid, usage):
         pass
+    async def on_cli_activity(events):
+        pass
     def on_tasks_changed():
         pass
     def on_jobs_changed():
@@ -424,6 +426,7 @@ def test_bind_ui_wires_all_callbacks(tmp_path):
         on_subagent_event=on_subagent_event,
         on_subagent_model=on_subagent_model,
         on_subagent_usage=on_subagent_usage,
+        on_cli_activity=on_cli_activity,
         on_tasks_changed=on_tasks_changed,
         on_jobs_changed=on_jobs_changed,
         on_compact=on_compact,
@@ -436,6 +439,7 @@ def test_bind_ui_wires_all_callbacks(tmp_path):
     assert h.deps.ui.on_subagent_event is on_subagent_event
     assert h.deps.ui.on_subagent_model is on_subagent_model
     assert h.deps.ui.on_subagent_usage is on_subagent_usage
+    assert h.deps.ui.on_cli_activity is on_cli_activity
     assert h.deps.tasks.on_change is on_tasks_changed
     assert h.deps.jobs.on_change is on_jobs_changed
     assert h.session.on_compact is on_compact

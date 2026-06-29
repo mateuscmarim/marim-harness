@@ -33,7 +33,7 @@ from pydantic_ai.usage import RequestUsage
 from ..usage import COST_DETAIL_KEY
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Callable
+    from collections.abc import AsyncGenerator, Awaitable, Callable
 
     from pydantic_ai.messages import ModelMessage
     from pydantic_ai.settings import ModelSettings
@@ -207,66 +207,152 @@ def format_activity_line(name: str, tool_input: dict) -> str:
 
 @dataclass
 class TextChunk:
-    """A piece of visible text (assistant prose or a folded activity line)."""
+    """A segment of assistant prose (one of Claude's text blocks, stripped)."""
 
     delta: str
 
 
 @dataclass
-class DoneChunk:
-    """Terminal chunk: the full text, Claude's session id, usage, and whether a
-    proper ``result`` event was seen (``complete=False`` ⇒ crash/bad output)."""
+class ToolUseChunk:
+    """Claude invoked one of its own tools. Surfaced structurally so the TUI can
+    render a native tool card; folded to a ``▸`` text line when there's no UI."""
 
-    text: str
+    name: str  # Claude Code tool name, e.g. "Read"/"Bash"
+    tool_input: dict
+    call_id: str
+
+
+@dataclass
+class ToolResultChunk:
+    """The result of a prior ``ToolUseChunk`` (matched by ``call_id``), so a live
+    tool card can flip from pending to done/failed."""
+
+    call_id: str
+    content: str
+    is_error: bool
+
+
+@dataclass
+class DoneChunk:
+    """Terminal chunk: Claude's session id, usage, and whether a proper ``result``
+    event was seen (``complete=False`` ⇒ crash/bad output)."""
+
     session_id: str | None
     usage: RequestUsage
     complete: bool
 
 
-async def consume_cli_stream(objs: AsyncIterator[dict]) -> AsyncIterator:
-    """Turn parsed stream-json objects into ``TextChunk``s then one ``DoneChunk``.
+def _flatten_result_content(content) -> str:
+    """A tool_result's content (str or list of content blocks) reduced to text."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            b.get("text", "")
+            for b in content
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
+    return "" if content is None else str(content)
 
-    Assistant ``text`` blocks and folded ``tool_use`` activity lines are each
-    emitted as their own segment, separated by a blank line so the TUI renders
-    readable output instead of a run-on wall (a tool line's command and the text
-    that follows it must not collide). The terminal ``result`` event yields a
-    ``DoneChunk`` carrying usage + session id. If the stream ends without a
-    ``result``, the final ``DoneChunk`` has ``complete=False``."""
-    text_parts: list[str] = []
+
+async def consume_cli_stream(objs: AsyncIterator[dict]) -> AsyncIterator:
+    """Turn parsed stream-json objects into structured chunks then one ``DoneChunk``.
+
+    Assistant ``text`` blocks become ``TextChunk``s; ``tool_use`` blocks become
+    ``ToolUseChunk``s; ``tool_result`` blocks (in ``user`` messages) become
+    ``ToolResultChunk``s. Keeping tool activity structured (rather than pre-folded
+    into text) lets the TUI render native tool cards, while the headless paths fold
+    it back to ``▸`` lines via ``fold_chunk_text``. The terminal ``result`` event
+    yields a ``DoneChunk`` with usage + session id; a stream that ends without one
+    yields ``DoneChunk(complete=False)``."""
     session_id: str | None = None
     async for obj in objs:
         kind = obj.get("type")
         if kind == "system":
             session_id = session_id or obj.get("session_id")
         elif kind == "assistant":
-            message = obj.get("message") or {}
-            for block in message.get("content") or []:
+            for block in (obj.get("message") or {}).get("content") or []:
                 btype = block.get("type")
-                segment = ""
                 if btype == "text":
-                    segment = (block.get("text", "") or "").strip()
+                    text = (block.get("text", "") or "").strip()
+                    if text:
+                        yield TextChunk(text)
                 elif btype == "tool_use":
-                    segment = format_activity_line(
-                        block.get("name", "tool"), block.get("input") or {}
+                    yield ToolUseChunk(
+                        name=block.get("name", "tool"),
+                        tool_input=block.get("input") or {},
+                        call_id=block.get("id", ""),
                     )
-                if not segment:
-                    continue
-                # Separate each segment with a blank line; the first one leads.
-                chunk = f"\n\n{segment}" if text_parts else segment
-                text_parts.append(chunk)
-                yield TextChunk(chunk)
+        elif kind == "user":
+            for block in (obj.get("message") or {}).get("content") or []:
+                if block.get("type") == "tool_result":
+                    yield ToolResultChunk(
+                        call_id=block.get("tool_use_id", ""),
+                        content=_flatten_result_content(block.get("content")),
+                        is_error=bool(block.get("is_error")),
+                    )
         elif kind == "result":
             session_id = session_id or obj.get("session_id")
             yield DoneChunk(
-                text="".join(text_parts),
                 session_id=session_id,
                 usage=request_usage_from_cli(obj.get("usage"), obj.get("total_cost_usd")),
                 complete=True,
             )
             return
-    yield DoneChunk(
-        text="".join(text_parts), session_id=session_id, usage=RequestUsage(), complete=False
+    yield DoneChunk(session_id=session_id, usage=RequestUsage(), complete=False)
+
+
+def fold_chunk_text(chunk, *, leading: bool) -> str:
+    """The text representation of a visible chunk for the headless (no-UI) paths:
+    assistant prose as-is, a ``ToolUseChunk`` as its ``▸`` activity line. Segments
+    are blank-line separated (``leading`` is True only for the first one).
+    ``ToolResultChunk``/``DoneChunk`` contribute no text. Returns ``""`` to skip."""
+    if isinstance(chunk, TextChunk):
+        segment = chunk.delta
+    elif isinstance(chunk, ToolUseChunk):
+        segment = format_activity_line(chunk.name, chunk.tool_input)
+    else:
+        return ""
+    return segment if leading else f"\n\n{segment}"
+
+
+def cli_activity_events(chunk) -> list:
+    """Translate a tool chunk into display-only pydantic-ai stream events for the
+    TUI side-channel — a ``FunctionToolCallEvent`` for a use, a
+    ``FunctionToolResultEvent`` for a result. Tool names/args are normalized to the
+    harness shapes (Read→read_file, …) so they render as native tool cards. These
+    NEVER enter the model response, so pydantic_ai never executes them."""
+    from datetime import datetime, timezone
+
+    from pydantic_ai.messages import (
+        FunctionToolCallEvent,
+        FunctionToolResultEvent,
+        ToolCallPart,
+        ToolReturnPart,
     )
+
+    from ..subagents.cli_backend import normalize_cc_tool
+
+    if isinstance(chunk, ToolUseChunk):
+        name, args = normalize_cc_tool(chunk.name, chunk.tool_input)
+        return [
+            FunctionToolCallEvent(
+                part=ToolCallPart(tool_name=name, args=args, tool_call_id=chunk.call_id)
+            )
+        ]
+    if isinstance(chunk, ToolResultChunk):
+        return [
+            FunctionToolResultEvent(
+                part=ToolReturnPart(
+                    tool_name="tool",
+                    content=chunk.content,
+                    tool_call_id=chunk.call_id,
+                    timestamp=datetime.now(tz=timezone.utc),
+                    outcome="failed" if chunk.is_error else "success",
+                )
+            )
+        ]
+    return []
 
 
 _ask_noticed = False
@@ -345,6 +431,11 @@ class ClaudeCliModel(Model):
         # the user's live Claude session, and they always send their own system
         # prompt. See ``ephemeral_clone``.
         self.ephemeral = ephemeral
+        # Late-bound by bind_ui (TUI only) to a coroutine that renders Claude's own
+        # tool_use/tool_result as native tool cards in the main transcript. When None
+        # (headless, or no UI) tool activity is folded into the text as ▸ lines.
+        # Never enters the model response, so pydantic_ai never executes these calls.
+        self.on_activity: Callable[[list], Awaitable[None]] | None = None
         self.spawn = spawn_cli_objects  # I/O seam; tests monkeypatch this
         # Late-bound by bootstrap/set_model to marim's real workspace (or worktree)
         # root, exactly like ``mode_getter``. Spawning in the process cwd (".") would
@@ -409,15 +500,20 @@ class ClaudeCliModel(Model):
     ) -> ModelResponse:
         argv = self._argv(messages)
         done: DoneChunk | None = None
+        parts: list[str] = []  # assistant prose + folded ▸ tool lines (no UI here)
         async for chunk in consume_cli_stream(self.spawn(argv, self.cwd)):
             if isinstance(chunk, DoneChunk):
                 done = chunk
+                continue
+            segment = fold_chunk_text(chunk, leading=not parts)
+            if segment:
+                parts.append(segment)
         if done is None or not done.complete:
             raise CliModelError("claude produced no result (crash or bad output).")
         if done.session_id and not self.ephemeral:
             self.session_id = done.session_id
         return ModelResponse(
-            parts=[TextPart(content=done.text)],
+            parts=[TextPart(content="".join(parts))],
             model_name=self.model_name,
             timestamp=self._ts,
             usage=done.usage,
@@ -441,6 +537,7 @@ class ClaudeCliModel(Model):
             _set_session=(
                 None if self.ephemeral else lambda sid: setattr(self, "session_id", sid)
             ),
+            _on_activity=self.on_activity,
         )
         yield stream
 
@@ -454,22 +551,54 @@ class ClaudeCliStreamedResponse(StreamedResponse):
     _model_id: str = "default"
     _ts: datetime | None = None
     _set_session: Callable[[str], None] | None = None
+    _on_activity: Callable[[list], Awaitable[None]] | None = None
 
     async def _get_event_iterator(self):
         if self._objs is None:
             return
+        # Two rendering modes. With a UI side-channel (_on_activity set), Claude's
+        # tool_use/tool_result become native tool cards pushed out-of-band, and each
+        # run of assistant prose gets its own text part (a fresh vendor_part_id after
+        # every tool) so the cards interleave between text blocks. Headless (no
+        # side-channel) folds tool_use into the text as ▸ lines in one growing part.
+        on_activity = self._on_activity
+        cards = on_activity is not None
+        part_n = 0
+        folded_any = False  # for blank-line separation in the headless fold path
+
+        async def text_events(content: str, part_id: str):
+            for event in self._parts_manager.handle_text_delta(
+                vendor_part_id=part_id, content=content
+            ):
+                yield event
+
         # Mirror ``request()``: a stream that ends without a proper ``result`` event
-        # (Claude crashed / produced no result) is a FAILED turn, not a truncated
-        # success. Track the terminal chunk and raise after the loop when it is
-        # missing or incomplete — the harness treats this like any mid-stream
-        # provider error and flushes its resumable baseline (clean failure).
+        # (Claude crashed / produced no result) is a FAILED turn — raise after the
+        # loop so the harness flushes its resumable baseline (clean failure).
         done: DoneChunk | None = None
         async for chunk in consume_cli_stream(self._objs):
             if isinstance(chunk, TextChunk):
-                for event in self._parts_manager.handle_text_delta(
-                    vendor_part_id="content", content=chunk.delta
-                ):
-                    yield event
+                if cards:
+                    async for ev in text_events(chunk.delta, f"text-{part_n}"):
+                        yield ev
+                else:
+                    seg = chunk.delta if not folded_any else f"\n\n{chunk.delta}"
+                    async for ev in text_events(seg, "text-0"):
+                        yield ev
+                    folded_any = True
+            elif isinstance(chunk, (ToolUseChunk, ToolResultChunk)):
+                if on_activity is not None:
+                    events = cli_activity_events(chunk)
+                    if events:
+                        await on_activity(events)
+                    if isinstance(chunk, ToolUseChunk):
+                        part_n += 1  # following prose starts a fresh part below the card
+                else:
+                    seg = fold_chunk_text(chunk, leading=not folded_any)
+                    if seg:
+                        async for ev in text_events(seg, "text-0"):
+                            yield ev
+                        folded_any = True
             elif isinstance(chunk, DoneChunk):
                 done = chunk
                 self._usage = chunk.usage

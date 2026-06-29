@@ -50,6 +50,7 @@ from .controller import (  # noqa: F401 — _has_unanswered_tool_calls/_repair_u
 from .deps import (
     ApprovalFn,
     AskUserFn,
+    CliActivityCb,
     Deps,
     HarnessAgent,
     HarnessServices,
@@ -329,6 +330,7 @@ class Harness:
         on_subagent_notice: SubAgentNoticeCb | None = None,
         on_subagent_model: SubAgentModelCb | None = None,
         on_subagent_usage: SubAgentUsageCb | None = None,
+        on_cli_activity: CliActivityCb | None = None,
         on_mode_change: Callable[[], None] | None = None,
         on_tasks_changed: Callable[[], None] | None = None,
         on_jobs_changed: Callable[[], None] | None = None,
@@ -355,6 +357,8 @@ class Harness:
         self.deps.ui.on_subagent_notice = on_subagent_notice
         self.deps.ui.on_subagent_model = on_subagent_model
         self.deps.ui.on_subagent_usage = on_subagent_usage
+        self.deps.ui.on_cli_activity = on_cli_activity
+        self._wire_cli_model(self.current_model)
         self.deps.ui.on_mode_change = on_mode_change
         self.deps.tasks.on_change = on_tasks_changed
         self.deps.jobs.on_change = on_jobs_changed
@@ -418,14 +422,21 @@ class Harness:
         self.session.update_model(model)
         if persist:
             self.session.set_model(model_id)
-        # Bind the live mode getter if the new model is a ClaudeCliModel so that
-        # switching TO this provider at runtime still honors live /mode changes.
+        # Re-wire the late-bound hooks if the new model is a ClaudeCliModel, so
+        # switching TO this provider at runtime honors live /mode, the workspace
+        # cwd, and the TUI tool-card side-channel.
+        self._wire_cli_model(model)
+
+    def _wire_cli_model(self, model: Model) -> None:
+        """Bind the late-bound hooks a ``ClaudeCliModel`` needs — live approval
+        mode, the real workspace (or worktree) cwd, and the TUI tool-card activity
+        side-channel. A no-op for every other provider's model."""
         from ..config.claude_cli_model import ClaudeCliModel
 
         if isinstance(model, ClaudeCliModel):
             model.mode_getter = lambda: self.mode.value
-            # Spawn Claude in marim's real workspace root, not the process cwd.
             model.cwd = str(self.deps.workspace.root)
+            model.on_activity = self.deps.ui.on_cli_activity
 
     @property
     def mode(self) -> Mode:

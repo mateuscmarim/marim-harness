@@ -173,35 +173,28 @@ def test_ephemeral_clone_is_stateless_read_only_with_cwd():
     assert clone.mode_getter() == "plan"  # aux agents run read-only
 
 
-@pytest.mark.anyio
-async def test_consume_stream_separates_text_and_activity():
-    # Folded tool-activity lines must not collide with the surrounding text — each
-    # segment gets its own line so the TUI renders readable output, not a run-on wall.
-    objs = [
-        {"type": "system", "session_id": "S"},
-        {"type": "assistant", "message": {"content": [{"type": "text", "text": "Surveying. "}]}},
-        {"type": "assistant", "message": {"content": [
-            {"type": "tool_use", "name": "Bash", "input": {"command": "ls | head -50"}}
-        ]}},
-        {"type": "assistant", "message": {"content": [{"type": "text", "text": "Now sizes."}]}},
-        {"type": "result", "result": "Now sizes.", "session_id": "S",
-         "usage": {"input_tokens": 1, "output_tokens": 1}},
-    ]
+def test_fold_chunk_text_separates_segments():
+    from marim_harness.config.claude_cli_model import (
+        ToolUseChunk,
+        fold_chunk_text,
+    )
 
-    async def gen():
-        for o in objs:
-            yield o
-
-    text = ""
-    async for chunk in consume_cli_stream(gen()):
-        if isinstance(chunk, TextChunk):
-            text += chunk.delta
-    # The bug: "ls | head -50Now sizes." ran together. The activity line and the
-    # following text must be separated by a newline.
+    first = fold_chunk_text(TextChunk("Surveying."), leading=True)
+    tool = fold_chunk_text(
+        ToolUseChunk("Bash", {"command": "ls | head -50"}, "t1"), leading=False
+    )
+    after = fold_chunk_text(TextChunk("Now sizes."), leading=False)
+    text = first + tool + after
+    # The old bug ran "head -50Now sizes." together; segments are blank-line separated.
     assert "head -50Now" not in text
     assert "▸ Bash ls | head -50" in text
-    # The text after the tool activity begins on a fresh line.
-    assert "\nNow sizes." in text
+    assert "\n\nNow sizes." in text
+
+
+def test_fold_chunk_text_skips_results():
+    from marim_harness.config.claude_cli_model import ToolResultChunk, fold_chunk_text
+
+    assert fold_chunk_text(ToolResultChunk("t1", "ok", False), leading=False) == ""
 
 
 def test_request_usage_folds_cache_and_cost():
@@ -275,20 +268,135 @@ async def test_consume_streams_text_activity_and_done():
             "total_cost_usd": 0.01,
         },
     ]
+    from marim_harness.config.claude_cli_model import ToolUseChunk
+
     chunks = await _collect(objs)
+    # Structured chunks: prose as TextChunk, Claude's tool as a ToolUseChunk.
     texts = [c.delta for c in chunks if isinstance(c, TextChunk)]
-    assert texts[0] == "Looking…"
-    assert "▸ Read x.py" in "".join(texts)
-    # Segments are blank-line separated; the final text segment carries that lead.
-    assert texts[-1].strip() == "Done."
-    assert texts[-1].startswith("\n\n")
+    assert texts == ["Looking…", "Done."]
+    tools = [c for c in chunks if isinstance(c, ToolUseChunk)]
+    assert len(tools) == 1
+    assert tools[0].name == "Read"
+    assert tools[0].tool_input == {"file_path": "x.py"}
+    assert tools[0].call_id == "t1"
     done = chunks[-1]
     assert isinstance(done, DoneChunk)
     assert done.session_id == "sess-9"
     assert done.complete is True
     assert done.usage.output_tokens == 4
-    # Final text is the concatenation of everything streamed.
-    assert done.text == "".join(texts)
+
+
+@pytest.mark.anyio
+async def test_consume_surfaces_tool_results():
+    from marim_harness.config.claude_cli_model import ToolResultChunk
+
+    objs = [
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "x.py"}}
+        ]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "PORT = 8080"}
+        ]}},
+        {"type": "result", "session_id": "s", "usage": {"input_tokens": 1, "output_tokens": 1}},
+    ]
+    chunks = await _collect(objs)
+    results = [c for c in chunks if isinstance(c, ToolResultChunk)]
+    assert len(results) == 1
+    assert results[0].call_id == "t1"
+    assert results[0].content == "PORT = 8080"
+    assert results[0].is_error is False
+
+
+def test_stream_renderer_on_cli_activity_dispatches_each_event(monkeypatch):
+    # StreamRenderer.on_cli_activity must route every side-channel event through
+    # the same dispatch path as the main turn, into a top-level sink.
+    import asyncio
+    from types import SimpleNamespace
+
+    from marim_harness.interfaces.tui.stream_render import StreamRenderer
+
+    r = StreamRenderer(app=SimpleNamespace())
+    dispatched = []
+
+    async def fake_dispatch(event, sink):
+        dispatched.append((event, type(sink).__name__))
+
+    monkeypatch.setattr(r, "dispatch_stream_event", fake_dispatch)
+    monkeypatch.setattr(r, "app", SimpleNamespace(query_one=lambda *a, **k: object()))
+
+    asyncio.run(r.on_cli_activity(["e1", "e2", "e3"]))
+    assert [e for e, _ in dispatched] == ["e1", "e2", "e3"]
+    assert all(sink == "_TopLevelSink" for _, sink in dispatched)
+
+
+def test_cli_activity_events_builds_native_tool_events():
+    from pydantic_ai.messages import FunctionToolCallEvent, FunctionToolResultEvent
+
+    from marim_harness.config.claude_cli_model import (
+        ToolResultChunk,
+        ToolUseChunk,
+        cli_activity_events,
+    )
+
+    call = cli_activity_events(ToolUseChunk("Read", {"file_path": "a.py"}, "t1"))
+    assert len(call) == 1
+    assert isinstance(call[0], FunctionToolCallEvent)
+    # Claude's "Read" is normalized to the harness name so it renders as a native card.
+    assert call[0].part.tool_name == "read_file"
+    assert call[0].part.tool_call_id == "t1"
+
+    res = cli_activity_events(ToolResultChunk("t1", "boom", True))
+    assert len(res) == 1
+    assert isinstance(res[0], FunctionToolResultEvent)
+    assert res[0].part.tool_call_id == "t1"
+    assert res[0].part.outcome == "failed"
+
+
+@pytest.mark.anyio
+async def test_request_stream_pushes_tool_cards_and_keeps_response_text_only():
+    from pydantic_ai.messages import (
+        FunctionToolCallEvent,
+        FunctionToolResultEvent,
+        ToolCallPart,
+    )
+    from pydantic_ai.models import ModelRequestParameters
+
+    pushed: list = []
+
+    async def on_activity(events):
+        pushed.extend(events)
+
+    model = ClaudeCliModel("sonnet")
+    model.mode_getter = lambda: "auto"
+    model.on_activity = on_activity
+    model.spawn = _fake_objs(
+        [
+            _INIT,
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "Reading."}]}},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "x.py"}}
+            ]}},
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "PORT=8080"}
+            ]}},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "Found it."}]}},
+            _result("Found it."),
+        ]
+    )
+    async with model.request_stream(_user("hi"), None, ModelRequestParameters()) as stream:
+        async for _ in stream:
+            pass
+        final = stream.get()
+
+    # Tool activity went out-of-band as native events...
+    assert any(isinstance(e, FunctionToolCallEvent) for e in pushed)
+    assert any(isinstance(e, FunctionToolResultEvent) for e in pushed)
+    # ...and NEVER into the model response (else pydantic_ai would re-execute it).
+    assert not any(isinstance(p, ToolCallPart) for p in final.parts)
+    joined = "".join(getattr(p, "content", "") for p in final.parts)
+    assert "Reading." in joined and "Found it." in joined
+    # The prose around the tool landed in separate parts so the card interleaves.
+    assert len(final.parts) >= 2
 
 
 @pytest.mark.anyio
@@ -298,7 +406,6 @@ async def test_consume_marks_incomplete_when_no_result():
     done = chunks[-1]
     assert isinstance(done, DoneChunk)
     assert done.complete is False
-    assert done.text == "hi"
 
 
 def _fake_objs(objs):

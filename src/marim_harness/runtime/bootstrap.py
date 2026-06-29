@@ -139,15 +139,9 @@ def build_harness(
     if resume:
         harness.resume()
 
-    # The claude-cli provider needs marim's *live* approval mode each turn (to pick
-    # Claude's --permission-mode) — bind it the same late way `get_model` is bound,
-    # so a runtime /mode switch is honored on the next turn.
-    from ..config.claude_cli_model import ClaudeCliModel
-
-    if isinstance(harness.current_model, ClaudeCliModel):
-        harness.current_model.mode_getter = lambda: harness.mode.value
-        # Spawn Claude in marim's real workspace (or the --worktree dir), not the
-        # process cwd — otherwise it reads/edits the wrong directory.
-        harness.current_model.cwd = str(workspace)
+    # The claude-cli provider needs late-bound hooks (live approval mode, the real
+    # workspace/worktree cwd, the TUI tool-card side-channel). Bind them now; the
+    # activity side-channel stays None until the TUI calls bind_ui.
+    harness._wire_cli_model(harness.current_model)
 
     return harness
