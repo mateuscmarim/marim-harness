@@ -131,3 +131,52 @@ async def test_live_tool_count_still_counts_after_refactor():
     # The existing int-tool fakes (no .name) must still count by length.
     m = _manager_with([_FakeServer("a", 4), _FakeServer("b", 6)])
     assert await m.live_tool_count() == 10
+
+
+class _InstrServer:
+    """Fake MCP server: tool_prefix + a plain-string instructions attribute."""
+    def __init__(self, prefix, instructions):
+        self.id = prefix
+        self.tool_prefix = prefix
+        self.instructions = instructions
+
+
+class _RaisingInstrServer:
+    """Fake whose .instructions raises AttributeError (simulates pre-init)."""
+    def __init__(self, prefix):
+        self.id = prefix
+        self.tool_prefix = prefix
+
+    @property
+    def instructions(self):
+        raise AttributeError("instructions only available after initialization")
+
+
+@pytest.mark.anyio
+async def test_discovered_server_instructions_selects_by_prefix():
+    m = _manager_with([
+        _InstrServer("mddocs", "Search first."),
+        _InstrServer("nasa", "Unused server."),
+    ])
+    # only mddocs tools were discovered
+    out = m.discovered_server_instructions({"mddocs_doc_index", "mddocs_grep_docs"})
+    assert out == [("mddocs", "Search first.")]
+
+
+@pytest.mark.anyio
+async def test_discovered_server_instructions_skips_empty_and_raising():
+    m = _manager_with([
+        _InstrServer("a", ""),               # empty instructions -> skipped
+        _InstrServer("b", None),             # no instructions -> skipped
+        _RaisingInstrServer("c"),            # pre-init raise -> getattr None -> skipped
+        _InstrServer("d", "Real guide."),    # included
+    ])
+    out = m.discovered_server_instructions({"a_x", "b_x", "c_x", "d_x"})
+    assert out == [("d", "Real guide.")]
+
+
+@pytest.mark.anyio
+async def test_discovered_server_instructions_sorted_and_empty_discovered():
+    m = _manager_with([_InstrServer("zoo", "Z"), _InstrServer("ant", "A")])
+    assert m.discovered_server_instructions({"zoo_t", "ant_t"}) == [("ant", "A"), ("zoo", "Z")]
+    assert m.discovered_server_instructions(set()) == []

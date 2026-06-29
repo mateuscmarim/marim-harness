@@ -110,6 +110,26 @@ class McpManager:
                 groups[name] = tool_names
         return groups
 
+    def discovered_server_instructions(
+        self, discovered: set[str]
+    ) -> list[tuple[str, str]]:
+        """For each non-disabled live server whose tools appear in ``discovered``,
+        return ``(server_name, instructions)`` — the server's init-time usage guide.
+        Best-effort: a server with no ``tool_prefix``, no/empty instructions, or one
+        whose ``.instructions`` raises before init (``getattr`` → ``None``) is
+        skipped, so a quiet/half-connected server never breaks a turn. Sorted by
+        server name for deterministic output."""
+        out: list[tuple[str, str]] = []
+        for s in self.live_toolsets():
+            prefix = getattr(s, "tool_prefix", None)
+            if not prefix or not any(t.startswith(f"{prefix}_") for t in discovered):
+                continue
+            text = getattr(s, "instructions", None)
+            if isinstance(text, str) and text.strip():
+                out.append((self.server_name(s), text))
+        out.sort(key=lambda pair: pair[0])
+        return out
+
     def deferred_toolsets(self) -> list:
         """The live MCP toolsets combined and marked deferred, so Pydantic AI's
         auto-injected ToolSearch capability hides them until the model searches.
