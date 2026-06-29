@@ -23,6 +23,14 @@ from marim_harness.config.claude_cli_model import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _fake_cli_binary(monkeypatch):
+    monkeypatch.setattr(
+        "marim_harness.subagents.cli_backend.resolve_cli_binary",
+        lambda: "/usr/bin/claude",
+    )
+
+
 def test_permission_mode_mapping():
     assert permission_mode_for("auto") == "acceptEdits"
     assert permission_mode_for("ask") == "acceptEdits"
