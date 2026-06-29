@@ -3,7 +3,6 @@ import pytest
 from marim_harness.mcp.catalog import (  # noqa: E501
     _CATALOG_PER_SERVER_CAP,
     _INSTRUCTIONS_CAP,
-    discovered_instructions_text,
     render_discovered_instructions,
     render_tool_catalog,
     tool_catalog_text,
@@ -99,23 +98,3 @@ def test_discovered_instructions_no_truncation_under_cap():
     assert "## small\nshort guide" in out
 
 
-class _FakeMcpInstr:
-    def __init__(self, pairs):
-        self._pairs = pairs
-
-    def discovered_server_instructions(self, discovered):
-        # ignore filtering here; the manager is unit-tested separately
-        return list(self._pairs) if discovered else []
-
-
-@pytest.mark.anyio
-async def test_discovered_instructions_text_empty_when_nothing_discovered():
-    mcp = _FakeMcpInstr([("mddocs", "Search first.")])
-    assert discovered_instructions_text(mcp, set()) == ""
-
-
-@pytest.mark.anyio
-async def test_discovered_instructions_text_renders_when_discovered():
-    mcp = _FakeMcpInstr([("mddocs", "Search first.")])
-    text = discovered_instructions_text(mcp, {"mddocs_doc_index"})
-    assert "## mddocs" in text and "Search first." in text

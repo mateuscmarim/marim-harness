@@ -9,6 +9,8 @@ from pydantic_ai import Agent, DeferredToolRequests
 from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.settings import ModelSettings
 
+from ..mcp.discovered_instructions_capability import DiscoveredInstructionsCapability
+
 if TYPE_CHECKING:
     from pydantic_ai.agent import EventStreamHandler
     from pydantic_ai.models import Model
@@ -176,6 +178,7 @@ def build_collaborators(
     ``Harness.current_model``) so a runtime ``/model`` switch is tracked
     without rewiring the sub-agent runner.
     """
+    mcp = McpManager(cfg.mcp_servers or [], set(cfg.mcp_disabled or []))
     agent = Agent(
         model,
         deps_type=Deps,
@@ -196,13 +199,16 @@ def build_collaborators(
         #  - suggest_unknown_tool_retry enriches an unknown-tool rejection with the
         #    nearest registered name (e.g. agents_memory_smart_search for
         #    agentmemory_memory_smart_search) so the retry has a concrete target.
+        #  - DiscoveredInstructionsCapability injects discovered servers' usage
+        #    instructions into cacheable history so they are prefix-cached and not
+        #    re-sent as dynamic instructions on every request.
         capabilities=[
             ProcessHistory(_drop_nameless_tool_calls),
             ProcessHistory(suggest_unknown_tool_retry),
+            DiscoveredInstructionsCapability(mcp),
         ],
     )
     provider.register(agent)
-    mcp = McpManager(cfg.mcp_servers or [], set(cfg.mcp_disabled or []))
     register_instructions(agent, mcp, cfg.proactive_memory)
     # Session-scoped LSP server pool, reachable by the navigation/diagnostics
     # tools through deps. Subagents share this deps object, so they get LSP too.

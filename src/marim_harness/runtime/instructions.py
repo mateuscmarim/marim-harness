@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     from ..mcp import McpManager
 
 from ..config import config_dir
-from ..mcp.catalog import discovered_instructions_text, tool_catalog_text
+from ..mcp.catalog import tool_catalog_text
 from ..plugins import plugin_instruction_texts
 from ..workspace import (
     agents_index_text,
@@ -247,11 +247,6 @@ def register_instructions(
         return await tool_catalog_text(
             mcp_manager, ws.tool_search, ws.tool_search_threshold
         )
-
-    @agent.instructions
-    def _discovered_instructions(ctx: RunContext[Deps]) -> str:
-        discovered = getattr(ctx, "discovered_tool_names", None) or set()
-        return discovered_instructions_text(mcp_manager, discovered)
 
     @agent.instructions
     def _memory_policy(ctx: RunContext[Deps]) -> str:
