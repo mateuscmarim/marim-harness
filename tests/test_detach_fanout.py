@@ -125,6 +125,72 @@ async def test_subagent_unset_spawn_runs_inline_not_detached(tmp_path: Path):
     assert deps.jobs.list() == []
 
 
+def _nested_spawn_model() -> FunctionModel:
+    """One model serving three roles by inspecting its instructions:
+      - main (depth 0): spawn a `general` child INLINE (background=False), then finish
+      - general (depth 1): spawn an `explore` child with background UNSET, then
+        report what it returned
+      - explore (depth 2): the leaf — return a marker
+    """
+    def fn(messages, info):
+        instr = _last_instructions(messages)
+
+        def spawn_return(msgs):
+            for m in msgs:
+                for p in getattr(m, "parts", []):
+                    if type(p).__name__ == "ToolReturnPart" and \
+                            getattr(p, "tool_name", "") == "spawn_agent":
+                        return str(p.content)
+            return None
+
+        if "exploration sub-agent" in instr:  # depth-2 leaf
+            return ModelResponse(parts=[TextPart(content="LEAF-OK")])
+
+        if "general-purpose sub-agent" in instr:  # depth-1
+            child = spawn_return(messages)
+            if child is not None:
+                return ModelResponse(parts=[TextPart(content=f"CHILD: {child}")])
+            return ModelResponse(parts=[ToolCallPart(
+                tool_name="spawn_agent",
+                args={"type": "explore", "task": "read"})])  # background UNSET
+
+        # main agent (depth 0)
+        if spawn_return(messages) is not None:
+            return ModelResponse(parts=[TextPart(content="done")])
+        return ModelResponse(parts=[ToolCallPart(
+            tool_name="spawn_agent",
+            args={"type": "general", "task": "spawn an explore child",
+                  "background": False})])  # inline, so the depth-1 spawn is observable
+    return FunctionModel(fn)
+
+
+@pytest.mark.anyio
+async def test_e2e_nested_subagent_spawn_stays_inline(tmp_path: Path):
+    """End-to-end through the real Harness + SubagentRunner: with detach_fanout +
+    interactive on, a sub-agent (depth 1) spawning a child must run it INLINE.
+    Before the fix the depth-1 spawn auto-detached — registering a job and handing
+    the sub-agent a detach message instead of the child's report. We assert the
+    leaf's marker propagates back up (inline) and that NO job was registered."""
+    deps = _make_deps(tmp_path)
+    harness = _make_harness(_nested_spawn_model(), deps)
+    harness.deps.ui.detach_fanout = True
+    harness.deps.ui.interactive = True
+
+    await harness.run_turn("go")
+
+    # No background job: the depth-1 child ran inline, not detached.
+    assert harness.deps.jobs.list() == []
+    # The leaf marker flowed depth 2 → depth 1 → main, proving the nested spawn
+    # returned its report synchronously rather than being orphaned to a job.
+    blob = "".join(
+        str(p.content)
+        for m in harness.session.history
+        for p in getattr(m, "parts", [])
+        if type(p).__name__ == "ToolReturnPart"
+    )
+    assert "LEAF-OK" in blob
+
+
 def test_spawn_agent_accepts_a_description_param():
     """The model habitually passes a `description` (Claude Code's Task tool has
     one); spawn_agent must accept it so a fan-out doesn't fail validation."""
