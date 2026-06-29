@@ -14,6 +14,8 @@ from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 from pydantic_ai.tools import AgentDepsT, RunContext
 
+from .catalog import cap_instructions
+
 if TYPE_CHECKING:
     from pydantic_ai.messages import ModelMessage
     from pydantic_ai.models import ModelRequestContext
@@ -43,7 +45,7 @@ def _instruction_messages(server: str, text: str) -> list[ModelMessage]:
     # tool-call parts, so it cannot create an unanswered-ToolCallPart resumability hazard.
     return [
         ModelResponse(parts=[TextPart(_marker(server))]),
-        ModelRequest(parts=[UserPromptPart(_envelope(server, text))]),
+        ModelRequest(parts=[UserPromptPart(_envelope(server, cap_instructions(text)))]),
     ]
 
 

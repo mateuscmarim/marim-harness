@@ -47,28 +47,16 @@ async def tool_catalog_text(mcp, policy: str, threshold: int) -> str:
 
 
 # At most this many chars of a single server's instructions go into the prompt;
-# beyond that we clip with a marker. Server instructions can be long, and this
-# block is re-sent each turn after discovery (dynamic instructions aren't cached),
-# so the cap bounds the recurring cost — mirrors the catalog's per-server name cap.
+# beyond that we clip with a marker. Server instructions can be long and the
+# discovered-instructions capability injects them into cacheable history (once per
+# server per session), so the cap bounds the fixed cache cost.
 _INSTRUCTIONS_CAP = 2000
 
-_DISCOVERED_PREAMBLE = (
-    "Usage guidance for the MCP servers you've loaded (follow it for those tools):"
-)
 
-
-def render_discovered_instructions(servers: list[tuple[str, str]]) -> str:
-    """Render a deterministic block of server-authored usage instructions for
-    servers the model has discovered. ``servers`` is ``(server_name, instructions)``
-    pairs (already filtered to non-empty). Each server's text is clipped to
-    ``_INSTRUCTIONS_CAP`` chars with a ``…(truncated)`` marker. Servers are sorted
-    for byte-stable output. Empty string when there are no servers."""
-    if not servers:
-        return ""
-    lines = [_DISCOVERED_PREAMBLE]
-    for name, text in sorted(servers):
-        body = text.strip()
-        if len(body) > _INSTRUCTIONS_CAP:
-            body = body[:_INSTRUCTIONS_CAP].rstrip() + "\n…(truncated)"
-        lines.append(f"\n## {name}\n{body}")
-    return "\n".join(lines)
+def cap_instructions(text: str) -> str:
+    """Clip one server's instructions to ``_INSTRUCTIONS_CAP`` chars with a truncation
+    marker — the per-server bound shared by the discovered-instructions delivery."""
+    body = text.strip()
+    if len(body) > _INSTRUCTIONS_CAP:
+        body = body[:_INSTRUCTIONS_CAP].rstrip() + "\n…(truncated)"
+    return body

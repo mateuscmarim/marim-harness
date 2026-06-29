@@ -1,9 +1,7 @@
 import pytest
 
-from marim_harness.mcp.catalog import (  # noqa: E501
+from marim_harness.mcp.catalog import (
     _CATALOG_PER_SERVER_CAP,
-    _INSTRUCTIONS_CAP,
-    render_discovered_instructions,
     render_tool_catalog,
     tool_catalog_text,
 )
@@ -72,29 +70,5 @@ async def test_catalog_text_shown_when_auto_above_threshold():
     text = await tool_catalog_text(mcp, "auto", 15)  # 20 > 15 -> deferred
     assert text.startswith("Additional MCP tools")
 
-
-def test_discovered_instructions_empty_when_no_servers():
-    assert render_discovered_instructions([]) == ""
-
-
-def test_discovered_instructions_renders_sorted_with_headers():
-    out = render_discovered_instructions([("zeta", "Z guide"), ("alpha", "A guide")])
-    assert "search_tools" not in out  # this block is usage guidance, not the catalog
-    assert out.index("## alpha") < out.index("## zeta")  # sorted by server name
-    assert "A guide" in out and "Z guide" in out
-
-
-def test_discovered_instructions_truncates_over_cap():
-    long = "x" * (_INSTRUCTIONS_CAP + 50)
-    out = render_discovered_instructions([("big", long)])
-    assert "…(truncated)" in out
-    # body is clipped to the cap (plus the marker), not the full length
-    assert out.count("x") <= _INSTRUCTIONS_CAP
-
-
-def test_discovered_instructions_no_truncation_under_cap():
-    out = render_discovered_instructions([("small", "short guide")])
-    assert "truncated" not in out
-    assert "## small\nshort guide" in out
 
 

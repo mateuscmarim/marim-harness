@@ -83,3 +83,27 @@ async def test_only_uninjected_servers_added():
 def test_injected_servers_scan():
     msgs = _instruction_messages("mddocs", "g") + _instruction_messages("nasa", "h")
     assert _injected_servers(msgs) == {"mddocs", "nasa"}
+
+
+@pytest.mark.anyio
+async def test_cap_applied_to_long_instructions():
+    """Instructions exceeding 2000 chars are truncated before injection."""
+    long_text = "y" * 2100
+    cap = DiscoveredInstructionsCapability(_FakeMcp([("bigserver", long_text)]))
+    out = await cap.before_model_request(_Ctx({"bigserver_tool"}), _base())
+    injected: str = out.messages[-1].parts[0].content
+    assert "…(truncated)" in injected
+    # The body portion (excluding the envelope label line) should not exceed the cap
+    # by more than the truncation marker itself.
+    assert injected.count("y") <= 2000
+
+
+@pytest.mark.anyio
+async def test_cap_not_applied_to_short_instructions():
+    """Instructions within 2000 chars are injected verbatim (no truncation marker)."""
+    short_text = "z" * 500
+    cap = DiscoveredInstructionsCapability(_FakeMcp([("smallserver", short_text)]))
+    out = await cap.before_model_request(_Ctx({"smallserver_tool"}), _base())
+    injected: str = out.messages[-1].parts[0].content
+    assert "truncated" not in injected
+    assert short_text in injected
