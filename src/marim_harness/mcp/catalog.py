@@ -2,6 +2,8 @@
 names injected into the prompt so the model knows what it can discover via
 ``search_tools`` (the schemas stay deferred). See the tool-catalog design doc."""
 
+from .manager import should_defer
+
 # At most this many tool names per server in the catalog; the rest collapse to a
 # "(+N more)" hint. Names-only is cheap, but a server with dozens of tools would
 # still bloat the prefix — and 12 names is ample query vocabulary for one server.
@@ -30,3 +32,15 @@ def render_tool_catalog(groups: dict[str, list[str]]) -> str:
         suffix = f" (+{extra} more)" if extra > 0 else ""
         lines.append(f"- {server}: {', '.join(shown)}{suffix}")
     return "\n".join(lines)
+
+
+async def tool_catalog_text(mcp, policy: str, threshold: int) -> str:
+    """The catalog block to inject when tool search is deferring this run, else "".
+    Gated by the same ``should_defer`` the controller uses for ``toolsets_for``, so
+    the catalog is shown exactly when the MCP tools are actually deferred. ``mcp`` is
+    an ``McpManager`` (duck-typed: needs ``async live_tools_by_server()``)."""
+    groups = await mcp.live_tools_by_server()
+    total = sum(len(v) for v in groups.values())
+    if not should_defer(policy, total, threshold):
+        return ""
+    return render_tool_catalog(groups)

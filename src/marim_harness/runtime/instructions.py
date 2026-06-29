@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from ..mcp import McpManager
 
 from ..config import config_dir
+from ..mcp.catalog import tool_catalog_text
 from ..plugins import plugin_instruction_texts
 from ..workspace import (
     agents_index_text,
@@ -239,6 +240,13 @@ def register_instructions(
     @agent.instructions
     def _mcp_index(ctx: RunContext[Deps]) -> str:
         return mcp_manager.mcp_index_text()
+
+    @agent.instructions
+    async def _tool_catalog(ctx: RunContext[Deps]) -> str:
+        ws = ctx.deps.workspace
+        return await tool_catalog_text(
+            mcp_manager, ws.tool_search, ws.tool_search_threshold
+        )
 
     @agent.instructions
     def _memory_policy(ctx: RunContext[Deps]) -> str:
