@@ -23,3 +23,12 @@ def test_build_cli_argv_defaults_unchanged():
     assert "--append-system-prompt" in argv
     assert "--resume" not in argv
     assert argv[argv.index("--model") + 1] == "sonnet"
+    # Safe mode is opt-in; default callers (sub-agents) keep their full environment.
+    assert "--safe-mode" not in argv
+
+
+def test_build_cli_argv_safe_mode():
+    # The main-loop model runs claude in safe mode so the user's plugins/hooks
+    # (e.g. agentmemory's cross-session context injection) don't pollute the turn.
+    argv = build_cli_argv("claude", "task", "SYSTEM", "plan", [], None, safe_mode=True)
+    assert "--safe-mode" in argv

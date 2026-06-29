@@ -490,6 +490,11 @@ class ClaudeCliModel(Model):
             self._model_id,
             resume_session_id=resume,
             append_system=append_system,
+            # Isolate from the user's plugins/hooks (notably agentmemory's
+            # cross-session context injection) so a marim turn isn't polluted by —
+            # or recorded into — other Claude sessions' memory. Auth/model/tools
+            # keep working.
+            safe_mode=True,
         )
 
     async def request(

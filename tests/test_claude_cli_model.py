@@ -455,6 +455,16 @@ async def test_request_returns_text_only_response_and_captures_session():
     assert model.session_id == "S1"  # captured for the next turn
 
 
+def test_argv_runs_claude_in_safe_mode():
+    # Every marim claude-cli turn must isolate from the user's plugins/hooks so
+    # agentmemory (and other SessionStart injectors) can't bleed cross-session
+    # context into the turn — which derails Claude into hallucinated transcripts.
+    model = ClaudeCliModel("sonnet")
+    model.mode_getter = lambda: "auto"
+    argv = model._argv(_user("hi"))
+    assert "--safe-mode" in argv
+
+
 @pytest.mark.anyio
 async def test_second_turn_uses_resume(monkeypatch):
     model = ClaudeCliModel("sonnet")

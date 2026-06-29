@@ -142,6 +142,7 @@ def build_cli_argv(
     *,
     resume_session_id: str | None = None,
     append_system: bool = True,
+    safe_mode: bool = False,
 ) -> list[str]:
     """The argv for one headless spawn. ``stream-json`` requires ``--verbose``.
     The task is a single positional arg (we exec, not shell — no quoting hazard);
@@ -152,12 +153,18 @@ def build_cli_argv(
     The main-loop ``ClaudeCliModel`` uses ``resume_session_id`` to continue an
     existing Claude session (sending only the new user message), and sets
     ``append_system=False`` on those resumed turns so the system prompt — already
-    set when the session was created — is not appended again."""
+    set when the session was created — is not appended again. It also sets
+    ``safe_mode`` so ``--safe-mode`` disables the user's plugins/hooks (e.g.
+    agentmemory's SessionStart context injection, which otherwise bleeds
+    cross-session observations into the turn and derails Claude); auth, model, and
+    built-in tools still work normally."""
     argv = [
         binary, "-p", prompt,
         "--output-format", "stream-json", "--verbose",
         "--permission-mode", permission_mode,
     ]
+    if safe_mode:
+        argv.append("--safe-mode")
     if append_system:
         argv += ["--append-system-prompt", system_prompt]
     if resume_session_id:
