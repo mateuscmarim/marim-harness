@@ -77,20 +77,38 @@ class McpManager:
             if self.server_name(s) not in self.disabled
         ]
 
-    async def live_tool_count(self) -> int:
-        """Best-effort count of tools across non-disabled live MCP servers. Uses
-        each server's cached ``list_tools()``; a server that can't list contributes
-        0 rather than failing the count."""
-        total = 0
+    async def _tools_per_server(self) -> dict[str, list]:
+        """Best-effort map of ``server_name -> its raw tool list`` across
+        non-disabled live servers. A server with no ``list_tools`` or one that
+        raises contributes nothing rather than failing. Shared by
+        ``live_tool_count`` and ``live_tools_by_server``."""
+        out: dict[str, list] = {}
         for s in self.live_toolsets():
             lister = getattr(s, "list_tools", None)
             if lister is None:
                 continue
             try:
-                total += len(await lister())
-            except Exception:  # noqa: BLE001 - one server's failure must not sink the count
-                logger.debug("tool count failed for %s", self.server_name(s), exc_info=True)
-        return total
+                out[self.server_name(s)] = list(await lister())
+            except Exception:  # noqa: BLE001 - one server's failure must not sink the rest
+                logger.debug("tool listing failed for %s", self.server_name(s), exc_info=True)
+        return out
+
+    async def live_tool_count(self) -> int:
+        """Best-effort count of tools across non-disabled live MCP servers."""
+        return sum(len(v) for v in (await self._tools_per_server()).values())
+
+    async def live_tools_by_server(self) -> dict[str, list[str]]:
+        """``server_name -> sorted tool names`` across non-disabled live servers
+        (best-effort). Backs the discovery catalog; servers whose tools have no
+        usable name are omitted."""
+        groups: dict[str, list[str]] = {}
+        for name, tools in (await self._tools_per_server()).items():
+            tool_names = sorted(
+                str(getattr(t, "name", "")) for t in tools if getattr(t, "name", "")
+            )
+            if tool_names:
+                groups[name] = tool_names
+        return groups
 
     def deferred_toolsets(self) -> list:
         """The live MCP toolsets combined and marked deferred, so Pydantic AI's

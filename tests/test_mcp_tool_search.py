@@ -88,3 +88,46 @@ async def test_deferred_toolsets_empty_when_no_servers():
     m = _manager_with([])
     assert m.deferred_toolsets() == []
     assert await m.toolsets_for("on", 15) == []
+
+
+class _NamedTool:
+    def __init__(self, name):
+        self.name = name
+
+
+class _NamedServer:
+    def __init__(self, sid, names):
+        self.id = sid
+        self._names = names
+
+    async def list_tools(self):
+        return [_NamedTool(n) for n in self._names]
+
+
+@pytest.mark.anyio
+async def test_live_tools_by_server_groups_sorted_names():
+    m = _manager_with([
+        _NamedServer("mddocs", ["mddocs_b", "mddocs_a"]),
+        _NamedServer("nasa", ["nasa_x"]),
+    ])
+    groups = await m.live_tools_by_server()
+    assert groups == {"mddocs": ["mddocs_a", "mddocs_b"], "nasa": ["nasa_x"]}
+
+
+@pytest.mark.anyio
+async def test_live_tools_by_server_best_effort_on_failure():
+    class _Bad:
+        id = "bad"
+
+        async def list_tools(self):
+            raise RuntimeError("boom")
+
+    m = _manager_with([_NamedServer("ok", ["t1"]), _Bad()])
+    assert await m.live_tools_by_server() == {"ok": ["t1"]}
+
+
+@pytest.mark.anyio
+async def test_live_tool_count_still_counts_after_refactor():
+    # The existing int-tool fakes (no .name) must still count by length.
+    m = _manager_with([_FakeServer("a", 4), _FakeServer("b", 6)])
+    assert await m.live_tool_count() == 10
