@@ -93,14 +93,35 @@ def extract_system(messages: list[ModelMessage]) -> str:
     return "\n".join(s for s in sys_parts if s)
 
 
+def _render_tool_args(args) -> str:
+    """A tool call's args as a compact one-line string. dicts are JSON-encoded so
+    the keys/values survive; a raw-string args payload is passed through."""
+    if isinstance(args, str):
+        return args
+    if args is None:
+        return ""
+    try:
+        return json.dumps(args, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        return str(args)
+
+
 def flatten_history(messages: list[ModelMessage]) -> str:
     """The whole conversation rendered to one prompt, for a cold first turn (no
-    Claude session to resume). User turns and our prior text answers only —
-    this model never produces tool-call parts, so there are none to render."""
+    Claude session to resume).
+
+    claude-cli's own responses are text-only, but a cold start can also happen
+    after switching providers mid-session — so the history may carry tool-call
+    and tool-return parts produced by another provider using marim's tools. We
+    render those too (``Assistant called <tool>(<args>)`` / ``Tool <tool>
+    returned: <result>``) so the switched-in Claude sees what the tools did,
+    not just the surrounding prose."""
     from pydantic_ai.messages import (
         ModelRequest,
         ModelResponse,
         TextPart,
+        ToolCallPart,
+        ToolReturnPart,
         UserPromptPart,
     )
 
@@ -112,10 +133,16 @@ def flatten_history(messages: list[ModelMessage]) -> str:
                     text = _part_text(p.content)
                     if text:
                         lines.append(f"User: {text}")
+                elif isinstance(p, ToolReturnPart):
+                    lines.append(f"Tool {p.tool_name} returned: {_part_text(p.content)}")
         elif isinstance(msg, ModelResponse):
             for p in msg.parts:
                 if isinstance(p, TextPart) and p.content:
                     lines.append(f"Assistant: {p.content}")
+                elif isinstance(p, ToolCallPart):
+                    lines.append(
+                        f"Assistant called {p.tool_name}({_render_tool_args(p.args)})"
+                    )
     return "\n\n".join(lines)
 
 

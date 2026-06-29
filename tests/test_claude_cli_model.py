@@ -77,6 +77,41 @@ def test_flatten_history_labels_roles():
     assert out.rstrip().endswith("User: more")
 
 
+def test_flatten_history_renders_tool_calls_and_returns():
+    # A history produced by ANOTHER provider (e.g. openrouter using marim's tools)
+    # carries ToolCallPart/ToolReturnPart. When claude-cli is switched in mid-session
+    # and cold-starts, flatten_history must preserve that tool context, not drop it.
+    from pydantic_ai.messages import ToolCallPart, ToolReturnPart
+
+    msgs = [
+        ModelRequest(parts=[UserPromptPart(content="what's in config.py?")]),
+        ModelResponse(
+            parts=[
+                TextPart(content="Let me read it."),
+                ToolCallPart(
+                    tool_name="read_file", args={"path": "config.py"}, tool_call_id="t1"
+                ),
+            ]
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="read_file", content="PORT = 8080", tool_call_id="t1"
+                )
+            ]
+        ),
+        ModelResponse(parts=[TextPart(content="It sets PORT to 8080.")]),
+    ]
+    out = flatten_history(msgs)
+    # The assistant's tool call is rendered (name + args) so Claude sees what was done.
+    assert "read_file" in out
+    assert "config.py" in out
+    # The tool's result is rendered so Claude sees what came back.
+    assert "PORT = 8080" in out
+    # Ordering preserved: the call appears before its result.
+    assert out.index("config.py") < out.index("PORT = 8080")
+
+
 def test_request_usage_folds_cache_and_cost():
     u = request_usage_from_cli(
         {
