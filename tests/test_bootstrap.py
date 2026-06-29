@@ -333,3 +333,30 @@ def test_build_harness_wires_claude_cli_mode_getter(tmp_path, monkeypatch):
     assert harness.current_model.mode_getter is not None
     # The getter reflects the harness's live mode as a plain string.
     assert harness.current_model.mode_getter() == harness.mode.value
+
+
+def test_build_harness_claude_cli_default_model_is_blank_not_none(tmp_path, monkeypatch):
+    """With claude-cli and MARIM_MODEL unset, cfg.model is None — the composed
+    model id must round-trip to a *blank* bare id, never the literal "None"
+    (which would spawn `claude --model None`)."""
+    monkeypatch.setenv("MARIM_PROVIDER", "claude-cli")
+    monkeypatch.delenv("MARIM_MODEL", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    from marim_harness.config import model as model_mod
+
+    monkeypatch.setattr(model_mod, "_claude_cli_available", lambda: True)
+    monkeypatch.setattr(
+        "marim_harness.subagents.cli_backend.resolve_cli_binary", lambda: "/usr/bin/claude"
+    )
+
+    from marim_harness.config.claude_cli_model import ClaudeCliModel
+    from marim_harness.runtime.bootstrap import build_harness
+
+    ws = tmp_path / "ws"
+    harness = build_harness(ws)
+    assert isinstance(harness.current_model, ClaudeCliModel)
+    assert harness.current_model._model_id in (None, "")
+    assert harness.current_model.model_name == "default"  # not "None"
+    # bootstrap also late-binds the spawn cwd to the real workspace (Fix 2).
+    assert harness.current_model.cwd == str(ws)

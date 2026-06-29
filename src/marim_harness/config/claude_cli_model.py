@@ -303,6 +303,10 @@ class ClaudeCliModel(Model):
         self.mode_getter: Callable[[], str] | None = None
         self.session_id: str | None = None
         self.spawn = spawn_cli_objects  # I/O seam; tests monkeypatch this
+        # Late-bound by bootstrap/set_model to marim's real workspace (or worktree)
+        # root, exactly like ``mode_getter``. Spawning in the process cwd (".") would
+        # make Claude read/edit the WRONG directory — destructively so under --worktree.
+        self.cwd: str = "."
         self._ts = datetime.now(tz=timezone.utc)
 
     @property
@@ -350,7 +354,7 @@ class ClaudeCliModel(Model):
     ) -> ModelResponse:
         argv = self._argv(messages)
         done: DoneChunk | None = None
-        async for chunk in consume_cli_stream(self.spawn(argv, ".")):
+        async for chunk in consume_cli_stream(self.spawn(argv, self.cwd)):
             if isinstance(chunk, DoneChunk):
                 done = chunk
         if done is None or not done.complete:
@@ -376,7 +380,7 @@ class ClaudeCliModel(Model):
         argv = self._argv(messages)
         stream = ClaudeCliStreamedResponse(
             model_request_parameters=model_request_parameters,
-            _objs=self.spawn(argv, "."),
+            _objs=self.spawn(argv, self.cwd),
             _model_id=self.model_name,
             _ts=self._ts,
             _set_session=lambda sid: setattr(self, "session_id", sid),
@@ -397,6 +401,12 @@ class ClaudeCliStreamedResponse(StreamedResponse):
     async def _get_event_iterator(self):
         if self._objs is None:
             return
+        # Mirror ``request()``: a stream that ends without a proper ``result`` event
+        # (Claude crashed / produced no result) is a FAILED turn, not a truncated
+        # success. Track the terminal chunk and raise after the loop when it is
+        # missing or incomplete — the harness treats this like any mid-stream
+        # provider error and flushes its resumable baseline (clean failure).
+        done: DoneChunk | None = None
         async for chunk in consume_cli_stream(self._objs):
             if isinstance(chunk, TextChunk):
                 for event in self._parts_manager.handle_text_delta(
@@ -404,10 +414,14 @@ class ClaudeCliStreamedResponse(StreamedResponse):
                 ):
                     yield event
             elif isinstance(chunk, DoneChunk):
+                done = chunk
                 self._usage = chunk.usage
                 if chunk.session_id and self._set_session is not None:
                     self._set_session(chunk.session_id)
-                self._finished = True
+                if chunk.complete:
+                    self._finished = True
+        if done is None or not done.complete:
+            raise CliModelError("claude produced no result (crash or bad output).")
 
     @property
     def model_name(self) -> str:

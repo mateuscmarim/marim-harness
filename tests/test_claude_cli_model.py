@@ -253,6 +253,56 @@ async def test_request_raises_on_incomplete_stream():
         await model.request(_user("hi"), None, ModelRequestParameters())
 
 
+@pytest.mark.parametrize("model_id", ["", None])
+def test_argv_omits_model_flag_when_id_blank(model_id):
+    # A blank/None model id (claude-cli's "let the CLI choose" default) must NOT
+    # emit `--model` — otherwise we'd spawn `claude --model None`.
+    model = ClaudeCliModel(model_id)
+    argv = model._argv(_user("hi"))
+    assert "--model" not in argv
+    # Sanity: an explicit id still passes through.
+    assert "--model" in ClaudeCliModel("sonnet")._argv(_user("hi"))
+
+
+@pytest.mark.anyio
+async def test_request_uses_configured_cwd():
+    model = ClaudeCliModel("sonnet")
+    model.cwd = "/some/dir"
+    captured = {}
+
+    def _spawn(argv, cwd):
+        captured["cwd"] = cwd
+
+        async def gen():
+            yield _INIT
+            yield {"type": "assistant", "message": {"content": [{"type": "text", "text": "ok"}]}}
+            yield _result("ok")
+
+        return gen()
+
+    model.spawn = _spawn
+    from pydantic_ai.models import ModelRequestParameters
+
+    await model.request(_user("hi"), None, ModelRequestParameters())
+    assert captured["cwd"] == "/some/dir"
+
+
+@pytest.mark.anyio
+async def test_request_stream_raises_on_incomplete_stream():
+    # The streamed path must fail (not present truncated text as success) when the
+    # stream ends without a `result` event — matching request().
+    model = ClaudeCliModel("sonnet")
+    model.spawn = _fake_objs(
+        [{"type": "assistant", "message": {"content": [{"type": "text", "text": "x"}]}}]
+    )
+    from pydantic_ai.models import ModelRequestParameters
+
+    with pytest.raises(CliModelError):
+        async with model.request_stream(_user("hi"), None, ModelRequestParameters()) as stream:
+            async for _ in stream:
+                pass
+
+
 @pytest.mark.anyio
 async def test_request_stream_yields_text_events():
     from pydantic_ai.messages import PartDeltaEvent, PartStartEvent

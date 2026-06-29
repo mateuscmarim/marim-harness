@@ -424,6 +424,8 @@ class Harness:
 
         if isinstance(model, ClaudeCliModel):
             model.mode_getter = lambda: self.mode.value
+            # Spawn Claude in marim's real workspace root, not the process cwd.
+            model.cwd = str(self.deps.workspace.root)
 
     @property
     def mode(self) -> Mode:

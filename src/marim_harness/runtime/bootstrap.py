@@ -49,7 +49,10 @@ def build_harness(
     model_source = MultiModelSource(
         {p: ModelSource(c) for p, c in configs.items()}, default_provider
     )
-    model_id = f"{default_provider}:{configs[default_provider].model}"
+    # A None model (claude-cli's "let the CLI choose" default) must round-trip to a
+    # bare empty id, not the literal string "None" — otherwise we'd spawn
+    # `claude --model None`. `parse_qualified` turns "claude-cli:" into bare "".
+    model_id = f"{default_provider}:{configs[default_provider].model or ''}"
     model = model_source.build(model_id)
     command_policy = CommandPolicy(
         denylist=cfg.command_denylist, allowlist=cfg.command_allowlist
@@ -130,5 +133,8 @@ def build_harness(
 
     if isinstance(harness.current_model, ClaudeCliModel):
         harness.current_model.mode_getter = lambda: harness.mode.value
+        # Spawn Claude in marim's real workspace (or the --worktree dir), not the
+        # process cwd — otherwise it reads/edits the wrong directory.
+        harness.current_model.cwd = str(workspace)
 
     return harness
