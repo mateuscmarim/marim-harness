@@ -199,7 +199,7 @@ async def test_consume_stream_separates_text_and_activity():
     # The bug: "ls | head -50Now sizes." ran together. The activity line and the
     # following text must be separated by a newline.
     assert "head -50Now" not in text
-    assert "⏺ Bash ls | head -50" in text
+    assert "▸ Bash ls | head -50" in text
     # The text after the tool activity begins on a fresh line.
     assert "\nNow sizes." in text
 
@@ -224,11 +224,15 @@ def test_request_usage_folds_cache_and_cost():
 
 
 def test_format_activity_line_summarizes_common_tools():
-    assert format_activity_line("Read", {"file_path": "a/b.py"}) == "⏺ Read a/b.py"
-    assert format_activity_line("Bash", {"command": "ls -la"}) == "⏺ Bash ls -la"
-    assert format_activity_line("Grep", {"pattern": "foo"}) == "⏺ Grep foo"
+    assert format_activity_line("Read", {"file_path": "a/b.py"}) == "▸ Read a/b.py"
+    assert format_activity_line("Bash", {"command": "ls -la"}) == "▸ Bash ls -la"
+    assert format_activity_line("Grep", {"pattern": "foo"}) == "▸ Grep foo"
     # Unknown tool: name only, no crash.
-    assert format_activity_line("TodoWrite", {"todos": []}) == "⏺ TodoWrite"
+    assert format_activity_line("TodoWrite", {"todos": []}) == "▸ TodoWrite"
+    # The marker must NOT be an emoji-presentation glyph: terminals draw those
+    # 2 cells wide while rich/Textual lay them out as 1, shifting the line and
+    # clipping a character at the wrap ("Read" -> "Rea"). U+23FA (⏺) was such a glyph.
+    assert "⏺" not in format_activity_line("Read", {"file_path": "a/b.py"})
 
 
 async def _collect(objs):
@@ -274,7 +278,7 @@ async def test_consume_streams_text_activity_and_done():
     chunks = await _collect(objs)
     texts = [c.delta for c in chunks if isinstance(c, TextChunk)]
     assert texts[0] == "Looking…"
-    assert "⏺ Read x.py" in "".join(texts)
+    assert "▸ Read x.py" in "".join(texts)
     # Segments are blank-line separated; the final text segment carries that lead.
     assert texts[-1].strip() == "Done."
     assert texts[-1].startswith("\n\n")

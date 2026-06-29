@@ -186,8 +186,15 @@ _ACTIVITY_ARG = {
 }
 
 
+# A narrow, non-emoji marker. ``⏺`` (U+23FA) is emoji-presentation: terminals draw
+# it 2 cells wide while rich/Textual lay it out as 1, so the line shifts and a
+# character gets clipped at the wrap ("Read" rendered as "Rea"). ``▸`` is a plain
+# geometric glyph that renders at its 1-cell width, keeping the layout honest.
+_ACTIVITY_MARKER = "▸"
+
+
 def format_activity_line(name: str, tool_input: dict) -> str:
-    """A compact ``⏺ <Tool> <summary>`` line for one Claude tool_use, folded into
+    """A compact ``▸ <Tool> <summary>`` line for one Claude tool_use, folded into
     the streamed text so the user sees progress (we cannot surface real tool-call
     parts — pydantic_ai would try to execute them)."""
     key = _ACTIVITY_ARG.get(name)
@@ -195,7 +202,7 @@ def format_activity_line(name: str, tool_input: dict) -> str:
     if key:
         raw = tool_input.get(key, "")
         summary = " " + str(raw).strip().splitlines()[0] if str(raw).strip() else ""
-    return f"⏺ {name}{summary}"
+    return f"{_ACTIVITY_MARKER} {name}{summary}"
 
 
 @dataclass
