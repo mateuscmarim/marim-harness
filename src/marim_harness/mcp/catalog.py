@@ -57,6 +57,15 @@ _DISCOVERED_PREAMBLE = (
 )
 
 
+def discovered_instructions_text(mcp, discovered: set[str]) -> str:
+    """The usage-guidance block to inject for servers the model has discovered this
+    run, or "" when nothing has been discovered. ``mcp`` is an ``McpManager``
+    (duck-typed: needs ``discovered_server_instructions``)."""
+    if not discovered:
+        return ""
+    return render_discovered_instructions(mcp.discovered_server_instructions(discovered))
+
+
 def render_discovered_instructions(servers: list[tuple[str, str]]) -> str:
     """Render a deterministic block of server-authored usage instructions for
     servers the model has discovered. ``servers`` is ``(server_name, instructions)``
