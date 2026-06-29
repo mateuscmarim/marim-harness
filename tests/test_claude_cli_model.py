@@ -9,6 +9,8 @@ from pydantic_ai.messages import (
 )
 
 from marim_harness.config.claude_cli_model import (
+    ClaudeCliModel,
+    CliModelError,
     DoneChunk,
     TextChunk,
     consume_cli_stream,
@@ -156,3 +158,111 @@ async def test_consume_marks_incomplete_when_no_result():
     assert isinstance(done, DoneChunk)
     assert done.complete is False
     assert done.text == "hi"
+
+
+def _fake_objs(objs):
+    async def _spawn(argv, cwd):
+        for o in objs:
+            yield o
+
+    return _spawn
+
+
+_INIT = {"type": "system", "subtype": "init", "session_id": "S1", "model": "claude-x"}
+
+
+def _result(text, sid="S1"):
+    return {
+        "type": "result",
+        "result": text,
+        "session_id": sid,
+        "usage": {"input_tokens": 1, "output_tokens": 2},
+        "total_cost_usd": 0.0,
+    }
+
+
+def _user(text):
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    return [ModelRequest(parts=[UserPromptPart(content=text)], instructions="SYS")]
+
+
+@pytest.mark.anyio
+async def test_request_returns_text_only_response_and_captures_session():
+    model = ClaudeCliModel("sonnet")
+    model.spawn = _fake_objs(
+        [
+            _INIT,
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "hello"}]}},
+            _result("hello"),
+        ]
+    )
+    from pydantic_ai.messages import TextPart, ToolCallPart
+    from pydantic_ai.models import ModelRequestParameters
+
+    resp = await model.request(_user("hi"), None, ModelRequestParameters())
+    assert [type(p) for p in resp.parts] == [TextPart]
+    assert resp.parts[0].content == "hello"
+    assert not any(isinstance(p, ToolCallPart) for p in resp.parts)
+    assert model.session_id == "S1"  # captured for the next turn
+
+
+@pytest.mark.anyio
+async def test_second_turn_uses_resume(monkeypatch):
+    model = ClaudeCliModel("sonnet")
+    model.session_id = "S1"
+    captured = {}
+
+    def _spawn(argv, cwd):
+        captured["argv"] = argv
+
+        async def gen():
+            yield _INIT
+            yield {"type": "assistant", "message": {"content": [{"type": "text", "text": "ok"}]}}
+            yield _result("ok", sid="S1")
+
+        return gen()
+
+    model.spawn = _spawn
+    from pydantic_ai.models import ModelRequestParameters
+
+    await model.request(_user("again"), None, ModelRequestParameters())
+    assert "--resume" in captured["argv"]
+    assert captured["argv"][captured["argv"].index("--resume") + 1] == "S1"
+    # The latest user message is the positional prompt, not the flattened history.
+    assert "again" in captured["argv"]
+
+
+@pytest.mark.anyio
+async def test_request_raises_on_incomplete_stream():
+    model = ClaudeCliModel("sonnet")
+    model.spawn = _fake_objs(
+        [{"type": "assistant", "message": {"content": [{"type": "text", "text": "x"}]}}]
+    )
+    from pydantic_ai.models import ModelRequestParameters
+
+    with pytest.raises(CliModelError):
+        await model.request(_user("hi"), None, ModelRequestParameters())
+
+
+@pytest.mark.anyio
+async def test_request_stream_yields_text_events():
+    from pydantic_ai.messages import PartDeltaEvent, PartStartEvent
+    from pydantic_ai.models import ModelRequestParameters
+
+    model = ClaudeCliModel("sonnet")
+    model.spawn = _fake_objs(
+        [
+            _INIT,
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "streamed"}]}},
+            _result("streamed"),
+        ]
+    )
+    events = []
+    async with model.request_stream(_user("hi"), None, ModelRequestParameters()) as stream:
+        async for ev in stream:
+            events.append(ev)
+        final = stream.get()
+    assert any(isinstance(e, (PartStartEvent, PartDeltaEvent)) for e in events)
+    assert final.parts[0].content == "streamed"
+    assert model.session_id == "S1"
