@@ -95,6 +95,19 @@ def build_harness(
     # diagnostics-on-edit is gated separately by lsp_enabled (the manager).
     register_lsp_tools = cfg.lsp_enabled and cfg.lsp_tools_enabled
 
+    # The aux agents (summarizer/titler) must NOT share a claude-cli main model:
+    # that instance carries the live session_id, so they would resume — and reply
+    # into — the user's real Claude session (and drop their own instructions). Give
+    # them a stateless, read-only ephemeral clone instead. Other providers reuse the
+    # one model as before.
+    from ..config.claude_cli_model import ClaudeCliModel
+
+    aux_model = (
+        model.ephemeral_clone(cwd=str(workspace))
+        if isinstance(model, ClaudeCliModel)
+        else model
+    )
+
     harness = Harness(
         model=model,
         provider=BuiltinToolProvider(
@@ -109,8 +122,8 @@ def build_harness(
             store=store,
             manager=manager,
             max_context_tokens=cfg.max_context_tokens,
-            summarizer=make_summarizer(model),
-            titler=make_titler(model),
+            summarizer=make_summarizer(aux_model),
+            titler=make_titler(aux_model),
             model_source=model_source,
             model_id=model_id,
             proactive_memory=cfg.proactive_memory,

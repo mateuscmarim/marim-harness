@@ -219,8 +219,10 @@ class DoneChunk:
 async def consume_cli_stream(objs: AsyncIterator[dict]) -> AsyncIterator:
     """Turn parsed stream-json objects into ``TextChunk``s then one ``DoneChunk``.
 
-    Assistant ``text`` blocks stream as-is; ``tool_use`` blocks are folded into the
-    text as ``format_activity_line`` output. The terminal ``result`` event yields a
+    Assistant ``text`` blocks and folded ``tool_use`` activity lines are each
+    emitted as their own segment, separated by a blank line so the TUI renders
+    readable output instead of a run-on wall (a tool line's command and the text
+    that follows it must not collide). The terminal ``result`` event yields a
     ``DoneChunk`` carrying usage + session id. If the stream ends without a
     ``result``, the final ``DoneChunk`` has ``complete=False``."""
     text_parts: list[str] = []
@@ -233,17 +235,19 @@ async def consume_cli_stream(objs: AsyncIterator[dict]) -> AsyncIterator:
             message = obj.get("message") or {}
             for block in message.get("content") or []:
                 btype = block.get("type")
+                segment = ""
                 if btype == "text":
-                    delta = block.get("text", "") or ""
-                    if delta:
-                        text_parts.append(delta)
-                        yield TextChunk(delta)
+                    segment = (block.get("text", "") or "").strip()
                 elif btype == "tool_use":
-                    line = "\n" + format_activity_line(
+                    segment = format_activity_line(
                         block.get("name", "tool"), block.get("input") or {}
                     )
-                    text_parts.append(line)
-                    yield TextChunk(line)
+                if not segment:
+                    continue
+                # Separate each segment with a blank line; the first one leads.
+                chunk = f"\n\n{segment}" if text_parts else segment
+                text_parts.append(chunk)
+                yield TextChunk(chunk)
         elif kind == "result":
             session_id = session_id or obj.get("session_id")
             yield DoneChunk(
@@ -324,17 +328,33 @@ class ClaudeCliModel(Model):
     internally. ``mode_getter`` is set by bootstrap to read marim's live approval
     mode; ``session_id`` is held in-memory across turns of one process."""
 
-    def __init__(self, model_id: str | None) -> None:
+    def __init__(self, model_id: str | None, *, ephemeral: bool = False) -> None:
         super().__init__()
         self._model_id = model_id
         self.mode_getter: Callable[[], str] | None = None
         self.session_id: str | None = None
+        # Ephemeral models are for one-shot aux agents (titler/summarizer): they
+        # never resume or store a session, so they can't continue — or hijack —
+        # the user's live Claude session, and they always send their own system
+        # prompt. See ``ephemeral_clone``.
+        self.ephemeral = ephemeral
         self.spawn = spawn_cli_objects  # I/O seam; tests monkeypatch this
         # Late-bound by bootstrap/set_model to marim's real workspace (or worktree)
         # root, exactly like ``mode_getter``. Spawning in the process cwd (".") would
         # make Claude read/edit the WRONG directory — destructively so under --worktree.
         self.cwd: str = "."
         self._ts = datetime.now(tz=timezone.utc)
+
+    def ephemeral_clone(self, *, cwd: str) -> ClaudeCliModel:
+        """A stateless, read-only copy for one-shot aux agents (titler/summarizer).
+
+        It never resumes or stores a Claude session — so titling/summarizing can't
+        continue or hijack the user's live conversation — always sends its own
+        instructions, and runs in plan (read-only) mode so it can't edit files."""
+        clone = ClaudeCliModel(self._model_id, ephemeral=True)
+        clone.cwd = cwd
+        clone.mode_getter = lambda: "plan"
+        return clone
 
     @property
     def model_name(self) -> str:
@@ -355,13 +375,14 @@ class ClaudeCliModel(Model):
             )
         mode = self.mode_getter() if self.mode_getter is not None else "plan"
         note_ask_limitation_once(mode)
-        if self.session_id:
-            prompt, append_system = latest_user_text(messages), False
+        if self.session_id and not self.ephemeral:
+            prompt, append_system, resume = latest_user_text(messages), False, self.session_id
         else:
             # Cold turn: re-seed Claude with the whole conversation (resumed marim
-            # session or first turn). For a brand-new session this is just the one
-            # user message.
-            prompt, append_system = flatten_history(messages), True
+            # session, first turn, or any ephemeral aux call). For a brand-new
+            # session this is just the one user message. Ephemeral models always
+            # take this path — never resuming the user's live session.
+            prompt, append_system, resume = flatten_history(messages), True, None
         return _build(
             binary,
             prompt,
@@ -369,7 +390,7 @@ class ClaudeCliModel(Model):
             permission_mode_for(mode),
             [],  # let Claude use its own native toolset for the permission mode
             self._model_id,
-            resume_session_id=self.session_id,
+            resume_session_id=resume,
             append_system=append_system,
         )
 
@@ -386,7 +407,7 @@ class ClaudeCliModel(Model):
                 done = chunk
         if done is None or not done.complete:
             raise CliModelError("claude produced no result (crash or bad output).")
-        if done.session_id:
+        if done.session_id and not self.ephemeral:
             self.session_id = done.session_id
         return ModelResponse(
             parts=[TextPart(content=done.text)],
@@ -410,7 +431,9 @@ class ClaudeCliModel(Model):
             _objs=self.spawn(argv, self.cwd),
             _model_id=self.model_name,
             _ts=self._ts,
-            _set_session=lambda sid: setattr(self, "session_id", sid),
+            _set_session=(
+                None if self.ephemeral else lambda sid: setattr(self, "session_id", sid)
+            ),
         )
         yield stream
 

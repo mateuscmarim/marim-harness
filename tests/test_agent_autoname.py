@@ -23,6 +23,22 @@ def test_clean_title_clamps_length():
     assert out.endswith("…")
 
 
+def test_title_prompt_restates_task_in_message():
+    # The titler must restate the task IN the user message (like the summarizer),
+    # not rely on the system prompt alone — otherwise a model whose system prompt
+    # is dominated by something else (e.g. claude -p, where our instruction is only
+    # *appended* to Claude Code's own prompt) replies conversationally instead of
+    # titling, and that reply becomes the session name.
+    from marim_harness.compaction import _title_prompt
+
+    out = _title_prompt("User: fix the parser off-by-one\nAssistant: done")
+    assert "fix the parser off-by-one" in out
+    assert "TRANSCRIPT" in out
+    lowered = out.lower()
+    assert "only the title" in lowered
+    assert "do not reply conversationally" in lowered
+
+
 @pytest.mark.anyio
 async def test_make_titler_returns_clean_title():
     from pydantic_ai import Agent

@@ -112,6 +112,98 @@ def test_flatten_history_renders_tool_calls_and_returns():
     assert out.index("config.py") < out.index("PORT = 8080")
 
 
+def test_ephemeral_model_never_resumes_and_always_sends_system():
+    # Aux agents (titler/summarizer) run on an ephemeral model so they never
+    # resume — or pollute — the user's live Claude session, and always carry their
+    # own instructions. Even with a session_id set, argv must omit --resume and
+    # include --append-system-prompt.
+    model = ClaudeCliModel("sonnet", ephemeral=True)
+    model.mode_getter = lambda: "plan"
+    model.session_id = "MAIN-123"  # would normally trigger the resume path
+    argv = model._argv(
+        [
+            __import__("pydantic_ai.messages", fromlist=["ModelRequest"]).ModelRequest(
+                parts=[UserPromptPart(content="hey")], instructions="TITLE RULES"
+            )
+        ]
+    )
+    assert "--resume" not in argv
+    assert "--append-system-prompt" in argv
+
+
+@pytest.mark.anyio
+async def test_ephemeral_model_does_not_store_session_id():
+    model = ClaudeCliModel("sonnet", ephemeral=True)
+    model.mode_getter = lambda: "plan"
+
+    def _spawn(argv, cwd):
+        async def gen():
+            yield {"type": "system", "session_id": "S9"}
+            yield {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "Fix parser"}]},
+            }
+            yield {
+                "type": "result",
+                "result": "Fix parser",
+                "session_id": "S9",
+                "usage": {"input_tokens": 1, "output_tokens": 2},
+            }
+        return gen()
+
+    model.spawn = _spawn
+    from pydantic_ai.messages import ModelRequest
+    from pydantic_ai.models import ModelRequestParameters
+
+    await model.request(
+        [ModelRequest(parts=[UserPromptPart(content="hi")], instructions="T")],
+        None,
+        ModelRequestParameters(),
+    )
+    assert model.session_id is None  # ephemeral: stays stateless across calls
+
+
+def test_ephemeral_clone_is_stateless_read_only_with_cwd():
+    main = ClaudeCliModel("opus")
+    main.cwd = "/main"
+    clone = main.ephemeral_clone(cwd="/ws")
+    assert clone.ephemeral is True
+    assert clone._model_id == "opus"
+    assert clone.cwd == "/ws"
+    assert clone.mode_getter() == "plan"  # aux agents run read-only
+
+
+@pytest.mark.anyio
+async def test_consume_stream_separates_text_and_activity():
+    # Folded tool-activity lines must not collide with the surrounding text — each
+    # segment gets its own line so the TUI renders readable output, not a run-on wall.
+    objs = [
+        {"type": "system", "session_id": "S"},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "Surveying. "}]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Bash", "input": {"command": "ls | head -50"}}
+        ]}},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "Now sizes."}]}},
+        {"type": "result", "result": "Now sizes.", "session_id": "S",
+         "usage": {"input_tokens": 1, "output_tokens": 1}},
+    ]
+
+    async def gen():
+        for o in objs:
+            yield o
+
+    text = ""
+    async for chunk in consume_cli_stream(gen()):
+        if isinstance(chunk, TextChunk):
+            text += chunk.delta
+    # The bug: "ls | head -50Now sizes." ran together. The activity line and the
+    # following text must be separated by a newline.
+    assert "head -50Now" not in text
+    assert "⏺ Bash ls | head -50" in text
+    # The text after the tool activity begins on a fresh line.
+    assert "\nNow sizes." in text
+
+
 def test_request_usage_folds_cache_and_cost():
     u = request_usage_from_cli(
         {
@@ -183,7 +275,9 @@ async def test_consume_streams_text_activity_and_done():
     texts = [c.delta for c in chunks if isinstance(c, TextChunk)]
     assert texts[0] == "Looking…"
     assert "⏺ Read x.py" in "".join(texts)
-    assert texts[-1] == "Done."
+    # Segments are blank-line separated; the final text segment carries that lead.
+    assert texts[-1].strip() == "Done."
+    assert texts[-1].startswith("\n\n")
     done = chunks[-1]
     assert isinstance(done, DoneChunk)
     assert done.session_id == "sess-9"

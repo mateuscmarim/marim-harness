@@ -302,12 +302,31 @@ def clean_title(raw: str) -> str:
     return text or "Untitled session"
 
 
+def _title_prompt(transcript: str) -> str:
+    """Wrap the transcript in an explicit, in-message title instruction. As with
+    ``_summarize_prompt``, a bare transcript with the rules only in the system
+    prompt lets a model reply conversationally instead of titling — and under the
+    claude-cli provider our instruction is merely *appended* to Claude Code's own
+    system prompt, so restating the task in the user turn is what keeps it on
+    task. Without this, the model's chat reply becomes the session name."""
+    return (
+        "Write a short, specific title (at most six words) for the coding-session "
+        "transcript below, following the rules in your instructions. Output only "
+        "the title — no quotes, no trailing punctuation, do not reply "
+        "conversationally or address the user.\n\n"
+        "=== TRANSCRIPT START ===\n"
+        f"{transcript}\n"
+        "=== TRANSCRIPT END ===\n\n"
+        "Title:"
+    )
+
+
 def make_titler(model) -> Titler:
     """Build a titler backed by a dedicated, tool-free agent on ``model``."""
     title_agent = Agent(model, instructions=_TITLE_INSTRUCTIONS)
 
     async def title(messages: list) -> str:
-        result = await title_agent.run(render_transcript(messages))
+        result = await title_agent.run(_title_prompt(render_transcript(messages)))
         return clean_title(result.output)
 
     return title
