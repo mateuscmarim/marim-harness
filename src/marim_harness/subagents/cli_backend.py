@@ -139,18 +139,29 @@ def build_cli_argv(
     permission_mode: str,
     allowed_tools: list[str],
     model: str | None,
+    *,
+    resume_session_id: str | None = None,
+    append_system: bool = True,
 ) -> list[str]:
     """The argv for one headless spawn. ``stream-json`` requires ``--verbose``.
     The task is a single positional arg (we exec, not shell — no quoting hazard);
     the agent's role prompt is appended to the CLI's own system prompt. ``--model``
     is omitted when None so the CLI uses its configured default; ``--allowedTools``
-    is omitted when empty (which, in plan mode, simply leaves the CLI read-only)."""
+    is omitted when empty (which, in plan mode, simply leaves the CLI read-only).
+
+    The main-loop ``ClaudeCliModel`` uses ``resume_session_id`` to continue an
+    existing Claude session (sending only the new user message), and sets
+    ``append_system=False`` on those resumed turns so the system prompt — already
+    set when the session was created — is not appended again."""
     argv = [
         binary, "-p", prompt,
         "--output-format", "stream-json", "--verbose",
-        "--append-system-prompt", system_prompt,
         "--permission-mode", permission_mode,
     ]
+    if append_system:
+        argv += ["--append-system-prompt", system_prompt]
+    if resume_session_id:
+        argv += ["--resume", resume_session_id]
     if allowed_tools:
         argv += ["--allowedTools", ",".join(allowed_tools)]
     if model:
