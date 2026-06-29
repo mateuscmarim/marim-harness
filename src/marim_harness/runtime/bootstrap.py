@@ -122,4 +122,13 @@ def build_harness(
     )
     if resume:
         harness.resume()
+
+    # The claude-cli provider needs marim's *live* approval mode each turn (to pick
+    # Claude's --permission-mode) — bind it the same late way `get_model` is bound,
+    # so a runtime /mode switch is honored on the next turn.
+    from ..config.claude_cli_model import ClaudeCliModel
+
+    if isinstance(harness.current_model, ClaudeCliModel):
+        harness.current_model.mode_getter = lambda: harness.mode.value
+
     return harness

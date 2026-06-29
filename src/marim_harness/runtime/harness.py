@@ -418,6 +418,12 @@ class Harness:
         self.session.update_model(model)
         if persist:
             self.session.set_model(model_id)
+        # Bind the live mode getter if the new model is a ClaudeCliModel so that
+        # switching TO this provider at runtime still honors live /mode changes.
+        from ..config.claude_cli_model import ClaudeCliModel
+
+        if isinstance(model, ClaudeCliModel):
+            model.mode_getter = lambda: self.mode.value
 
     @property
     def mode(self) -> Mode:

@@ -27,9 +27,11 @@ Match that order locally before claiming work is done. `requires-python` is `>=3
 so avoid 3.11+ only syntax.
 
 Set `MARIM_DEBUG=1` for DEBUG logging. Provider config lives in env vars / `.env`
-(see `.env.example`): `MARIM_PROVIDER` (`openrouter`|`local`|`google`), `MARIM_MODEL`,
+(see `.env.example`): `MARIM_PROVIDER` (`openrouter`|`local`|`google`|`claude-cli`), `MARIM_MODEL`,
 `OPENROUTER_API_KEY`, etc. Default provider is OpenRouter, default model
-`anthropic/claude-sonnet-4-6`.
+`anthropic/claude-sonnet-4-6`. `claude-cli` delegates each turn to the `claude` CLI on a
+Claude subscription — marim acts as a launcher (Claude runs its own tools/loop), so marim's
+own tools/approval/LSP/MCP do not apply in that provider.
 
 ## Architecture
 
