@@ -207,6 +207,16 @@ def test_build_stdio_server_from_command():
     assert server.process_tool_call is not None  # gated
 
 
+def test_build_stdio_server_gets_agent_tool_retry_budget():
+    # MCP tools must get the same retry budget the agent gives its builtins
+    # (retries=2). pydantic-ai defaults an MCP server's max_retries to 1, so a
+    # single transient tool error (e.g. a Playwright page-session blip) raised
+    # UnexpectedModelBehavior and killed the spawn on the first miss.
+    servers, _ = build_mcp_servers({"files": {"command": "npx", "args": ["fs"]}})
+    (server,) = servers
+    assert server.max_retries == 2
+
+
 def test_build_http_server_from_url():
     from pydantic_ai.mcp import MCPServerStreamableHTTP
 
@@ -215,6 +225,7 @@ def test_build_http_server_from_url():
     (server,) = servers
     assert isinstance(server, MCPServerStreamableHTTP)
     assert server.tool_prefix == "web"
+    assert server.max_retries == 2  # same budget as stdio + the agent's builtins
 
 
 def test_build_sse_server_when_type_sse():

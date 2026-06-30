@@ -33,6 +33,12 @@ from ..config import config_dir
 from ..runtime.permissions import Mode
 from ..tools.offload import _INLINE_CHAR_LIMIT, offload_if_large
 
+# Per-tool retry budget for MCP servers, matched to the agent's ``retries=2`` (the
+# main agent and every sub-agent are built with it). pydantic-ai defaults an MCP
+# server's max_retries to 1, which kills the whole run with UnexpectedModelBehavior
+# on the first tool error — see build_mcp_servers' docstring.
+_MCP_TOOL_RETRIES = 2
+
 # MCPServerStdio/StreamableHTTP/SSE are deprecated in favour of MCPToolset in
 # pydantic-ai 2.x, but they remain the only variants with the simple
 # command/url + tool_prefix kwargs this config maps onto. Suppress import-time
@@ -344,7 +350,16 @@ def build_mcp_servers(specs: dict) -> tuple[list, list[str]]:
 
     Returns ``(servers, warnings)``. A spec that is neither stdio (has
     ``command``) nor HTTP/SSE (has ``url``) is skipped with a warning instead of
-    crashing, so one bad entry can't take down the rest."""
+    crashing, so one bad entry can't take down the rest.
+
+    Each server is given the same per-tool retry budget the agent grants its
+    builtins (``_MCP_TOOL_RETRIES``). pydantic-ai defaults an MCP server's
+    ``max_retries`` to 1, but the agent (and every sub-agent) is built with
+    ``retries=2`` precisely because a budget of 1 kills the whole run on the
+    first tool error — see the runner's Agent construction. A flaky MCP tool
+    (e.g. a Playwright page-session blip) would otherwise raise
+    ``UnexpectedModelBehavior`` and take the spawn down before the model gets a
+    chance to recover. We align the two so MCP tools get the same second chance."""
     servers: list = []
     notes: list[str] = []
     # Suppress construction-time DeprecationWarning from the deprecated MCP
@@ -364,6 +379,7 @@ def build_mcp_servers(specs: dict) -> tuple[list, list[str]]:
                     cwd=spec.get("cwd"),
                     tool_prefix=name,
                     process_tool_call=hook,
+                    max_retries=_MCP_TOOL_RETRIES,
                 )
             elif "url" in spec:
                 kind = (
@@ -376,6 +392,7 @@ def build_mcp_servers(specs: dict) -> tuple[list, list[str]]:
                     headers=spec.get("headers"),
                     tool_prefix=name,
                     process_tool_call=hook,
+                    max_retries=_MCP_TOOL_RETRIES,
                 )
             else:
                 notes.append(
