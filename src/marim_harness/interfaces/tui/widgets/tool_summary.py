@@ -29,7 +29,7 @@ _TOOL_LABELS = {
 # here use the generic "first meaningful arg" fallback.
 _TARGET_ARG = {
     "read_file": "path", "write_file": "path", "edit_file": "path",
-    "bash": "command", "grep": "pattern", "glob": "pattern", "tree": "path",
+    "grep": "pattern", "glob": "pattern", "tree": "path",
     "wait_for_job": "id", "web_search": "query", "fetch_url": "url",
     # Pin the memory tools' targets to the title/name: their args also carry a
     # multi-line `body`, so the order-dependent "first meaningful arg" fallback
@@ -92,9 +92,24 @@ def _task_digest(tasks) -> str:
     return f"{head} · ▸ {current}" if current else head
 
 
+def _bash_description(args: dict) -> str:
+    """The bash call's optional human-written summary, stripped — or ``""`` when
+    absent/blank. Used to headline the row while the command itself stays in the
+    body and the approval modal."""
+    d = args.get("description")
+    return d.strip() if isinstance(d, str) else ""
+
+
 def _raw_target(tool_name: str, args: dict) -> str:
     if tool_name == "update_tasks":
         return _task_digest(args.get("todos"))
+    if tool_name == "bash":
+        # Prefer the human-written `description` as the headline, falling back to
+        # the `command`. The command is never hidden: it stays in the expanded
+        # body (arg_lines render `command: '…'`) and the approval modal shows the
+        # raw `$ command`, so a friendly label can't mask what actually runs.
+        v = _bash_description(args) or args.get("command") or ""
+        return " ".join(str(v).split())
     if tool_name == "spawn_agent":
         # Prefer the short `description`, then the `task`. Pinning the target keeps
         # the order-dependent "first meaningful arg" fallback from surfacing a bare
@@ -158,7 +173,11 @@ def _badges(tool_name: str, args: dict) -> tuple[str, ...]:
 
 def summarize(tool_name: str, args: dict, *, cap: int = _PREVIEW_CAP) -> ToolSummary:
     raw = _raw_target(tool_name, args)
-    clip = _clip_middle if tool_name == "bash" else _clip
+    # A bash *command*'s tail is informative (``… | tail -1``) → middle-clip. A
+    # bash *description* is prose → head-clip (like every other target). Pick by
+    # which one _raw_target actually surfaced.
+    bash_command_shown = tool_name == "bash" and not _bash_description(args)
+    clip = _clip_middle if bash_command_shown else _clip
     target = clip(raw, cap)
     # Append the read window after clipping the path, so a long path can't push
     # the range off the end — the range is the new, salient bit.

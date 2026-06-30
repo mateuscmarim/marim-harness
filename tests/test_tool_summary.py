@@ -80,6 +80,45 @@ def test_bash_command_clips_middle_keeping_the_tail():
     assert "…" in s.target and len(s.target) <= 30
 
 
+def test_bash_prefers_description_as_headline():
+    # The human-written description headlines the row; the command itself stays
+    # visible in the expanded body (arg_lines) and the approval modal.
+    s = summarize("bash", {
+        "command": "uv run pytest --no-cov -q 2>&1 | tail -1",
+        "description": "Run the test suite",
+    })
+    assert s.label == "Bash"
+    assert s.target == "Run the test suite"
+
+
+def test_bash_without_description_falls_back_to_command():
+    s = summarize("bash", {"command": "ls -la"})
+    assert s.target == "ls -la"
+
+
+def test_bash_blank_description_falls_back_to_command():
+    s = summarize("bash", {"command": "ls -la", "description": "   "})
+    assert s.target == "ls -la"
+
+
+def test_bash_description_head_clips_as_prose_not_middle():
+    desc = "Count the total number of source lines across the whole project tree"
+    s = summarize("bash", {"command": "wc -l", "description": desc}, cap=30)
+    # Prose clips from the END (head kept), unlike a command's middle-clip.
+    assert s.target.startswith("Count the total")
+    assert s.target.endswith("…")
+    assert len(s.target) <= 30
+
+
+def test_bash_description_with_background_keeps_bg_badge():
+    s = summarize("bash", {
+        "command": "npm run dev", "description": "Start the dev server",
+        "background": True,
+    })
+    assert s.target == "Start the dev server"
+    assert s.badges == ("bg",)
+
+
 def test_grep_path_becomes_an_in_badge():
     s = summarize("grep", {"pattern": "build_harness", "path": "src/"})
     assert s.label == "Grep"
