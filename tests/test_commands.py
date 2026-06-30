@@ -11,6 +11,7 @@ from marim_harness.interfaces.tui.commands import (
     resolve_ref,
 )
 from marim_harness.interfaces.tui.themes import THEME_NAMES
+from marim_harness.mcp.manager import McpStatus
 from marim_harness.session import SessionInfo
 
 
@@ -241,7 +242,7 @@ async def test_mcp_lists_server_status():
                 SimpleNamespace(id="web"),
                 SimpleNamespace(id="idle"),
             ],
-            mcp_status={"connected": ["files"], "failed": [("web", "boom")]},
+            mcp_status=McpStatus(connected=["files"], failed=[("web", "boom")]),
         )
     )
     await dispatch(app, "/mcp")
@@ -256,7 +257,7 @@ async def test_mcp_none_configured():
     app = _FakeApp()
     app.harness = SimpleNamespace(
         mcp=SimpleNamespace(
-            mcp_servers=[], mcp_status={"connected": [], "failed": []}
+            mcp_servers=[], mcp_status=McpStatus()
         )
     )
     await dispatch(app, "/mcp")
@@ -272,7 +273,7 @@ class _FakeMcpHarness:
         self.mcp = SimpleNamespace(
             disabled=set(disabled),
             mcp_servers=[SimpleNamespace(id=n) for n in names],
-            mcp_status={"connected": list(names), "failed": []},
+            mcp_status=McpStatus(connected=list(names), failed=[]),
             configured_names=lambda: list(self._names),
         )
         self.enabled_calls: list[str] = []

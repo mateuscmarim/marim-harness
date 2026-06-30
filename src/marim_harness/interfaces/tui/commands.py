@@ -12,6 +12,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from ...mcp.manager import McpStatus
 from ...runtime.permissions import Mode
 from ...workspace import discover_skills
 from .themes import THEME_NAMES
@@ -253,9 +254,9 @@ async def _mcp_list(app: HarnessApp) -> None:
             "or `~/.config/marim/mcp.json` (global)."
         )
         return
-    status = getattr(app.harness.mcp, "mcp_status", {"connected": [], "failed": []})
-    connected = set(status.get("connected", []))
-    failed = dict(status.get("failed", []))
+    status = getattr(app.harness.mcp, "mcp_status", None) or McpStatus()
+    connected = set(status.connected)
+    failed = dict(status.failed)
     disabled = set(getattr(app.harness.mcp, "disabled", set()) or set())
     lines = ["**MCP servers**", ""]
     for s in servers:

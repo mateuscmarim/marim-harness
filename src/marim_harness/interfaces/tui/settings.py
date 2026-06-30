@@ -270,6 +270,13 @@ class SettingsScreen(Screen[None]):
                 type="integer",
             )
         with Horizontal(classes="frow"):
+            yield Label("Sub-agent request limit")
+            yield Input(
+                value=str(self.env_cfg.subagent.request_limit),
+                id="subagent-req-limit",
+                type="integer",
+            )
+        with Horizontal(classes="frow"):
             yield Label("Notification events")
             yield Input(
                 value=", ".join(sorted(self.env_cfg.notifications.events)),
@@ -423,6 +430,15 @@ class SettingsScreen(Screen[None]):
         if ts_threshold <= 0:
             status.update("Tool-search threshold must be a positive integer.")
             return
+        req_raw = self.query_one("#subagent-req-limit", Input).value.strip()
+        try:
+            req_limit = int(req_raw)
+        except ValueError:
+            status.update("Sub-agent request limit must be a positive integer.")
+            return
+        if req_limit <= 0:
+            status.update("Sub-agent request limit must be a positive integer.")
+            return
         values = {
             "MARIM_DEFAULT_MODE": default_mode,
             "MARIM_TOOL_SEARCH": tool_search,
@@ -432,6 +448,7 @@ class SettingsScreen(Screen[None]):
             "MARIM_JOB_TOOL_COMBINED": _b(self.query_one("#sw-job", BoxCheckbox).value),
             "MARIM_PROACTIVE_MEMORY": _b(self.query_one("#sw-mem", BoxCheckbox).value),
             "MARIM_MAX_CONTEXT_TOKENS": str(ctx),
+            "MARIM_SUBAGENT_REQUEST_LIMIT": str(req_limit),
             "MARIM_NOTIFICATIONS": _b(
                 self.query_one("#sw-notifications", BoxCheckbox).value
             ),

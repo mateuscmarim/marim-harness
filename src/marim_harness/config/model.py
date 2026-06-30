@@ -51,6 +51,10 @@ class SubagentConfig:
     detach_fanout: bool = True
     autonomous_wake: bool = True
     wake_depth_cap: int = 8
+    # Backstop on a single sub-agent run: the most model requests it may make
+    # before pydantic-ai aborts it. Bounds a runaway sub-agent (stuck calling
+    # tools and never concluding) rather than blocking the spawning turn forever.
+    request_limit: int = 50
 
 
 @dataclass
@@ -113,6 +117,7 @@ def _common_kwargs() -> dict[str, Any]:
         detach_fanout=_bool_env("MARIM_DETACH_FANOUT", True),
         autonomous_wake=_bool_env("MARIM_AUTONOMOUS_WAKE", True),
         wake_depth_cap=_int_env("MARIM_WAKE_DEPTH_CAP", 8),
+        request_limit=_int_env("MARIM_SUBAGENT_REQUEST_LIMIT", 50),
     )
     notifications = NotificationConfig(
         enabled=_bool_env("MARIM_NOTIFICATIONS", True),

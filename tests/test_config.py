@@ -53,6 +53,20 @@ def test_negative_subagent_concurrency_maps_to_none(monkeypatch):
     assert load_config().subagent.concurrency is None
 
 
+def test_load_config_reads_subagent_request_limit(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setenv("MARIM_SUBAGENT_REQUEST_LIMIT", "120")
+    assert load_config().subagent.request_limit == 120
+
+
+def test_subagent_request_limit_defaults_to_50(monkeypatch):
+    monkeypatch.delenv("MARIM_SUBAGENT_REQUEST_LIMIT", raising=False)
+    assert load_config().subagent.request_limit == 50
+    # A non-positive value is rejected (per _int_env) and falls back to the default.
+    monkeypatch.setenv("MARIM_SUBAGENT_REQUEST_LIMIT", "0")
+    assert load_config().subagent.request_limit == 50
+
+
 def test_detach_fanout_defaults_on(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     monkeypatch.delenv("MARIM_DETACH_FANOUT", raising=False)

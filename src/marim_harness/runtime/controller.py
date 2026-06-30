@@ -7,6 +7,7 @@ consumables, steer buffering) from model/session/MCP lifecycle management.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterable, Callable, Sequence
 from dataclasses import dataclass, replace
@@ -68,18 +69,41 @@ def _has_unanswered_tool_calls(history: list[ModelMessage]) -> bool:
     return bool(calls - returns)
 
 
+def _tool_call_is_unusable(part) -> bool:
+    """True when ``part`` is a ``ToolCallPart`` no provider will accept back in
+    history because it's structurally broken: its function name never streamed (an
+    empty ``tool_name``), or its arguments arrived as a string that isn't valid
+    JSON. A flaky model/provider produces both — the first 400s the next request
+    with "tool_calls[i] is missing a function name", the second with "Assistant
+    tool call function.arguments must be valid JSON". Args given as a dict (already
+    structured) or an empty/absent value (a no-arg call) are fine and kept."""
+    from pydantic_ai.messages import ToolCallPart
+
+    if not isinstance(part, ToolCallPart):
+        return False
+    if not part.tool_name:
+        return True
+    args = part.args
+    if isinstance(args, str) and args.strip():
+        try:
+            json.loads(args)
+        except (ValueError, TypeError):
+            return True
+    return False
+
+
 def _drop_nameless_tool_calls(history: list[ModelMessage]) -> list[ModelMessage]:
-    """Return a history with every nameless ``ToolCallPart`` (and the returns it
-    orphans) removed. A flaky model/provider can stream a partial tool call whose
-    function name never arrives, leaving a ``ToolCallPart`` with an empty
-    ``tool_name``; persisted, every provider then rejects the next request
-    ("tool_calls[i] is missing a function name"), wedging the session just like a
-    dangling call does. The unanswered-call repair can't catch it — the part has
-    an id, it's just nameless — so it needs its own pass. A ``ToolReturnPart``
-    that answered a dropped call is dropped too (it would now reference nothing),
-    and a message left with no parts is removed rather than sent empty. Returns
-    the input list unchanged when nothing is nameless, so callers can skip a
-    redundant persist."""
+    """Return a history with every structurally-unusable ``ToolCallPart`` (and the
+    returns it orphans) removed — see :func:`_tool_call_is_unusable` for what
+    counts: a call whose function name never arrived, or whose args string won't
+    parse as JSON. Persisted, every provider then rejects the next request
+    ("tool_calls[i] is missing a function name" / "function.arguments must be valid
+    JSON"), wedging the session just like a dangling call does. The unanswered-call
+    repair can't catch it — the part has an id and (sometimes) a name, it's just
+    broken — so it needs its own pass. A ``ToolReturnPart`` that answered a dropped
+    call is dropped too (it would now reference nothing), and a message left with
+    no parts is removed rather than sent empty. Returns the input list unchanged
+    when nothing is broken, so callers can skip a redundant persist."""
     from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 
     # Hot path: this runs as a ProcessHistory capability before EVERY model
@@ -91,22 +115,22 @@ def _drop_nameless_tool_calls(history: list[ModelMessage]) -> list[ModelMessage]
     # run's messages (``_agent_graph``: ``messages=ctx.state.message_history[:]``)
     # and uses our return value only for that one request — it never writes the
     # cleaned list back into ``ctx.state.message_history``. So stripping a
-    # nameless part is ephemeral: the malformed ModelResponse stays in the run's
+    # broken part is ephemeral: the malformed ModelResponse stays in the run's
     # own history and gets *buried* as later steps append after it, and every
     # subsequent request must re-strip it from somewhere in the middle. A
-    # tail-only short-circuit would therefore miss a buried nameless call and let
+    # tail-only short-circuit would therefore miss a buried broken call and let
     # the provider reject the next request — the exact wedge this guards against.
     if not any(
-        isinstance(part, ToolCallPart) and not part.tool_name
+        _tool_call_is_unusable(part)
         for message in history
         for part in getattr(message, "parts", [])
     ):
         return history
-    nameless_ids = {
+    broken_ids = {
         part.tool_call_id
         for message in history
         for part in getattr(message, "parts", [])
-        if isinstance(part, ToolCallPart) and not part.tool_name
+        if _tool_call_is_unusable(part)
     }
     cleaned: list[ModelMessage] = []
     for message in history:
@@ -119,7 +143,7 @@ def _drop_nameless_tool_calls(history: list[ModelMessage]) -> list[ModelMessage]
             for part in parts
             if not (
                 isinstance(part, (ToolCallPart, ToolReturnPart))
-                and part.tool_call_id in nameless_ids
+                and part.tool_call_id in broken_ids
             )
         ]
         if not kept:

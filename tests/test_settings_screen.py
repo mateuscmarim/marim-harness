@@ -259,3 +259,47 @@ async def test_tool_search_selector_saves(isolated_env, monkeypatch, tmp_path):
         await pilot.pause()
     assert os.environ.get("MARIM_TOOL_SEARCH") == "on"
     assert os.environ.get("MARIM_TOOL_SEARCH_THRESHOLD") == "20"
+
+
+@pytest.mark.anyio
+async def test_subagent_request_limit_reflects_config_and_saves(
+    isolated_env, monkeypatch, tmp_path
+):
+    """The Config section's sub-agent request-limit input shows the configured value
+    and, on save, persists MARIM_SUBAGENT_REQUEST_LIMIT to the .env."""
+    from textual.widgets import Input
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("MARIM_SUBAGENT_REQUEST_LIMIT", raising=False)
+    app = _Host(_fake_harness(), _env_cfg())  # default request_limit == 50
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        screen.active_section = "config"
+        await pilot.pause()
+        assert screen.query_one("#subagent-req-limit", Input).value == "50"
+        screen.query_one("#subagent-req-limit", Input).value = "120"
+        await pilot.pause()
+        screen._save_env()
+        await pilot.pause()
+    assert os.environ.get("MARIM_SUBAGENT_REQUEST_LIMIT") == "120"
+    assert "MARIM_SUBAGENT_REQUEST_LIMIT=120" in (tmp_path / "marim" / ".env").read_text()
+
+
+@pytest.mark.anyio
+async def test_invalid_request_limit_blocks_save(isolated_env, monkeypatch, tmp_path):
+    from textual.widgets import Input
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        screen.active_section = "config"
+        await pilot.pause()
+        screen.query_one("#subagent-req-limit", Input).value = "0"
+        screen._save_env()
+        await pilot.pause()
+        status = str(screen.query_one("#save-status").render())
+    assert not (tmp_path / "marim" / ".env").exists()
+    assert "request limit" in status.lower()

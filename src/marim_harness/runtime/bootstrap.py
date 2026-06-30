@@ -131,6 +131,7 @@ def build_harness(
             wake_depth_cap=cfg.subagent.wake_depth_cap,
             subagent_concurrency=cfg.subagent.concurrency,
             subagent_transcript_cap=cfg.subagent.transcript_cap,
+            subagent_request_limit=cfg.subagent.request_limit,
             mcp_servers=mcp_servers,
             mcp_disabled=mcp_disabled,
             notifications=cfg.notifications,

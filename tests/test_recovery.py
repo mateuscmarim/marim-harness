@@ -198,6 +198,44 @@ def test_drop_nameless_keeps_other_parts_of_a_mixed_message():
     assert isinstance(parts[0], TextPart)
 
 
+# A model can also emit a *named* tool call whose arguments aren't valid JSON
+# (a truncated stream, a provider that forwards raw text). Persisted, the next
+# request 400s with "Assistant tool call function.arguments must be valid JSON".
+# The nameless check misses it — the part HAS a name — so the scrub must also
+# drop a call whose args string won't parse.
+
+
+def test_drop_unusable_removes_a_call_with_malformed_json_args():
+    history = [
+        ModelResponse(
+            parts=[
+                ToolCallPart(tool_name="bash", args='{"command": "ls"', tool_call_id="ok"),
+            ]
+        ),
+    ]
+    cleaned = _drop_nameless_tool_calls(history)
+    calls = [
+        p
+        for m in cleaned
+        for p in getattr(m, "parts", [])
+        if isinstance(p, ToolCallPart)
+    ]
+    assert calls == []  # the truncated-JSON call is structurally unusable → gone
+
+
+def test_drop_unusable_keeps_a_call_with_valid_json_string_args():
+    """A guard against over-removal: args given as a *valid* JSON string is fine —
+    providers accept it — so the scrub must leave it (and stay a noop)."""
+    history = [
+        ModelResponse(
+            parts=[
+                ToolCallPart(tool_name="bash", args='{"command": "ls"}', tool_call_id="ok"),
+            ]
+        ),
+    ]
+    assert _drop_nameless_tool_calls(history) is history
+
+
 async def test_resume_strips_nameless_tool_call_then_runs(tmp_path):
     """End-to-end: a persisted history carrying a nameless tool call must resume
     on the next prompt — the malformed call is stripped before the request, so

@@ -22,6 +22,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import Agent, capture_run_messages
+from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import UsageLimits
 
@@ -291,6 +292,10 @@ class SubagentRunner:
         else:
             model_obj = self._build_model(model)
         allow_gated = self.deps.workspace.mode is Mode.auto
+        # Imported lazily for the same reason _resumable_history does: agent.py
+        # imports this module, so a top-level import of the harness would cycle.
+        from ..runtime.harness import _drop_nameless_tool_calls
+
         sub = Agent(
             model_obj,
             deps_type=Deps,
@@ -306,6 +311,14 @@ class SubagentRunner:
             # budget 1 dies on the first mispredict where the main agent recovers.
             retries=2,
             model_settings=self._model_settings,
+            # Same scrub the main agent runs (harness.py): a flaky sub-agent model
+            # can emit a structurally-broken tool call live mid-run (nameless, or
+            # args that aren't valid JSON). Without this, the broken part rides in
+            # history and the provider 400s the next request ("missing a function
+            # name" / "function.arguments must be valid JSON"), crashing the spawn.
+            # It runs before EVERY request, so it catches a call buried mid-history
+            # that the transient-retry repair (only on the resume path) never sees.
+            capabilities=[ProcessHistory(_drop_nameless_tool_calls)],
         )
         self.provider.register_subagent(sub, effective_tools(defn, allow_gated=allow_gated))
         # Nested spawning: only register spawn_agent if the child would be

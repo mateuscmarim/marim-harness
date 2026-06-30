@@ -135,6 +135,46 @@ async def test_resumes_after_transient_error_without_re_running_work(tmp_path: P
 
 
 @pytest.mark.anyio
+async def test_subagent_strips_a_nameless_tool_call_before_the_next_request(tmp_path: Path):
+    """A sub-agent's model can emit a structurally-broken tool call LIVE mid-run (a
+    nameless call, or args that aren't valid JSON). The main agent scrubs these
+    before every request via a ProcessHistory capability; a sub-agent built without
+    it carries the broken call into the next request, which the provider 400s with
+    'tool_calls[i] is missing a function name'. The built sub-agent must get the
+    same scrub, so the malformed call never reaches the next request."""
+    seen: dict = {}
+    calls = {"n": 0}
+
+    def fn(messages, info):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # A flaky provider streams a tool call whose function name never lands.
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name="", args={}, tool_call_id="bad")]
+            )
+        seen["messages"] = messages
+        return ModelResponse(parts=[TextPart(content="done")])
+
+    deps = _make_deps(tmp_path)
+    runner = _make_harness(FunctionModel(fn), deps).subagents
+    sub, err = runner.build("general")
+    assert err is None, err
+    assert sub is not None
+
+    result = await runner._run_to_completion(sub, "go", deps, None, None)
+
+    assert result.output == "done"
+    # The continuation request the model saw must not carry the nameless call.
+    nameless = [
+        p
+        for m in seen["messages"]
+        for p in getattr(m, "parts", [])
+        if isinstance(p, ToolCallPart) and not p.tool_name
+    ]
+    assert nameless == []
+
+
+@pytest.mark.anyio
 async def test_retry_emits_a_ui_notice_for_a_foreground_spawn(tmp_path: Path):
     runner, _ = _runner(tmp_path)
     notices: list[tuple[str, str]] = []
