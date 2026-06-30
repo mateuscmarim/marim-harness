@@ -19,7 +19,8 @@ target test file path, the seed file path, and the scenario body (steps and expe
 
 # For each test you generate
 - Obtain the test plan with all the steps and verification specification
-- Run the `generator_setup_page` tool to set up page for the scenario
+- Run the `generator_setup_page` tool to set up page for the scenario — use the
+  generator's own setup tool, NOT `planner_setup_page` (that one belongs to the planner)
 - For each step and verification in the scenario, do the following:
   - Use Playwright tool to manually execute it in real-time.
   - Use the step description as the intent for each Playwright tool call.
