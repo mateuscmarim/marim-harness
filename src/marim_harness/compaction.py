@@ -12,6 +12,7 @@ Two strategies share the same head/tail split:
   synthetic message, falling back to truncation if the summary call fails.
 """
 
+import dataclasses
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -142,6 +143,65 @@ def compact_history(
     if start is None:
         return history, False
     return history[:1] + history[start:], True
+
+
+# Replaces a stale tool observation's body. Kept short and explicit so the model
+# knows the output was *elided*, not lost, and can re-run the tool if it still
+# needs it — the same contract read_file/run_bash already use when they clip.
+MASKED_OBSERVATION = (
+    "[observation elided to save context — re-run the tool if you need this output]"
+)
+
+
+def mask_stale_observations(
+    history: list,
+    keep_recent: int = 4,
+    *,
+    min_chars: int = 200,
+) -> tuple[list, int]:
+    """Replace the body of older tool-observation returns with a short placeholder.
+
+    Walks ``history`` newest-first, leaves the most recent ``keep_recent``
+    ``ToolReturnPart`` payloads intact (the agent is most likely still acting on
+    them), and swaps the ``content`` of older returns whose rendered length is at
+    least ``min_chars`` for :data:`MASKED_OBSERVATION`. A return's ``tool_name``
+    and ``tool_call_id`` are preserved, so the tool-call/return pairing every chat
+    API enforces is never broken — only the bulky payload is dropped.
+
+    This is the cache-safe lever: it is meant to run *at compaction time*, when the
+    cached message tail is already invalidated by the rewrite, so masking adds no
+    extra cache miss (a per-request sliding mask would bust the tail cache every
+    turn and cost more than it saves). Already-masked returns and small ones are
+    skipped, so re-running it is idempotent. Returns ``(new_history, masked_count)``
+    and never mutates the input — masked messages are rebuilt via ``replace``.
+    """
+    seen = 0
+    masked = 0
+    new_history = list(history)
+    # Newest-first (messages and parts both reversed) so "keep the most recent N"
+    # is a single running count across the whole history.
+    for idx in range(len(new_history) - 1, -1, -1):
+        message = new_history[idx]
+        parts = getattr(message, "parts", None)
+        if not parts:
+            continue
+        new_parts = list(parts)
+        changed = False
+        for pidx in range(len(parts) - 1, -1, -1):
+            part = parts[pidx]
+            if not isinstance(part, ToolReturnPart):
+                continue
+            seen += 1
+            if seen <= keep_recent or part.content == MASKED_OBSERVATION:
+                continue
+            if len(str(part.content)) < min_chars:
+                continue
+            new_parts[pidx] = dataclasses.replace(part, content=MASKED_OBSERVATION)
+            changed = True
+            masked += 1
+        if changed:
+            new_history[idx] = dataclasses.replace(message, parts=new_parts)
+    return new_history, masked
 
 
 def render_transcript(messages: list, max_part_chars: int = 2000) -> str:

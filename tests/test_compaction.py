@@ -9,10 +9,12 @@ from pydantic_ai.messages import (
 )
 
 from marim_harness.compaction import (
+    MASKED_OBSERVATION,
     SUMMARY_PREFIX,
     compact_history,
     compact_history_with_summary,
     estimate_tokens,
+    mask_stale_observations,
     render_transcript,
     summary_text,
     will_compact,
@@ -287,3 +289,62 @@ async def test_make_summarizer_sends_framed_prompt_to_model():
     assert out == "ok"
     assert "explain this" in seen["prompt"]  # the transcript reached the model
     assert "ummariz" in seen["prompt"]  # wrapped with the explicit framing
+
+
+def _tool_return(tid: str, content) -> ModelRequest:
+    return ModelRequest(
+        parts=[ToolReturnPart(tool_name="read_file", content=content, tool_call_id=tid)]
+    )
+
+
+def test_mask_keeps_recent_returns_and_elides_older_bulky_ones():
+    big = "x" * 500
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="go")]),
+        _tool_return("t1", f"old {big}"),
+        _tool_return("t2", f"mid {big}"),
+        _tool_return("t3", f"recent {big}"),
+        ModelResponse(parts=[TextPart(content="done")]),
+    ]
+    new_history, masked = mask_stale_observations(history, keep_recent=1)
+
+    assert masked == 2  # t1 and t2 elided; t3 (most recent) kept
+    contents = [
+        p.content
+        for m in new_history
+        for p in m.parts
+        if isinstance(p, ToolReturnPart)
+    ]
+    assert contents[0] == MASKED_OBSERVATION
+    assert contents[1] == MASKED_OBSERVATION
+    assert contents[2].startswith("recent ")
+
+
+def test_mask_preserves_pairing_identity():
+    big = "y" * 500
+    history = [_tool_return("call-abc", big), _tool_return("call-def", big)]
+    new_history, masked = mask_stale_observations(history, keep_recent=0)
+
+    ids = [p.tool_call_id for m in new_history for p in m.parts]
+    names = [p.tool_name for m in new_history for p in m.parts]
+    assert masked == 2
+    assert ids == ["call-abc", "call-def"]  # tool_call_id untouched
+    assert names == ["read_file", "read_file"]  # tool_name untouched
+
+
+def test_mask_skips_small_returns():
+    history = [_tool_return("t1", "ok"), _tool_return("t2", "z" * 500)]
+    _, masked = mask_stale_observations(history, keep_recent=0, min_chars=200)
+    assert masked == 1  # only the bulky one
+
+
+def test_mask_does_not_mutate_input_and_is_idempotent():
+    big = "w" * 500
+    history = [_tool_return("t1", big)]
+    new_history, masked = mask_stale_observations(history, keep_recent=0)
+    assert masked == 1
+    assert history[0].parts[0].content == big  # original untouched
+
+    # Re-running over already-masked history is a no-op.
+    _, again = mask_stale_observations(new_history, keep_recent=0)
+    assert again == 0

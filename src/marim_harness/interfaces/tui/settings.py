@@ -235,6 +235,11 @@ class SettingsScreen(Screen[None]):
             "Proactive memory", value=self.env_cfg.proactive_memory, id="sw-mem"
         )
         yield BoxCheckbox(
+            "Mask stale observations at compaction",
+            value=self.env_cfg.mask_observations,
+            id="sw-mask-obs",
+        )
+        yield BoxCheckbox(
             "Desktop notifications",
             value=self.env_cfg.notifications.enabled,
             id="sw-notifications",
@@ -267,6 +272,20 @@ class SettingsScreen(Screen[None]):
             yield Input(
                 value=str(self.env_cfg.max_context_tokens),
                 id="ctx-input",
+                type="integer",
+            )
+        with Horizontal(classes="frow"):
+            yield Label("Mask: keep recent returns")
+            yield Input(
+                value=str(self.env_cfg.mask_keep_recent),
+                id="mask-keep-recent",
+                type="integer",
+            )
+        with Horizontal(classes="frow"):
+            yield Label("Mask: min chars to elide")
+            yield Input(
+                value=str(self.env_cfg.mask_min_chars),
+                id="mask-min-chars",
                 type="integer",
             )
         with Horizontal(classes="frow"):
@@ -400,6 +419,16 @@ class SettingsScreen(Screen[None]):
         state.update(self._mcp_status_word(name))
         self.app.status.refresh_status()  # type: ignore[attr-defined]
 
+    def _positive_int(self, selector: str) -> int | None:
+        """Parse a positive integer from an Input, or None if blank/invalid/≤0.
+        The caller turns None into a field-specific error on the status line."""
+        raw = self.query_one(selector, Input).value.strip()
+        try:
+            value = int(raw)
+        except ValueError:
+            return None
+        return value if value > 0 else None
+
     def _save_env(self) -> None:
         status = self.query_one("#save-status", Static)
         raw = self.query_one("#ctx-input", Input).value.strip()
@@ -439,6 +468,14 @@ class SettingsScreen(Screen[None]):
         if req_limit <= 0:
             status.update("Sub-agent request limit must be a positive integer.")
             return
+        keep_recent = self._positive_int("#mask-keep-recent")
+        if keep_recent is None:
+            status.update("Mask: keep recent returns must be a positive integer.")
+            return
+        min_chars = self._positive_int("#mask-min-chars")
+        if min_chars is None:
+            status.update("Mask: min chars to elide must be a positive integer.")
+            return
         values = {
             "MARIM_DEFAULT_MODE": default_mode,
             "MARIM_TOOL_SEARCH": tool_search,
@@ -447,6 +484,11 @@ class SettingsScreen(Screen[None]):
             "MARIM_LSP_TOOLS": _b(self.query_one("#sw-lsp-tools", BoxCheckbox).value),
             "MARIM_JOB_TOOL_COMBINED": _b(self.query_one("#sw-job", BoxCheckbox).value),
             "MARIM_PROACTIVE_MEMORY": _b(self.query_one("#sw-mem", BoxCheckbox).value),
+            "MARIM_MASK_OBSERVATIONS": _b(
+                self.query_one("#sw-mask-obs", BoxCheckbox).value
+            ),
+            "MARIM_MASK_KEEP_RECENT": str(keep_recent),
+            "MARIM_MASK_MIN_CHARS": str(min_chars),
             "MARIM_MAX_CONTEXT_TOKENS": str(ctx),
             "MARIM_SUBAGENT_REQUEST_LIMIT": str(req_limit),
             "MARIM_NOTIFICATIONS": _b(

@@ -185,6 +185,51 @@ async def test_save_writes_env_file(isolated_env, monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
+async def test_mask_observations_toggle_saves(isolated_env, monkeypatch, tmp_path):
+    """The 'Mask stale observations' checkbox (on by default) persists
+    MARIM_MASK_OBSERVATIONS to the .env when toggled off and saved."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    app = _Host(_fake_harness(), _env_cfg())  # mask_observations defaults True
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        await _goto_config(pilot)
+        assert app.screen.query_one("#sw-mask-obs").value is True
+        assert app.screen.query_one("#mask-keep-recent").value == "4"
+        assert app.screen.query_one("#mask-min-chars").value == "200"
+        await pilot.click("#sw-mask-obs")  # toggle masking off
+        app.screen.query_one("#mask-keep-recent").value = "2"
+        app.screen.query_one("#mask-min-chars").value = "500"
+        await pilot.pause()
+        _scroll_to(app, "#save-env")
+        await pilot.pause()
+        await pilot.click("#save-env")
+        await pilot.pause()
+    text = (tmp_path / "marim" / ".env").read_text()
+    assert "MARIM_MASK_OBSERVATIONS=0" in text
+    assert "MARIM_MASK_KEEP_RECENT=2" in text
+    assert "MARIM_MASK_MIN_CHARS=500" in text
+
+
+@pytest.mark.anyio
+async def test_invalid_mask_threshold_blocks_save(isolated_env, monkeypatch, tmp_path):
+    """A non-positive masking threshold is rejected and blocks the whole save."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        await _goto_config(pilot)
+        app.screen.query_one("#mask-keep-recent").value = "0"
+        await pilot.pause()
+        _scroll_to(app, "#save-env")
+        await pilot.pause()
+        await pilot.click("#save-env")
+        await pilot.pause()
+        status = str(app.screen.query_one("#save-status").render())
+    assert not (tmp_path / "marim" / ".env").exists()
+    assert "positive integer" in status
+
+
+@pytest.mark.anyio
 async def test_invalid_context_budget_blocks_save(isolated_env, monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     app = _Host(_fake_harness(), _env_cfg())

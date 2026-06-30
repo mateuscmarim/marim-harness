@@ -90,6 +90,15 @@ class HarnessConfig:
     keep_last_messages: int = 20
     summarizer: Summarizer | None = None
     titler: Titler | None = None
+    # When set, compaction also elides older tool-observation payloads in the
+    # retained tail to shed tokens (see compaction.mask_stale_observations). Safe
+    # for prompt caching because it runs only when compaction already rewrites the
+    # cached tail. User-toggleable via the TUI settings / MARIM_MASK_OBSERVATIONS.
+    mask_observations: bool = True
+    # Masking thresholds: how many recent tool returns to keep intact, and the
+    # minimum rendered length below which a return isn't worth masking.
+    mask_keep_recent: int = 4
+    mask_min_chars: int = 200
     model_source: ModelSource | MultiModelSource | None = None
     model_id: str | None = None
     proactive_memory: bool = False
@@ -218,6 +227,9 @@ def build_collaborators(
         cfg.store, cfg.manager, deps,
         cfg.max_context_tokens, cfg.keep_last_messages,
         cfg.summarizer, cfg.titler,
+        mask_observations=cfg.mask_observations,
+        mask_keep_recent=cfg.mask_keep_recent,
+        mask_min_chars=cfg.mask_min_chars,
     )
     # Per-session checkpoints. Wire the real GitSnapshotter so rewind
     # restores working-tree files end-to-end.

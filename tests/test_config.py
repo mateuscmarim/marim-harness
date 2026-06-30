@@ -67,6 +67,39 @@ def test_subagent_request_limit_defaults_to_50(monkeypatch):
     assert load_config().subagent.request_limit == 50
 
 
+def test_mask_observations_defaults_on(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.delenv("MARIM_MASK_OBSERVATIONS", raising=False)
+    assert load_config().mask_observations is True
+
+
+def test_mask_observations_opt_out(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setenv("MARIM_MASK_OBSERVATIONS", "0")
+    assert load_config().mask_observations is False
+
+
+def test_mask_thresholds_default(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.delenv("MARIM_MASK_KEEP_RECENT", raising=False)
+    monkeypatch.delenv("MARIM_MASK_MIN_CHARS", raising=False)
+    cfg = load_config()
+    assert cfg.mask_keep_recent == 4
+    assert cfg.mask_min_chars == 200
+
+
+def test_mask_thresholds_from_env(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setenv("MARIM_MASK_KEEP_RECENT", "2")
+    monkeypatch.setenv("MARIM_MASK_MIN_CHARS", "500")
+    cfg = load_config()
+    assert cfg.mask_keep_recent == 2
+    assert cfg.mask_min_chars == 500
+    # Non-positive values are rejected (per _int_env) and fall back to defaults.
+    monkeypatch.setenv("MARIM_MASK_KEEP_RECENT", "0")
+    assert load_config().mask_keep_recent == 4
+
+
 def test_detach_fanout_defaults_on(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     monkeypatch.delenv("MARIM_DETACH_FANOUT", raising=False)

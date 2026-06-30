@@ -489,6 +489,113 @@ async def test_forced_compaction_clears_indicator_even_without_shrink(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_compaction_masks_stale_observations_when_enabled(tmp_path):
+    """With mask_observations on, a compaction that fires also elides the bulky
+    tool-observation payloads in the retained tail (keeping the most recent)."""
+    from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
+
+    from marim_harness.compaction import MASKED_OBSERVATION
+
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+    ctrl = SessionController(
+        None, None, deps, max_context_tokens=1, keep_last_messages=20,
+        mask_observations=True,
+    )
+
+    def _turn(n: int) -> list:
+        tid = f"t{n}"
+        return [
+            ModelRequest(parts=[UserPromptPart(content=f"prompt {n}")]),
+            ModelResponse(parts=[ToolCallPart(
+                tool_name="read_file", args={"p": n}, tool_call_id=tid)]),
+            ModelRequest(parts=[ToolReturnPart(
+                tool_name="read_file", content="DATA " + "z" * 500, tool_call_id=tid)]),
+            ModelResponse(parts=[TextPart(content=f"answer {n}")]),
+        ]
+
+    ctrl.history = [m for n in range(8) for m in _turn(n)]
+    await ctrl.maybe_compact()
+
+    returns = [
+        p.content for m in ctrl.history for p in m.parts
+        if isinstance(p, ToolReturnPart)
+    ]
+    assert returns, "tail should still carry tool returns"
+    assert MASKED_OBSERVATION in returns  # older observations elided
+    assert any(c != MASKED_OBSERVATION for c in returns)  # recent ones kept
+
+
+@pytest.mark.anyio
+async def test_compaction_mask_keep_recent_threshold_threads_through(tmp_path):
+    """A custom mask_keep_recent reaches mask_stale_observations: with keep_recent=1
+    only the single most-recent tool return survives unmasked."""
+    from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
+
+    from marim_harness.compaction import MASKED_OBSERVATION
+
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+    ctrl = SessionController(
+        None, None, deps, max_context_tokens=1, keep_last_messages=20,
+        mask_observations=True, mask_keep_recent=1, mask_min_chars=50,
+    )
+
+    def _turn(n: int) -> list:
+        tid = f"t{n}"
+        return [
+            ModelRequest(parts=[UserPromptPart(content=f"prompt {n}")]),
+            ModelResponse(parts=[ToolCallPart(
+                tool_name="read_file", args={"p": n}, tool_call_id=tid)]),
+            ModelRequest(parts=[ToolReturnPart(
+                tool_name="read_file", content="DATA " + "z" * 500, tool_call_id=tid)]),
+            ModelResponse(parts=[TextPart(content=f"answer {n}")]),
+        ]
+
+    ctrl.history = [m for n in range(8) for m in _turn(n)]
+    await ctrl.maybe_compact()
+
+    returns = [
+        p.content for m in ctrl.history for p in m.parts
+        if isinstance(p, ToolReturnPart)
+    ]
+    kept = [c for c in returns if c != MASKED_OBSERVATION]
+    assert len(kept) == 1  # keep_recent=1 honored
+
+
+@pytest.mark.anyio
+async def test_compaction_leaves_observations_intact_when_disabled(tmp_path):
+    from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
+
+    from marim_harness.compaction import MASKED_OBSERVATION
+
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+    ctrl = SessionController(
+        None, None, deps, max_context_tokens=1, keep_last_messages=20,
+        mask_observations=False,
+    )
+
+    def _turn(n: int) -> list:
+        tid = f"t{n}"
+        return [
+            ModelRequest(parts=[UserPromptPart(content=f"prompt {n}")]),
+            ModelResponse(parts=[ToolCallPart(
+                tool_name="read_file", args={"p": n}, tool_call_id=tid)]),
+            ModelRequest(parts=[ToolReturnPart(
+                tool_name="read_file", content="DATA " + "z" * 500, tool_call_id=tid)]),
+            ModelResponse(parts=[TextPart(content=f"answer {n}")]),
+        ]
+
+    ctrl.history = [m for n in range(8) for m in _turn(n)]
+    await ctrl.maybe_compact()
+
+    returns = [
+        p.content for m in ctrl.history for p in m.parts
+        if isinstance(p, ToolReturnPart)
+    ]
+    assert returns
+    assert MASKED_OBSERVATION not in returns  # default off: no masking
+
+
+@pytest.mark.anyio
 async def test_compaction_persists_the_compacted_history(tmp_path):
     """A compaction that fires must be persisted, so a process death between turns
     doesn't lose it (and the on-disk file matches the in-memory history)."""

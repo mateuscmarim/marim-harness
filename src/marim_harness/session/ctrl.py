@@ -19,6 +19,7 @@ from ..compaction import (
     compact_history_with_summary,
     make_summarizer,
     make_titler,
+    mask_stale_observations,
 )
 from ..hooks import events as hook_events
 from ..hooks.runner import base_payload
@@ -111,6 +112,9 @@ class SessionController:
         keep_last_messages: int,
         summarizer: Summarizer | None = None,
         titler: Titler | None = None,
+        mask_observations: bool = False,
+        mask_keep_recent: int = 4,
+        mask_min_chars: int = 200,
     ) -> None:
         self.store = store
         self.manager = manager
@@ -119,6 +123,13 @@ class SessionController:
         self.keep_last_messages = keep_last_messages
         self.summarizer = summarizer
         self.titler = titler
+        # When set, compaction also elides older tool-observation payloads in the
+        # retained tail (see mask_stale_observations). Off by default so the
+        # behaviour is opt-in for non-TUI/embedding callers; the harness wires the
+        # user-facing toggle through HarnessConfig.
+        self.mask_observations = mask_observations
+        self.mask_keep_recent = mask_keep_recent
+        self.mask_min_chars = mask_min_chars
         self.history_version: int = 0
         self._last_persisted_version: int = -1
         # ``history`` is a property; the underlying list lives in ``_history``.
@@ -315,6 +326,17 @@ class SessionController:
             new_history, compacted = compact_history(
                 self.history, self.max_context_tokens, self.keep_last_messages,
                 force=force, tail_start=tail_start,
+            )
+        # Mask stale tool observations only when a compaction actually fired: the
+        # rewrite has already invalidated the cached message tail, so eliding the
+        # bulky payloads here is free of any extra cache miss (a per-turn mask
+        # would bust that cache every turn instead). Skipped when nothing compacted
+        # so a warm cache stays warm.
+        if compacted and self.mask_observations:
+            new_history, _ = mask_stale_observations(
+                new_history,
+                self.mask_keep_recent,
+                min_chars=self.mask_min_chars,
             )
         if compacted:
             self.history = new_history
