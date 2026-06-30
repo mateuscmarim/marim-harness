@@ -1,7 +1,7 @@
 """Depth field on Deps — the foundation for nested sub-agent tracking."""
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic_ai.messages import ModelResponse, TextPart
@@ -46,6 +46,7 @@ def _make_runner(tmp_path: Path, max_depth: int = 3) -> SubagentRunner:
     provider = BuiltinToolProvider()
     mcp = MagicMock(spec=McpManager)
     mcp.granted_servers.return_value = ([], [])
+    mcp.granted_toolsets = AsyncMock(return_value=([], []))
     hooks = MagicMock()
     session = MagicMock()
     return SubagentRunner(

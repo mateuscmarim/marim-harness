@@ -171,6 +171,40 @@ class McpManager:
                 granted.append(server)
         return granted, unknown
 
+    async def _tool_count(self, servers: list) -> int:
+        """Best-effort total tool count across ``servers`` (each best-effort: a
+        server with no ``list_tools`` or one that raises contributes nothing,
+        so a half-connected server never sinks the count)."""
+        total = 0
+        for s in servers:
+            lister = getattr(s, "list_tools", None)
+            if lister is None:
+                continue
+            try:
+                total += len(list(await lister()))
+            except Exception:  # noqa: BLE001 - one server's failure must not sink the rest
+                logger.debug("tool listing failed for %s", self.server_name(s), exc_info=True)
+        return total
+
+    async def granted_toolsets(
+        self, names: list[str] | None, policy: str, threshold: int
+    ) -> tuple[list, list[str]]:
+        """Like :meth:`granted_servers`, but applies the same tool-search deferral
+        the main agent's :meth:`toolsets_for` uses — computed over the *granted
+        subset only*. When ``should_defer`` fires for the granted servers'
+        combined tool count, they are combined behind Pydantic AI's ToolSearch, so
+        a sub-agent granted a large MCP surface searches for tools on demand
+        instead of carrying every schema in its context; otherwise the raw granted
+        servers pass through. ``unknown`` is forwarded unchanged for the caller's
+        grant note. Mirrors what the main agent gets, so a server deferred for the
+        main loop isn't dumped wholesale into every spawn that's granted it."""
+        granted, unknown = self.granted_servers(names)
+        if not granted:
+            return granted, unknown
+        if should_defer(policy, await self._tool_count(granted), threshold):
+            return [DeferredLoadingToolset(CombinedToolset(granted))], unknown
+        return granted, unknown
+
     def grant_note(self, unknown: list[str]) -> str:
         if not unknown:
             return ""

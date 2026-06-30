@@ -90,6 +90,52 @@ async def test_deferred_toolsets_empty_when_no_servers():
     assert await m.toolsets_for("on", 15) == []
 
 
+# granted_toolsets: the sub-agent grant path honors the same deferral the main
+# agent uses, computed over the GRANTED subset (not all live servers).
+@pytest.mark.anyio
+async def test_granted_toolsets_defers_a_large_granted_surface():
+    from pydantic_ai import DeferredLoadingToolset
+
+    m = _manager_with([_FakeServer("pw", 50)])
+    result, unknown = await m.granted_toolsets(["pw"], "auto", 15)
+    assert unknown == []
+    assert len(result) == 1 and isinstance(result[0], DeferredLoadingToolset)
+
+
+@pytest.mark.anyio
+async def test_granted_toolsets_under_threshold_returns_raw():
+    small = _FakeServer("pw", 5)
+    m = _manager_with([small])
+    result, _ = await m.granted_toolsets(["pw"], "auto", 15)
+    assert result == [small]  # not wrapped
+
+
+@pytest.mark.anyio
+async def test_granted_toolsets_off_never_defers():
+    big = _FakeServer("pw", 50)
+    m = _manager_with([big])
+    result, _ = await m.granted_toolsets(["pw"], "off", 15)
+    assert result == [big]
+
+
+@pytest.mark.anyio
+async def test_granted_toolsets_counts_only_the_granted_subset():
+    # A big server is live but NOT granted; the small granted one stays under
+    # threshold, so no deferral — proving the count is the granted subset, not all live.
+    small, big = _FakeServer("a", 5), _FakeServer("b", 50)
+    m = _manager_with([small, big])
+    result, _ = await m.granted_toolsets(["a"], "auto", 15)
+    assert result == [small]
+
+
+@pytest.mark.anyio
+async def test_granted_toolsets_unknown_name_is_reported_not_deferred():
+    m = _manager_with([_FakeServer("pw", 50)])
+    result, unknown = await m.granted_toolsets(["nope"], "auto", 15)
+    assert result == []
+    assert unknown == ["nope"]
+
+
 class _NamedTool:
     def __init__(self, name):
         self.name = name

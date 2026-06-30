@@ -511,7 +511,16 @@ class SubagentRunner:
                 self._discard_worktree(iso)
             return err or f"Failed to build sub-agent {type!r}."
         t_built = time.perf_counter()
-        granted, unknown = self.mcp.granted_servers(mcp_names)
+        # Apply the same tool-search deferral the main agent uses: a large granted
+        # MCP surface is combined behind ToolSearch rather than injected wholesale,
+        # so a spawn granted (say) an 86-tool browser server searches for tools on
+        # demand instead of carrying every schema. Policy/threshold are the same
+        # workspace settings the controller reads for the main turn.
+        granted, unknown = await self.mcp.granted_toolsets(
+            mcp_names,
+            self.deps.workspace.tool_search,
+            self.deps.workspace.tool_search_threshold,
+        )
         await self.hooks.subagent_start(type, task)
         # Foreground passes its tool_call_id; a background spawn now passes its own
         # stream_id too (Phase 2), so it streams to the UI exactly like foreground.
