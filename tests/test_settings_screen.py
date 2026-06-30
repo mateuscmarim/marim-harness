@@ -247,6 +247,28 @@ async def test_int_input_real_submit_event_autosaves(isolated_env, monkeypatch, 
 
 
 @pytest.mark.anyio
+async def test_wake_depth_cap_reflects_config_and_saves(isolated_env, monkeypatch, tmp_path):
+    """The Tools page's autonomous-wake-turns input shows the configured value
+    (default 8) and persists MARIM_WAKE_DEPTH_CAP on commit."""
+    from textual.widgets import Input
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("MARIM_WAKE_DEPTH_CAP", raising=False)
+    app = _Host(_fake_harness(), _env_cfg())  # subagent.wake_depth_cap defaults 8
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        inp = app.screen.query_one("#wake-depth-cap", Input)
+        assert inp.value == "8"
+        inp.value = "3"
+        app.screen._commit_input("wake-depth-cap")
+        await pilot.pause()
+    assert os.environ.get("MARIM_WAKE_DEPTH_CAP") == "3"
+    assert "MARIM_WAKE_DEPTH_CAP=3" in (tmp_path / "marim" / ".env").read_text()
+
+
+@pytest.mark.anyio
 async def test_invalid_int_rejected_no_write(isolated_env, monkeypatch, tmp_path):
     from textual.widgets import Input
 
