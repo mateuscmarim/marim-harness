@@ -50,7 +50,7 @@ node_modules/
 # only the misplaced root copy is ignored.
 /seed.spec.ts
 
-# Generated e2e test plans written by the playwright planner. The directory is
-# kept (via its README anchor) but the generated plans are local scratch.
-/specs/*
-!/specs/README.md
+# Playwright e2e workspace scaffolded by `playwright init-agents` (the planner's
+# specs/plan.md output dir). Scaffold, not marim source — the workflow itself
+# lives in the examples/playwright plugin. Ignored wholesale.
+/specs/
