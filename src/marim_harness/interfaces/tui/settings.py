@@ -1,7 +1,8 @@
-"""The full-bleed settings screen: edit runtime settings live (mode, model, theme,
-MCP) and the env-backed toggles, which auto-save per field.
+"""The full-bleed settings screen: topic pages on a left rail (Session, Theme,
+MCP servers, Context & Memory, Tools, Notifications, Advanced). Live settings
+(mode, model, theme, MCP) apply immediately; env-backed settings auto-save per field.
 
-Runtime widgets apply immediately by calling the same harness mutations the slash
+Live widgets apply immediately by calling the same harness mutations the slash
 commands use. The env block (LSP, LSP tools, job-tool mode, context budget,
 proactive memory, ...) is written to the global .env as soon as a field changes
 (checkbox/radio on change, text/integer input on Enter or blur) and takes effect on
