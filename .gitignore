@@ -13,17 +13,23 @@ __pycache__/
 .coverage
 coverage.xml
 
-# Offloaded fetch_url bodies — large pages written to disk so they don't flood
-# context. Local scratch, never committed.
-.marim/fetch/
-.marim/output/
-
-# Over-budget sub-agent reports spilled to disk by the output cap. Local scratch.
-.marim/subagent-output/
-
-# Full provider-error payload spilled by the turn loop for debugging. Local scratch.
-.marim/last-provider-error.json
+# marim's per-project working dir: offloaded fetch bodies, sub-agent/output
+# spill, the last-provider-error payload, and generated test reports — all local
+# scratch. Ignored wholesale; commit a specific file with a negation (e.g.
+# `!.marim/mcp.json`) if a project ever needs to track project-local config.
+.marim/
 
 # Git worktrees created by --worktree / the /worktree command.
 .worktrees/
-.claude/worktrees/
+
+# Claude Code host config — per-machine and duplicated by marim's own plugins.
+# marim never reads .claude/ (see test_ignores_claude_agents_dir) nor the root
+# .mcp.json (it uses .marim/mcp.json; see mcp/config.py). The playwright agents
+# + MCP server ship as the examples/playwright plugin, the source of truth.
+.claude/
+.mcp.json
+
+# Generated e2e test plans written by the playwright planner. The directory is
+# kept (via its README anchor) but the generated plans are local scratch.
+/specs/*
+!/specs/README.md
