@@ -165,86 +165,75 @@ def _scroll_to(app, widget_id):
 
 
 @pytest.mark.anyio
-async def test_save_writes_env_file(isolated_env, monkeypatch, tmp_path):
+async def test_open_does_not_write_env(isolated_env, monkeypatch, tmp_path):
+    """Opening the screen must not write .env (mount-time Changed events are ignored)."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+    assert not (tmp_path / "marim" / ".env").exists()
+
+
+@pytest.mark.anyio
+async def test_checkbox_autosaves(isolated_env, monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     app = _Host(_fake_harness(), _env_cfg())  # lsp_enabled defaults True
     async with app.run_test(size=(120, 45)) as pilot:
         await pilot.pause()
         await _goto_config(pilot)
+        _scroll_to(app, "#sw-lsp")
         await pilot.click("#sw-lsp")  # toggle LSP off
         await pilot.pause()
-        _scroll_to(app, "#save-env")
-        await pilot.pause()
-        await pilot.click("#save-env")
-        await pilot.pause()
-    env_file = tmp_path / "marim" / ".env"
-    assert env_file.exists()
-    text = env_file.read_text()
-    assert "MARIM_LSP=0" in text
-    assert "MARIM_MAX_CONTEXT_TOKENS=100000" in text
+    assert "MARIM_LSP=0" in (tmp_path / "marim" / ".env").read_text()
 
 
 @pytest.mark.anyio
-async def test_mask_observations_toggle_saves(isolated_env, monkeypatch, tmp_path):
-    """The 'Mask stale observations' checkbox (on by default) persists
-    MARIM_MASK_OBSERVATIONS to the .env when toggled off and saved."""
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    app = _Host(_fake_harness(), _env_cfg())  # mask_observations defaults True
-    async with app.run_test(size=(120, 45)) as pilot:
-        await pilot.pause()
-        await _goto_config(pilot)
-        assert app.screen.query_one("#sw-mask-obs").value is True
-        assert app.screen.query_one("#mask-keep-recent").value == "4"
-        assert app.screen.query_one("#mask-min-chars").value == "200"
-        await pilot.click("#sw-mask-obs")  # toggle masking off
-        app.screen.query_one("#mask-keep-recent").value = "2"
-        app.screen.query_one("#mask-min-chars").value = "500"
-        await pilot.pause()
-        _scroll_to(app, "#save-env")
-        await pilot.pause()
-        await pilot.click("#save-env")
-        await pilot.pause()
-    text = (tmp_path / "marim" / ".env").read_text()
-    assert "MARIM_MASK_OBSERVATIONS=0" in text
-    assert "MARIM_MASK_KEEP_RECENT=2" in text
-    assert "MARIM_MASK_MIN_CHARS=500" in text
+async def test_int_input_autosaves_on_submit(isolated_env, monkeypatch, tmp_path):
+    from textual.widgets import Input
 
-
-@pytest.mark.anyio
-async def test_invalid_mask_threshold_blocks_save(isolated_env, monkeypatch, tmp_path):
-    """A non-positive masking threshold is rejected and blocks the whole save."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     app = _Host(_fake_harness(), _env_cfg())
     async with app.run_test(size=(120, 45)) as pilot:
         await pilot.pause()
         await _goto_config(pilot)
-        app.screen.query_one("#mask-keep-recent").value = "0"
+        inp = app.screen.query_one("#subagent-req-limit", Input)
+        inp.value = "120"
+        app.screen._commit_input("subagent-req-limit")  # what Enter/blur trigger
         await pilot.pause()
-        _scroll_to(app, "#save-env")
-        await pilot.pause()
-        await pilot.click("#save-env")
-        await pilot.pause()
-        status = str(app.screen.query_one("#save-status").render())
-    assert not (tmp_path / "marim" / ".env").exists()
-    assert "positive integer" in status
+    assert os.environ.get("MARIM_SUBAGENT_REQUEST_LIMIT") == "120"
 
 
 @pytest.mark.anyio
-async def test_invalid_context_budget_blocks_save(isolated_env, monkeypatch, tmp_path):
+async def test_invalid_int_rejected_no_write(isolated_env, monkeypatch, tmp_path):
+    from textual.widgets import Input
+
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     app = _Host(_fake_harness(), _env_cfg())
     async with app.run_test(size=(120, 45)) as pilot:
         await pilot.pause()
         await _goto_config(pilot)
-        app.screen.query_one("#ctx-input").value = "0"
+        app.screen.query_one("#mask-keep-recent", Input).value = "0"
+        app.screen._commit_input("mask-keep-recent")
         await pilot.pause()
-        _scroll_to(app, "#save-env")
-        await pilot.pause()
-        await pilot.click("#save-env")
-        await pilot.pause()
-        status = str(app.screen.query_one("#save-status").render())
+        status = str(app.screen.query_one("#settings-status").render())
     assert not (tmp_path / "marim" / ".env").exists()
     assert "positive integer" in status
+
+
+@pytest.mark.anyio
+async def test_radio_autosaves(isolated_env, monkeypatch, tmp_path):
+    from textual.widgets import RadioButton
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("MARIM_DEFAULT_MODE", raising=False)
+    app = _Host(_fake_harness(), _env_cfg())  # default_mode == "ask"
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "config"
+        await pilot.pause()
+        app.screen.query_one("#defmode-plan", RadioButton).value = True
+        await pilot.pause()
+    assert os.environ.get("MARIM_DEFAULT_MODE") == "plan"
 
 
 @pytest.mark.anyio
@@ -261,90 +250,3 @@ async def test_down_arrow_switches_section():
         assert screen.query_one("#section-runtime").display is False
 
 
-@pytest.mark.anyio
-async def test_default_mode_radio_reflects_config_and_saves(isolated_env, monkeypatch, tmp_path):
-    """The Config section's default-mode radio shows the configured value and,
-    on save, persists MARIM_DEFAULT_MODE to the .env (mirrored to os.environ)."""
-    from textual.widgets import RadioButton
-
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.delenv("MARIM_DEFAULT_MODE", raising=False)
-    app = _Host(_fake_harness(), _env_cfg())  # env_cfg.default_mode == "ask"
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        screen = app.screen
-        # config default is "ask" -> that radio starts pressed
-        assert screen.query_one("#defmode-ask", RadioButton).value is True
-        screen.active_section = "config"
-        await pilot.pause()
-        screen.query_one("#defmode-plan", RadioButton).value = True
-        await pilot.pause()
-        screen._save_env()
-        await pilot.pause()
-    assert os.environ.get("MARIM_DEFAULT_MODE") == "plan"
-
-
-@pytest.mark.anyio
-async def test_tool_search_selector_saves(isolated_env, monkeypatch, tmp_path):
-    from textual.widgets import Input, RadioButton
-
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.delenv("MARIM_TOOL_SEARCH", raising=False)
-    app = _Host(_fake_harness(), _env_cfg())  # env_cfg.tool_search == "auto"
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        screen = app.screen
-        assert screen.query_one("#toolsearch-auto", RadioButton).value is True
-        screen.active_section = "config"
-        await pilot.pause()
-        screen.query_one("#toolsearch-on", RadioButton).value = True
-        screen.query_one("#toolsearch-threshold", Input).value = "20"
-        await pilot.pause()
-        screen._save_env()
-        await pilot.pause()
-    assert os.environ.get("MARIM_TOOL_SEARCH") == "on"
-    assert os.environ.get("MARIM_TOOL_SEARCH_THRESHOLD") == "20"
-
-
-@pytest.mark.anyio
-async def test_subagent_request_limit_reflects_config_and_saves(
-    isolated_env, monkeypatch, tmp_path
-):
-    """The Config section's sub-agent request-limit input shows the configured value
-    and, on save, persists MARIM_SUBAGENT_REQUEST_LIMIT to the .env."""
-    from textual.widgets import Input
-
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.delenv("MARIM_SUBAGENT_REQUEST_LIMIT", raising=False)
-    app = _Host(_fake_harness(), _env_cfg())  # default request_limit == 50
-    async with app.run_test(size=(120, 45)) as pilot:
-        await pilot.pause()
-        screen = app.screen
-        screen.active_section = "config"
-        await pilot.pause()
-        assert screen.query_one("#subagent-req-limit", Input).value == "50"
-        screen.query_one("#subagent-req-limit", Input).value = "120"
-        await pilot.pause()
-        screen._save_env()
-        await pilot.pause()
-    assert os.environ.get("MARIM_SUBAGENT_REQUEST_LIMIT") == "120"
-    assert "MARIM_SUBAGENT_REQUEST_LIMIT=120" in (tmp_path / "marim" / ".env").read_text()
-
-
-@pytest.mark.anyio
-async def test_invalid_request_limit_blocks_save(isolated_env, monkeypatch, tmp_path):
-    from textual.widgets import Input
-
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    app = _Host(_fake_harness(), _env_cfg())
-    async with app.run_test(size=(120, 45)) as pilot:
-        await pilot.pause()
-        screen = app.screen
-        screen.active_section = "config"
-        await pilot.pause()
-        screen.query_one("#subagent-req-limit", Input).value = "0"
-        screen._save_env()
-        await pilot.pause()
-        status = str(screen.query_one("#save-status").render())
-    assert not (tmp_path / "marim" / ".env").exists()
-    assert "request limit" in status.lower()

@@ -1,11 +1,13 @@
 """The full-bleed settings screen: edit runtime settings live (mode, model, theme,
-MCP) and the env-backed toggles with an explicit save to the global .env.
+MCP) and the env-backed toggles, which auto-save per field.
 
 Runtime widgets apply immediately by calling the same harness mutations the slash
 commands use. The env block (LSP, LSP tools, job-tool mode, context budget,
-proactive memory) is written to the global .env only when "Save to .env" is pressed
-and takes effect on the next launch — those settings are consumed at Harness
-construction and cannot be safely re-registered mid-session."""
+proactive memory, ...) is written to the global .env as soon as a field changes
+(checkbox/radio on change, text/integer input on Enter or blur) and takes effect on
+the next launch — those settings are consumed at Harness construction and cannot be
+safely re-registered mid-session. The `_ready` flag suppresses the Changed events
+that fire while widgets mount with their initial values."""
 
 from __future__ import annotations
 
@@ -46,10 +48,36 @@ _SECTIONS = (
     ("mcp", "MCP servers"),
     ("config", "Config"),
 )
-_SETTINGS_HINTS = "↑↓ section · enter edit · esc close"
+_SETTINGS_HINTS = "↑↓ section · enter edit · changes save automatically · esc close"
 
 # Each theme's accent hex, for the colored dot in the Theme section + the rail badge.
 _ACCENTS = {t.name: str(t.primary) for t in MARIM_THEMES}
+
+# Auto-save registries: widget id -> what to persist. The same ids are used in
+# both the old single-Config layout and the topic-page layout, so these maps are
+# the single source of truth for persistence and survive the page restructure.
+_ENV_CHECKBOXES: dict[str, str] = {
+    "sw-lsp": "MARIM_LSP",
+    "sw-lsp-tools": "MARIM_LSP_TOOLS",
+    "sw-job": "MARIM_JOB_TOOL_COMBINED",
+    "sw-mem": "MARIM_PROACTIVE_MEMORY",
+    "sw-mask-obs": "MARIM_MASK_OBSERVATIONS",
+    "sw-notifications": "MARIM_NOTIFICATIONS",
+}
+# widget id -> (env var, human label for the "must be a positive integer" error)
+_ENV_INT_INPUTS: dict[str, tuple[str, str]] = {
+    "ctx-input": ("MARIM_MAX_CONTEXT_TOKENS", "Context budget"),
+    "toolsearch-threshold": ("MARIM_TOOL_SEARCH_THRESHOLD", "Tool-search threshold"),
+    "mask-keep-recent": ("MARIM_MASK_KEEP_RECENT", "Mask: keep recent returns"),
+    "mask-min-chars": ("MARIM_MASK_MIN_CHARS", "Mask: min chars to elide"),
+    "subagent-req-limit": ("MARIM_SUBAGENT_REQUEST_LIMIT", "Sub-agent request limit"),
+}
+# radio set id -> (env var, ordered choices)
+_ENV_RADIOS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "default-mode-set": ("MARIM_DEFAULT_MODE", _MODES),
+    "toolsearch-set": ("MARIM_TOOL_SEARCH", _TOOL_SEARCH_MODES),
+}
+_ENV_TEXT_INPUTS: dict[str, str] = {"notif-events-input": "MARIM_NOTIFICATION_EVENTS"}
 
 
 def _short_theme(name: str) -> str:
@@ -113,7 +141,9 @@ class SettingsScreen(Screen[None]):
     .frow { width: 1fr; height: 3; }
     .frow Label { width: 24; height: 3; content-align: left middle; }
     .frow Input { width: 1fr; }
-    #settings-hints { height: 1; padding: 0 1; background: $panel; color: $text-muted; }
+    #settings-footer { height: 1; background: $panel; }
+    #settings-hints { padding: 0 1; color: $text-muted; width: auto; }
+    #settings-status { width: 1fr; color: $text-muted; content-align: right middle; padding: 0 1; }
     """
 
     BINDINGS = [
@@ -134,6 +164,9 @@ class SettingsScreen(Screen[None]):
         self._mcp_names: list[str] = []
         # Rail row id -> section key, for click-to-select.
         self._rail_ids = {f"rail-{k}": k for k, _ in _SECTIONS}
+        # Gate auto-save until the initial widget tree has mounted: setting widget
+        # values during compose fires Changed events we must not persist.
+        self._ready = False
 
     def compose(self) -> ComposeResult:
         yield Static(id="settings-header")
@@ -157,7 +190,9 @@ class SettingsScreen(Screen[None]):
                     yield from self._mcp_widgets()
                 with Vertical(id="section-config"):
                     yield from self._config_widgets()
-        yield Static(_SETTINGS_HINTS, id="settings-hints")
+        with Horizontal(id="settings-footer"):
+            yield Static(_SETTINGS_HINTS, id="settings-hints")
+            yield Static("", id="settings-status")
 
     def _rail_badge(self, key: str) -> str:
         """The current value shown to the right of a rail row (mode / theme / count)."""
@@ -221,7 +256,7 @@ class SettingsScreen(Screen[None]):
                 )
 
     def _config_widgets(self) -> ComposeResult:
-        yield Static("Saved to .env — applies on next launch.", classes="muted")
+        yield Static("Changes save automatically — apply on next launch.", classes="muted")
         yield BoxCheckbox("LSP", value=self.env_cfg.lsp_enabled, id="sw-lsp")
         yield BoxCheckbox(
             "LSP navigation tools",
@@ -301,8 +336,6 @@ class SettingsScreen(Screen[None]):
                 value=", ".join(sorted(self.env_cfg.notifications.events)),
                 id="notif-events-input",
             )
-        yield Button("Save to .env", id="save-env", variant="success")
-        yield Static("", id="save-status")
         deny = ", ".join(self.env_cfg.command_denylist) or "(none)"
         allow = ", ".join(self.env_cfg.command_allowlist) or "(none)"
         trust = "on" if self.env_cfg.trust_project_hooks else "off"
@@ -314,6 +347,7 @@ class SettingsScreen(Screen[None]):
     def on_mount(self) -> None:
         self._apply_section()
         self._paint_themes()
+        self._ready = True
 
     def watch_active_section(self) -> None:
         if self.is_mounted:
@@ -371,23 +405,55 @@ class SettingsScreen(Screen[None]):
         self.query_one("#badge-theme", Static).update(_short_theme(name))
 
     def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
-        if event.index is None or event.radio_set.id != "mode-set":
+        if event.index is None:
             return
-        self.harness.set_mode(Mode(_MODES[event.index]))
-        self.query_one("#badge-runtime", Static).update(self.harness.deps.workspace.mode.value)
-        self.app.status.refresh_status()  # type: ignore[attr-defined]
+        rid = event.radio_set.id or ""
+        if rid == "mode-set":
+            self.harness.set_mode(Mode(_MODES[event.index]))
+            self.query_one("#badge-runtime", Static).update(
+                self.harness.deps.workspace.mode.value
+            )
+            self.app.status.refresh_status()  # type: ignore[attr-defined]
+            return
+        if not self._ready:
+            return
+        spec = _ENV_RADIOS.get(rid)
+        if spec is not None:
+            env_key, choices = spec
+            self._commit_env(env_key, choices[event.index])
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        bid = event.button.id or ""
-        if bid == "model-change":
+        if (event.button.id or "") == "model-change":
             self._open_model_picker()
-        elif bid == "save-env":
-            self._save_env()
 
     async def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         cid = event.checkbox.id or ""
         if cid.startswith("mcp-toggle-"):
             await self._toggle_mcp(int(cid.removeprefix("mcp-toggle-")), event.value)
+            return
+        if not self._ready:
+            return
+        env_key = _ENV_CHECKBOXES.get(cid)
+        if env_key is not None:
+            self._commit_env(env_key, _b(event.value))
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self._commit_input(event.input.id or "")
+
+    def on_input_blurred(self, event: Input.Blurred) -> None:
+        if self._ready:
+            self._commit_input(event.input.id or "")
+
+    def _commit_input(self, widget_id: str) -> None:
+        if not self._ready:
+            return
+        if widget_id in _ENV_INT_INPUTS:
+            self._commit_int(widget_id)
+        elif widget_id in _ENV_TEXT_INPUTS:
+            self._commit_env(
+                _ENV_TEXT_INPUTS[widget_id],
+                self.query_one(f"#{widget_id}", Input).value.strip(),
+            )
 
     def _mcp_status_word(self, name: str) -> str:
         mcp = self.harness.mcp
@@ -429,81 +495,28 @@ class SettingsScreen(Screen[None]):
             return None
         return value if value > 0 else None
 
-    def _save_env(self) -> None:
-        status = self.query_one("#save-status", Static)
-        raw = self.query_one("#ctx-input", Input).value.strip()
+    def _status(self, msg: str) -> None:
+        self.query_one("#settings-status", Static).update(msg)
+
+    def _commit_env(self, env_key: str, value: str) -> None:
+        """Persist a single env var to the global .env, surfacing the result in the
+        footer status. Used by every auto-saving widget."""
         try:
-            ctx = int(raw)
-        except ValueError:
-            status.update("Context budget must be a positive integer.")
-            return
-        if ctx <= 0:
-            status.update("Context budget must be a positive integer.")
-            return
-        dm = self.query_one("#default-mode-set", RadioSet)
-        idx = dm.pressed_index
-        default_mode = _MODES[idx] if 0 <= idx < len(_MODES) else self.env_cfg.default_mode
-        ts = self.query_one("#toolsearch-set", RadioSet)
-        ts_idx = ts.pressed_index
-        tool_search = (
-            _TOOL_SEARCH_MODES[ts_idx]
-            if 0 <= ts_idx < len(_TOOL_SEARCH_MODES)
-            else self.env_cfg.tool_search
-        )
-        ts_raw = self.query_one("#toolsearch-threshold", Input).value.strip()
-        try:
-            ts_threshold = int(ts_raw)
-        except ValueError:
-            status.update("Tool-search threshold must be a positive integer.")
-            return
-        if ts_threshold <= 0:
-            status.update("Tool-search threshold must be a positive integer.")
-            return
-        req_raw = self.query_one("#subagent-req-limit", Input).value.strip()
-        try:
-            req_limit = int(req_raw)
-        except ValueError:
-            status.update("Sub-agent request limit must be a positive integer.")
-            return
-        if req_limit <= 0:
-            status.update("Sub-agent request limit must be a positive integer.")
-            return
-        keep_recent = self._positive_int("#mask-keep-recent")
-        if keep_recent is None:
-            status.update("Mask: keep recent returns must be a positive integer.")
-            return
-        min_chars = self._positive_int("#mask-min-chars")
-        if min_chars is None:
-            status.update("Mask: min chars to elide must be a positive integer.")
-            return
-        values = {
-            "MARIM_DEFAULT_MODE": default_mode,
-            "MARIM_TOOL_SEARCH": tool_search,
-            "MARIM_TOOL_SEARCH_THRESHOLD": str(ts_threshold),
-            "MARIM_LSP": _b(self.query_one("#sw-lsp", BoxCheckbox).value),
-            "MARIM_LSP_TOOLS": _b(self.query_one("#sw-lsp-tools", BoxCheckbox).value),
-            "MARIM_JOB_TOOL_COMBINED": _b(self.query_one("#sw-job", BoxCheckbox).value),
-            "MARIM_PROACTIVE_MEMORY": _b(self.query_one("#sw-mem", BoxCheckbox).value),
-            "MARIM_MASK_OBSERVATIONS": _b(
-                self.query_one("#sw-mask-obs", BoxCheckbox).value
-            ),
-            "MARIM_MASK_KEEP_RECENT": str(keep_recent),
-            "MARIM_MASK_MIN_CHARS": str(min_chars),
-            "MARIM_MAX_CONTEXT_TOKENS": str(ctx),
-            "MARIM_SUBAGENT_REQUEST_LIMIT": str(req_limit),
-            "MARIM_NOTIFICATIONS": _b(
-                self.query_one("#sw-notifications", BoxCheckbox).value
-            ),
-            "MARIM_NOTIFICATION_EVENTS": self.query_one(
-                "#notif-events-input", Input
-            ).value.strip(),
-        }
-        try:
-            path = save_env_settings(values)
+            save_env_settings({env_key: value})
         except Exception as exc:  # surface any write failure on the status line
-            status.update(f"Save failed: {exc}")
+            self._status(f"Save failed: {exc}")
             return
-        status.update(f"Saved to {path} — applies on next launch.")
+        self._status(f"✓ saved {env_key} · applies next launch")
+
+    def _commit_int(self, widget_id: str) -> None:
+        """Validate and persist one integer Input. A blank/invalid/≤0 value is
+        rejected with a field-specific message and nothing is written."""
+        env_key, label = _ENV_INT_INPUTS[widget_id]
+        value = self._positive_int(f"#{widget_id}")
+        if value is None:
+            self._status(f"{label} must be a positive integer.")
+            return
+        self._commit_env(env_key, str(value))
 
     def _open_model_picker(self) -> None:
         source = self.harness.model_source
