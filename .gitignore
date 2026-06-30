@@ -12,6 +12,23 @@ __pycache__/
 # Coverage artifacts from the test runner
 .coverage
 coverage.xml
+htmlcov/
+
+# Python build / packaging artifacts (uv build, pip wheel, etc.)
+build/
+dist/
+*.egg-info/
+
+# Node / Playwright — the e2e-tests workflow runs @playwright/test via npx.
+node_modules/
+/test-results/
+/playwright-report/
+/blob-report/
+.last-run.json
+
+# OS / editor cruft.
+.DS_Store
+*.swp
 
 # marim's per-project working dir: offloaded fetch bodies, sub-agent/output
 # spill, the last-provider-error payload, and generated test reports — all local
