@@ -75,6 +75,7 @@ _ENV_INT_INPUTS: dict[str, tuple[str, str]] = {
     "mask-keep-recent": ("MARIM_MASK_KEEP_RECENT", "Mask: keep recent returns"),
     "mask-min-chars": ("MARIM_MASK_MIN_CHARS", "Mask: min chars to elide"),
     "subagent-req-limit": ("MARIM_SUBAGENT_REQUEST_LIMIT", "Sub-agent request limit"),
+    "wake-depth-cap": ("MARIM_WAKE_DEPTH_CAP", "Autonomous wake turns"),
 }
 # radio set id -> (env var, ordered choices)
 _ENV_RADIOS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -335,6 +336,13 @@ class SettingsScreen(Screen[None]):
             yield Input(
                 value=str(self.env_cfg.subagent.request_limit),
                 id="subagent-req-limit",
+                type="integer",
+            )
+        with Horizontal(classes="frow"):
+            yield Label("Autonomous wake turns")
+            yield Input(
+                value=str(self.env_cfg.subagent.wake_depth_cap),
+                id="wake-depth-cap",
                 type="integer",
             )
 
