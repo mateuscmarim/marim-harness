@@ -248,5 +248,3 @@ async def test_down_arrow_switches_section():
         assert screen.active_section == "theme"
         assert screen.query_one("#section-theme").display is True
         assert screen.query_one("#section-runtime").display is False
-
-
