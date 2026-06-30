@@ -45,6 +45,10 @@ node_modules/
 # + MCP server ship as the examples/playwright plugin, the source of truth.
 .claude/
 .mcp.json
+# Stray Playwright seed scaffolded at the repo root by `playwright init-agents`.
+# The e2e workflow's real seed lives at tests/seed.spec.ts (still trackable);
+# only the misplaced root copy is ignored.
+/seed.spec.ts
 
 # Generated e2e test plans written by the playwright planner. The directory is
 # kept (via its README anchor) but the generated plans are local scratch.
