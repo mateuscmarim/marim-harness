@@ -43,10 +43,13 @@ _TOOL_SEARCH_MODES = ("off", "auto", "on")
 
 # The full-bleed settings screen's rail sections, in order: (key, label).
 _SECTIONS = (
-    ("runtime", "Runtime"),
+    ("session", "Session"),
     ("theme", "Theme"),
     ("mcp", "MCP servers"),
-    ("config", "Config"),
+    ("context", "Context & Memory"),
+    ("tools", "Tools"),
+    ("notifications", "Notifications"),
+    ("advanced", "Advanced"),
 )
 _SETTINGS_HINTS = "↑↓ section · enter edit · changes save automatically · esc close"
 
@@ -141,6 +144,9 @@ class SettingsScreen(Screen[None]):
     .frow { width: 1fr; height: 3; }
     .frow Label { width: 24; height: 3; content-align: left middle; }
     .frow Input { width: 1fr; }
+    .field-tag { width: auto; color: $text-muted; }
+    .field-row { layout: horizontal; height: 1; }
+    .field-row .field-main { width: 1fr; }
     #settings-footer { height: 1; background: $panel; }
     #settings-hints { padding: 0 1; color: $text-muted; width: auto; }
     #settings-status { width: 1fr; color: $text-muted; content-align: right middle; padding: 0 1; }
@@ -152,7 +158,7 @@ class SettingsScreen(Screen[None]):
         Binding("up", "prev_section", "Prev section", show=False),
     ]
 
-    active_section: reactive[str] = reactive("runtime")
+    active_section: reactive[str] = reactive("session")
 
     def __init__(
         self, *, harness: Harness, current_theme: str, env_cfg: ModelConfig
@@ -182,21 +188,27 @@ class SettingsScreen(Screen[None]):
                             classes="rail-badge",
                         )
             with VerticalScroll(id="settings-content"):
-                with Vertical(id="section-runtime"):
-                    yield from self._runtime_widgets()
+                with Vertical(id="section-session"):
+                    yield from self._session_widgets()
                 with Vertical(id="section-theme"):
                     yield from self._theme_widgets()
                 with Vertical(id="section-mcp"):
                     yield from self._mcp_widgets()
-                with Vertical(id="section-config"):
-                    yield from self._config_widgets()
+                with Vertical(id="section-context"):
+                    yield from self._context_widgets()
+                with Vertical(id="section-tools"):
+                    yield from self._tools_widgets()
+                with Vertical(id="section-notifications"):
+                    yield from self._notifications_widgets()
+                with Vertical(id="section-advanced"):
+                    yield from self._advanced_widgets()
         with Horizontal(id="settings-footer"):
             yield Static(_SETTINGS_HINTS, id="settings-hints")
             yield Static("", id="settings-status")
 
     def _rail_badge(self, key: str) -> str:
         """The current value shown to the right of a rail row (mode / theme / count)."""
-        if key == "runtime":
+        if key == "session":
             return self.harness.deps.workspace.mode.value
         if key == "theme":
             return _short_theme(self.current_theme)
@@ -204,9 +216,15 @@ class SettingsScreen(Screen[None]):
             return str(len(list(self.harness.mcp.configured_names())))
         return ""
 
-    def _runtime_widgets(self) -> ComposeResult:
-        yield Static("Changes apply immediately to the active session.", classes="muted")
-        yield Label("Mode")
+    def _tag(self, live: bool) -> Static:
+        return Static("live" if live else "next launch", classes="field-tag")
+
+    def _session_widgets(self) -> ComposeResult:
+        yield Static(
+            "Mode & model apply live; default mode applies next launch.",
+            classes="muted",
+        )
+        yield Label("Mode (this session)")
         with RadioSet(id="mode-set"):
             for name in _MODES:
                 yield RadioButton(
@@ -217,10 +235,14 @@ class SettingsScreen(Screen[None]):
         with Horizontal(classes="srow"):
             yield Static(f"Model: {self.harness.model_label}", id="model-label")
             yield Button("change", id="model-change", variant="primary")
-        yield Static(
-            f"Context budget: {self.env_cfg.max_context_tokens:,} tokens",
-            classes="muted",
-        )
+        yield Label("Default mode (new sessions)")
+        with RadioSet(id="default-mode-set"):
+            for name in _MODES:
+                yield RadioButton(
+                    name,
+                    value=(name == self.env_cfg.default_mode),
+                    id=f"defmode-{name}",
+                )
 
     def _theme_widgets(self) -> ComposeResult:
         yield Static("Accent palette for the harness UI.", classes="muted")
@@ -255,8 +277,40 @@ class SettingsScreen(Screen[None]):
                     classes="mcp-on",
                 )
 
-    def _config_widgets(self) -> ComposeResult:
-        yield Static("Changes save automatically — apply on next launch.", classes="muted")
+    def _context_widgets(self) -> ComposeResult:
+        yield Static("Saved to .env — applies on next launch.", classes="muted")
+        with Horizontal(classes="frow"):
+            yield Label("Context budget (tokens)")
+            yield Input(
+                value=str(self.env_cfg.max_context_tokens),
+                id="ctx-input",
+                type="integer",
+            )
+        yield BoxCheckbox(
+            "Mask stale observations at compaction",
+            value=self.env_cfg.mask_observations,
+            id="sw-mask-obs",
+        )
+        with Horizontal(classes="frow"):
+            yield Label("Mask: keep recent returns")
+            yield Input(
+                value=str(self.env_cfg.mask_keep_recent),
+                id="mask-keep-recent",
+                type="integer",
+            )
+        with Horizontal(classes="frow"):
+            yield Label("Mask: min chars to elide")
+            yield Input(
+                value=str(self.env_cfg.mask_min_chars),
+                id="mask-min-chars",
+                type="integer",
+            )
+        yield BoxCheckbox(
+            "Proactive memory", value=self.env_cfg.proactive_memory, id="sw-mem"
+        )
+
+    def _tools_widgets(self) -> ComposeResult:
+        yield Static("Saved to .env — applies on next launch.", classes="muted")
         yield BoxCheckbox("LSP", value=self.env_cfg.lsp_enabled, id="sw-lsp")
         yield BoxCheckbox(
             "LSP navigation tools",
@@ -266,27 +320,6 @@ class SettingsScreen(Screen[None]):
         yield BoxCheckbox(
             "Job tool combined", value=self.env_cfg.job_tool_combined, id="sw-job"
         )
-        yield BoxCheckbox(
-            "Proactive memory", value=self.env_cfg.proactive_memory, id="sw-mem"
-        )
-        yield BoxCheckbox(
-            "Mask stale observations at compaction",
-            value=self.env_cfg.mask_observations,
-            id="sw-mask-obs",
-        )
-        yield BoxCheckbox(
-            "Desktop notifications",
-            value=self.env_cfg.notifications.enabled,
-            id="sw-notifications",
-        )
-        yield Label("Default mode (new sessions)")
-        with RadioSet(id="default-mode-set"):
-            for name in _MODES:
-                yield RadioButton(
-                    name,
-                    value=(name == self.env_cfg.default_mode),
-                    id=f"defmode-{name}",
-                )
         yield Label("Tool search (MCP/plugin tools)")
         with RadioSet(id="toolsearch-set"):
             for name in _TOOL_SEARCH_MODES:
@@ -303,42 +336,32 @@ class SettingsScreen(Screen[None]):
                 type="integer",
             )
         with Horizontal(classes="frow"):
-            yield Label("Context budget (tokens)")
-            yield Input(
-                value=str(self.env_cfg.max_context_tokens),
-                id="ctx-input",
-                type="integer",
-            )
-        with Horizontal(classes="frow"):
-            yield Label("Mask: keep recent returns")
-            yield Input(
-                value=str(self.env_cfg.mask_keep_recent),
-                id="mask-keep-recent",
-                type="integer",
-            )
-        with Horizontal(classes="frow"):
-            yield Label("Mask: min chars to elide")
-            yield Input(
-                value=str(self.env_cfg.mask_min_chars),
-                id="mask-min-chars",
-                type="integer",
-            )
-        with Horizontal(classes="frow"):
             yield Label("Sub-agent request limit")
             yield Input(
                 value=str(self.env_cfg.subagent.request_limit),
                 id="subagent-req-limit",
                 type="integer",
             )
+
+    def _notifications_widgets(self) -> ComposeResult:
+        yield Static("Saved to .env — applies on next launch.", classes="muted")
+        yield BoxCheckbox(
+            "Desktop notifications",
+            value=self.env_cfg.notifications.enabled,
+            id="sw-notifications",
+        )
         with Horizontal(classes="frow"):
             yield Label("Notification events")
             yield Input(
                 value=", ".join(sorted(self.env_cfg.notifications.events)),
                 id="notif-events-input",
             )
+
+    def _advanced_widgets(self) -> ComposeResult:
         deny = ", ".join(self.env_cfg.command_denylist) or "(none)"
         allow = ", ".join(self.env_cfg.command_allowlist) or "(none)"
         trust = "on" if self.env_cfg.trust_project_hooks else "off"
+        yield Static("Read-only — managed in config or project settings.", classes="muted")
         yield Static(f"Command denylist: {deny}", classes="muted")
         yield Static(f"Command allowlist: {allow}", classes="muted")
         yield Static(f"Trust project hooks: {trust}", classes="muted")
@@ -410,7 +433,7 @@ class SettingsScreen(Screen[None]):
         rid = event.radio_set.id or ""
         if rid == "mode-set":
             self.harness.set_mode(Mode(_MODES[event.index]))
-            self.query_one("#badge-runtime", Static).update(
+            self.query_one("#badge-session", Static).update(
                 self.harness.deps.workspace.mode.value
             )
             self.app.status.refresh_status()  # type: ignore[attr-defined]

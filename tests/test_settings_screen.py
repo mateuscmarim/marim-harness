@@ -1,9 +1,10 @@
 """Tests for the full-bleed SettingsScreen (replaces the centered SettingsModal).
 
 The screen mirrors the sub-agents full-bleed layout: a header breadcrumb, a left
-section rail (Runtime / Theme / MCP servers / Config), a content pane, and a footer
-hint bar. Sections are mounted once and shown/hidden by ``display`` so widget state
-and ids survive section switches.
+section rail (Session / Theme / MCP servers / Context & Memory / Tools /
+Notifications / Advanced), a content pane, and a footer hint bar. Sections are
+mounted once and shown/hidden by ``display`` so widget state and ids survive
+section switches.
 """
 
 import os
@@ -90,15 +91,34 @@ class _Host(App):
 
 
 @pytest.mark.anyio
-async def test_opens_on_runtime_section():
-    """The screen opens with Runtime active: its section is shown, others hidden."""
+async def test_opens_on_session_section():
     app = _Host(_fake_harness(), _env_cfg())
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = app.screen
-        assert screen.active_section == "runtime"
-        assert screen.query_one("#section-runtime").display is True
+        assert screen.active_section == "session"
+        assert screen.query_one("#section-session").display is True
         assert screen.query_one("#section-theme").display is False
+
+
+@pytest.mark.anyio
+async def test_every_page_mounts_its_fields():
+    """Each topic page owns its expected widgets; no field appears twice."""
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        s = app.screen
+        # Session: live mode + relaunch default-mode are distinct widgets.
+        assert s.query_one("#section-session #mode-set") is not None
+        assert s.query_one("#section-session #default-mode-set") is not None
+        # Context & Memory owns the single context-budget input (de-duplicated).
+        assert s.query_one("#section-context #ctx-input") is not None
+        assert len(s.query("#ctx-input")) == 1
+        # Tools owns LSP + tool-search.
+        assert s.query_one("#section-tools #sw-lsp") is not None
+        assert s.query_one("#section-tools #toolsearch-set") is not None
+        # Notifications owns the events input.
+        assert s.query_one("#section-notifications #notif-events-input") is not None
 
 
 @pytest.mark.anyio
@@ -114,7 +134,7 @@ async def test_escape_dismisses():
 
 @pytest.mark.anyio
 async def test_mode_radio_applies_live():
-    """Selecting a mode in the Runtime section applies it to the harness at once."""
+    """Selecting a mode in the Session section applies it to the harness at once."""
     harness = _fake_harness()
     app = _Host(harness, _env_cfg())
     async with app.run_test(size=(120, 40)) as pilot:
@@ -131,7 +151,7 @@ async def test_mcp_toggle_disables_server():
     app = _Host(h, _env_cfg())
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        await pilot.press("down", "down")  # Runtime -> Theme -> MCP
+        await pilot.press("down", "down")  # Session -> Theme -> MCP
         await pilot.pause()
         await pilot.click("#mcp-toggle-0")  # turn the [x] toggle off
         await pilot.pause()
@@ -145,7 +165,7 @@ async def test_theme_applies_live():
     app = _Host(_fake_harness(), _env_cfg())
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        await pilot.press("down")  # Runtime -> Theme
+        await pilot.press("down")  # Session -> Theme
         await pilot.pause()
         await pilot.click("#theme-0")  # first theme
         await pilot.pause()
@@ -153,8 +173,8 @@ async def test_theme_applies_live():
 
 
 async def _goto_config(pilot):
-    """Navigate Runtime -> Config (the 4th rail section)."""
-    await pilot.press("down", "down", "down")
+    """Reach a relaunch page. Context & Memory is the 4th rail section."""
+    pilot.app.screen.active_section = "context"
     await pilot.pause()
 
 
@@ -180,7 +200,8 @@ async def test_checkbox_autosaves(isolated_env, monkeypatch, tmp_path):
     app = _Host(_fake_harness(), _env_cfg())  # lsp_enabled defaults True
     async with app.run_test(size=(120, 45)) as pilot:
         await pilot.pause()
-        await _goto_config(pilot)
+        app.screen.active_section = "tools"
+        await pilot.pause()
         _scroll_to(app, "#sw-lsp")
         await pilot.click("#sw-lsp")  # toggle LSP off
         await pilot.pause()
@@ -195,12 +216,34 @@ async def test_int_input_autosaves_on_submit(isolated_env, monkeypatch, tmp_path
     app = _Host(_fake_harness(), _env_cfg())
     async with app.run_test(size=(120, 45)) as pilot:
         await pilot.pause()
-        await _goto_config(pilot)
+        app.screen.active_section = "tools"
+        await pilot.pause()
         inp = app.screen.query_one("#subagent-req-limit", Input)
         inp.value = "120"
         app.screen._commit_input("subagent-req-limit")  # what Enter/blur trigger
         await pilot.pause()
     assert os.environ.get("MARIM_SUBAGENT_REQUEST_LIMIT") == "120"
+
+
+@pytest.mark.anyio
+async def test_int_input_real_submit_event_autosaves(isolated_env, monkeypatch, tmp_path):
+    """End-to-end through the real Textual event: focus + type + Enter fires
+    Input.Submitted -> on_input_submitted, not a direct _commit_input call."""
+    from textual.widgets import Input
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        inp = app.screen.query_one("#subagent-req-limit", Input)
+        inp.focus()
+        await pilot.pause()
+        inp.value = "150"
+        await pilot.press("enter")
+        await pilot.pause()
+    assert os.environ.get("MARIM_SUBAGENT_REQUEST_LIMIT") == "150"
 
 
 @pytest.mark.anyio
@@ -229,7 +272,7 @@ async def test_radio_autosaves(isolated_env, monkeypatch, tmp_path):
     app = _Host(_fake_harness(), _env_cfg())  # default_mode == "ask"
     async with app.run_test(size=(120, 45)) as pilot:
         await pilot.pause()
-        app.screen.active_section = "config"
+        app.screen.active_section = "session"
         await pilot.pause()
         app.screen.query_one("#defmode-plan", RadioButton).value = True
         await pilot.pause()
@@ -238,7 +281,6 @@ async def test_radio_autosaves(isolated_env, monkeypatch, tmp_path):
 
 @pytest.mark.anyio
 async def test_down_arrow_switches_section():
-    """Pressing down moves the rail selection Runtime -> Theme and swaps content."""
     app = _Host(_fake_harness(), _env_cfg())
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -247,4 +289,4 @@ async def test_down_arrow_switches_section():
         screen = app.screen
         assert screen.active_section == "theme"
         assert screen.query_one("#section-theme").display is True
-        assert screen.query_one("#section-runtime").display is False
+        assert screen.query_one("#section-session").display is False
