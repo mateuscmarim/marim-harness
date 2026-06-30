@@ -45,10 +45,15 @@ Spawn every agent with the MCP grant — without it they have no browser:
 1. **Plan.** `spawn_agent(type="playwright:planner", mcp=["playwright_test"],
    task="Plan tests for <app URL>. Seed: tests/seed.spec.ts. Keep it focused:
    N core scenarios.")` → a Markdown plan under `specs/`.
-2. **Generate.** Read the saved plan. For each scenario, one spawn:
+2. **Generate — one at a time, never in parallel.** Read the saved plan. For
+   each scenario, one spawn:
    `spawn_agent(type="playwright:generator", mcp=["playwright_test"], task=<the
    scenario: suite name, test name, target file under tests/, seed file>)`.
-   Fan these out in parallel.
+   **Wait for each generator to finish before spawning the next.** All spawns
+   share ONE `playwright_test` server → ONE browser page, with no per-caller
+   isolation, so parallel generators reset and navigate the same page out from
+   under each other ("Must setup test before interacting with the page" / "page
+   session lost"). Sequential is mandatory here, not a preference.
 3. **Heal.** `spawn_agent(type="playwright:healer", mcp=["playwright_test"],
    task="Run the suite and fix failing tests")`. The healer edits spec files, so
    it needs gated `edit_file`/`write_file` — that means the session must be in
