@@ -145,9 +145,6 @@ class SettingsScreen(Screen[None]):
     .frow { width: 1fr; height: 3; }
     .frow Label { width: 24; height: 3; content-align: left middle; }
     .frow Input { width: 1fr; }
-    .field-tag { width: auto; color: $text-muted; }
-    .field-row { layout: horizontal; height: 1; }
-    .field-row .field-main { width: 1fr; }
     #settings-footer { height: 1; background: $panel; }
     #settings-hints { padding: 0 1; color: $text-muted; width: auto; }
     #settings-status { width: 1fr; color: $text-muted; content-align: right middle; padding: 0 1; }
@@ -216,9 +213,6 @@ class SettingsScreen(Screen[None]):
         if key == "mcp":
             return str(len(list(self.harness.mcp.configured_names())))
         return ""
-
-    def _tag(self, live: bool) -> Static:
-        return Static("live" if live else "next launch", classes="field-tag")
 
     def _session_widgets(self) -> ComposeResult:
         yield Static(
