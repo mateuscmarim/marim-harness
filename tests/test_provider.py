@@ -679,6 +679,9 @@ def test_array_arg_accepts_stringified_object_elements(tool_name, param, extra, 
     agent = _build_agent()
     schema = agent._function_toolset.tools[tool_name].function_schema
     assert schema.json_schema["properties"][param]["type"] == "array"
+    items = schema.json_schema["properties"][param].get("items", {})
+    # the element schema is structured (object / $ref / union), not a bare string
+    assert items.get("type") == "object" or "$ref" in items or "anyOf" in items
     out = schema.validator.validate_python({param: elements, **extra})
     assert isinstance(out[param], list) and out[param]
     # each element decoded into the real dataclass, not left as a str

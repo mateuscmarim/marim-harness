@@ -75,13 +75,21 @@ def coerce_by_schema(value: object, schema: object, defs: dict | None = None) ->
     schema = _resolve(schema, defs)
 
     # Combinators: a nullable/union schema. Use the first non-null branch — for the
-    # ubiquitous ``[{...}, {"type": "null"}]`` pattern that is the real type.
+    # ubiquitous ``[{...}, {"type": "null"}]`` pattern that is the real type. But if
+    # any non-null branch is string-typed, a JSON-looking string may be intended
+    # literally (e.g. ``anyOf: [{"type": "integer"}, {"type": "string"}]``); decoding
+    # it would silently rewrite a valid string, so leave the value alone — mirrors
+    # the list-form ``type: [...]`` guard below.
     for combinator in ("anyOf", "oneOf"):
         branches = schema.get(combinator)
         if isinstance(branches, list):
-            for branch in branches:
-                if isinstance(branch, dict) and "null" not in _schema_types(branch):
-                    return coerce_by_schema(value, branch, defs)
+            nonnull = [
+                b for b in branches if isinstance(b, dict) and "null" not in _schema_types(b)
+            ]
+            if any("string" in _schema_types(b) for b in nonnull):
+                return value
+            for branch in nonnull:
+                return coerce_by_schema(value, branch, defs)
             return value
 
     types = _schema_types(schema)

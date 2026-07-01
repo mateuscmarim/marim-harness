@@ -71,3 +71,32 @@ def test_coerces_scalar_number_and_bool():
         "properties": {"n": {"type": "integer"}, "ok": {"type": "boolean"}},
     }
     assert coerce_by_schema({"n": "5", "ok": "true"}, schema) == {"n": 5, "ok": True}
+
+
+def test_anyof_with_string_branch_leaves_value_untouched():
+    schema = {
+        "type": "object",
+        "properties": {"id": {"anyOf": [{"type": "integer"}, {"type": "string"}]}},
+    }
+    # "123" is a valid string for this union — must NOT be rewritten to int 123.
+    assert coerce_by_schema({"id": "123"}, schema) == {"id": "123"}
+
+
+def test_list_form_union_with_string_leaves_value_untouched():
+    schema = {"type": "object", "properties": {"id": {"type": ["integer", "string"]}}}
+    assert coerce_by_schema({"id": "123"}, schema) == {"id": "123"}
+
+
+def test_oneof_nullable_object_still_decodes():
+    schema = {
+        "type": "object",
+        "properties": {
+            "cfg": {
+                "oneOf": [
+                    {"type": "object", "properties": {"n": {"type": "integer"}}},
+                    {"type": "null"},
+                ]
+            }
+        },
+    }
+    assert coerce_by_schema({"cfg": '{"n": 4}'}, schema) == {"cfg": {"n": 4}}
