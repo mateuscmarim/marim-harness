@@ -190,14 +190,15 @@ class _StreamSink(abc.ABC):
         return False
 
     async def _claim_spawn(
-        self, event, args: dict, container: Widget, parent_id: "str | None"
+        self, event, args: dict, container: Widget, parent_id: str | None
     ) -> "SubAgentWidget":
         """Shared spawn_agent claim for both scopes: build the live card, register
         it so its own stream (forwarded by the runner under this tool_call_id) can
         find it, create its detail pane, break the current tool run, and mount the
         card into this sink's container (#log for the top-level agent, the parent's
         pane for a nested spawn). ``parent_id`` tags the card for the list's tree
-        order (None for a top-level spawn)."""
+        order (None for a top-level spawn). Returns the card; both call sites
+        currently ignore it (exposed for tests and future callers)."""
         widget = self._r.mount_spawn_widget(args)
         widget.stream_id = event.part.tool_call_id
         widget.parent_id = parent_id

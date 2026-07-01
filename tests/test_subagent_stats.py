@@ -109,6 +109,10 @@ def test_tree_order_nests_children_after_parent_depth_first():
     assert [(r.agent.stream_id, r.depth) for r in rows] == [
         ("a", 0), ("b", 1), ("c", 2), ("d", 0),
     ]
+    # is_last is computed across roots too: `a` has a following root `d`, `d` doesn't.
+    by_id = {r.agent.stream_id: r for r in rows}
+    assert by_id["a"].is_last is False
+    assert by_id["d"].is_last is True
 
 
 def test_tree_order_marks_last_sibling():
@@ -138,6 +142,7 @@ def test_row_prefix_shape():
     assert _row_prefix(1, True) == "└─ "
     assert _row_prefix(1, False) == "├─ "
     assert _row_prefix(2, True) == "  └─ "
+    assert _row_prefix(2, False) == "  ├─ "
 
 
 def test_row_cells_prefix_prepended_to_label():
@@ -151,10 +156,21 @@ def test_row_cells_default_prefix_unchanged():
     assert row_cells(n)[1] == "research — map it"
 
 
+def test_row_cells_prefix_precedes_detached_tag():
+    # A nested-and-detached agent (unusual, but the ordering must be defined): the
+    # tree prefix wraps the "bg · " tag, so the row still reads as nested.
+    n = FakeNode("b", parent_id="a", agent_type="explore", _title="probe",
+                 detached=True)
+    assert row_cells(n, prefix="└─ ")[1] == "└─ bg · explore — probe"
+
+
 def test_aggregate_counts_every_agent_once():
     # Simulate a parent (100 tok) with one nested child (40 tok). aggregate sums
     # each agent's own tokens; the total is 140, not 100+140 (which is what a
-    # double-count of an already-cumulative parent would produce).
+    # double-count of an already-cumulative parent would produce). This pins the
+    # PURE function on fake data; the real isolation guarantee (a parent run's
+    # ctx.usage excludes its children) lives in runner.py's `sub.run` call, which
+    # threads no `usage=` — a change there would not be caught by this test.
     parent = FakeNode("p", tokens=100)
     child = FakeNode("c", parent_id="p", tokens=40)
     stats = aggregate([parent, child], cost_of=lambda a: 0.0)

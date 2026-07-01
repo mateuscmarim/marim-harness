@@ -11,7 +11,7 @@ from .format import format_cost, human_tokens
 STATUS_GLYPH = {"done": "✓", "denied": "✕", "failed": "✕"}
 
 
-@dataclass
+@dataclass(frozen=True)
 class TreeRow:
     """One agent placed in the display tree: the agent, its nesting ``depth``
     (0 = a top-level spawn / list root), and whether it is the last of its

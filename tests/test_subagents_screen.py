@@ -542,3 +542,36 @@ async def test_list_renders_child_indented_under_parent(tmp_path):
         assert cell(0).startswith("general —")
         assert cell(1).startswith("└─ explore —")   # nested under parent
         assert cell(2).startswith("coding —")        # sibling root, not indented
+
+
+def test_repaint_list_survives_uncomposed_view():
+    """A flush tick can fire between the view being created and its compose
+    children mounting, so ``view.list`` raises NoMatches. ``_repaint_list`` must
+    skip that tick rather than crash the live flush path (regression guard for the
+    race fixed alongside the tree-order change). Deterministic: no real mount, a
+    stub view whose ``list`` always raises."""
+    from textual.css.query import NoMatches
+
+    from marim_harness.interfaces.tui.subagents_viewer import SubAgentsViewer
+
+    class _StubView:
+        def repaint(self, *args, **kwargs):
+            pass  # real repaint also no-ops when the list isn't queryable
+
+        @property
+        def list(self):
+            raise NoMatches("list not composed yet")
+
+    class _StubStream:
+        subagents = [object()]  # non-empty so _repaint_list doesn't close early
+
+    class _StubApp:
+        stream = _StubStream()
+
+        def query_one(self, _selector):
+            return _StubView()
+
+    viewer = SubAgentsViewer(_StubApp())
+    viewer.open = True
+    # Must return without raising even though the view's list isn't composed.
+    assert viewer._repaint_list() is None
