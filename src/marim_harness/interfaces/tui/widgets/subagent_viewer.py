@@ -5,7 +5,7 @@ chooses which transcript the detail host shows."""
 
 from textual.widgets import DataTable
 
-from .subagent_stats import row_cells
+from .subagent_stats import _row_prefix, row_cells, tree_order
 
 # (label, width) per column. Fixed widths keep the stat columns (tools/tokens/
 # cost/dur) visible and aligned: DataTable truncates the long "{type} — title"
@@ -46,8 +46,8 @@ class SubAgentList(DataTable):
         keep = self.cursor_row if selected is None else selected
         with self.prevent(DataTable.RowHighlighted):
             self.clear()
-            for w in subagents:
-                self.add_row(*row_cells(w))
+            for tr in tree_order(subagents):
+                self.add_row(*row_cells(tr.agent, _row_prefix(tr.depth, tr.is_last)))
             if self.row_count:
                 self.move_cursor(row=max(0, min(keep, self.row_count - 1)))
 

@@ -4,11 +4,23 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Static
 
+from marim_harness.interfaces.tui.stream_render import _SubAgentSink
 from marim_harness.interfaces.tui.widgets.subagent_detail import SubAgentDetailHost
 from marim_harness.interfaces.tui.widgets.subagent_stats import aggregate
 from marim_harness.interfaces.tui.widgets.subagent_viewer import SubAgentList
 from marim_harness.interfaces.tui.widgets.subagents_view import SubAgentSummary, SubAgentsView
 from tests.conftest import _make_deps
+
+
+class _FakePart:
+    def __init__(self, tool_name: str, tool_call_id: str) -> None:
+        self.tool_name = tool_name
+        self.tool_call_id = tool_call_id
+
+
+class _FakeToolEvent:
+    def __init__(self, tool_name: str, tool_call_id: str) -> None:
+        self.part = _FakePart(tool_name, tool_call_id)
 
 
 def _app(tmp_path: Path):
@@ -453,3 +465,80 @@ def test_repaint_before_children_mount_is_noop():
     view = SubAgentsView()
     # Bare instance, never mounted -> SubAgentSummary/SubAgentList aren't queryable.
     view.repaint([], lambda _s: 0.0)  # must not raise NoMatches
+
+
+@pytest.mark.anyio
+async def test_nested_spawn_registers_child_card_in_parent_pane(tmp_path):
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        r = app.stream
+        # A top-level spawn: parent card + pane, registered like the real path.
+        parent = r.mount_spawn_widget({"type": "general", "description": "parent"})
+        parent.stream_id = "call-parent"
+        r.tool_widgets["call-parent"] = parent
+        parent_pane = r.ensure_pane(parent)
+        await pilot.pause()
+
+        # The parent's stream claims a nested spawn_agent.
+        sink = _SubAgentSink(r, parent, "call-parent")
+        ev = _FakeToolEvent("spawn_agent", "call-child")
+        claimed = await sink.intercept_tool(
+            ev, {"type": "explore", "description": "child"}, parent_pane
+        )
+        await pilot.pause()
+
+        assert claimed is True
+        child = r.tool_widgets["call-child"]
+        assert child.parent_id == "call-parent"     # tagged for the tree
+        assert child in r.subagents                  # shows in the list
+        assert child.pane is not None                # its own detail pane exists
+        assert child in parent_pane.children         # card mounted in parent's pane
+
+
+@pytest.mark.anyio
+async def test_nested_non_spawn_tool_not_claimed(tmp_path):
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        r = app.stream
+        parent = r.mount_spawn_widget({"type": "general", "description": "parent"})
+        parent.stream_id = "call-parent"
+        r.tool_widgets["call-parent"] = parent
+        parent_pane = r.ensure_pane(parent)
+        await pilot.pause()
+        sink = _SubAgentSink(r, parent, "call-parent")
+        claimed = await sink.intercept_tool(
+            _FakeToolEvent("read_file", "call-read"), {"path": "x"}, parent_pane
+        )
+        assert claimed is False                      # only spawn_agent is claimed
+
+
+@pytest.mark.anyio
+async def test_list_renders_child_indented_under_parent(tmp_path):
+    from marim_harness.interfaces.tui.widgets.subagent_viewer import SubAgentList
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        r = app.stream
+        parent = r.mount_spawn_widget({"type": "general", "description": "parent"})
+        parent.stream_id = "call-parent"
+        child = r.mount_spawn_widget({"type": "explore", "description": "child"})
+        child.stream_id = "call-child"
+        child.parent_id = "call-parent"
+        # A second top-level spawn appended AFTER the child, to prove ordering is
+        # by tree, not insertion.
+        sibling = r.mount_spawn_widget({"type": "coding", "description": "sib"})
+        sibling.stream_id = "call-sib"
+
+        view = app.query_one(SubAgentsView)
+        view.repaint(r.subagents, lambda a: 0.0, selected=0)
+        await pilot.pause()
+
+        lst = app.query_one(SubAgentList)
+
+        def cell(row: int) -> str:
+            return str(lst.get_row_at(row)[1])
+
+        # Row 0 = parent, row 1 = its child (indented), row 2 = sibling.
+        assert cell(0).startswith("general —")
+        assert cell(1).startswith("└─ explore —")   # nested under parent
+        assert cell(2).startswith("coding —")        # sibling root, not indented

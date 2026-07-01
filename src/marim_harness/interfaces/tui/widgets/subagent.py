@@ -114,6 +114,12 @@ class SubAgentWidget(Vertical):
         # once the widget is registered. The flush tick uses it to skip transcripts
         # that aren't currently being viewed.
         self.stream_id = ""
+        # The stream_id of the spawn that created this card, when it was spawned
+        # by another sub-agent rather than the top-level agent. None for a
+        # top-level spawn. Drives the depth-first tree order + connectors in the
+        # sub-agents list (see subagent_stats.tree_order). Set by the renderer's
+        # _claim_spawn at registration time.
+        self.parent_id: str | None = None
         self.status = "pending"  # "pending" | "done" | "denied" | "failed"
         self.report = ""
         self._fail_reason = ""  # clipped, shown on the collapsed card line

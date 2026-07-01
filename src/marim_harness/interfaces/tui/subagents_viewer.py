@@ -15,8 +15,10 @@ the screen is open, and opening mid-run shows an already-current transcript.
 """
 
 from textual.containers import VerticalScroll
+from textual.css.query import NoMatches
 
 from .widgets import NoticeMessage, PromptInput, SubAgentsView
+from .widgets.subagent_stats import tree_order
 
 
 class SubAgentsViewer:
@@ -33,6 +35,12 @@ class SubAgentsViewer:
         # repainting inline per event) is what keeps a fan-out from pinning a core —
         # see refresh / drain_repaint.
         self.dirty = False
+
+    def _ordered(self) -> list:
+        """Sub-agents in the list's display (depth-first) order — the same order
+        SubAgentList.refresh_rows renders — so a DataTable cursor row maps to the
+        correct agent."""
+        return [tr.agent for tr in tree_order(self.app.stream.subagents)]
 
     def toggle(self) -> None:
         """Ctrl+X: open the full-bleed sub-agents screen (or close it if open)."""
@@ -51,10 +59,11 @@ class SubAgentsViewer:
                 NoticeMessage("No sub-agents spawned yet — nothing to view.")
             )
             return
-        index = len(subs) - 1
+        ordered = self._ordered()
+        index = len(ordered) - 1
         if stream_id is not None:
             index = next(
-                (i for i, w in enumerate(subs) if w.stream_id == stream_id), index
+                (i for i, w in enumerate(ordered) if w.stream_id == stream_id), index
             )
         self.open = True
         self.index = index
@@ -90,8 +99,18 @@ class SubAgentsViewer:
             return
         view = app.query_one(SubAgentsView)
         view.repaint(subs, self.cost, selected=select)
-        self.index = max(0, min(view.list.cursor_row, len(subs) - 1))
-        current = subs[self.index]
+        try:
+            cursor_row = view.list.cursor_row
+        except NoMatches:
+            # A flush tick can land between this view being created and its compose
+            # children mounting, so the list isn't queryable yet. view.repaint above
+            # already skipped for the same reason; skip the cursor sync too rather
+            # than crash the live flush path — the next tick repaints once the list
+            # exists (mirrors SubAgentsView.repaint's own NoMatches guard).
+            return
+        ordered = self._ordered()
+        self.index = max(0, min(cursor_row, len(ordered) - 1))
+        current = ordered[self.index]
         if current.pane is not None:
             view.host.show(current.stream_id)
             # Lazy-load the persisted transcript the first time this pane is
@@ -164,8 +183,14 @@ class SubAgentsViewer:
     def on_row_highlighted(self, event) -> None:
         """Moving the list cursor selects that agent's transcript."""
         if self.open and event.cursor_row is not None:
-            self.index = event.cursor_row
-            current = self.app.stream.subagents[self.index]
+            ordered = self._ordered()
+            if not ordered:
+                return
+            # Clamp the highlighted row into the ordered list, mirroring
+            # _repaint_list — a defensive bound so a stale cursor row never
+            # indexes past the tree-ordered agents.
+            self.index = max(0, min(event.cursor_row, len(ordered) - 1))
+            current = ordered[self.index]
             if current.pane is not None:
                 self.app.query_one(SubAgentsView).host.show(current.stream_id)
             self.app.stream.flush_streams()
