@@ -217,7 +217,7 @@ class SettingsScreen(Screen[None]):
 
     def _session_widgets(self) -> ComposeResult:
         yield Static(
-            "Mode & model apply live; default mode applies next launch.",
+            "Mode, model & autonomous wake apply live; default mode applies next launch.",
             classes="muted",
         )
         yield Label("Mode (this session)")
@@ -231,6 +231,11 @@ class SettingsScreen(Screen[None]):
         with Horizontal(classes="srow"):
             yield Static(f"Model: {self.harness.model_label}", id="model-label")
             yield Button("change", id="model-change", variant="primary")
+        yield BoxCheckbox(
+            "Autonomous wake (react to finished jobs)",
+            value=getattr(self.app, "autonomous_wake", self.harness.autonomous_wake),
+            id="sw-autonomous-wake",
+        )
         yield Label("Default mode (new sessions)")
         with RadioSet(id="default-mode-set"):
             for name in _MODES:
@@ -456,6 +461,12 @@ class SettingsScreen(Screen[None]):
         cid = event.checkbox.id or ""
         if cid.startswith("mcp-toggle-"):
             await self._toggle_mcp(int(cid.removeprefix("mcp-toggle-")), event.value)
+            return
+        if cid == "sw-autonomous-wake":
+            # Live, session-only toggle — mirrors `/jobs wake on|off`. The App reads
+            # this flag per wake decision; nothing is persisted to .env.
+            self.app.autonomous_wake = event.value  # type: ignore[attr-defined]
+            self.app.status.refresh_status()  # type: ignore[attr-defined]
             return
         if not self._ready:
             return
