@@ -15,6 +15,7 @@ the screen is open, and opening mid-run shows an already-current transcript.
 """
 
 from textual.containers import VerticalScroll
+from textual.css.query import NoMatches
 
 from .widgets import NoticeMessage, PromptInput, SubAgentsView
 from .widgets.subagent_stats import tree_order
@@ -98,8 +99,17 @@ class SubAgentsViewer:
             return
         view = app.query_one(SubAgentsView)
         view.repaint(subs, self.cost, selected=select)
+        try:
+            cursor_row = view.list.cursor_row
+        except NoMatches:
+            # A flush tick can land between this view being created and its compose
+            # children mounting, so the list isn't queryable yet. view.repaint above
+            # already skipped for the same reason; skip the cursor sync too rather
+            # than crash the live flush path — the next tick repaints once the list
+            # exists (mirrors SubAgentsView.repaint's own NoMatches guard).
+            return
         ordered = self._ordered()
-        self.index = max(0, min(view.list.cursor_row, len(ordered) - 1))
+        self.index = max(0, min(cursor_row, len(ordered) - 1))
         current = ordered[self.index]
         if current.pane is not None:
             view.host.show(current.stream_id)

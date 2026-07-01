@@ -153,6 +153,10 @@ class _StreamSink(abc.ABC):
     # threads the narrowed Widget into the handlers that mount, so the None case
     # is handled at the boundary rather than papered over with a cast.
     container: Widget | None
+    # The owning renderer, set by every concrete sink's __init__. Declared here so
+    # shared base-class helpers (``_claim_spawn``) can reach it under the type
+    # checker without each subclass re-declaring the attribute.
+    _r: "StreamRenderer"
 
     @abc.abstractmethod
     def get_run(self) -> tuple:
