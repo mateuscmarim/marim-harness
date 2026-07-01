@@ -38,12 +38,13 @@ logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
 
 
-def _decode_json_list(value: object) -> object:
-    """Before-validator for an array tool argument: some models serialize a list
-    argument as a JSON *string* (e.g. ``'[{"old_string": …}]'``) rather than a
-    real array. Decode such a string to the list it represents; pass anything
-    else through untouched, so a genuine list validates normally and a non-JSON
-    string still surfaces the real validation error instead of being swallowed."""
+def _decode_json(value: object) -> object:
+    """Before-validator for a structured tool argument: some models serialize a
+    list or object argument as a JSON *string* (e.g. ``'[{"old_string": …}]'`` or
+    ``'{"text": …}'``) rather than a real array/object. Decode such a string to the
+    value it represents; pass anything else through untouched, so a genuine
+    array/object validates normally and a non-JSON string still surfaces the real
+    validation error instead of being swallowed."""
     if isinstance(value, str):
         try:
             return json.loads(value)
@@ -57,7 +58,13 @@ def _decode_json_list(value: object) -> object:
 # the model stays ``array`` (BeforeValidator leaves it unchanged), so a
 # well-behaved model is unaffected while a lenient one doesn't fail the turn on a
 # stringified array. Applied to every array-typed tool arg (edits/todos/questions).
-LenientList = Annotated[list[_T], BeforeValidator(_decode_json_list)]
+LenientList = Annotated[list[_T], BeforeValidator(_decode_json)]
+
+# A single tool argument (or list element) that tolerates a JSON-stringified
+# object. Same relax-don't-mask contract as ``LenientList``; used on the object
+# element types so a model that stringifies each element (not just the whole list)
+# still validates. The advertised schema is unchanged.
+Lenient = Annotated[_T, BeforeValidator(_decode_json)]
 
 # Foreground bash timeout, expressed in milliseconds to match the convention the
 # model already uses (Claude Code's Bash tool is ms; models reliably pass ms even
@@ -354,7 +361,7 @@ def read_skill_file(ctx: RunContext[Deps], name: str, path: str) -> str:
     return read_bundled_file(skill, path)
 
 
-async def update_tasks(ctx: RunContext[Deps], todos: LenientList[Task]) -> str:
+async def update_tasks(ctx: RunContext[Deps], todos: LenientList[Lenient[Task]]) -> str:
     """Maintain your checklist for the current multi-step task. Pass the
     FULL list every time — it replaces the previous one. Each item is
     {text, status} where status is pending, in_progress, or done. Keep
@@ -371,7 +378,7 @@ async def update_tasks(ctx: RunContext[Deps], todos: LenientList[Task]) -> str:
     return summarize(ctx.deps.tasks.items)
 
 
-async def ask_user(ctx: RunContext[Deps], questions: LenientList[Question]) -> str:
+async def ask_user(ctx: RunContext[Deps], questions: LenientList[Lenient[Question]]) -> str:
     """Ask the user to choose between concrete options, pausing your turn until
     they answer. Use this only when the user's decision changes what you do next
     and you can't settle it yourself or from the code — not for things you can

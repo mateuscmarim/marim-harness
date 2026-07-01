@@ -459,6 +459,56 @@ async def test_hook_ask_untrusted_no_callback_denies(tmp_path: Path):
     assert "approval" in result.lower() or "denied" in result.lower()
 
 
+@pytest.mark.anyio
+async def test_hook_decodes_stringified_structured_arg(tmp_path: Path):
+    """A model that stringifies a structured MCP arg gets it decoded from the tool's
+    inputSchema before the server sees it."""
+    calls: list = []
+    tool = SimpleNamespace(
+        name="save_plan",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "suites": {"type": "array", "items": {"type": "object"}},
+            },
+        },
+    )
+
+    async def list_tools():
+        return [tool]
+
+    holder = {"server": SimpleNamespace(list_tools=list_tools)}
+    hook = make_approval_hook("pw", trusted=True, schema_holder=holder)
+    args = {"name": "TodoMVC", "suites": '[{"title": "add"}]'}
+    result = await hook(_ctx(Mode.auto), await _runner(calls), "save_plan", args)
+    assert result == "RAN"
+    assert calls == [("save_plan", {"name": "TodoMVC", "suites": [{"title": "add"}]})]
+
+
+@pytest.mark.anyio
+async def test_hook_without_holder_passes_args_through(tmp_path: Path):
+    """No schema holder → no coercion (today's behavior)."""
+    calls: list = []
+    hook = make_approval_hook("pw", trusted=True)
+    await hook(_ctx(Mode.auto), await _runner(calls), "save_plan", {"suites": "[1]"})
+    assert calls == [("save_plan", {"suites": "[1]"})]
+
+
+@pytest.mark.anyio
+async def test_hook_schema_fetch_failure_falls_back(tmp_path: Path):
+    """If the tool schema can't be fetched, dispatch uncoerced rather than erroring."""
+    calls: list = []
+
+    async def boom():
+        raise RuntimeError("server down")
+
+    holder = {"server": SimpleNamespace(list_tools=boom)}
+    hook = make_approval_hook("pw", trusted=True, schema_holder=holder)
+    await hook(_ctx(Mode.auto), await _runner(calls), "save_plan", {"suites": "[1]"})
+    assert calls == [("save_plan", {"suites": "[1]"})]
+
+
 # --- result bounding (context-flood protection) ----------------------------
 
 
