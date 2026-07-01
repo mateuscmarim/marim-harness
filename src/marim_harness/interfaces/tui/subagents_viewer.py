@@ -183,8 +183,13 @@ class SubAgentsViewer:
     def on_row_highlighted(self, event) -> None:
         """Moving the list cursor selects that agent's transcript."""
         if self.open and event.cursor_row is not None:
-            self.index = event.cursor_row
             ordered = self._ordered()
+            if not ordered:
+                return
+            # Clamp the highlighted row into the ordered list, mirroring
+            # _repaint_list — a defensive bound so a stale cursor row never
+            # indexes past the tree-ordered agents.
+            self.index = max(0, min(event.cursor_row, len(ordered) - 1))
             current = ordered[self.index]
             if current.pane is not None:
                 self.app.query_one(SubAgentsView).host.show(current.stream_id)
