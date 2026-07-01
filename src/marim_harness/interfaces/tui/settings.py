@@ -75,6 +75,7 @@ _ENV_INT_INPUTS: dict[str, tuple[str, str]] = {
     "mask-keep-recent": ("MARIM_MASK_KEEP_RECENT", "Mask: keep recent returns"),
     "mask-min-chars": ("MARIM_MASK_MIN_CHARS", "Mask: min chars to elide"),
     "subagent-req-limit": ("MARIM_SUBAGENT_REQUEST_LIMIT", "Sub-agent request limit"),
+    "wake-depth-cap": ("MARIM_WAKE_DEPTH_CAP", "Autonomous wake turns"),
 }
 # radio set id -> (env var, ordered choices)
 _ENV_RADIOS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -216,7 +217,7 @@ class SettingsScreen(Screen[None]):
 
     def _session_widgets(self) -> ComposeResult:
         yield Static(
-            "Mode & model apply live; default mode applies next launch.",
+            "Mode, model & autonomous wake apply live; default mode applies next launch.",
             classes="muted",
         )
         yield Label("Mode (this session)")
@@ -230,6 +231,11 @@ class SettingsScreen(Screen[None]):
         with Horizontal(classes="srow"):
             yield Static(f"Model: {self.harness.model_label}", id="model-label")
             yield Button("change", id="model-change", variant="primary")
+        yield BoxCheckbox(
+            "Autonomous wake (react to finished jobs)",
+            value=getattr(self.app, "autonomous_wake", self.harness.autonomous_wake),
+            id="sw-autonomous-wake",
+        )
         yield Label("Default mode (new sessions)")
         with RadioSet(id="default-mode-set"):
             for name in _MODES:
@@ -335,6 +341,13 @@ class SettingsScreen(Screen[None]):
             yield Input(
                 value=str(self.env_cfg.subagent.request_limit),
                 id="subagent-req-limit",
+                type="integer",
+            )
+        with Horizontal(classes="frow"):
+            yield Label("Autonomous wake turns")
+            yield Input(
+                value=str(self.env_cfg.subagent.wake_depth_cap),
+                id="wake-depth-cap",
                 type="integer",
             )
 
@@ -448,6 +461,12 @@ class SettingsScreen(Screen[None]):
         cid = event.checkbox.id or ""
         if cid.startswith("mcp-toggle-"):
             await self._toggle_mcp(int(cid.removeprefix("mcp-toggle-")), event.value)
+            return
+        if cid == "sw-autonomous-wake":
+            # Live, session-only toggle — mirrors `/jobs wake on|off`. The App reads
+            # this flag per wake decision; nothing is persisted to .env.
+            self.app.autonomous_wake = event.value  # type: ignore[attr-defined]
+            self.app.status.refresh_status()  # type: ignore[attr-defined]
             return
         if not self._ready:
             return

@@ -40,6 +40,7 @@ def _fake_harness():
             disabled=set(),
             mcp_status=SimpleNamespace(connected=[], failed={}),
         ),
+        autonomous_wake=True,
     )
     h.set_mode = lambda mode: setattr(h.deps.workspace, "mode", mode)
     return h
@@ -77,6 +78,7 @@ class _Host(App):
         self._harness = harness
         self._env_cfg = env_cfg
         self.status = SimpleNamespace(refresh_status=lambda: None)
+        self.autonomous_wake = harness.autonomous_wake
 
     def on_mount(self) -> None:
         for theme in MARIM_THEMES:
@@ -142,6 +144,21 @@ async def test_mode_radio_applies_live():
         await pilot.click("#mode-plan")
         await pilot.pause()
     assert harness.deps.workspace.mode == Mode.plan
+
+
+@pytest.mark.anyio
+async def test_autonomous_wake_toggle_applies_live():
+    """The Session page's autonomous-wake checkbox reflects the app's live state
+    and flips it immediately (session-only, like /jobs wake), without writing .env."""
+    harness = _fake_harness()  # autonomous_wake defaults True
+    app = _Host(harness, _env_cfg())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        assert app.screen.query_one("#sw-autonomous-wake").value is True
+        assert app.autonomous_wake is True
+        await pilot.click("#sw-autonomous-wake")  # toggle off
+        await pilot.pause()
+    assert app.autonomous_wake is False
 
 
 @pytest.mark.anyio
@@ -244,6 +261,28 @@ async def test_int_input_real_submit_event_autosaves(isolated_env, monkeypatch, 
         await pilot.press("enter")
         await pilot.pause()
     assert os.environ.get("MARIM_SUBAGENT_REQUEST_LIMIT") == "150"
+
+
+@pytest.mark.anyio
+async def test_wake_depth_cap_reflects_config_and_saves(isolated_env, monkeypatch, tmp_path):
+    """The Tools page's autonomous-wake-turns input shows the configured value
+    (default 8) and persists MARIM_WAKE_DEPTH_CAP on commit."""
+    from textual.widgets import Input
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("MARIM_WAKE_DEPTH_CAP", raising=False)
+    app = _Host(_fake_harness(), _env_cfg())  # subagent.wake_depth_cap defaults 8
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        inp = app.screen.query_one("#wake-depth-cap", Input)
+        assert inp.value == "8"
+        inp.value = "3"
+        app.screen._commit_input("wake-depth-cap")
+        await pilot.pause()
+    assert os.environ.get("MARIM_WAKE_DEPTH_CAP") == "3"
+    assert "MARIM_WAKE_DEPTH_CAP=3" in (tmp_path / "marim" / ".env").read_text()
 
 
 @pytest.mark.anyio
