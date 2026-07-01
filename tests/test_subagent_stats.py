@@ -19,6 +19,8 @@ class FakeAgent:
     detached: bool = False
     _title: str = "map the codebase"
     _dur: str = "12s"
+    stream_id: str = ""
+    parent_id: str | None = None
 
     def display_title(self) -> str:
         return self._title

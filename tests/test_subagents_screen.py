@@ -510,3 +510,35 @@ async def test_nested_non_spawn_tool_not_claimed(tmp_path):
             _FakeToolEvent("read_file", "call-read"), {"path": "x"}, parent_pane
         )
         assert claimed is False                      # only spawn_agent is claimed
+
+
+@pytest.mark.anyio
+async def test_list_renders_child_indented_under_parent(tmp_path):
+    from marim_harness.interfaces.tui.widgets.subagent_viewer import SubAgentList
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        r = app.stream
+        parent = r.mount_spawn_widget({"type": "general", "description": "parent"})
+        parent.stream_id = "call-parent"
+        child = r.mount_spawn_widget({"type": "explore", "description": "child"})
+        child.stream_id = "call-child"
+        child.parent_id = "call-parent"
+        # A second top-level spawn appended AFTER the child, to prove ordering is
+        # by tree, not insertion.
+        sibling = r.mount_spawn_widget({"type": "coding", "description": "sib"})
+        sibling.stream_id = "call-sib"
+
+        view = app.query_one(SubAgentsView)
+        view.repaint(r.subagents, lambda a: 0.0, selected=0)
+        await pilot.pause()
+
+        lst = app.query_one(SubAgentList)
+
+        def cell(row: int) -> str:
+            return str(lst.get_row_at(row)[1])
+
+        # Row 0 = parent, row 1 = its child (indented), row 2 = sibling.
+        assert cell(0).startswith("general —")
+        assert cell(1).startswith("└─ explore —")   # nested under parent
+        assert cell(2).startswith("coding —")        # sibling root, not indented
