@@ -4,11 +4,23 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Static
 
+from marim_harness.interfaces.tui.stream_render import _SubAgentSink
 from marim_harness.interfaces.tui.widgets.subagent_detail import SubAgentDetailHost
 from marim_harness.interfaces.tui.widgets.subagent_stats import aggregate
 from marim_harness.interfaces.tui.widgets.subagent_viewer import SubAgentList
 from marim_harness.interfaces.tui.widgets.subagents_view import SubAgentSummary, SubAgentsView
 from tests.conftest import _make_deps
+
+
+class _FakePart:
+    def __init__(self, tool_name: str, tool_call_id: str) -> None:
+        self.tool_name = tool_name
+        self.tool_call_id = tool_call_id
+
+
+class _FakeToolEvent:
+    def __init__(self, tool_name: str, tool_call_id: str) -> None:
+        self.part = _FakePart(tool_name, tool_call_id)
 
 
 def _app(tmp_path: Path):
@@ -453,3 +465,48 @@ def test_repaint_before_children_mount_is_noop():
     view = SubAgentsView()
     # Bare instance, never mounted -> SubAgentSummary/SubAgentList aren't queryable.
     view.repaint([], lambda _s: 0.0)  # must not raise NoMatches
+
+
+@pytest.mark.anyio
+async def test_nested_spawn_registers_child_card_in_parent_pane(tmp_path):
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        r = app.stream
+        # A top-level spawn: parent card + pane, registered like the real path.
+        parent = r.mount_spawn_widget({"type": "general", "description": "parent"})
+        parent.stream_id = "call-parent"
+        r.tool_widgets["call-parent"] = parent
+        parent_pane = r.ensure_pane(parent)
+        await pilot.pause()
+
+        # The parent's stream claims a nested spawn_agent.
+        sink = _SubAgentSink(r, parent, "call-parent")
+        ev = _FakeToolEvent("spawn_agent", "call-child")
+        claimed = await sink.intercept_tool(
+            ev, {"type": "explore", "description": "child"}, parent_pane
+        )
+        await pilot.pause()
+
+        assert claimed is True
+        child = r.tool_widgets["call-child"]
+        assert child.parent_id == "call-parent"     # tagged for the tree
+        assert child in r.subagents                  # shows in the list
+        assert child.pane is not None                # its own detail pane exists
+        assert child in parent_pane.children         # card mounted in parent's pane
+
+
+@pytest.mark.anyio
+async def test_nested_non_spawn_tool_not_claimed(tmp_path):
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        r = app.stream
+        parent = r.mount_spawn_widget({"type": "general", "description": "parent"})
+        parent.stream_id = "call-parent"
+        r.tool_widgets["call-parent"] = parent
+        parent_pane = r.ensure_pane(parent)
+        await pilot.pause()
+        sink = _SubAgentSink(r, parent, "call-parent")
+        claimed = await sink.intercept_tool(
+            _FakeToolEvent("read_file", "call-read"), {"path": "x"}, parent_pane
+        )
+        assert claimed is False                      # only spawn_agent is claimed

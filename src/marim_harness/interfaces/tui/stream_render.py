@@ -185,6 +185,24 @@ class _StreamSink(abc.ABC):
         (non-None) mount target. Default: never intercepts."""
         return False
 
+    async def _claim_spawn(
+        self, event, args: dict, container: Widget, parent_id: "str | None"
+    ) -> "SubAgentWidget":
+        """Shared spawn_agent claim for both scopes: build the live card, register
+        it so its own stream (forwarded by the runner under this tool_call_id) can
+        find it, create its detail pane, break the current tool run, and mount the
+        card into this sink's container (#log for the top-level agent, the parent's
+        pane for a nested spawn). ``parent_id`` tags the card for the list's tree
+        order (None for a top-level spawn)."""
+        widget = self._r.mount_spawn_widget(args)
+        widget.stream_id = event.part.tool_call_id
+        widget.parent_id = parent_id
+        self._r.tool_widgets[event.part.tool_call_id] = widget
+        self._r.ensure_pane(widget)
+        self.set_run(None, None)
+        await container.mount(widget)
+        return widget
+
     def on_result(self, event) -> None:  # noqa: B027
         """Called after a tool result is rendered (cleanup hook)."""
 
@@ -230,12 +248,7 @@ class _TopLevelSink(_StreamSink):
         # settles and fills it (note_detached_spawn / fill_finished_detached_cards)
         # — so a backgrounded spawn no longer renders a misleading ✓ tool row.
         if event.part.tool_name == "spawn_agent":
-            widget = self._r.mount_spawn_widget(args)
-            widget.stream_id = event.part.tool_call_id
-            self._r.tool_widgets[event.part.tool_call_id] = widget
-            self._r.ensure_pane(widget)          # build + attach the pane
-            self.set_run(None, None)
-            await container.mount(widget)
+            await self._claim_spawn(event, args, container, parent_id=None)
             return True
         # ask_user is a user-facing Q&A, not mechanical work — keep it out of the
         # collapsed tool group, where the question and the user's answer would be
@@ -305,6 +318,19 @@ class _SubAgentSink(_StreamSink):
 
     def set_thinking(self, widget) -> None:
         self._r._sub_streams.setdefault(self._sid, _SubStreamState()).thinking = widget
+
+    async def intercept_tool(self, event, args: dict, container: Widget) -> bool:
+        # A nested spawn_agent gets the same live card as a top-level one, mounted
+        # into this sub-agent's pane and tagged with this agent as its parent. The
+        # child's own stream is already forwarded by the runner under the nested
+        # spawn's tool_call_id (subagents/runner.py); registering the card here is
+        # what lets on_subagent_event find it instead of dropping the stream.
+        if event.part.tool_name == "spawn_agent":
+            await self._claim_spawn(
+                event, args, container, parent_id=self._parent.stream_id
+            )
+            return True
+        return False
 
     def on_text(self) -> None:
         self._parent.note_text()
