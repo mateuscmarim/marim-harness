@@ -1,9 +1,11 @@
 from dataclasses import dataclass
 
 from marim_harness.interfaces.tui.widgets.subagent_stats import (
+    _row_prefix,
     aggregate,
     row_cells,
     status_glyph,
+    tree_order,
 )
 
 
@@ -17,6 +19,27 @@ class FakeAgent:
     detached: bool = False
     _title: str = "map the codebase"
     _dur: str = "12s"
+
+    def display_title(self) -> str:
+        return self._title
+
+    def _duration(self) -> str:
+        return self._dur
+
+
+@dataclass
+class FakeNode:
+    stream_id: str
+    parent_id: str | None = None
+    # row_cells needs these too:
+    status: str = "done"
+    agent_type: str = "explore"
+    tokens: int = 0
+    cost_text: str | None = None
+    tool_count: int = 0
+    detached: bool = False
+    _title: str = "t"
+    _dur: str = "1s"
 
     def display_title(self) -> str:
         return self._title
@@ -72,3 +95,55 @@ def test_aggregate_empty_is_blank_cost():
     s = aggregate([], cost_of=lambda a: 0.0)
     assert s.total == 0
     assert s.cost_text == ""
+
+
+def test_tree_order_nests_children_after_parent_depth_first():
+    a = FakeNode("a")
+    b = FakeNode("b", parent_id="a")       # child of a
+    c = FakeNode("c", parent_id="b")       # grandchild
+    d = FakeNode("d")                      # second root
+    # Insertion order interleaves roots and descendants:
+    rows = tree_order([a, d, b, c])
+    assert [(r.agent.stream_id, r.depth) for r in rows] == [
+        ("a", 0), ("b", 1), ("c", 2), ("d", 0),
+    ]
+
+
+def test_tree_order_marks_last_sibling():
+    a = FakeNode("a")
+    b = FakeNode("b", parent_id="a")
+    c = FakeNode("c", parent_id="a")
+    rows = tree_order([a, b, c])
+    by_id = {r.agent.stream_id: r for r in rows}
+    assert by_id["b"].is_last is False
+    assert by_id["c"].is_last is True
+    assert by_id["a"].is_last is True      # only root
+
+
+def test_tree_order_orphan_parent_becomes_root():
+    # parent_id points at an agent not in the list → treated as a root, never hidden.
+    orphan = FakeNode("x", parent_id="missing")
+    rows = tree_order([orphan])
+    assert [(r.agent.stream_id, r.depth) for r in rows] == [("x", 0)]
+
+
+def test_tree_order_empty():
+    assert tree_order([]) == []
+
+
+def test_row_prefix_shape():
+    assert _row_prefix(0, True) == ""
+    assert _row_prefix(1, True) == "└─ "
+    assert _row_prefix(1, False) == "├─ "
+    assert _row_prefix(2, True) == "  └─ "
+
+
+def test_row_cells_prefix_prepended_to_label():
+    n = FakeNode("b", parent_id="a", agent_type="explore", _title="read file")
+    cells = row_cells(n, prefix="└─ ")
+    assert cells[1] == "└─ explore — read file"
+
+
+def test_row_cells_default_prefix_unchanged():
+    n = FakeNode("a", agent_type="research", _title="map it")
+    assert row_cells(n)[1] == "research — map it"
