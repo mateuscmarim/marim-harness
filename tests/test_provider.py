@@ -660,6 +660,31 @@ def test_array_arg_accepts_json_stringified_list(tool_name, param, extra, string
     assert isinstance(out[param], list) and out[param], "stringified array was not decoded"
 
 
+@pytest.mark.parametrize(
+    ("tool_name", "param", "extra", "elements"),
+    [
+        ("update_tasks", "todos", {}, ['{"text": "do it", "status": "pending"}']),
+        (
+            "ask_user",
+            "questions",
+            {},
+            ['{"question": "ok?", "header": "h", "options": [{"label": "yes"}]}'],
+        ),
+    ],
+)
+def test_array_arg_accepts_stringified_object_elements(tool_name, param, extra, elements):
+    """Beyond a whole stringified list, a model may stringify each *element* object.
+    The element-level before-validator must unwrap those too, and the advertised
+    schema stays an array of objects."""
+    agent = _build_agent()
+    schema = agent._function_toolset.tools[tool_name].function_schema
+    assert schema.json_schema["properties"][param]["type"] == "array"
+    out = schema.validator.validate_python({param: elements, **extra})
+    assert isinstance(out[param], list) and out[param]
+    # each element decoded into the real dataclass, not left as a str
+    assert not any(isinstance(item, str) for item in out[param])
+
+
 def test_array_arg_still_accepts_real_list():
     """A genuine array must validate unchanged — the coercion only touches strings."""
     agent = _build_agent()
