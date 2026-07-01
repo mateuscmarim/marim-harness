@@ -149,3 +149,14 @@ def test_row_cells_prefix_prepended_to_label():
 def test_row_cells_default_prefix_unchanged():
     n = FakeNode("a", agent_type="research", _title="map it")
     assert row_cells(n)[1] == "research — map it"
+
+
+def test_aggregate_counts_every_agent_once():
+    # Simulate a parent (100 tok) with one nested child (40 tok). aggregate sums
+    # each agent's own tokens; the total is 140, not 100+140 (which is what a
+    # double-count of an already-cumulative parent would produce).
+    parent = FakeNode("p", tokens=100)
+    child = FakeNode("c", parent_id="p", tokens=40)
+    stats = aggregate([parent, child], cost_of=lambda a: 0.0)
+    assert stats.total == 2
+    assert stats.tokens == 140
