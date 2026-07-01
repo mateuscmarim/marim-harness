@@ -95,8 +95,11 @@ the interface layer.
 Tool implementations are module-level functions in `tools/provider.py` so they can be
 registered two ways from one source of truth: onto the main agent (gated tools behind
 `requires_approval=True`) and onto sub-agents (registered *plain* — reach is decided
-up front by which names are granted, never by mid-run prompting). `spawn_agent` is
-never granted to sub-agents, so they cannot recurse. Tool docstrings are the model-
+up front by which names are granted, never by mid-run prompting). `spawn_agent` is granted to a sub-agent only when it could still nest within the
+depth ceiling (`depth + 1 < SUBAGENT_MAX_DEPTH`, default 3) — see
+`SubagentRunner.build`; at the leaf depth the tool is absent, so nesting is
+bounded, not forbidden. Nested spawns render in the sub-agents screen as an
+indented tree (a child card streams into its parent's transcript pane). Tool docstrings are the model-
 facing tool descriptions — they are part of the product; write them with that in mind.
 `names.py` is the leaf module holding tool-name sets (`GATED_TOOLS`, `LSP_TOOLS`, etc.)
 to avoid import cycles.
