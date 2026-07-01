@@ -31,6 +31,7 @@ from pathlib import Path
 from ..atomic_io import atomic_write_text
 from ..config import config_dir
 from ..runtime.permissions import Mode
+from ..tools.coerce import coerce_by_schema
 from ..tools.offload import _INLINE_CHAR_LIMIT, offload_if_large
 
 # Per-tool retry budget for MCP servers, matched to the agent's ``retries=2`` (the
@@ -301,7 +302,7 @@ class _McpApprovalCall:
         return self._args
 
 
-def make_approval_hook(label: str, trusted: bool):
+def make_approval_hook(label: str, trusted: bool, *, schema_holder: dict | None = None):
     """Build a ``process_tool_call`` hook that gates an MCP server's tool calls by
     the live session mode: ``auto`` runs them, ``plan`` denies them (read-only),
     and ``ask`` runs a *trusted* server's calls but prompts for an *untrusted*
@@ -311,7 +312,49 @@ def make_approval_hook(label: str, trusted: bool):
     ``label`` is the server's config name; it prefixes the tool name shown to the
     user so an approval prompt names which server is calling. The mode and the
     approval callback are read from ``ctx.deps`` at call time, so runtime mode
-    switches take effect immediately."""
+    switches take effect immediately.
+
+    ``schema_holder`` (when given) is a one-key dict the caller populates with
+    ``{"server": <MCPServer>}`` right after the server is built. On first dispatch
+    the hook reads the server's tool input schemas — cheap, since pydantic-ai has
+    already cached them via its own ``list_tools`` at startup — and decodes any
+    argument a model stringified when the schema expects a structured value (see
+    :func:`coerce_by_schema`). Absent a holder, a fetch error, or an unknown tool,
+    the args pass through untouched, exactly as before."""
+    schema_cache: dict[str, dict] = {}
+    schema_state = {"loaded": False}
+
+    async def _tool_schema(name: str) -> dict | None:
+        if schema_holder is None:
+            return None
+        server = schema_holder.get("server")
+        if server is None:
+            return None
+        if not schema_state["loaded"]:
+            try:
+                tools = await server.list_tools()
+            except Exception:  # noqa: BLE001 - best-effort: fall back to uncoerced dispatch
+                return None
+            for tool in tools:
+                nm = getattr(tool, "name", None)
+                sch = getattr(tool, "inputSchema", None)
+                if isinstance(nm, str) and isinstance(sch, dict):
+                    schema_cache[nm] = sch
+            schema_state["loaded"] = True
+        return schema_cache.get(name)
+
+    async def _coerce_args(name: str, args: dict | None) -> dict | None:
+        if not isinstance(args, dict):
+            return args
+        schema = await _tool_schema(name)
+        if not isinstance(schema, dict):
+            return args
+        # coerce_by_schema is typed to return `object` (it recurses into scalars
+        # too), but fed a dict it always returns a dict — narrow explicitly so the
+        # reassignment below doesn't widen `args`'s type for the callers downstream
+        # (_bound_tool_result / _McpApprovalCall both expect dict | None).
+        coerced = coerce_by_schema(args, schema)
+        return coerced if isinstance(coerced, dict) else args
 
     async def hook(ctx, call_tool, name, args):
         deps = ctx.deps
@@ -323,6 +366,10 @@ def make_approval_hook(label: str, trusted: bool):
         mode = getattr(ws, "mode", None) if ws is not None else None
         if mode is Mode.plan:
             return f"Denied: {display} is blocked in read-only plan mode."
+        # Decode any stringified structured arg before the server (and the approval
+        # prompt) ever see it, so a model that serialized a nested value as a string
+        # doesn't burn a turn on the server's rejection.
+        args = await _coerce_args(name, args)
         if mode is Mode.auto or trusted:
             result = await call_tool(name, args)
             return _bound_tool_result(
@@ -370,7 +417,10 @@ def build_mcp_servers(specs: dict) -> tuple[list, list[str]]:
             if not isinstance(spec, dict):
                 notes.append(f"MCP server {name!r}: spec must be an object; skipped.")
                 continue
-            hook = make_approval_hook(name, bool(spec.get("trust", False)))
+            holder: dict = {}
+            hook = make_approval_hook(
+                name, bool(spec.get("trust", False)), schema_holder=holder
+            )
             if "command" in spec:
                 server = _QuietStdioServer(
                     command=spec["command"],
@@ -399,5 +449,9 @@ def build_mcp_servers(specs: dict) -> tuple[list, list[str]]:
                     f"MCP server {name!r}: needs 'command' or 'url'; skipped."
                 )
                 continue
+            # The hook needs the server to read tool inputSchemas, but the server
+            # needs the hook at construction — so hand the hook a holder now and
+            # fill it once the server exists.
+            holder["server"] = server
             servers.append(server)
     return servers, notes
