@@ -330,6 +330,27 @@ def test_set_model_persists_to_session(tmp_path: Path):
     assert h.session.manager.store(h.session.store.session_id).model == "openai/gpt-5.2"
 
 
+def test_set_model_invalidates_discovered_context_windows(tmp_path: Path):
+    """A /model switch must re-arm window discovery: on the local provider the
+    new model JIT-loads, possibly at a different context size than anything
+    probed before — stale windows would gate compaction/masking on the old
+    model's limit. A spy pins the WIRING; invalidate() itself is unit-tested
+    in test_context_limits.py."""
+    h = _switch_harness(tmp_path, source=_FakeSource())
+    calls = {"n": 0}
+
+    class _SpyLimits:
+        def invalidate(self):
+            calls["n"] += 1
+
+        def threshold(self, model_id):
+            return 100_000
+
+    h.session.limits = _SpyLimits()
+    h.set_model("openai/gpt-5.2")
+    assert calls["n"] == 1
+
+
 @pytest.mark.anyio
 async def test_switch_session_restores_its_model(tmp_path: Path):
     h = _switch_harness(tmp_path, source=_FakeSource())
