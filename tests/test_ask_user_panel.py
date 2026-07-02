@@ -204,3 +204,38 @@ async def test_panel_removed_after_answer():
         await pilot.press("enter")
         await pilot.pause()
         assert not app.query(AskUserPanel)
+
+
+@pytest.mark.anyio
+async def test_option_list_shows_three_options_and_scrolls():
+    """Long option lists cap at three visible options (each 2 rows here: label
+    + description) and scroll internally — the scrollbar belongs to the list,
+    and the question and free-text input stay pinned inside the panel."""
+    qs = [Question("Pick one", "Pick",
+                   [Choice(f"opt {i}", "a description") for i in range(8)])]
+    app = _Harness(qs)
+    async with app.run_test(size=(80, 50)) as pilot:
+        await pilot.pause()
+        panel = app.query_one(AskUserPanel)
+        opts = app.query_one("#ask-options")
+        # 3 options x 2 rows + the OptionList's own tall border
+        assert opts.region.height == 8
+        assert opts.show_vertical_scrollbar
+        # the panel itself does not scroll; the input stays inside it
+        assert not panel.show_vertical_scrollbar
+        other = app.query_one("#ask-other")
+        assert other.region.bottom < panel.region.bottom
+
+
+@pytest.mark.anyio
+async def test_short_option_list_is_not_padded():
+    """A two-option list takes only its own height — the 3-option cap is a
+    maximum, not a fixed size."""
+    qs = [Question("Pick one", "Pick", [Choice("a"), Choice("b")])]
+    app = _Harness(qs)
+    async with app.run_test(size=(80, 50)) as pilot:
+        await pilot.pause()
+        opts = app.query_one("#ask-options")
+        # 2 single-row options + border
+        assert opts.region.height == 4
+        assert not opts.show_vertical_scrollbar

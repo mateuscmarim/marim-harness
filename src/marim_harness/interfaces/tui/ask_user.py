@@ -24,6 +24,15 @@ def _option_prompt(choice: Choice) -> Text:
     return text
 
 
+def _list_height(options: list[Choice]) -> int:
+    """The option widget's max height: at most three options visible (the rest
+    scroll), plus 2 for the widget's own `tall` border. Keeping the cap on the
+    list itself — rather than letting the panel overflow — pins the question
+    and free-text input on screen and puts the scrollbar inside the list,
+    where the overflow actually is."""
+    return sum(2 if o.description else 1 for o in options[:3]) + 2
+
+
 class AskUserPanel(InteractionPanel):
     """Resolves with ``{header: str | list[str]}`` for every question, or None
     if the user pressed Escape."""
@@ -39,7 +48,6 @@ class AskUserPanel(InteractionPanel):
     }
     #ask-body {
         height: auto;
-        max-height: 18;
     }
     #ask-confirm {
         margin-top: 1;
@@ -87,6 +95,7 @@ class AskUserPanel(InteractionPanel):
 
         if q.multi:
             sel: SelectionList[int] = SelectionList(id="ask-select")
+            sel.styles.max_height = _list_height(q.options)
             await body.mount(sel)
             for i, opt in enumerate(q.options):
                 sel.add_option((_option_prompt(opt), i))
@@ -94,6 +103,7 @@ class AskUserPanel(InteractionPanel):
             sel.focus()
         else:
             options = OptionList(id="ask-options")
+            options.styles.max_height = _list_height(q.options)
             await body.mount(options)
             for i, opt in enumerate(q.options):
                 options.add_option(Option(_option_prompt(opt), id=str(i)))
