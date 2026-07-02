@@ -205,3 +205,142 @@ async def test_no_ui_notice_when_there_is_no_stream(tmp_path: Path):
     sub = _FlakySub(ModelHTTPError(504, "m", body="idle timeout"), fail_times=1)
     await runner._run_to_completion(sub, "task", None, None, None, None)
     assert notices == []
+
+
+def _overflow() -> ModelHTTPError:
+    return ModelHTTPError(
+        400, "m", body={"message": "This model's maximum context length is "
+                                   "8192 tokens; your request used more."}
+    )
+
+
+@pytest.mark.anyio
+async def test_overflow_sheds_stale_observations_and_resumes(tmp_path: Path):
+    """A context overflow mid-run is recovered ONCE: the captured conversation is
+    resumed with stale tool observations masked, so the run finishes instead of
+    dying — and without re-running the tools (same resume contract as the
+    transient path)."""
+    runner, sleeps = _runner(tmp_path)
+    state = {"raised": False}
+    seen: dict = {}
+
+    def fn(messages, info):
+        parts = [p for m in messages for p in getattr(m, "parts", [])]
+        returns = [p for p in parts if type(p).__name__ == "ToolReturnPart"]
+        if len(returns) < 2:
+            return ModelResponse(parts=[ToolCallPart(
+                tool_name="blob", args={}, tool_call_id=f"t{len(returns)}")])
+        if not state["raised"]:
+            state["raised"] = True
+            raise _overflow()
+        seen["messages"] = messages
+        return ModelResponse(parts=[TextPart(content="done")])
+
+    sub = Agent(FunctionModel(fn))
+
+    @sub.tool_plain
+    def blob() -> str:
+        return "x" * 500
+
+    result = await runner._run_to_completion(sub, "go", None, None, None)
+    assert result.output == "done"
+    assert sleeps == []  # overflow recovery resumes immediately, no backoff
+
+    from marim_harness.compaction import MASKED_OBSERVATION
+    contents = [
+        str(p.content) for m in seen["messages"]
+        for p in getattr(m, "parts", [])
+        if type(p).__name__ == "ToolReturnPart"
+    ]
+    assert contents[0] == MASKED_OBSERVATION   # stale observation shed
+    assert contents[1] == "x" * 500            # newest spared (keep_recent=1)
+
+
+@pytest.mark.anyio
+async def test_overflow_with_nothing_to_shed_raises(tmp_path: Path):
+    """When masking can free nothing (only one observation, which is spared), a
+    resume would fail identically — the overflow must surface, not loop."""
+    runner, _ = _runner(tmp_path)
+    calls = {"n": 0}
+
+    def fn(messages, info):
+        calls["n"] += 1
+        parts = [p for m in messages for p in getattr(m, "parts", [])]
+        if not any(type(p).__name__ == "ToolReturnPart" for p in parts):
+            return ModelResponse(parts=[ToolCallPart(
+                tool_name="blob", args={}, tool_call_id="t0")])
+        raise _overflow()
+
+    sub = Agent(FunctionModel(fn))
+
+    @sub.tool_plain
+    def blob() -> str:
+        return "x" * 500
+
+    with pytest.raises(ModelHTTPError):
+        await runner._run_to_completion(sub, "go", None, None, None)
+    assert calls["n"] == 2  # tool round + the failing request; no resume attempt
+
+
+@pytest.mark.anyio
+async def test_overflow_gives_up_after_one_shed(tmp_path: Path):
+    """A second overflow after a successful shed-and-resume surfaces: masking
+    already freed everything it could."""
+    runner, _ = _runner(tmp_path)
+    calls = {"n": 0}
+
+    def fn(messages, info):
+        calls["n"] += 1
+        parts = [p for m in messages for p in getattr(m, "parts", [])]
+        returns = [p for p in parts if type(p).__name__ == "ToolReturnPart"]
+        if len(returns) < 2:
+            return ModelResponse(parts=[ToolCallPart(
+                tool_name="blob", args={}, tool_call_id=f"t{len(returns)}")])
+        raise _overflow()
+
+    sub = Agent(FunctionModel(fn))
+
+    @sub.tool_plain
+    def blob() -> str:
+        return "x" * 500
+
+    with pytest.raises(ModelHTTPError):
+        await runner._run_to_completion(sub, "go", None, None, None)
+    # 2 tool rounds + overflow, then exactly ONE resumed request that overflows
+    # again and surfaces: 4 model calls total.
+    assert calls["n"] == 4
+
+
+@pytest.mark.anyio
+async def test_overflow_shed_emits_a_ui_notice_for_a_foreground_spawn(tmp_path: Path):
+    runner, _ = _runner(tmp_path)
+    notices: list[tuple[str, str]] = []
+
+    async def _notice(stream_id: str, message: str) -> None:
+        notices.append((stream_id, message))
+
+    runner.deps.ui.on_subagent_notice = _notice
+    state = {"raised": False}
+
+    def fn(messages, info):
+        parts = [p for m in messages for p in getattr(m, "parts", [])]
+        returns = [p for p in parts if type(p).__name__ == "ToolReturnPart"]
+        if len(returns) < 2:
+            return ModelResponse(parts=[ToolCallPart(
+                tool_name="blob", args={}, tool_call_id=f"t{len(returns)}")])
+        if not state["raised"]:
+            state["raised"] = True
+            raise _overflow()
+        return ModelResponse(parts=[TextPart(content="done")])
+
+    sub = Agent(FunctionModel(fn))
+
+    @sub.tool_plain
+    def blob() -> str:
+        return "x" * 500
+
+    await runner._run_to_completion(sub, "go", None, None, None, "sid-1")
+    assert len(notices) == 1
+    stream_id, message = notices[0]
+    assert stream_id == "sid-1"
+    assert "overflow" in message.lower()

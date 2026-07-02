@@ -36,9 +36,10 @@ if TYPE_CHECKING:
     from ..tools.provider import ToolProvider
     from .cli_backend import CliResult
 
+from ..compaction import mask_stale_observations
 from ..hooks.dispatch import TurnHooks
 from ..runtime.deps import Deps, SubAgent
-from ..runtime.errors import is_transient_model_error
+from ..runtime.errors import is_context_overflow_error, is_transient_model_error
 from ..runtime.permissions import Mode
 from ..tasks import TaskList
 from ..tools import fs
@@ -435,8 +436,14 @@ class SubagentRunner:
         is fine — its worktree is a throwaway branch.
 
         A foreground spawn (``stream_id`` set) gets an out-of-band UI notice on each
-        retry so the user sees the card recover rather than silently stall."""
+        retry so the user sees the card recover rather than silently stall.
+
+        A context-overflow rejection (a permanent 4xx the transient path would
+        surface) gets one recovery attempt of its own: the captured conversation
+        is resumed with stale tool observations masked (see ``_shed_context``);
+        a repeat overflow, or one with nothing left to shed, surfaces normally."""
         attempt = 0
+        overflow_shed = False
         resume_history: list | None = None
         while True:
             captured: list = []
@@ -450,6 +457,24 @@ class SubagentRunner:
                         usage_limits=UsageLimits(request_limit=self._request_limit),
                     )
             except Exception as exc:  # noqa: BLE001
+                # Context overflow is a permanent 4xx, so the transient path below
+                # would re-raise it — but unlike a genuine bad request it IS
+                # recoverable: shed the bulky old observations from the captured
+                # conversation and resume once. Unlike the proactive masker (which
+                # rewrites only the outgoing request), the shed is folded into the
+                # resume history itself, so the freed tokens stay freed. One shot
+                # only: a second overflow means masking already gave all it had.
+                if not overflow_shed and is_context_overflow_error(exc):
+                    shed = self._shed_context(list(captured))
+                    if shed is not None:
+                        overflow_shed = True
+                        resume_history = shed
+                        logger.info(
+                            "sub-agent overflowed its context; masked stale "
+                            "observations and resuming"
+                        )
+                        await self._notice_overflow(stream_id)
+                        continue
                 if attempt >= self._retry_attempts or not is_transient_model_error(exc):
                     raise
                 attempt += 1
@@ -474,6 +499,34 @@ class SubagentRunner:
             f"transient error ({exc.__class__.__name__}) — "
             f"retrying {attempt}/{self._retry_attempts}…",
         )
+
+    # Shed settings for the overflow backstop: spare only the newest observation
+    # (the model may still be acting on it) and mask anything else remotely bulky.
+    # Deliberately more aggressive than the proactive masker — by the time we're
+    # here the provider has already rejected the request for size.
+    _SHED_KEEP_RECENT = 1
+    _SHED_MIN_CHARS = 64
+
+    def _shed_context(self, messages: list) -> list | None:
+        """The overflow-recovery lever: repair the captured conversation the same
+        way a transient resume does, then aggressively mask stale observations.
+        Returns the shrunk history to resume from, or None when masking freed
+        nothing — the overflow is then unrecoverable here and must surface."""
+        repaired = _resumable_history(messages)
+        if not repaired:
+            return None
+        masked, count = mask_stale_observations(
+            repaired, self._SHED_KEEP_RECENT, min_chars=self._SHED_MIN_CHARS
+        )
+        return masked if count else None
+
+    async def _notice_overflow(self, stream_id: str | None) -> None:
+        """Surface an overflow recovery on a foreground spawn's card. A no-op for
+        a background spawn (no card) or when no UI is listening."""
+        cb = self.deps.ui.on_subagent_notice
+        if cb is None or not stream_id:
+            return
+        await cb(stream_id, "context overflow — masked stale tool output, resuming…")
 
     async def _execute_spawn(
         self, type: str, task: str, mcp_names: list[str] | None,
