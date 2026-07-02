@@ -26,6 +26,7 @@ from marim_harness.subagents.cli_backend import (
     cli_permission_mode,
     map_tools_to_cc,
     resolve_cli_binary,
+    sum_result_usages,
     synth_usage,
 )
 from marim_harness.tools.names import READ_TOOLS, SUBAGENT_TOOLS
@@ -129,6 +130,29 @@ def test_synth_usage_omits_cost_key_when_absent():
 def test_synth_usage_tolerates_none():
     u = synth_usage(None, num_turns=0)
     assert u.input_tokens == 0 and u.output_tokens == 0
+
+
+def test_sum_result_usages_sums_tokens_and_keeps_last_cumulative_cost():
+    r1 = {"num_turns": 2, "total_cost_usd": 0.04,
+          "usage": {"input_tokens": 18, "output_tokens": 1083,
+                    "cache_read_input_tokens": 44348,
+                    "cache_creation_input_tokens": 10455,
+                    "cache_creation": {"ephemeral_1h_input_tokens": 10455}}}
+    r2 = {"num_turns": 1, "total_cost_usd": 0.05,
+          "usage": {"input_tokens": 10, "output_tokens": 48,
+                    "cache_read_input_tokens": 28039,
+                    "cache_creation_input_tokens": 1942}}
+    summed, turns, cost = sum_result_usages([r1, r2])
+    assert summed["input_tokens"] == 28 and summed["output_tokens"] == 1131
+    assert summed["cache_read_input_tokens"] == 44348 + 28039
+    assert "cache_creation" not in summed  # nested dicts skipped
+    assert turns == 3
+    assert cost == 0.05  # total_cost_usd is cumulative — last wins
+
+
+def test_sum_result_usages_tolerates_missing_fields():
+    summed, turns, cost = sum_result_usages([{"usage": None}, {}])
+    assert summed == {} and turns == 0 and cost is None
 
 
 def test_translate_assistant_text_emits_start_then_full_delta():

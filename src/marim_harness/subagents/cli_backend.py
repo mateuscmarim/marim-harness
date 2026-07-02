@@ -218,6 +218,30 @@ def synth_usage(
     )
 
 
+def sum_result_usages(results: list[dict]) -> tuple[dict, int, float | None]:
+    """Fold one CLI run's ``result`` events into ``(usage, num_turns, cost)``
+    ready for ``synth_usage`` / ``request_usage_from_cli``.
+
+    One ``claude -p`` process can emit SEVERAL result events: an async
+    sub-agent's completion notification re-invokes the main agent, which ends
+    in another result. Token buckets are per-segment, so they are summed;
+    ``total_cost_usd`` is cumulative across the whole process, so the LAST
+    value is the run's cost (both verified against a live 2.1.198 stream).
+    Nested non-numeric usage values (``cache_creation``, ``server_tool_use``)
+    are skipped."""
+    summed: dict = {}
+    turns = 0
+    cost: float | None = None
+    for r in results:
+        for k, v in (r.get("usage") or {}).items():
+            if isinstance(v, (int, float)):
+                summed[k] = summed.get(k, 0) + v
+        turns += int(r.get("num_turns", 0) or 0)
+        if r.get("total_cost_usd") is not None:
+            cost = float(r["total_cost_usd"])
+    return summed, turns, cost
+
+
 class CliStreamTranslator:
     """Turns parsed Claude Code stream-json objects into the Pydantic AI message
     events the TUI already renders, so a CLI spawn streams nested under its card
