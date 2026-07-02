@@ -57,6 +57,7 @@ from ..workspace.worktree import (
     remove_worktree,
     repo_root,
 )
+from .masking import ObservationMasker
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +119,11 @@ class SubagentRunner:
                  build_model: Callable[[str], Model] | None = None,
                  concurrency: int | None = None,
                  transcript_cap: int = 2000,
-                 max_depth: int = 3) -> None:
+                 max_depth: int = 3,
+                 max_context_tokens: int = 100_000,
+                 mask_observations: bool = True,
+                 mask_keep_recent: int = 4,
+                 mask_min_chars: int = 200) -> None:
         self.provider = provider
         self.mcp = mcp
         self.deps = deps
@@ -153,6 +158,15 @@ class SubagentRunner:
         # Hard depth ceiling. Spawns that would produce a sub-agent at
         # depth >= max_depth are refused. Default 3: main → sub → grandchild.
         self._max_depth = max_depth
+        # Context masking for spawned sub-agents. A sub-agent does the read-heavy
+        # fan-out work, so its history is dominated by tool observations; past a
+        # token trigger those are masked per-request by an ObservationMasker (one
+        # per spawn — see masking.py for why the state matters). The knobs are the
+        # same user-facing settings the session compactor reads.
+        self._max_context_tokens = max_context_tokens
+        self._mask_observations = mask_observations
+        self._mask_keep_recent = mask_keep_recent
+        self._mask_min_chars = mask_min_chars
 
     def _open_worktree(self, stream_id: str):
         """Create an isolated git worktree for a spawn off the repo's HEAD.
@@ -296,6 +310,25 @@ class SubagentRunner:
         # imports this module, so a top-level import of the harness would cycle.
         from ..runtime.harness import _drop_nameless_tool_calls
 
+        # Same scrub the main agent runs (harness.py): a flaky sub-agent model
+        # can emit a structurally-broken tool call live mid-run (nameless, or
+        # args that aren't valid JSON). Without this, the broken part rides in
+        # history and the provider 400s the next request ("missing a function
+        # name" / "function.arguments must be valid JSON"), crashing the spawn.
+        # It runs before EVERY request, so it catches a call buried mid-history
+        # that the transient-retry repair (only on the resume path) never sees.
+        capabilities: list = [ProcessHistory(_drop_nameless_tool_calls)]
+        if self._mask_observations:
+            # One masker PER SPAWN: it holds the run's committed mask set, and
+            # sharing an instance across spawns would leak one run's masked
+            # tool_call_ids into another's requests.
+            masker = ObservationMasker(
+                self._max_context_tokens,
+                keep_recent=self._mask_keep_recent,
+                min_chars=self._mask_min_chars,
+            )
+            capabilities.append(ProcessHistory(masker.mask))
+
         sub = Agent(
             model_obj,
             deps_type=Deps,
@@ -311,14 +344,7 @@ class SubagentRunner:
             # budget 1 dies on the first mispredict where the main agent recovers.
             retries=2,
             model_settings=self._model_settings,
-            # Same scrub the main agent runs (harness.py): a flaky sub-agent model
-            # can emit a structurally-broken tool call live mid-run (nameless, or
-            # args that aren't valid JSON). Without this, the broken part rides in
-            # history and the provider 400s the next request ("missing a function
-            # name" / "function.arguments must be valid JSON"), crashing the spawn.
-            # It runs before EVERY request, so it catches a call buried mid-history
-            # that the transient-retry repair (only on the resume path) never sees.
-            capabilities=[ProcessHistory(_drop_nameless_tool_calls)],
+            capabilities=capabilities,
         )
         self.provider.register_subagent(sub, effective_tools(defn, allow_gated=allow_gated))
         # Nested spawning: only register spawn_agent if the child would be

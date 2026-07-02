@@ -9,16 +9,20 @@ returns arrive, so the request prefix is byte-stable and the provider prompt
 cache survives. A stateless newest-N mask would fail (3).
 """
 
+import pytest
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
+    TextPart,
     ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
 )
+from pydantic_ai.models.function import FunctionModel
 
 from marim_harness.compaction import MASKED_OBSERVATION
 from marim_harness.subagents.masking import ObservationMasker
+from tests.conftest import _make_deps, _make_harness
 
 
 def _round(i: int, size: int) -> list:
@@ -112,3 +116,53 @@ def test_small_returns_are_never_masked():
     returns = _returns(view)
     assert returns["t0"] == "x" * 50           # small stays, masking it buys nothing
     assert returns["t1"] == MASKED_OBSERVATION
+
+
+@pytest.mark.anyio
+async def test_built_subagent_masks_stale_observations_in_requests(tmp_path):
+    """End-to-end through SubagentRunner.build: with a tiny context budget, older
+    bulky tool returns are masked in the request the model actually sees — and,
+    because pydantic-ai writes the processed history back into run state
+    (``ctx.state.message_history[:] = messages``), the masking persists into
+    ``all_messages()``. The second property is pinned so an upstream semantics
+    change is caught here instead of silently altering transcript content."""
+    seen: dict = {}
+    calls = {"n": 0}
+
+    def fn(messages, info):
+        calls["n"] += 1
+        if calls["n"] <= 3:
+            return ModelResponse(parts=[ToolCallPart(
+                tool_name="blob", args={}, tool_call_id=f"t{calls['n']}")])
+        seen["messages"] = messages
+        return ModelResponse(parts=[TextPart(content="done")])
+
+    deps = _make_deps(tmp_path)
+    runner = _make_harness(FunctionModel(fn), deps).subagents
+    runner._max_context_tokens = 400   # trigger ≈ 300 tokens; each blob is ~500
+    runner._mask_keep_recent = 1
+    runner._mask_min_chars = 100
+    sub, err = runner.build("general")
+    assert err is None, err
+    assert sub is not None
+
+    @sub.tool_plain
+    def blob() -> str:
+        return "x" * 2000
+
+    result = await runner._run_to_completion(sub, "go", deps, None, None)
+    assert result.output == "done"
+
+    request_returns = [
+        str(p.content) for m in seen["messages"]
+        for p in getattr(m, "parts", []) if isinstance(p, ToolReturnPart)
+    ]
+    assert MASKED_OBSERVATION in request_returns        # stale observations masked
+    assert any("x" * 100 in c for c in request_returns)  # newest spared
+
+    stored_returns = [
+        str(p.content) for m in result.all_messages()
+        for p in getattr(m, "parts", []) if isinstance(p, ToolReturnPart)
+    ]
+    # Write-back semantics: the processed (masked) history IS the stored history.
+    assert MASKED_OBSERVATION in stored_returns

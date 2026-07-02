@@ -7,15 +7,21 @@ outgoing request size and, past a trigger, swaps stale observation payloads for
 :data:`~marim_harness.compaction.MASKED_OBSERVATION` — the model keeps the
 *trace* of what it did and can re-run a tool if it still needs a masked output.
 
-The masker is deliberately **stateful, one instance per spawn**. pydantic-ai's
-``ProcessHistory`` rewrites only the outgoing request (the run's stored history
-keeps the originals), so a stateless "mask everything older than the newest N"
-would mask against a boundary that moves every request and rewrite the request
-prefix every time — busting the provider prompt cache on each call. Instead the
-masker remembers which returns it masked (by ``tool_call_id``) and re-applies
-exactly that set, only *extending* it when the estimate crosses the trigger
-again. Between trigger events the request prefix is byte-stable, so masking
-costs one cache miss per trigger — the same bargain session compaction makes.
+The masker is deliberately **stateful, one instance per spawn**. Whether a
+``ProcessHistory`` rewrite persists between requests is an upstream
+implementation detail: pydantic-ai currently writes the processed history back
+into the run's state (``ctx.state.message_history[:] = messages`` in
+``_agent_graph._prepare_request``), but that semantics has differed across
+versions, and under a request-only semantics a stateless "mask everything older
+than the newest N" would mask against a boundary that moves every request —
+rewriting the request prefix every time and busting the provider prompt cache
+on each call. The masker therefore remembers which returns it masked (by
+``tool_call_id``) and re-applies exactly that set, only *extending* it when the
+estimate crosses the trigger again. Between trigger events the request prefix
+is byte-stable under either upstream semantics, so masking costs one cache miss
+per trigger — the same bargain session compaction makes. A side effect of the
+current write-back: the run's ``all_messages()`` and saved transcripts carry
+the masked placeholders — i.e. what the model actually saw.
 """
 
 from __future__ import annotations

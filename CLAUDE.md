@@ -126,7 +126,8 @@ to avoid import cycles.
   git worktrees, snapshots. (The root-level `compaction.py` builds the
   summarizer/titler aux agents and the token-budget compaction helpers.)
 - `subagents/` — `runner.py` (`SubagentRunner`: spawns and drives isolated
-  sub-agents) and `cli_backend.py` (the optional `claude -p` CLI backend it
+  sub-agents), `masking.py` (per-spawn context masking of stale tool
+  observations), and `cli_backend.py` (the optional `claude -p` CLI backend it
   delegates to). Re-exported as `marim_harness.subagents.SubagentRunner`.
 - `interfaces/tui/` — Textual app, widgets, `styles.tcss`, approval/ask-user modals,
   streaming render. `interfaces/cli/` — router + per-command modules (lazily imported
