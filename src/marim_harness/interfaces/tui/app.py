@@ -569,6 +569,10 @@ class HarnessApp(App):
         prompt = self.query_one(PromptInput)
         prompt.text = item.text
         prompt.load_attachments(item.attachments or [])
+        # Drop the paste stash along with the old draft: it belongs to whatever
+        # was in the box before, and a stale entry would leave a dangling
+        # [Pasted text #N] marker (or make a hand-typed #1 resurrect it).
+        prompt.pastes = []
         prompt.move_cursor(prompt.document.end)
         prompt.focus()
 

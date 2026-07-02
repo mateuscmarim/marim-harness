@@ -100,6 +100,10 @@ async def test_steer_expands_markers_too():
         await pilot.pause()
         assert app.steered == [blob]
         assert pi.pastes == []
+        # Steer consumes the draft, same as submit — a dead marker with no
+        # backing stash entry must not survive for a later Enter to resubmit.
+        assert pi.text == ""
+        assert pi.attachments == []
 
 
 @pytest.mark.anyio

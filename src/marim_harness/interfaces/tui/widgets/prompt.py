@@ -118,6 +118,13 @@ class PromptInput(TextArea):
             self.post_message(self.Steer(self._expand_pastes(self.text), atts))
             self.attachments = []
             self.pastes = []
+            # Steer consumes the draft like Submit does. Every steer path (the
+            # busy-turn handler and the buffered-steer requeue in app.py) works
+            # off the expanded Steer.value / harness-buffered text, never the
+            # box itself, so clearing here can't strand content — it just
+            # avoids leaving a dead [Pasted text #N] marker with an emptied
+            # stash for a later Enter to submit literally.
+            self.text = ""
             self._reset_nav()
             return
         if event.key == "enter":
