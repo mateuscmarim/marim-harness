@@ -16,7 +16,7 @@ every script exits 0.
 
 - The agents need gated `bash`/`write_file`/`edit_file`, which marim strips
   from sub-agents outside **auto** mode. Not in auto mode? Say so and stop.
-- Check the MCP servers enabled in this session (the sub-agents index lists
+- Check the MCP servers enabled in this session (the MCP-servers index lists
   them). If one is a browser-automation server (Playwright MCP or similar),
   remember its name — you will grant it to the planner. If none, proceed
   anyway and note it: browser-strategy tasks will be planned as *inferred*
@@ -35,7 +35,8 @@ Scrapers live in a self-contained `scrapers/` uv project. Check for
   `uv init scrapers && cd scrapers && uv add httpx parsel pydantic && mkdir -p specs samples`.
   Never run installs or create files anywhere else in the workspace.
 - **Both exist:** ask whether this is a *new extraction request* (extend the
-  plan — go to Step 2) or *repair of broken scrapers* (skip to Step 4).
+  plan — go to Step 2) or *repair of broken scrapers* (snapshot `find
+  scrapers -type f | sort` first, then skip to Step 4).
 
 ## Step 2 — plan
 
@@ -45,7 +46,7 @@ against this at the end to catch drift).
 Spawn the planner with the user's request verbatim:
 `spawn_agent(type="scraper-gen:planner", mcp=[<browser server>] if available,
 task="Plan scrapers for: <the user's data request>. Work in scrapers/; write
-specs/plan.md.")`
+scrapers/specs/plan.md.")`
 
 Read the returned `specs/plan.md` yourself, then show the user a short
 summary — each task's name, strategy (http/api/browser/blocked), fields, and
