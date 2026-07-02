@@ -83,7 +83,10 @@ class StatusPresenter:
     def status_text(self) -> Content:
         cfg = getattr(self.app.harness, "model_label", "model")
         used = self._context_tokens()
-        max_ctx = getattr(self.app.harness.session, "max_context_tokens", 0) or 0
+        # Denominate against the resolved threshold (min(budget, 0.8×window)),
+        # not the raw budget: 100% keeps meaning "compaction imminent" even
+        # when a small discovered window, not the budget, is the binding limit.
+        max_ctx = getattr(self.app.harness.session, "compact_threshold", 0) or 0
         pct = round(used / max_ctx * 100) if max_ctx else 0
         ctx_text = f"ctx {human_tokens(used)}/{human_tokens(max_ctx)} ({pct}%)"
         ctx_style = "red" if pct >= 90 else "yellow" if pct >= 75 else ""

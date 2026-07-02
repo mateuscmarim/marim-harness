@@ -23,6 +23,7 @@ from ..compaction import (
     make_summarizer,  # noqa: F401 — re-exported for tests
     make_titler,  # noqa: F401 — re-exported for tests
 )
+from ..config.context_limits import ContextLimits
 from ..hooks.dispatch import TurnHooks
 from ..lsp.manager import LspManager
 from ..mcp import McpManager
@@ -99,6 +100,10 @@ class HarnessConfig:
     # minimum rendered length below which a return isn't worth masking.
     mask_keep_recent: int = 4
     mask_min_chars: int = 200
+    # The window/budget resolver. None ⇒ build_collaborators constructs a
+    # discovery-less one from max_context_tokens, preserving the legacy
+    # fixed-budget behavior for embedders that never touch the new knobs.
+    context_limits: ContextLimits | None = None
     model_source: ModelSource | MultiModelSource | None = None
     model_id: str | None = None
     proactive_memory: bool = False
@@ -223,6 +228,11 @@ def build_collaborators(
     # Session-scoped LSP server pool, reachable by the navigation/diagnostics
     # tools through deps. Subagents share this deps object, so they get LSP too.
     lsp = LspManager(deps.workspace.root) if cfg.lsp_enabled else None
+    limits = cfg.context_limits or ContextLimits(budget=cfg.max_context_tokens or None)
+    # The live model id for threshold resolution: reads the current model each
+    # call, so a runtime /model switch re-keys thresholds without rewiring —
+    # the same closure trick get_model itself uses.
+    get_model_id = lambda: getattr(get_model(), "model_name", None)  # noqa: E731
     session = SessionController(
         cfg.store, cfg.manager, deps,
         cfg.max_context_tokens, cfg.keep_last_messages,
@@ -230,6 +240,8 @@ def build_collaborators(
         mask_observations=cfg.mask_observations,
         mask_keep_recent=cfg.mask_keep_recent,
         mask_min_chars=cfg.mask_min_chars,
+        limits=limits,
+        get_model_id=get_model_id,
     )
     # Per-session checkpoints. Wire the real GitSnapshotter so rewind
     # restores working-tree files end-to-end.
@@ -437,6 +449,12 @@ class Harness:
             return
         model = self.model_source.build(model_id)
         self.current_model = model
+        # A model switch invalidates discovered windows: on the local provider
+        # the new model JIT-loads, possibly at a different context size than
+        # anything probed before. Re-discovery happens lazily at the next
+        # async site (maybe_compact / spawn prep) — set_model stays sync.
+        if self.session.limits is not None:
+            self.session.limits.invalidate()
         self.model_id = model_id
         self.model_label = self.model_source.label(model_id)
         self.session.update_model(model)

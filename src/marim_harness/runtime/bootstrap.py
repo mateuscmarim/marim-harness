@@ -9,6 +9,7 @@ from ..config import (
     detect_active_providers,
     load_config,
 )
+from ..config.context_limits import build_context_limits
 from ..hooks import HookRunner, load_hooks_config
 from ..mcp import build_mcp_servers, disabled_server_names, load_mcp_config
 from ..notifications import Notifier
@@ -122,6 +123,12 @@ def build_harness(
             store=store,
             manager=manager,
             max_context_tokens=cfg.max_context_tokens,
+            context_limits=build_context_limits(
+                cfg.provider, cfg.base_url, cfg.api_key,
+                window_override=cfg.context_window,
+                budget=cfg.max_context_tokens or None,
+                budget_overrides_raw=cfg.context_budgets,
+            ),
             mask_observations=cfg.mask_observations,
             mask_keep_recent=cfg.mask_keep_recent,
             mask_min_chars=cfg.mask_min_chars,

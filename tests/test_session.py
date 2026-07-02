@@ -714,3 +714,56 @@ def test_session_save_load_round_trips_image(tmp_path, monkeypatch):
     parts = loaded[0].parts
     binaries = [c for c in parts[0].content if isinstance(c, BinaryContent)]
     assert binaries and binaries[0].data == b"\x89PNGz"
+
+
+# ---------------------------------------------------------------------------
+# compact_threshold / ContextLimits wiring
+# ---------------------------------------------------------------------------
+
+
+def _over_budget_history() -> list:
+    """A history large enough that even a generous fixed budget (100_000) would
+    NOT trigger compaction, but a tiny resolved threshold (tens of tokens) will —
+    matching the masking tests' shape above, just sized to also exercise a
+    non-trivial max_context_tokens gate."""
+    return [
+        ModelRequest(parts=[UserPromptPart(content="x" * 5000)]),
+        ModelRequest(parts=[UserPromptPart(content="y" * 5000)]),
+        ModelRequest(parts=[UserPromptPart(content="z" * 5000)]),
+    ]
+
+
+@pytest.mark.anyio
+async def test_maybe_compact_gates_on_the_resolved_threshold(tmp_path):
+    """With a ContextLimits attached, the compaction gate follows the
+    discovered window (0.8 ratio), not the raw budget: a tiny discovered
+    window must force compaction even when the budget says there's room."""
+    from marim_harness.config.context_limits import ContextLimits
+
+    async def fake_local():
+        return {"tiny": 100}  # threshold = 80 tokens — anything compacts
+
+    limits = ContextLimits(budget=1_000_000, fetch_local=fake_local)
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+    ctrl = SessionController(None, None, deps, 1_000_000, 1)
+    ctrl.limits = limits
+    ctrl.get_model_id = lambda: "tiny"
+    ctrl.history = _over_budget_history()
+    assert await ctrl.maybe_compact() is True
+
+
+@pytest.mark.anyio
+async def test_maybe_compact_without_limits_keeps_legacy_budget_gate(tmp_path):
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+    ctrl = SessionController(None, None, deps, 100_000, 20)  # max_context_tokens as before
+    assert ctrl.compact_threshold == ctrl.max_context_tokens
+
+
+def test_compact_threshold_reads_the_warm_cache(tmp_path):
+    from marim_harness.config.context_limits import ContextLimits
+
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+    ctrl = SessionController(None, None, deps, 100_000, 20)
+    ctrl.limits = ContextLimits(budget=42_000)
+    ctrl.get_model_id = lambda: "m"
+    assert ctrl.compact_threshold == 42_000  # sync, no resolve needed

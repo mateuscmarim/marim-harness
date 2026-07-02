@@ -468,7 +468,11 @@ async def test_status_bar_shows_context_usage(tmp_path: Path):
         await pilot.pause()
         bar = app.query_one("#status-bar")
         assert "ctx" in str(bar.render()).lower()  # shown even when empty
-        # ~500 tokens of content against a 1000-token window -> 50%
+        # ~500 tokens of content against a 1000-token window -> 50%. The gauge
+        # denominates against compact_threshold, which defers to a wired
+        # ContextLimits when present (build_collaborators always wires one);
+        # drop it here to exercise the legacy fixed-budget fallback directly.
+        app.harness.session.limits = None
         app.harness.session.max_context_tokens = 1000
         app.harness.session.history = [
             ModelRequest(parts=[UserPromptPart(content="x" * 2000)])

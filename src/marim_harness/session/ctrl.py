@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, SupportsIndex
 if TYPE_CHECKING:
     from pydantic_ai.models import Model
 
+    from ..config.context_limits import ContextLimits
+
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.usage import RunUsage
 
@@ -115,6 +117,8 @@ class SessionController:
         mask_observations: bool = False,
         mask_keep_recent: int = 4,
         mask_min_chars: int = 200,
+        limits: ContextLimits | None = None,
+        get_model_id: Callable[[], str | None] | None = None,
     ) -> None:
         self.store = store
         self.manager = manager
@@ -130,6 +134,12 @@ class SessionController:
         self.mask_observations = mask_observations
         self.mask_keep_recent = mask_keep_recent
         self.mask_min_chars = mask_min_chars
+        # The window/budget resolver, when the harness wires one (headless and
+        # TUI both do via build_collaborators; embedders may leave it None and
+        # keep the fixed max_context_tokens gate). get_model_id reads the LIVE
+        # model so a /model switch re-keys the threshold without rewiring.
+        self.limits = limits
+        self.get_model_id = get_model_id
         self.history_version: int = 0
         self._last_persisted_version: int = -1
         # ``history`` is a property; the underlying list lives in ``_history``.
@@ -151,6 +161,17 @@ class SessionController:
     @property
     def total_tokens(self) -> int:
         return self.usage.total_tokens
+
+    @property
+    def compact_threshold(self) -> int:
+        """The compaction trigger: the resolver's threshold for the current
+        model when one is wired (already min(budget, 0.8 × window)), else the
+        legacy fixed budget. Sync and I/O-free — the status gauge reads this
+        every frame; maybe_compact warms discovery before comparing."""
+        if self.limits is not None:
+            model_id = self.get_model_id() if self.get_model_id else None
+            return self.limits.threshold(model_id)
+        return self.max_context_tokens
 
     # Attribute setter that bumps the version on every history replacement —
     # the persist cache relies on this, so direct ``self.history = x`` (which
@@ -292,8 +313,17 @@ class SessionController:
         # the history), so the precomputed boundary stays valid. A forced
         # compaction is always "going"; _plan_tail_start still returns None when
         # there is nothing meaningful to drop.
+        #
+        # Warm window discovery before gating: this is an async site, and the
+        # resolver caches, so all later sync reads (the gauge, the property
+        # above) see the discovered window. Never raises — discovery is
+        # best-effort by contract.
+        if self.limits is not None:
+            model_id = self.get_model_id() if self.get_model_id else None
+            await self.limits.resolve(model_id)
+        threshold = self.compact_threshold
         tail_start = _plan_tail_start(
-            self.history, self.max_context_tokens, self.keep_last_messages,
+            self.history, threshold, self.keep_last_messages,
             force=force,
         )
         going = force or tail_start is not None
@@ -319,12 +349,12 @@ class SessionController:
             self.on_compact_start()
         if self.summarizer is not None:
             new_history, compacted = await compact_history_with_summary(
-                self.history, self.max_context_tokens, self.summarizer,
+                self.history, threshold, self.summarizer,
                 self.keep_last_messages, force=force, tail_start=tail_start,
             )
         else:
             new_history, compacted = compact_history(
-                self.history, self.max_context_tokens, self.keep_last_messages,
+                self.history, threshold, self.keep_last_messages,
                 force=force, tail_start=tail_start,
             )
         # Mask stale tool observations only when a compaction actually fired: the
