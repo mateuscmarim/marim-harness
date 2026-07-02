@@ -37,12 +37,19 @@ from .context import (
 from .context import (
     plan_mode_preamble,
     render_checklist_block,
+    render_shell_results_block,
     wrap_turn_context,
 )
 from .errors import dump_provider_error, is_context_overflow_error
 from .permissions import Mode, resolve_approvals
 
 logger = logging.getLogger(__name__)
+
+# Total character budget for pending `!` passthrough results awaiting the next
+# turn. run_bash caps each individual output, but a burst of `!` commands could
+# still stack an unbounded prefix onto one prompt — the queue drops oldest
+# entries past this, and the rendered block notes how many were elided.
+_SHELL_RESULTS_BUDGET = 20_000
 
 
 @dataclass
@@ -255,6 +262,12 @@ class TurnController:
         self._pending_jobs_digest: str | None = None
         self._consumed_this_turn: _ConsumedContext = _ConsumedContext()
 
+        # `!` passthrough results awaiting the next turn's prompt (see
+        # add_shell_result). Not restored on turn failure: the outputs are still
+        # on the user's screen and re-runnable, unlike hook context / digests.
+        self._pending_shell_results: list[tuple[str, str]] = []
+        self._shell_results_dropped = 0
+
         # Live RunContext for mid-turn steering.
         self._active_run_ctx: RunContext[Deps] | None = None
         self._steer_buffer: list[tuple[str, list[tuple[bytes, str]] | None]] = []
@@ -266,6 +279,21 @@ class TurnController:
     def clear_pending_jobs_digest(self) -> None:
         """Drop any re-stashed jobs digest (conversation context changed)."""
         self._pending_jobs_digest = None
+
+    def add_shell_result(self, command: str, output: str) -> None:
+        """Queue a user-run `!` passthrough result for the next turn's prompt.
+
+        Bounded: once the pending set exceeds the character budget the oldest
+        entries are dropped (and counted, so the rendered block can say so) —
+        a burst of `!` commands must not stack an unbounded prefix onto the
+        next prompt. The newest entry is always kept even if it alone exceeds
+        the budget; run_bash already caps any single output."""
+        self._pending_shell_results.append((command, output))
+        total = sum(len(c) + len(o) for c, o in self._pending_shell_results)
+        while total > _SHELL_RESULTS_BUDGET and len(self._pending_shell_results) > 1:
+            c, o = self._pending_shell_results.pop(0)
+            total -= len(c) + len(o)
+            self._shell_results_dropped += 1
 
     async def _maybe_compact(self) -> None:
         # When compaction actually shrinks the history, the checkpoints captured
@@ -320,6 +348,17 @@ class TurnController:
         # Prepended first so it sits just above the user's typed request.
         if self.deps.workspace.mode is Mode.plan:
             prompt = f"{plan_mode_preamble()}\n\n{prompt}"
+        # Commands the user ran via the `!` passthrough since the last turn.
+        # Their outputs are already on the user's screen; this drain makes them
+        # model-visible. Consumed here (not restored on failure — the user can
+        # re-run a ! command, unlike hook context).
+        shell_block = render_shell_results_block(
+            self._pending_shell_results, self._shell_results_dropped
+        )
+        if shell_block:
+            prompt = f"{shell_block}\n\n{prompt}"
+            self._pending_shell_results = []
+            self._shell_results_dropped = 0
         # Current task checklist as turn-state (not consumed) — see
         # render_checklist_block for why it rides in the per-turn envelope rather
         # than the (cache-stable) system prompt.

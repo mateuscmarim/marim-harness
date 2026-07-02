@@ -509,6 +509,11 @@ class Harness:
         """Delegate to ``turn_controller.steer``."""
         self.turn_controller.steer(text, attachments)
 
+    def add_shell_result(self, command: str, output: str) -> None:
+        """Queue a user-run `!` passthrough result for the next turn's context.
+        Delegates to the turn controller's pending queue."""
+        self.turn_controller.add_shell_result(command, output)
+
     def take_buffered_steers(
         self,
     ) -> list[tuple[str, list[tuple[bytes, str]] | None]]:

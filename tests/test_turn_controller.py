@@ -284,3 +284,59 @@ async def test_run_turn_passes_plain_toolsets_when_off(tmp_path, monkeypatch):
     monkeypatch.setattr(tc, "_run_with_approval", spy)
     await tc.run_turn("hi")
     assert captured["toolsets"] == servers  # unwrapped, unchanged
+
+
+def _ok_model():
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    return FunctionModel(fn)
+
+
+@pytest.mark.anyio
+async def test_assemble_prompt_injects_pending_shell_results(tmp_path):
+    """A queued `!` result rides the next turn's injected prefix, is consumed
+    by that drain, and never re-injects on the following turn."""
+    tc = _make_tc(_ok_model(), tmp_path)
+    tc.add_shell_result("git status", "exit 0\nclean")
+    prompt = await tc._assemble_prompt("what changed?")
+    assert "<user-shell-commands>" in prompt
+    assert "$ git status" in prompt
+    assert "exit 0\nclean" in prompt
+    assert "what changed?" in prompt
+    prompt2 = await tc._assemble_prompt("and now?")
+    assert "<user-shell-commands>" not in prompt2
+
+
+@pytest.mark.anyio
+async def test_shell_results_budget_drops_oldest_with_marker(tmp_path):
+    """The pending queue is bounded: oldest entries fall off past the character
+    budget and the block says how many were elided."""
+    tc = _make_tc(_ok_model(), tmp_path)
+    tc.add_shell_result("first-command", "x" * 15_000)
+    tc.add_shell_result("second-command", "y" * 15_000)
+    prompt = await tc._assemble_prompt("hi")
+    assert "$ first-command" not in prompt
+    assert "$ second-command" in prompt
+    assert "1 earlier command(s) elided" in prompt
+
+
+@pytest.mark.anyio
+async def test_shell_results_keep_newest_even_if_oversized(tmp_path):
+    """A single oversized entry is never dropped to zero — run_bash already caps
+    individual outputs, so the newest result is always kept."""
+    tc = _make_tc(_ok_model(), tmp_path)
+    tc.add_shell_result("big", "z" * 50_000)
+    prompt = await tc._assemble_prompt("hi")
+    assert "$ big" in prompt
+
+
+def test_harness_add_shell_result_delegates(tmp_path):
+    from pydantic_ai.models.test import TestModel
+
+    deps = _make_deps(tmp_path)
+    harness = Harness(
+        TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="t"
+    )
+    harness.add_shell_result("echo hi", "exit 0\nhi")
+    assert harness.turn_controller._pending_shell_results == [("echo hi", "exit 0\nhi")]
