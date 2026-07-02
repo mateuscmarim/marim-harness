@@ -2,8 +2,17 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from marim_harness.workspace import ModelEntry, filter_entries, model_supports_images, parse_models
-from marim_harness.workspace.catalog import fetch_local_models, parse_google_models
+from marim_harness.workspace import (
+    ModelEntry,
+    filter_entries,
+    model_supports_images,
+    parse_models,
+)
+from marim_harness.workspace.catalog import (
+    fetch_local_models,
+    parse_google_models,
+    parse_lmstudio_models,
+)
 
 
 def _mock_async_client(payload, *, raises: Exception | None = None):
@@ -165,3 +174,48 @@ def test_filter_entries_matches_provider():
         ModelEntry(id="y", name="Y", provider="local"),
     ]
     assert [e.id for e in filter_entries(entries, "local")] == ["y"]
+
+
+def test_parse_models_keeps_openrouter_context_length():
+    payload = {"data": [
+        {"id": "anthropic/claude-opus-4-8", "name": "Opus", "context_length": 200000},
+        {"id": "some/other", "name": "Other"},                    # field absent
+        {"id": "bad/ctx", "name": "Bad", "context_length": "big"},  # non-int ignored
+    ]}
+    entries = {e.id: e for e in parse_models(payload)}
+    assert entries["anthropic/claude-opus-4-8"].context_window == 200000
+    assert entries["some/other"].context_window is None
+    assert entries["bad/ctx"].context_window is None
+
+
+def test_parse_google_models_keeps_input_token_limit():
+    payload = {"models": [
+        {"name": "models/gemini-2.5-pro", "displayName": "Gemini",
+         "supportedGenerationMethods": ["generateContent"],
+         "inputTokenLimit": 1048576},
+    ]}
+    (entry,) = parse_google_models(payload)
+    assert entry.context_window == 1048576
+
+
+def test_parse_lmstudio_models_prefers_loaded_context_length():
+    """The exact shape LM Studio's /api/v0/models returns (verified live):
+    a loaded model carries loaded_context_length — the true serving window,
+    which can be far below max_context_length — while a not-loaded model
+    only advertises its max."""
+    payload = {"data": [
+        {"id": "qwen/qwen3.5-9b", "state": "loaded",
+         "max_context_length": 262144, "loaded_context_length": 101039},
+        {"id": "ornith-1.0-35b", "state": "not-loaded",
+         "max_context_length": 262144},
+        {"id": "junk", "max_context_length": "nope"},
+    ]}
+    windows = parse_lmstudio_models(payload)
+    assert windows["qwen/qwen3.5-9b"] == 101039   # loaded beats max
+    assert windows["ornith-1.0-35b"] == 262144    # max is the only signal
+    assert "junk" not in windows
+
+
+def test_parse_lmstudio_models_tolerates_garbage():
+    assert parse_lmstudio_models({}) == {}
+    assert parse_lmstudio_models({"data": "nope"}) == {}

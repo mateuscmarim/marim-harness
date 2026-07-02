@@ -22,6 +22,11 @@ class ModelEntry:
     name: str
     supports_images: bool | None = None
     provider: str | None = None
+    # The model's context window in tokens, when the catalog states it
+    # (OpenRouter context_length, Google inputTokenLimit); None when the
+    # source doesn't say. Consumed by config.context_limits to derive the
+    # compaction/masking threshold.
+    context_window: int | None = None
 
     @property
     def qualified(self) -> str:
@@ -49,8 +54,11 @@ def parse_models(payload: dict) -> list[ModelEntry]:
             mods = arch.get("input_modalities")
             if isinstance(mods, list):
                 supports_images = "image" in mods
+        ctx = row.get("context_length")
+        context_window = ctx if isinstance(ctx, int) and ctx > 0 else None
         entries.append(ModelEntry(id=model_id, name=display,
-                                  supports_images=supports_images))
+                                  supports_images=supports_images,
+                                  context_window=context_window))
     entries.sort(key=lambda e: e.id)
     return entries
 
@@ -92,7 +100,10 @@ def parse_google_models(payload: dict) -> list[ModelEntry]:
         # asserting True (the contract on ModelEntry.supports_images is
         # "True/False when the catalog states it, else None"). None never blocks
         # submission, same as the OpenRouter parser does for rows lacking the field.
-        entries.append(ModelEntry(id=model_id, name=display, supports_images=None))
+        limit = row.get("inputTokenLimit")
+        context_window = limit if isinstance(limit, int) and limit > 0 else None
+        entries.append(ModelEntry(id=model_id, name=display, supports_images=None,
+                                  context_window=context_window))
     entries.sort(key=lambda e: e.id)
     return entries
 
@@ -154,6 +165,61 @@ async def fetch_local_models(
     except Exception as exc:
         logger.warning("failed to fetch local model catalog from %s: %s", url, exc)
         return []
+
+
+def parse_lmstudio_models(payload: dict) -> dict[str, int]:
+    """Model id → context window from LM Studio's enhanced ``/api/v0/models``.
+
+    Prefers ``loaded_context_length`` — the window the model is *actually
+    serving* — over ``max_context_length`` (what the weights support). The two
+    can differ wildly: a model advertising 262k loaded at ~101k is exactly the
+    mismatch that let requests overflow while the token gauge read 12%.
+    ``loaded_context_length`` only exists on rows with ``state: "loaded"``;
+    for everything else the max is the best available signal."""
+    rows = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return {}
+    windows: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        model_id = row.get("id")
+        if not isinstance(model_id, str) or not model_id:
+            continue
+        ctx = row.get("loaded_context_length")
+        if not (isinstance(ctx, int) and ctx > 0):
+            ctx = row.get("max_context_length")
+        if isinstance(ctx, int) and ctx > 0:
+            windows[model_id] = ctx
+    return windows
+
+
+async def fetch_lmstudio_windows(
+    base_url: str | None, api_key: str | None = None, timeout: float = 10.0
+) -> dict[str, int]:
+    """Probe LM Studio's ``/api/v0/models`` for per-model context windows.
+
+    The OpenAI-compatible ``/v1/models`` carries no context information, so
+    this hits the enhanced REST API instead, derived from the same base_url
+    (``…:1234/v1`` → ``…:1234/api/v0/models``). Returns ``{}`` on any failure
+    — a non-LM-Studio local server 404s here and that must never break a turn.
+    httpx is imported lazily to keep the import chain light."""
+    if not base_url:
+        return {}
+    import httpx
+
+    root = base_url.rstrip("/")
+    root = root.removesuffix("/v1")
+    url = f"{root}/api/v0/models"
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            return parse_lmstudio_models(response.json())
+    except Exception as exc:
+        logger.warning("failed to fetch LM Studio windows from %s: %s", url, exc)
+        return {}
 
 
 def model_supports_images(entries: list[ModelEntry], model_id: str) -> bool | None:
