@@ -3642,3 +3642,82 @@ async def test_sub_streams_pruned_after_subagent_finish(tmp_path: Path):
         # After the spawn result, prune_completed must drop the finished entry.
         app.stream.prune_completed()
         assert "s1" not in app.stream._sub_streams
+
+
+@pytest.mark.anyio
+async def test_bang_submission_runs_command_not_a_turn(tmp_path: Path):
+    """A `!` submission executes locally: the result lands in the pending
+    shell-results queue and no agent turn starts (history stays empty)."""
+    from marim_harness.interfaces.tui.widgets.prompt import PromptInput
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.on_prompt_input_submitted(
+            PromptInput.Submitted("!echo bang-marker")
+        )
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        pending = app.harness.turn_controller._pending_shell_results
+        assert len(pending) == 1
+        assert pending[0][0] == "echo bang-marker"
+        assert "bang-marker" in pending[0][1]
+        assert list(app.harness.session.history) == []  # no turn ran
+
+
+@pytest.mark.anyio
+async def test_bare_bang_shows_usage_hint(tmp_path: Path):
+    from marim_harness.interfaces.tui.widgets.prompt import PromptInput
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.on_prompt_input_submitted(PromptInput.Submitted("!"))
+        await pilot.pause()
+        assert app.harness.turn_controller._pending_shell_results == []
+
+
+@pytest.mark.anyio
+async def test_bang_refused_while_turn_busy(tmp_path: Path):
+    """A `!` command mid-turn is refused with a notice — running it would
+    interleave its output with the streaming response."""
+    from marim_harness.interfaces.tui.widgets.prompt import PromptInput
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._turn_starting = True  # the turn_busy property's spawn-gap term
+        await app.on_prompt_input_submitted(PromptInput.Submitted("!echo hi"))
+        await pilot.pause()
+        assert app.harness.turn_controller._pending_shell_results == []
+        notices = [str(w.render()) for w in app.query(NoticeMessage)]
+        assert any("shell command" in n for n in notices)
+
+
+@pytest.mark.anyio
+async def test_bang_sudo_prompts_for_password_and_cancel_skips_run(
+    tmp_path: Path,
+):
+    """A leading-sudo command opens the password modal; cancelling it (None)
+    skips the run entirely."""
+    from marim_harness.interfaces.tui.shell_passthrough import SudoPasswordModal
+    from marim_harness.interfaces.tui.widgets.prompt import PromptInput
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        seen: list = []
+
+        async def fake_wait(screen):
+            seen.append(screen)
+            return None  # user cancelled
+
+        app.push_screen_wait = fake_wait  # type: ignore[method-assign]
+        await app.on_prompt_input_submitted(
+            PromptInput.Submitted("!sudo whoami")
+        )
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert len(seen) == 1
+        assert isinstance(seen[0], SudoPasswordModal)
+        assert app.harness.turn_controller._pending_shell_results == []

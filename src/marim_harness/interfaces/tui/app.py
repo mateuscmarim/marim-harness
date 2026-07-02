@@ -23,6 +23,13 @@ from .notify import FinishedJobNotifier
 from .queue import TurnQueue
 from .session_view import SessionView
 from .settings import SettingsScreen
+from .shell_passthrough import (
+    SudoPasswordModal,
+    format_transcript_block,
+    needs_sudo_password,
+    parse_bang,
+    run_passthrough,
+)
 from .status import (
     _CLOCK_TICK_INTERVAL,
     _SPINNER_TICK_INTERVAL,
@@ -875,6 +882,9 @@ class HarnessApp(App):
         if text.startswith("/"):
             await dispatch(self, text)
             return
+        if (command := parse_bang(text)) is not None:
+            await self._handle_bang(command)
+            return
         reason = self._image_block_reason(event.attachments)
         if reason is not None:
             self._append_log(NoticeMessage(reason))
@@ -886,6 +896,46 @@ class HarnessApp(App):
             return
         self._queue.paused = False
         await self._start_turn(text, event.attachments)
+
+    async def _handle_bang(self, command: str) -> None:
+        """Route a `!` submission: usage hint for a bare `!`, refusal mid-turn,
+        otherwise run in a worker. A worker (not this handler) because sudo's
+        modal needs push_screen_wait — invalid outside a worker, the same
+        constraint the model picker documents — and because the command may
+        legitimately run for up to PASSTHROUGH_TIMEOUT."""
+        if not command:
+            await self.post_system(
+                "Usage: `! <command>` — run a shell command here; its output is "
+                "shared with the model on your next message."
+            )
+            return
+        if self.turn_busy:
+            self._append_log(NoticeMessage(
+                "Can't run a shell command while a turn is running. "
+                "Press Esc first."
+            ))
+            return
+        self.run_worker(self._run_shell_passthrough(command), exclusive=False)
+
+    async def _run_shell_passthrough(self, command: str) -> None:
+        """Execute a `!` command, render its output into the transcript, and
+        queue it for the next turn's context. Leading-sudo commands collect a
+        password first; it only ever transits the subprocess stdin pipe."""
+        password: str | None = None
+        if needs_sudo_password(command):
+            password = await self.push_screen_wait(SudoPasswordModal(command))
+            if password is None:
+                self._append_log(NoticeMessage("sudo command cancelled"))
+                return
+        try:
+            output = await run_passthrough(
+                self.harness.deps.workspace.root, command, password
+            )
+        except OSError as exc:
+            self._append_log(ErrorMessage(f"! {command} failed to start: {exc}"))
+            return
+        await self.post_system(format_transcript_block(command, output))
+        self.harness.add_shell_result(command, output)
 
     async def _run_turn(
         self, text: str, attachments: list[tuple[bytes, str]] | None = None
