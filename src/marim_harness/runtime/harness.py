@@ -388,12 +388,14 @@ class Harness:
         return count
 
     def _clear_job_context(self) -> None:
-        """Drop finished-job history and any re-stashed jobs digest when the
-        conversation context changes (/clear, /new, /switch): they belong to a
-        conversation that's no longer active. Running jobs are process-scoped and
-        deliberately kept (see JobRegistry.clear_history)."""
+        """Drop finished-job history, any re-stashed jobs digest, and any
+        queued `!` passthrough results when the conversation context changes
+        (/clear, /new, /switch): they belong to a conversation that's no
+        longer active. Running jobs are process-scoped and deliberately kept
+        (see JobRegistry.clear_history)."""
         self.deps.jobs.clear_history()
         self.turn_controller.clear_pending_jobs_digest()
+        self.turn_controller.clear_pending_shell_results()
 
     def reset(self) -> None:
         self.session.reset()

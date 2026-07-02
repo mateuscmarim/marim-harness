@@ -923,7 +923,15 @@ class HarnessApp(App):
         # immune to that sweep; a turn starting mid-passthrough is fine — the
         # passthrough's output still lands in the transcript and queues normally.
         self.run_worker(
-            self._run_shell_passthrough(command), group="shell-passthrough", exclusive=False
+            self._run_shell_passthrough(command),
+            group="shell-passthrough",
+            exclusive=False,
+            # Belt for anything the except clauses in _run_shell_passthrough miss:
+            # an arbitrary user command (up to PASSTHROUGH_TIMEOUT) must never be
+            # able to take down the whole session via Textual's default
+            # exit_on_error=True (see the notification worker below for the same
+            # pattern).
+            exit_on_error=False,
         )
 
     async def _run_shell_passthrough(self, command: str) -> None:
@@ -943,8 +951,15 @@ class HarnessApp(App):
         except OSError as exc:
             self._append_log(ErrorMessage(f"! {command} failed to start: {exc}"))
             return
-        await self.post_system(format_transcript_block(command, output))
-        self.harness.add_shell_result(command, output)
+        try:
+            # Queue before rendering: if the render below fails, the model still
+            # gets the output on the next turn even though the transcript never
+            # showed it — losing the render is recoverable (the user can scroll
+            # up or re-run), losing the model-context entry silently is worse.
+            self.harness.add_shell_result(command, output)
+            await self.post_system(format_transcript_block(command, output))
+        except Exception as exc:  # keep the session alive on any render failure
+            self._append_log(ErrorMessage(f"! {command}: {type(exc).__name__}: {exc}"))
 
     async def _run_turn(
         self, text: str, attachments: list[tuple[bytes, str]] | None = None

@@ -280,6 +280,16 @@ class TurnController:
         """Drop any re-stashed jobs digest (conversation context changed)."""
         self._pending_jobs_digest = None
 
+    def clear_pending_shell_results(self) -> None:
+        """Drop queued `!` passthrough results (conversation context changed).
+        Called on /clear, /new, and session switch for the same reason the jobs
+        digest is dropped there: the queue belongs to a conversation that is no
+        longer active, and injecting it would tell the model the user is looking
+        at output that is no longer on their screen (or belongs to another
+        session entirely)."""
+        self._pending_shell_results = []
+        self._shell_results_dropped = 0
+
     def add_shell_result(self, command: str, output: str) -> None:
         """Queue a user-run `!` passthrough result for the next turn's prompt.
 

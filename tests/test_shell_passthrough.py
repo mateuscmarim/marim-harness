@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -46,6 +47,22 @@ def test_format_transcript_block_echoes_command_and_fences_output():
     assert "! echo hi" in block
     assert "```" in block
     assert "exit 0\nhi" in block
+
+
+def test_format_transcript_block_survives_backtick_fences_in_output():
+    output = "```python\nprint('hi')\n```"
+    block = format_transcript_block("cat README.md", output)
+    lines = block.split("\n")
+    opening_fence_line = lines[2]  # "{fence}text"
+    closing_fence = lines[-1]
+    assert opening_fence_line.endswith("text")
+    opening_fence = opening_fence_line[: -len("text")]
+    longest_run_in_output = max(len(m) for m in re.findall(r"`+", output))
+    # Opening and closing fences match, and both are strictly longer than any
+    # backtick run embedded in the output — so the embedded ``` can't close
+    # the block early.
+    assert opening_fence == closing_fence
+    assert len(opening_fence) > longest_run_in_output
 
 
 @pytest.mark.anyio

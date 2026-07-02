@@ -6,6 +6,7 @@ sudo path exists because the TUI's subprocesses have no controlling terminal —
 sudo cannot prompt on its own, so the modal collects the password and
 :func:`run_passthrough` feeds it via ``sudo -S`` on stdin."""
 
+import re
 from pathlib import Path
 
 from textual.app import ComposeResult
@@ -54,8 +55,13 @@ def rewrite_sudo(command: str) -> str:
 
 def format_transcript_block(command: str, output: str) -> str:
     """Markdown for the transcript: the command echoed as typed, then the
-    ``exit N`` + output fenced verbatim."""
-    return f"`! {command}`\n\n```text\n{output}\n```"
+    ``exit N`` + output fenced verbatim. The fence is sized to exceed the
+    longest backtick run in the output, so output that itself contains ```
+    (a README, a markdown file catted to the terminal) can't break out of
+    the code block and render as markdown."""
+    longest = max((len(m.group(0)) for m in re.finditer(r"`+", output)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"`! {command}`\n\n{fence}text\n{output}\n{fence}"
 
 
 async def run_passthrough(

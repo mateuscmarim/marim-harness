@@ -3666,6 +3666,32 @@ async def test_bang_submission_runs_command_not_a_turn(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_bang_render_failure_surfaces_error_not_crash(tmp_path: Path):
+    """An unexpected exception inside the passthrough (here: the transcript
+    render) must surface as an ErrorMessage, not exit the app — and the result
+    must already be queued for the model."""
+    from marim_harness.interfaces.tui.widgets import ErrorMessage
+    from marim_harness.interfaces.tui.widgets.prompt import PromptInput
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        async def boom(markdown: str) -> None:
+            raise RuntimeError("render exploded")
+
+        app.post_system = boom  # type: ignore[method-assign]
+        await app.on_prompt_input_submitted(PromptInput.Submitted("!echo queued-anyway"))
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app.is_running  # the app survived
+        pending = app.harness.turn_controller._pending_shell_results
+        assert len(pending) == 1 and "queued-anyway" in pending[0][1]
+        errors = [str(w.render()) for w in app.query(ErrorMessage)]
+        assert any("render exploded" in e for e in errors)
+
+
+@pytest.mark.anyio
 async def test_bang_survives_a_turn_starting_mid_run(tmp_path: Path):
     """A turn starting while a ! command runs must not cancel it: the
     passthrough worker lives in its own worker group, outside the default

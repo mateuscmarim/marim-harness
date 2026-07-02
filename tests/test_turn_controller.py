@@ -340,3 +340,29 @@ def test_harness_add_shell_result_delegates(tmp_path):
     )
     harness.add_shell_result("echo hi", "exit 0\nhi")
     assert harness.turn_controller._pending_shell_results == [("echo hi", "exit 0\nhi")]
+
+
+def test_clear_job_context_drops_pending_shell_results(tmp_path):
+    """/clear, /new, and session switch all route through Harness._clear_job_context
+    (verified by reading harness.py: reset(), new_session(), and switch_session()
+    each call it), so exercising it directly covers all three call sites."""
+    from pydantic_ai.models.test import TestModel
+
+    deps = _make_deps(tmp_path)
+    harness = Harness(
+        TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="t"
+    )
+    harness.add_shell_result("echo hi", "exit 0\nhi")
+    harness._clear_job_context()
+    assert harness.turn_controller._pending_shell_results == []
+
+
+@pytest.mark.anyio
+async def test_clear_pending_shell_results_empties_queue(tmp_path):
+    """/clear and session switches drop queued ! results — the next turn of a
+    NEW conversation must not inject output from the dead one."""
+    tc = _make_tc(_ok_model(), tmp_path)
+    tc.add_shell_result("git status", "exit 0\nclean")
+    tc.clear_pending_shell_results()
+    prompt = await tc._assemble_prompt("hi")
+    assert "<user-shell-commands>" not in prompt
