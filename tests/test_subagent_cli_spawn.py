@@ -123,3 +123,46 @@ async def test_cli_backend_skips_usage_callback_without_stream_id(
     await runner.run("cli-worker", "do the thing", stream_id="")
 
     assert received == []
+
+
+_FAKE_CLI_CHILD = '''#!{python}
+import json, sys
+for o in [
+    {{"type": "assistant", "message": {{"id": "m1", "content": [
+        {{"type": "tool_use", "id": "tsub", "name": "Agent",
+          "input": {{"description": "d", "subagent_type": "Explore", "prompt": "p"}}}},
+    ]}}}},
+    {{"type": "system", "subtype": "task_started", "tool_use_id": "tsub"}},
+    {{"type": "assistant", "parent_tool_use_id": "tsub",
+      "message": {{"id": "m2", "content": [{{"type": "text", "text": "4"}}]}}}},
+    {{"type": "system", "subtype": "task_notification", "tool_use_id": "tsub",
+      "status": "completed", "summary": "4"}},
+    {{"type": "result", "subtype": "success", "result": "Done", "num_turns": 1,
+      "usage": {{"input_tokens": 1, "output_tokens": 1}}}},
+]:
+    sys.stdout.write(json.dumps(o) + "\\n")
+'''
+
+
+def _fake_cli_child(tmp_path: Path) -> str:
+    p = tmp_path / "fake_claude_child.py"
+    p.write_text(_FAKE_CLI_CHILD.format(python=sys.executable), encoding="utf-8")
+    p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IRWXU)
+    return str(p)
+
+
+@pytest.mark.anyio
+async def test_cli_backend_persists_child_transcripts(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", _fake_cli_child(tmp_path))
+    _write_cli_agent(tmp_path)
+    runner = _make_harness(_dummy_model(), _make_deps(tmp_path)).subagents
+
+    saved: list[str] = []
+    real_save = runner._save_transcript
+    monkeypatch.setattr(
+        runner, "_save_transcript",
+        lambda sid, msgs: (saved.append(sid), real_save(sid, msgs)),
+    )
+    out = await runner.run("cli-worker", "do the thing", stream_id="s1")
+    assert "Done" in out
+    assert "s1" in saved and "tsub" in saved  # parent sidecar AND the child's

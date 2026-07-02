@@ -861,6 +861,11 @@ class SubagentRunner:
             raise
         await self.hooks.subagent_stop(defn.name, task, result.output)
         self._save_transcript(stream_id, result.transcript)
+        # Claude-side sub-agents (the CLI's own Agent/Task spawns) each get a
+        # sidecar under their stream id — the same id their live card streamed
+        # under — so the sub-agents screen can replay them after a resume.
+        for child_id, msgs in result.child_transcripts.items():
+            self._save_transcript(child_id, msgs)
         self.session.usage += result.usage
         if background:
             self.session.persist()
