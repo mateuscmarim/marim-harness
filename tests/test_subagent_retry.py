@@ -11,7 +11,7 @@ the inner ``_run_to_completion`` loop so they don't depend on a live model.
 from pathlib import Path
 
 import pytest
-from pydantic_ai import Agent
+from pydantic_ai import Agent, capture_run_messages
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
@@ -344,6 +344,186 @@ async def test_overflow_shed_emits_a_ui_notice_for_a_foreground_spawn(tmp_path: 
     stream_id, message = notices[0]
     assert stream_id == "sid-1"
     assert "overflow" in message.lower()
+
+
+def test_fresh_capture_is_fresh_even_inside_a_used_capture():
+    """Pin the private pydantic-ai names ``_fresh_capture`` relies on AND its core
+    semantics: inside an already-*used* ``capture_run_messages`` context (the state
+    a foreground spawn actually runs in — the main turn's run set the flag), the
+    helper must yield a brand-new list bound as the current capture state, and
+    restore the outer state on exit. If a pydantic-ai bump renames
+    ``_messages_ctx_var``/``_RunMessages`` or changes the used-flag protocol, this
+    fails loudly instead of sub-agent resumes silently picking up the
+    orchestrator's conversation."""
+    from pydantic_ai import _agent_graph
+
+    from marim_harness.subagents.runner import _fresh_capture
+
+    with capture_run_messages() as outer:
+        # Simulate the main turn's agent.run having bound this context.
+        _agent_graph._messages_ctx_var.get().used = True
+        with _fresh_capture() as inner:
+            assert inner is not outer
+            state = _agent_graph._messages_ctx_var.get()
+            assert state.messages is inner
+            assert state.used is False  # a run inside will bind to `inner`
+        # On exit the outer capture state is restored untouched.
+        restored = _agent_graph._messages_ctx_var.get()
+        assert restored.messages is outer
+        assert restored.used is True
+
+
+@pytest.mark.anyio
+async def test_overflow_resume_inside_main_turn_capture_uses_the_subs_history(tmp_path: Path):
+    """THE production topology: a foreground spawn runs inside the main turn's tool
+    execution, where the TurnController already holds a capture_run_messages
+    context that the main run has bound (``used=True``). pydantic-ai's public
+    ``capture_run_messages`` REUSES that state instead of nesting, so a capture
+    opened in ``_run_to_completion`` would alias the MAIN turn's message list —
+    and an overflow shed (or transient resume) would resume the sub-agent with
+    the orchestrator's conversation. This pins that the sub-agent's resume history
+    is its OWN conversation and the outer capture stays untouched."""
+    runner, _ = _runner(tmp_path)
+    state = {"raised": False}
+    seen: dict = {}
+
+    def sub_fn(messages, info):
+        parts = [p for m in messages for p in getattr(m, "parts", [])]
+        returns = [p for p in parts if type(p).__name__ == "ToolReturnPart"]
+        if len(returns) < 2:
+            return ModelResponse(parts=[ToolCallPart(
+                tool_name="blob", args={}, tool_call_id=f"t{len(returns)}")])
+        if not state["raised"]:
+            state["raised"] = True
+            raise _overflow()
+        seen["messages"] = messages
+        return ModelResponse(parts=[TextPart(content="sub-done")])
+
+    sub = Agent(FunctionModel(sub_fn))
+
+    @sub.tool_plain
+    def blob() -> str:
+        return "x" * 500
+
+    def outer_fn(messages, info):
+        parts = [p for m in messages for p in getattr(m, "parts", [])]
+        if not any(type(p).__name__ == "ToolReturnPart" for p in parts):
+            return ModelResponse(parts=[ToolCallPart(
+                tool_name="delegate", args={}, tool_call_id="outer-t1")])
+        return ModelResponse(parts=[TextPart(content="outer-done")])
+
+    outer = Agent(FunctionModel(outer_fn))
+    inner_output: dict = {}
+
+    @outer.tool_plain
+    async def delegate() -> str:
+        result = await runner._run_to_completion(sub, "sub task", None, None, None)
+        inner_output["out"] = result.output
+        return result.output
+
+    # The outer capture context, bound by the outer run — exactly what
+    # TurnController._run_agent_loop holds around the main agent's run.
+    with capture_run_messages() as outer_captured:
+        result = await outer.run("orchestrate")
+
+    # (a) The spawn recovered and both agents finished.
+    assert result.output == "outer-done"
+    assert inner_output["out"] == "sub-done"
+
+    def _texts(messages) -> str:
+        return " ".join(
+            str(getattr(p, "content", ""))
+            for m in messages for p in getattr(m, "parts", [])
+        )
+
+    def _tool_names(messages) -> set:
+        return {
+            getattr(p, "tool_name", None)
+            for m in messages for p in getattr(m, "parts", [])
+        } - {None}
+
+    # (b) The resumed history the sub's model saw is the SUB's conversation:
+    # its task and its (shed-masked) tool round — none of the outer agent's.
+    from marim_harness.compaction import MASKED_OBSERVATION
+    sub_seen = seen["messages"]
+    assert "sub task" in _texts(sub_seen)
+    assert "orchestrate" not in _texts(sub_seen)
+    assert "delegate" not in _tool_names(sub_seen)
+    contents = [
+        str(p.content) for m in sub_seen for p in getattr(m, "parts", [])
+        if type(p).__name__ == "ToolReturnPart"
+    ]
+    assert contents[0] == MASKED_OBSERVATION   # stale observation shed
+    assert contents[1] == "x" * 500            # newest spared (keep_recent=1)
+
+    # (c) The outer captured list still holds the OUTER conversation, untouched
+    # by the sub-agent's run and resume.
+    assert "orchestrate" in _texts(outer_captured)
+    assert "sub task" not in _texts(outer_captured)
+    assert "blob" not in _tool_names(outer_captured)
+    assert "delegate" in _tool_names(outer_captured)
+
+
+@pytest.mark.anyio
+async def test_overflow_shed_resume_accumulates_usage_across_attempts(tmp_path: Path):
+    """The failed (overflowed) attempt's spend must not be dropped: one usage
+    accumulator rides every ``sub.run`` call, so the result the callers fold into
+    ``session.usage`` covers BOTH attempts — and the shed-and-resumed attempt is
+    the largest request of the whole run, exactly the one worth billing."""
+    runner, _ = _runner(tmp_path)
+    state = {"raised": False}
+
+    def fn(messages, info):
+        parts = [p for m in messages for p in getattr(m, "parts", [])]
+        returns = [p for p in parts if type(p).__name__ == "ToolReturnPart"]
+        if len(returns) < 2:
+            return ModelResponse(parts=[ToolCallPart(
+                tool_name="blob", args={}, tool_call_id=f"t{len(returns)}")])
+        if not state["raised"]:
+            state["raised"] = True
+            raise _overflow()
+        return ModelResponse(parts=[TextPart(content="done")])
+
+    sub = Agent(FunctionModel(fn))
+
+    @sub.tool_plain
+    def blob() -> str:
+        return "x" * 500
+
+    result = await runner._run_to_completion(sub, "go", None, None, None)
+    assert result.output == "done"
+    # First attempt completed 2 tool-round requests before overflowing; the
+    # resumed attempt made 1 more. All three must be in the usage the foreground/
+    # background tails bank via `session.usage += result.usage`.
+    assert result.usage.requests == 3
+
+
+@pytest.mark.anyio
+async def test_give_up_after_retries_banks_partial_usage_into_session(tmp_path: Path):
+    """When ``_run_to_completion`` exhausts its budget and re-raises, the spend
+    from the failed attempts must land in ``session.usage`` anyway — there is no
+    result for the callers to fold, but the provider billed those tokens."""
+    runner, _ = _runner(tmp_path)
+
+    def fn(messages, info):
+        parts = [p for m in messages for p in getattr(m, "parts", [])]
+        if not any(type(p).__name__ == "ToolReturnPart" for p in parts):
+            return ModelResponse(parts=[ToolCallPart(
+                tool_name="counter", args={}, tool_call_id="t1")])
+        raise ModelHTTPError(503, "m", body="overloaded")
+
+    sub = Agent(FunctionModel(fn))
+
+    @sub.tool_plain
+    def counter() -> str:
+        return "counted"
+
+    before = runner.session.usage.requests
+    with pytest.raises(ModelHTTPError):
+        await runner._run_to_completion(sub, "go", None, None, None)
+    # The first attempt's completed tool-round request survives the give-up.
+    assert runner.session.usage.requests == before + 1
+    assert runner.session.usage.input_tokens > 0
 
 
 @pytest.mark.anyio

@@ -21,10 +21,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
-from pydantic_ai import Agent, capture_run_messages
+from pydantic_ai import Agent
 from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.settings import ModelSettings
-from pydantic_ai.usage import UsageLimits
+from pydantic_ai.usage import RunUsage, UsageLimits
 
 if TYPE_CHECKING:
     from pydantic_ai.agent import EventStreamHandler
@@ -73,6 +73,42 @@ def _iso_branch(stream_id: str, seq: int) -> str:
     don't collide) and falls back to a sequence number when there's no id."""
     base = _ISO_SLUG.sub("-", (stream_id or "").lower()).strip("-")
     return f"subagent/{base or f'anon-{seq}'}"
+
+
+@contextlib.contextmanager
+def _fresh_capture():
+    """A message-capture context that is ALWAYS fresh — unlike pydantic-ai's
+    public ``capture_run_messages``, which this deliberately bypasses.
+
+    Why the private API: ``capture_run_messages`` REUSES an existing contextvar
+    state instead of nesting, and an ``agent.run`` binds to the captured list
+    only while the state's ``used`` flag is still False. A foreground spawn runs
+    INSIDE the main turn's tool execution, where ``TurnController._run_agent_loop``
+    already holds a capture context that the main run has bound (flag set).
+    Entering the public context there yields the MAIN turn's message list — and
+    the sub-agent's run, finding ``used=True``, records its messages into a list
+    nobody holds. A retry in ``_run_to_completion`` would then "resume" the
+    sub-agent with the orchestrator's conversation instead of its own. This
+    helper reaches for pydantic-ai's private ``_messages_ctx_var`` and
+    unconditionally installs a fresh ``_RunMessages`` holder, restoring the
+    outer state in ``finally`` so the main turn's capture is untouched.
+
+    The private-name coupling is a considered trade: pydantic-ai offers no
+    nested/fresh mode for ``capture_run_messages`` (its docs promise only "the
+    first run within the context"), and the alternative — not capturing at all —
+    would forfeit sub-agent resumability. ``tests/test_subagent_retry.py`` pins
+    both the private names and the outer-capture topology, so a dependency bump
+    that changes either fails loudly there instead of silently corrupting
+    sub-agent resumes with the main conversation.
+    """
+    from pydantic_ai import _agent_graph
+
+    messages: list = []
+    token = _agent_graph._messages_ctx_var.set(_agent_graph._RunMessages(messages))
+    try:
+        yield messages
+    finally:
+        _agent_graph._messages_ctx_var.reset(token)
 
 
 def _resumable_history(messages: list) -> list | None:
@@ -163,7 +199,11 @@ class SubagentRunner:
         # fan-out work, so its history is dominated by tool observations; past a
         # token trigger those are masked per-request by an ObservationMasker (one
         # per spawn — see masking.py for why the state matters). The knobs are the
-        # same user-facing settings the session compactor reads.
+        # same user-facing settings the session compactor reads. A per-spawn model
+        # override still inherits the session's max_context_tokens, so a smaller-
+        # window override model triggers proactive masking late — the reactive
+        # overflow backstop in _run_to_completion covers that miss; per-model
+        # window resolution is out of scope here.
         self._max_context_tokens = max_context_tokens
         self._mask_observations = mask_observations
         self._mask_keep_recent = mask_keep_recent
@@ -318,7 +358,9 @@ class SubagentRunner:
         # name" / "function.arguments must be valid JSON"), crashing the spawn.
         # It runs before EVERY request, so it catches a call buried mid-history
         # that the transient-retry repair (only on the resume path) never sees.
-        capabilities: list = [ProcessHistory(_drop_nameless_tool_calls)]
+        capabilities: list[ProcessHistory[Deps]] = [
+            ProcessHistory(_drop_nameless_tool_calls)
+        ]
         if self._mask_observations:
             # One masker PER SPAWN: it holds the run's committed mask set, and
             # sharing an instance across spawns would leak one run's masked
@@ -445,15 +487,28 @@ class SubagentRunner:
         attempt = 0
         overflow_shed = False
         resume_history: list | None = None
+        # One usage accumulator across ALL attempts, mirroring the controller's
+        # per-round banking (see _run_with_approval): pydantic-ai mutates it in
+        # place as each model step completes, so an attempt that dies mid-run
+        # still leaves its spend here. On success the returned ``result.usage``
+        # IS this object (agent.run threads ``usage or RunUsage()`` straight
+        # into run state), so the callers' ``session.usage += result.usage``
+        # already covers the failed attempts; the re-raise path below banks it
+        # explicitly since no result reaches the caller there.
+        run_usage = RunUsage()
         while True:
             captured: list = []
             try:
-                with capture_run_messages() as captured:
+                # NOT the public capture_run_messages: a foreground spawn runs
+                # inside the main turn's capture context, which the public API
+                # would silently reuse — see _fresh_capture's docstring.
+                with _fresh_capture() as captured:
                     return await sub.run(
                         task if resume_history is None else None,
                         message_history=resume_history,
                         deps=run_deps, toolsets=granted,
                         event_stream_handler=handler,
+                        usage=run_usage,
                         usage_limits=UsageLimits(request_limit=self._request_limit),
                     )
             except Exception as exc:  # noqa: BLE001
@@ -476,6 +531,12 @@ class SubagentRunner:
                         await self._notice_overflow(stream_id)
                         continue
                 if attempt >= self._retry_attempts or not is_transient_model_error(exc):
+                    # Surfacing the failure loses the result object but must not
+                    # lose the spend: the provider billed the failed attempts'
+                    # tokens regardless, so bank the accumulator before the
+                    # re-raise. (The success path needs no counterpart — the
+                    # callers fold result.usage, which IS this accumulator.)
+                    self.session.usage += run_usage
                     raise
                 attempt += 1
                 resume_history = _resumable_history(list(captured))
@@ -515,6 +576,14 @@ class SubagentRunner:
         repaired = _resumable_history(messages)
         if not repaired:
             return None
+        # Known imprecision, accepted: mask_stale_observations counts "recent"
+        # newest-first across parts, so a parallel tool round wider than
+        # keep_recent(=1) can mask sibling returns the model hasn't acted on
+        # yet — and after the repair above, the spared "newest" return can be a
+        # repair-synthesized stub rather than real output. Acceptable here: the
+        # placeholder text invites the model to re-run the tool, and by this
+        # point the provider has already rejected the request outright, so a
+        # lossy-but-live resume beats a dead spawn.
         masked, count = mask_stale_observations(
             repaired, self._SHED_KEEP_RECENT, min_chars=self._SHED_MIN_CHARS
         )

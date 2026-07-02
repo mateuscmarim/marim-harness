@@ -347,3 +347,24 @@ def test_is_context_overflow_model_http_error_plain_400_is_false():
         400, "m", body={"message": "invalid request: unsupported parameter"}
     )
     assert is_context_overflow_error(err) is False
+
+
+def test_marker_phrase_on_a_transient_status_is_not_an_overflow():
+    """A 429/5xx body can mention an overflow marker phrase in prose ("context
+    window", "reduce the length") without the request being oversized. The
+    runner checks overflow BEFORE the transient classifier, so an unguarded
+    match would shed a sub-agent's context on a hiccup that a plain backoff
+    retry would fix — the error must classify transient, not overflow."""
+    err = ModelHTTPError(
+        503, "m",
+        body={"message": "The context window service is temporarily overloaded; "
+                         "please try again."},
+    )
+    assert is_context_overflow_error(err) is False
+    assert is_transient_model_error(err) is True
+
+
+def test_overflow_marker_on_413_still_classifies_as_overflow():
+    # Some providers reject an oversized request with 413 Payload Too Large.
+    err = ModelHTTPError(413, "m", body={"message": "prompt is too long"})
+    assert is_context_overflow_error(err) is True

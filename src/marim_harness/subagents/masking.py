@@ -19,9 +19,16 @@ on each call. The masker therefore remembers which returns it masked (by
 ``tool_call_id``) and re-applies exactly that set, only *extending* it when the
 estimate crosses the trigger again. Between trigger events the request prefix
 is byte-stable under either upstream semantics, so masking costs one cache miss
-per trigger — the same bargain session compaction makes. A side effect of the
-current write-back: the run's ``all_messages()`` and saved transcripts carry
-the masked placeholders — i.e. what the model actually saw.
+per trigger — the same bargain session compaction makes. That bound holds only
+while masking actually brings the estimate back under the trigger: in the
+saturated regime (keep_recent recent returns alone keep the estimate above it),
+every request re-crosses the trigger and the set grows by roughly one return
+per request — the one that just aged out of the keep_recent window — so the
+cost degrades to a cache miss per request. The damage stays confined to the
+last ~keep_recent tool rounds near the tail, though: the long masked prefix in
+front of them is already committed and remains byte-stable. A side effect of
+the current write-back: the run's ``all_messages()`` and saved transcripts
+carry the masked placeholders — i.e. what the model actually saw.
 """
 
 from __future__ import annotations

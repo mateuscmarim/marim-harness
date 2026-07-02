@@ -238,6 +238,14 @@ def is_context_overflow_error(exc: BaseException) -> bool:
     http = _find_model_http_error(exc)
     if http is None:
         return False
+    # Only the client-error statuses a provider actually uses for an oversized
+    # request count (400 bad request, 413 payload too large, 422 unprocessable).
+    # A 429/5xx body can mention a marker phrase in prose ("context window",
+    # "reduce the length") without the request being oversized — and the runner
+    # checks overflow BEFORE the transient classifier, so an unguarded match
+    # would shed a sub-agent's context on a hiccup a plain backoff retry fixes.
+    if getattr(http, "status_code", None) not in (400, 413, 422):
+        return False
     blob = f"{http} {getattr(http, 'body', '') or ''}".lower()
     return any(marker in blob for marker in _OVERFLOW_MARKERS)
 
