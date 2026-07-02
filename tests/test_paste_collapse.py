@@ -4,6 +4,7 @@ See docs/superpowers/specs/2026-07-02-paste-collapsing-design.md."""
 import pytest
 from textual import events
 from textual.app import App, ComposeResult
+from textual.widgets.text_area import Selection
 
 from marim_harness.interfaces.tui.widgets.prompt import PromptInput
 
@@ -113,3 +114,31 @@ async def test_unmatched_marker_submits_as_literal_text():
         await pilot.press("enter")
         await pilot.pause()
         assert app.submitted == ["[Pasted text #7 +9 lines]"]
+
+
+@pytest.mark.anyio
+async def test_small_paste_replaces_selection():
+    app = _PromptHost()
+    async with app.run_test() as pilot:
+        pi = app.query_one(PromptInput)
+        pi.focus()
+        await pilot.pause()
+        pi.insert("hello world")
+        pi.selection = Selection((0, 0), (0, 5))
+        await _paste(pilot, pi, "BYE")
+        assert pi.text == "BYE world"
+
+
+@pytest.mark.anyio
+async def test_collapsing_paste_replaces_selection():
+    app = _PromptHost()
+    async with app.run_test() as pilot:
+        pi = app.query_one(PromptInput)
+        pi.focus()
+        await pilot.pause()
+        pi.insert("hello world")
+        pi.selection = Selection((0, 0), (0, 5))
+        blob = "\n".join(f"line {i}" for i in range(13))
+        await _paste(pilot, pi, blob)
+        assert pi.text == "[Pasted text #1 +13 lines] world"
+        assert pi.pastes == [blob]

@@ -205,14 +205,17 @@ class PromptInput(TextArea):
         return True
 
     def _maybe_collapse_paste(self, text: str) -> bool:
-        """Stash a large paste and insert its compact marker instead of the
-        text. Returns True when it consumed the paste; small pastes fall
-        through to the normal TextArea insert."""
+        """Stash a large paste and replace the current selection with its
+        compact marker instead of the text. Returns True when it consumed
+        the paste; small pastes fall through to Textual's default
+        selection-aware paste handling."""
         lines = text.count("\n") + 1
         if lines <= _PASTE_MAX_LINES and len(text) <= _PASTE_MAX_CHARS:
             return False
         self.pastes.append(text)
-        self.insert(_paste_marker(len(self.pastes), text))
+        # Replace like a real paste would: a selection is consumed by the
+        # marker, not skipped over (TextArea.insert ignores the selection).
+        self.replace(_paste_marker(len(self.pastes), text), *self.selection)
         return True
 
     def _expand_pastes(self, text: str) -> str:
@@ -250,11 +253,15 @@ class PromptInput(TextArea):
             event.stop()
             self._cache_and_insert(path.read_bytes(), media_type)
             return
-        event.prevent_default()
+        # This widget is always the final handler for a paste: stop it from
+        # bubbling to ancestors regardless of outcome. prevent_default() is
+        # conditional though — it only suppresses TextArea's own selection-
+        # aware paste handling when we've replaced the selection ourselves
+        # with a collapse marker. A small paste leaves prevent_default()
+        # uncalled so TextArea's default paste (selection-aware) still runs.
         event.stop()
-        if not self._maybe_collapse_paste(event.text):
-            # Small paste: insert normally
-            self.insert(event.text)
+        if self._maybe_collapse_paste(event.text):
+            event.prevent_default()
 
     def _offset(self, loc: tuple[int, int]) -> int:
         """Absolute character offset of a (row, col) cursor location."""
