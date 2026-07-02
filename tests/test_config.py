@@ -751,6 +751,12 @@ def test_deprecated_max_context_tokens_still_honored(monkeypatch, caplog):
     )
 
 
+def test_context_budget_zero_means_unbudgeted(monkeypatch):
+    monkeypatch.setenv("MARIM_CONTEXT_BUDGET", "0")
+    cfg = load_config()
+    assert cfg.max_context_tokens == 0
+
+
 def test_context_window_and_budgets_env(monkeypatch):
     monkeypatch.setenv("MARIM_CONTEXT_WINDOW", "32768")
     monkeypatch.setenv("MARIM_CONTEXT_BUDGETS", "anthropic/claude-opus*=60000")

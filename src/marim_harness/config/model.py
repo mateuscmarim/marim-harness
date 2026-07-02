@@ -126,15 +126,29 @@ class ModelConfig:
 def _context_budget_env() -> int:
     """MARIM_CONTEXT_BUDGET, falling back to the deprecated
     MARIM_MAX_CONTEXT_TOKENS (same meaning, old name) with a one-time
-    warning, else the historical 100k default."""
-    if os.getenv("MARIM_CONTEXT_BUDGET") is not None:
-        return _int_env("MARIM_CONTEXT_BUDGET", 100_000)
-    if os.getenv("MARIM_MAX_CONTEXT_TOKENS") is not None:
+    warning, else the historical 100k default. Parsed directly rather than
+    via _int_env because 0 is a meaningful value here — "unbudgeted"
+    (window-only) — not an invalid one to be replaced by the default."""
+
+    def _parse(raw: str) -> int | None:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            return None
+
+    raw = os.getenv("MARIM_CONTEXT_BUDGET")
+    if raw is not None:
+        value = _parse(raw)
+        if value is not None:
+            return value
+    elif os.getenv("MARIM_MAX_CONTEXT_TOKENS") is not None:
         logger.warning(
             "MARIM_MAX_CONTEXT_TOKENS is deprecated; rename it to "
             "MARIM_CONTEXT_BUDGET (same meaning: the global context budget)."
         )
-        return _int_env("MARIM_MAX_CONTEXT_TOKENS", 100_000)
+        value = _parse(os.environ["MARIM_MAX_CONTEXT_TOKENS"])
+        if value is not None:
+            return value
     return 100_000
 
 
