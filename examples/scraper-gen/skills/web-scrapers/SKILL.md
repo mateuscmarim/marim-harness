@@ -62,6 +62,9 @@ One generator spawn per non-blocked task; never batch two tasks into one
 spawn. Each spawn's task is the full task block pasted verbatim plus the
 plan's header lines (base_url, robots, politeness), with
 `returns="script path, final exit code, record count, deviations from plan"`.
+Also pass a short `description` (e.g. the task name) on every spawn — without
+it the job label falls back to the full composed task, which makes the jobs
+panel and any injected `after=` headings unreadable.
 
 How you spawn depends on the plan:
 

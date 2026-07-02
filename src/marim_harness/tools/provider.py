@@ -11,7 +11,7 @@ from pydantic import BeforeValidator
 from pydantic_ai import ModelRetry, RunContext
 
 from ..ask_user import Choice, Question, answers_to_json, coerce_questions
-from ..jobs import JobRegistry, PrerequisiteFailed, render_jobs
+from ..jobs import JobRegistry, PrerequisiteFailed, _one_line, render_jobs
 from ..runtime.deps import Deps, HarnessAgent, SubAgent
 from ..runtime.permissions import Mode
 from ..tasks import Task, summarize
@@ -568,8 +568,12 @@ async def _run_after(
         raise PrerequisiteFailed(
             f"prerequisite {bad.id} {bad.status}" + (f" — {tail}" if tail else "")
         )
+    # Clip the heading to one line: a background spawn's label falls back to
+    # the full composed (multi-section) task when `description` was omitted,
+    # so without _one_line a dependent would receive its prerequisite's entire
+    # prompt embedded inside its own "### job-N — ..." heading.
     sections = [
-        f"### {j.id} — {j.label}\n{j.result or '(no output)'}" for j in settled
+        f"### {j.id} — {_one_line(j.label)}\n{j.result or '(no output)'}" for j in settled
     ]
     full_task = task + "\n\n## Results of prerequisite jobs\n\n" + "\n\n".join(sections)
     state["waiting"] = False
@@ -683,6 +687,11 @@ async def spawn_agent(
     omit it."""
     mcp_names = _coerce_names(mcp)
     after_ids = _coerce_names(after)
+    if after_ids is not None:
+        # Dedupe while preserving order: a model that lists the same
+        # prerequisite id twice (e.g. after=[a, a]) would otherwise inject
+        # that prerequisite's report twice into the dependent's task.
+        after_ids = list(dict.fromkeys(after_ids))
     # Depth enforcement: refuse spawns that would exceed the depth ceiling.
     # max_depth is None for the main agent (defaults to SUBAGENT_MAX_DEPTH).
     # Sub-agents get it bound via functools.partial by SubagentRunner.build().

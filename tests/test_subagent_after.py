@@ -52,15 +52,42 @@ def _job_id(spawn_result: str) -> str:
 
 async def test_dependent_waits_then_receives_injected_report(tmp_path):
     calls: list = []
-    gate = asyncio.Event()
-    ctx = _ctx(tmp_path, calls, gate)
+    # Two independent gates (rather than the shared-gate helper) so the test
+    # can observe the dependent's output_fn contract in full: "(waiting on
+    # job-N)" while blocked on the prerequisite, then "(still running)" once
+    # it has left the waiting phase and started its own inner run but hasn't
+    # finished yet (F5) — a single shared gate can't distinguish those states.
+    gate_a, gate_b = asyncio.Event(), asyncio.Event()
+
+    async def run(type, task, mcp_names, budget, model, isolation, stream_id, depth):
+        await (gate_a if task.startswith("task A") else gate_b).wait()
+        calls.append(task)
+        return f"report[{task.splitlines()[0]}]"
+
+    deps = _make_deps(tmp_path, mode=Mode.auto,
+                      services=HarnessServices(run_background_agent=run))
+    ctx = _Ctx(deps)
     a = _job_id(await spawn_agent(ctx, type="general", task="task A", background=True))
     b = _job_id(await spawn_agent(
         ctx, type="general", task="task B", background=True, after=a))
     await asyncio.sleep(0)
     assert calls == []  # A gated, B waiting on A — neither inner run started
     assert f"(waiting on {a})" in ctx.deps.jobs.output(b)
-    gate.set()
+
+    gate_a.set()
+    await ctx.deps.jobs.wait(a, 5)
+    # B's wrapper has left the waiting phase and is now inside its own inner
+    # run, blocked on gate_b — output_fn must report the generic "still
+    # running" marker, not the stale "(waiting on ...)" note.
+    for _ in range(400):
+        if ctx.deps.jobs.output(b) != f"(waiting on {a})":
+            break
+        await asyncio.sleep(0)
+    else:
+        raise AssertionError("dependent job never left its waiting phase")
+    assert ctx.deps.jobs.output(b) == "(still running)"
+
+    gate_b.set()
     await ctx.deps.jobs.wait(b, 5)
     assert len(calls) == 2
     assert calls[0].startswith("task A")
@@ -180,6 +207,29 @@ async def test_chain_runs_strictly_in_order(tmp_path):
     # C sees B's report; A's report reaches C only inside B's injected text,
     # so C's own prerequisite section must reference job B, not job A.
     assert f"### {b} " in calls[2] and f"### {a} " not in calls[2]
+
+
+async def test_injected_heading_clips_multiline_label(tmp_path):
+    """A background spawn's label falls back to the full composed task when
+    `description` is omitted. The injected '### job-N — ...' heading must stay
+    one line (via jobs._one_line) even when the prerequisite's task/label
+    spans many lines — otherwise a dependent's prompt embeds its
+    prerequisite's entire multi-section prompt inside a heading."""
+    calls: list = []
+    ctx = _ctx(tmp_path, calls)
+    multiline_task = "task A summary line\n\n## Scope\nlots of extra detail\nmore detail"
+    a = _job_id(await spawn_agent(
+        ctx, type="general", task=multiline_task, background=True))
+    b = _job_id(await spawn_agent(
+        ctx, type="general", task="task B", background=True, after=a))
+    await ctx.deps.jobs.wait(b, 5)
+    task_b = calls[-1]
+
+    heading_start = task_b.index(f"### {a}")
+    heading_line = task_b[heading_start:task_b.index("\n", heading_start)]
+    assert heading_line == f"### {a} — general: task A summary line"
+    assert "## Scope" not in heading_line
+    assert "## Scope" not in task_b  # dropped entirely, not just off the heading line
 
 
 async def test_bash_job_as_prerequisite(tmp_path):

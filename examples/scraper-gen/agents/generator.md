@@ -39,7 +39,8 @@ selector/JSON path), `notes`, and header `politeness`/`base_url`.
 
 **For `strategy: derive`:** the script reads its input records from the
 dependency tasks' sample files (`scrapers/samples/<task>.jsonl` for each task
-in `depends_on`) and never touches the network — no httpx client, no delays
+in `depends_on` — from the script's own working directory that is
+`samples/<task>.jsonl`) and never touches the network — no httpx client, no delays
 needed. If an input file is missing or empty, print which one to stderr and
 exit 2: a mis-ordered run must fail loudly, never write an empty merge that
 "passes". Your spawner injects the dependency generators' reports under
