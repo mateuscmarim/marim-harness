@@ -201,6 +201,28 @@ def test_is_context_overflow_detects_message_phrase():
     assert is_context_overflow_error(err) is True
 
 
+def test_is_context_overflow_detects_lmstudio_context_size_wording():
+    """The local provider (LM Studio) rejects an oversized request with
+    'Context size has been exceeded.' — no status code, no nested error dict,
+    the message riding both as the exception text and as a flat body. This is
+    the exact payload from .marim/last-provider-error.json when a research
+    fan-out's six spawns all died without the shed-and-resume backstop ever
+    firing: 'context size' was missing from the overflow marker set."""
+    req = httpx.Request("POST", "http://localhost:1234/v1/chat/completions")
+    err = APIError(
+        "Context size has been exceeded.", req,
+        body={"message": "Context size has been exceeded."},
+    )
+    assert is_context_overflow_error(err) is True
+
+
+def test_is_context_overflow_detects_context_size_in_model_http_error():
+    """The same LM Studio wording surfaced through pydantic-ai's ModelHTTPError
+    (the shape the sub-agent runner classifies) must also be recognized."""
+    err = _http_error(400, body={"message": "Context size has been exceeded."})
+    assert is_context_overflow_error(err) is True
+
+
 def test_is_context_overflow_false_for_other_provider_and_plain_errors():
     assert is_context_overflow_error(_api_error(_OPENROUTER_502)) is False
     assert is_context_overflow_error(ValueError("boom")) is False

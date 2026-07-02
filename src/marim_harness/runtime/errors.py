@@ -81,6 +81,10 @@ _OVERFLOW_MARKERS = (
     "context length",
     "maximum context",
     "context window",
+    # LM Studio (the `local` provider): "Context size has been exceeded." —
+    # no status code, no nested error dict, just this message. Missing from
+    # this set, it once let a whole research fan-out die un-recovered.
+    "context size",
     "too many tokens",
     "reduce the length",
     "prompt is too long",
