@@ -63,7 +63,19 @@ class ModelConfig:
     model: str | None  # None ⇒ claude-cli uses its own configured default
     base_url: str | None = None
     api_key: str | None = None
+    # The GLOBAL context budget in tokens — an economic ceiling, not the
+    # model's window. Compaction/masking trigger at min(budget, 0.8 × the
+    # discovered window); see config/context_limits.py. Kept under its
+    # historical name because persisted settings and the TUI field bind to
+    # it. 0 ⇒ unbudgeted (window-only).
     max_context_tokens: int = 100_000
+    # Manual context-window override for servers discovery can't read
+    # (a non-LM-Studio local server, an offline box). None ⇒ discover.
+    context_window: int | None = None
+    # Per-model budget overrides: comma-separated pattern=tokens pairs,
+    # fnmatch on the model id (e.g. "anthropic/claude-opus*=60000"); "=0"
+    # means unbudgeted for that model. Raw string; parsed by ContextLimits.
+    context_budgets: str = ""
     # When true, compaction also elides older tool-observation payloads in the
     # retained tail to save tokens (see compaction.mask_stale_observations).
     # Cache-safe because it only runs when compaction already rewrites the tail.
@@ -111,6 +123,21 @@ class ModelConfig:
     )
 
 
+def _context_budget_env() -> int:
+    """MARIM_CONTEXT_BUDGET, falling back to the deprecated
+    MARIM_MAX_CONTEXT_TOKENS (same meaning, old name) with a one-time
+    warning, else the historical 100k default."""
+    if os.getenv("MARIM_CONTEXT_BUDGET") is not None:
+        return _int_env("MARIM_CONTEXT_BUDGET", 100_000)
+    if os.getenv("MARIM_MAX_CONTEXT_TOKENS") is not None:
+        logger.warning(
+            "MARIM_MAX_CONTEXT_TOKENS is deprecated; rename it to "
+            "MARIM_CONTEXT_BUDGET (same meaning: the global context budget)."
+        )
+        return _int_env("MARIM_MAX_CONTEXT_TOKENS", 100_000)
+    return 100_000
+
+
 def _common_kwargs() -> dict[str, Any]:
     """Provider-independent knobs shared by every ModelConfig. Grouped sub-agent
     and notification knobs are built into their own config objects (see
@@ -133,7 +160,9 @@ def _common_kwargs() -> dict[str, Any]:
         events=parse_events(os.getenv("MARIM_NOTIFICATION_EVENTS", "")),
     )
     return dict(
-        max_context_tokens=_int_env("MARIM_MAX_CONTEXT_TOKENS", 100_000),
+        max_context_tokens=_context_budget_env(),
+        context_window=(_int_env("MARIM_CONTEXT_WINDOW", 0) or None),
+        context_budgets=os.getenv("MARIM_CONTEXT_BUDGETS", ""),
         mask_observations=_bool_env("MARIM_MASK_OBSERVATIONS", True),
         mask_keep_recent=_int_env("MARIM_MASK_KEEP_RECENT", 4),
         mask_min_chars=_int_env("MARIM_MASK_MIN_CHARS", 200),

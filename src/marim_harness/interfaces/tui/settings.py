@@ -281,7 +281,7 @@ class SettingsScreen(Screen[None]):
     def _context_widgets(self) -> ComposeResult:
         yield Static("Saved to .env — applies on next launch.", classes="muted")
         with Horizontal(classes="frow"):
-            yield Label("Context budget (tokens)")
+            yield Label("Context budget (tokens, 0 = unbudgeted)")
             yield Input(
                 value=str(self.env_cfg.max_context_tokens),
                 id="ctx-input",

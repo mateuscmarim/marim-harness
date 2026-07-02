@@ -732,6 +732,47 @@ def test_provider_config_claude_cli_model_override(monkeypatch):
     assert model_mod.load_config().model == "opus"
 
 
+def test_context_budget_env_resolution(monkeypatch):
+    monkeypatch.setenv("MARIM_CONTEXT_BUDGET", "60000")
+    monkeypatch.setenv("MARIM_MAX_CONTEXT_TOKENS", "111111")  # ignored when new var set
+    cfg = load_config()
+    assert cfg.max_context_tokens == 60000
+
+
+def test_deprecated_max_context_tokens_still_honored(monkeypatch, caplog):
+    monkeypatch.delenv("MARIM_CONTEXT_BUDGET", raising=False)
+    monkeypatch.setenv("MARIM_MAX_CONTEXT_TOKENS", "70000")
+    with caplog.at_level("WARNING"):
+        cfg = load_config()
+    assert cfg.max_context_tokens == 70000
+    assert any(
+        "MARIM_MAX_CONTEXT_TOKENS" in r.message and "deprecated" in r.message
+        for r in caplog.records
+    )
+
+
+def test_context_window_and_budgets_env(monkeypatch):
+    monkeypatch.setenv("MARIM_CONTEXT_WINDOW", "32768")
+    monkeypatch.setenv("MARIM_CONTEXT_BUDGETS", "anthropic/claude-opus*=60000")
+    cfg = load_config()
+    assert cfg.context_window == 32768
+    assert cfg.context_budgets == "anthropic/claude-opus*=60000"
+
+
+def test_context_defaults(monkeypatch):
+    for var in (
+        "MARIM_CONTEXT_BUDGET",
+        "MARIM_MAX_CONTEXT_TOKENS",
+        "MARIM_CONTEXT_WINDOW",
+        "MARIM_CONTEXT_BUDGETS",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    cfg = load_config()
+    assert cfg.max_context_tokens == 100_000
+    assert cfg.context_window is None
+    assert cfg.context_budgets == ""
+
+
 def test_has_creds_follows_binary(monkeypatch):
     monkeypatch.setattr(model_mod, "_claude_cli_available", lambda: True)
     assert model_mod._provider_has_creds("claude-cli") is True

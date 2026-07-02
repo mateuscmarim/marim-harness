@@ -61,6 +61,8 @@ def _cmd_show(args, *, out, err) -> int:
             "model": cfg.model,
             "base_url": cfg.base_url,
             "max_context_tokens": cfg.max_context_tokens,
+            "context_window": cfg.context_window,
+            "context_budgets": cfg.context_budgets,
             "proactive_memory": cfg.proactive_memory,
             "default_mode": cfg.default_mode,
             "tool_search": cfg.tool_search,
@@ -75,6 +77,8 @@ def _cmd_show(args, *, out, err) -> int:
     print(f"model:               {cfg.model}", file=out)
     print(f"base_url:            {cfg.base_url}", file=out)
     print(f"max_context_tokens:  {cfg.max_context_tokens}", file=out)
+    print(f"context_window:      {cfg.context_window}", file=out)
+    print(f"context_budgets:     {cfg.context_budgets}", file=out)
     print(f"proactive_memory:    {'on' if cfg.proactive_memory else 'off'}", file=out)
     print(f"default_mode:        {cfg.default_mode}", file=out)
     print(f"tool_search:         {cfg.tool_search}", file=out)
