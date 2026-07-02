@@ -239,3 +239,33 @@ async def test_short_option_list_is_not_padded():
         # 2 single-row options + border
         assert opts.region.height == 4
         assert not opts.show_vertical_scrollbar
+
+
+@pytest.mark.anyio
+async def test_selection_list_caps_at_three_visible_options():
+    """The 3-option cap applies to multi-select too."""
+    qs = [Question("Pick many", "Feat",
+                   [Choice(f"o{i}") for i in range(6)], multi=True)]
+    app = _Harness(qs)
+    async with app.run_test(size=(80, 50)) as pilot:
+        await pilot.pause()
+        sel = app.query_one("#ask-select", SelectionList)
+        # 3 single-row options + the list's tall border
+        assert sel.region.height == 5
+        assert sel.show_vertical_scrollbar
+
+
+@pytest.mark.anyio
+async def test_confirm_button_shows_selected_count():
+    qs = [Question("Pick many", "Feat", [Choice("a"), Choice("b")], multi=True)]
+    app = _Harness(qs)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        confirm = app.query_one("#ask-confirm", Button)
+        assert str(confirm.label) == "Confirm selection"
+        await pilot.press("space")  # check the highlighted option
+        await pilot.pause()
+        assert str(confirm.label) == "Confirm selection (1)"
+        await pilot.press("space")  # uncheck it again
+        await pilot.pause()
+        assert str(confirm.label) == "Confirm selection"

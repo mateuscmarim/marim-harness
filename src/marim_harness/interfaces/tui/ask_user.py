@@ -8,7 +8,7 @@ modal) so the transcript stays scrollable while the question is pending."""
 
 from rich.text import Text
 from textual.app import ComposeResult
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Input, OptionList, SelectionList, Static
 from textual.widgets.option_list import Option
 
@@ -49,8 +49,15 @@ class AskUserPanel(InteractionPanel):
     #ask-body {
         height: auto;
     }
-    #ask-confirm {
+    #ask-confirm-row {
+        height: auto;
         margin-top: 1;
+        /* bottom-right action, matching the approval panel's button row */
+        align-horizontal: right;
+    }
+    #ask-confirm {
+        min-width: 24;
+        text-style: bold;
     }
     """
 
@@ -67,10 +74,11 @@ class AskUserPanel(InteractionPanel):
         yield Static("", id="ask-question")
         yield Vertical(id="ask-body")
         yield Input(placeholder="or type your own answer…", id="ask-other")
-        # compact: one row instead of the default three-row bevelled block —
-        # vertical space is scarce while a panel is up.
-        yield Button("Confirm selection", id="ask-confirm", variant="primary",
-                     compact=True)
+        with Horizontal(id="ask-confirm-row"):
+            # compact: one row instead of the default three-row bevelled
+            # block — vertical space is scarce while a panel is up.
+            yield Button("Confirm selection", id="ask-confirm", variant="primary",
+                         compact=True)
 
     def on_mount(self) -> None:
         self.run_worker(self._show_question())
@@ -93,8 +101,8 @@ class AskUserPanel(InteractionPanel):
         await body.remove_children()
         other = self.query_one("#ask-other", Input)
         other.value = ""
-        confirm = self.query_one("#ask-confirm", Button)
-        confirm.display = q.multi
+        self.query_one("#ask-confirm-row", Horizontal).display = q.multi
+        self.query_one("#ask-confirm", Button).label = "Confirm selection"
 
         if q.multi:
             sel: SelectionList[int] = SelectionList(id="ask-select")
@@ -112,6 +120,14 @@ class AskUserPanel(InteractionPanel):
                 options.add_option(Option(_option_prompt(opt), id=str(i)))
             options.highlighted = 0
             options.focus()
+
+    def on_selection_list_selected_changed(
+        self, event: SelectionList.SelectedChanged
+    ) -> None:
+        """Live feedback on the confirm button: how many options are checked."""
+        n = len(event.selection_list.selected)
+        label = f"Confirm selection ({n})" if n else "Confirm selection"
+        self.query_one("#ask-confirm", Button).label = label
 
     def _record(self, answer: str | list[str]) -> None:
         """Store the current question's answer, then advance or resolve."""
