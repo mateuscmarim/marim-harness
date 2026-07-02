@@ -30,6 +30,8 @@ from pydantic_ai.messages import (
     PartStartEvent,
     TextPart,
     TextPartDelta,
+    ThinkingPart,
+    ThinkingPartDelta,
     ToolCallPart,
     ToolReturnPart,
 )
@@ -227,6 +229,11 @@ class CliStreamTranslator:
     stream-json without ``--include-partial-messages`` delivers each assistant
     message whole, so a text block becomes an empty part-start plus one full
     delta — the render path's delta branch appends it exactly as for live tokens.
+    Thinking blocks render as collapsed thoughts via PartStartEvent(ThinkingPart) +
+    PartDeltaEvent(ThinkingPartDelta). The ``record_call`` and ``record_return``
+    methods exist for the demux to synthesize tool call/return pairs (e.g. for
+    Claude's own sub-agents) into the transcript so a persisted sidecar never
+    carries an unanswered call.
     """
 
     def __init__(self) -> None:
@@ -256,6 +263,15 @@ class CliStreamTranslator:
                     delta=TextPartDelta(content_delta=block.get("text", "")),
                 ))
                 resp_parts.append(TextPart(content=block.get("text", "")))
+            elif btype == "thinking":
+                idx = self._index
+                self._index += 1
+                events.append(PartStartEvent(index=idx, part=ThinkingPart(content="")))
+                events.append(PartDeltaEvent(
+                    index=idx,
+                    delta=ThinkingPartDelta(content_delta=block.get("thinking", "")),
+                ))
+                resp_parts.append(ThinkingPart(content=block.get("thinking", "")))
             elif btype == "tool_use":
                 call_id = block.get("id", "")
                 name, args = normalize_cc_tool(
@@ -296,6 +312,19 @@ class CliStreamTranslator:
     def transcript(self) -> list:
         """The run so far as pydantic-ai messages (for transcript persistence)."""
         return list(self._messages)
+
+    def record_call(self, part: ToolCallPart) -> None:
+        """Append a synthesized tool call (e.g. the demux's spawn_agent for a
+        Claude-side sub-agent) to the transcript, and remember its name so a
+        later synthesized return — or a raw tool_result hitting translate() —
+        labels itself correctly."""
+        self._call_names[part.tool_call_id] = part.tool_name
+        self._messages.append(ModelResponse(parts=[part]))
+
+    def record_return(self, part: ToolReturnPart) -> None:
+        """Append a synthesized tool return, closing a record_call so a
+        persisted sidecar never carries an unanswered call."""
+        self._messages.append(ModelRequest(parts=[part]))
 
 
 def _flatten_tool_result(content) -> str:

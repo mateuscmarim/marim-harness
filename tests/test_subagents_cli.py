@@ -11,6 +11,8 @@ from pydantic_ai.messages import (
     PartDeltaEvent,
     PartStartEvent,
     TextPartDelta,
+    ThinkingPart,
+    ThinkingPartDelta,
     ToolCallPart,
     ToolReturnPart,
 )
@@ -264,6 +266,39 @@ def test_translator_accumulates_transcript_messages():
     ret = msgs[1].parts[0]
     assert isinstance(ret, ToolReturnPart)
     assert ret.tool_name == "read_file" and ret.content == "file body"
+
+
+def test_translate_thinking_block_emits_thinking_events():
+    t = CliStreamTranslator()
+    events = t.translate({"type": "assistant", "message": {"content": [
+        {"type": "thinking", "thinking": "pondering...", "signature": "sig"},
+    ]}})
+    assert isinstance(events[0], PartStartEvent)
+    assert isinstance(events[0].part, ThinkingPart)
+    assert isinstance(events[1], PartDeltaEvent)
+    assert isinstance(events[1].delta, ThinkingPartDelta)
+    assert events[1].delta.content_delta == "pondering..."
+    # the transcript carries the thought too
+    parts = t.transcript()[0].parts
+    assert isinstance(parts[0], ThinkingPart) and parts[0].content == "pondering..."
+
+
+def test_record_call_and_return_append_transcript_pair():
+    t = CliStreamTranslator()
+    t.record_call(ToolCallPart(tool_name="spawn_agent", args={"type": "Explore"},
+                               tool_call_id="t1"))
+    from datetime import datetime, timezone
+    t.record_return(ToolReturnPart(
+        tool_name="spawn_agent", content="4", tool_call_id="t1",
+        timestamp=datetime.now(tz=timezone.utc), outcome="success",
+    ))
+    msgs = t.transcript()
+    assert isinstance(msgs[0], ModelResponse)
+    call = cast(ToolCallPart, msgs[0].parts[0])
+    assert call.tool_name == "spawn_agent"
+    assert isinstance(msgs[1], ModelRequest)
+    ret = cast(ToolReturnPart, msgs[1].parts[0])
+    assert ret.content == "4"
 
 
 # ---------------------------------------------------------------------------
