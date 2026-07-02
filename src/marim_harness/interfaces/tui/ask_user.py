@@ -67,7 +67,10 @@ class AskUserPanel(InteractionPanel):
         yield Static("", id="ask-question")
         yield Vertical(id="ask-body")
         yield Input(placeholder="or type your own answer…", id="ask-other")
-        yield Button("Confirm selection", id="ask-confirm", variant="primary")
+        # compact: one row instead of the default three-row bevelled block —
+        # vertical space is scarce while a panel is up.
+        yield Button("Confirm selection", id="ask-confirm", variant="primary",
+                     compact=True)
 
     def on_mount(self) -> None:
         self.run_worker(self._show_question())
