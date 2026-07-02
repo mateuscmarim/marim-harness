@@ -261,7 +261,7 @@ def build_collaborators(
         max_depth=SUBAGENT_MAX_DEPTH,
         # Sub-agents reuse the session's context budget and masking knobs — one
         # user-facing setting governs both the main history and spawned runs.
-        max_context_tokens=cfg.max_context_tokens,
+        limits=limits,
         mask_observations=cfg.mask_observations,
         mask_keep_recent=cfg.mask_keep_recent,
         mask_min_chars=cfg.mask_min_chars,

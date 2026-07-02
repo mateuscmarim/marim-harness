@@ -39,25 +39,22 @@ from pydantic_ai.messages import ModelMessage, ToolReturnPart
 
 from ..compaction import MASKED_OBSERVATION, estimate_tokens, mask_stale_observations
 
-# Fraction of the context budget at which masking kicks in. Below it the history
-# rides untouched; above it, stale observations are masked in one batch. Kept
-# comfortably under 1.0 because estimate_tokens is a char/4 heuristic that can
-# undershoot the provider's real tokenizer.
-_TRIGGER_RATIO = 0.75
-
 
 class ObservationMasker:
     """Masks stale tool observations in a sub-agent's outgoing requests.
 
     Build one per spawn and register its :meth:`mask` as a ``ProcessHistory``
-    capability. ``max_tokens`` is the model's context budget (the same value the
-    session compactor uses); ``keep_recent``/``min_chars`` have the semantics of
+    capability. ``trigger_tokens`` is the masking trigger, already carrying any
+    window safety ratio; ``keep_recent``/``min_chars`` have the semantics of
     :func:`marim_harness.compaction.mask_stale_observations`.
     """
 
-    def __init__(self, max_tokens: int, keep_recent: int = 4,
+    def __init__(self, trigger_tokens: int, keep_recent: int = 4,
                  min_chars: int = 200) -> None:
-        self._trigger_tokens = int(max_tokens * _TRIGGER_RATIO)
+        # The trigger arrives pre-derived (min(budget, 0.8 × window) — see
+        # config/context_limits.py). No internal ratio on top: stacking one
+        # would silently move masking to 0.6 of the window.
+        self._trigger_tokens = trigger_tokens
         self._keep_recent = keep_recent
         self._min_chars = min_chars
         # tool_call_ids whose returns are masked. Monotonic — ids are only ever

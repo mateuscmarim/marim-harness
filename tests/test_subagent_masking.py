@@ -22,7 +22,7 @@ from pydantic_ai.models.function import FunctionModel
 
 from marim_harness.compaction import MASKED_OBSERVATION
 from marim_harness.subagents.masking import ObservationMasker
-from tests.conftest import _make_deps, _make_harness
+from tests.conftest import _make_deps, _make_harness, _text_model
 
 
 def _round(i: int, size: int) -> list:
@@ -56,15 +56,15 @@ def _returns(history) -> dict[str, str]:
 
 
 def test_below_trigger_masks_nothing():
-    masker = ObservationMasker(max_tokens=100_000)
+    masker = ObservationMasker(trigger_tokens=75_000)
     history = _history(rounds=3, size=400)
     view = masker.mask(history)
     assert all(c == "x" * 400 for c in _returns(view).values())
 
 
 def test_crossing_trigger_masks_stale_keeps_recent():
-    # trigger = 0.75 * 1000 = 750 tokens; 4 rounds x 1200 chars ≈ 1200 tokens.
-    masker = ObservationMasker(max_tokens=1000, keep_recent=2, min_chars=100)
+    # trigger = 750; 4 rounds x 1200 chars ≈ 1200 tokens.
+    masker = ObservationMasker(trigger_tokens=750, keep_recent=2, min_chars=100)
     view = masker.mask(_history(rounds=4, size=1200))
     returns = _returns(view)
     assert returns["t0"] == MASKED_OBSERVATION
@@ -74,7 +74,7 @@ def test_crossing_trigger_masks_stale_keeps_recent():
 
 
 def test_never_mutates_the_input_history():
-    masker = ObservationMasker(max_tokens=1000, keep_recent=2, min_chars=100)
+    masker = ObservationMasker(trigger_tokens=750, keep_recent=2, min_chars=100)
     history = _history(rounds=4, size=1200)
     masker.mask(history)
     assert all(c == "x" * 1200 for c in _returns(history).values())
@@ -84,7 +84,7 @@ def test_mask_set_is_stable_between_triggers():
     """After a trigger, a spared return stays unmasked even once newer returns
     arrive — until the NEXT trigger. This is the cache-stability property; a
     stateless newest-N mask would re-mask t2 here and bust the prefix cache."""
-    masker = ObservationMasker(max_tokens=1000, keep_recent=2, min_chars=100)
+    masker = ObservationMasker(trigger_tokens=750, keep_recent=2, min_chars=100)
     history = _history(rounds=4, size=1200)
     masker.mask(history)                       # trigger 1: masks t0, t1
     history += _round(4, size=200)             # small growth: stays under trigger
@@ -95,7 +95,7 @@ def test_mask_set_is_stable_between_triggers():
 
 
 def test_second_trigger_extends_the_mask_set():
-    masker = ObservationMasker(max_tokens=1000, keep_recent=2, min_chars=100)
+    masker = ObservationMasker(trigger_tokens=750, keep_recent=2, min_chars=100)
     history = _history(rounds=4, size=1200)
     masker.mask(history)                       # trigger 1: masks t0, t1
     history += _round(4, size=1200)            # big growth: crosses trigger again
@@ -107,7 +107,7 @@ def test_second_trigger_extends_the_mask_set():
 
 
 def test_small_returns_are_never_masked():
-    masker = ObservationMasker(max_tokens=1000, keep_recent=1, min_chars=100)
+    masker = ObservationMasker(trigger_tokens=750, keep_recent=1, min_chars=100)
     history = [ModelRequest(parts=[UserPromptPart(content="task")])]
     history += _round(0, size=50)              # tiny: below min_chars
     history += _round(1, size=4000)
@@ -137,12 +137,16 @@ async def test_built_subagent_masks_stale_observations_in_requests(tmp_path):
         seen["messages"] = messages
         return ModelResponse(parts=[TextPart(content="done")])
 
+    from marim_harness.config.context_limits import ContextLimits
+
     deps = _make_deps(tmp_path)
     runner = _make_harness(FunctionModel(fn), deps).subagents
-    runner._max_context_tokens = 400   # trigger ≈ 300 tokens; each blob is ~500
+    # threshold = 0.8 * 400 = 320 tokens; each blob is ~500 tokens.
+    runner._limits = ContextLimits(budget=None, window_override=400)
     runner._mask_keep_recent = 1
     runner._mask_min_chars = 100
-    sub, err = runner.build("general")
+    mask_trigger = await runner._mask_trigger_for(None)
+    sub, err = runner.build("general", mask_trigger=mask_trigger)
     assert err is None, err
     assert sub is not None
 
@@ -166,3 +170,20 @@ async def test_built_subagent_masks_stale_observations_in_requests(tmp_path):
     ]
     # Write-back semantics: the processed (masked) history IS the stored history.
     assert MASKED_OBSERVATION in stored_returns
+
+
+@pytest.mark.anyio
+async def test_spawn_trigger_follows_the_loaded_window_not_the_budget(tmp_path):
+    """The failure that motivated the split: LM Studio loads a 262k model at
+    ~101k while the configured budget said 180k — the spawn's mask trigger
+    must follow 0.8 × the LOADED window, resolved per spawn."""
+    from marim_harness.config.context_limits import ContextLimits
+
+    async def fake_local():
+        return {"qwen/qwen3.5-9b": 101_039}
+
+    deps = _make_deps(tmp_path)
+    runner = _make_harness(_text_model(), deps).subagents
+    runner._limits = ContextLimits(budget=180_000, fetch_local=fake_local)
+    trigger = await runner._mask_trigger_for("qwen/qwen3.5-9b")
+    assert trigger == int(0.8 * 101_039)

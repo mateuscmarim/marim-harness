@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from .cli_backend import CliResult
 
 from ..compaction import mask_stale_observations
+from ..config.context_limits import ContextLimits
 from ..hooks.dispatch import TurnHooks
 from ..runtime.deps import Deps, SubAgent
 from ..runtime.errors import is_context_overflow_error, is_transient_model_error
@@ -157,7 +158,7 @@ class SubagentRunner:
                  concurrency: int | None = None,
                  transcript_cap: int = 2000,
                  max_depth: int = 3,
-                 max_context_tokens: int = 100_000,
+                 limits: ContextLimits | None = None,
                  mask_observations: bool = True,
                  mask_keep_recent: int = 4,
                  mask_min_chars: int = 200) -> None:
@@ -198,13 +199,15 @@ class SubagentRunner:
         # Context masking for spawned sub-agents. A sub-agent does the read-heavy
         # fan-out work, so its history is dominated by tool observations; past a
         # token trigger those are masked per-request by an ObservationMasker (one
-        # per spawn — see masking.py for why the state matters). The knobs are the
-        # same user-facing settings the session compactor reads. A per-spawn model
-        # override still inherits the session's max_context_tokens, so a smaller-
-        # window override model triggers proactive masking late — the reactive
-        # overflow backstop in _run_to_completion covers that miss; per-model
-        # window resolution is out of scope here.
-        self._max_context_tokens = max_context_tokens
+        # per spawn — see masking.py for why the state matters). The trigger is
+        # resolved per spawn from this runner's ContextLimits (see
+        # _mask_trigger_for): a per-spawn model override resolves its own window
+        # and budget rather than inheriting the session model's, and a spawn on
+        # the session model resolves the session model's — falling back to the
+        # historical 75k (see _FALLBACK_MASK_TRIGGER) when no resolver is wired.
+        # The reactive overflow backstop in _run_to_completion still covers any
+        # late trigger a resolution miss leaves behind.
+        self._limits = limits
         self._mask_observations = mask_observations
         self._mask_keep_recent = mask_keep_recent
         self._mask_min_chars = mask_min_chars
@@ -309,10 +312,24 @@ class SubagentRunner:
 
         return handler
 
+    # The historical default trigger (0.75 × the old 100k budget), used only
+    # when no ContextLimits is wired (bare embedders / legacy constructions).
+    _FALLBACK_MASK_TRIGGER = 75_000
+
+    async def _mask_trigger_for(self, model_id: str | None) -> int:
+        """The masking trigger for a spawn: the resolver's threshold for the
+        spawn's OWN model (a per-spawn override budgets/windows as itself, not
+        as the session model), warmed here because spawn prep is async."""
+        if self._limits is None:
+            return self._FALLBACK_MASK_TRIGGER
+        if model_id is None:
+            model_id = getattr(self._get_model(), "model_name", None)
+        return await self._limits.resolve(model_id)
+
     def build(
         self, type: str, max_output_chars: int | None = None,
         model: str | None = None, workspace_root=None, *, defn=None,
-        depth: int = 0,
+        depth: int = 0, mask_trigger: int | None = None,
     ) -> tuple[SubAgent | None, str | None]:
         """Build an isolated sub-agent of ``type``, with its reach decided up
         front: gated tools only in auto mode, so a run never needs an approval
@@ -325,8 +342,10 @@ class SubagentRunner:
         *discovery* still reads the main workspace. ``defn`` is the already-resolved
         agent definition when the caller has one (``_execute_spawn`` resolves it once
         to pick the backend, then threads it through so discovery's filesystem walk
-        isn't repeated); when None we resolve it here. Returns ``(agent, None)`` or,
-        for an unknown type or an unresolvable model, ``(None, message)``."""
+        isn't repeated); when None we resolve it here. ``mask_trigger`` is the
+        masking trigger resolved by the caller; None falls back to the legacy
+        default. Returns ``(agent, None)`` or, for an unknown type or an
+        unresolvable model, ``(None, message)``."""
         if defn is None:
             defn = find_agent(self.deps.workspace.root, type)
         if defn is None:
@@ -366,7 +385,7 @@ class SubagentRunner:
             # sharing an instance across spawns would leak one run's masked
             # tool_call_ids into another's requests.
             masker = ObservationMasker(
-                self._max_context_tokens,
+                mask_trigger if mask_trigger is not None else self._FALLBACK_MASK_TRIGGER,
                 keep_recent=self._mask_keep_recent,
                 min_chars=self._mask_min_chars,
             )
@@ -665,8 +684,9 @@ class SubagentRunner:
         the caller can return directly. Called after worktree open and CLI early-return.
         ``defn`` is the definition the caller already resolved, threaded into ``build``
         so discovery isn't walked twice per spawn."""
+        mask_trigger = await self._mask_trigger_for(model)
         sub, err = self.build(type, max_output_chars, model, work_root, defn=defn,
-                              depth=depth)
+                              depth=depth, mask_trigger=mask_trigger)
         if sub is None:
             if iso:
                 self._discard_worktree(iso)
