@@ -14,6 +14,8 @@ existing call sites/tests that import them from there."""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from ..tasks import Task, render_tasks
 from .errors import provider_error_status
 
@@ -80,6 +82,36 @@ def render_checklist_block(items: list[Task]) -> str:
         "Task checklist (✔ done · ▸ active · ○ pending):\n\n"
         + render_tasks(items)
     )
+
+
+def render_shell_results_block(
+    results: Sequence[tuple[str, str]], dropped: int = 0
+) -> str:
+    """The ``<user-shell-commands>`` block for the turn-context envelope, or
+    ``""`` when there is nothing to show (falsy-when-empty, matching
+    :func:`render_checklist_block` so callers can ``if block:``).
+
+    Each entry is ``(command, output)`` from the TUI's ``!`` passthrough —
+    commands the user ran themselves, whose output is already on their screen.
+    The block exists so the model can see what the user saw. ``dropped`` counts
+    entries the controller's budget cap elided; it is surfaced as a marker line
+    so the model knows the list is incomplete rather than assuming it saw
+    everything."""
+    if not results:
+        return ""
+    lines = [
+        "<user-shell-commands>",
+        "The user ran these commands directly in their own shell (via the `!` "
+        "prompt passthrough). The outputs are shown verbatim and are already "
+        "visible to the user.",
+    ]
+    if dropped:
+        lines.append(f"({dropped} earlier command(s) elided to fit the context budget)")
+    for command, output in results:
+        lines.append(f"$ {command}")
+        lines.append(output)
+    lines.append("</user-shell-commands>")
+    return "\n".join(lines)
 
 
 def _short(exc: BaseException, limit: int = 200) -> str:
