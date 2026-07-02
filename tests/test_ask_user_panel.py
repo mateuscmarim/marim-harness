@@ -269,3 +269,23 @@ async def test_confirm_button_shows_selected_count():
         await pilot.press("space")  # uncheck it again
         await pilot.pause()
         assert str(confirm.label) == "Confirm selection"
+
+
+@pytest.mark.anyio
+async def test_more_options_hint_when_list_overflows():
+    qs = [Question("Pick one", "Pick", [Choice(f"o{i}") for i in range(8)])]
+    app = _Harness(qs)
+    async with app.run_test(size=(80, 50)) as pilot:
+        await pilot.pause()
+        more = app.query_one("#ask-more", Static)
+        assert more.display
+        assert "+5 more options" in str(more.render())
+
+
+@pytest.mark.anyio
+async def test_no_more_options_hint_when_list_fits():
+    qs = [Question("Pick one", "Pick", [Choice("a"), Choice("b")])]
+    app = _Harness(qs)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert not app.query_one("#ask-more", Static).display

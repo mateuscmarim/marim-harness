@@ -49,6 +49,9 @@ class AskUserPanel(InteractionPanel):
     #ask-body {
         height: auto;
     }
+    #ask-more {
+        color: $text-muted;
+    }
     #ask-confirm-row {
         height: auto;
         margin-top: 1;
@@ -71,6 +74,7 @@ class AskUserPanel(InteractionPanel):
         yield Static("", id="ask-progress")
         yield Static("", id="ask-question")
         yield Vertical(id="ask-body")
+        yield Static("", id="ask-more")
         yield Input(placeholder="or type your own answer…", id="ask-other")
         with Horizontal(id="ask-confirm-row"):
             # compact: one row instead of the default three-row bevelled
@@ -101,6 +105,14 @@ class AskUserPanel(InteractionPanel):
         other.value = ""
         self.query_one("#ask-confirm-row", Horizontal).display = q.multi
         self.query_one("#ask-confirm", Button).label = "Confirm selection"
+        # The list shows at most three options (_list_height); when more are
+        # hidden below the fold, say so — the scrollbar alone is easy to miss.
+        more = self.query_one("#ask-more", Static)
+        hidden = len(q.options) - 3
+        more.display = hidden > 0
+        if hidden > 0:
+            plural = "s" if hidden > 1 else ""
+            more.update(f"+{hidden} more option{plural} — scroll ↓")
 
         if q.multi:
             sel: SelectionList[int] = SelectionList(id="ask-select")
