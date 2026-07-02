@@ -327,3 +327,23 @@ async def test_run_turn_dumps_provider_error_and_stashes_note(tmp_path):
     assert "invalid request" in dump.read_text()
     assert harness.turn_controller._pending_error_note is not None
     assert "400" in harness.turn_controller._pending_error_note
+
+
+def test_is_context_overflow_detects_model_http_error_body():
+    """A sub-agent's model layer surfaces the provider rejection as a pydantic-ai
+    ModelHTTPError (no openai.APIError in the chain). The detector must classify
+    it, or the runner's shed-and-resume backstop never fires."""
+    err = ModelHTTPError(
+        400, "m",
+        body={"message": "This model's maximum context length is 8192 tokens."},
+    )
+    assert is_context_overflow_error(err) is True
+
+
+def test_is_context_overflow_model_http_error_plain_400_is_false():
+    """A genuine bad request must NOT read as an overflow — the backstop would
+    mask-and-resume a request that will fail identically."""
+    err = ModelHTTPError(
+        400, "m", body={"message": "invalid request: unsupported parameter"}
+    )
+    assert is_context_overflow_error(err) is False

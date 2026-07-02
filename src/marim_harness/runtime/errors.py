@@ -217,18 +217,28 @@ def is_context_overflow_error(exc: BaseException) -> bool:
 
     The harness's token estimate is a coarse char/4 heuristic, so it can undershoot
     the real window and let a too-large request through; the caller uses this to
-    force a compaction and retry instead of failing the turn."""
+    force a compaction (main turn) or an observation shed (sub-agent) and retry
+    instead of failing outright.
+
+    Two shapes are recognized: an ``openai.APIError`` in the chain (the main
+    turn's shape — OpenRouter nests the detail in the body), and a pydantic-ai
+    ``ModelHTTPError`` (the shape a sub-agent's model layer raises, which may not
+    chain an openai error at all)."""
     api = _find_api_error(exc)
-    if api is None:
+    if api is not None:
+        err = _error_dict(api) or {}
+        if err.get("code") == "context_length_exceeded":
+            return True
+        haystack = [str(api), str(err.get("message") or "")]
+        meta = err.get("metadata")
+        if isinstance(meta, dict):
+            haystack.append(str(meta.get("raw") or ""))
+        if any(m in " ".join(haystack).lower() for m in _OVERFLOW_MARKERS):
+            return True
+    http = _find_model_http_error(exc)
+    if http is None:
         return False
-    err = _error_dict(api) or {}
-    if err.get("code") == "context_length_exceeded":
-        return True
-    haystack = [str(api), str(err.get("message") or "")]
-    meta = err.get("metadata")
-    if isinstance(meta, dict):
-        haystack.append(str(meta.get("raw") or ""))
-    blob = " ".join(haystack).lower()
+    blob = f"{http} {getattr(http, 'body', '') or ''}".lower()
     return any(marker in blob for marker in _OVERFLOW_MARKERS)
 
 
