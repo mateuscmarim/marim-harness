@@ -275,16 +275,19 @@ class PromptInput(TextArea):
         return (head.count("\n"), offset - (head.rfind("\n") + 1))
 
     def _delete_markers(self, key: str) -> bool:
-        """Keep ``[Image #N]`` markers atomic: if a backspace/delete touches any
-        part of a marker (including its brackets), remove the whole marker and
-        drop the matching attachment instead of breaking the text. Surviving
-        markers renumber so they stay ``#1..#M`` aligned with ``attachments``.
-        Returns True when it consumed the edit, False to fall through to the
-        normal TextArea editing."""
+        """Keep ``[Image #N]`` and ``[Pasted text #N …]`` markers atomic: if a
+        backspace/delete touches any part of a marker (including its
+        brackets), remove the whole marker and drop the matching
+        attachment/stash entry instead of breaking the text. Surviving
+        markers renumber so each kind stays ``#1..#M`` aligned with its list
+        (the two kinds number independently). Returns True when it consumed
+        the edit, False to fall through to the normal TextArea editing."""
         text = self.text
-        spans = [(m.start(), m.end(), int(m.group(1)))
-                 for m in _IMAGE_MARKER.finditer(text)]
-        if not spans:
+        image_spans = [(m.start(), m.end(), int(m.group(1)))
+                       for m in _IMAGE_MARKER.finditer(text)]
+        paste_spans = [(m.start(), m.end(), int(m.group(1)))
+                       for m in _PASTE_MARKER.finditer(text)]
+        if not image_spans and not paste_spans:
             return False
         lo = self._offset(self.selection.start)
         hi = self._offset(self.selection.end)
@@ -299,22 +302,36 @@ class PromptInput(TextArea):
                 if hi >= len(text):
                     return False
                 hi += 1
-        hit = [s for s in spans if s[0] < hi and s[1] > lo]
-        if not hit:
+        image_hit = [s for s in image_spans if s[0] < hi and s[1] > lo]
+        paste_hit = [s for s in paste_spans if s[0] < hi and s[1] > lo]
+        if not image_hit and not paste_hit:
             return False
-        lo = min(lo, min(s[0] for s in hit))
-        hi = max(hi, max(s[1] for s in hit))
-        removed = {s[2] for s in hit}
-        for n in sorted(removed, reverse=True):
+        every_hit = image_hit + paste_hit
+        lo = min(lo, min(s[0] for s in every_hit))
+        hi = max(hi, max(s[1] for s in every_hit))
+        removed_images = {s[2] for s in image_hit}
+        removed_pastes = {s[2] for s in paste_hit}
+        for n in sorted(removed_images, reverse=True):
             if 1 <= n <= len(self.attachments):
                 del self.attachments[n - 1]
+        for n in sorted(removed_pastes, reverse=True):
+            if 1 <= n <= len(self.pastes):
+                del self.pastes[n - 1]
 
-        def _renumber(m: "re.Match[str]") -> str:
+        def _renumber_image(m: "re.Match[str]") -> str:
             n = int(m.group(1))
-            return f"[Image #{n - sum(r < n for r in removed)}]"
+            return f"[Image #{n - sum(r < n for r in removed_images)}]"
 
-        new_prefix = _IMAGE_MARKER.sub(_renumber, text[:lo])
-        new_text = new_prefix + _IMAGE_MARKER.sub(_renumber, text[hi:])
+        def _renumber_paste(m: "re.Match[str]") -> str:
+            n = int(m.group(1))
+            return f"[Pasted text #{n - sum(r < n for r in removed_pastes)} {m.group(2)}]"
+
+        def _renumber(segment: str) -> str:
+            segment = _IMAGE_MARKER.sub(_renumber_image, segment)
+            return _PASTE_MARKER.sub(_renumber_paste, segment)
+
+        new_prefix = _renumber(text[:lo])
+        new_text = new_prefix + _renumber(text[hi:])
         self.text = new_text
         self.move_cursor(self._location(len(new_prefix)))
         return True

@@ -142,3 +142,69 @@ async def test_collapsing_paste_replaces_selection():
         await _paste(pilot, pi, blob)
         assert pi.text == "[Pasted text #1 +13 lines] world"
         assert pi.pastes == [blob]
+
+
+@pytest.mark.anyio
+async def test_backspace_removes_whole_marker_and_stash_entry():
+    app = _PromptHost()
+    async with app.run_test() as pilot:
+        pi = app.query_one(PromptInput)
+        pi.focus()
+        await pilot.pause()
+        blob = "\n".join(f"line {i}" for i in range(13))
+        await _paste(pilot, pi, blob)
+        # Cursor sits right after the marker; one backspace kills all of it.
+        await pilot.press("backspace")
+        await pilot.pause()
+        assert pi.text == ""
+        assert pi.pastes == []
+
+
+@pytest.mark.anyio
+async def test_deleting_first_of_two_markers_renumbers_survivor():
+    app = _PromptHost()
+    async with app.run_test() as pilot:
+        pi = app.query_one(PromptInput)
+        pi.focus()
+        await pilot.pause()
+        first = "\n".join(f"a{i}" for i in range(5))
+        second = "x" * 700
+        await _paste(pilot, pi, first)
+        await _paste(pilot, pi, second)
+        assert pi.text == "[Pasted text #1 +5 lines][Pasted text #2 +700 chars]"
+        # Put the cursor inside the FIRST marker and delete it.
+        pi.move_cursor((0, 5))
+        await pilot.press("backspace")
+        await pilot.pause()
+        # Survivor renumbers to #1 and keeps its own +chars tail.
+        assert pi.text == "[Pasted text #1 +700 chars]"
+        assert pi.pastes == [second]
+        # And it still expands to the right content.
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.submitted == [second]
+
+
+@pytest.mark.anyio
+async def test_image_and_paste_markers_number_independently(tmp_path):
+    """Pasting an image path makes [Image #1]; a text paste makes
+    [Pasted text #1 …] — deleting the paste marker must not disturb the
+    image attachment. Fake image bytes follow test_image_paste.py's pattern
+    (there is no fixture file; a path ending .png with any bytes suffices)."""
+    app = _PromptHost()
+    async with app.run_test() as pilot:
+        pi = app.query_one(PromptInput)
+        pi.focus()
+        await pilot.pause()
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNGbytes")
+        await _paste(pilot, pi, str(img))          # -> [Image #1]
+        blob = "\n".join(f"l{i}" for i in range(9))
+        await _paste(pilot, pi, blob)              # -> [Pasted text #1 +9 lines]
+        assert pi.text == "[Image #1][Pasted text #1 +9 lines]"
+        # Deleting the paste marker must not touch the image attachment.
+        await pilot.press("backspace")
+        await pilot.pause()
+        assert pi.text == "[Image #1]"
+        assert pi.pastes == []
+        assert len(pi.attachments) == 1
