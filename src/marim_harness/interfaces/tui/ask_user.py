@@ -52,8 +52,6 @@ class AskUserPanel(InteractionPanel):
     #ask-confirm-row {
         height: auto;
         margin-top: 1;
-        /* bottom-right action, matching the approval panel's button row */
-        align-horizontal: right;
     }
     #ask-confirm {
         min-width: 24;
