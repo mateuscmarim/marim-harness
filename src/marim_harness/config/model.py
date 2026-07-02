@@ -123,12 +123,19 @@ class ModelConfig:
     )
 
 
+# Once-only guard for the deprecation warning below: load_config() runs many
+# times per process (e.g. every Settings-screen open), and the nag is only
+# useful the first time.
+_budget_deprecation_warned = False
+
+
 def _context_budget_env() -> int:
     """MARIM_CONTEXT_BUDGET, falling back to the deprecated
     MARIM_MAX_CONTEXT_TOKENS (same meaning, old name) with a one-time
     warning, else the historical 100k default. Parsed directly rather than
     via _int_env because 0 is a meaningful value here — "unbudgeted"
     (window-only) — not an invalid one to be replaced by the default."""
+    global _budget_deprecation_warned
 
     def _parse(raw: str) -> int | None:
         try:
@@ -142,10 +149,12 @@ def _context_budget_env() -> int:
         if value is not None:
             return value
     elif os.getenv("MARIM_MAX_CONTEXT_TOKENS") is not None:
-        logger.warning(
-            "MARIM_MAX_CONTEXT_TOKENS is deprecated; rename it to "
-            "MARIM_CONTEXT_BUDGET (same meaning: the global context budget)."
-        )
+        if not _budget_deprecation_warned:
+            _budget_deprecation_warned = True
+            logger.warning(
+                "MARIM_MAX_CONTEXT_TOKENS is deprecated; rename it to "
+                "MARIM_CONTEXT_BUDGET (same meaning: the global context budget)."
+            )
         value = _parse(os.environ["MARIM_MAX_CONTEXT_TOKENS"])
         if value is not None:
             return value

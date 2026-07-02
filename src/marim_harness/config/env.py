@@ -11,7 +11,10 @@ logger = logging.getLogger(__name__)
 # a hostile project .env can't smuggle a bad value past validation.
 _POSITIVE_INT_KEYS = frozenset(
     {
-        "MARIM_MAX_CONTEXT_TOKENS",
+        # MARIM_MAX_CONTEXT_TOKENS is deliberately absent: it is the deprecated
+        # alias for MARIM_CONTEXT_BUDGET, where 0 is a meaningful value
+        # ("unbudgeted"), so the sanitizer must not strip it; garbage is handled
+        # by _context_budget_env's own direct parse.
         "MARIM_WAKE_DEPTH_CAP",
         "MARIM_SUBAGENT_TRANSCRIPT_CAP",
         "MARIM_TOOL_SEARCH_THRESHOLD",

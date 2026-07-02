@@ -483,7 +483,10 @@ def test_load_environment_survives_malformed_project_env(
     assert os.environ["MARIM_MODEL"] == "global-model"
 
 
-@pytest.mark.parametrize("key", ["MARIM_MAX_CONTEXT_TOKENS", "MARIM_WAKE_DEPTH_CAP"])
+# MARIM_MAX_CONTEXT_TOKENS is deliberately NOT in these parametrize lists: it is
+# the deprecated alias for MARIM_CONTEXT_BUDGET, where 0 is meaningful
+# ("unbudgeted"), so the sanitizer must leave it alone.
+@pytest.mark.parametrize("key", ["MARIM_SUBAGENT_TRANSCRIPT_CAP", "MARIM_WAKE_DEPTH_CAP"])
 @pytest.mark.parametrize("bad", ["-5", "0", "abc", "1.5", "  "])
 def test_load_environment_drops_invalid_positive_int(
     isolated_env, monkeypatch, tmp_path, key, bad
@@ -497,7 +500,7 @@ def test_load_environment_drops_invalid_positive_int(
     assert key not in os.environ
 
 
-@pytest.mark.parametrize("key", ["MARIM_MAX_CONTEXT_TOKENS", "MARIM_WAKE_DEPTH_CAP"])
+@pytest.mark.parametrize("key", ["MARIM_SUBAGENT_TRANSCRIPT_CAP", "MARIM_WAKE_DEPTH_CAP"])
 def test_load_environment_keeps_valid_positive_int(isolated_env, monkeypatch, tmp_path, key):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.chdir(tmp_path)
@@ -507,14 +510,28 @@ def test_load_environment_keeps_valid_positive_int(isolated_env, monkeypatch, tm
 
 
 def test_load_environment_invalid_int_falls_back_to_default(isolated_env, monkeypatch, tmp_path):
-    """End-to-end: a bad MARIM_MAX_CONTEXT_TOKENS yields the built-in default in
-    the resolved config (not the garbage value)."""
+    """End-to-end: a garbage MARIM_MAX_CONTEXT_TOKENS yields the built-in default
+    in the resolved config (not the garbage value). Garbage is now handled by
+    _context_budget_env's direct parse (the var is no longer sanitizer-stripped,
+    since 0 is meaningful for it)."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
-    monkeypatch.setenv("MARIM_MAX_CONTEXT_TOKENS", "-9")
+    monkeypatch.setenv("MARIM_MAX_CONTEXT_TOKENS", "not-an-int")
     load_environment()
     assert load_config().max_context_tokens == 100_000
+
+
+def test_load_environment_deprecated_zero_budget_survives(isolated_env, monkeypatch, tmp_path):
+    """End-to-end: MARIM_MAX_CONTEXT_TOKENS=0 must survive load_environment's
+    positive-int sanitizer (0 means "unbudgeted" for the budget alias, not an
+    invalid value) and resolve to max_context_tokens == 0."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setenv("MARIM_MAX_CONTEXT_TOKENS", "0")
+    load_environment()
+    assert load_config().max_context_tokens == 0
 
 
 def test_parse_qualified_known_prefix_routes_to_provider():
@@ -732,23 +749,31 @@ def test_provider_config_claude_cli_model_override(monkeypatch):
     assert model_mod.load_config().model == "opus"
 
 
-def test_context_budget_env_resolution(monkeypatch):
+def test_context_budget_env_resolution(monkeypatch, caplog):
     monkeypatch.setenv("MARIM_CONTEXT_BUDGET", "60000")
     monkeypatch.setenv("MARIM_MAX_CONTEXT_TOKENS", "111111")  # ignored when new var set
-    cfg = load_config()
+    with caplog.at_level("WARNING"):
+        cfg = load_config()
     assert cfg.max_context_tokens == 60000
+    # The new var wins silently: no deprecation nag while it is set.
+    assert not any("deprecated" in r.message for r in caplog.records)
 
 
 def test_deprecated_max_context_tokens_still_honored(monkeypatch, caplog):
     monkeypatch.delenv("MARIM_CONTEXT_BUDGET", raising=False)
     monkeypatch.setenv("MARIM_MAX_CONTEXT_TOKENS", "70000")
+    # Reset the once-only guard so this test is order-independent (an earlier
+    # test may already have tripped the warning in this process).
+    monkeypatch.setattr(model_mod, "_budget_deprecation_warned", False, raising=False)
     with caplog.at_level("WARNING"):
         cfg = load_config()
+        load_config()  # a second load must NOT re-warn — the nag is one-time
     assert cfg.max_context_tokens == 70000
-    assert any(
-        "MARIM_MAX_CONTEXT_TOKENS" in r.message and "deprecated" in r.message
-        for r in caplog.records
-    )
+    deprecations = [
+        r for r in caplog.records
+        if "MARIM_MAX_CONTEXT_TOKENS" in r.message and "deprecated" in r.message
+    ]
+    assert len(deprecations) == 1
 
 
 def test_context_budget_zero_means_unbudgeted(monkeypatch):
