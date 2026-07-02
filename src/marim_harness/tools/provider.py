@@ -748,7 +748,7 @@ async def spawn_agent(
             state = {"waiting": True}
             waiting_note = f"(waiting on {', '.join(after_ids)})"
             # Type guard: we've already checked run_background_agent is not None
-            # on line 737, so this is safe.
+            # in the guard above, so this is safe.
             run_bg = ctx.deps.services.run_background_agent
             assert run_bg is not None
 
