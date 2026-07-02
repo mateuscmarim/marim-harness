@@ -1,0 +1,103 @@
+"""Per-run context masking for sub-agents.
+
+A sub-agent's context is dominated by tool observations (file reads, grep dumps,
+command output) whose useful lifespan is short: once the model has acted on an
+observation, the raw payload is dead weight. ``ObservationMasker`` watches the
+outgoing request size and, past a trigger, swaps stale observation payloads for
+:data:`~marim_harness.compaction.MASKED_OBSERVATION` — the model keeps the
+*trace* of what it did and can re-run a tool if it still needs a masked output.
+
+The masker is deliberately **stateful, one instance per spawn**. pydantic-ai's
+``ProcessHistory`` rewrites only the outgoing request (the run's stored history
+keeps the originals), so a stateless "mask everything older than the newest N"
+would mask against a boundary that moves every request and rewrite the request
+prefix every time — busting the provider prompt cache on each call. Instead the
+masker remembers which returns it masked (by ``tool_call_id``) and re-applies
+exactly that set, only *extending* it when the estimate crosses the trigger
+again. Between trigger events the request prefix is byte-stable, so masking
+costs one cache miss per trigger — the same bargain session compaction makes.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+
+from pydantic_ai.messages import ModelMessage, ToolReturnPart
+
+from ..compaction import MASKED_OBSERVATION, estimate_tokens, mask_stale_observations
+
+# Fraction of the context budget at which masking kicks in. Below it the history
+# rides untouched; above it, stale observations are masked in one batch. Kept
+# comfortably under 1.0 because estimate_tokens is a char/4 heuristic that can
+# undershoot the provider's real tokenizer.
+_TRIGGER_RATIO = 0.75
+
+
+class ObservationMasker:
+    """Masks stale tool observations in a sub-agent's outgoing requests.
+
+    Build one per spawn and register its :meth:`mask` as a ``ProcessHistory``
+    capability. ``max_tokens`` is the model's context budget (the same value the
+    session compactor uses); ``keep_recent``/``min_chars`` have the semantics of
+    :func:`marim_harness.compaction.mask_stale_observations`.
+    """
+
+    def __init__(self, max_tokens: int, keep_recent: int = 4,
+                 min_chars: int = 200) -> None:
+        self._trigger_tokens = int(max_tokens * _TRIGGER_RATIO)
+        self._keep_recent = keep_recent
+        self._min_chars = min_chars
+        # tool_call_ids whose returns are masked. Monotonic — ids are only ever
+        # added — which is what keeps the request prefix stable between triggers.
+        self._masked_ids: set[str] = set()
+
+    def mask(self, messages: list[ModelMessage]) -> list[ModelMessage]:
+        """The ProcessHistory hook: re-apply the committed mask set, then extend
+        it (sparing the newest ``keep_recent`` returns) if the request would still
+        run past the trigger. Never mutates ``messages`` or its parts."""
+        view = self._apply(messages)
+        if estimate_tokens(view) <= self._trigger_tokens:
+            return view
+        view, masked = mask_stale_observations(
+            view, self._keep_recent, min_chars=self._min_chars
+        )
+        if masked:
+            self._commit(view)
+        return view
+
+    def _apply(self, messages: list[ModelMessage]) -> list[ModelMessage]:
+        """Rebuild ``messages`` with every return in the committed set masked.
+        Returns a fresh list; untouched messages are shared, not copied."""
+        out = list(messages)
+        if not self._masked_ids:
+            return out
+        for idx, message in enumerate(out):
+            parts = getattr(message, "parts", None)
+            if not parts:
+                continue
+            new_parts = list(parts)
+            changed = False
+            for pidx, part in enumerate(parts):
+                if (
+                    isinstance(part, ToolReturnPart)
+                    and part.tool_call_id in self._masked_ids
+                    and part.content != MASKED_OBSERVATION
+                ):
+                    new_parts[pidx] = dataclasses.replace(
+                        part, content=MASKED_OBSERVATION
+                    )
+                    changed = True
+            if changed:
+                out[idx] = dataclasses.replace(message, parts=new_parts)
+        return out
+
+    def _commit(self, view: list[ModelMessage]) -> None:
+        """Record every masked return in ``view`` so later requests re-apply the
+        exact same set."""
+        for message in view:
+            for part in getattr(message, "parts", []):
+                if (
+                    isinstance(part, ToolReturnPart)
+                    and part.content == MASKED_OBSERVATION
+                ):
+                    self._masked_ids.add(part.tool_call_id)
