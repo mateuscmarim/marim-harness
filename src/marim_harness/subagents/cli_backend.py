@@ -20,6 +20,7 @@ import os
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
@@ -36,6 +37,9 @@ from pydantic_ai.messages import (
     ToolReturnPart,
 )
 from pydantic_ai.usage import RunUsage
+
+if TYPE_CHECKING:
+    from .cli_demux import RoutedEvent
 
 logger = logging.getLogger(__name__)
 
@@ -105,11 +109,14 @@ class CliRunError(Exception):
 @dataclass
 class CliResult:
     """A finished CLI spawn, shaped like the bits of a Pydantic AI run result the
-    spawn lifecycle consumes: the final report text and the run's usage."""
+    spawn lifecycle consumes: the final report text, the run's usage, and the
+    transcripts — the parent's, plus one per Claude-side child sub-agent (keyed
+    by the child's stream id) for sidecar persistence."""
 
     output: str
     usage: RunUsage
     transcript: list = field(default_factory=list)
+    child_transcripts: dict = field(default_factory=dict)
 
 
 def resolve_cli_binary() -> str | None:
@@ -435,10 +442,12 @@ class ClaudeCliRunner:
         # would deadlock (child blocks writing stderr, parent waits on stdout EOF).
         stderr_task = asyncio.ensure_future(proc.stderr.read()) if proc.stderr is not None else None
         try:
+            from .cli_demux import CliSubagentDemux  # lazy: cli_demux imports us
+
             translator = CliStreamTranslator()
+            demux = CliSubagentDemux()
             output = ""
-            usage = RunUsage()
-            result_seen = False
+            results: list[dict] = []
             model_sent = False
             assert proc.stdout is not None
             async for raw in _iter_ndjson_lines(proc.stdout):
@@ -449,6 +458,15 @@ class ClaudeCliRunner:
                     obj = json.loads(line)
                 except json.JSONDecodeError:
                     continue  # non-JSON noise on stdout — skip
+                # Claude-side sub-agent traffic (Agent/Task spawns, their child
+                # streams, task lifecycle events) is demuxed into per-card
+                # streams; whatever remains is this spawn's own main stream.
+                routed, remainder = demux.route(obj)
+                for r in routed:
+                    await self._deliver(r, translator, stream_id)
+                if remainder is None:
+                    continue
+                obj = remainder
                 if not model_sent:
                     # The system/init event carries the session model at top level;
                     # assistant messages carry it under message.model. Surface the
@@ -463,12 +481,12 @@ class ClaudeCliRunner:
                         if self._on_model is not None and stream_id:
                             await self._on_model(stream_id, str(found))
                 if obj.get("type") == "result":
+                    # One -p process can emit several results (an async
+                    # sub-agent's completion notification re-invokes the main
+                    # agent). The LAST result's text is the final report;
+                    # usage folds across all of them (sum_result_usages).
+                    results.append(obj)
                     output = obj.get("result", "") or ""
-                    usage = synth_usage(
-                        obj.get("usage"), obj.get("num_turns", 0) or 0,
-                        obj.get("total_cost_usd"),
-                    )
-                    result_seen = True
                     continue
                 for event in translator.translate(obj):
                     if self._on_event is not None and stream_id:
@@ -476,10 +494,15 @@ class ClaudeCliRunner:
             stderr_bytes = await stderr_task if stderr_task is not None else b""
             stderr_task = None  # consumed — don't cancel it in finally
             code = await proc.wait()
-            if not result_seen:
+            if not results:
                 detail = stderr_bytes.decode("utf-8", "replace").strip() or f"exit code {code}"
                 raise CliRunError(f"claude produced no result ({detail})")
-            return CliResult(output=output, usage=usage, transcript=translator.transcript())
+            return CliResult(
+                output=output,
+                usage=synth_usage(*sum_result_usages(results)),
+                transcript=translator.transcript(),
+                child_transcripts=demux.child_transcripts(),
+            )
         finally:
             # On an exceptional/cancelled exit, reap the child so an auto-mode CLI
             # can't keep editing files after the spawn was abandoned, and never leave
@@ -494,3 +517,25 @@ class ClaudeCliRunner:
                     proc.kill()
                 with contextlib.suppress(BaseException):
                     await proc.wait()
+
+    async def _deliver(
+        self, routed: RoutedEvent, translator: CliStreamTranslator, stream_id: str
+    ) -> None:
+        """Forward one demux-routed event. Main-routed events (the synthesized
+        spawn_agent call/return for a Claude-side spawn) go to this spawn's own
+        stream and are recorded into the parent transcript, so the persisted
+        sidecar replays the nested card. Child-routed events go to the child's
+        stream with its live usage and (once) its reported model."""
+        if routed.stream_id is None:
+            part = getattr(routed.event, "part", None)
+            if isinstance(part, ToolCallPart):
+                translator.record_call(part)
+            elif isinstance(part, ToolReturnPart):
+                translator.record_return(part)
+            if self._on_event is not None and stream_id:
+                await self._on_event(stream_id, routed.event, None)
+            return
+        if routed.model and self._on_model is not None:
+            await self._on_model(routed.stream_id, routed.model)
+        if self._on_event is not None:
+            await self._on_event(routed.stream_id, routed.event, routed.usage)

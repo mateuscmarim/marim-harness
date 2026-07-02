@@ -632,3 +632,109 @@ async def test_runner_returns_transcript(tmp_path):
     )
     assert result.transcript
     assert any(isinstance(m, ModelResponse) for m in result.transcript)
+
+
+_FAKE_CLI_AGENT = '''#!{python}
+import json, sys
+lines = [
+    {{"type": "system", "subtype": "init", "model": "claude-opus-4-8"}},
+    {{"type": "assistant", "message": {{"model": "claude-opus-4-8", "id": "msg_p1",
+        "content": [
+        {{"type": "tool_use", "id": "tsub", "name": "Agent",
+          "input": {{"description": "Answer 2+2", "subagent_type": "Explore",
+                     "prompt": "What is 2+2?"}}}},
+    ]}}}},
+    {{"type": "system", "subtype": "task_started", "task_id": "af41",
+      "tool_use_id": "tsub", "description": "Answer 2+2",
+      "subagent_type": "Explore", "prompt": "What is 2+2?"}},
+    {{"type": "user", "message": {{"content": [
+        {{"type": "tool_result", "tool_use_id": "tsub",
+          "content": [{{"type": "text", "text": "Async agent launched..."}}]}},
+    ]}}}},
+    {{"type": "assistant", "parent_tool_use_id": "tsub",
+      "message": {{"model": "claude-haiku-4-5", "id": "msg_c1",
+        "usage": {{"input_tokens": 10, "output_tokens": 5,
+                   "cache_creation_input_tokens": 10066}},
+        "content": [{{"type": "text", "text": "4"}}]}}}},
+    {{"type": "system", "subtype": "task_updated", "task_id": "af41",
+      "patch": {{"status": "completed"}}}},
+    {{"type": "system", "subtype": "task_notification", "task_id": "af41",
+      "tool_use_id": "tsub", "status": "completed", "summary": "4",
+      "usage": {{"total_tokens": 10086, "tool_uses": 0, "duration_ms": 2073}}}},
+    {{"type": "result", "subtype": "success",
+      "result": "Agent spawned. Waiting for it to complete...", "num_turns": 2,
+      "total_cost_usd": 0.04,
+      "usage": {{"input_tokens": 18, "output_tokens": 1083}}}},
+    {{"type": "assistant", "message": {{"model": "claude-opus-4-8", "id": "msg_p2",
+        "content": [{{"type": "text", "text": "Four."}}]}}}},
+    {{"type": "result", "subtype": "success", "result": "Four.", "num_turns": 1,
+      "total_cost_usd": 0.05,
+      "usage": {{"input_tokens": 10, "output_tokens": 48}}}},
+]
+for o in lines:
+    sys.stdout.write(json.dumps(o) + "\\n")
+'''
+
+
+def _make_fake_cli_agent(tmp_path) -> str:
+    p = tmp_path / "fake_claude_agent.py"
+    p.write_text(_FAKE_CLI_AGENT.format(python=sys.executable), encoding="utf-8")
+    p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IRWXU)
+    return str(p)
+
+
+@pytest.mark.anyio
+async def test_runner_demuxes_claude_side_subagents(tmp_path):
+    binary = _make_fake_cli_agent(tmp_path)
+    events: list[tuple[str, object, object]] = []
+    models: list[tuple[str, str]] = []
+
+    async def on_event(stream_id, event, usage):
+        events.append((stream_id, event, usage))
+
+    async def on_model(stream_id, model):
+        models.append((stream_id, model))
+
+    runner = ClaudeCliRunner(on_event, None, on_model)
+    result = await runner.run(
+        binary=binary, prompt="t", system_prompt="s", cwd=str(tmp_path),
+        allow_gated=False, allowed_tools=[], model=None, stream_id="parent",
+    )
+    # Final report is the LAST result event's text; usage sums both segments
+    # and keeps the last (cumulative) cost.
+    assert result.output == "Four."
+    assert result.usage.output_tokens == 1083 + 48
+    from marim_harness.usage import COST_DETAIL_KEY
+    assert result.usage.details[COST_DETAIL_KEY] == 50_000  # $0.05 in micro-USD
+
+    # The spawn surfaced on the PARENT stream as a spawn_agent call…
+    spawn_calls = [
+        (sid, ev) for sid, ev, _ in events
+        if isinstance(ev, FunctionToolCallEvent) and ev.part.tool_name == "spawn_agent"
+    ]
+    assert spawn_calls and spawn_calls[0][0] == "parent"
+    assert spawn_calls[0][1].part.tool_call_id == "tsub"
+    # …child text streamed on the CHILD stream, carrying live usage…
+    child_events = [(sid, ev, u) for sid, ev, u in events if sid == "tsub"]
+    assert child_events
+    assert any(u is not None and u.output_tokens == 5 for _, _, u in child_events)
+    # …and the notification settled the card with the summary.
+    finishes = [
+        ev for sid, ev, _ in events
+        if sid == "parent" and isinstance(ev, FunctionToolResultEvent)
+        and ev.part.tool_name == "spawn_agent"
+    ]
+    assert finishes and finishes[0].part.content == "4"
+
+    # The child's model reached the card; the run's own model still surfaced.
+    assert ("tsub", "claude-haiku-4-5") in models
+    assert any(m == "claude-opus-4-8" for _, m in models)
+
+    # Parent transcript pairs the synthesized spawn call with its return;
+    # the child transcript is captured for sidecar persistence.
+    parent_parts = [p for m in result.transcript for p in m.parts]
+    assert any(getattr(p, "tool_name", "") == "spawn_agent"
+               and isinstance(p, ToolCallPart) for p in parent_parts)
+    assert any(getattr(p, "tool_name", "") == "spawn_agent"
+               and isinstance(p, ToolReturnPart) for p in parent_parts)
+    assert "tsub" in result.child_transcripts
