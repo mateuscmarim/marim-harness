@@ -24,12 +24,29 @@ def _option_prompt(choice: Choice) -> Text:
     return text
 
 
-def _list_height(options: list[Choice]) -> int:
+def _multi_prompt(choice: Choice) -> Text:
+    """A multi-select option's prompt. SelectionList is single-row per option
+    (its text-wrap is nowrap — a two-line prompt would be collapsed anyway),
+    so the description rides inline and dim after the label, ellipsized by
+    the widget when too long."""
+    text = Text(choice.label)
+    if choice.description:
+        text.append(f" — {choice.description}", style="dim")
+    return text
+
+
+def _list_height(options: list[Choice], multi: bool) -> int:
     """The option widget's max height: at most three options visible (the rest
     scroll), plus 2 for the widget's own `tall` border. Keeping the cap on the
     list itself — rather than letting the panel overflow — pins the question
     and free-text input on screen and puts the scrollbar inside the list,
-    where the overflow actually is."""
+    where the overflow actually is.
+
+    Row math differs by widget: SelectionList draws exactly one row per
+    option regardless of description (see _multi_prompt); OptionList gives a
+    description its own row."""
+    if multi:
+        return min(len(options), 3) + 2
     return sum(2 if o.description else 1 for o in options[:3]) + 2
 
 
@@ -116,15 +133,15 @@ class AskUserPanel(InteractionPanel):
 
         if q.multi:
             sel: SelectionList[int] = SelectionList(id="ask-select")
-            sel.styles.max_height = _list_height(q.options)
+            sel.styles.max_height = _list_height(q.options, multi=True)
             await body.mount(sel)
             for i, opt in enumerate(q.options):
-                sel.add_option((_option_prompt(opt), i))
+                sel.add_option((_multi_prompt(opt), i))
             sel.highlighted = 0
             sel.focus()
         else:
             options = OptionList(id="ask-options")
-            options.styles.max_height = _list_height(q.options)
+            options.styles.max_height = _list_height(q.options, multi=False)
             await body.mount(options)
             for i, opt in enumerate(q.options):
                 options.add_option(Option(_option_prompt(opt), id=str(i)))

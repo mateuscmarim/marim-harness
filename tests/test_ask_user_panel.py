@@ -289,3 +289,25 @@ async def test_no_more_options_hint_when_list_fits():
     async with app.run_test() as pilot:
         await pilot.pause()
         assert not app.query_one("#ask-more", Static).display
+
+
+@pytest.mark.anyio
+async def test_selection_list_cap_with_descriptions():
+    """SelectionList renders one row per option even with a description
+    (nowrap), so the cap must count 1 row each — not 2 like OptionList.
+    Before this was widget-aware, described multi-selects showed ~6 options
+    while the overflow hint claimed only 3 were visible."""
+    qs = [Question("Pick many", "Feat",
+                   [Choice(f"o{i}", "a description") for i in range(6)],
+                   multi=True)]
+    app = _Harness(qs)
+    async with app.run_test(size=(80, 50)) as pilot:
+        await pilot.pause()
+        sel = app.query_one("#ask-select", SelectionList)
+        # 3 single-row options + the list's tall border
+        assert sel.region.height == 5
+        assert sel.virtual_size.height == 6  # one row per option
+        assert sel.show_vertical_scrollbar
+        # description is inlined after the label, not dropped
+        first = sel.get_option_at_index(0).prompt
+        assert "a description" in str(first)
