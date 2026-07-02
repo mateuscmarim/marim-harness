@@ -14,7 +14,8 @@ or the plan.
 *workspace root*, not `scrapers/` — prefix shell commands with `cd scrapers
 && …` and use `scrapers/`-prefixed paths with write_file/read_file/edit_file.
 
-**Task block fields you receive:** `script`, `strategy` (http|api|browser),
+**Task block fields you receive:** `script`, `strategy`
+(http|api|browser|derive), optional `depends_on`,
 `entry_urls`, `pagination`, `min_records`, `fields` (name, type, required,
 selector/JSON path), `notes`, and header `politeness`/`base_url`.
 
@@ -35,6 +36,15 @@ selector/JSON path), `notes`, and header `politeness`/`base_url`.
   on any validation error or if fewer than `min_records` records were
   extracted (when `--limit` is 0 or >= `min_records`).
 - Exit codes: 0 success, 1 validation/count failure, 2 fetch or parse error.
+
+**For `strategy: derive`:** the script reads its input records from the
+dependency tasks' sample files (`scrapers/samples/<task>.jsonl` for each task
+in `depends_on`) and never touches the network — no httpx client, no delays
+needed. If an input file is missing or empty, print which one to stderr and
+exit 2: a mis-ordered run must fail loudly, never write an empty merge that
+"passes". Your spawner injects the dependency generators' reports under
+"## Results of prerequisite jobs" — use them for expected record counts and
+any deviations they made from the plan.
 
 Skeleton to follow (adapt fields, fetching, and parsing to the task):
 
