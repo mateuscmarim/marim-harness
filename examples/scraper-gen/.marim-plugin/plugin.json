@@ -1,0 +1,8 @@
+{
+  "name": "scraper-gen",
+  "version": "0.1.0",
+  "description": "Web-scraper generation agents (planner, generator, healer): plan extraction HTTP-first, generate self-validating Python scrapers, heal them against live sample runs.",
+  "author": {"name": "marim"},
+  "license": "MIT",
+  "keywords": ["scraping", "extraction", "httpx", "parsel", "playwright"]
+}
