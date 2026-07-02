@@ -658,6 +658,15 @@ class SubagentRunner:
             # its crash propagate would fail the whole turn and take down any
             # sibling spawns fanning out alongside it. Contain it.
             await self.hooks.subagent_stop(type, task, f"error: {exc}")
+            if is_context_overflow_error(exc):
+                # The shed-and-resume backstop already ran and it still
+                # overflowed: tell the orchestrator what to DO, not just what
+                # broke — this string is what the model reads and acts on.
+                return (
+                    f"Sub-agent {type!r} overflowed its context window even after "
+                    "masking stale tool output. Split the task into smaller "
+                    "spawns, or narrow the scope so this sub-agent reads less."
+                )
             return f"Sub-agent {type!r} failed: {exc.__class__.__name__}: {exc}"
         except BaseException:
             # Cancellation/interrupt (e.g. shutdown tearing down a running job) is

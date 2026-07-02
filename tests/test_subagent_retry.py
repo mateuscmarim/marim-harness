@@ -344,3 +344,21 @@ async def test_overflow_shed_emits_a_ui_notice_for_a_foreground_spawn(tmp_path: 
     stream_id, message = notices[0]
     assert stream_id == "sid-1"
     assert "overflow" in message.lower()
+
+
+@pytest.mark.anyio
+async def test_foreground_overflow_failure_tells_orchestrator_to_split(tmp_path: Path):
+    """When the shed-and-resume backstop is exhausted, the contained foreground
+    error must tell the orchestrator what to DO (split/narrow the task) — the
+    tool result is model-facing product surface, not a stack trace."""
+    runner, _ = _runner(tmp_path)
+
+    async def _boom(*args, **kwargs):
+        raise ModelHTTPError(
+            400, "m", body={"message": "maximum context length exceeded"}
+        )
+
+    runner._run_to_completion = _boom
+    out = await runner.run("general", "task", "sid-1")
+    assert "overflowed its context window" in out
+    assert "split the task" in out.lower()
