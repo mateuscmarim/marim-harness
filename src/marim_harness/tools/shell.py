@@ -100,18 +100,35 @@ async def run_bash(
     root: Path,
     command: str,
     timeout: int = _DEFAULT_TIMEOUT,
+    stdin_data: bytes | None = None,
 ) -> str:
     """Run a shell command in the workspace root, capturing combined output.
 
     Runs in its own session so a timeout can signal the whole process group and
-    take down any children the command spawned, not just the shell."""
+    take down any children the command spawned, not just the shell.
+
+    ``stdin_data`` (when given) is piped to the command's stdin in one write and
+    the pipe is closed immediately, so a reader sees the bytes then EOF. With the
+    default ``None`` no stdin pipe is wired at all — identical to the historical
+    behavior."""
     proc = await asyncio.create_subprocess_shell(
         command,
         cwd=str(root),
+        stdin=asyncio.subprocess.PIPE if stdin_data is not None else None,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         start_new_session=True,
     )
+    if stdin_data is not None and proc.stdin is not None:
+        # One small write (a sudo password, a heredoc-ish snippet), then close so
+        # the child sees EOF. Suppress pipe errors: a command that exits without
+        # reading stdin (or dies at spawn) must not crash the runner — its own
+        # exit code / output is the signal the caller cares about.
+        with contextlib.suppress(BrokenPipeError, ConnectionResetError, OSError):
+            proc.stdin.write(stdin_data)
+            await proc.stdin.drain()
+        with contextlib.suppress(BrokenPipeError, ConnectionResetError, OSError):
+            proc.stdin.close()
     # Read stdout line-by-line instead of using proc.communicate() so we can
     # retain whatever was read before a timeout kills the process.  communicate()
     # closes its internal reader on cancellation, discarding buffered output.

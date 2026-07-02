@@ -315,3 +315,21 @@ async def test_background_wait_offloads_but_live_output_truncates(tmp_path, monk
     assert len(saved) == 1 and saved[0].read_text().count("line ") == 500
     # the live preview path stays bounded by max_output (head+tail truncation)
     assert len(bp.output()) <= 80 + 64  # cap + the "… (N chars truncated) …" marker
+
+
+@pytest.mark.anyio
+async def test_run_bash_stdin_data_reaches_the_process(tmp_path: Path):
+    """stdin_data is piped to the command's stdin, written once, then closed
+    (cat exits on EOF instead of hanging)."""
+    out = await shell.run_bash(tmp_path, "cat", stdin_data=b"hello-stdin\n")
+    assert out.startswith("exit 0")
+    assert "hello-stdin" in out
+
+
+@pytest.mark.anyio
+async def test_run_bash_without_stdin_data_is_unchanged(tmp_path: Path):
+    """Default None wires no stdin pipe — a command reading stdin sees EOF-ish
+    inherited stdin, and plain commands behave exactly as before."""
+    out = await shell.run_bash(tmp_path, "echo no-stdin")
+    assert out.startswith("exit 0")
+    assert "no-stdin" in out
