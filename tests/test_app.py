@@ -3666,15 +3666,46 @@ async def test_bang_submission_runs_command_not_a_turn(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_bang_survives_a_turn_starting_mid_run(tmp_path: Path):
+    """A turn starting while a ! command runs must not cancel it: the
+    passthrough worker lives in its own worker group, outside the default
+    group that the exclusive turn worker sweeps."""
+    from marim_harness.interfaces.tui.widgets.prompt import PromptInput
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.on_prompt_input_submitted(
+            PromptInput.Submitted("!sleep 0.3 && echo survived")
+        )
+        await app._start_turn("hello")  # exclusive turn worker joins now
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        pending = app.harness.turn_controller._pending_shell_results
+        assert len(pending) == 1
+        assert "survived" in pending[0][1]
+
+
+@pytest.mark.anyio
 async def test_bare_bang_shows_usage_hint(tmp_path: Path):
     from marim_harness.interfaces.tui.widgets.prompt import PromptInput
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
+        shown: list[str] = []
+        real_post_system = app.post_system
+
+        async def spy(markdown: str) -> None:
+            shown.append(markdown)
+            await real_post_system(markdown)
+
+        app.post_system = spy  # type: ignore[method-assign]
         await app.on_prompt_input_submitted(PromptInput.Submitted("!"))
         await pilot.pause()
+        assert any("Usage" in s for s in shown)
         assert app.harness.turn_controller._pending_shell_results == []
+        assert list(app.harness.session.history) == []  # no turn started
 
 
 @pytest.mark.anyio

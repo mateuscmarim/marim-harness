@@ -915,7 +915,16 @@ class HarnessApp(App):
                 "Press Esc first."
             ))
             return
-        self.run_worker(self._run_shell_passthrough(command), exclusive=False)
+        # group="shell-passthrough": Textual's WorkerManager cancels every worker
+        # sharing a group when a new *exclusive* worker joins that group. The turn
+        # worker (_start_turn) runs exclusive=True in the default group, so leaving
+        # this one there too would let a chat message silently kill an in-flight
+        # `!` command with no notice and no queued output. Its own group keeps it
+        # immune to that sweep; a turn starting mid-passthrough is fine — the
+        # passthrough's output still lands in the transcript and queues normally.
+        self.run_worker(
+            self._run_shell_passthrough(command), group="shell-passthrough", exclusive=False
+        )
 
     async def _run_shell_passthrough(self, command: str) -> None:
         """Execute a `!` command, render its output into the transcript, and
