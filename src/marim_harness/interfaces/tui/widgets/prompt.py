@@ -1,5 +1,6 @@
 """The multi-line prompt input box: submit/newline keys, shell-style history
-recall, auto-grow, and image-attachment handling (paste + ``[Image #N]`` markers)."""
+recall, auto-grow, image-attachment handling (paste + ``[Image #N]`` markers),
+and Claude-Code-style paste collapsing (``[Pasted text #N …]`` markers)."""
 
 import re
 from pathlib import Path
@@ -9,6 +10,19 @@ from textual.message import Message
 from textual.widgets import TextArea
 
 _IMAGE_MARKER = re.compile(r"\[Image #(\d+)\]")
+_PASTE_MARKER = re.compile(r"\[Pasted text #(\d+) (\+\d+ (?:lines|chars))\]")
+# Collapse thresholds (spec: more than 3 lines OR more than 600 chars).
+_PASTE_MAX_LINES = 3
+_PASTE_MAX_CHARS = 600
+
+
+def _paste_marker(n: int, text: str) -> str:
+    """The compact marker for stash entry ``n``: a line count for multi-line
+    pastes, a character count for long one-liners."""
+    lines = text.count("\n") + 1
+    if lines > 1:
+        return f"[Pasted text #{n} +{lines} lines]"
+    return f"[Pasted text #{n} +{len(text)} chars]"
 
 
 class PromptInput(TextArea):
@@ -65,6 +79,9 @@ class PromptInput(TextArea):
         self._draft = ""
         super().__init__(soft_wrap=True, show_line_numbers=False)
         self.attachments: list[tuple[Path, str]] = []
+        # Full texts of collapsed pastes, in insertion order; the box shows a
+        # numbered [Pasted text #N …] marker per entry (mirrors attachments).
+        self.pastes: list[str] = []
         self._slash_active: bool = False
         # Set for the next text change when it comes from a history recall (_show),
         # so on_text_area_changed skips slash-menu activation for it — see _show.
@@ -98,16 +115,18 @@ class PromptInput(TextArea):
             event.prevent_default()
             event.stop()
             atts = [(p.read_bytes(), m) for p, m in self.attachments]
-            self.post_message(self.Steer(self.text, atts))
+            self.post_message(self.Steer(self._expand_pastes(self.text), atts))
             self.attachments = []
+            self.pastes = []
             self._reset_nav()
             return
         if event.key == "enter":
             event.prevent_default()
             event.stop()
             atts = [(p.read_bytes(), m) for p, m in self.attachments]
-            self.post_message(self.Submitted(self.text, atts))
+            self.post_message(self.Submitted(self._expand_pastes(self.text), atts))
             self.attachments = []
+            self.pastes = []
             self._reset_nav()
             return
         if event.key in ("shift+enter", "ctrl+j"):
@@ -185,6 +204,30 @@ class PromptInput(TextArea):
         self.insert(f"[Image #{len(self.attachments)}]")
         return True
 
+    def _maybe_collapse_paste(self, text: str) -> bool:
+        """Stash a large paste and insert its compact marker instead of the
+        text. Returns True when it consumed the paste; small pastes fall
+        through to the normal TextArea insert."""
+        lines = text.count("\n") + 1
+        if lines <= _PASTE_MAX_LINES and len(text) <= _PASTE_MAX_CHARS:
+            return False
+        self.pastes.append(text)
+        self.insert(_paste_marker(len(self.pastes), text))
+        return True
+
+    def _expand_pastes(self, text: str) -> str:
+        """Replace each [Pasted text #N …] marker with its stashed content.
+        A marker with no matching stash entry (hand-typed, or mangled past
+        recognition and retyped) is left as literal text."""
+
+        def _sub(m: "re.Match[str]") -> str:
+            n = int(m.group(1))
+            if 1 <= n <= len(self.pastes):
+                return self.pastes[n - 1]
+            return m.group(0)
+
+        return _PASTE_MARKER.sub(_sub, text)
+
     def _session_id(self) -> str:
         # Resolve lazily from the running app's harness; fall back to a constant
         # bucket if unavailable (e.g. isolated widget tests). Persistence (the
@@ -199,14 +242,19 @@ class PromptInput(TextArea):
         from .... import images
 
         path = images.detect_image_path(event.text)
-        if path is None:
-            return  # let TextArea insert the pasted text normally
-        media_type = images.media_type_for_path(path)
-        if media_type is None:
+        if path is not None:
+            media_type = images.media_type_for_path(path)
+            if media_type is None:
+                return  # image-looking path, unknown type: normal text insert
+            event.prevent_default()
+            event.stop()
+            self._cache_and_insert(path.read_bytes(), media_type)
             return
         event.prevent_default()
         event.stop()
-        self._cache_and_insert(path.read_bytes(), media_type)
+        if not self._maybe_collapse_paste(event.text):
+            # Small paste: insert normally
+            self.insert(event.text)
 
     def _offset(self, loc: tuple[int, int]) -> int:
         """Absolute character offset of a (row, col) cursor location."""
