@@ -66,7 +66,8 @@ plan's header lines (base_url, robots, politeness), with
 How you spawn depends on the plan:
 
 - **No `depends_on` anywhere:** spawn all generators in one turn (leave
-  `background` unset; that already runs them in parallel).
+  `background` unset; that already runs them in parallel) — unless the
+  same-host cap below applies.
 - **Any task has `depends_on`:** spawn every generator as a background job
   (`background=True`) so each has a job id, and give each dependent task
   `after=[<job ids of the generators for the tasks it depends on>]` — the
@@ -82,7 +83,11 @@ out freely; for tasks on the *same* host run at most 2–3 generators at a
 time (spawn in waves), and if any generator reports 429/rate-limit
 responses, drop to fully sequential for that host. A rate-limited site makes
 generators "fix" working selectors and later trips the healer's pass-twice
-rule into false flakiness.
+rule into false flakiness. To run waves even when no task has
+`depends_on`, spawn same-host generators as background jobs and chain
+each wave with `after=[<previous wave's job ids>]` — the politeness cap
+uses the same mechanism as data dependencies; different-host and `derive`
+tasks need no chaining.
 
 ## Step 4 — heal
 
