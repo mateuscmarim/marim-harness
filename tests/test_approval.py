@@ -1,12 +1,15 @@
 import pytest
-from textual.app import App
+from textual.app import App, ComposeResult
+from textual.containers import VerticalScroll
+from textual.widgets import Static
 
 from marim_harness.interfaces.tui.approval import (
     ADDED_STYLE,
     REMOVED_STYLE,
-    ApprovalModal,
+    ApprovalPanel,
     format_detail,
 )
+from marim_harness.interfaces.tui.interaction_panel import run_panel
 
 
 def _styled_text(detail, needle: str) -> set[str]:
@@ -26,12 +29,16 @@ class _Harness(App):
         super().__init__()
         self.result = "unset"
 
+    def compose(self) -> ComposeResult:
+        yield VerticalScroll(Static("line\n" * 100), id="log")
+        yield Static("", id="status-bar")
+
     def on_mount(self) -> None:
         self.run_worker(self._ask())
 
     async def _ask(self) -> None:
-        self.result = await self.push_screen_wait(
-            ApprovalModal("edit_file", {"path": "a.txt"})
+        self.result = await run_panel(
+            self, ApprovalPanel("edit_file", {"path": "a.txt"})
         )
 
 
@@ -64,6 +71,29 @@ async def test_escape_denies():
         await pilot.press("escape")
         await pilot.pause()
     assert app.result is False
+
+
+@pytest.mark.anyio
+async def test_panel_removed_after_decision():
+    app = _Harness()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        assert not app.query(ApprovalPanel)
+
+
+@pytest.mark.anyio
+async def test_transcript_scrolls_while_approval_pending():
+    app = _Harness()
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        log = app.query_one("#log", VerticalScroll)
+        assert log.scroll_y == 0
+        await pilot.press("pagedown")
+        await pilot.pause()
+        assert log.scroll_y > 0
+        assert app.result == "unset"
 
 
 def test_format_detail_edit_shows_diff():

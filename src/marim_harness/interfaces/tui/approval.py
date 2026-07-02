@@ -1,8 +1,9 @@
 from rich.text import Text
 from textual.app import ComposeResult
-from textual.containers import Horizontal, Vertical
-from textual.screen import ModalScreen
+from textual.containers import Horizontal
 from textual.widgets import Button, Static
+
+from .interaction_panel import InteractionPanel
 
 # Diff highlighting styles for the approval preview.
 REMOVED_STYLE = "red"
@@ -46,21 +47,17 @@ def format_detail(tool_name: str, args: dict) -> Text:
     return detail
 
 
-class ApprovalModal(ModalScreen[bool]):
-    """Asks the user to approve or deny a tool call. Dismisses with True/False."""
+class ApprovalPanel(InteractionPanel):
+    """Asks the user to approve or deny a tool call, inline above the status
+    bar so the transcript stays readable. Resolves with True/False."""
 
-    CSS = """
-    ApprovalModal {
-        align: center middle;
-    }
-    #approval-box {
-        width: 70%;
-        max-width: 100;
-        height: auto;
-        max-height: 80%;
-        padding: 1 2;
+    # The panel itself takes focus on mount so the a/d/Esc bindings are live
+    # immediately (the modal got this from the screen's focus scope).
+    can_focus = True
+
+    DEFAULT_CSS = """
+    ApprovalPanel {
         border: round $warning;
-        background: $surface;
     }
     #approval-title {
         text-style: bold;
@@ -81,9 +78,10 @@ class ApprovalModal(ModalScreen[bool]):
     }
     """
 
-    # Esc denies — backing out of an approval is a deny, and it keeps the modal
-    # consistent with every other modal (model picker, ask-user, settings), which
-    # all bind Esc to cancel. Without it a reflexive Esc does nothing and traps you.
+    # Esc denies — backing out of an approval is a deny, and it keeps the panel
+    # consistent with ask-user, which binds Esc to cancel. Without it a
+    # reflexive Esc would fall through to the app binding and cancel the whole
+    # turn.
     BINDINGS = [
         ("a", "approve", "Approve"),
         ("d", "deny", "Deny"),
@@ -96,18 +94,20 @@ class ApprovalModal(ModalScreen[bool]):
         self.args = args
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="approval-box"):
-            yield Static(f"Approve  {self.tool_name}?", id="approval-title")
-            yield Static(format_detail(self.tool_name, self.args), id="approval-detail")
-            with Horizontal(id="approval-buttons"):
-                yield Button("Deny (d)", id="deny", variant="error")
-                yield Button("Approve (a)", id="approve", variant="success")
+        yield Static(f"Approve  {self.tool_name}?", id="approval-title")
+        yield Static(format_detail(self.tool_name, self.args), id="approval-detail")
+        with Horizontal(id="approval-buttons"):
+            yield Button("Deny (d)", id="deny", variant="error")
+            yield Button("Approve (a)", id="approve", variant="success")
+
+    def on_mount(self) -> None:
+        self.focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        self.dismiss(event.button.id == "approve")
+        self.resolve(event.button.id == "approve")
 
     def action_approve(self) -> None:
-        self.dismiss(True)
+        self.resolve(True)
 
     def action_deny(self) -> None:
-        self.dismiss(False)
+        self.resolve(False)

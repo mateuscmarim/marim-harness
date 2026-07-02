@@ -44,6 +44,8 @@ class InteractionPanel(Vertical):
         padding: 1 2;
         background: $surface;
         border: round $accent;
+        /* content taller than the clamp scrolls instead of clipping */
+        overflow-y: auto;
     }
     """
 

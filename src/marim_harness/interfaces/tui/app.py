@@ -15,7 +15,7 @@ from ...runtime.harness import Harness
 from ...usage import resolve_cost
 from ..history import PromptHistory
 from ..prefs import load_theme, save_theme
-from .approval import ApprovalModal
+from .approval import ApprovalPanel
 from .ask_user import AskUserPanel
 from .commands import dispatch
 from .interaction_panel import InteractionPanel, run_panel
@@ -801,8 +801,8 @@ class HarnessApp(App):
             f"Tool: {call.tool_name}",
             "approval_needed",
         )
-        approved = await self.push_screen_wait(
-            ApprovalModal(call.tool_name, call.args_as_dict())
+        approved = await run_panel(
+            self, ApprovalPanel(call.tool_name, call.args_as_dict())
         )
         return True if approved else ToolDenied("denied by user")
 
