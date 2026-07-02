@@ -317,15 +317,23 @@ class PromptInput(TextArea):
         return True
 
     def _target_height(self) -> int:
-        """Rows the box should occupy: one per logical line, clamped to the
-        [min, max] window."""
-        lines = self.document.line_count
+        """Rows the box should occupy: one per *visual* line, clamped to the
+        [min, max] window. The box soft-wraps, so a single long logical line
+        can occupy several rows — ``document.line_count`` would under-count
+        those and the box wouldn't grow while text visibly wrapped."""
+        lines = self.wrapped_document.height
         return max(self._MIN_LINES, min(lines, self._MAX_LINES))
 
     def _resize(self) -> None:
         # +2 for the box border's top and bottom rows (see styles.tcss), so the
         # visible text area, not the outer box, tracks the [min, max] window.
         self.styles.height = self._target_height() + 2
+
+    def on_resize(self) -> None:
+        # A width change re-wraps the text, changing the visual line count —
+        # re-fit. (Our own height writes land here too, but re-setting an
+        # unchanged height is a no-op, so this can't loop.)
+        self._resize()
 
     def on_text_area_changed(self, event: "TextArea.Changed") -> None:
         self._resize()

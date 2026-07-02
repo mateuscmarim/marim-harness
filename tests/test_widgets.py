@@ -569,6 +569,14 @@ async def test_target_height_grows_and_caps():
         assert pi._target_height() == 5  # grows with logical lines
         pi.text = "\n".join(str(i) for i in range(20))
         assert pi._target_height() == PromptInput._MAX_LINES  # capped
+        # Soft wrap: ONE logical line that wraps must grow the box too —
+        # document.line_count says 1, but the text occupies several rows.
+        pi.text = "word " * 40  # ~200 chars at an ~76-col text area
+        await pilot.pause()
+        assert pi._target_height() > PromptInput._MIN_LINES
+        pi.text = "x" * 2000  # wraps far past the cap
+        await pilot.pause()
+        assert pi._target_height() == PromptInput._MAX_LINES
 
 
 @pytest.mark.anyio
