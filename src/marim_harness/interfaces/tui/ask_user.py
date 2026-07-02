@@ -112,12 +112,23 @@ class AskUserPanel(InteractionPanel):
             self.run_worker(self._show_question())
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        # A second event can land after the final _record already resolved
+        # ``result`` (e.g. one queued right before the panel is torn down by
+        # run_panel's finally) — _index is already past the end of
+        # _questions at that point, so indexing it would IndexError. The
+        # panel is going away regardless, so just ignore the stale event.
+        if self.result.done():
+            return
         q = self._questions[self._index]
         if q.multi or event.option.id is None:
             return
         self._record(q.options[int(event.option.id)].label)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        # See on_option_list_option_selected: guard against a stale event
+        # landing after the future is already resolved.
+        if self.result.done():
+            return
         q = self._questions[self._index]
         if q.multi:
             self._confirm_multi()
@@ -127,6 +138,11 @@ class AskUserPanel(InteractionPanel):
             self._record(text)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        # See on_option_list_option_selected: guard against a stale event
+        # landing after the future is already resolved (this is the only
+        # path into _confirm_multi besides on_input_submitted, both guarded).
+        if self.result.done():
+            return
         if event.button.id == "ask-confirm":
             self._confirm_multi()
 

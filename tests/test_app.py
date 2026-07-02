@@ -3108,6 +3108,68 @@ async def test_ask_user_callback_shows_panel_and_returns_answer(tmp_path: Path):
         assert worker.result == {"Pick": "Alpha"}
 
 
+@pytest.mark.anyio
+async def test_ask_user_escape_cancels_only_the_question(tmp_path: Path):
+    """Esc with panel focus must cancel the question only — the panel's own
+    ``escape`` binding (priority within the panel) wins over the app's
+    non-priority ``escape -> cancel_turn`` binding. This only exercises the
+    real HarnessApp binding table; the stub-harness tests in
+    test_ask_user_panel.py don't have the app's escape binding at all."""
+    from marim_harness.ask_user import Choice, Question
+    from marim_harness.interfaces.tui.ask_user import AskUserPanel
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        qs = [Question("Pick one", "Pick", [Choice("Alpha"), Choice("Beta")])]
+        # _ask_user runs as its own worker here (not the turn worker), so
+        # asserting its result and the panel's teardown is enough to prove
+        # the escape landed on the panel rather than falling through to
+        # cancel_turn.
+        worker = app.run_worker(app._ask_user(qs))
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        assert worker.result is None
+        assert not app.query(AskUserPanel)
+        assert app.is_running
+
+
+@pytest.mark.anyio
+async def test_ask_user_panel_closes_open_subagents_viewer(tmp_path: Path):
+    """A panel mounted while the ctrl+x sub-agents screen is open would render
+    underneath it (invisible, its own layer) yet still take focus, and the
+    viewer's Esc ("back") would land on it instead of the panel — silently
+    cancelling the question. run_panel closes the viewer first."""
+    from marim_harness.ask_user import Choice, Question
+    from marim_harness.interfaces.tui.widgets import SubAgentsView
+
+    async def gen():
+        yield _spawn_call("s1", "first")
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.stream.on_events(None, gen())
+        await pilot.pause()
+        app.action_toggle_subagents()
+        await pilot.pause()
+        assert app.subagents.open is True
+
+        qs = [Question("Pick one", "Pick", [Choice("Alpha"), Choice("Beta")])]
+        worker = app.run_worker(app._ask_user(qs))
+        await pilot.pause()
+
+        assert app.subagents.open is False
+        view = app.query_one(SubAgentsView)
+        assert view.display is False
+        assert app.query_one("#log").display is True
+
+        await pilot.press("enter")  # selects highlighted "Alpha"
+        await pilot.pause()
+        assert worker.result == {"Pick": "Alpha"}
+
+
 def test_format_duration_units():
     from marim_harness.interfaces.tui.status import format_duration as _format_duration
 

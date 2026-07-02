@@ -79,9 +79,31 @@ async def run_panel(app: App, panel: InteractionPanel) -> Any:
     await, and awaiting the removal here could be interrupted by that same
     cancellation — scheduling it is enough. Focus is restored to whatever had
     it before the panel appeared (the modals got this for free from screen
-    push/pop)."""
+    push/pop).
+
+    Two things must happen before the mount, both because #status-bar and the
+    sub-agents viewer live in the *base* screen (index 0 of the stack), not
+    necessarily the top one:
+
+    - The base screen is targeted explicitly rather than via ``app.mount``,
+      which delegates to ``app.screen`` (the top of the stack). The settings
+      screen and model picker are ModalScreens the user can open mid-turn; if
+      an approval/ask_user fires while one is on top, ``app.mount`` would look
+      for #status-bar on the modal and raise NoMatches, killing the turn.
+    - The ctrl+x sub-agents viewer, when open, covers the base screen on its
+      own layer — a panel mounted underneath it would be invisible yet still
+      grab focus, and the viewer's Esc ("back") would land on it instead of
+      cancelling/denying as intended. So an open viewer is closed first. This
+      is the one generic thing run_panel knows about the real app; test
+      harnesses have no ``subagents`` collaborator, hence the guard.
+    """
+    subagents = getattr(app, "subagents", None)
+    if subagents is not None and getattr(subagents, "open", False):
+        subagents.close()
     previous = app.focused
-    await app.mount(panel, before="#status-bar")
+    base = app.screen_stack[0]
+    bar = base.query_one("#status-bar")
+    await base.mount(panel, before=bar)
     try:
         return await panel.result
     finally:

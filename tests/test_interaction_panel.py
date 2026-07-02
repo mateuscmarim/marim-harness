@@ -4,6 +4,7 @@ cancel, and scroll-key forwarding to the transcript."""
 import pytest
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
+from textual.screen import ModalScreen
 from textual.widgets import Static
 
 from marim_harness.interfaces.tui.interaction_panel import InteractionPanel, run_panel
@@ -74,6 +75,54 @@ async def test_double_resolve_is_harmless():
         app.panel.resolve("second")  # must not raise InvalidStateError
         await pilot.pause()
         assert app.result == "first"
+
+
+class _ManualPanelApp(App):
+    """Like _PanelApp, but doesn't auto-start run_panel on mount — the test
+    controls exactly when the panel is requested, so it can push a modal
+    screen first and prove run_panel still finds the base screen."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.result = "unset"
+        self.panel = InteractionPanel()
+
+    def compose(self) -> ComposeResult:
+        yield VerticalScroll(Static("line\n" * 200), id="log")
+        yield Static("status", id="status-bar")
+
+    async def ask(self) -> None:
+        self.result = await run_panel(self, self.panel)
+
+
+@pytest.mark.anyio
+async def test_mounts_into_base_screen_with_modal_on_top():
+    """App.mount delegates to app.screen — the TOP of the screen stack. The
+    settings screen and model picker are ModalScreens the user can open
+    mid-turn; if an approval/ask_user then fires, run_panel must still find
+    #status-bar on the BASE screen, not the modal (which raises NoMatches and
+    kills the turn if targeted via app.mount)."""
+    app = _ManualPanelApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        base = app.screen_stack[0]
+        app.push_screen(ModalScreen())
+        await pilot.pause()
+        assert len(app.screen_stack) == 2  # modal is now on top
+
+        app.run_worker(app.ask())
+        await pilot.pause()
+
+        assert app.panel.is_attached
+        assert app.panel.parent is base
+        bar = base.query_one("#status-bar")
+        assert list(base.children).index(app.panel) < list(base.children).index(bar)
+
+        # Resolution still works even with the modal on top (only its
+        # keyboard reachability is affected, which is out of scope here).
+        app.panel.resolve("done")
+        await pilot.pause()
+        assert app.result == "done"
 
 
 @pytest.mark.anyio

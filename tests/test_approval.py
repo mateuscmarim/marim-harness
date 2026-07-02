@@ -64,7 +64,7 @@ async def test_deny_returns_false():
 
 @pytest.mark.anyio
 async def test_escape_denies():
-    """Esc backs out of the approval as a deny (consistent with the other modals)."""
+    """Esc backs out of the approval as a deny (consistent with the ask-user panel)."""
     app = _Harness()
     async with app.run_test() as pilot:
         await pilot.pause()

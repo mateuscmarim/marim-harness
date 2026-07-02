@@ -105,7 +105,7 @@ async def test_multi_select_empty_confirm_is_ignored():
         # Click Confirm without selecting anything or typing free-text
         await pilot.click("#ask-confirm")
         await pilot.pause()
-        # Modal must NOT have dismissed: result stays at sentinel
+        # Panel must NOT have dismissed: result stays at sentinel
         assert app.result == "unset"
         # The SelectionList must still be mounted
         assert app.query_one("#ask-select", SelectionList) is not None
@@ -165,6 +165,34 @@ async def test_transcript_scrolls_while_question_pending():
         await pilot.pause()
         assert log.scroll_y > 0
         assert app.result == "unset"
+
+
+@pytest.mark.anyio
+async def test_late_event_after_last_answer_does_not_raise():
+    """A second event (OptionSelected/Input.Submitted/Button.Pressed) racing
+    the panel's removal after the final _record already resolved ``result``
+    must not IndexError — _index is past the end of _questions by then."""
+    from textual.widgets import Button, Input, OptionList
+    from textual.widgets.option_list import Option
+
+    qs = [Question("Pick one", "Pick", [Choice("Alpha")])]
+    app = _Harness(qs)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.query_one(AskUserPanel)
+        await pilot.press("enter")  # answers the only question -> resolves
+        await pilot.pause()
+        assert panel.result.done()
+
+        # Stand-in event sources: they don't need to be mounted anywhere —
+        # the handlers are called directly to simulate an event delivered
+        # after resolution but before the panel is torn down.
+        panel.on_input_submitted(Input.Submitted(Input(), "late"))
+        panel.on_option_list_option_selected(
+            OptionList.OptionSelected(OptionList(), Option("x", id="0"), 0)
+        )
+        panel.on_button_pressed(Button.Pressed(Button(id="ask-confirm")))
+    assert app.result == {"Pick": "Alpha"}
 
 
 @pytest.mark.anyio
