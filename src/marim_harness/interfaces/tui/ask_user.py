@@ -1,18 +1,19 @@
-"""The modal behind the ``ask_user`` tool: steps the user through a prompt's
-questions one at a time and dismisses with a ``{header: answer}`` mapping (or
-None if cancelled). Single-select uses an OptionList; multi-select a
-SelectionList with a Confirm button; a free-text Input is always visible so
-"Other" is offered on every question."""
+"""The inline panel behind the ``ask_user`` tool: steps the user through a
+prompt's questions one at a time and resolves with a ``{header: answer}``
+mapping (or None if cancelled). Single-select uses an OptionList; multi-select
+a SelectionList with a Confirm button; a free-text Input is always visible so
+"Other" is offered on every question. Mounted above the status bar (not a
+modal) so the transcript stays scrollable while the question is pending."""
 
 
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Vertical
-from textual.screen import ModalScreen
 from textual.widgets import Button, Input, OptionList, SelectionList, Static
 from textual.widgets.option_list import Option
 
 from ...ask_user import Choice, Question
+from .interaction_panel import InteractionPanel
 
 
 def _option_prompt(choice: Choice) -> Text:
@@ -23,23 +24,11 @@ def _option_prompt(choice: Choice) -> Text:
     return text
 
 
-class AskUserModal(ModalScreen[dict | None]):
-    """Dismisses with ``{header: str | list[str]}`` for every question, or None
+class AskUserPanel(InteractionPanel):
+    """Resolves with ``{header: str | list[str]}`` for every question, or None
     if the user pressed Escape."""
 
-    CSS = """
-    AskUserModal {
-        align: center middle;
-    }
-    #ask-box {
-        width: 80%;
-        max-width: 100;
-        height: auto;
-        max-height: 80%;
-        padding: 1 2;
-        border: round $accent;
-        background: $surface;
-    }
+    DEFAULT_CSS = """
     #ask-progress {
         color: $text-muted;
     }
@@ -70,13 +59,12 @@ class AskUserModal(ModalScreen[dict | None]):
         self._answers: dict = {}
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="ask-box"):
-            yield Static("", id="ask-progress")
-            yield Static("", id="ask-question")
-            yield Vertical(id="ask-body")
-            yield Static("Or type your own answer:", id="ask-other-label")
-            yield Input(placeholder="type a custom answer…", id="ask-other")
-            yield Button("Confirm selection", id="ask-confirm", variant="primary")
+        yield Static("", id="ask-progress")
+        yield Static("", id="ask-question")
+        yield Vertical(id="ask-body")
+        yield Static("Or type your own answer:", id="ask-other-label")
+        yield Input(placeholder="type a custom answer…", id="ask-other")
+        yield Button("Confirm selection", id="ask-confirm", variant="primary")
 
     def on_mount(self) -> None:
         self.run_worker(self._show_question())
@@ -114,12 +102,12 @@ class AskUserModal(ModalScreen[dict | None]):
             options.focus()
 
     def _record(self, answer: str | list[str]) -> None:
-        """Store the current question's answer, then advance or dismiss."""
+        """Store the current question's answer, then advance or resolve."""
         q = self._questions[self._index]
         self._answers[q.header] = answer
         self._index += 1
         if self._index >= len(self._questions):
-            self.dismiss(self._answers)
+            self.resolve(self._answers)
         else:
             self.run_worker(self._show_question())
 
@@ -160,4 +148,4 @@ class AskUserModal(ModalScreen[dict | None]):
         self._record(labels)
 
     def action_cancel(self) -> None:
-        self.dismiss(None)
+        self.resolve(None)

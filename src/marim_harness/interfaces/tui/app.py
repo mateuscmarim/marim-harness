@@ -16,8 +16,9 @@ from ...usage import resolve_cost
 from ..history import PromptHistory
 from ..prefs import load_theme, save_theme
 from .approval import ApprovalModal
-from .ask_user import AskUserModal
+from .ask_user import AskUserPanel
 from .commands import dispatch
+from .interaction_panel import InteractionPanel, run_panel
 from .model_picker import ModelPickerModal
 from .notify import FinishedJobNotifier
 from .queue import TurnQueue
@@ -229,12 +230,16 @@ class HarnessApp(App):
         """Keep the prompt focused. When focus lands on a non-input main-screen
         widget — the conversation transcript or a panel header, reachable by a
         click or Tab — snap it straight back to the prompt so a keystroke always
-        lands in the input. Two scopes are deliberately left alone: a pushed
+        lands in the input. Three scopes are deliberately left alone: a pushed
         modal/overlay (it's a separate screen, ``screen_stack > 1``, and owns its
-        own focus) and the ctrl+x sub-agents screen (``subagents.open``, which
-        drives its list/pane focus). Refocusing the prompt re-fires this for the
-        prompt itself, which the identity check below makes a no-op — no loop."""
-        if len(self.screen_stack) > 1 or self.subagents.open:
+        own focus), the ctrl+x sub-agents screen (``subagents.open``, which
+        drives its list/pane focus), and an active InteractionPanel (ask-user/
+        approval) — unlike the ModalScreens it replaces, it's mounted in this
+        same base screen, so its OptionList/SelectionList/buttons need this
+        guard to back off or Enter/Space could never reach them. Refocusing the
+        prompt re-fires this for the prompt itself, which the identity check
+        below makes a no-op — no loop."""
+        if len(self.screen_stack) > 1 or self.subagents.open or self.query(InteractionPanel):
             return
         try:
             prompt = self.query_one(PromptInput)
@@ -803,11 +808,12 @@ class HarnessApp(App):
 
     async def _ask_user(self, questions):
         """Put a structured question to the user and return their {header:
-        answer} mapping, or None if they dismissed it. Runs inside the turn
-        worker, so push_screen_wait is valid (same as _request_approval)."""
+        answer} mapping, or None if they dismissed it. Inline panel, not a
+        modal: the transcript stays scrollable while the agent waits, and a
+        cancelled turn removes the panel via run_panel's finally."""
         prompt = questions[0].question if questions else ""
         self._notify("Question from agent", prompt, "ask_user")
-        return await self.push_screen_wait(AskUserModal(questions))
+        return await run_panel(self, AskUserPanel(questions))
 
     # --- Slash-command autocomplete ---
 

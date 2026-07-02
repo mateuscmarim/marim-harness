@@ -3094,7 +3094,7 @@ async def test_ask_user_callback_is_wired(tmp_path: Path):
 
 
 @pytest.mark.anyio
-async def test_ask_user_callback_shows_modal_and_returns_answer(tmp_path: Path):
+async def test_ask_user_callback_shows_panel_and_returns_answer(tmp_path: Path):
     from marim_harness.ask_user import Choice, Question
 
     app = _app(tmp_path)
