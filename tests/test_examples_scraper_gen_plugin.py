@@ -38,3 +38,17 @@ def test_three_agents_parse_with_expected_tools():
         assert defn is not None, f"{name}.md failed to parse"
         assert defn.qualified_name == f"scraper-gen:{name}"
         assert set(defn.tools) == tools, f"{name} tools drifted"
+
+
+def test_web_scrapers_skill_parses():
+    from marim_harness.workspace.skills import _parse_skill
+
+    # The workflow lives in a lazy-loaded skill; its description must mention
+    # scraping/extraction so the model triggers it on scraper requests.
+    skill = _parse_skill(
+        "plugin:scraper-gen", PLUGIN_ROOT / "skills" / "web-scrapers", plugin="scraper-gen"
+    )
+    assert skill is not None
+    assert skill.qualified_name == "scraper-gen:web-scrapers"
+    desc = skill.description.lower()
+    assert any(kw in desc for kw in ("scrap", "extract", "crawl"))
