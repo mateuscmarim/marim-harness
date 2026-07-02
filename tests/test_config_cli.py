@@ -159,6 +159,49 @@ def test_set_masks_secret_value_in_confirmation(monkeypatch, tmp_path):
     assert "MARIM_API_KEY=sk-supersecret" in env_file.read_text()
 
 
+def test_set_accepts_context_budget_including_zero(monkeypatch, tmp_path):
+    """MARIM_CONTEXT_BUDGET is settable and 0 (= unbudgeted) is a valid value."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    _clear_marim_env(monkeypatch)
+    assert config_cmd.main(["set", "MARIM_CONTEXT_BUDGET", "0"], out=io.StringIO()) == 0
+    assert "MARIM_CONTEXT_BUDGET=0" in (tmp_path / "marim" / ".env").read_text()
+
+
+def test_set_rejects_negative_context_budget(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    err = io.StringIO()
+    assert config_cmd.main(["set", "MARIM_CONTEXT_BUDGET", "-5"], err=err) == 2
+    assert err.getvalue().strip()
+
+
+def test_set_accepts_context_window_and_budgets(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    _clear_marim_env(monkeypatch)
+    assert config_cmd.main(["set", "MARIM_CONTEXT_WINDOW", "131072"], out=io.StringIO()) == 0
+    assert config_cmd.main(
+        ["set", "MARIM_CONTEXT_BUDGETS", "anthropic/claude-opus*=60000"], out=io.StringIO()
+    ) == 0
+    text = (tmp_path / "marim" / ".env").read_text()
+    assert "MARIM_CONTEXT_WINDOW=131072" in text
+    assert "MARIM_CONTEXT_BUDGETS=anthropic/claude-opus*=60000" in text
+
+
+def test_set_rejects_non_positive_context_window(monkeypatch, tmp_path):
+    """0 means unbudgeted for the BUDGET; a window of 0 is meaningless."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    err = io.StringIO()
+    assert config_cmd.main(["set", "MARIM_CONTEXT_WINDOW", "0"], err=err) == 2
+    assert "positive" in err.getvalue().lower()
+
+
+def test_set_still_accepts_deprecated_max_context_tokens(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    _clear_marim_env(monkeypatch)
+    code = config_cmd.main(["set", "MARIM_MAX_CONTEXT_TOKENS", "120000"], out=io.StringIO())
+    assert code == 0
+    assert "MARIM_MAX_CONTEXT_TOKENS=120000" in (tmp_path / "marim" / ".env").read_text()
+
+
 def test_set_rejects_invalid_default_mode(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     err = io.StringIO()

@@ -68,14 +68,25 @@ _ENV_CHECKBOXES: dict[str, str] = {
     "sw-mask-obs": "MARIM_MASK_OBSERVATIONS",
     "sw-notifications": "MARIM_NOTIFICATIONS",
 }
-# widget id -> (env var, human label for the "must be a positive integer" error)
+# widget id -> (env var, human label for the validation error message)
 _ENV_INT_INPUTS: dict[str, tuple[str, str]] = {
-    "ctx-input": ("MARIM_MAX_CONTEXT_TOKENS", "Context budget"),
+    "ctx-input": ("MARIM_CONTEXT_BUDGET", "Context budget"),
     "toolsearch-threshold": ("MARIM_TOOL_SEARCH_THRESHOLD", "Tool-search threshold"),
     "mask-keep-recent": ("MARIM_MASK_KEEP_RECENT", "Mask: keep recent returns"),
     "mask-min-chars": ("MARIM_MASK_MIN_CHARS", "Mask: min chars to elide"),
     "subagent-req-limit": ("MARIM_SUBAGENT_REQUEST_LIMIT", "Sub-agent request limit"),
     "wake-depth-cap": ("MARIM_WAKE_DEPTH_CAP", "Autonomous wake turns"),
+}
+# Integer inputs whose domain includes 0. The context budget's label promises
+# "0 = unbudgeted" (window-only), so its commit must accept it; every other
+# integer field still requires a positive value.
+_ZERO_OK_INPUTS = frozenset({"ctx-input"})
+# env var -> deprecated aliases removed in the same save. Saving the budget
+# must retire MARIM_MAX_CONTEXT_TOKENS: leaving the old line behind would make
+# the deprecation nag fire against a line the app wrote itself, and — worse —
+# would let the stale alias linger where a user might expect it to still win.
+_DROP_ON_SAVE: dict[str, tuple[str, ...]] = {
+    "MARIM_CONTEXT_BUDGET": ("MARIM_MAX_CONTEXT_TOKENS",),
 }
 # radio set id -> (env var, ordered choices)
 _ENV_RADIOS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -522,36 +533,42 @@ class SettingsScreen(Screen[None]):
         state.update(self._mcp_status_word(name))
         self.app.status.refresh_status()  # type: ignore[attr-defined]
 
-    def _positive_int(self, selector: str) -> int | None:
-        """Parse a positive integer from an Input, or None if blank/invalid/≤0.
-        The caller turns None into a field-specific error on the status line."""
+    def _int_at_least(self, selector: str, minimum: int) -> int | None:
+        """Parse an integer ≥ ``minimum`` from an Input, or None if blank/
+        invalid/below the floor. The caller turns None into a field-specific
+        error on the status line."""
         raw = self.query_one(selector, Input).value.strip()
         try:
             value = int(raw)
         except ValueError:
             return None
-        return value if value > 0 else None
+        return value if value >= minimum else None
 
     def _status(self, msg: str) -> None:
         self.query_one("#settings-status", Static).update(msg)
 
     def _commit_env(self, env_key: str, value: str) -> None:
-        """Persist a single env var to the global .env, surfacing the result in the
-        footer status. Used by every auto-saving widget."""
+        """Persist a single env var to the global .env (retiring any deprecated
+        aliases in the same save), surfacing the result in the footer status.
+        Used by every auto-saving widget."""
         try:
-            save_env_settings({env_key: value})
+            save_env_settings({env_key: value}, drop=_DROP_ON_SAVE.get(env_key, ()))
         except Exception as exc:  # surface any write failure on the status line
             self._status(f"Save failed: {exc}")
             return
         self._status(f"✓ saved {env_key} · applies next launch")
 
     def _commit_int(self, widget_id: str) -> None:
-        """Validate and persist one integer Input. A blank/invalid/≤0 value is
-        rejected with a field-specific message and nothing is written."""
+        """Validate and persist one integer Input. A blank/invalid/out-of-range
+        value is rejected with a field-specific message and nothing is written.
+        Fields in ``_ZERO_OK_INPUTS`` accept 0 (a meaningful sentinel there);
+        the rest require a positive integer."""
         env_key, label = _ENV_INT_INPUTS[widget_id]
-        value = self._positive_int(f"#{widget_id}")
+        minimum = 0 if widget_id in _ZERO_OK_INPUTS else 1
+        value = self._int_at_least(f"#{widget_id}", minimum)
         if value is None:
-            self._status(f"{label} must be a positive integer.")
+            kind = "non-negative" if minimum == 0 else "positive"
+            self._status(f"{label} must be a {kind} integer.")
             return
         self._commit_env(env_key, str(value))
 

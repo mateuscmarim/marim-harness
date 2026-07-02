@@ -259,8 +259,10 @@ def build_collaborators(
         concurrency=cfg.subagent_concurrency,
         transcript_cap=cfg.subagent_transcript_cap,
         max_depth=SUBAGENT_MAX_DEPTH,
-        # Sub-agents reuse the session's context budget and masking knobs — one
-        # user-facing setting governs both the main history and spawned runs.
+        # Sub-agents share the session's context-limits RESOLVER and masking
+        # knobs: one discovery cache governs both the main history and spawned
+        # runs, but each spawn resolves its own threshold through it — a
+        # per-spawn model override resolves that model's window/budget.
         limits=limits,
         mask_observations=cfg.mask_observations,
         mask_keep_recent=cfg.mask_keep_recent,
@@ -449,10 +451,13 @@ class Harness:
             return
         model = self.model_source.build(model_id)
         self.current_model = model
-        # A model switch invalidates discovered windows: on the local provider
-        # the new model JIT-loads, possibly at a different context size than
-        # anything probed before. Re-discovery happens lazily at the next
-        # async site (maybe_compact / spawn prep) — set_model stays sync.
+        # A model switch invalidates discovered windows: the switch may land
+        # on ANOTHER provider entirely (qualified `local:...` ids) whose
+        # catalog must be consulted, and on the local provider the new model
+        # JIT-loads, possibly at a different context size than anything probed
+        # before. Re-discovery re-probes every active provider's source lazily
+        # at the next async site (maybe_compact / spawn prep) — set_model
+        # stays sync.
         if self.session.limits is not None:
             self.session.limits.invalidate()
         self.model_id = model_id

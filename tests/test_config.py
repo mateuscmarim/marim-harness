@@ -782,6 +782,19 @@ def test_context_budget_zero_means_unbudgeted(monkeypatch):
     assert cfg.max_context_tokens == 0
 
 
+@pytest.mark.parametrize("var", ["MARIM_CONTEXT_BUDGET", "MARIM_MAX_CONTEXT_TOKENS"])
+def test_context_budget_negative_is_garbage_not_uncapped(monkeypatch, var):
+    """A typo'd negative budget must fail CLOSED (the 100k default), not open:
+    treating it as 0 would mean unbudgeted — the failure direction is MORE
+    spend. Only an explicit 0 uncaps."""
+    for name in ("MARIM_CONTEXT_BUDGET", "MARIM_MAX_CONTEXT_TOKENS"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(var, "-5")
+    assert load_config().max_context_tokens == 100_000
+    monkeypatch.setenv(var, "0")
+    assert load_config().max_context_tokens == 0
+
+
 def test_context_window_and_budgets_env(monkeypatch):
     monkeypatch.setenv("MARIM_CONTEXT_WINDOW", "32768")
     monkeypatch.setenv("MARIM_CONTEXT_BUDGETS", "anthropic/claude-opus*=60000")

@@ -46,6 +46,25 @@ def test_values_unquoted(isolated_env, tmp_path):
     assert '"120000"' not in target.read_text()
 
 
+def test_save_env_settings_drops_retired_keys(isolated_env, tmp_path, monkeypatch):
+    """``drop`` removes a retired key's line and its os.environ mirror in the
+    same atomic save — used to replace MARIM_MAX_CONTEXT_TOKENS with
+    MARIM_CONTEXT_BUDGET without leaving the deprecated line behind."""
+    target = tmp_path / ".env"
+    target.write_text("MARIM_MAX_CONTEXT_TOKENS=120000\nMARIM_MODEL=keep\n")
+    monkeypatch.setenv("MARIM_MAX_CONTEXT_TOKENS", "120000")
+    save_env_settings(
+        {"MARIM_CONTEXT_BUDGET": "90000"},
+        path=target,
+        drop=("MARIM_MAX_CONTEXT_TOKENS",),
+    )
+    text = target.read_text()
+    assert "MARIM_CONTEXT_BUDGET=90000" in text
+    assert "MARIM_MAX_CONTEXT_TOKENS" not in text
+    assert "MARIM_MODEL=keep" in text
+    assert "MARIM_MAX_CONTEXT_TOKENS" not in os.environ
+
+
 def test_mirrors_into_os_environ(isolated_env, tmp_path):
     save_env_settings({"MARIM_LSP": "0"}, path=tmp_path / ".env")
     assert os.environ["MARIM_LSP"] == "0"

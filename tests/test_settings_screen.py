@@ -303,6 +303,70 @@ async def test_invalid_int_rejected_no_write(isolated_env, monkeypatch, tmp_path
 
 
 @pytest.mark.anyio
+async def test_ctx_budget_zero_accepted_and_saved_under_new_key(
+    isolated_env, monkeypatch, tmp_path
+):
+    """The label says "0 = unbudgeted" — 0 must be accepted and persisted as
+    MARIM_CONTEXT_BUDGET (never the deprecated MARIM_MAX_CONTEXT_TOKENS)."""
+    from textual.widgets import Input
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        await _goto_config(pilot)
+        app.screen.query_one("#ctx-input", Input).value = "0"
+        app.screen._commit_input("ctx-input")
+        await pilot.pause()
+    text = (tmp_path / "marim" / ".env").read_text()
+    assert "MARIM_CONTEXT_BUDGET=0" in text
+    assert "MARIM_MAX_CONTEXT_TOKENS" not in text
+    assert os.environ.get("MARIM_CONTEXT_BUDGET") == "0"
+
+
+@pytest.mark.anyio
+async def test_ctx_budget_save_retires_deprecated_key(isolated_env, monkeypatch, tmp_path):
+    """A save must remove any stale MARIM_MAX_CONTEXT_TOKENS line (and its
+    os.environ mirror) so the deprecation nag can't fire against a line the
+    app wrote itself — and so the old var can't shadow the new one."""
+    from textual.widgets import Input
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    env_file = tmp_path / "marim" / ".env"
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text("MARIM_MAX_CONTEXT_TOKENS=120000\nMARIM_MODEL=keep-me\n")
+    monkeypatch.setenv("MARIM_MAX_CONTEXT_TOKENS", "120000")
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        await _goto_config(pilot)
+        app.screen.query_one("#ctx-input", Input).value = "90000"
+        app.screen._commit_input("ctx-input")
+        await pilot.pause()
+    text = env_file.read_text()
+    assert "MARIM_CONTEXT_BUDGET=90000" in text
+    assert "MARIM_MAX_CONTEXT_TOKENS" not in text
+    assert "MARIM_MODEL=keep-me" in text  # unrelated lines survive
+    assert "MARIM_MAX_CONTEXT_TOKENS" not in os.environ
+
+
+@pytest.mark.anyio
+async def test_ctx_budget_negative_rejected_no_write(isolated_env, monkeypatch, tmp_path):
+    """0 is meaningful for the budget but a negative is still garbage."""
+    from textual.widgets import Input
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        await _goto_config(pilot)
+        app.screen.query_one("#ctx-input", Input).value = "-5"
+        app.screen._commit_input("ctx-input")
+        await pilot.pause()
+    assert not (tmp_path / "marim" / ".env").exists()
+
+
+@pytest.mark.anyio
 async def test_radio_autosaves(isolated_env, monkeypatch, tmp_path):
     from textual.widgets import RadioButton
 

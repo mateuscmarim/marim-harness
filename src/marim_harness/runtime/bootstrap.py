@@ -123,8 +123,12 @@ def build_harness(
             store=store,
             manager=manager,
             max_context_tokens=cfg.max_context_tokens,
+            # Window discovery covers EVERY active provider (the same set the
+            # MultiModelSource above routes across): /model can switch to a
+            # qualified `local:...`/`google:...` id, and the new provider's
+            # window must still be discoverable after the invalidate.
             context_limits=build_context_limits(
-                cfg.provider, cfg.base_url, cfg.api_key,
+                configs,
                 window_override=cfg.context_window,
                 budget=cfg.max_context_tokens or None,
                 budget_overrides_raw=cfg.context_budgets,

@@ -24,9 +24,14 @@ never break a turn.
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from fnmatch import fnmatch
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .model import ModelConfig
 
 logger = logging.getLogger(__name__)
 
@@ -39,10 +44,12 @@ WINDOW_SAFETY_RATIO = 0.8
 DEFAULT_THRESHOLD = 100_000
 
 # Injected discovery callables (built by build_context_limits per provider):
-# a catalog fetch yielding ModelEntry-likes with .id/.context_window, and a
-# local probe yielding {model_id: window}.
+# a catalog fetch yielding ModelEntry-likes with .id/.context_window, a local
+# probe yielding {model_id: window}, and the normalized form every source is
+# reduced to — a window fetch yielding {model_id: window}.
 CatalogFetch = Callable[[], Awaitable[list]]
 LocalFetch = Callable[[], Awaitable[dict[str, int]]]
+WindowFetch = Callable[[], Awaitable[dict[str, int]]]
 
 
 def parse_budget_overrides(raw: str) -> list[tuple[str, int | None]]:
@@ -72,12 +79,19 @@ def parse_budget_overrides(raw: str) -> list[tuple[str, int | None]]:
     return overrides
 
 
+# The provider names a colon prefix can qualify. Mirrors _KNOWN_PROVIDERS in
+# config/model.py (not imported: that module pulls in catalog/notification
+# machinery and this one must stay light).
+_PROVIDER_PREFIXES = frozenset({"openrouter", "local", "google", "claude-cli"})
+
+
 def _bare_id(model_id: str) -> str:
     """Strip a ``provider:`` qualifier so overrides and catalog lookups match
-    both ``local:qwen/qwen3.5-9b`` and ``qwen/qwen3.5-9b``. Only the FIRST
-    colon-segment is a qualifier; model ids themselves don't contain colons."""
+    both ``local:qwen/qwen3.5-9b`` and ``qwen/qwen3.5-9b``. Model ids CAN
+    contain colons (Ollama tags like ``qwen2.5-coder:7b``), so only a known
+    provider name before the first colon is treated as a qualifier."""
     head, sep, rest = model_id.partition(":")
-    return rest if sep and "/" not in head else model_id
+    return rest if sep and head in _PROVIDER_PREFIXES else model_id
 
 
 class ContextLimits:
@@ -92,18 +106,34 @@ class ContextLimits:
         window_override: int | None = None,
         fetch_catalog: CatalogFetch | None = None,
         fetch_local: LocalFetch | None = None,
+        fetchers: list[WindowFetch] | None = None,
     ) -> None:
         self._budget = budget
         self._overrides = parse_budget_overrides(budget_overrides_raw)
         self._window_override = window_override
-        self._fetch_catalog = fetch_catalog
-        self._fetch_local = fetch_local
+        # Every discovery source is normalized to a WindowFetch and merged at
+        # resolve time. The legacy single-source kwargs are folded in so older
+        # call sites and tests keep working unchanged.
+        self._fetchers: list[WindowFetch] = list(fetchers or [])
+        if fetch_local is not None:
+            self._fetchers.append(fetch_local)
+        if fetch_catalog is not None:
+            self._fetchers.append(_catalog_windows(fetch_catalog))
         self._windows: dict[str, int] = {}
-        # Discovery runs once per instance lifetime (catalog contents are
-        # static enough for a session); invalidate() re-arms it — used on
-        # /model switch because LM Studio JIT-loads models at possibly
-        # different context sizes.
-        self._discovered = False
+        # Single-flight discovery: the first resolve() creates this task and
+        # concurrent callers await the SAME task. That guarantee is what lets
+        # a parallel spawn fan-out's spawns all see the discovered window —
+        # each spawn freezes the returned threshold into its masker, so a
+        # racing caller must never observe a budget-only threshold computed
+        # from still-empty windows. A COMPLETED task also serves as the
+        # "discovered" latch: a failed fetch still counts (discovery is
+        # best-effort — stale/absent windows fall back to the budget), and
+        # only invalidate() (a model switch) re-arms it. The generation
+        # counter is what makes invalidate() safe mid-turn: a fetch started
+        # before the invalidate discards its results instead of resurrecting
+        # the windows invalidate() just cleared.
+        self._discovery: asyncio.Task[None] | None = None
+        self._generation = 0
 
     # -- budget ----------------------------------------------------------
 
@@ -142,66 +172,121 @@ class ContextLimits:
 
     async def resolve(self, model_id: str | None) -> int:
         """Warm window discovery (once per instance, re-armed by
-        :meth:`invalidate`) and return the threshold. Never raises."""
-        if not self._discovered:
-            self._discovered = True
-            try:
-                if self._fetch_local is not None:
-                    self._windows.update(await self._fetch_local())
-                elif self._fetch_catalog is not None:
-                    for entry in await self._fetch_catalog():
-                        window = getattr(entry, "context_window", None)
-                        if isinstance(window, int) and window > 0:
-                            self._windows[entry.id] = window
-            except Exception as exc:  # noqa: BLE001 — discovery is best-effort
-                logger.warning("context-window discovery failed: %s", exc)
+        :meth:`invalidate`; concurrent callers share one in-flight fetch)
+        and return the threshold. Never raises."""
+        if self._discovery is None:
+            self._discovery = asyncio.create_task(self._discover(self._generation))
+        # Hold a local reference: invalidate() may null self._discovery while
+        # we are parked here, and we still want to await THIS fetch (its
+        # results get discarded by the generation guard, not by us).
+        discovery = self._discovery
+        try:
+            await discovery
+        except Exception as exc:  # noqa: BLE001 — discovery is best-effort
+            logger.warning("context-window discovery failed: %s", exc)
         return self.threshold(model_id)
 
+    async def _discover(self, generation: int) -> None:
+        """Fetch windows from ALL sources and merge them. One source failing
+        (a provider catalog down, a non-LM-Studio local server 404ing the
+        probe) must never poison the others — or break a turn."""
+        results = await asyncio.gather(
+            *(fetch() for fetch in self._fetchers), return_exceptions=True
+        )
+        merged: dict[str, int] = {}
+        for result in results:
+            if isinstance(result, BaseException):
+                logger.warning("context-window discovery source failed: %s", result)
+                continue
+            merged.update(result)
+        if generation != self._generation:
+            # invalidate() ran while this fetch was in flight: these windows
+            # describe the world before the model switch, and committing them
+            # would resurrect exactly what invalidate() cleared. Discard; the
+            # next resolve() re-fetches under the new generation.
+            return
+        self._windows.update(merged)
+
     def invalidate(self) -> None:
-        """Drop discovered windows so the next resolve() re-probes. Called on
-        /model switch: LM Studio JIT-loads the new model, possibly at a
-        different context size than anything probed before."""
+        """Drop discovered windows so the next resolve() re-probes every
+        source. Called on /model switch: the switch may land on another
+        provider entirely (qualified ``local:...`` ids), and LM Studio
+        JIT-loads the new model, possibly at a different context size than
+        anything probed before. Bumping the generation makes an in-flight
+        fetch stale, so its late results are discarded, not committed."""
         self._windows.clear()
-        self._discovered = False
+        self._discovery = None
+        self._generation += 1
+
+
+def _catalog_windows(fetch_catalog: CatalogFetch) -> WindowFetch:
+    """Normalize a catalog fetch (ModelEntry-likes) into a window fetch."""
+    async def _windows() -> dict[str, int]:
+        windows: dict[str, int] = {}
+        for entry in await fetch_catalog():
+            window = getattr(entry, "context_window", None)
+            if isinstance(window, int) and window > 0:
+                windows[entry.id] = window
+        return windows
+    return _windows
+
+
+def _qualified(provider: str, windows: dict[str, int]) -> dict[str, int]:
+    """Key each window under both the bare id and ``provider:id``: /model
+    accepts qualified ids, and the qualified key keeps two providers serving
+    the same bare id from clobbering each other on qualified lookups."""
+    out = dict(windows)
+    out.update({f"{provider}:{mid}": window for mid, window in windows.items()})
+    return out
 
 
 def build_context_limits(
-    provider: str,
-    base_url: str | None,
-    api_key: str | None,
+    configs: Mapping[str, ModelConfig],
     *,
     window_override: int | None,
     budget: int | None,
     budget_overrides_raw: str = "",
 ) -> ContextLimits:
-    """Wire a ContextLimits to the right discovery source for ``provider``.
-    Catalog imports are deferred to call time — this module is imported by
-    config plumbing and must stay light."""
+    """Wire a ContextLimits with a discovery source for every ACTIVE provider
+    in ``configs`` (provider name -> its ModelConfig). /model accepts
+    qualified ids like ``local:qwen/...``, so a runtime switch can land on
+    any active provider — discovery must cover them all, not just the
+    default, or a cross-provider switch would silently fall back to the
+    budget. Catalog imports are deferred to call time — this module is
+    imported by config plumbing and must stay light."""
     from ..workspace.catalog import (
         fetch_google_models,
         fetch_lmstudio_windows,
         fetch_openrouter_models,
     )
 
-    fetch_catalog: CatalogFetch | None = None
-    fetch_local: LocalFetch | None = None
-    if provider == "openrouter":
-        async def _fetch_catalog():
-            return await fetch_openrouter_models(api_key)
-        fetch_catalog = _fetch_catalog
-    elif provider == "google":
-        async def _fetch_catalog():
-            return await fetch_google_models(api_key)
-        fetch_catalog = _fetch_catalog
-    elif provider == "local":
-        async def _fetch_local():
-            return await fetch_lmstudio_windows(base_url, api_key)
-        fetch_local = _fetch_local
-    # claude-cli / unknown: no discovery — threshold rides on budget/override.
+    def _catalog_fetcher(provider: str, fetch, api_key: str | None) -> WindowFetch:
+        async def _windows() -> dict[str, int]:
+            windows: dict[str, int] = {}
+            for entry in await fetch(api_key):
+                window = getattr(entry, "context_window", None)
+                if isinstance(window, int) and window > 0:
+                    windows[entry.id] = window
+            return _qualified(provider, windows)
+        return _windows
+
+    def _local_fetcher(provider: str, base_url: str | None, api_key: str | None) -> WindowFetch:
+        async def _windows() -> dict[str, int]:
+            return _qualified(provider, await fetch_lmstudio_windows(base_url, api_key))
+        return _windows
+
+    fetchers: list[WindowFetch] = []
+    for provider, cfg in configs.items():
+        if provider == "openrouter":
+            fetchers.append(_catalog_fetcher(provider, fetch_openrouter_models, cfg.api_key))
+        elif provider == "google":
+            fetchers.append(_catalog_fetcher(provider, fetch_google_models, cfg.api_key))
+        elif provider == "local":
+            fetchers.append(_local_fetcher(provider, cfg.base_url, cfg.api_key))
+        # claude-cli / unknown: no discovery — threshold rides on budget/override.
     return ContextLimits(
         budget=budget,
         budget_overrides_raw=budget_overrides_raw,
         window_override=window_override,
-        fetch_catalog=fetch_catalog,
-        fetch_local=fetch_local,
+        fetchers=fetchers,
     )

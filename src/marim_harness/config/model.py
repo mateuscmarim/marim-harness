@@ -139,9 +139,12 @@ def _context_budget_env() -> int:
 
     def _parse(raw: str) -> int | None:
         try:
-            return max(0, int(raw))
+            value = int(raw)
         except ValueError:
             return None
+        # A negative budget is garbage and must fail CLOSED (the default cap),
+        # not open (0 = unbudgeted ⇒ MORE spend): only an explicit 0 uncaps.
+        return value if value >= 0 else None
 
     raw = os.getenv("MARIM_CONTEXT_BUDGET")
     if raw is not None:

@@ -15,6 +15,11 @@ _ALLOWED_KEYS = (
     "MARIM_BASE_URL",
     "MARIM_API_KEY",
     "OPENROUTER_API_KEY",
+    "MARIM_CONTEXT_BUDGET",
+    "MARIM_CONTEXT_WINDOW",
+    "MARIM_CONTEXT_BUDGETS",
+    # Deprecated alias for MARIM_CONTEXT_BUDGET; still accepted so existing
+    # scripts keep working (the loader warns once at startup).
     "MARIM_MAX_CONTEXT_TOKENS",
     "MARIM_PROACTIVE_MEMORY",
     "MARIM_DEFAULT_MODE",
@@ -30,7 +35,11 @@ _ENUM_KEYS = {
 }
 
 # Keys whose value must be a positive integer (> 0).
-_POSITIVE_INT_KEYS_CLI = {"MARIM_TOOL_SEARCH_THRESHOLD"}
+_POSITIVE_INT_KEYS_CLI = {"MARIM_TOOL_SEARCH_THRESHOLD", "MARIM_CONTEXT_WINDOW"}
+
+# Keys whose value must be an integer ≥ 0: for the budget, 0 is a meaningful
+# sentinel (unbudgeted, window-only), but a negative is still garbage.
+_NON_NEGATIVE_INT_KEYS_CLI = {"MARIM_CONTEXT_BUDGET"}
 
 
 def _is_secret(key: str) -> bool:
@@ -115,14 +124,16 @@ def _cmd_set(args, *, out, err) -> int:
                 file=err,
             )
             return 2
-    if key in _POSITIVE_INT_KEYS_CLI:
+    if key in _POSITIVE_INT_KEYS_CLI or key in _NON_NEGATIVE_INT_KEYS_CLI:
+        floor = 0 if key in _NON_NEGATIVE_INT_KEYS_CLI else 1
+        kind = "non-negative" if floor == 0 else "positive"
         try:
             n = int(value)
         except ValueError:
-            print(f"error: {key} must be a positive integer", file=err)
+            print(f"error: {key} must be a {kind} integer", file=err)
             return 2
-        if n <= 0:
-            print(f"error: {key} must be a positive integer", file=err)
+        if n < floor:
+            print(f"error: {key} must be a {kind} integer", file=err)
             return 2
         value = str(n)
     _persist(key, value)
