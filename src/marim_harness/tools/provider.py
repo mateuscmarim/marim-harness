@@ -572,9 +572,11 @@ async def spawn_agent(
 ) -> str:
     """Delegate a sub-task to an isolated sub-agent that runs on the same model
     and reports back. `type` is a built-in — `explore` (read-only investigation;
-    reports findings, changes nothing) or `general` (full toolset; carries out a
-    focused sub-task autonomously) — or a custom agent by name, as listed in the
-    sub-agents index. The sub-agent starts with a clean context, does `task`, and
+    reports findings, changes nothing — use it to investigate before acting,
+    especially over large files/logs/output you don't want cluttering your own
+    context) or `general` (full toolset; carries out a focused sub-task
+    autonomously) — or a custom agent by name, as listed in the sub-agents index.
+    The sub-agent starts with a clean context, does `task`, and
     its final message becomes this tool's result. Spawn several in one turn to
     fan out independent work. Sub-agents can spawn deeper sub-agents, but are
     limited by a maximum nesting depth — attempts to spawn beyond that limit are

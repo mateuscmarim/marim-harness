@@ -77,7 +77,9 @@ def _builtins() -> dict[str, AgentDef]:
     return {
         "explore": AgentDef(
             "explore",
-            "Read-only investigation; reports findings, changes nothing.",
+            "Read-only investigation; reports findings, changes nothing. Use when "
+            "investigating something before acting, especially over large files, "
+            "logs, or output you don't want cluttering your own context.",
             _EXPLORE_PROMPT, _EXPLORE_TOOLS, "built-in",
         ),
         "general": AgentDef(
