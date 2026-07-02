@@ -41,10 +41,6 @@ class AskUserPanel(InteractionPanel):
         height: auto;
         max-height: 18;
     }
-    #ask-other-label {
-        color: $text-muted;
-        margin-top: 1;
-    }
     #ask-confirm {
         margin-top: 1;
     }
@@ -62,8 +58,7 @@ class AskUserPanel(InteractionPanel):
         yield Static("", id="ask-progress")
         yield Static("", id="ask-question")
         yield Vertical(id="ask-body")
-        yield Static("Or type your own answer:", id="ask-other-label")
-        yield Input(placeholder="type a custom answer…", id="ask-other")
+        yield Input(placeholder="or type your own answer…", id="ask-other")
         yield Button("Confirm selection", id="ask-confirm", variant="primary")
 
     def on_mount(self) -> None:
@@ -76,7 +71,11 @@ class AskUserPanel(InteractionPanel):
         q = self._questions[self._index]
         total = len(self._questions)
         progress = f"Question {self._index + 1}/{total}" if total > 1 else ""
-        self.query_one("#ask-progress", Static).update(progress)
+        progress_line = self.query_one("#ask-progress", Static)
+        progress_line.update(progress)
+        # An empty Static still occupies a row; hide the line entirely on
+        # single-question prompts so the panel stays as short as possible.
+        progress_line.display = bool(progress)
         self.query_one("#ask-question", Static).update(q.question)
 
         body = self.query_one("#ask-body", Vertical)

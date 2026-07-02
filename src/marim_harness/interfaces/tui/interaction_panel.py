@@ -41,7 +41,9 @@ class InteractionPanel(Vertical):
     InteractionPanel {
         height: auto;
         max-height: 50%;
-        padding: 1 2;
+        /* horizontal-only padding: the round border already separates the
+           panel vertically, and rows are scarce while a panel is up */
+        padding: 0 2;
         background: $surface;
         border: round $accent;
         /* content taller than the clamp scrolls instead of clipping */
