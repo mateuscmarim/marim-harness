@@ -1,9 +1,13 @@
 """Per-sub-agent transcript sidecars.
 
-A sub-agent's full step-by-step transcript is immutable once it finishes, but the
-session JSON is re-serialized every turn — so transcripts live in write-once
-sidecar files next to the session, loaded lazily only when a resumed pane is
-opened. One file per spawn, keyed by the spawn's tool_call_id."""
+A sub-agent's step-by-step transcript would otherwise live only in the session
+JSON, which is re-serialized every turn — so it instead lives in its own sidecar
+file next to the session, loaded lazily only when a resumed pane is opened. A
+sidecar is no longer write-once: a running spawn checkpoints it (v2 envelope,
+``status="running"``) before every model request, so a process death mid-run
+still leaves a resumable trail, and the spawn's completion (or failure) stamps a
+terminal status on the final write. One file per spawn, keyed by the spawn's
+tool_call_id."""
 
 from __future__ import annotations
 

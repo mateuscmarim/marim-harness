@@ -141,6 +141,7 @@ class _SpawnPrep:
     t_built: float
     first_event_at: list[float]  # mutable; ``on_first_event`` probe appends during run
     depth: int  # depth of the spawned sub-agent
+    meta: dict | None = None  # sidecar meta template (Task: subagent resume)
 
 
 class SubagentRunner:
@@ -330,6 +331,7 @@ class SubagentRunner:
         self, type: str, max_output_chars: int | None = None,
         model: str | None = None, workspace_root=None, *, defn=None,
         depth: int = 0, mask_trigger: int | None = None,
+        checkpoint: Callable[[list], None] | None = None,
     ) -> tuple[SubAgent | None, str | None]:
         """Build an isolated sub-agent of ``type``, with its reach decided up
         front: gated tools only in auto mode, so a run never needs an approval
@@ -370,6 +372,17 @@ class SubagentRunner:
         # imports this module, so a top-level import of the harness would cycle.
         from ..runtime.harness import _drop_nameless_tool_calls
 
+        capabilities: list[ProcessHistory[Deps]] = []
+        if checkpoint is not None:
+            # Sidecar checkpoint: ProcessHistory runs before EVERY model request,
+            # which is exactly the per-model-response boundary the resume design
+            # wants — each checkpoint ends at a message boundary. The processor
+            # must return the history unchanged; the write is a side effect.
+            def _checkpoint_history(messages: list) -> list:
+                checkpoint(messages)
+                return messages
+
+            capabilities.append(ProcessHistory(_checkpoint_history))
         # Same scrub the main agent runs (harness.py): a flaky sub-agent model
         # can emit a structurally-broken tool call live mid-run (nameless, or
         # args that aren't valid JSON). Without this, the broken part rides in
@@ -377,9 +390,7 @@ class SubagentRunner:
         # name" / "function.arguments must be valid JSON"), crashing the spawn.
         # It runs before EVERY request, so it catches a call buried mid-history
         # that the transient-retry repair (only on the resume path) never sees.
-        capabilities: list[ProcessHistory[Deps]] = [
-            ProcessHistory(_drop_nameless_tool_calls)
-        ]
+        capabilities.append(ProcessHistory(_drop_nameless_tool_calls))
         if self._mask_observations:
             # One masker PER SPAWN: it holds the run's committed mask set, and
             # sharing an instance across spawns would leak one run's masked
@@ -470,13 +481,26 @@ class SubagentRunner:
         from ..session import TranscriptStore
         return TranscriptStore(store.path, store.session_id)
 
-    def _save_transcript(self, stream_id: str, messages: list) -> None:
+    def _save_transcript(self, stream_id: str, messages: list,
+                         meta: dict | None = None) -> None:
         try:
             store = self._transcript_store()
             if stream_id and messages and store is not None:
-                store.write(stream_id, messages, self._transcript_cap)
+                store.write(stream_id, messages, self._transcript_cap, meta=meta)
         except Exception as exc:  # noqa: BLE001 - persistence is best-effort
             logger.warning("Failed to save transcript %s: %s", stream_id, exc)
+
+    def _final_meta(self, prep: _SpawnPrep, status: str, usage) -> dict | None:
+        """The terminal sidecar meta for a finished spawn: the prep's template
+        stamped with its terminal status and total spend. None when the spawn had
+        no stream id (headless) — the sidecar then stays v1."""
+        if prep.meta is None:
+            return None
+        meta = dict(prep.meta)
+        meta["status"] = status
+        if usage is not None:
+            meta["usage"] = {"input": usage.input_tokens, "output": usage.output_tokens}
+        return meta
 
     async def _run_to_completion(self, sub: SubAgent, task: str, run_deps: Deps,
                                  granted: list[Any], handler: EventStreamHandler[Deps] | None,
@@ -685,8 +709,31 @@ class SubagentRunner:
         ``defn`` is the definition the caller already resolved, threaded into ``build``
         so discovery isn't walked twice per spawn."""
         mask_trigger = await self._mask_trigger_for(model)
+        meta: dict | None = None
+        checkpoint = None
+        if stream_id:
+            # The sidecar meta template: everything a resumed session needs to
+            # rebuild the card (type/task/model) and re-run the spawn
+            # (mcp/depth/isolation/max_output_chars). Status stays "running"
+            # for every mid-run checkpoint; the final save stamps the terminal
+            # status. parent_id is deliberately absent — the runner doesn't know
+            # its caller's stream, so a synthesized interrupted card renders
+            # top-level.
+            meta = {
+                "stream_id": stream_id, "type": type, "task": task,
+                "model": model, "mcp": mcp_names, "depth": depth,
+                "max_output_chars": max_output_chars,
+                "isolation": iso["branch"] if iso else None,
+                "status": "running",
+            }
+
+            def _checkpoint(messages: list, _meta=meta) -> None:
+                self._save_transcript(stream_id, messages, meta=_meta)
+
+            checkpoint = _checkpoint
         sub, err = self.build(type, max_output_chars, model, work_root, defn=defn,
-                              depth=depth, mask_trigger=mask_trigger)
+                              depth=depth, mask_trigger=mask_trigger,
+                              checkpoint=checkpoint)
         if sub is None:
             if iso:
                 self._discard_worktree(iso)
@@ -713,7 +760,7 @@ class SubagentRunner:
         return _SpawnPrep(
             sub=sub, granted=granted, unknown=unknown, handler=handler,
             iso=iso, t0=t0, t_built=t_built, first_event_at=first_event_at,
-            depth=depth,
+            depth=depth, meta=meta,
         )
 
     async def _execute_foreground_spawn(
@@ -767,7 +814,10 @@ class SubagentRunner:
             raise
         self._log_spawn_timing(type, prep.t0, prep.t_built, prep.first_event_at, failed=False)
         await self.hooks.subagent_stop(type, task, result.output)
-        self._save_transcript(stream_id, result.all_messages())
+        self._save_transcript(
+            stream_id, result.all_messages(),
+            meta=self._final_meta(prep, "finished", result.usage),
+        )
         self.session.usage += result.usage
         # A foreground spawn's spend is persisted by run_turn's _persist.
         capped = self._cap_output(result.output, max_output_chars, stream_id)
@@ -814,12 +864,18 @@ class SubagentRunner:
             raise
         self._log_spawn_timing(type, prep.t0, prep.t_built, prep.first_event_at, failed=False)
         await self.hooks.subagent_stop(type, task, result.output)
-        self._save_transcript(stream_id, result.all_messages())
+        self._save_transcript(
+            stream_id, result.all_messages(),
+            meta=self._final_meta(prep, "finished", result.usage),
+        )
         self.session.usage += result.usage
         # A background spawn finishes off-turn, so no run_turn will fold in its
         # spend — persist right away so the saved session reflects it even if the
-        # process exits before the next turn.
-        self.session.persist()
+        # process exits before the next turn. force=True: the persist cache keys
+        # off history_version, which a background completion never bumps, so an
+        # unforced persist here would be silently skipped (losing the spend and,
+        # since Task 3, the settled-jobs history entry).
+        self.session.persist(force=True)
         self._bg_seq += 1
         spill_ref = f"bg-{self._bg_seq}"
         capped = self._cap_output(result.output, max_output_chars, spill_ref)
@@ -860,7 +916,18 @@ class SubagentRunner:
                 self._discard_worktree(iso)
             raise
         await self.hooks.subagent_stop(defn.name, task, result.output)
-        self._save_transcript(stream_id, result.transcript)
+        self._save_transcript(
+            stream_id, result.transcript,
+            meta={
+                "stream_id": stream_id, "type": defn.name, "task": task,
+                "model": model, "mcp": None, "depth": 1,
+                "max_output_chars": max_output_chars,
+                "isolation": iso["branch"] if iso else None,
+                "status": "finished",
+                "usage": {"input": result.usage.input_tokens,
+                          "output": result.usage.output_tokens},
+            },
+        )
         # Claude-side sub-agents (the CLI's own Agent/Task spawns) each get a
         # sidecar under their stream id — the same id their live card streamed
         # under — so the sub-agents screen can replay them after a resume.
@@ -868,7 +935,7 @@ class SubagentRunner:
             self._save_transcript(child_id, msgs)
         self.session.usage += result.usage
         if background:
-            self.session.persist()
+            self.session.persist(force=True)
             self._bg_seq += 1
             spill_ref = f"bg-{self._bg_seq}"
         else:

@@ -96,9 +96,10 @@ values (`name`, `task`, `parent_id`, `depth`, `granted`, `isolation`) are all kn
 - `cap_transcript` applies to every checkpoint, same cap as today, so a long-running
   spawn's sidecar stays bounded.
 - CLI-demuxed children keep their completion-time write (the CLI backend does not stream
-  per-response boundaries we control); they gain meta on that final write so they replay
-  with full card state. A CLI child interrupted mid-run stays lost — acceptable: the CLI
-  owns its own resume story.
+  per-response boundaries we control); the parent CLI spawn gains meta on that final write;
+  children stay v1 (their card state replays from the parent transcript, and
+  `child_transcripts()` carries no type/task to build meta from). A CLI child interrupted
+  mid-run stays lost — acceptable: the CLI owns its own resume story.
 
 **Interrupted detection is passive:** nothing marks a sidecar `interrupted` at crash
 time (there's no one alive to do it). A sidecar whose meta says `running` while no live
