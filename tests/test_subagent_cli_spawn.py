@@ -161,7 +161,10 @@ async def test_cli_backend_persists_child_transcripts(tmp_path: Path, monkeypatc
     real_save = runner._save_transcript
     monkeypatch.setattr(
         runner, "_save_transcript",
-        lambda sid, msgs, meta=None: (saved.append(sid), real_save(sid, msgs, meta=meta)),
+        lambda sid, msgs, meta=None, cap_reasoning=False: (
+            saved.append(sid),
+            real_save(sid, msgs, meta=meta, cap_reasoning=cap_reasoning),
+        ),
     )
     out = await runner.run("cli-worker", "do the thing", stream_id="s1")
     assert "Done" in out

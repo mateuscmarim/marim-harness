@@ -940,6 +940,7 @@ class SubagentRunner:
         self, defn, task: str, work_root, iso,
         mcp_names: list[str] | None, max_output_chars: int | None,
         model: str | None, stream_id: str, *, background: bool,
+        resume_session_id: str | None = None, original_task: str | None = None,
     ) -> str:
         """Run a ``backend: claude-cli`` agent inside the same lifecycle the native
         path uses: hooks bracketing, output cap/spill, worktree close, background
@@ -951,37 +952,78 @@ class SubagentRunner:
         taken down); background re-raises to the job registry. Usage is folded into
         the session, and a background spawn persists immediately since no run_turn
         will fold its spend."""
-        await self.hooks.subagent_start(defn.name, task)
+        hook_task = original_task or task
+        meta: dict | None = None
+        checkpoint: Callable[[list, str | None], None] | None = None
+        if stream_id:
+            # Same template the native path builds in _prepare_spawn, plus the two
+            # CLI-only keys: `backend` routes resume_spawn to the CLI branch, and
+            # `cli_session_id` (filled by the first checkpoint once the init event
+            # arrives) is the `claude -p --resume` key. Mutating the shared
+            # template between checkpoints is safe — TranscriptStore.write
+            # snapshots the dict before stamping.
+            meta = {
+                "stream_id": stream_id, "type": defn.name, "task": hook_task,
+                "model": model, "mcp": None, "depth": 1,
+                "max_output_chars": max_output_chars,
+                "isolation": iso["branch"] if iso else None,
+                "status": "running",
+                "backend": "claude-cli",
+                "cli_session_id": resume_session_id,
+            }
+
+            def _checkpoint(messages: list, session_id: str | None,
+                           _meta=meta) -> None:
+                if session_id:
+                    _meta["cli_session_id"] = session_id
+                self._save_transcript(stream_id, messages, meta=_meta,
+                                      cap_reasoning=True)
+
+            checkpoint = _checkpoint
+
+        await self.hooks.subagent_start(defn.name, hook_task)
         try:
             async with self._slot():
-                result = await self._run_cli(defn, task, work_root, model, stream_id)
+                result = await self._run_cli(
+                    defn, task, work_root, model, stream_id,
+                    checkpoint=checkpoint, resume_session_id=resume_session_id,
+                )
         except Exception as exc:  # noqa: BLE001
             if iso:
-                self._discard_worktree(iso)
+                if resume_session_id is None:
+                    self._discard_worktree(iso)
+                else:
+                    # A resumed spawn's branch holds prior committed work; a failed
+                    # resume must not destroy it. Tear down only the worktree
+                    # checkout and keep the branch (native-resume parity).
+                    self._teardown_worktree(iso, force=True)
             if background:
                 raise
-            await self.hooks.subagent_stop(defn.name, task, f"error: {exc}")
+            await self.hooks.subagent_stop(defn.name, hook_task, f"error: {exc}")
             return f"Sub-agent {defn.name!r} failed: {exc.__class__.__name__}: {exc}"
         except BaseException:
             # Cancellation/interrupt slips past the contain-as-error handler above
             # (it's a BaseException). Discard the worktree before it propagates so
             # a cancelled isolated CLI spawn doesn't leak its worktree + branch.
             if iso:
-                self._discard_worktree(iso)
+                if resume_session_id is None:
+                    self._discard_worktree(iso)
+                else:
+                    # See the except Exception arm above: a resumed spawn's branch
+                    # must survive a cancelled resume too.
+                    self._teardown_worktree(iso, force=True)
             raise
-        await self.hooks.subagent_stop(defn.name, task, result.output)
-        self._save_transcript(
-            stream_id, result.transcript,
-            meta={
-                "stream_id": stream_id, "type": defn.name, "task": task,
-                "model": model, "mcp": None, "depth": 1,
-                "max_output_chars": max_output_chars,
-                "isolation": iso["branch"] if iso else None,
+        await self.hooks.subagent_stop(defn.name, hook_task, result.output)
+        final_meta = None
+        if meta is not None:
+            final_meta = {
+                **meta,
                 "status": "finished",
+                "cli_session_id": result.session_id or meta["cli_session_id"],
                 "usage": {"input": result.usage.input_tokens,
                           "output": result.usage.output_tokens},
-            },
-        )
+            }
+        self._save_transcript(stream_id, result.transcript, meta=final_meta)
         # Claude-side sub-agents (the CLI's own Agent/Task spawns) each get a
         # sidecar under their stream id — the same id their live card streamed
         # under — so the sub-agents screen can replay them after a resume.
@@ -1012,7 +1054,8 @@ class SubagentRunner:
         )
 
     async def _run_cli(self, defn, task: str, work_root, model: str | None,
-                       stream_id: str) -> CliResult:
+                       stream_id: str, checkpoint=None,
+                       resume_session_id: str | None = None) -> CliResult:
         """Resolve binary, tool reach, model, and cwd for a CLI spawn, then run it.
         Raises CliUnavailable when no `claude` binary is found so the caller's
         contained-error path reports it. Reach mirrors the native gate — gated
@@ -1043,7 +1086,8 @@ class SubagentRunner:
         result = await runner.run(
             binary=binary, prompt=task, system_prompt=defn.prompt, cwd=cwd,
             allow_gated=allow_gated, allowed_tools=tools, model=model_name,
-            stream_id=stream_id,
+            stream_id=stream_id, checkpoint=checkpoint,
+            resume_session_id=resume_session_id,
         )
         if stream_id and cbs.on_subagent_usage is not None:
             await cbs.on_subagent_usage(stream_id, result.usage)
