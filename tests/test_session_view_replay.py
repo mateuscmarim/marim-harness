@@ -26,6 +26,39 @@ def _app(tmp_path: Path):
     return HarnessApp(harness)
 
 
+def _app_with_store(tmp_path: Path):
+    """Like ``_app`` but wired to a real ``SessionStore``: ``finish_replayed_cards``
+    early-returns without one (it needs ``store.path``/``store.session_id`` to open
+    the sidecar's ``TranscriptStore``), so any test exercising the jobs-history /
+    sidecar join needs this fixture instead of the store-less ``_app``."""
+    from pydantic_ai.models.test import TestModel
+
+    from marim_harness.interfaces.tui.app import HarnessApp
+    from marim_harness.runtime.harness import Harness
+    from marim_harness.session import SessionManager
+    from marim_harness.tools.provider import BuiltinToolProvider
+
+    deps = _make_deps(tmp_path)
+    manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
+    store = manager.create("main")
+    harness = Harness(
+        TestModel(call_tools=[]), BuiltinToolProvider(), deps,
+        instructions="test", store=store, manager=manager,
+    )
+    return HarnessApp(harness)
+
+
+def _spawn_meta(stream_id: str, task: str, status: str = "running") -> dict:
+    """A v2 sidecar meta dict carrying the keys the runner's checkpoint write
+    produces (spec 2026-07-03-subagent-resume, Task 2) — the minimum shape
+    ``scan_meta``/``finish_replayed_cards`` read."""
+    return {
+        "stream_id": stream_id, "type": "general", "task": task, "model": None,
+        "mcp": None, "depth": 1, "max_output_chars": None, "isolation": None,
+        "status": status,
+    }
+
+
 @pytest.mark.anyio
 async def test_replay_parts_text_mounts_assistant_message(tmp_path: Path):
     """TextPart → AssistantMessage mounted; group/solo reset to None."""
@@ -237,3 +270,176 @@ async def test_replay_parts_text_resets_group_solo_with_prior_state(tmp_path: Pa
         )
         assert group is None
         assert solo is None
+
+
+@pytest.mark.anyio
+async def test_background_spawn_replays_as_card_and_joins_subagents(tmp_path: Path):
+    """A background spawn_agent call must replay as a SubAgentWidget card (not a
+    plain tool row) and land in app.stream.subagents — the backing list the ctrl+x
+    screen navigates. Regression: background spawns used to fall through to the
+    generic ToolCallWidget arm on replay."""
+    from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.harness.session.history = [
+            ModelResponse(parts=[ToolCallPart(
+                tool_name="spawn_agent",
+                args={"type": "general", "task": "t", "background": True},
+                tool_call_id="sg-bg",
+            )]),
+            ModelRequest(parts=[ToolReturnPart(
+                tool_name="spawn_agent",
+                content="Started job-3 (agent) — general: t",
+                tool_call_id="sg-bg",
+            )]),
+        ]
+        await app.session.render_session("note")
+        await pilot.pause()
+
+        assert any(w.stream_id == "sg-bg" for w in app.stream.subagents)
+        card = next(w for w in app.stream.subagents if w.stream_id == "sg-bg")
+        assert card.detached and card.job_id == "job-3"
+
+
+@pytest.mark.anyio
+async def test_background_spawn_settles_from_jobs_history(tmp_path: Path):
+    """A background spawn's ToolReturnPart is only a job-id handoff, not the
+    report — the settled status/report must come from the imported jobs history
+    (JobRegistry.import_history), joined by stream_id in finish_replayed_cards."""
+    from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
+
+    app = _app_with_store(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.harness.session.history = [
+            ModelResponse(parts=[ToolCallPart(
+                tool_name="spawn_agent",
+                args={"type": "general", "task": "t", "background": True},
+                tool_call_id="sg-bg",
+            )]),
+            ModelRequest(parts=[ToolReturnPart(
+                tool_name="spawn_agent",
+                content="Started job-3 (agent) — general: t",
+                tool_call_id="sg-bg",
+            )]),
+        ]
+        app.harness.deps.jobs.import_history([{
+            "id": "job-3", "kind": "agent", "label": "general: t",
+            "status": "done", "result_tail": "all good",
+            "stream_id": "sg-bg", "finished_at": "t",
+        }])
+        await app.session.render_session("note")
+        await pilot.pause()
+
+        card = next(w for w in app.stream.subagents if w.stream_id == "sg-bg")
+        assert card.status == "done" and card.report == "all good"
+
+
+@pytest.mark.anyio
+async def test_foreground_spawn_with_running_sidecar_flips_to_interrupted(tmp_path: Path):
+    """A foreground spawn cut down mid-run leaves its main-history ToolReturnPart
+    repaired to the resumability stub — which replay finishes as "done" — but its
+    sidecar's meta still says "running" (the final write never happened). The
+    sidecar is the more trustworthy source, so finish_replayed_cards flips the
+    card to interrupted."""
+    from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
+
+    from marim_harness.session import TranscriptStore
+
+    app = _app_with_store(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        store = app.harness.session.store
+        assert store is not None
+        ts = TranscriptStore(store.path, store.session_id)
+        ts.write(
+            "sg-fg",
+            [ModelRequest(parts=[])],
+            2000,
+            meta=_spawn_meta("sg-fg", "t", status="running"),
+        )
+
+        repair_stub = (
+            "Tool call was interrupted before completion and did not run (the turn "
+            "was aborted). Re-issue it if you still need the result."
+        )
+        app.harness.session.history = [
+            ModelResponse(parts=[ToolCallPart(
+                tool_name="spawn_agent",
+                args={"type": "general", "task": "t"},
+                tool_call_id="sg-fg",
+            )]),
+            ModelRequest(parts=[ToolReturnPart(
+                tool_name="spawn_agent", content=repair_stub, tool_call_id="sg-fg",
+            )]),
+        ]
+        await app.session.render_session("note")
+        await pilot.pause()
+
+        card = next(w for w in app.stream.subagents if w.stream_id == "sg-fg")
+        assert card.status == "interrupted"
+
+
+@pytest.mark.anyio
+async def test_running_sidecar_with_no_card_synthesizes_ghost_card(tmp_path: Path):
+    """A running sidecar with no matching spawn anywhere in the main history means
+    the owning turn itself never persisted (a crash before that turn's save).
+    finish_replayed_cards must still surface the work by synthesizing a card from
+    the sidecar meta alone — and it must run even though history is empty."""
+    from pydantic_ai.messages import ModelResponse
+
+    from marim_harness.interfaces.tui.widgets.subagent_detail import SubAgentDetailHost
+    from marim_harness.session import TranscriptStore
+
+    app = _app_with_store(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        store = app.harness.session.store
+        assert store is not None
+        ts = TranscriptStore(store.path, store.session_id)
+        ts.write(
+            "sg-ghost",
+            [ModelResponse(parts=[])],
+            2000,
+            meta=_spawn_meta("sg-ghost", "ghost task", status="running"),
+        )
+        assert app.harness.session.history == []  # the crash-before-persist case
+
+        await app.session.render_session("note")
+        await pilot.pause()
+
+        ghost = next(w for w in app.stream.subagents if w.stream_id == "sg-ghost")
+        assert ghost.status == "interrupted"
+        assert ghost.pane is not None
+        assert ghost.pane.transcript_loaded is False  # lazy-load still applies
+        # The synthesized pane is registered in the detail host too, not just
+        # attached to the card — the ctrl+x screen shows it via the host.
+        assert app.query_one(SubAgentDetailHost).pane("sg-ghost") is ghost.pane
+
+
+@pytest.mark.anyio
+async def test_replayed_foreground_card_joins_subagents_list(tmp_path: Path):
+    """A replayed FOREGROUND card must also join app.stream.subagents — the
+    regression this task fixes for the empty ctrl+x screen after a resume (only
+    background spawns joined the list before)."""
+    from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.harness.session.history = [
+            ModelResponse(parts=[ToolCallPart(
+                tool_name="spawn_agent",
+                args={"type": "general", "task": "t"},
+                tool_call_id="sg-fg2",
+            )]),
+            ModelRequest(parts=[ToolReturnPart(
+                tool_name="spawn_agent", content="final report", tool_call_id="sg-fg2",
+            )]),
+        ]
+        await app.session.render_session("note")
+        await pilot.pause()
+
+        assert any(w.stream_id == "sg-fg2" for w in app.stream.subagents)

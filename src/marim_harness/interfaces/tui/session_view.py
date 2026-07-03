@@ -38,12 +38,18 @@ class SessionView:
         tool_widgets: dict,
         group: ToolGroupWidget | None,
         solo: ToolCallWidget | None,
+        parent_id: str | None = None,
     ) -> tuple[ToolGroupWidget | None, ToolCallWidget | None]:
         """Dispatch one message part to the appropriate widget.
 
         Handles the parts shared between main-log replay (replay_history) and
         sub-agent pane replay (replay_messages_into): TextPart, ThinkingPart,
         generic ToolCallPart, and ToolReturnPart.
+
+        ``parent_id`` is the stream_id of the sub-agent card this replay is
+        nested under (None for the top-level log), so a spawn replayed inside
+        another spawn's pane tags its own card for the sub-agents screen's tree
+        order — mirroring the live path's ``_claim_spawn``.
 
         Main-log-only arms (UserPromptPart, ask_user standalone mount, and
         SubAgentDetailHost pane creation with model_label fallback) are left
@@ -76,12 +82,13 @@ class SessionView:
                 widget.finalize()
         elif isinstance(part, ToolCallPart):
             args = part.args_as_dict()
-            # A foreground spawn_agent rebuilds as its SubAgentWidget card
-            # (mirroring the live path) rather than a generic tool row. Its
-            # nested transcript was never persisted, so the resumed card carries
-            # only the final report. A background spawn returns a job id and
-            # stays a plain tool.
-            if part.tool_name == "spawn_agent" and not args.get("background"):
+            # Every spawn_agent call rebuilds as its SubAgentWidget card
+            # (mirroring the live path) rather than a generic tool row —
+            # foreground AND background, so the sub-agents screen repopulates
+            # after a resume. The card also joins the renderer's backing list,
+            # which the live path does in mount_spawn_widget; replay skipped it
+            # historically, leaving the ctrl+x screen empty on a resumed session.
+            if part.tool_name == "spawn_agent":
                 group = None
                 solo = None
                 widget = SubAgentWidget(
@@ -91,6 +98,10 @@ class SessionView:
                     description=str(args.get("description") or ""),
                 )
                 widget.stream_id = part.tool_call_id
+                widget.parent_id = parent_id
+                if all(w.stream_id != widget.stream_id
+                       for w in self.app.stream.subagents):
+                    self.app.stream.subagents.append(widget)
                 tool_widgets[part.tool_call_id] = widget
                 await mount_fn(widget)
                 # SubAgentDetailHost pane creation and model_label fallback are
@@ -108,6 +119,17 @@ class SessionView:
             widget = tool_widgets.get(part.tool_call_id)
             if widget is not None:
                 content = str(part.content)
+                if isinstance(widget, SubAgentWidget):
+                    from .stream_render import _detached_job_id
+
+                    job_id = _detached_job_id(content)
+                    if job_id is not None:
+                        # A detach handoff is a job-id receipt, not the report —
+                        # finish_replayed_cards joins the real outcome from the
+                        # persisted jobs history / sidecar meta after replay.
+                        widget.detached = True
+                        widget.job_id = job_id
+                        return group, solo
                 status = status_from_part(part)
                 # A failed spawn returns its error as a normal tool result;
                 # detect the runner's failure text so the card shows failed,
@@ -181,14 +203,14 @@ class SessionView:
                         group, solo = await self._replay_parts(
                             part, log, log.mount, tool_widgets, group, solo,
                         )
-                        # Main-log-only post-processing: foreground spawn_agent
-                        # needs a SubAgentDetailHost pane for lazy transcript load
-                        # on resume, and falls back to harness.model_label when
-                        # the spawn didn't specify a model explicitly.
+                        # Main-log-only post-processing: every replayed spawn_agent
+                        # (foreground and background alike) needs a
+                        # SubAgentDetailHost pane for lazy transcript load on
+                        # resume, and falls back to harness.model_label when the
+                        # spawn didn't specify a model explicitly.
                         if (
                             isinstance(part, ToolCallPart)
                             and part.tool_name == "spawn_agent"
-                            and not part.args_as_dict().get("background")
                         ):
                             args = part.args_as_dict()
                             model_label = str(
@@ -210,12 +232,16 @@ class SessionView:
                                 )
                                 widget.pane = pane
 
-    async def replay_messages_into(self, pane, messages) -> None:
+    async def replay_messages_into(
+        self, pane, messages, parent_id: str | None = None,
+    ) -> None:
         """Render resumed sub-agent transcript messages into ``pane``.
 
         Drives the same per-part widget construction as ``replay_history`` but
         targets a ``SubAgentPane`` (VerticalScroll) instead of the main log.
-        Sets ``pane.transcript_loaded = True`` when done."""
+        ``parent_id`` is the owning card's stream_id, so a nested spawn found
+        inside this transcript tags its own card for the sub-agents screen's
+        tree order. Sets ``pane.transcript_loaded = True`` when done."""
         from pydantic_ai.messages import ModelRequest, ModelResponse
 
         tool_widgets: dict = {}
@@ -226,9 +252,69 @@ class SessionView:
                 for part in message.parts:
                     group, solo = await self._replay_parts(
                         part, pane, pane.add, tool_widgets, group, solo,
+                        parent_id=parent_id,
                     )
         self.app.stream.flush_streams()
         pane.transcript_loaded = True
+
+    _REPAIR_STUB_MARKER = "interrupted before completion"
+
+    async def finish_replayed_cards(self) -> None:
+        """Settle every replayed card's final state from the persisted record:
+        the jobs history supplies a background spawn's status/report (its
+        ToolReturnPart is only a job-id handoff), and the sidecar meta scan flags
+        spawns that died mid-run as interrupted — including ones whose owning
+        turn never persisted, which get a card synthesized from meta alone so no
+        work silently vanishes."""
+        store = self.app.harness.session.store
+        if store is None:
+            return
+        from ...session import TranscriptStore
+
+        metas = TranscriptStore(store.path, store.session_id).scan_meta()
+        jobs = self.app.harness.deps.jobs
+        settled = {j.stream_id: j for j in jobs.history if j.stream_id}
+        for card in list(self.app.stream.subagents):
+            job = settled.get(card.stream_id)
+            meta = metas.get(card.stream_id)
+            meta_status = meta.get("status") if meta else None
+            if card.status == "pending":
+                # A detached card whose handoff we skipped in _replay_parts.
+                if job is not None:
+                    status = "failed" if job.status in ("failed", "cancelled") else "done"
+                    card.finish(job.result or "", status=status)
+                elif meta_status == "finished":
+                    card.finish("", status="done")
+                elif meta_status == "failed":
+                    card.finish("", status="failed")
+                else:
+                    card.finish("", status="interrupted")
+            elif (meta_status == "running" and job is None
+                  and self._REPAIR_STUB_MARKER in card.report):
+                # A foreground spawn cut down mid-run: the main history's repair
+                # stub finished the card "done", but the sidecar (whose final
+                # write never happened) knows it never completed.
+                card.finish(card.report, status="interrupted")
+        # Spawns with a running sidecar but no card at all: the owning turn was
+        # never persisted (crash before the turn's persist). Synthesize a card
+        # from meta so the work is discoverable and resumable.
+        have = {w.stream_id for w in self.app.stream.subagents}
+        log = self.app.query_one("#log", VerticalScroll)
+        for sid, meta in metas.items():
+            if meta.get("status") != "running" or sid in have or sid in settled:
+                continue
+            widget = SubAgentWidget(
+                str(meta.get("type", "")), str(meta.get("task", "")),
+                str(meta.get("model") or self.app.harness.model_label or ""),
+            )
+            widget.stream_id = sid
+            self.app.stream.subagents.append(widget)
+            await log.mount(widget)
+            host = self.app.query_one(SubAgentDetailHost)
+            pane = host.add_pane(sid, widget.agent_type, widget.model_label,
+                                 widget.display_title(), widget.agent_task)
+            widget.pane = pane  # transcript_loaded stays False → lazy sidecar load
+            widget.finish("", status="interrupted")
 
     async def mount_header(self, log: VerticalScroll) -> AssistantMessage:
         """Mount the two-column intro header — the MARIM banner on the left, the
@@ -272,6 +358,11 @@ class SessionView:
             self.app.stream.append_stream(intro, note)
             if self.app.harness.session.history:
                 await self.replay_history(log)
+            # Must run even with no history: a crash can leave a sidecar
+            # checkpointed mid-run with no turn ever persisted to the main log,
+            # so the synthesized-card branch below is the only thing that
+            # surfaces that work.
+            await self.finish_replayed_cards()
             self.app.stream.flush_streams()  # render the rebuilt log before first paint
         finally:
             self.app.stream.rebuilding = False

@@ -136,7 +136,7 @@ class SubAgentsViewer:
         from ...session import TranscriptStore
         msgs = TranscriptStore(store.path, store.session_id).read(stream_id)
         if msgs is not None:
-            await self.app.session.replay_messages_into(pane, msgs)
+            await self.app.session.replay_messages_into(pane, msgs, parent_id=stream_id)
         else:
             from textual.content import Content
             from textual.widgets import Static

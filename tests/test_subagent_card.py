@@ -120,6 +120,16 @@ def test_blocked_card_names_the_culprit_in_header():
     assert "✕" in header
 
 
+def test_interrupted_status_glyph_and_activity():
+    """A spawn whose sidecar was found mid-run at resume (a crashed process) gets
+    the "interrupted" status: a distinct pause glyph — not the ✓/✕ of a settled
+    run — and an activity line pointing at the sub-agents screen's resume key."""
+    w = SubAgentWidget("general", "task text")
+    w.finish("", status="interrupted")
+    assert w._glyph() == "⏸"
+    assert "resume" in str(w._activity.render())
+
+
 def test_finish_clears_stale_waiting_state():
     w = SubAgentWidget("merge", "Combine the reports", "sonnet")
     w.after_ids = ["job-3"]

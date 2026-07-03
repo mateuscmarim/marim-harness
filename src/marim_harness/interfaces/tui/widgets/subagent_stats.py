@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from .format import format_cost, human_tokens
 
-STATUS_GLYPH = {"done": "✓", "denied": "✕", "failed": "✕"}
+STATUS_GLYPH = {"done": "✓", "denied": "✕", "failed": "✕", "interrupted": "⏸"}
 
 
 @dataclass(frozen=True)
@@ -96,10 +96,12 @@ class SummaryStats:
 def aggregate(agents: list, cost_of: Callable[[object], float]) -> SummaryStats:
     """Roll up the session's sub-agents for the summary bar. ``cost_of`` maps an
     agent to its dollar cost (injected so this stays free of usage/model wiring).
-    A failed *or* denied agent counts as failed; everything not terminal is
-    running — split into *waiting* (blocked on after= prerequisites, ``getattr``
-    so plain stand-ins work) and genuinely running. Cost is blank until at least
-    one agent is metered."""
+    A failed, denied, *or* interrupted agent counts as failed (interrupted is
+    terminal and needs attention; a dedicated summary bucket isn't worth a
+    bar-format change); everything not terminal is running — split into
+    *waiting* (blocked on after= prerequisites, ``getattr`` so plain stand-ins
+    work) and genuinely running. Cost is blank until at least one agent is
+    metered."""
     running = waiting = done = failed = tokens = 0
     cost = 0.0
     for a in agents:
@@ -107,7 +109,7 @@ def aggregate(agents: list, cost_of: Callable[[object], float]) -> SummaryStats:
         cost += cost_of(a)
         if a.status == "done":
             done += 1
-        elif a.status in ("failed", "denied"):
+        elif a.status in ("failed", "denied", "interrupted"):
             failed += 1
         elif getattr(a, "waiting", False):
             waiting += 1

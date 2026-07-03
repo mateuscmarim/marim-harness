@@ -120,7 +120,7 @@ class SubAgentWidget(Vertical):
         # sub-agents list (see subagent_stats.tree_order). Set by the renderer's
         # _claim_spawn at registration time.
         self.parent_id: str | None = None
-        self.status = "pending"  # "pending" | "done" | "denied" | "failed"
+        self.status = "pending"  # "pending" | "done" | "denied" | "failed" | "interrupted"
         self.report = ""
         self._fail_reason = ""  # clipped, shown on the collapsed card line
         self._full_reason = ""  # unclipped; the expanded line shows this
@@ -220,6 +220,8 @@ class SubAgentWidget(Vertical):
             return "✓"
         if self.status in ("denied", "failed"):
             return "✕"
+        if self.status == "interrupted":
+            return "⏸"
         if self.waiting:
             return "⧗"
         return _SPINNER[self._spin]
@@ -301,6 +303,11 @@ class SubAgentWidget(Vertical):
             # Let the line grow + wrap only while expanded; otherwise it stays one row.
             self._activity.set_class(self._expanded and expandable, "-expanded")
             self._activity.update(Content.assemble((f"↳ {reason}", "red"), (marker, "dim")))
+        elif self.status == "interrupted":
+            self._activity.update(Content.assemble(
+                ("↳ interrupted — press r in the sub-agents screen (ctrl+x) to resume",
+                 "dim"),
+            ))
         else:
             # Done: collapse to the run summary (tool tally + frozen duration). A
             # background agent streams its steps too, so its tally is real.
