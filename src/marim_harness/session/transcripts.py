@@ -11,6 +11,7 @@ import json
 import logging
 import re
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 from pydantic_ai.messages import ModelMessagesTypeAdapter
@@ -41,14 +42,29 @@ class TranscriptStore:
     def _file(self, stream_id: str) -> Path:
         return self._dir / f"{_safe(stream_id)}.json"
 
-    def write(self, stream_id: str, messages: list, cap: int) -> None:
+    def write(self, stream_id: str, messages: list, cap: int,
+              meta: dict | None = None) -> None:
+        """Persist one spawn's transcript. With ``meta`` the file is a v2 envelope
+        ``{"v": 2, "meta": ..., "messages": [...]}`` — the meta carries what a
+        resumed session needs to rebuild the card and (for an interrupted spawn)
+        re-run it. Without ``meta`` the historical v1 bare-list format is kept, so
+        callers migrate incrementally and old files stay valid. ``meta`` must carry
+        ``stream_id``: the filename is a lossy sanitization, so ``scan_meta`` can
+        only key results off the id stored inside the file."""
         if not stream_id or not messages:
             return
         try:
             capped = cap_transcript(messages, cap)
-            payload = ModelMessagesTypeAdapter.dump_json(capped).decode("utf-8")
+            msgs = ModelMessagesTypeAdapter.dump_python(capped, mode="json")
+            if meta is None:
+                payload = msgs
+            else:
+                meta = dict(meta)  # never mutate the caller's (reused) meta dict
+                meta["stream_id"] = stream_id
+                meta["updated"] = datetime.now(timezone.utc).isoformat()
+                payload = {"v": 2, "meta": meta, "messages": msgs}
             self._dir.mkdir(parents=True, exist_ok=True)
-            atomic_write_text(self._file(stream_id), payload)
+            atomic_write_text(self._file(stream_id), json.dumps(payload))
         except Exception as exc:  # noqa: BLE001 - persistence is best-effort
             logger.warning("Failed to write sub-agent transcript %s: %s", stream_id, exc)
 
@@ -58,10 +74,51 @@ class TranscriptStore:
             return None
         try:
             raw = json.loads(path.read_text())
+            if isinstance(raw, dict):  # v2 envelope; a bare list is a v1 file
+                raw = raw.get("messages", [])
             return list(ModelMessagesTypeAdapter.validate_python(raw))
         except Exception as exc:  # noqa: BLE001 - a corrupt sidecar must not crash resume
             logger.warning("Failed to read sub-agent transcript %s: %s", stream_id, exc)
             return None
+
+    def read_meta(self, stream_id: str) -> dict | None:
+        """The v2 meta for one spawn, without validating its messages (cheap).
+        None for a missing, corrupt, or v1 (bare-list) sidecar."""
+        path = self._file(stream_id)
+        if not path.exists():
+            return None
+        try:
+            raw = json.loads(path.read_text())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to read sidecar meta %s: %s", stream_id, exc)
+            return None
+        if isinstance(raw, dict) and isinstance(raw.get("meta"), dict):
+            return raw["meta"]
+        return None
+
+    def scan_meta(self) -> dict[str, dict]:
+        """stream_id → meta for every v2 sidecar in this session's dir. Used once
+        at session resume to find spawns that died mid-run (meta still says
+        ``running``). Corrupt and v1 files are skipped with a warning — detection
+        degrades to fewer interrupted cards, never a crash."""
+        out: dict[str, dict] = {}
+        if not self._dir.exists():
+            return out
+        for path in self._dir.glob("*.json"):
+            try:
+                raw = json.loads(path.read_text())
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Skipping unreadable sidecar %s: %s", path, exc)
+                continue
+            if not isinstance(raw, dict):
+                continue
+            meta = raw.get("meta")
+            if not isinstance(meta, dict):
+                continue
+            sid = meta.get("stream_id")
+            if sid:
+                out[str(sid)] = meta
+        return out
 
     def delete_all(self) -> None:
         shutil.rmtree(self._dir, ignore_errors=True)
