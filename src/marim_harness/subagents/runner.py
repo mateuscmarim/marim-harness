@@ -213,6 +213,13 @@ class SubagentRunner:
         self._mask_observations = mask_observations
         self._mask_keep_recent = mask_keep_recent
         self._mask_min_chars = mask_min_chars
+        # Stream ids of spawns whose resume is in flight but not yet registered as
+        # a job. resume_spawn awaits (limits resolve, subagent_start hook, MCP
+        # grants) between its guards and jobs.register, so two rapid `r` presses
+        # can both clear the jobs-scan guard and double-spawn. This synchronous
+        # set, added-to before the first await, is the race guard for that window;
+        # once the job is registered the jobs.list() running-scan takes over.
+        self._resuming: set[str] = set()
 
     def _open_worktree(self, stream_id: str):
         """Create an isolated git worktree for a spawn off the repo's HEAD.
@@ -483,11 +490,13 @@ class SubagentRunner:
         return TranscriptStore(store.path, store.session_id)
 
     def _save_transcript(self, stream_id: str, messages: list,
-                         meta: dict | None = None) -> None:
+                         meta: dict | None = None, *,
+                         cap_reasoning: bool = False) -> None:
         try:
             store = self._transcript_store()
             if stream_id and messages and store is not None:
-                store.write(stream_id, messages, self._transcript_cap, meta=meta)
+                store.write(stream_id, messages, self._transcript_cap, meta=meta,
+                            cap_reasoning=cap_reasoning)
         except Exception as exc:  # noqa: BLE001 - persistence is best-effort
             logger.warning("Failed to save transcript %s: %s", stream_id, exc)
 
@@ -738,7 +747,12 @@ class SubagentRunner:
             }
 
             def _checkpoint(messages: list, _meta=meta) -> None:
-                self._save_transcript(stream_id, messages, meta=_meta)
+                # cap_reasoning=True bounds the mid-run payload: this fires before
+                # every model request as the conversation grows, so oversized
+                # text/thinking parts are clipped here (the final write leaves them
+                # in full). See cap_transcript.
+                self._save_transcript(stream_id, messages, meta=_meta,
+                                      cap_reasoning=True)
 
             checkpoint = _checkpoint
         sub, err = self.build(type, max_output_chars, model, work_root, defn=defn,
@@ -890,7 +904,14 @@ class SubagentRunner:
                     self._teardown_worktree(prep.iso, force=True)
             raise
         self._log_spawn_timing(type, prep.t0, prep.t_built, prep.first_event_at, failed=False)
-        await self.hooks.subagent_stop(type, task, result.output)
+        # The stop hook must see the SAME task the start hook got. subagent_start
+        # fires in _prepare_spawn with the sidecar-meta task; on a resumed spawn the
+        # local ``task`` here is the internal _CONTINUATION_PROMPT, so read the
+        # original task off prep.meta to keep the start/stop hook payloads coherent.
+        # For a non-resumed background spawn prep.meta["task"] == task, so this is a
+        # no-op there.
+        stop_task = prep.meta["task"] if prep.meta else task
+        await self.hooks.subagent_stop(type, stop_task, result.output)
         self._save_transcript(
             stream_id, result.all_messages(),
             meta=self._final_meta(prep, "finished", result.usage),
@@ -902,6 +923,12 @@ class SubagentRunner:
         # off history_version, which a background completion never bumps, so an
         # unforced persist here would be silently skipped (losing the spend and,
         # since Task 3, the settled-jobs history entry).
+        #
+        # Known asymmetry (by design): if the user ran /switch while this job was
+        # in flight, self.session now points at a DIFFERENT session, so this
+        # settle's spend + settled-jobs entry persist into the CURRENT session's
+        # payload, not the one that spawned it. Jobs are process-scoped, not
+        # session-scoped, so the summary follows the active session — accepted.
         self.session.persist(force=True)
         self._bg_seq += 1
         spill_ref = f"bg-{self._bg_seq}"
@@ -1115,54 +1142,68 @@ class SubagentRunner:
         turn is gone after a restart (the main history's dangling spawn_agent
         call was repaired with a synthetic return), so the finished-job digest
         is the only report consumer that still exists — and it already works."""
-        store = self._transcript_store()
-        if store is None:
-            return None, "No session store — can't resume."
-        meta = store.read_meta(stream_id)
-        if meta is None:
-            return None, ("No resumable transcript for this spawn (missing or "
-                          "pre-envelope sidecar).")
-        status = meta.get("status")
-        if status not in ("running", "interrupted"):
-            return None, f"Spawn already {status} — nothing to resume."
-        for job in self.deps.jobs.list():
-            if job.stream_id == stream_id and job.status == "running":
-                return None, f"Already resuming as {job.id}."
-        messages = store.read(stream_id)
-        history = _resumable_history(messages or [])
-        if history is None:
-            return None, "Transcript unreadable or empty — can't resume."
-        type_ = str(meta.get("type") or "")
-        task = str(meta.get("task") or "")
-        iso = None
-        branch = meta.get("isolation")
-        if branch:
-            repo = repo_root(self.deps.workspace.root)
-            if repo is None or not branch_exists(repo, branch):
-                return None, (f"Isolation branch {branch!r} no longer exists — "
-                              "can't resume this isolated spawn.")
-            try:
-                path = create_or_reuse_worktree(repo, branch)
-            except WorktreeError as exc:
-                return None, f"Couldn't reopen the isolated worktree: {exc}"
-            iso = {"repo": repo, "branch": branch, "path": path}
-        prep = await self._prepare_spawn(
-            type_, task, meta.get("mcp"), meta.get("max_output_chars"),
-            meta.get("model"), iso, iso["path"] if iso else None, stream_id,
-            debug=logger.isEnabledFor(logging.DEBUG), t0=time.perf_counter(),
-            depth=int(meta.get("depth") or 1),
-        )
-        if isinstance(prep, str):
-            if iso:
-                self._teardown_worktree(iso)  # keep the branch — it's prior work
-            return None, prep
-        label = f"{type_}: resumed — {task}"
-        job_id = self.deps.jobs.register(
-            "agent", label,
-            self._execute_background_spawn(
-                type_, self._CONTINUATION_PROMPT, stream_id,
-                meta.get("max_output_chars"), prep, history=history,
-            ),
-            stream_id=stream_id,
-        )
-        return job_id, f"Resumed as {job_id}."
+        # Synchronous in-flight guard, set BEFORE the first await below. Two rapid
+        # `r` presses both clear the jobs.list() running-scan (neither has
+        # registered a job yet) and then both await _prepare_spawn, double-spawning.
+        # This set closes that window: the second concurrent call sees the id
+        # already present and refuses. The finally releases it on EVERY exit — once
+        # the job is registered the jobs.list() running-scan is the durable guard,
+        # and releasing on a refusal/exception keeps a later retry from being
+        # permanently locked out.
+        if stream_id in self._resuming:
+            return None, "Already resuming this spawn — hold on."
+        self._resuming.add(stream_id)
+        try:
+            store = self._transcript_store()
+            if store is None:
+                return None, "No session store — can't resume."
+            meta = store.read_meta(stream_id)
+            if meta is None:
+                return None, ("No resumable transcript for this spawn (missing or "
+                              "pre-envelope sidecar).")
+            status = meta.get("status")
+            if status not in ("running", "interrupted"):
+                return None, f"Spawn already {status} — nothing to resume."
+            for job in self.deps.jobs.list():
+                if job.stream_id == stream_id and job.status == "running":
+                    return None, f"Already resuming as {job.id}."
+            messages = store.read(stream_id)
+            history = _resumable_history(messages or [])
+            if history is None:
+                return None, "Transcript unreadable or empty — can't resume."
+            type_ = str(meta.get("type") or "")
+            task = str(meta.get("task") or "")
+            iso = None
+            branch = meta.get("isolation")
+            if branch:
+                repo = repo_root(self.deps.workspace.root)
+                if repo is None or not branch_exists(repo, branch):
+                    return None, (f"Isolation branch {branch!r} no longer exists — "
+                                  "can't resume this isolated spawn.")
+                try:
+                    path = create_or_reuse_worktree(repo, branch)
+                except WorktreeError as exc:
+                    return None, f"Couldn't reopen the isolated worktree: {exc}"
+                iso = {"repo": repo, "branch": branch, "path": path}
+            prep = await self._prepare_spawn(
+                type_, task, meta.get("mcp"), meta.get("max_output_chars"),
+                meta.get("model"), iso, iso["path"] if iso else None, stream_id,
+                debug=logger.isEnabledFor(logging.DEBUG), t0=time.perf_counter(),
+                depth=int(meta.get("depth") or 1),
+            )
+            if isinstance(prep, str):
+                if iso:
+                    self._teardown_worktree(iso)  # keep the branch — it's prior work
+                return None, prep
+            label = f"{type_}: resumed — {task}"
+            job_id = self.deps.jobs.register(
+                "agent", label,
+                self._execute_background_spawn(
+                    type_, self._CONTINUATION_PROMPT, stream_id,
+                    meta.get("max_output_chars"), prep, history=history,
+                ),
+                stream_id=stream_id,
+            )
+            return job_id, f"Resumed as {job_id}."
+        finally:
+            self._resuming.discard(stream_id)

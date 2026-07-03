@@ -93,8 +93,11 @@ values (`name`, `task`, `parent_id`, `depth`, `granted`, `isolation`) are all kn
 `_prepare_spawn` time — thread them from `_SpawnPrep` into the flush closure.
 
 - Checkpoint failures log and continue; a checkpoint must never kill a spawn.
-- `cap_transcript` applies to every checkpoint, same cap as today, so a long-running
-  spawn's sidecar stays bounded.
+- `cap_transcript` applies to every checkpoint, same cap as today. For checkpoints it
+  runs with `cap_reasoning=True`, so oversized text/thinking parts are clipped to the
+  per-part cap alongside tool results — otherwise the mid-run payload (re-serialized
+  before every model request) would grow unbounded with the reasoning stream. Final
+  writes keep `cap_reasoning=False`, so a completed sidecar preserves its full reasoning.
 - CLI-demuxed children keep their completion-time write (the CLI backend does not stream
   per-response boundaries we control); the parent CLI spawn gains meta on that final write;
   children stay v1 (their card state replays from the parent transcript, and
@@ -103,7 +106,11 @@ values (`name`, `task`, `parent_id`, `depth`, `granted`, `isolation`) are all kn
 
 **Interrupted detection is passive:** nothing marks a sidecar `interrupted` at crash
 time (there's no one alive to do it). A sidecar whose meta says `running` while no live
-job owns its stream_id *is* interrupted — the resume scan makes that determination.
+job owns its stream_id *is* interrupted — the resume scan makes that determination. Note
+this means a *permanently-failed* native spawn also leaves its sidecar at `running` (the
+terminal-status write only happens on success; a crash never runs it), so it too replays
+as interrupted/resumable — the intended "retry it" semantic. The terminal `failed` meta
+arm is therefore reachable only via the CLI backend, which writes its own final meta.
 
 ## 2. Finished-job history (spec §6 of 2026-06-25)
 

@@ -209,6 +209,14 @@ class SessionManager:
         if not self.dir.exists():
             return infos
         for path in self.dir.glob("*.json"):
+            # Skip a session's checkpoint sidecar (``<id>.checkpoints.json``): it
+            # shares the sessions dir and matches ``*.json`` but is NOT a session.
+            # Killing marim during a session's first-ever turn (before the session
+            # file is written) would otherwise leave only the checkpoint file, and
+            # listing it as a phantom session lets ``--resume`` open the phantom —
+            # hiding the real, interrupted session and its spawns.
+            if path.name.endswith(".checkpoints.json"):
+                continue
             try:
                 data = json.loads(path.read_text())
             except (json.JSONDecodeError, OSError) as exc:

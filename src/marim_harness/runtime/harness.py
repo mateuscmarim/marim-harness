@@ -434,10 +434,19 @@ class Harness:
             self.set_model(saved, persist=False)
 
     def switch_session(self, session_id: str) -> int:
+        # Clear the OUTGOING session's job context BEFORE loading the incoming one.
+        # The clear belongs to the session we're leaving: _clear_job_context wipes
+        # jobs.history (plus the digest / `!` passthrough buffers), which are the
+        # departing conversation's state. self.session.switch_session then imports
+        # the INCOMING session's persisted jobs history (via _load_active_store →
+        # jobs.import_history) — and that import must survive. Clearing AFTER the
+        # switch (the old order) wiped the freshly imported history, leaving
+        # finish_replayed_cards' settled join empty and — worse — making the next
+        # persist write jobs=[] back over the file, erasing it for good.
+        self._clear_job_context()
         count = self.session.switch_session(session_id)
         self.checkpoints.reload()
         self._apply_saved_model()
-        self._clear_job_context()
         return count
 
     async def rename_session(self, name: str | None = None) -> str | None:

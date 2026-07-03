@@ -528,6 +528,112 @@ async def test_render_session_twice_with_spawn_no_duplicate_panes(tmp_path: Path
 
 
 @pytest.mark.anyio
+async def test_still_running_job_card_rearmed_not_interrupted(tmp_path: Path):
+    """A background job survives a session switch/rebuild (jobs are process-scoped).
+    A card for a STILL-running job has a live registry job while its sidecar still
+    says "running" — it must NOT be flagged interrupted. finish_replayed_cards
+    re-arms it (adopt_resumed_card) so it stays pending, re-registers in
+    tool_widgets, and settles when the job finishes."""
+    import asyncio
+
+    from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
+
+    from marim_harness.session import TranscriptStore
+
+    app = _app_with_store(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # A live-job settle otherwise fires the autonomous-wake digest turn, which
+        # is out of scope here (and races app teardown) — this test is about the
+        # card's re-arm/settle, not the wake path.
+        app.autonomous_wake = False
+        store = app.harness.session.store
+        assert store is not None
+        ts = TranscriptStore(store.path, store.session_id)
+        ts.write("sg-live", [ModelRequest(parts=[])], 2000,
+                 meta=_spawn_meta("sg-live", "t", status="running"))
+
+        gate = asyncio.Event()
+
+        async def coro():
+            await gate.wait()
+            return "live report"
+
+        jobs = app.harness.deps.jobs
+        job_id = jobs.register("agent", "general: t", coro(), stream_id="sg-live")
+        app.harness.session.history = [
+            ModelResponse(parts=[ToolCallPart(
+                tool_name="spawn_agent",
+                args={"type": "general", "task": "t", "background": True},
+                tool_call_id="sg-live",
+            )]),
+            ModelRequest(parts=[ToolReturnPart(
+                tool_name="spawn_agent",
+                content=f"Started {job_id} (agent) — general: t",
+                tool_call_id="sg-live",
+            )]),
+        ]
+        await app.session.render_session("note")
+        await pilot.pause()
+
+        card = next(w for w in app.stream.subagents if w.stream_id == "sg-live")
+        assert card.status == "pending"  # re-armed, NOT interrupted
+        assert app.stream.tool_widgets.get("sg-live") is card
+
+        gate.set()
+        await jobs.wait(job_id)
+        await asyncio.sleep(0)  # let the job's done-callback settle it
+        app.stream.fill_finished_detached_cards(jobs)
+        assert card.status == "done"
+        assert card.report == "live report"
+
+
+@pytest.mark.anyio
+async def test_nested_pane_replay_settles_child_from_jobs_history(tmp_path: Path):
+    """A nested background spawn buried in a parent's transcript replays as a fresh
+    pending card only when the pane is lazily loaded — AFTER the main-pass
+    finish_replayed_cards already ran. _load_transcript must re-run the settle join
+    so the newly created child card fills from jobs history instead of dangling."""
+    from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
+
+    from marim_harness.interfaces.tui.widgets.subagent_detail import SubAgentDetailHost
+    from marim_harness.session import TranscriptStore
+
+    app = _app_with_store(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        store = app.harness.session.store
+        assert store is not None
+        ts = TranscriptStore(store.path, store.session_id)
+        ts.write("sg-parent", [
+            ModelResponse(parts=[ToolCallPart(
+                tool_name="spawn_agent",
+                args={"type": "general", "task": "child", "background": True},
+                tool_call_id="sg-child",
+            )]),
+            ModelRequest(parts=[ToolReturnPart(
+                tool_name="spawn_agent",
+                content="Started job-9 (agent) — general: child",
+                tool_call_id="sg-child",
+            )]),
+        ], 2000)
+        app.harness.deps.jobs.import_history([{
+            "id": "job-9", "kind": "agent", "label": "general: child",
+            "status": "done", "result_tail": "child done",
+            "stream_id": "sg-child", "finished_at": "t",
+        }])
+        host = app.query_one(SubAgentDetailHost)
+        pane = host.add_pane("sg-parent", "general", "", "parent", "parent task")
+
+        await app.subagents._load_transcript(pane, "sg-parent")
+        await pilot.pause()
+
+        child = next(w for w in app.stream.subagents if w.stream_id == "sg-child")
+        assert child.status == "done"
+        assert child.report == "child done"
+
+
+@pytest.mark.anyio
 async def test_never_ran_spawn_card_finishes_failed_not_interrupted(tmp_path: Path):
     """A spawn_agent ToolCallPart that never actually executed (Pydantic
     arg-validation retry → a RetryPromptPart, no ToolReturnPart, no sidecar)

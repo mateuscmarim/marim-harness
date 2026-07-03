@@ -202,6 +202,72 @@ async def test_isolated_spawn_crash_cleans_up_worktree_and_branch(repo: Path):
     assert not (repo / ".worktrees" / "subagent" / "tc1").exists()
 
 
+def _crash_build(h):
+    """Stub build so the spawned agent always crashes mid-run."""
+    class _CrashAgent:
+        async def run(self, task, **kwargs):
+            raise RuntimeError("boom mid-run")
+
+    h.subagents.build = lambda type, max_output_chars=None, model=None, \
+        workspace_root=None, defn=None, depth=0, mask_trigger=None, \
+        checkpoint=None: (_CrashAgent(), None)
+
+
+def _dangling_resume_history():
+    from pydantic_ai.messages import ModelRequest, ToolCallPart, UserPromptPart
+
+    return [
+        ModelRequest(parts=[UserPromptPart(content="original task")]),
+        ModelResponse(parts=[ToolCallPart(
+            tool_name="read_file", args={"path": "x"}, tool_call_id="d")]),
+    ]
+
+
+@pytest.mark.anyio
+async def test_failed_resumed_isolated_spawn_keeps_its_branch(repo: Path):
+    """A resumed isolated spawn's branch holds prior committed work; a failed resume
+    must tear down only the worktree checkout and KEEP the branch (history is not
+    None → _teardown_worktree(force=True)), so the deliverable isn't destroyed."""
+    from marim_harness.session import SessionStore, TranscriptStore
+
+    subprocess.run(["git", "branch", "subagent/sg6"], cwd=repo, check=True)
+    assert _branch_exists(repo, "subagent/sg6")
+
+    store = SessionStore(path=repo / "sessions" / "s.json", workspace_root=repo,
+                         session_id="s", name="s")
+    deps = _make_deps(repo)
+    h = _make_harness(_text_model(), deps, store=store)
+    _crash_build(h)
+
+    ts = TranscriptStore(store.path, store.session_id)
+    ts.write("sg6", _dangling_resume_history(), 2000, meta={
+        "stream_id": "sg6", "type": "general", "task": "t", "model": None,
+        "mcp": None, "depth": 1, "max_output_chars": None,
+        "isolation": "subagent/sg6", "status": "running",
+    })
+
+    job_id, message = await h.subagents.resume_spawn("sg6")
+    assert job_id is not None, message
+    await h.deps.jobs.wait(job_id)
+    assert h.deps.jobs.get(job_id).status == "failed"
+    assert _branch_exists(repo, "subagent/sg6")  # the deliverable survives
+
+
+@pytest.mark.anyio
+async def test_failed_fresh_isolated_background_spawn_drops_branch(repo: Path):
+    """A FRESH background isolated spawn (history is None) that crashes still drops
+    its throwaway branch — the resume-only keep-branch path must not leak into it."""
+    deps = _make_deps(repo)
+    h = _make_harness(_text_model(), deps)
+    _crash_build(h)
+
+    with pytest.raises(RuntimeError):
+        await h.subagents.run_background(
+            "general", "do it", isolation="worktree", stream_id="frb6",
+        )
+    assert not _branch_exists(repo, "subagent/frb6")
+
+
 @pytest.mark.anyio
 async def test_isolated_spawn_cancel_cleans_up_worktree_and_branch(repo: Path):
     """A cancelled isolated spawn (CancelledError is a BaseException, e.g. shutdown

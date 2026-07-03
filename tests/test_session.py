@@ -171,6 +171,24 @@ def test_list_skips_corrupt_while_load_raises(tmp_path: Path):
         store.load()
 
 
+def test_list_skips_checkpoint_sidecar(tmp_path: Path):
+    """A ``<id>.checkpoints.json`` sidecar shares the sessions dir and matches
+    ``*.json`` but is NOT a session — killing marim during a session's first-ever
+    turn can leave one on its own. list() must not surface it as a phantom session
+    (which would let --resume open the phantom and hide the real interrupted one)."""
+    mgr = _manager(tmp_path)
+    store = mgr.create("real")
+    store.save(_history(), RunUsage(), [])
+    # A checkpoint sidecar next to it — no session file of its own for this id.
+    (mgr.dir / "orphan-session.checkpoints.json").write_text('{"snapshots": []}')
+
+    ids = [info.id for info in mgr.list()]
+    assert store.session_id in ids
+    assert all(not i.endswith(".checkpoints") for i in ids)
+    assert "orphan-session" not in ids
+    assert len(ids) == 1
+
+
 def test_tasks_round_trip(tmp_path: Path):
     mgr = _manager(tmp_path)
     store = mgr.create("With Tasks")

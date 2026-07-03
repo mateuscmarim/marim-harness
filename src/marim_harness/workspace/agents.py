@@ -341,15 +341,27 @@ def cap_subagent_output(
     return head + note, output
 
 
-def cap_transcript(messages: list, cap: int) -> list:
+def cap_transcript(messages: list, cap: int, *, cap_reasoning: bool = False) -> list:
     """Return a copy of ``messages`` with every ``ToolReturnPart`` whose content
     exceeds ``cap`` characters truncated to ``cap`` chars plus a marker. Only tool
-    *results* are capped — text, thinking, and tool-call parts (the reasoning and
-    the actions) are kept in full. Pure: never mutates the input messages."""
+    *results* are capped by default — text, thinking, and tool-call parts (the
+    reasoning and the actions) are kept in full. Pure: never mutates the input.
+
+    ``cap_reasoning`` additionally clips oversized ``TextPart`` / ``ThinkingPart``
+    contents to the same per-part cap. It exists for the *checkpoint* path only
+    (see ``TranscriptStore.write`` / the runner's checkpoint closure): a mid-run
+    sidecar is re-serialized before EVERY model request on the event loop, so an
+    unbounded stream of reasoning would make each checkpoint's payload grow with
+    the whole conversation. Final writes leave it False so a completed sidecar
+    keeps its full reasoning."""
     # Imported lazily so this module stays free of pydantic_ai at import time: the
     # CLI router pulls in workspace/ (via config → catalog), and dragging in
     # pydantic_ai there would cost ~1s on every `marim --help`/config command.
-    from pydantic_ai.messages import ToolReturnPart
+    from pydantic_ai.messages import TextPart, ThinkingPart, ToolReturnPart
+
+    def _clip(text: str) -> str:
+        marker = f"\n…(truncated, {len(text)} chars)"
+        return text[: max(0, cap - len(marker))] + marker
 
     out = []
     for message in messages:
@@ -357,14 +369,14 @@ def cap_transcript(messages: list, cap: int) -> list:
         if not parts:
             out.append(message)
             continue
+        # Tool results always cap; text/thinking cap only on the checkpoint path.
+        cappable = (ToolReturnPart, TextPart, ThinkingPart) if cap_reasoning else ToolReturnPart
         new_parts = []
         for part in parts:
-            if isinstance(part, ToolReturnPart):
+            if isinstance(part, cappable):
                 text = part.content if isinstance(part.content, str) else str(part.content)
                 if len(text) > cap:
-                    marker = f"\n…(truncated, {len(text)} chars)"
-                    head = text[: max(0, cap - len(marker))]
-                    part = dataclasses.replace(part, content=head + marker)
+                    part = dataclasses.replace(part, content=_clip(text))
             new_parts.append(part)
         out.append(dataclasses.replace(message, parts=new_parts))
     return out

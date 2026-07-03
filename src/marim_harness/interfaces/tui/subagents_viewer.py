@@ -162,6 +162,15 @@ class SubAgentsViewer:
         msgs = TranscriptStore(store.path, store.session_id).read(stream_id)
         if msgs is not None:
             await self.app.session.replay_messages_into(pane, msgs, parent_id=stream_id)
+            # A nested background spawn buried in this transcript replays as a
+            # fresh *pending* card — but the main-pass finish_replayed_cards already
+            # ran (before this lazy pane load created the card), so nothing would
+            # ever settle it and it would dangle pending forever. Re-run the settle
+            # join now to fill the newly created child card from jobs history /
+            # sidecar meta. Safe to re-run: the join only touches cards whose status
+            # is still "pending" (plus the repair-stub-gated running-sidecar elif),
+            # so every card the first pass already finished is skipped — idempotent.
+            await self.app.session.finish_replayed_cards()
         else:
             from textual.content import Content
             from textual.widgets import Static

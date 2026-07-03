@@ -45,9 +45,9 @@ def _spy_saves(runner):
     seen: list[str | None] = []
     orig = runner._save_transcript
 
-    def spy(stream_id, messages, meta=None):
+    def spy(stream_id, messages, meta=None, **kw):
         seen.append(None if meta is None else meta.get("status"))
-        orig(stream_id, messages, meta=meta)
+        orig(stream_id, messages, meta=meta, **kw)
 
     runner._save_transcript = spy
     return seen
@@ -149,6 +149,98 @@ async def test_resume_refuses_v1_finished_and_double_resume(tmp_path):
     second, msg = await harness.subagents.resume_spawn("sg-int")
     assert second is None and first in msg
     await harness.deps.jobs.wait(first)
+
+
+@pytest.mark.anyio
+async def test_resume_double_press_registers_exactly_one_job(tmp_path):
+    """Two rapid `r` presses race: both clear the jobs-scan guard (neither has
+    registered yet) and both await _prepare_spawn, double-spawning. The synchronous
+    in-flight guard (self._resuming, added before the first await) must let exactly
+    one through and refuse the other."""
+    import asyncio
+
+    store = _session_store(tmp_path)
+    harness = _make_harness(_resume_model(), _make_deps(tmp_path), store=store)
+    ts = TranscriptStore(store.path, store.session_id)
+    ts.write("sg-race", _dangling_history(), 2000, meta=_interrupted_meta("sg-race"))
+
+    gate = asyncio.Event()
+    orig_prepare = harness.subagents._prepare_spawn
+
+    async def gated_prepare(*a, **k):
+        await gate.wait()  # park the first caller mid-resume, before it registers
+        return await orig_prepare(*a, **k)
+
+    harness.subagents._prepare_spawn = gated_prepare
+
+    t1 = asyncio.create_task(harness.subagents.resume_spawn("sg-race"))
+    t2 = asyncio.create_task(harness.subagents.resume_spawn("sg-race"))
+    await asyncio.sleep(0.05)  # one parks at the gate; the other must refuse now
+    gate.set()
+    (id1, _msg1), (id2, _msg2) = await t1, await t2
+
+    registered = [j for j in harness.deps.jobs.list() if j.stream_id == "sg-race"]
+    assert len(registered) == 1, "the race must not double-spawn"
+    ids = [id1, id2]
+    assert ids.count(None) == 1 and len([i for i in ids if i]) == 1
+    winner = id1 or id2
+    assert winner is not None
+    await harness.deps.jobs.wait(winner)
+
+
+@pytest.mark.anyio
+async def test_checkpoint_clips_oversized_reasoning(tmp_path):
+    """A mid-run checkpoint (before every model request) must bound its payload —
+    oversized ThinkingPart/TextPart contents are clipped, not just tool results, so
+    a long reasoning stream doesn't make each checkpoint re-serialize unboundedly.
+    The spawn fails after the checkpoint so no final write overwrites it on disk."""
+    from pydantic_ai.messages import ThinkingPart
+
+    def fn(messages, info):
+        if len(messages) == 1:
+            return ModelResponse(parts=[
+                ThinkingPart(content="T" * 6000),
+                ToolCallPart(tool_name="list_files", args={"path": "."},
+                             tool_call_id="t1"),
+            ])
+        raise RuntimeError("stop")  # permanent → no final write; checkpoint rests
+
+    store = _session_store(tmp_path)
+    harness = _make_harness(FunctionModel(fn), _make_deps(tmp_path), store=store)
+    out = await harness.subagents.run("general", "task", stream_id="sg-think")
+    assert "failed" in out  # foreground contains the crash
+
+    msgs = TranscriptStore(store.path, store.session_id).read("sg-think")
+    thoughts = [p for m in msgs for p in getattr(m, "parts", [])
+                if isinstance(p, ThinkingPart)]
+    assert thoughts, "the checkpoint must have captured the thinking part"
+    assert all(len(str(p.content)) < 6000 for p in thoughts)
+    assert any("truncated, 6000 chars" in str(p.content) for p in thoughts)
+
+
+@pytest.mark.anyio
+async def test_resume_stop_hook_gets_original_task_not_continuation_prompt(tmp_path):
+    """The subagent_stop hook must see the SAME task the start hook got — the
+    original task — not the internal _CONTINUATION_PROMPT the resumed run is fed."""
+    store = _session_store(tmp_path)
+    harness = _make_harness(_resume_model(), _make_deps(tmp_path), store=store)
+    ts = TranscriptStore(store.path, store.session_id)
+    ts.write("sg-hook", _dangling_history(), 2000, meta=_interrupted_meta("sg-hook"))
+
+    seen: dict[str, str] = {}
+    orig_stop = harness.subagents.hooks.subagent_stop
+
+    async def spy_stop(subagent_type, task, result):
+        seen["task"] = task
+        return await orig_stop(subagent_type, task, result)
+
+    harness.subagents.hooks.subagent_stop = spy_stop
+
+    job_id, message = await harness.subagents.resume_spawn("sg-hook")
+    assert job_id is not None, message
+    await harness.deps.jobs.wait(job_id)
+    assert seen["task"] == "original task"
+    assert seen["task"] != harness.subagents._CONTINUATION_PROMPT
 
 
 @pytest.mark.anyio

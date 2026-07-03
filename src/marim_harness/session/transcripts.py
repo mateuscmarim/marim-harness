@@ -47,18 +47,22 @@ class TranscriptStore:
         return self._dir / f"{_safe(stream_id)}.json"
 
     def write(self, stream_id: str, messages: list, cap: int,
-              meta: dict | None = None) -> None:
+              meta: dict | None = None, *, cap_reasoning: bool = False) -> None:
         """Persist one spawn's transcript. With ``meta`` the file is a v2 envelope
         ``{"v": 2, "meta": ..., "messages": [...]}`` — the meta carries what a
         resumed session needs to rebuild the card and (for an interrupted spawn)
         re-run it. Without ``meta`` the historical v1 bare-list format is kept, so
         callers migrate incrementally and old files stay valid. ``meta`` must carry
         ``stream_id``: the filename is a lossy sanitization, so ``scan_meta`` can
-        only key results off the id stored inside the file."""
+        only key results off the id stored inside the file.
+
+        ``cap_reasoning`` (checkpoint path only) also clips oversized text/thinking
+        parts to ``cap`` so a mid-run sidecar re-written before every model request
+        stays bounded — see ``cap_transcript``."""
         if not stream_id or not messages:
             return
         try:
-            capped = cap_transcript(messages, cap)
+            capped = cap_transcript(messages, cap, cap_reasoning=cap_reasoning)
             msgs = ModelMessagesTypeAdapter.dump_python(capped, mode="json")
             if meta is None:
                 payload = msgs

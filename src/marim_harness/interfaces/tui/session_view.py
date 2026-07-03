@@ -274,7 +274,22 @@ class SessionView:
         metas = TranscriptStore(store.path, store.session_id).scan_meta()
         jobs = self.app.harness.deps.jobs
         settled = {j.stream_id: j for j in jobs.history if j.stream_id}
+        # A background job survives a session switch/rebuild (jobs are process-
+        # scoped), so a spawn that is STILL running has a live registry job while
+        # its sidecar still says "running". Left to the meta-status arms below that
+        # card would be flagged interrupted — dangling the `r` key and never
+        # updating on settle (replay doesn't re-register tool_widgets/_detached
+        # cards). Re-arm such a card via the very path a fresh resume uses.
+        running = {j.stream_id: j for j in jobs.list()
+                   if j.stream_id and j.status == "running"}
         for card in list(self.app.stream.subagents):
+            live = running.get(card.stream_id)
+            if live is not None:
+                # adopt_resumed_card flips the card back to pending, restarts its
+                # clock, and re-routes the live stream + settle path into it — so
+                # live events land and the job's completion fills the card as usual.
+                self.app.stream.adopt_resumed_card(card, live.id)
+                continue
             job = settled.get(card.stream_id)
             meta = metas.get(card.stream_id)
             meta_status = meta.get("status") if meta else None
@@ -286,6 +301,12 @@ class SessionView:
                 elif meta_status == "finished":
                     card.finish("", status="done")
                 elif meta_status == "failed":
+                    # Only ever reached via the CLI backend. A permanently-failed
+                    # *native* spawn deliberately leaves its sidecar at status
+                    # "running" (no terminal write happens on a crash), so it
+                    # replays as interrupted/resumable — the "retry it" semantic —
+                    # and never lands here. The CLI path is the sole writer of a
+                    # terminal "failed" meta (see _execute_cli_spawn).
                     card.finish("", status="failed")
                 elif meta_status == "running":
                     # A sidecar checkpointed mid-run but never finalized: the spawn
