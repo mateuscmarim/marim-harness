@@ -184,6 +184,37 @@ async def test_wait_and_cancel_autoname_are_noops_when_idle(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_explicit_rename_never_persists_history(tmp_path: Path):
+    """The TUI dispatches slash commands even mid-turn, so /name can run while
+    the in-memory history holds a dirty approval-round state. The rename must
+    patch only the name header on disk — the messages array stays untouched."""
+    h = _autoname_harness(tmp_path, _fake_titler, name="start")
+    await h.run_turn("do work")  # persists a clean history
+    on_disk, _, _, _ = h.session.store.load()
+
+    # Simulate the mid-approval state: in-memory history has grown past what
+    # was persisted (and must not reach disk via the rename).
+    h.session.history = list(h.session.history) + ["dangling tool call"]
+    assert await h.rename_session("Mid-turn Name") == "Mid-turn Name"
+
+    again = h.session.manager.store(h.session.store.session_id)
+    assert again.name == "Mid-turn Name"
+    messages, _, _, _ = again.load()
+    assert len(messages) == len(on_disk)
+
+
+@pytest.mark.anyio
+async def test_rename_before_first_persist_lands_on_next_save(tmp_path: Path):
+    """With no session file yet, rename's metadata patch is a no-op on disk;
+    the in-memory name rides along with the next full persist."""
+    h = _autoname_harness(tmp_path, _fake_titler, name="start")
+    assert await h.rename_session("Early Name") == "Early Name"
+    assert not h.session.store.path.exists()
+    await h.run_turn("hello")  # the turn's persist carries the name
+    assert h.session.manager.store(h.session.store.session_id).name == "Early Name"
+
+
+@pytest.mark.anyio
 async def test_rename_session_explicit_and_generated(tmp_path: Path):
     h = _autoname_harness(tmp_path, _fake_titler, name="start")
     # Explicit rename sets the name verbatim.

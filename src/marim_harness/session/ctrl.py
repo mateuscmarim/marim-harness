@@ -497,5 +497,12 @@ class SessionController:
             return None
         self.store.name = new
         self.store.auto_named = False
-        self.persist(force=True)
+        # Metadata-only on-disk patch, like the autoname apply above — and for
+        # the same reason: the TUI dispatches slash commands even mid-turn, so
+        # /name during an approval wait would otherwise full-persist a history
+        # ending in unanswered tool calls (the invariant in
+        # TurnController._run_with_approval). When the session file doesn't
+        # exist yet this is a no-op and the name lands with the next full
+        # persist (turn end / app exit / headless teardown).
+        self.store.save_meta()
         return new
