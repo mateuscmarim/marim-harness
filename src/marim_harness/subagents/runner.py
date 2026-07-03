@@ -51,15 +51,7 @@ from ..workspace import (
     find_agent,
     subagent_instructions,
 )
-from ..workspace.worktree import (
-    WorktreeError,
-    branch_exists,
-    commit_worktree,
-    create_or_reuse_worktree,
-    delete_branch,
-    remove_worktree,
-    repo_root,
-)
+from .isolation import SpawnWorktree
 from .masking import ObservationMasker
 
 logger = logging.getLogger(__name__)
@@ -150,7 +142,7 @@ class _SpawnPrep:
     granted: list[object]
     unknown: list[str]
     handler: EventStreamHandler[Deps] | None
-    iso: dict | None
+    iso: SpawnWorktree | None
     t0: float
     t_built: float
     first_event_at: list[float]  # mutable; ``on_first_event`` probe appends during run
@@ -234,60 +226,16 @@ class SubagentRunner:
         # once the job is registered the jobs.list() running-scan takes over.
         self._resuming: set[str] = set()
 
-    def _open_worktree(self, stream_id: str):
-        """Create an isolated git worktree for a spawn off the repo's HEAD.
-        Returns ``(info, None)`` where ``info`` is a dict with ``repo``,
-        ``branch`` and ``path``, or ``(None, message)`` when the workspace isn't a
-        git repo or git refuses (the message is surfaced to the orchestrator)."""
-        repo = repo_root(self.deps.workspace.root)
-        if repo is None:
-            return None, (
-                "Isolated spawn needs a git repo, but this workspace isn't one. "
-                "Re-run without isolation, or initialize git first."
-            )
+    def _open_worktree(self, stream_id: str) -> tuple[SpawnWorktree | None, str | None]:
+        """Open an isolated worktree for a fresh spawn, naming its branch from the
+        spawn's stream id (unique per tool call, so parallel spawns don't collide)
+        with a monotonic-sequence fallback when there's no id. The worktree's own
+        lifecycle (close/discard/teardown) lives on ``SpawnWorktree``; this method
+        just owns the branch-naming counter."""
         self._iso_seq += 1
-        branch = _iso_branch(stream_id, self._iso_seq)
-        try:
-            path = create_or_reuse_worktree(repo, branch)
-        except WorktreeError as exc:
-            return None, f"Couldn't create an isolated worktree: {exc}"
-        return {"repo": repo, "branch": branch, "path": path}, None
-
-    def _close_worktree(self, iso: dict) -> str:
-        """Commit the spawn's changes to its branch, tear down the worktree, and
-        return a note pointing the orchestrator at the branch (empty-ish when the
-        spawn changed nothing). Never raises — cleanup problems become notes."""
-        branch = iso["branch"]
-        try:
-            summary = commit_worktree(iso["path"], f"sub-agent work on {branch}")
-        except WorktreeError as exc:
-            return (f"\n\n[isolated run on branch {branch}: commit failed ({exc}); "
-                    f"worktree left at {iso['path']}]")
-        if summary is None:
-            # Nothing was produced: drop the worktree (force, since gitignored
-            # leftovers may remain) and the empty branch, so spawns that change
-            # nothing don't leave a trail of dead branches behind.
-            self._teardown_worktree(iso, force=True, drop_branch=True)
-            return "\n\n[isolated run made no file changes]"
-        self._teardown_worktree(iso)  # keep the branch — it's the deliverable
-        return (f"\n\n[isolated run committed to branch {branch}:\n{summary}\n"
-                f"merge with `git merge {branch}` or review `git diff {branch}`]")
-
-    def _discard_worktree(self, iso: dict) -> None:
-        """Teardown for a worktree whose spawn errored before it could report:
-        force-remove it (the partial work is dirty and unwanted) and drop the
-        branch, so a crashed isolated spawn leaves nothing behind."""
-        self._teardown_worktree(iso, force=True, drop_branch=True)
-
-    def _teardown_worktree(self, iso: dict, *, force: bool = False,
-                           drop_branch: bool = False) -> None:
-        """Best-effort removal of a spawn's worktree (and optionally its branch).
-        Cleanup failures are swallowed — a stuck worktree is untidy, not fatal."""
-        with contextlib.suppress(WorktreeError):
-            remove_worktree(iso["repo"], iso["branch"], force=force)
-        if drop_branch:
-            with contextlib.suppress(WorktreeError):
-                delete_branch(iso["repo"], iso["branch"])
+        return SpawnWorktree.open(
+            self.deps.workspace.root, _iso_branch(stream_id, self._iso_seq)
+        )
 
     def handler(
         self,
@@ -698,7 +646,7 @@ class SubagentRunner:
             iso, err = self._open_worktree(stream_id)
             if err is not None:
                 return err
-        work_root = iso["path"] if iso else None
+        work_root = iso.path if iso else None
         # CLI-backed agents run an external `claude` process instead of the
         # in-process Pydantic AI loop. Branch here so the native build+run flow
         # below is unchanged. The CLI path mirrors the same wrapper (hooks
@@ -730,7 +678,7 @@ class SubagentRunner:
     async def _prepare_spawn(
         self, type: str, task: str, mcp_names: list[str] | None,
         max_output_chars: int | None, model: str | None,
-        iso: dict | None, work_root, stream_id: str,
+        iso: SpawnWorktree | None, work_root, stream_id: str,
         *, debug: bool, t0: float, defn=None, depth: int = 0,
     ) -> _SpawnPrep | str:
         """Build the sub-agent, grant MCP servers, fire the start hook, and wire the
@@ -753,7 +701,7 @@ class SubagentRunner:
                 "stream_id": stream_id, "type": type, "task": task,
                 "model": model, "mcp": mcp_names, "depth": depth,
                 "max_output_chars": max_output_chars,
-                "isolation": iso["branch"] if iso else None,
+                "isolation": iso.branch if iso else None,
                 "status": "running",
             }
 
@@ -771,7 +719,7 @@ class SubagentRunner:
                               checkpoint=checkpoint)
         if sub is None:
             if iso:
-                self._discard_worktree(iso)
+                iso.discard()
             return err or f"Failed to build sub-agent {type!r}."
         t_built = time.perf_counter()
         # Apply the same tool-search deferral the main agent uses: a large granted
@@ -808,7 +756,7 @@ class SubagentRunner:
         the caller's ``run_turn`` persists it."""
         if prep.iso:
             run_deps = replace(
-                self.deps, workspace=replace(self.deps.workspace, root=prep.iso["path"])
+                self.deps, workspace=replace(self.deps.workspace, root=prep.iso.path)
             )
         else:
             run_deps = self.deps
@@ -830,7 +778,7 @@ class SubagentRunner:
         except Exception as exc:  # noqa: BLE001
             self._log_spawn_timing(type, prep.t0, prep.t_built, prep.first_event_at, failed=True)
             if prep.iso:
-                self._discard_worktree(prep.iso)
+                prep.iso.discard()
             # A foreground spawn runs inside the turn's tool execution; letting
             # its crash propagate would fail the whole turn and take down any
             # sibling spawns fanning out alongside it. Contain it.
@@ -851,7 +799,7 @@ class SubagentRunner:
             # Discard the worktree before it propagates — otherwise an isolated
             # spawn leaks its worktree + branch on every cancel.
             if prep.iso:
-                self._discard_worktree(prep.iso)
+                prep.iso.discard()
             raise
         self._log_spawn_timing(type, prep.t0, prep.t_built, prep.first_event_at, failed=False)
         await self.hooks.subagent_stop(type, task, result.output)
@@ -862,7 +810,7 @@ class SubagentRunner:
         self.session.usage += result.usage
         # A foreground spawn's spend is persisted by run_turn's _persist.
         capped = self._cap_output(result.output, max_output_chars, stream_id)
-        iso_note = self._close_worktree(prep.iso) if prep.iso else ""
+        iso_note = prep.iso.close() if prep.iso else ""
         return self.mcp.grant_note(prep.unknown) + capped + iso_note
 
     async def _execute_background_spawn(
@@ -893,8 +841,12 @@ class SubagentRunner:
             )
         if prep.iso:
             run_deps = replace(
-                run_deps, workspace=replace(run_deps.workspace, root=prep.iso["path"])
+                run_deps, workspace=replace(run_deps.workspace, root=prep.iso.path)
             )
+        # A resumed spawn (history set) keeps its branch on failure — it holds
+        # prior committed work; a fresh spawn's branch is throwaway. See
+        # SpawnWorktree.teardown_after_failure.
+        resumed = history is not None
         try:
             async with self._slot():
                 result = await self._run_to_completion(
@@ -904,27 +856,16 @@ class SubagentRunner:
         except Exception:  # noqa: BLE001
             self._log_spawn_timing(type, prep.t0, prep.t_built, prep.first_event_at, failed=True)
             if prep.iso:
-                if history is None:
-                    self._discard_worktree(prep.iso)
-                else:
-                    # A resumed spawn's branch holds prior committed work; a
-                    # failed resume must not destroy it. Tear down only the
-                    # worktree checkout and keep the branch.
-                    self._teardown_worktree(prep.iso, force=True)
+                prep.iso.teardown_after_failure(resumed=resumed)
             # A background crash is intentionally NOT contained: it propagates
             # to the job registry, which marks the job failed.
             raise
         except BaseException:
             # Cancellation (e.g. cancel_all() tearing down jobs on shutdown) is a
-            # BaseException and skips the handler above; discard the isolated
+            # BaseException and skips the handler above; tear down the isolated
             # worktree before it propagates so a cancelled spawn leaves none behind.
             if prep.iso:
-                if history is None:
-                    self._discard_worktree(prep.iso)
-                else:
-                    # See the except Exception arm above: a resumed spawn's
-                    # branch must survive a cancelled resume too.
-                    self._teardown_worktree(prep.iso, force=True)
+                prep.iso.teardown_after_failure(resumed=resumed)
             raise
         self._log_spawn_timing(type, prep.t0, prep.t_built, prep.first_event_at, failed=False)
         # The stop hook must see the SAME task the start hook got. subagent_start
@@ -956,7 +897,7 @@ class SubagentRunner:
         self._bg_seq += 1
         spill_ref = f"bg-{self._bg_seq}"
         capped = self._cap_output(result.output, max_output_chars, spill_ref)
-        iso_note = self._close_worktree(prep.iso) if prep.iso else ""
+        iso_note = prep.iso.close() if prep.iso else ""
         return self.mcp.grant_note(prep.unknown) + capped + iso_note
 
     async def _execute_cli_spawn(
@@ -995,7 +936,7 @@ class SubagentRunner:
                 "stream_id": stream_id, "type": defn.name, "task": hook_task,
                 "model": model, "mcp": None, "depth": depth,
                 "max_output_chars": max_output_chars,
-                "isolation": iso["branch"] if iso else None,
+                "isolation": iso.branch if iso else None,
                 "status": "running",
                 "backend": "claude-cli",
                 "cli_session_id": resume_session_id,
@@ -1019,6 +960,9 @@ class SubagentRunner:
             checkpoint = _checkpoint
 
         await self.hooks.subagent_start(defn.name, hook_task)
+        # A resumed CLI spawn (resume_session_id set) keeps its branch on failure —
+        # native-resume parity; a fresh spawn's branch is throwaway.
+        resumed = resume_session_id is not None
         try:
             async with self._slot():
                 result = await self._run_cli(
@@ -1027,28 +971,17 @@ class SubagentRunner:
                 )
         except Exception as exc:  # noqa: BLE001
             if iso:
-                if resume_session_id is None:
-                    self._discard_worktree(iso)
-                else:
-                    # A resumed spawn's branch holds prior committed work; a failed
-                    # resume must not destroy it. Tear down only the worktree
-                    # checkout and keep the branch (native-resume parity).
-                    self._teardown_worktree(iso, force=True)
+                iso.teardown_after_failure(resumed=resumed)
             if background:
                 raise
             await self.hooks.subagent_stop(defn.name, hook_task, f"error: {exc}")
             return f"Sub-agent {defn.name!r} failed: {exc.__class__.__name__}: {exc}"
         except BaseException:
             # Cancellation/interrupt slips past the contain-as-error handler above
-            # (it's a BaseException). Discard the worktree before it propagates so
+            # (it's a BaseException). Tear down the worktree before it propagates so
             # a cancelled isolated CLI spawn doesn't leak its worktree + branch.
             if iso:
-                if resume_session_id is None:
-                    self._discard_worktree(iso)
-                else:
-                    # See the except Exception arm above: a resumed spawn's branch
-                    # must survive a cancelled resume too.
-                    self._teardown_worktree(iso, force=True)
+                iso.teardown_after_failure(resumed=resumed)
             raise
         await self.hooks.subagent_stop(defn.name, hook_task, result.output)
         # Same prefix rule as the checkpoint above: the final write is also
@@ -1079,7 +1012,7 @@ class SubagentRunner:
         else:
             spill_ref = stream_id
         capped = self._cap_output(result.output, max_output_chars, spill_ref)
-        iso_note = self._close_worktree(iso) if iso else ""
+        iso_note = iso.close() if iso else ""
         return self._cli_mcp_note(mcp_names) + capped + iso_note
 
     @staticmethod
@@ -1268,24 +1201,19 @@ class SubagentRunner:
             iso = None
             branch = meta.get("isolation")
             if branch:
-                repo = repo_root(self.deps.workspace.root)
-                if repo is None or not branch_exists(repo, branch):
-                    return None, (f"Isolation branch {branch!r} no longer exists — "
-                                  "can't resume this isolated spawn.")
-                try:
-                    path = create_or_reuse_worktree(repo, branch)
-                except WorktreeError as exc:
-                    return None, f"Couldn't reopen the isolated worktree: {exc}"
-                iso = {"repo": repo, "branch": branch, "path": path}
+                iso, err = SpawnWorktree.reopen(self.deps.workspace.root, branch)
+                if err is not None:
+                    return None, err
             prep = await self._prepare_spawn(
                 type_, task, meta.get("mcp"), meta.get("max_output_chars"),
-                meta.get("model"), iso, iso["path"] if iso else None, stream_id,
+                meta.get("model"), iso, iso.path if iso else None, stream_id,
                 debug=logger.isEnabledFor(logging.DEBUG), t0=time.perf_counter(),
                 depth=int(meta.get("depth") or 1),
             )
             if isinstance(prep, str):
                 if iso:
-                    self._teardown_worktree(iso)  # keep the branch — it's prior work
+                    # Keep the branch — it's prior work; only the checkout goes.
+                    iso.teardown_after_failure(resumed=True)
                 return None, prep
             label = f"{type_}: resumed — {task}"
             job_id = self.deps.jobs.register(
@@ -1325,15 +1253,9 @@ class SubagentRunner:
         iso = None
         branch = meta.get("isolation")
         if branch:
-            repo = repo_root(self.deps.workspace.root)
-            if repo is None or not branch_exists(repo, branch):
-                return None, (f"Isolation branch {branch!r} no longer exists — "
-                              "can't resume this isolated spawn.")
-            try:
-                path = create_or_reuse_worktree(repo, branch)
-            except WorktreeError as exc:
-                return None, f"Couldn't reopen the isolated worktree: {exc}"
-            iso = {"repo": repo, "branch": branch, "path": path}
+            iso, err = SpawnWorktree.reopen(self.deps.workspace.root, branch)
+            if err is not None:
+                return None, err
         # Read the previously persisted transcript before relaunching. The resumed
         # CLI process's stream carries only the continuation (`claude -p --resume`
         # does not re-emit prior history), so the resume's checkpoints and final
@@ -1349,7 +1271,7 @@ class SubagentRunner:
             "agent", label,
             self._execute_cli_spawn(
                 defn, self._CONTINUATION_PROMPT,
-                iso["path"] if iso else None, iso,
+                iso.path if iso else None, iso,
                 None, meta.get("max_output_chars"), meta.get("model"), stream_id,
                 background=True, resume_session_id=session_id,
                 original_task=task, depth=int(meta.get("depth") or 1),
