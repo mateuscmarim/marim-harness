@@ -77,6 +77,14 @@ class JobRegistry:
         # the current turn — the wake scheduler skips these so a redundant
         # autonomous turn doesn't fire after the agent already got the result.
         self._wake_consumed: set[str] = set()
+        # Poll ledger: consecutive identical read-only observations per surface
+        # ("list", "output:<job-id>") since the last state change. Read by the
+        # jobs tools (via note_poll) to nudge a model out of busy-polling with
+        # an escalating no-change response; any register/settle/clear resets it
+        # because the next poll genuinely has something new to see. Deliberately
+        # NOT reset at turn boundaries — the ledger keys off job state, not
+        # turns (spec 2026-07-02-job-poll-guard-design).
+        self._poll_ledger: dict[str, tuple[str, int]] = {}
 
     def _notify(self) -> None:
         if self.on_change is not None:
@@ -89,6 +97,7 @@ class JobRegistry:
         if job.status != "running":
             return
         job.status = status
+        self._poll_ledger.clear()
         if result is not None:
             job.result = result
         self._finished_since_turn.append(job.id)
@@ -97,6 +106,17 @@ class JobRegistry:
     def _next_id(self) -> str:
         self._counter += 1
         return f"job-{self._counter}"
+
+    def note_poll(self, key: str, snapshot: str) -> int:
+        """Record one read-only poll of ``key`` (a tool surface: ``"list"`` or
+        ``"output:<job-id>"``) that observed ``snapshot``, and return how many
+        consecutive polls of that key saw this exact snapshot (1 = first sight,
+        or changed since last time). Snapshots must be stable projections —
+        never include elapsed-time renderings, or the count can never rise."""
+        last, count = self._poll_ledger.get(key, ("", 0))
+        count = count + 1 if snapshot == last else 1
+        self._poll_ledger[key] = (snapshot, count)
+        return count
 
     def register(
         self,
@@ -133,6 +153,7 @@ class JobRegistry:
         task.add_done_callback(_on_done)
         job.task = task
         self._jobs[job.id] = job
+        self._poll_ledger.clear()
         self._notify()
         return job.id
 
@@ -308,6 +329,7 @@ class JobRegistry:
         # Drained buffers reference only settled jobs, all of which are now gone.
         self._finished_since_turn = []
         self._wake_consumed.clear()
+        self._poll_ledger.clear()
         self._notify()
 
     def _digest_tail(self, job: Job) -> str:

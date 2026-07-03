@@ -564,6 +564,39 @@ async def test_cancel_all_settles_dependent_cancelled_not_failed():
     assert reg.has_finished_pending() is False
 
 
+@pytest.mark.anyio
+async def test_note_poll_counts_identical_and_resets_on_change():
+    reg = JobRegistry()
+    assert reg.note_poll("list", "A") == 1
+    assert reg.note_poll("list", "A") == 2
+    assert reg.note_poll("list", "A") == 3
+    assert reg.note_poll("list", "B") == 1  # snapshot changed → fresh count
+    assert reg.note_poll("output:job-1", "x") == 1  # keys are independent
+    assert reg.note_poll("list", "B") == 2  # …and don't disturb each other
+
+
+@pytest.mark.anyio
+async def test_note_poll_ledger_clears_on_state_changes():
+    reg = JobRegistry()
+    assert reg.note_poll("list", "A") == 1
+
+    gate = asyncio.Event()
+
+    async def _work() -> str:
+        await gate.wait()
+        return "ok"
+
+    jid = reg.register("agent", "w", _work())  # register clears the ledger
+    assert reg.note_poll("list", "A") == 1
+    assert reg.note_poll("list", "A") == 2
+    gate.set()
+    await reg.wait(jid, 5)  # settle clears the ledger
+    assert reg.note_poll("list", "A") == 1
+    reg.note_poll("list", "A")
+    reg.clear_history()  # /clear clears the ledger
+    assert reg.note_poll("list", "A") == 1
+
+
 def _sleep_then(value, seconds):
     async def coro():
         await asyncio.sleep(seconds)
