@@ -777,6 +777,7 @@ async def spawn_agent(
                 "agent", label,
                 _run_after(ctx.deps.jobs, after_ids, task, _start_inner, state),
                 output_fn=_waiting_output,
+                stream_id=ctx.tool_call_id or None,
             )
         else:
             job_id = ctx.deps.jobs.register(
@@ -785,6 +786,7 @@ async def spawn_agent(
                     type, task, mcp_names, budget, model, isolation,
                     ctx.tool_call_id or "", ctx.deps.subagent_depth,
                 ),
+                stream_id=ctx.tool_call_id or None,
             )
         if auto_detached:
             return _detach_handoff(job_id)

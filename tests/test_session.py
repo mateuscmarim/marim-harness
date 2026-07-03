@@ -46,7 +46,7 @@ def test_create_save_and_load_roundtrip(tmp_path: Path):
 
     # A fresh store for the same id loads the saved conversation.
     again = mgr.store(store.session_id)
-    messages, usage, tasks, _ = again.load()
+    messages, usage, tasks, _, _ = again.load()
     assert len(messages) == len(history)
     assert type(messages[0]).__name__ == type(history[0]).__name__
     assert usage.total_tokens == 20
@@ -67,7 +67,7 @@ def test_save_meta_patches_name_without_touching_messages(tmp_path: Path):
     assert again.name == "Autonamed Title"
     assert again.auto_named is False
     # The messages array on disk is untouched by the metadata patch.
-    messages, usage, _, _ = again.load()
+    messages, usage, _, _, _ = again.load()
     assert len(messages) == len(history)
     assert usage.total_tokens == 7
 
@@ -100,7 +100,7 @@ def test_image_bytes_survive_save_and_load(tmp_path: Path, monkeypatch):
     ]
     store.save(history, RunUsage())
 
-    messages, _, _, _ = mgr.store(store.session_id).load()
+    messages, _, _, _, _ = mgr.store(store.session_id).load()
     loaded = messages[0].parts[0].content[1]
     assert isinstance(loaded, BinaryContent)
     assert loaded.data == raw  # byte-identical, not double-encoded/garbled
@@ -124,7 +124,7 @@ def test_usage_round_trips_all_fields(tmp_path: Path):
     )
     store.save(_history(), usage)
 
-    _, loaded, _, _ = mgr.store(store.session_id).load()
+    _, loaded, _, _, _ = mgr.store(store.session_id).load()
     assert loaded == usage
     assert loaded.total_tokens == usage.total_tokens
     assert loaded.requests == 4
@@ -136,7 +136,7 @@ def test_usage_round_trips_all_fields(tmp_path: Path):
 def test_load_missing_returns_empty(tmp_path: Path):
     mgr = _manager(tmp_path)
     store = mgr.create()
-    messages, usage, tasks, _ = store.load()
+    messages, usage, tasks, _, _ = store.load()
     assert messages == []
     assert usage.total_tokens == 0
     assert tasks == []
@@ -179,7 +179,7 @@ def test_tasks_round_trip(tmp_path: Path):
         {"text": "second", "status": "in_progress"},
     ]
     store.save(_history(), RunUsage(), tasks)
-    _, _, loaded, _ = mgr.store(store.session_id).load()
+    _, _, loaded, _, _ = mgr.store(store.session_id).load()
     assert loaded == tasks
 
 
@@ -191,7 +191,7 @@ def test_legacy_file_without_tasks_loads_empty(tmp_path: Path):
     data = json.loads(store.path.read_text())
     del data["tasks"]
     store.path.write_text(json.dumps(data))
-    _, _, loaded, _ = mgr.store(store.session_id).load()
+    _, _, loaded, _, _ = mgr.store(store.session_id).load()
     assert loaded == []
 
 
@@ -643,7 +643,7 @@ async def test_compaction_persists_the_compacted_history(tmp_path):
     compacted_len = len(ctrl.history)
     assert compacted_len < 3  # the compaction actually fired
     # A fresh load from disk must reflect the compacted history, not the full one.
-    reloaded, _, _, _ = mgr.store(store.session_id).load()
+    reloaded, _, _, _, _ = mgr.store(store.session_id).load()
     assert len(reloaded) == compacted_len
 
 
@@ -739,7 +739,7 @@ def test_session_save_load_round_trips_image(tmp_path, monkeypatch):
     store.save(history, RunUsage())
     # session JSON must not carry the base64 payload inline
     assert "marim-image-cache://" in store.path.read_text()
-    loaded, _usage, _tasks, _ = store.load()
+    loaded, _usage, _tasks, _, _ = store.load()
     parts = loaded[0].parts
     binaries = [c for c in parts[0].content if isinstance(c, BinaryContent)]
     assert binaries and binaries[0].data == b"\x89PNGz"
@@ -796,3 +796,27 @@ def test_compact_threshold_reads_the_warm_cache(tmp_path):
     ctrl.limits = ContextLimits(budget=42_000)
     ctrl.get_model_id = lambda: "m"
     assert ctrl.compact_threshold == 42_000  # sync, no resolve needed
+
+
+# ---------------------------------------------------------------------------
+# jobs history round trip
+# ---------------------------------------------------------------------------
+
+
+def test_session_store_round_trips_jobs_history(tmp_path):
+    store = SessionStore(path=tmp_path / "s.json", workspace_root=tmp_path,
+                         session_id="sid", name="s")
+    entry = {"id": "job-1", "kind": "agent", "label": "general: x",
+             "status": "done", "result_tail": "ok", "stream_id": "sg-1",
+             "finished_at": "2026-07-03T00:00:00+00:00"}
+    store.save([], RunUsage(), jobs=[entry])
+    *_, jobs = store.load()
+    assert jobs == [entry]
+
+
+def test_session_store_without_jobs_key_loads_empty(tmp_path):
+    store = SessionStore(path=tmp_path / "s.json", workspace_root=tmp_path,
+                         session_id="sid", name="s")
+    store.save([], RunUsage())      # no jobs kwarg — old-style file
+    *_, jobs = store.load()
+    assert jobs == []

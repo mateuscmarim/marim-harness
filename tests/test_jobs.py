@@ -603,3 +603,42 @@ def _sleep_then(value, seconds):
         return value
 
     return coro()
+
+
+@pytest.mark.anyio
+async def test_export_and_import_settled_history():
+    reg = JobRegistry()
+
+    async def _ok() -> str:
+        return "did the thing " * 40  # long → tail-capped on export
+
+    jid = reg.register("agent", "general: do it", _ok(), stream_id="sg-1")
+    await reg.wait(jid)
+    exported = reg.export_settled()
+    assert len(exported) == 1
+    entry = exported[0]
+    assert entry["id"] == jid and entry["stream_id"] == "sg-1"
+    assert entry["status"] == "done" and len(entry["result_tail"]) <= 210
+    assert entry["finished_at"]
+
+    fresh = JobRegistry()
+    fresh.import_history(exported)
+    assert [j.id for j in fresh.history] == [jid]
+    assert fresh.history[0].stream_id == "sg-1"
+    # Imported ids seed the counter so a new job never collides with history.
+    assert fresh.register("bash", "x", _noop()) != jid
+
+
+async def _noop() -> str:
+    return ""
+
+
+def test_import_history_is_not_live():
+    reg = JobRegistry()
+    reg.import_history([{"id": "job-1", "kind": "agent", "label": "l",
+                         "status": "done", "result_tail": "r",
+                         "stream_id": "sg", "finished_at": "t"}])
+    assert reg.get("job-1") is None          # not pollable/killable
+    assert not reg.has_finished_pending()    # never enters the digest
+    reg.clear_history()
+    assert reg.history == []

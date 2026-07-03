@@ -402,7 +402,9 @@ async def test_spawn_agent_forwards_mcp_background(tmp_path):
     deps = _make_deps(tmp_path)
     deps.services.run_background_agent = fake_bg
     # Close the coroutine in the stub to prevent "coroutine was never awaited" warning.
-    deps.jobs = SimpleNamespace(register=lambda kind, label, coro: (coro.close(), "job-1")[1])
+    deps.jobs = SimpleNamespace(
+        register=lambda kind, label, coro, **kw: (coro.close(), "job-1")[1]
+    )
     ctx = SimpleNamespace(deps=deps, tool_call_id="tc2")
 
     out = await spawn_agent(ctx, "general", "do it", background=True, mcp=["sentry"])
@@ -501,7 +503,7 @@ async def test_spawn_agent_coerces_comma_separated_mcp_background(tmp_path):
     deps = _make_deps(tmp_path)
     deps.services.run_background_agent = fake_bg
     deps.jobs = SimpleNamespace(
-        register=lambda kind, label, coro: (coro.close(), "job-1")[1]
+        register=lambda kind, label, coro, **kw: (coro.close(), "job-1")[1]
     )
     ctx = SimpleNamespace(deps=deps, tool_call_id="tc5")
 

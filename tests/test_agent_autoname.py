@@ -190,7 +190,7 @@ async def test_explicit_rename_never_persists_history(tmp_path: Path):
     patch only the name header on disk — the messages array stays untouched."""
     h = _autoname_harness(tmp_path, _fake_titler, name="start")
     await h.run_turn("do work")  # persists a clean history
-    on_disk, _, _, _ = h.session.store.load()
+    on_disk, _, _, _, _ = h.session.store.load()
 
     # Simulate the mid-approval state: in-memory history has grown past what
     # was persisted (and must not reach disk via the rename).
@@ -199,7 +199,7 @@ async def test_explicit_rename_never_persists_history(tmp_path: Path):
 
     again = h.session.manager.store(h.session.store.session_id)
     assert again.name == "Mid-turn Name"
-    messages, _, _, _ = again.load()
+    messages, _, _, _, _ = again.load()
     assert len(messages) == len(on_disk)
 
 

@@ -313,14 +313,16 @@ class HarnessApp(App):
         self._render_tasks()
 
     def _render_jobs(self) -> None:
-        """Repaint the jobs panel from the registry's current jobs."""
+        """Repaint the jobs panel from the registry's current jobs, prior-session
+        history first (history rows are terminal, so render_jobs already
+        suffixes them ``(done)``/``(failed)``)."""
         if not self.is_running:
             return  # a job changed before mount / after teardown — on_mount paints
         try:
             panel = self.query_one(JobPanel)
         except NoMatches:
             return  # tearing down; nothing to paint
-        panel.show_jobs(self.jobs.list())
+        panel.show_jobs(self.jobs.history + self.jobs.list())
 
     def _on_jobs_changed(self) -> None:
         """Live callback from the job registry — repaint as jobs launch and

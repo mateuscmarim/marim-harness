@@ -72,7 +72,7 @@ def test_concurrent_saves_to_same_session_are_serialized(tmp_path: Path):
 
     # After concurrent saves, the file must be valid JSON with the full history —
     # not a torn write from interleaving.
-    messages, usage, tasks, dur = store.load()
+    messages, usage, tasks, dur, _ = store.load()
     assert len(messages) == len(history)
 
 

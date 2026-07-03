@@ -85,7 +85,8 @@ class SessionStore:
 
     def save(self, history: list, usage: RunUsage,
              tasks: list | None = None,
-             duration_seconds: float | None = None) -> None:
+             duration_seconds: float | None = None,
+             jobs: list | None = None) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "id": self.session_id,
@@ -108,6 +109,7 @@ class SessionStore:
                 "details": usage.details,
             },
             "tasks": tasks or [],
+            "jobs": jobs or [],
             # Cheap header field so SessionManager.list() can report the count
             # without parsing the (potentially multi-MB) messages array. Old
             # files predate it; list() falls back to len(messages) when absent.
@@ -147,11 +149,12 @@ class SessionStore:
             data["auto"] = self.auto_named
             atomic_write_text(self.path, json.dumps(data))
 
-    def load(self) -> tuple[list, RunUsage, list, float | None]:
-        """Return ``(messages, usage, tasks, duration_seconds)``. Files written
-        before task/duration tracking simply have no key and load as defaults."""
+    def load(self) -> tuple[list, RunUsage, list, float | None, list]:
+        """Return ``(messages, usage, tasks, duration_seconds, jobs)``. Files
+        written before task/duration/jobs tracking simply have no key and load
+        as defaults."""
         if not self.path.exists():
-            return [], RunUsage(), [], None
+            return [], RunUsage(), [], None, []
         try:
             data = json.loads(self.path.read_text())
         except (json.JSONDecodeError, OSError) as exc:
@@ -178,7 +181,8 @@ class SessionStore:
             tool_calls=tok.get("tool_calls", 0),
             details=tok.get("details") or {},
         )
-        return messages, usage, data.get("tasks", []), data.get("duration_seconds")
+        return (messages, usage, data.get("tasks", []),
+                data.get("duration_seconds"), data.get("jobs", []))
 
     def clear(self) -> None:
         self.path.unlink(missing_ok=True)

@@ -202,7 +202,7 @@ async def test_run_turn_persists_to_store(tmp_path: Path):
         instructions="x", store=store,
     )
     await harness.run_turn("change foo to bar")
-    messages, usage, _, _ = store.load()
+    messages, usage, _, _, _ = store.load()
     assert len(messages) > 0
     assert usage.total_tokens == harness.session.total_tokens
 
@@ -425,7 +425,7 @@ async def test_cancel_during_approval_keeps_session_resumable(tmp_path: Path):
         await harness.run_turn("change foo to bar")
 
     # On disk: resumable (no dangling tool calls)...
-    messages, _, _, _ = store.load()
+    messages, _, _, _, _ = store.load()
     assert _unanswered_tool_calls(messages) == set()
     # ...and in memory too, so the next turn can proceed.
     assert _unanswered_tool_calls(harness.session.history) == set()

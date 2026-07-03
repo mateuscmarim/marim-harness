@@ -44,7 +44,7 @@ def test_tool_search_parts_round_trip(tmp_path: Path) -> None:
     store = mgr.create("tool-search-rt")
     store.save(history, RunUsage())
 
-    messages, _, _, _ = mgr.store(store.session_id).load()
+    messages, _, _, _, _ = mgr.store(store.session_id).load()
 
     all_parts = [p for msg in messages for p in getattr(msg, "parts", [])]
     calls = [p for p in all_parts if isinstance(p, ToolSearchCallPart)]

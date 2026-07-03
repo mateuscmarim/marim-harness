@@ -11,9 +11,11 @@ agent jobs have none and read ``(still running)`` until done.
 
 State lives on :class:`~marim_harness.runtime.deps.Deps` next to the task checklist:
 tools mutate it via ``ctx.deps.jobs``, and the TUI subscribes to ``on_change`` to
-repaint a live panel. Nothing is persisted — jobs belong to the running process
-and are cancelled on exit. The agent reaches results by *pulling*
-(``job_output`` / ``wait_for_job``); nothing wakes a turn on its own.
+repaint a live panel. Live jobs belong to the running process and are cancelled
+on exit; settled summaries, though, are exported (:meth:`JobRegistry.export_settled`)
+into the session payload and re-imported as read-only ``history`` on resume, so
+the jobs panel and sub-agent cards survive a restart. The agent reaches results
+by *pulling* (``job_output`` / ``wait_for_job``); nothing wakes a turn on its own.
 """
 
 from __future__ import annotations
@@ -21,8 +23,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Literal
 
 logger = logging.getLogger(__name__)
@@ -38,11 +42,38 @@ class PrerequisiteFailed(RuntimeError):
 
 _GLYPH = {"running": "▸", "done": "+", "failed": "x", "cancelled": "x"}
 
+# The terminal statuses a persisted history entry can carry — "running" is
+# deliberately excluded (a history row is by definition settled).
+_SETTLED_STATUSES: frozenset[Status] = frozenset({"done", "failed", "cancelled"})
+
+
+def _validated_status(raw: object) -> Status:
+    """Coerce an imported history entry's ``status`` to a known :data:`Status`,
+    falling back to ``"done"`` for anything unrecognized (a forward-compat
+    guard against a session file written by a newer/older version)."""
+    return raw if raw in _SETTLED_STATUSES else "done"
+
 # How many trailing chars of a finished job's output to inline in the next-turn
 # digest. The tail carries the verdict (a test summary, a final error), so a
 # short tail lets the model read the result without a separate job_output pull,
 # while the cap keeps the prompt from ballooning when many jobs finish at once.
 _DIGEST_RESULT_CHARS = 200
+
+# How many settled-job summaries a session payload carries at most (see
+# JobRegistry.export_settled) — a long-lived session shouldn't accrete an
+# unbounded history.
+_HISTORY_CAP = 50
+
+
+def _result_tail(result: str | None) -> str:
+    """The last _DIGEST_RESULT_CHARS chars of a result, whitespace-collapsed —
+    the same verdict-carrying tail the digest inlines."""
+    if not result:
+        return ""
+    compact = " ".join(result.split())
+    if len(compact) > _DIGEST_RESULT_CHARS:
+        compact = "…" + compact[-_DIGEST_RESULT_CHARS:]
+    return compact
 
 
 @dataclass
@@ -56,6 +87,11 @@ class Job:
     label: str
     status: Status = "running"
     result: str | None = None
+    # The spawn's tool_call_id when kind == "agent" — the cross-cutting key that
+    # joins a settled job back to its sub-agent card and transcript sidecar.
+    stream_id: str | None = None
+    # UTC ISO stamp set at settle time; rides into the persisted history.
+    finished_at: str | None = None
     task: asyncio.Task | None = field(default=None, repr=False)
     kill: Callable[[], None] | None = field(default=None, repr=False)
     output_fn: Callable[[], str] | None = field(default=None, repr=False)
@@ -85,6 +121,11 @@ class JobRegistry:
         # NOT reset at turn boundaries — the ledger keys off job state, not
         # turns (spec 2026-07-02-job-poll-guard-design).
         self._poll_ledger: dict[str, tuple[str, int]] = {}
+        # Settled-job summaries imported from the persisted session (spec
+        # 2026-07-03-subagent-resume, §2). Read-only display state: never in
+        # ``_jobs``, never killable/pollable, never in the digest — a prior
+        # process already surfaced these results.
+        self.history: list[Job] = []
 
     def _notify(self) -> None:
         if self.on_change is not None:
@@ -96,6 +137,7 @@ class JobRegistry:
         wrapper's cancel path and an explicit ``cancel()`` can't double-count."""
         if job.status != "running":
             return
+        job.finished_at = datetime.now(timezone.utc).isoformat()
         job.status = status
         self._poll_ledger.clear()
         if result is not None:
@@ -126,12 +168,13 @@ class JobRegistry:
         *,
         kill: Callable[[], None] | None = None,
         output_fn: Callable[[], str] | None = None,
+        stream_id: str | None = None,
     ) -> str:
         """Schedule ``coro`` as a background job and return its id. The coroutine's
         return value becomes the job's result; an exception marks it failed; being
         cancelled marks it cancelled. Fires ``on_change`` on launch and finish."""
         job = Job(id=self._next_id(), kind=kind, label=label,
-                  kill=kill, output_fn=output_fn)
+                  kill=kill, output_fn=output_fn, stream_id=stream_id)
 
         # Drive the caller's coroutine directly as the task and settle from a
         # done-callback. A wrapper coroutine that merely `await`s ``coro`` would,
@@ -330,6 +373,7 @@ class JobRegistry:
         self._finished_since_turn = []
         self._wake_consumed.clear()
         self._poll_ledger.clear()
+        self.history = []
         self._notify()
 
     def _digest_tail(self, job: Job) -> str:
@@ -337,12 +381,41 @@ class JobRegistry:
         :data:`_DIGEST_RESULT_CHARS` chars of its result, whitespace-collapsed so
         the verdict reads on one line. Empty when the job has no result (e.g.
         cancelled)."""
-        if not job.result:
-            return ""
-        compact = " ".join(job.result.split())
-        if len(compact) > _DIGEST_RESULT_CHARS:
-            compact = "…" + compact[-_DIGEST_RESULT_CHARS:]
-        return f": {compact}"
+        tail = _result_tail(job.result)
+        return f": {tail}" if tail else ""
+
+    def export_settled(self) -> list[dict]:
+        """Summaries of every terminal job — prior-session history first, then
+        this process's settles — capped to the newest _HISTORY_CAP so a
+        long-lived session doesn't accrete unboundedly. Results are persisted as
+        tails, not full reports: the session payload must not balloon (full
+        reports were already delivered via the digest or spill files)."""
+        def entry(j: Job) -> dict:
+            return {"id": j.id, "kind": j.kind, "label": j.label,
+                    "status": j.status, "result_tail": _result_tail(j.result),
+                    "stream_id": j.stream_id, "finished_at": j.finished_at}
+
+        settled = [entry(j) for j in self._jobs.values() if j.status != "running"]
+        prior = [entry(j) for j in self.history]
+        return (prior + settled)[-_HISTORY_CAP:]
+
+    def import_history(self, entries: list[dict]) -> None:
+        """Load prior-session settled summaries as read-only ``history``. Also
+        seeds the id counter past any imported ``job-N`` so a job launched this
+        process never shares an id with a history row on the panel."""
+        self.history = [
+            Job(id=str(e.get("id", "?")), kind=str(e.get("kind", "agent")),
+                label=str(e.get("label", "")), status=_validated_status(e.get("status")),
+                result=e.get("result_tail") or None,
+                stream_id=e.get("stream_id"), finished_at=e.get("finished_at"))
+            for e in entries
+            if isinstance(e, dict)
+        ]
+        for job in self.history:
+            m = re.fullmatch(r"job-(\d+)", job.id)
+            if m:
+                self._counter = max(self._counter, int(m.group(1)))
+        self._notify()
 
     def any_running(self) -> bool:
         """True if any job is still in the ``running`` state."""

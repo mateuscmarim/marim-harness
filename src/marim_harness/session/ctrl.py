@@ -216,6 +216,7 @@ class SessionController:
             self.store.save(
                 self.history, self.usage, self.deps.tasks.to_payload(),
                 duration_seconds=self.duration_seconds + elapsed,
+                jobs=self.deps.jobs.export_settled(),
             )
             self._last_persisted_version = self.history_version
 
@@ -243,8 +244,9 @@ class SessionController:
         and ``switch_session`` so the load sequence can't drift between them.
         Returns the loaded message count."""
         assert self.store is not None  # callers guard; narrows for the type checker
-        self.history, self.usage, tasks, prev_duration = self.store.load()
+        self.history, self.usage, tasks, prev_duration, jobs = self.store.load()
         self.deps.tasks.load(tasks)
+        self.deps.jobs.import_history(jobs)
         self.duration_seconds = prev_duration or 0.0
         self._segment_start = time.monotonic()
         return len(self.history)
