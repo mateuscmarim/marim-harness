@@ -348,6 +348,11 @@ class LspManager:
         # and fan out across sub-agents for free. ``settle`` is unused here (it
         # paces the LSP push path below, not a subprocess).
         if registry.language_for(path) == "python":
+            # The external-checker shortcut must still honor the per-language
+            # disable switch — "LSP off for python" means no diagnostics
+            # subprocesses either, matching every other operation's gate.
+            if "python" in self._disabled:
+                return "LSP is disabled for python."
             diags = await checks.python_diagnostics(self.root, path, deep=deep)
             return checks.format_checks(path, diags)
         server, language, err = await self._server_for(path)

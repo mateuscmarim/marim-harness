@@ -89,7 +89,7 @@ async def test_python_diagnostics_merges_ruff_and_pyright(tmp_path, monkeypatch)
     )
 
     async def fake_run(cmd, cwd, timeout):
-        return pyright_json if cmd[0] in ("pyright", "basedpyright") else ruff_json
+        return pyright_json if "pyright" in cmd[0] else ruff_json
 
     monkeypatch.setattr(checks, "_run", fake_run)
     diags = await checks.python_diagnostics(tmp_path, "m.py", deep=True)
@@ -110,7 +110,27 @@ async def test_python_diagnostics_skips_pyright_when_absent(tmp_path, monkeypatc
 
     monkeypatch.setattr(checks, "_run", fake_run)
     await checks.python_diagnostics(tmp_path, "m.py", deep=True)
-    assert calls == ["ruff"]  # pyright absent → not invoked
+    assert calls == ["/usr/bin/ruff"]  # pyright absent → not invoked
+
+
+@pytest.mark.anyio
+async def test_python_diagnostics_invoke_resolved_binaries(tmp_path, monkeypatch):
+    """The probe resolves each checker's binary path once; the invocation must
+    use that resolved path, not re-trust a bare literal that can diverge from
+    what the probe actually found."""
+    monkeypatch.setattr(checks.shutil, "which", lambda b: f"/opt/tools/{b}")
+    checks._ruff_bin.cache_clear()
+    checks._pyright_bin.cache_clear()
+    cmds: list = []
+
+    async def fake_run(cmd, cwd, timeout):
+        cmds.append(cmd)
+        return "[]" if "ruff" in cmd[0] else "{}"
+
+    monkeypatch.setattr(checks, "_run", fake_run)
+    await checks.python_diagnostics(tmp_path, "m.py", deep=True)
+    assert cmds[0][0] == "/opt/tools/ruff"
+    assert cmds[1][0] == "/opt/tools/basedpyright"
 
 
 @pytest.mark.anyio

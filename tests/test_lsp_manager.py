@@ -134,6 +134,29 @@ async def test_disabled_language(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_diagnostics_honor_disabled_python(tmp_path, monkeypatch):
+    """Python diagnostics bypass the LSP server and shell out to ruff/pyright —
+    but that shortcut must still honor the per-language disable switch, like
+    every other LSP operation. Disabled means no subprocesses run."""
+    from marim_harness.lsp import checks
+
+    (tmp_path / "m.py").write_text("x = 1\n")
+    ran: list = []
+
+    async def spy_run(cmd, cwd, timeout):
+        ran.append(cmd)
+        return "[]"
+
+    monkeypatch.setattr(checks, "_run", spy_run)
+    mgr = LspManager(tmp_path, disabled=frozenset({"python"}),
+                     server_factory=lambda lang, root: None)
+    out = await mgr.diagnostics("m.py")
+    assert "disabled" in out.lower()
+    assert ran == [], "external checkers ran despite python LSP being disabled"
+    await mgr.aclose()
+
+
+@pytest.mark.anyio
 async def test_hover_and_document_symbols(tmp_path):
     (tmp_path / "m.py").write_text("x = 1\n")
     fakes: list = []

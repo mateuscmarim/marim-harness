@@ -137,10 +137,13 @@ def _ruff_bin() -> str | None:
 @lru_cache(maxsize=1)
 def _pyright_bin() -> str | None:
     """The pyright CLI to use, preferring the actively-maintained basedpyright
-    fork when present. None when neither is on PATH. Resolved once."""
+    fork when present. None when neither is on PATH. Resolved once — and
+    resolved to the *path* which() found, so the invocation runs exactly the
+    binary the probe verified."""
     for b in ("basedpyright", "pyright"):
-        if shutil.which(b):
-            return b
+        found = shutil.which(b)
+        if found:
+            return found
     return None
 
 
@@ -150,9 +153,12 @@ async def python_diagnostics(root: Path, path: str, *, deep: bool) -> list[Diag]
     independent subprocesses, so this is safe to call concurrently from many
     sub-agents. Results are sorted by position for stable output."""
     diags: list[Diag] = []
-    if _ruff_bin() is not None:
+    ruff = _ruff_bin()
+    if ruff is not None:
+        # Invoke the resolved path, not a bare "ruff" — the probe's answer is
+        # the one binary we verified exists.
         out = await _run(
-            ["ruff", "check", "--output-format=json", "--", path], root, _RUFF_TIMEOUT
+            [ruff, "check", "--output-format=json", "--", path], root, _RUFF_TIMEOUT
         )
         if out is not None:
             diags.extend(_parse_ruff(out))
