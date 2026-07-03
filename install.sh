@@ -3,9 +3,10 @@
 # Install marim as a global command (`marim`, plus `marim-harness`).
 #
 # Usage:
-#   ./install.sh                 # install, prompt for the OpenRouter API key
+#   ./install.sh                 # install with the TUI, prompt for the OpenRouter API key
 #   ./install.sh --key sk-or-... # install non-interactively with a key
 #   ./install.sh --no-key        # install, don't touch the API key
+#   ./install.sh --no-tui        # headless-only install (no textual dependency)
 #
 # Re-run any time to upgrade; the install is editable, so source edits in this
 # checkout take effect on the next `marim` run without reinstalling.
@@ -16,13 +17,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 KEY=""
 ASK_KEY=1
+TUI=1
 for arg in "$@"; do
     case "$arg" in
         --key=*) KEY="${arg#--key=}"; ASK_KEY=0 ;;
         --key) shift; KEY="${1:-}"; ASK_KEY=0 ;;
         --no-key) ASK_KEY=0 ;;
+        --no-tui) TUI=0 ;;
         -h|--help)
-            sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
             exit 0 ;;
         *) ;;
     esac
@@ -37,8 +40,12 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 # 2. Install (editable) — provides both `marim` and `marim-harness` on PATH.
-echo "Installing marim from $SCRIPT_DIR ..."
-uv tool install --force --editable "$SCRIPT_DIR"
+TARGET="$SCRIPT_DIR"
+if [ "$TUI" -eq 1 ]; then
+    TARGET="$SCRIPT_DIR[tui]"
+fi
+echo "Installing marim from $TARGET ..."
+uv tool install --force --editable "$TARGET"
 
 # 3. Seed the global config from the template, if absent.
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/marim"
