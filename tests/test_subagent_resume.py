@@ -282,8 +282,12 @@ def _resume_fake_cli(tmp_path, argv_file):
         f"#!{sys.executable}\n"
         "import json, sys\n"
         f"open({str(argv_file)!r}, 'w').write(json.dumps(sys.argv))\n"
+        # A DIFFERENT session id than the one seeded in meta ("sess-abc"): a fork
+        # on --resume mints a new session, and the finished sidecar must record the
+        # NEWEST id (result.session_id wins over the meta's), so a later re-resume
+        # keys off the fork, not the exhausted original.
         'sys.stdout.write(json.dumps({"type": "system", "subtype": "init",'
-        ' "session_id": "sess-abc", "model": "m"}) + "\\n")\n'
+        ' "session_id": "sess-def", "model": "m"}) + "\\n")\n'
         # An assistant text event so the translated transcript is non-empty —
         # TranscriptStore.write no-ops on an empty message list (see
         # transcripts.py), which would otherwise leave the sidecar's status
@@ -320,6 +324,52 @@ async def test_resume_cli_spawn_relaunches_with_resume_flag(tmp_path, monkeypatc
     meta = ts.read_meta("sg-cli")
     assert meta["status"] == "finished"
     assert meta["task"] == "original cli task"  # continuation prompt never leaks in
+    # Newest-session-id-wins: the fork reported "sess-def" on --resume; the finished
+    # meta must key future resumes off it, not the exhausted seeded "sess-abc".
+    assert meta["cli_session_id"] == "sess-def"
+
+
+@pytest.mark.anyio
+async def test_resume_cli_preserves_prior_transcript(tmp_path, monkeypatch):
+    """The resumed CLI run's translator starts empty and `claude -p --resume` does
+    not re-emit prior history, so without prepending the persisted transcript the
+    resume's checkpoints (and final write) would overwrite the sidecar with
+    tail-only content, destroying the pre-interrupt segment the pane replays."""
+    argv_file = tmp_path / "argv.json"
+    monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", _resume_fake_cli(tmp_path, argv_file))
+    _cli_agent(tmp_path)
+    store = _session_store(tmp_path)
+    harness = _make_harness(_resume_model(), _make_deps(tmp_path), store=store)
+    ts = TranscriptStore(store.path, store.session_id)
+    ts.write("sg-keep", _dangling_history(), 2000, meta=_cli_meta("sg-keep"))
+    job_id, message = await harness.subagents.resume_spawn("sg-keep")
+    assert job_id is not None, message
+    await harness.deps.jobs.wait(job_id)
+    msgs = ts.read("sg-keep")
+    calls = [p for m in msgs for p in getattr(m, "parts", [])
+             if isinstance(p, ToolCallPart)]
+    texts = [p for m in msgs for p in getattr(m, "parts", [])
+             if isinstance(p, TextPart)]
+    assert any(p.tool_call_id == "dangling" for p in calls), \
+        "the pre-interrupt segment must survive the resume's checkpoints"
+    assert any("resuming" in str(p.content) for p in texts), \
+        "the continuation's content must be present too"
+    assert ts.read_meta("sg-keep")["status"] == "finished"
+
+
+@pytest.mark.anyio
+async def test_cli_spawn_records_caller_depth(tmp_path, monkeypatch):
+    """A CLI spawn made by a nested native sub-agent records the real depth
+    (caller_depth + 1), not a hardcoded 1."""
+    argv_file = tmp_path / "argv.json"
+    monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", _resume_fake_cli(tmp_path, argv_file))
+    _cli_agent(tmp_path)
+    store = _session_store(tmp_path)
+    harness = _make_harness(_resume_model(), _make_deps(tmp_path), store=store)
+    out = await harness.subagents.run("cli-worker", "task", "sg-depth", caller_depth=1)
+    assert out == "resumed-cli-ok"
+    meta = TranscriptStore(store.path, store.session_id).read_meta("sg-depth")
+    assert meta["depth"] == 2
 
 
 @pytest.mark.anyio

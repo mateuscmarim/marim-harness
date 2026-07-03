@@ -118,8 +118,13 @@ double-press guard, no live job on the stream_id), branch on
    pruned, wrong machine), the process fails, the job settles failed, and the CLI's
    error renders on the card — the same containment every CLI spawn already has.
 
-The resumed run checkpoints too (same closure), so a resume interrupted *again* remains
-resumable; the final write stamps `finished` with the CLI's usage
+The resumed run reads the previously persisted transcript before relaunching and
+prepends it to every checkpoint *and* the final write — the CLI's `--resume` stream
+carries only the continuation, not the prior history, so without this prefix the
+resume would overwrite the sidecar with tail-only content and destroy the pre-interrupt
+segment (including the demuxed-children entries) the pane replays. The resumed run
+checkpoints too (same closure), so a resume interrupted *again* remains resumable; the
+final write stamps `finished` with the CLI's usage
 (`synth_usage`/`sum_result_usages`, unchanged).
 
 ## 4. What the user sees

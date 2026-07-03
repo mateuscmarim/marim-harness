@@ -301,12 +301,14 @@ class SessionView:
                 elif meta_status == "finished":
                     card.finish("", status="done")
                 elif meta_status == "failed":
-                    # Only ever reached via the CLI backend. A permanently-failed
-                    # *native* spawn deliberately leaves its sidecar at status
-                    # "running" (no terminal write happens on a crash), so it
-                    # replays as interrupted/resumable — the "retry it" semantic —
-                    # and never lands here. The CLI path is the sole writer of a
-                    # terminal "failed" meta (see _execute_cli_spawn).
+                    # Currently unreachable-by-writers: nothing in src/ writes a
+                    # terminal "failed" meta. A permanently-failed *native* spawn
+                    # deliberately leaves its sidecar at status "running" (no
+                    # terminal write happens on a crash), so it replays as
+                    # interrupted/resumable — the "retry it" semantic. A CLI
+                    # failure now leaves a checkpointed "running" sidecar too, for
+                    # the same reason. This arm is kept as forward-compat for a
+                    # future terminal-status writer.
                     card.finish("", status="failed")
                 elif meta_status == "running":
                     # A sidecar checkpointed mid-run but never finalized: the spawn

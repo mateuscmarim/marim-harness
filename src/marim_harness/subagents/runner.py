@@ -698,12 +698,12 @@ class SubagentRunner:
         # thread it through to _prepare_spawn/build so a native spawn doesn't pay the
         # walk a second time — it matters on a fan-out (2N walks → N).
         defn = find_agent(self.deps.workspace.root, type)
+        depth = caller_depth + 1
         if defn is not None and defn.backend == "claude-cli":
             return await self._execute_cli_spawn(
                 defn, task, work_root, iso, mcp_names, max_output_chars,
-                model, stream_id, background=background,
+                model, stream_id, background=background, depth=depth,
             )
-        depth = caller_depth + 1
         prep = await self._prepare_spawn(
             type, task, mcp_names, max_output_chars, model,
             iso, work_root, stream_id, debug=debug, t0=t0, defn=defn, depth=depth,
@@ -941,6 +941,7 @@ class SubagentRunner:
         mcp_names: list[str] | None, max_output_chars: int | None,
         model: str | None, stream_id: str, *, background: bool,
         resume_session_id: str | None = None, original_task: str | None = None,
+        depth: int = 1, transcript_prefix: list | None = None,
     ) -> str:
         """Run a ``backend: claude-cli`` agent inside the same lifecycle the native
         path uses: hooks bracketing, output cap/spill, worktree close, background
@@ -964,7 +965,7 @@ class SubagentRunner:
             # snapshots the dict before stamping.
             meta = {
                 "stream_id": stream_id, "type": defn.name, "task": hook_task,
-                "model": model, "mcp": None, "depth": 1,
+                "model": model, "mcp": None, "depth": depth,
                 "max_output_chars": max_output_chars,
                 "isolation": iso["branch"] if iso else None,
                 "status": "running",
@@ -976,8 +977,16 @@ class SubagentRunner:
                            _meta=meta) -> None:
                 if session_id:
                     _meta["cli_session_id"] = session_id
-                self._save_transcript(stream_id, messages, meta=_meta,
-                                      cap_reasoning=True)
+                # The resumed process's stream carries only the CONTINUATION —
+                # `claude -p --resume` does not re-emit the prior history. Without
+                # the prefix, this checkpoint would overwrite the sidecar with
+                # tail-only content, destroying the interrupted segment (incl. the
+                # demuxed-children entries) the pane replays (spec §4). On a fresh
+                # spawn transcript_prefix is None, so this is a plain passthrough.
+                # cap_transcript (inside TranscriptStore.write) bounds the combined
+                # payload.
+                self._save_transcript(stream_id, (transcript_prefix or []) + messages,
+                                      meta=_meta, cap_reasoning=True)
 
             checkpoint = _checkpoint
 
@@ -1023,7 +1032,10 @@ class SubagentRunner:
                 "usage": {"input": result.usage.input_tokens,
                           "output": result.usage.output_tokens},
             }
-        self._save_transcript(stream_id, result.transcript, meta=final_meta)
+        # Same prefix rule as the checkpoint above: the final write is also
+        # tail-only for a resumed run, so prepend the pre-interrupt segment.
+        self._save_transcript(stream_id, (transcript_prefix or []) + result.transcript,
+                              meta=final_meta)
         # Claude-side sub-agents (the CLI's own Agent/Task spawns) each get a
         # sidecar under their stream id — the same id their live card streamed
         # under — so the sub-agents screen can replay them after a resume.
@@ -1292,6 +1304,16 @@ class SubagentRunner:
             except WorktreeError as exc:
                 return None, f"Couldn't reopen the isolated worktree: {exc}"
             iso = {"repo": repo, "branch": branch, "path": path}
+        # Read the previously persisted transcript before relaunching. The resumed
+        # CLI process's stream carries only the continuation (`claude -p --resume`
+        # does not re-emit prior history), so the resume's checkpoints and final
+        # write must PREPEND this prefix or they'd overwrite the sidecar with
+        # tail-only content, destroying the pre-interrupt segment (incl. the
+        # demuxed children) the pane replays (spec §4). Best-effort: an unreadable
+        # transcript yields [], so the resume proceeds tail-only rather than
+        # refusing — resumability trumps a perfect replay.
+        store = self._transcript_store()
+        prior = (store.read(stream_id) or []) if store is not None else []
         label = f"{type_}: resumed — {task}"
         job_id = self.deps.jobs.register(
             "agent", label,
@@ -1300,7 +1322,8 @@ class SubagentRunner:
                 iso["path"] if iso else None, iso,
                 None, meta.get("max_output_chars"), meta.get("model"), stream_id,
                 background=True, resume_session_id=session_id,
-                original_task=task,
+                original_task=task, depth=int(meta.get("depth") or 1),
+                transcript_prefix=prior,
             ),
             stream_id=stream_id,
         )
