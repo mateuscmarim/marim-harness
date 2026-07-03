@@ -874,3 +874,64 @@ async def test_combined_job_tool_routes_through_the_guard(tmp_path):
     assert "end your turn" in second  # same guard as the standalone jobs() tool
     gate.set()
     await ctx.deps.jobs.wait(jid, 5)
+
+
+@pytest.mark.anyio
+async def test_wait_timeout_appends_end_turn_nudge_when_interactive(tmp_path):
+    from marim_harness.tools.provider import wait_for_job
+
+    ctx, gate, jid = await _poll_ctx(tmp_path)
+    ctx.deps.ui.interactive = True
+    out = await wait_for_job(ctx, jid, timeout=0.01)
+    assert "still running" in out
+    assert "end your turn" in out  # the wake loop makes ending the turn safe
+    gate.set()
+    await ctx.deps.jobs.wait(jid, 5)
+
+
+@pytest.mark.anyio
+async def test_wait_timeout_headless_keeps_bare_note(tmp_path):
+    from marim_harness.tools.provider import wait_for_job
+
+    ctx, gate, jid = await _poll_ctx(tmp_path)
+    assert ctx.deps.ui.interactive is False  # headless default: no wake loop
+    out = await wait_for_job(ctx, jid, timeout=0.01)
+    assert "still running" in out
+    assert "end your turn" not in out
+    gate.set()
+    await ctx.deps.jobs.wait(jid, 5)
+
+
+@pytest.mark.anyio
+async def test_wait_success_has_no_nudge(tmp_path):
+    from marim_harness.tools.provider import wait_for_job
+
+    ctx, gate, jid = await _poll_ctx(tmp_path)
+    ctx.deps.ui.interactive = True
+    gate.set()
+    out = await wait_for_job(ctx, jid, timeout=5)
+    assert out == "done!"
+
+
+@pytest.mark.anyio
+async def test_wait_unknown_job_has_no_nudge(tmp_path):
+    from marim_harness.tools.provider import wait_for_job
+
+    ctx, gate, jid = await _poll_ctx(tmp_path)
+    ctx.deps.ui.interactive = True
+    out = await wait_for_job(ctx, "job-999", timeout=0.01)
+    assert out == "No job 'job-999'."
+    gate.set()
+    await ctx.deps.jobs.wait(jid, 5)
+
+
+@pytest.mark.anyio
+async def test_combined_job_wait_timeout_nudges(tmp_path):
+    from marim_harness.tools.provider import job
+
+    ctx, gate, jid = await _poll_ctx(tmp_path)
+    ctx.deps.ui.interactive = True
+    out = await job(ctx, "wait", jid, timeout=0.01)
+    assert "still running" in out and "end your turn" in out
+    gate.set()
+    await ctx.deps.jobs.wait(jid, 5)

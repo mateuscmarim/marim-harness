@@ -958,6 +958,29 @@ def _job_output_read(ctx: RunContext[Deps], id: str) -> str:
     return _guarded_poll_response(ctx, f"output:{id}", body, any_running=running)
 
 
+_WAIT_TIMEOUT_NUDGE = (
+    "If you don't need its result to continue this turn, end your turn — the "
+    "harness wakes you when it finishes and delivers its report. Wait again "
+    "only if you must block on it now."
+)
+
+
+async def _job_wait(ctx: RunContext[Deps], id: str, timeout: float) -> str:
+    """The shared body of wait_for_job() and job("wait"). A timed-out wait is
+    detected by the job still being in "running" state after the wait returns
+    (the registry's message stays opaque here); interactive sessions get an
+    end-your-turn nudge appended because the wake loop makes that the cheaper
+    move, while headless — which has no wake loop and re-waiting IS the right
+    call — keeps the bare note. Softer than the poll guard on purpose: a
+    timed-out wait sometimes precedes a legitimate re-wait mid-task."""
+    body = await ctx.deps.jobs.wait(id, timeout)
+    target = ctx.deps.jobs.get(id)
+    timed_out = target is not None and target.status == "running"
+    if timed_out and ctx.deps.ui.interactive:
+        return f"{body}\n\n{_WAIT_TIMEOUT_NUDGE}"
+    return body
+
+
 def jobs(ctx: RunContext[Deps]) -> str:
     """List the background jobs you've launched this session, with their id, kind
     (bash/agent), label, and status (running/done/failed/cancelled). Use this to
@@ -979,11 +1002,13 @@ async def wait_for_job(ctx: RunContext[Deps], id: str, timeout: float = 60) -> s
     """Block until a background job finishes (up to `timeout` seconds — note this
     one is seconds, unlike bash's millisecond timeout), then
     return its result. If it's still running when the timeout elapses, the job
-    keeps going and you get a "still running" note — call again or check
-    job_output later. Use this when you need a job's result before continuing.
-    To make progress meanwhile, emit independent read_file/grep calls in the SAME
-    response as this wait — they run concurrently while the job finishes."""
-    return await ctx.deps.jobs.wait(id, timeout)
+    keeps going and you get a "still running" note — if you don't need the
+    result to continue this turn, end your turn instead of re-waiting; the
+    report is delivered when it finishes. Use this only when you must block on
+    a job's result before continuing. To make progress meanwhile, emit
+    independent read_file/grep calls in the SAME response as this wait — they
+    run concurrently while the job finishes."""
+    return await _job_wait(ctx, id, timeout)
 
 
 async def cancel_job(ctx: RunContext[Deps], id: str) -> str:
@@ -1003,7 +1028,9 @@ async def job(
     - "output": read job `id`'s output without blocking — final result if done,
       live output so far for a running bash job.
     - "wait": block until job `id` finishes (up to `timeout` seconds) and return
-      its result; a still-running note if the timeout elapses (the job keeps going).
+      its result; a still-running note if the timeout elapses (the job keeps
+      going — if you don't need the result this turn, end your turn instead of
+      re-waiting; the report is delivered when it finishes).
     - "cancel": stop running job `id` (kills its process or cancels its run).
     `id` is required for every action except "list"; `timeout` applies only to
     "wait" and is in seconds (unlike bash's millisecond timeout). Never call
@@ -1016,7 +1043,7 @@ async def job(
     if action == "output":
         return _job_output_read(ctx, id)
     if action == "wait":
-        return await ctx.deps.jobs.wait(id, timeout)
+        return await _job_wait(ctx, id, timeout)
     return await ctx.deps.jobs.cancel(id)  # action == "cancel"
 
 
