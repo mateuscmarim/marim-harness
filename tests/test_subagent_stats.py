@@ -17,6 +17,7 @@ class FakeAgent:
     cost_text: str | None = None
     tool_count: int = 0
     detached: bool = False
+    waiting: bool = False
     _title: str = "map the codebase"
     _dur: str = "12s"
     stream_id: str = ""
@@ -176,3 +177,37 @@ def test_aggregate_counts_every_agent_once():
     stats = aggregate([parent, child], cost_of=lambda a: 0.0)
     assert stats.total == 2
     assert stats.tokens == 140
+
+
+def test_status_glyph_waiting_variant():
+    # A pending agent blocked on after= prerequisites shows ⧗, not the running ▸.
+    assert status_glyph("pending", waiting=True) == "⧗"
+    assert status_glyph("pending", waiting=False) == "▸"
+    # Terminal states win over a stale waiting flag.
+    assert status_glyph("done", waiting=True) == "✓"
+    assert status_glyph("failed", waiting=True) == "✕"
+
+
+def test_row_cells_waiting_agent_gets_hourglass():
+    a = FakeAgent(status="pending", waiting=True)
+    assert row_cells(a)[0] == "⧗"
+
+
+def test_row_cells_tolerates_agents_without_waiting_field():
+    # FakeNode has no `waiting` attribute — row_cells must not require it.
+    n = FakeNode(stream_id="s1")
+    assert row_cells(n)[0] == "✓"
+
+
+def test_aggregate_splits_waiting_out_of_running():
+    agents = [
+        FakeAgent(status="pending", waiting=True, tokens=10),
+        FakeAgent(status="pending", tokens=20),
+        FakeAgent(status="done", tokens=30),
+    ]
+    stats = aggregate(agents, cost_of=lambda a: 0.0)
+    assert stats.total == 3
+    assert stats.waiting == 1
+    assert stats.running == 1  # the genuinely-executing one only
+    assert stats.done == 1
+    assert stats.tokens == 60

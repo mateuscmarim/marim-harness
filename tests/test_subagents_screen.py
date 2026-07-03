@@ -618,3 +618,21 @@ def test_repaint_list_survives_uncomposed_view():
     viewer.open = True
     # Must return without raising even though the view's list isn't composed.
     assert viewer._repaint_list() is None
+
+
+@pytest.mark.anyio
+async def test_summary_bar_shows_waiting_segment_only_when_nonzero():
+    from tests.test_subagent_stats import FakeAgent
+
+    app = _ListApp()
+    async with app.run_test():
+        summ = app.query_one(SubAgentSummary)
+        summ.refresh_totals(aggregate(
+            [FakeAgent(status="pending", waiting=True), FakeAgent(status="done")],
+            cost_of=lambda a: 0.0,
+        ))
+        assert "1 waiting" in str(summ.render())
+        summ.refresh_totals(aggregate(
+            [FakeAgent(status="done")], cost_of=lambda a: 0.0,
+        ))
+        assert "waiting" not in str(summ.render())

@@ -53,9 +53,13 @@ def _row_prefix(depth: int, is_last: bool) -> str:
     return "  " * (depth - 1) + ("└─ " if is_last else "├─ ")
 
 
-def status_glyph(status: str) -> str:
-    """The list glyph for a sub-agent status; running agents get a ▸ marker."""
-    return STATUS_GLYPH.get(status, "▸")
+def status_glyph(status: str, waiting: bool = False) -> str:
+    """The list glyph for a sub-agent status; running agents get a ▸ marker,
+    and a non-terminal agent blocked on after= prerequisites gets ⧗ so a
+    stalled fan-out doesn't read as busier than it is."""
+    if status in STATUS_GLYPH:
+        return STATUS_GLYPH[status]
+    return "⧗" if waiting else "▸"
 
 
 def row_cells(agent, prefix: str = "") -> list[str]:
@@ -69,7 +73,7 @@ def row_cells(agent, prefix: str = "") -> list[str]:
     label = f"{prefix}{label}"
     tokens = human_tokens(agent.tokens) if agent.tokens else ""
     return [
-        status_glyph(agent.status),
+        status_glyph(agent.status, getattr(agent, "waiting", False)),
         label,
         str(agent.tool_count),
         tokens,
@@ -82,6 +86,7 @@ def row_cells(agent, prefix: str = "") -> list[str]:
 class SummaryStats:
     total: int
     running: int
+    waiting: int
     done: int
     failed: int
     tokens: int
@@ -92,8 +97,10 @@ def aggregate(agents: list, cost_of: Callable[[object], float]) -> SummaryStats:
     """Roll up the session's sub-agents for the summary bar. ``cost_of`` maps an
     agent to its dollar cost (injected so this stays free of usage/model wiring).
     A failed *or* denied agent counts as failed; everything not terminal is
-    running. Cost is blank until at least one agent is metered."""
-    running = done = failed = tokens = 0
+    running — split into *waiting* (blocked on after= prerequisites, ``getattr``
+    so plain stand-ins work) and genuinely running. Cost is blank until at least
+    one agent is metered."""
+    running = waiting = done = failed = tokens = 0
     cost = 0.0
     for a in agents:
         tokens += a.tokens
@@ -102,11 +109,14 @@ def aggregate(agents: list, cost_of: Callable[[object], float]) -> SummaryStats:
             done += 1
         elif a.status in ("failed", "denied"):
             failed += 1
+        elif getattr(a, "waiting", False):
+            waiting += 1
         else:
             running += 1
     return SummaryStats(
         total=len(agents),
         running=running,
+        waiting=waiting,
         done=done,
         failed=failed,
         tokens=tokens,

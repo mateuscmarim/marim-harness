@@ -28,10 +28,10 @@ class SubAgentSummary(Static):
         super().__init__(id="subagent-summary")
 
     def refresh_totals(self, stats: SummaryStats) -> None:
-        left = (
-            f"{stats.total} sub-agents · "
-            f"{stats.running} running · {stats.done} done · {stats.failed} failed"
-        )
+        mid = f"{stats.running} running · {stats.done} done · {stats.failed} failed"
+        if stats.waiting:
+            mid = f"{stats.waiting} waiting · {mid}"
+        left = f"{stats.total} sub-agents · {mid}"
         right = f"{stats.tokens:,} tokens"
         if stats.cost_text:
             right = f"{right} · {stats.cost_text}"
