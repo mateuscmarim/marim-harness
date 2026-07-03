@@ -42,12 +42,14 @@ def load_hooks_config(workspace_root: Path, *, trust_project: bool) -> dict:
     """Merge global hook entries, project entries (only when ``trust_project``),
     and entries from enabled+trusted plugins into one ``{event: [entry, ...]}``
     map. Per-event lists are concatenated. Plugin hooks are gated by per-plugin
-    trust, independent of ``trust_project`` (which governs ``.marim/hooks.json``)."""
+    trust; *project-scope* plugins additionally require ``trust_project``, since
+    their registry (and its trust bit) is committed to the repo — the same gate
+    that governs ``.marim/hooks.json``."""
     from ..plugins import plugin_hook_entries
 
     merged: dict = {}
     _merge_into(merged, _read_hooks(global_hooks_config_path()))
     if trust_project:
         _merge_into(merged, _read_hooks(project_hooks_config_path(workspace_root)))
-    _merge_into(merged, plugin_hook_entries(workspace_root))
+    _merge_into(merged, plugin_hook_entries(workspace_root, trust_project=trust_project))
     return merged

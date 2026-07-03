@@ -179,10 +179,38 @@ def _linked_elevation_revokes_trust(p: ResolvedPlugin) -> bool:
     return False
 
 
-def _enabled_trusted(workspace_root) -> list[ResolvedPlugin]:
+def _project_scope_untrusted(p: ResolvedPlugin, trust_project: bool) -> bool:
+    """Whether a project-scope plugin's executable surface must be withheld
+    because the *project* isn't trusted.
+
+    A project plugin's registry (``.marim/plugins/plugins.json``) travels with
+    the repo, so its ``trusted`` bit is whoever-committed-it-controlled — on a
+    freshly cloned repo that's the exact supply-chain vector the
+    ``MARIM_TRUST_PROJECT_HOOKS`` gate exists to close for ``.marim/hooks.json``
+    and ``.marim/mcp.json``. Executable contributions (hooks/MCP) from project
+    plugins therefore require *both* the per-plugin trust bit *and* the project
+    trust gate. Global plugins are unaffected: they were installed by an explicit
+    user action into the user's own config dir, outside the repo's reach. Inert
+    contributions (skills/agents/instructions) are never gated here — they don't
+    execute code."""
+    if p.scope != "project" or trust_project:
+        return False
+    if has_executable(plugin_bundle_summary(p.manifest)):
+        logger.warning(
+            "project plugin %r bundles hooks/MCP but the project is not trusted; "
+            "withholding them. Set MARIM_TRUST_PROJECT_HOOKS=1 to honor project "
+            "plugin hooks/MCP in this workspace.",
+            p.name,
+        )
+    return True
+
+
+def _enabled_trusted(workspace_root, *, trust_project: bool) -> list[ResolvedPlugin]:
     return [
         p for p in discover_plugins(workspace_root)
-        if p.enabled and p.trusted and not _linked_elevation_revokes_trust(p)
+        if p.enabled and p.trusted
+        and not _linked_elevation_revokes_trust(p)
+        and not _project_scope_untrusted(p, trust_project)
     ]
 
 
@@ -249,11 +277,14 @@ def _resolve_mcp_servers(source) -> dict | None:
     return servers if isinstance(servers, dict) else None
 
 
-def plugin_hook_entries(workspace_root) -> dict:
+def plugin_hook_entries(workspace_root, *, trust_project: bool = False) -> dict:
     """Merged ``{event: [entry,...]}`` from enabled+trusted plugins, with
-    ``${MARIM_PLUGIN_ROOT}`` substituted in each entry."""
+    ``${MARIM_PLUGIN_ROOT}`` substituted in each entry. Project-scope plugins
+    contribute only when ``trust_project`` is set (their registry is committed
+    to the repo, so the trust bit alone is not the user's word — see
+    _project_scope_untrusted); the fail-safe default withholds them."""
     merged: dict = {}
-    for p in _enabled_trusted(workspace_root):
+    for p in _enabled_trusted(workspace_root, trust_project=trust_project):
         hooks = _resolve_hooks_entries(p.manifest.hooks_source())
         if hooks is None:
             continue
@@ -266,12 +297,14 @@ def plugin_hook_entries(workspace_root) -> dict:
     return merged
 
 
-def plugin_mcp_specs(workspace_root) -> dict:
+def plugin_mcp_specs(workspace_root, *, trust_project: bool = False) -> dict:
     """Merged ``{namespaced_name: spec}`` from enabled+trusted plugins. Server
     names are namespaced ``<plugin>_<server>`` so two plugins never collide on
-    a tool prefix. ``${MARIM_PLUGIN_ROOT}`` is substituted in each spec."""
+    a tool prefix. ``${MARIM_PLUGIN_ROOT}`` is substituted in each spec.
+    Project-scope plugins contribute only when ``trust_project`` is set, same
+    as plugin_hook_entries — MCP servers launch code on connect."""
     merged: dict = {}
-    for p in _enabled_trusted(workspace_root):
+    for p in _enabled_trusted(workspace_root, trust_project=trust_project):
         servers = _resolve_mcp_servers(p.manifest.mcp_source())
         if servers is None:
             continue

@@ -101,6 +101,81 @@ def test_hooks_and_mcp_require_trust(tmp_path, monkeypatch):
     assert "untrusted_web" in specs and specs["untrusted_web"]["url"] == "https://u"
 
 
+_EXEC_FILES = {
+    "hooks/hooks.json": json.dumps(
+        {"hooks": {"Stop": [{"type": "command", "command": "${MARIM_PLUGIN_ROOT}/x.sh"}]}}
+    ),
+    "mcp.json": json.dumps({"mcpServers": {"web": {"url": "https://u"}}}),
+}
+
+
+def test_project_plugin_executables_require_project_trust(tmp_path, monkeypatch):
+    """The supply-chain hole: a cloned repo can commit .marim/plugins/ with a
+    registry marking a plugin enabled+trusted. That committed trust bit is
+    attacker-controlled, so project-scope hooks/MCP must additionally require
+    the MARIM_TRUST_PROJECT_HOOKS gate that guards .marim/hooks.json."""
+    ws = _ws(tmp_path, monkeypatch)
+    pdir = ws / ".marim" / "plugins"
+    _make_plugin(pdir, "evil", manifest={}, files=_EXEC_FILES)
+    _install(pdir, "evil", enabled=True, trusted=True)
+
+    # Untrusted project (the default): the committed trust bit is not honored.
+    assert plugin_hook_entries(ws) == {}
+    assert plugin_mcp_specs(ws) == {}
+    assert plugin_hook_entries(ws, trust_project=False) == {}
+    assert plugin_mcp_specs(ws, trust_project=False) == {}
+
+    # Trusted project: per-plugin trust applies as before.
+    entries = plugin_hook_entries(ws, trust_project=True)
+    assert entries["Stop"][0]["command"] == str((pdir / "evil").resolve()) + "/x.sh"
+    assert "evil_web" in plugin_mcp_specs(ws, trust_project=True)
+
+
+def test_global_plugin_executables_ignore_project_trust(tmp_path, monkeypatch):
+    """Global plugins were installed by an explicit user action into the user's
+    own config dir — the project trust gate must not silence them."""
+    ws = _ws(tmp_path, monkeypatch)
+    gdir = tmp_path / "cfg" / "marim" / "plugins"
+    _make_plugin(gdir, "mine", manifest={}, files=_EXEC_FILES)
+    _install(gdir, "mine", enabled=True, trusted=True)
+
+    assert "Stop" in plugin_hook_entries(ws, trust_project=False)
+    assert "mine_web" in plugin_mcp_specs(ws, trust_project=False)
+
+
+def test_untrusted_project_plugin_keeps_inert_contributions(tmp_path, monkeypatch):
+    """Skills/agents/instructions are inert text — they stay available from an
+    untrusted project plugin; only the executable surface is withheld."""
+    ws = _ws(tmp_path, monkeypatch)
+    pdir = ws / ".marim" / "plugins"
+    _make_plugin(
+        pdir, "shared",
+        manifest={},
+        files={**_EXEC_FILES, "skills/s/SKILL.md": "x", "AGENTS.md": "read me"},
+    )
+    _install(pdir, "shared", enabled=True, trusted=True)
+
+    assert "shared" in dict(plugin_skill_roots(ws))
+    assert plugin_instruction_texts(ws) == [("shared", "read me")]
+    assert plugin_hook_entries(ws, trust_project=False) == {}
+
+
+def test_load_configs_gate_project_plugins(tmp_path, monkeypatch):
+    """End to end: the merged hook/MCP configs used by bootstrap honor the gate."""
+    from marim_harness.hooks.config import load_hooks_config
+    from marim_harness.mcp.config import load_mcp_config
+
+    ws = _ws(tmp_path, monkeypatch)
+    pdir = ws / ".marim" / "plugins"
+    _make_plugin(pdir, "evil", manifest={}, files=_EXEC_FILES)
+    _install(pdir, "evil", enabled=True, trusted=True)
+
+    assert load_hooks_config(ws, trust_project=False) == {}
+    assert "evil_web" not in load_mcp_config(ws, trust_project=False)
+    assert "Stop" in load_hooks_config(ws, trust_project=True)
+    assert "evil_web" in load_mcp_config(ws, trust_project=True)
+
+
 def test_instruction_texts(tmp_path, monkeypatch):
     ws = _ws(tmp_path, monkeypatch)
     gdir = tmp_path / "cfg" / "marim" / "plugins"

@@ -192,11 +192,14 @@ def load_mcp_config(workspace_root: Path, *, trust_project: bool = False) -> dic
     tool-call approval gate applies — so a cloned, untrusted repo's config would
     otherwise run arbitrary commands on first launch. They are therefore honored
     only when ``trust_project`` is set (the same ``MARIM_TRUST_PROJECT_HOOKS``
-    gate as project hooks). Plugin and global servers are the user's own and are
-    always included (plugin servers carry their own enabled+trusted gate)."""
+    gate as project hooks). Global servers and global plugins are the user's own
+    and are always included (plugin servers carry their own enabled+trusted
+    gate); *project-scope* plugins ride the same ``trust_project`` gate as
+    ``.marim/mcp.json``, since their registry — trust bit included — is
+    committed to the repo."""
     from ..plugins import plugin_mcp_specs
 
-    merged = dict(plugin_mcp_specs(workspace_root))
+    merged = dict(plugin_mcp_specs(workspace_root, trust_project=trust_project))
     merged.update(_read_servers(global_mcp_config_path()))
     if trust_project:
         merged.update(_read_servers(project_mcp_config_path(workspace_root)))
