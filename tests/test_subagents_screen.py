@@ -764,3 +764,45 @@ async def test_transcript_loader_worker_survives_exclusive_turn_worker(tmp_path,
 
         release.set()
         await pilot.pause()
+
+
+@pytest.mark.anyio
+async def test_cursor_move_lazy_loads_resumed_transcript(tmp_path, monkeypatch):
+    """Arrowing to another card must lazy-load that card's persisted transcript.
+
+    In a resumed idle session nothing streams, so the flush-tick repaint (the
+    other path through the lazy loader) never fires — the RowHighlighted
+    handler itself must arm the loader, or every pane except the one selected
+    at open stays blank forever."""
+    from marim_harness.interfaces.tui.subagents_viewer import SubAgentsViewer
+
+    loaded: list[str] = []
+
+    async def fake_load(self, pane, stream_id):
+        loaded.append(stream_id)
+
+    monkeypatch.setattr(SubAgentsViewer, "_load_transcript", fake_load)
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        r = app.stream
+        panes = {}
+        for sid in ("call_1", "call_2"):
+            w = r.mount_spawn_widget({"type": "research", "description": sid})
+            w.stream_id = sid
+            r.tool_widgets[sid] = w
+            panes[sid] = r.ensure_pane(w)
+            await app.query_one("#log").mount(w)
+        await pilot.pause()
+        # A live spawn's pane is born loaded; resume leaves panes unloaded.
+        # Arm the lazy loader the way the resume path leaves it.
+        for pane in panes.values():
+            pane.transcript_loaded = False
+
+        await pilot.press("ctrl+x")  # opens at the most recent spawn (call_2)
+        await pilot.pause()
+        assert "call_2" in loaded
+
+        await pilot.press("up")  # cursor to call_1
+        await pilot.pause()
+        assert "call_1" in loaded, "cursor move did not lazy-load the selected pane"

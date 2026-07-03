@@ -142,26 +142,35 @@ class SubAgentsViewer:
         current = ordered[self.index]
         if current.pane is not None:
             view.host.show(current.stream_id)
-            # Lazy-load the persisted transcript the first time this pane is
-            # shown. The replay awaits a widget mount per message, but this
-            # repaint is sync and fires on every live flush tick — so flip the
-            # guard now and hand the actual replay to a one-shot worker, which
-            # keeps later ticks from relaunching it.
-            if not current.pane.transcript_loaded:
-                current.pane.transcript_loaded = True
-                # group="subagent-transcripts": the turn worker runs
-                # exclusive=True in the DEFAULT group, and Textual cancels every
-                # worker sharing a group when an exclusive worker joins it — a
-                # turn starting mid-replay would truncate the transcript with
-                # the loaded-guard already set, leaving no retry (the same sweep
-                # hazard the shell-passthrough worker in app.py documents).
-                # exit_on_error=False: a replay of arbitrary persisted data must
-                # degrade to a broken pane, never take down the whole session.
-                app.run_worker(
-                    self._load_transcript(current.pane, current.stream_id),
-                    group="subagent-transcripts",
-                    exit_on_error=False,
-                )
+            self._lazy_load(current)
+
+    def _lazy_load(self, card) -> None:
+        """Lazy-load the persisted transcript the first time ``card``'s pane is
+        shown. Both selection paths must call this — the repaint (open / flush
+        tick) AND the RowHighlighted cursor move: in a resumed idle session
+        nothing streams, so the flush tick never repaints and a cursor move is
+        the only chance a non-initially-selected pane gets to replay.
+
+        The replay awaits a widget mount per message, but the callers are sync
+        (and the repaint fires on every live flush tick) — so flip the guard now
+        and hand the actual replay to a one-shot worker, which keeps later
+        calls from relaunching it."""
+        if card.pane.transcript_loaded:
+            return
+        card.pane.transcript_loaded = True
+        # group="subagent-transcripts": the turn worker runs
+        # exclusive=True in the DEFAULT group, and Textual cancels every
+        # worker sharing a group when an exclusive worker joins it — a
+        # turn starting mid-replay would truncate the transcript with
+        # the loaded-guard already set, leaving no retry (the same sweep
+        # hazard the shell-passthrough worker in app.py documents).
+        # exit_on_error=False: a replay of arbitrary persisted data must
+        # degrade to a broken pane, never take down the whole session.
+        self.app.run_worker(
+            self._load_transcript(card.pane, card.stream_id),
+            group="subagent-transcripts",
+            exit_on_error=False,
+        )
 
     async def _load_transcript(self, pane, stream_id: str) -> None:
         """Replay a resumed sub-agent's persisted transcript into ``pane``.
@@ -241,4 +250,5 @@ class SubAgentsViewer:
             current = ordered[self.index]
             if current.pane is not None:
                 self.app.query_one(SubAgentsView).host.show(current.stream_id)
+                self._lazy_load(current)
             self.app.stream.flush_streams()
