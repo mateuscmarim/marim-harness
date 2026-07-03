@@ -1023,7 +1023,9 @@ git add src/marim_harness/interfaces/tui tests/
 git commit -m "feat(tui): replay every spawn as a card; flag interrupted spawns"
 ```
 
----### Task 5: `resume_spawn` + the sub-agents screen action
+---
+
+### Task 5: `resume_spawn` + the sub-agents screen action
 
 **Files:**
 - Modify: `src/marim_harness/subagents/runner.py`
