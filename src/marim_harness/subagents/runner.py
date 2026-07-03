@@ -53,6 +53,7 @@ from ..workspace import (
 )
 from .isolation import SpawnWorktree
 from .masking import ObservationMasker
+from .persistence import SpawnTranscripts, count_tool_calls
 
 logger = logging.getLogger(__name__)
 
@@ -121,19 +122,6 @@ def _resumable_history(messages: list) -> list | None:
     return repaired or None
 
 
-def _count_tool_calls(messages: list) -> int:
-    """The number of tool calls in a spawn's transcript — the same tally the live
-    card counts one ``note_tool`` at a time, recomputed from the persisted record
-    for the terminal sidecar meta."""
-    from pydantic_ai.messages import ModelResponse, ToolCallPart
-
-    return sum(
-        1
-        for m in messages if isinstance(m, ModelResponse)
-        for p in m.parts if isinstance(p, ToolCallPart)
-    )
-
-
 @dataclass(frozen=True)
 class _SpawnPrep:
     """Shared state returned by ``_prepare_spawn``: the built sub-agent and all
@@ -199,7 +187,9 @@ class SubagentRunner:
         # is built lazily on first use so the runner can be constructed off-loop.
         self._concurrency = concurrency if (concurrency and concurrency > 0) else None
         self._sem: asyncio.Semaphore | None = None
-        self._transcript_cap = transcript_cap
+        # Session-bound persistence for a spawn's sidecar transcript + terminal
+        # meta. Reads the store off `session` per call, so it follows a /switch.
+        self._transcripts = SpawnTranscripts(session, transcript_cap)
         # Hard depth ceiling. Spawns that would produce a sub-agent at
         # depth >= max_depth are refused. Default 3: main → sub → grandchild.
         self._max_depth = max_depth
@@ -433,43 +423,6 @@ class SubagentRunner:
         if self._sem is None:
             self._sem = asyncio.Semaphore(self._concurrency)
         return self._sem
-
-    def _transcript_store(self):
-        """A TranscriptStore bound to the *current* session (follows switches)."""
-        store = self.session.store
-        if store is None:
-            return None
-        from ..session import TranscriptStore
-        return TranscriptStore(store.path, store.session_id)
-
-    def _save_transcript(self, stream_id: str, messages: list,
-                         meta: dict | None = None, *,
-                         cap_reasoning: bool = False) -> None:
-        try:
-            store = self._transcript_store()
-            if stream_id and messages and store is not None:
-                store.write(stream_id, messages, self._transcript_cap, meta=meta,
-                            cap_reasoning=cap_reasoning)
-        except Exception as exc:  # noqa: BLE001 - persistence is best-effort
-            logger.warning("Failed to save transcript %s: %s", stream_id, exc)
-
-    def _final_meta(self, prep: _SpawnPrep, status: str, usage,
-                    messages: list | None = None) -> dict | None:
-        """The terminal sidecar meta for a finished spawn: the prep's template
-        stamped with its terminal status, total spend, and run stats (tool tally +
-        wall-clock duration) so a resumed session can rehydrate the sub-agents
-        screen's columns. None when the spawn had no stream id (headless) — the
-        sidecar then stays v1."""
-        if prep.meta is None:
-            return None
-        meta = dict(prep.meta)
-        meta["status"] = status
-        if usage is not None:
-            meta["usage"] = {"input": usage.input_tokens, "output": usage.output_tokens}
-        if messages is not None:
-            meta["tool_count"] = _count_tool_calls(messages)
-        meta["duration"] = time.perf_counter() - prep.t0
-        return meta
 
     async def _run_to_completion(self, sub: SubAgent, task: str, run_deps: Deps,
                                  granted: list[Any], handler: EventStreamHandler[Deps] | None,
@@ -710,8 +663,8 @@ class SubagentRunner:
                 # every model request as the conversation grows, so oversized
                 # text/thinking parts are clipped here (the final write leaves them
                 # in full). See cap_transcript.
-                self._save_transcript(stream_id, messages, meta=_meta,
-                                      cap_reasoning=True)
+                self._transcripts.save(stream_id, messages, meta=_meta,
+                                       cap_reasoning=True)
 
             checkpoint = _checkpoint
         sub, err = self.build(type, max_output_chars, model, work_root, defn=defn,
@@ -803,9 +756,10 @@ class SubagentRunner:
             raise
         self._log_spawn_timing(type, prep.t0, prep.t_built, prep.first_event_at, failed=False)
         await self.hooks.subagent_stop(type, task, result.output)
-        self._save_transcript(
+        self._transcripts.save(
             stream_id, result.all_messages(),
-            meta=self._final_meta(prep, "finished", result.usage, result.all_messages()),
+            meta=self._transcripts.final_meta(
+                prep.meta, "finished", result.usage, prep.t0, result.all_messages()),
         )
         self.session.usage += result.usage
         # A foreground spawn's spend is persisted by run_turn's _persist.
@@ -876,9 +830,10 @@ class SubagentRunner:
         # no-op there.
         stop_task = prep.meta["task"] if prep.meta else task
         await self.hooks.subagent_stop(type, stop_task, result.output)
-        self._save_transcript(
+        self._transcripts.save(
             stream_id, result.all_messages(),
-            meta=self._final_meta(prep, "finished", result.usage, result.all_messages()),
+            meta=self._transcripts.final_meta(
+                prep.meta, "finished", result.usage, prep.t0, result.all_messages()),
         )
         self.session.usage += result.usage
         # A background spawn finishes off-turn, so no run_turn will fold in its
@@ -954,8 +909,8 @@ class SubagentRunner:
                 # spawn transcript_prefix is None, so this is a plain passthrough.
                 # cap_transcript (inside TranscriptStore.write) bounds the combined
                 # payload.
-                self._save_transcript(stream_id, (transcript_prefix or []) + messages,
-                                      meta=_meta, cap_reasoning=True)
+                self._transcripts.save(stream_id, (transcript_prefix or []) + messages,
+                                       meta=_meta, cap_reasoning=True)
 
             checkpoint = _checkpoint
 
@@ -995,15 +950,15 @@ class SubagentRunner:
                 "cli_session_id": result.session_id or meta["cli_session_id"],
                 "usage": {"input": result.usage.input_tokens,
                           "output": result.usage.output_tokens},
-                "tool_count": _count_tool_calls(full_transcript),
+                "tool_count": count_tool_calls(full_transcript),
                 "duration": time.perf_counter() - t0,
             }
-        self._save_transcript(stream_id, full_transcript, meta=final_meta)
+        self._transcripts.save(stream_id, full_transcript, meta=final_meta)
         # Claude-side sub-agents (the CLI's own Agent/Task spawns) each get a
         # sidecar under their stream id — the same id their live card streamed
         # under — so the sub-agents screen can replay them after a resume.
         for child_id, msgs in result.child_transcripts.items():
-            self._save_transcript(child_id, msgs)
+            self._transcripts.save(child_id, msgs)
         self.session.usage += result.usage
         if background:
             self.session.persist(force=True)
@@ -1173,10 +1128,9 @@ class SubagentRunner:
             return None, "Already resuming this spawn — hold on."
         self._resuming.add(stream_id)
         try:
-            store = self._transcript_store()
-            if store is None:
+            if not self._transcripts.has_store:
                 return None, "No session store — can't resume."
-            meta = store.read_meta(stream_id)
+            meta = self._transcripts.read_meta(stream_id)
             if meta is None:
                 return None, ("No resumable transcript for this spawn (missing or "
                               "pre-envelope sidecar).")
@@ -1192,7 +1146,7 @@ class SubagentRunner:
             # would be wasted work at best and engine-swapping at worst.
             if meta.get("backend") == "claude-cli":
                 return await self._resume_cli_spawn(stream_id, meta)
-            messages = store.read(stream_id)
+            messages = self._transcripts.read(stream_id)
             history = _resumable_history(messages or [])
             if history is None:
                 return None, "Transcript unreadable or empty — can't resume."
@@ -1264,8 +1218,7 @@ class SubagentRunner:
         # demuxed children) the pane replays (spec §4). Best-effort: an unreadable
         # transcript yields [], so the resume proceeds tail-only rather than
         # refusing — resumability trumps a perfect replay.
-        store = self._transcript_store()
-        prior = (store.read(stream_id) or []) if store is not None else []
+        prior = self._transcripts.read(stream_id) or []
         label = f"{type_}: resumed — {task}"
         job_id = self.deps.jobs.register(
             "agent", label,

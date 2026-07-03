@@ -158,9 +158,9 @@ async def test_cli_backend_persists_child_transcripts(tmp_path: Path, monkeypatc
     runner = _make_harness(_dummy_model(), _make_deps(tmp_path)).subagents
 
     saved: list[str] = []
-    real_save = runner._save_transcript
+    real_save = runner._transcripts.save
     monkeypatch.setattr(
-        runner, "_save_transcript",
+        runner._transcripts, "save",
         lambda sid, msgs, meta=None, cap_reasoning=False: (
             saved.append(sid),
             real_save(sid, msgs, meta=meta, cap_reasoning=cap_reasoning),

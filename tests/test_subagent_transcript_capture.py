@@ -75,13 +75,13 @@ async def test_cli_spawn_checkpoints_with_backend_meta(tmp_path, monkeypatch):
         _make_deps(tmp_path), store=store,
     )
     statuses: list[str | None] = []
-    orig = harness.subagents._save_transcript
+    orig = harness.subagents._transcripts.save
 
     def spy(stream_id, messages, meta=None, cap_reasoning=False):
         statuses.append(None if meta is None else meta.get("status"))
         orig(stream_id, messages, meta=meta, cap_reasoning=cap_reasoning)
 
-    harness.subagents._save_transcript = spy
+    harness.subagents._transcripts.save = spy
     await harness.subagents.run("cli-worker", "do it", stream_id="sg-cli")
     # Mid-run checkpoints say "running"; the parent's completion write is last
     # ("finished" — this fake spawns no Claude-side children, so no trailing

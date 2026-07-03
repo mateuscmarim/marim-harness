@@ -43,15 +43,15 @@ def _tool_then_text_model() -> FunctionModel:
 
 
 def _spy_saves(runner):
-    """Record every _save_transcript meta status, preserving behavior."""
+    """Record every transcript-save meta status, preserving behavior."""
     seen: list[str | None] = []
-    orig = runner._save_transcript
+    orig = runner._transcripts.save
 
     def spy(stream_id, messages, meta=None, **kw):
         seen.append(None if meta is None else meta.get("status"))
         orig(stream_id, messages, meta=meta, **kw)
 
-    runner._save_transcript = spy
+    runner._transcripts.save = spy
     return seen
 
 
