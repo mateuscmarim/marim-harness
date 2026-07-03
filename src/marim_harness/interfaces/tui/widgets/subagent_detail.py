@@ -146,6 +146,17 @@ class SubAgentDetailHost(ContentSwitcher):
         self.mount(pane)
         return pane
 
+    async def clear_panes(self) -> None:
+        """Tear down every mounted pane so a session rebuild starts from a clean
+        host. Called from ``render_session`` (the switch/clear rebuild seam). The
+        live stream keeps a per-session set of panes keyed by a spawn's
+        ``tool_call_id``; switching to another session — or re-rendering the same
+        one — must drop them first, or ``add_pane`` re-inserts a pane with the same
+        deterministic ``pane_id`` and raises ``DuplicateIds``. Clearing ``current``
+        first keeps the ``ContentSwitcher`` from pointing at a removed id."""
+        self.current = None
+        await self.query(SubAgentPane).remove()
+
     def pane(self, stream_id: str) -> "SubAgentPane | None":
         pid = pane_id(stream_id)
         for p in self.query(SubAgentPane):

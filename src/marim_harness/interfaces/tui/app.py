@@ -185,9 +185,14 @@ class HarnessApp(App):
                 intro,
                 f"**Resumed session** — {n} messages, {tokens} tokens restored.",
             )
-            await self.session.replay_history(log)
         else:
             self.stream.append_stream(intro, _WELCOME)
+        # Replay the restored history AND settle its sub-agent cards through the
+        # same seam the switch/clear path uses (SessionView.replay_and_settle).
+        # Routing startup resume through it is what makes a spawn killed mid-run
+        # surface here as an interrupted card — replaying alone (the old behavior)
+        # left the killed spawn's sidecar unsettled and the card invisible.
+        await self.session.replay_and_settle(log)
         self.stream.flush_streams()  # render the static intro/replay before first paint
         # A resumed session opens at the bottom (where you left off); a fresh one
         # starts top-aligned with the header pinned at the top and only anchors

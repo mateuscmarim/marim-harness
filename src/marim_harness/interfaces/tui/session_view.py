@@ -287,8 +287,21 @@ class SessionView:
                     card.finish("", status="done")
                 elif meta_status == "failed":
                     card.finish("", status="failed")
-                else:
+                elif meta_status == "running":
+                    # A sidecar checkpointed mid-run but never finalized: the spawn
+                    # was cut down while working. It has a resumable transcript, so
+                    # surface it as interrupted (▸ press r on the ctrl+x screen).
                     card.finish("", status="interrupted")
+                else:
+                    # No settled job AND no sidecar meta: the spawn_agent call never
+                    # actually ran (e.g. Pydantic arg-validation rejected it, leaving
+                    # a RetryPromptPart and no ToolReturnPart/sidecar). There is
+                    # nothing to resume — resume_spawn refuses a card with no meta —
+                    # so finish it "failed" rather than a forever-pending
+                    # "interrupted" ghost that dangles a dead press-r affordance.
+                    card.finish(
+                        "spawn never ran (no transcript recorded)", status="failed"
+                    )
             elif (meta_status == "running" and job is None
                   and self._REPAIR_STUB_MARKER in card.report):
                 # A foreground spawn cut down mid-run: the main history's repair
@@ -315,6 +328,25 @@ class SessionView:
                                  widget.display_title(), widget.agent_task)
             widget.pane = pane  # transcript_loaded stays False → lazy sidecar load
             widget.finish("", status="interrupted")
+
+    async def replay_and_settle(self, log: VerticalScroll) -> None:
+        """Replay the restored history into ``log`` and then settle every replayed
+        card from the persisted record. This is the single seam both rebuild entry
+        points route through — the session-switch/clear path (``render_session``)
+        AND the startup ``marim --resume`` path (``app.on_mount``) — so a resumed
+        session settles its sub-agent cards identically no matter how it was opened.
+
+        Keeping the two on one seam is the load-bearing invariant: when the settle
+        step lived only in ``render_session``, a normal startup resume replayed the
+        history but never settled it, so a spawn killed mid-run left no interrupted
+        card and was unresumable on the feature's main path.
+
+        ``finish_replayed_cards`` must run even with NO history: a crash can leave a
+        sidecar checkpointed mid-run with its owning turn never persisted, and the
+        synthesized-card branch is the only thing that surfaces that work."""
+        if self.app.harness.session.history:
+            await self.replay_history(log)
+        await self.finish_replayed_cards()
 
     async def mount_header(self, log: VerticalScroll) -> AssistantMessage:
         """Mount the two-column intro header — the MARIM banner on the left, the
@@ -354,15 +386,16 @@ class SessionView:
         try:
             log.anchor(False)  # drop any anchor inherited from the previous session
             await log.remove_children()
+            # The detail host's transcript panes are per-session live state; a
+            # rebuild for a different (or reloaded) session must start from an empty
+            # host, or replay re-adds a pane with the same deterministic pane_id and
+            # hard-crashes with DuplicateIds. Clearing here is safe against the live
+            # streaming path (StreamRenderer.ensure_pane): render_session never runs
+            # mid-turn, so no stream is feeding a pane while this tears them down.
+            await self.app.query_one(SubAgentDetailHost).clear_panes()
             intro = await self.mount_header(log)
             self.app.stream.append_stream(intro, note)
-            if self.app.harness.session.history:
-                await self.replay_history(log)
-            # Must run even with no history: a crash can leave a sidecar
-            # checkpointed mid-run with no turn ever persisted to the main log,
-            # so the synthesized-card branch below is the only thing that
-            # surfaces that work.
-            await self.finish_replayed_cards()
+            await self.replay_and_settle(log)
             self.app.stream.flush_streams()  # render the rebuilt log before first paint
         finally:
             self.app.stream.rebuilding = False

@@ -443,3 +443,113 @@ async def test_replayed_foreground_card_joins_subagents_list(tmp_path: Path):
         await pilot.pause()
 
         assert any(w.stream_id == "sg-fg2" for w in app.stream.subagents)
+
+
+@pytest.mark.anyio
+async def test_startup_resume_settles_interrupted_card(tmp_path: Path):
+    """The STARTUP resume path (``app.on_mount`` — i.e. ``marim --resume``) must
+    settle replayed cards exactly like the session-switch path: a spawn killed
+    mid-run leaves its sidecar at status "running", and that must surface as an
+    interrupted card. Regression: on_mount replayed the restored history but never
+    called finish_replayed_cards (that lived only in the switch/rebuild path), so
+    on a normal resume killed spawns were invisible and unresumable.
+
+    Drives the real startup seam: history + sidecar are set up BEFORE run_test,
+    so on_mount is what replays and settles them (mirrors test_app.py's
+    history-before-mount pattern)."""
+    from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
+
+    from marim_harness.session import TranscriptStore
+
+    app = _app_with_store(tmp_path)
+    store = app.harness.session.store
+    assert store is not None
+    ts = TranscriptStore(store.path, store.session_id)
+    ts.write(
+        "sg-killed",
+        [ModelRequest(parts=[])],
+        2000,
+        meta=_spawn_meta("sg-killed", "long task", status="running"),
+    )
+    # A foreground spawn whose dangling ToolReturnPart was repaired to the
+    # resumability stub — the killed-mid-run shape. Set on history BEFORE mount so
+    # on_mount is the code path that replays and (must) settle it.
+    repair_stub = (
+        "Tool call was interrupted before completion and did not run (the turn "
+        "was aborted). Re-issue it if you still need the result."
+    )
+    app.harness.session.history = [
+        ModelResponse(parts=[ToolCallPart(
+            tool_name="spawn_agent",
+            args={"type": "general", "task": "long task"},
+            tool_call_id="sg-killed",
+        )]),
+        ModelRequest(parts=[ToolReturnPart(
+            tool_name="spawn_agent", content=repair_stub, tool_call_id="sg-killed",
+        )]),
+    ]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        card = next(w for w in app.stream.subagents if w.stream_id == "sg-killed")
+        assert card.status == "interrupted"
+
+
+@pytest.mark.anyio
+async def test_render_session_twice_with_spawn_no_duplicate_panes(tmp_path: Path):
+    """Rebuilding the log for a session that has a spawn (render_session — the
+    shared switch/clear/startup seam) must be pane-safe. Switching away and back
+    re-runs render_session, and without clearing the detail host the second run
+    re-adds a pane with the same deterministic ``pane_id`` → DuplicateIds crash.
+    Regression for the ``/switch`` crash."""
+    from pydantic_ai.messages import ModelResponse, ToolCallPart
+
+    from marim_harness.interfaces.tui.widgets.subagent_detail import SubAgentDetailHost
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.harness.session.history = [
+            ModelResponse(parts=[ToolCallPart(
+                tool_name="spawn_agent",
+                args={"type": "general", "task": "t"},
+                tool_call_id="sg-dup",
+            )]),
+        ]
+        await app.session.render_session("first")
+        await pilot.pause()
+        # Switching away and back re-runs render_session for the same spawn.
+        await app.session.render_session("second")
+        await pilot.pause()
+
+        host = app.query_one(SubAgentDetailHost)
+        panes = [p for p in host.query("SubAgentPane") if p.stream_id == "sg-dup"]
+        assert len(panes) == 1  # the rebuild cleared the stale pane before re-adding
+        assert host.pane("sg-dup") is not None  # still loadable
+
+
+@pytest.mark.anyio
+async def test_never_ran_spawn_card_finishes_failed_not_interrupted(tmp_path: Path):
+    """A spawn_agent ToolCallPart that never actually executed (Pydantic
+    arg-validation retry → a RetryPromptPart, no ToolReturnPart, no sidecar)
+    replays as a pending card. With no settled job AND no sidecar meta there is
+    nothing to resume (resume_spawn refuses a card with no meta), so the card must
+    finish "failed" — not the forever-"interrupted" ghost the old else-branch
+    produced."""
+    from pydantic_ai.messages import ModelResponse, ToolCallPart
+
+    app = _app_with_store(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.harness.session.history = [
+            ModelResponse(parts=[ToolCallPart(
+                tool_name="spawn_agent",
+                args={"type": "general", "task": "t"},
+                tool_call_id="sg-never",
+            )]),
+        ]
+        await app.session.render_session("note")
+        await pilot.pause()
+
+        card = next(w for w in app.stream.subagents if w.stream_id == "sg-never")
+        assert card.status == "failed"
+        assert "spawn never ran" in card.report
