@@ -335,13 +335,26 @@ def test_build_harness_wires_claude_cli_mode_getter(tmp_path, monkeypatch):
     assert harness.current_model.mode_getter() == harness.mode.value
     # No UI yet → the tool-card side-channel is unbound (headless folds to ▸ text).
     assert harness.current_model.on_activity is None
+    assert harness.current_model.on_subagent is None          # before bind_ui
     # bind_ui wires the side-channel onto the model so Claude's tool activity
     # renders as native cards in the main transcript.
     async def _on_cli_activity(events):
         pass
 
-    harness.bind_ui(on_cli_activity=_on_cli_activity)
+    async def _on_subagent_event(sid, event, usage):
+        pass
+
+    async def _on_subagent_model(sid, model_id):
+        pass
+
+    harness.bind_ui(
+        on_cli_activity=_on_cli_activity,
+        on_subagent_event=_on_subagent_event,
+        on_subagent_model=_on_subagent_model,
+    )
     assert harness.current_model.on_activity is _on_cli_activity
+    assert harness.current_model.on_subagent is _on_subagent_event   # after
+    assert harness.current_model.on_subagent_model is _on_subagent_model
 
 
 def test_build_harness_claude_cli_default_model_is_blank_not_none(tmp_path, monkeypatch):

@@ -471,6 +471,13 @@ class ClaudeCliModel(Model):
         # (headless, or no UI) tool activity is folded into the text as ▸ lines.
         # Never enters the model response, so pydantic_ai never executes these calls.
         self.on_activity: Callable[[list], Awaitable[None]] | None = None
+        # Late-bound by bind_ui (TUI only): routes a Claude-side sub-agent's
+        # translated events to the sub-agents screen (on_subagent ≙
+        # Deps.ui.on_subagent_event) and relabels its card with the model the
+        # child reports (on_subagent_model). None headless — the stream filter
+        # in consume_cli_stream then simply drops child traffic.
+        self.on_subagent: Callable[[str, object, object], Awaitable[None]] | None = None
+        self.on_subagent_model: Callable[[str, str], Awaitable[None]] | None = None
         self.spawn = spawn_cli_objects  # I/O seam; tests monkeypatch this
         # Late-bound by bootstrap/set_model to marim's real workspace (or worktree)
         # root, exactly like ``mode_getter``. Spawning in the process cwd (".") would
@@ -578,6 +585,8 @@ class ClaudeCliModel(Model):
                 None if self.ephemeral else lambda sid: setattr(self, "session_id", sid)
             ),
             _on_activity=self.on_activity,
+            _on_subagent=self.on_subagent,
+            _on_subagent_model=self.on_subagent_model,
         )
         yield stream
 
@@ -592,6 +601,31 @@ class ClaudeCliStreamedResponse(StreamedResponse):
     _ts: datetime | None = None
     _set_session: Callable[[str], None] | None = None
     _on_activity: Callable[[list], Awaitable[None]] | None = None
+    _on_subagent: Callable[[str, object, object], Awaitable[None]] | None = None
+    _on_subagent_model: Callable[[str, str], Awaitable[None]] | None = None
+
+    async def _demuxed_objs(self) -> AsyncIterator[dict]:
+        """Tee the raw stream through a CliSubagentDemux: Claude-side sub-agent
+        traffic is delivered out-of-band (the synthesized spawn_agent call/
+        return via _on_activity — the top-level sink claims those and builds
+        the live card — and child events via _on_subagent, keyed by the spawn's
+        tool_use id); everything else flows on to the chunk pipeline."""
+        from ..subagents.cli_demux import CliSubagentDemux
+
+        demux = CliSubagentDemux()
+        assert self._objs is not None
+        async for obj in self._objs:
+            routed, remainder = demux.route(obj)
+            for r in routed:
+                if r.stream_id is None:
+                    if self._on_activity is not None:
+                        await self._on_activity([r.event])
+                elif self._on_subagent is not None:
+                    if r.model and self._on_subagent_model is not None:
+                        await self._on_subagent_model(r.stream_id, r.model)
+                    await self._on_subagent(r.stream_id, r.event, r.usage)
+            if remainder is not None:
+                yield remainder
 
     async def _get_event_iterator(self):
         if self._objs is None:
@@ -605,6 +639,10 @@ class ClaudeCliStreamedResponse(StreamedResponse):
         cards = on_activity is not None
         part_n = 0
         folded_any = False  # for blank-line separation in the headless fold path
+        # The demux tee is active only when the sub-agent side-channel is wired
+        # (a UI is bound); headless keeps the cheap filter-only path in
+        # consume_cli_stream (Claude-side child traffic is simply dropped there).
+        objs = self._demuxed_objs() if self._on_subagent is not None else self._objs
 
         async def text_events(content: str, part_id: str):
             for event in self._parts_manager.handle_text_delta(
@@ -623,7 +661,7 @@ class ClaudeCliStreamedResponse(StreamedResponse):
         # finished on the first one would cut the run short. The last DoneChunk
         # wins.
         done: DoneChunk | None = None
-        async for chunk in consume_cli_stream(self._objs):
+        async for chunk in consume_cli_stream(objs):
             if isinstance(chunk, TextChunk):
                 if cards:
                     async for ev in text_events(chunk.delta, f"text-{part_n}"):

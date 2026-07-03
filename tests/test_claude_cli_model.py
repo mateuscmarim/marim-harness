@@ -478,6 +478,76 @@ def _user(text):
     return [ModelRequest(parts=[UserPromptPart(content=text)], instructions="SYS")]
 
 
+async def _stream_text(model) -> str:
+    """Drive ``model.request_stream`` to completion and return the response's
+    joined text, mirroring the invocation in
+    ``test_request_stream_pushes_tool_cards_and_keeps_response_text_only``."""
+    from pydantic_ai.models import ModelRequestParameters
+
+    async with model.request_stream(_user("hi"), None, ModelRequestParameters()) as stream:
+        async for _ in stream:
+            pass
+        final = stream.get()
+    return "".join(getattr(p, "content", "") for p in final.parts)
+
+
+@pytest.mark.anyio
+async def test_request_stream_routes_claude_subagents_to_side_channels():
+    from marim_harness.config.claude_cli_model import ClaudeCliModel
+
+    model = ClaudeCliModel("claude-opus-4-8")
+    activity: list = []
+    sub_events: list[tuple[str, object, object]] = []
+    sub_models: list[tuple[str, str]] = []
+
+    async def on_activity(events):
+        activity.extend(events)
+
+    async def on_subagent(sid, event, usage):
+        sub_events.append((sid, event, usage))
+
+    async def on_subagent_model(sid, m):
+        sub_models.append((sid, m))
+
+    model.on_activity = on_activity
+    model.on_subagent = on_subagent
+    model.on_subagent_model = on_subagent_model
+    model.spawn = _fake_objs([
+        {"type": "assistant", "message": {"id": "m1", "content": [
+            {"type": "tool_use", "id": "tsub", "name": "Agent",
+             "input": {"description": "d", "subagent_type": "Explore",
+                       "prompt": "p"}},
+        ]}},
+        {"type": "system", "subtype": "task_started", "tool_use_id": "tsub"},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "tsub",
+             "content": "Async agent launched..."}]}},
+        {"type": "assistant", "parent_tool_use_id": "tsub",
+         "message": {"id": "m2", "model": "claude-haiku-4-5",
+                     "usage": {"input_tokens": 3, "output_tokens": 2},
+                     "content": [{"type": "text", "text": "4"}]}},
+        {"type": "system", "subtype": "task_notification", "tool_use_id": "tsub",
+         "status": "completed", "summary": "4"},
+        {"type": "assistant", "message": {"id": "m3", "content": [
+            {"type": "text", "text": "Four."}]}},
+        {"type": "result", "subtype": "success", "result": "Four.", "num_turns": 1,
+         "session_id": "sess-1", "usage": {"input_tokens": 1, "output_tokens": 1}},
+    ])
+    text = await _stream_text(model)  # see note below
+
+    # spawn call + spawn return went to the MAIN transcript side-channel
+    spawn_names = [
+        e.part.tool_name for e in activity if hasattr(e, "part")
+    ]
+    assert spawn_names.count("spawn_agent") == 2
+    # child events went to the sub-agent channel, tagged with usage + model
+    assert sub_events and all(sid == "tsub" for sid, _, _ in sub_events)
+    assert any(u is not None and u.output_tokens == 2 for _, _, u in sub_events)
+    assert ("tsub", "claude-haiku-4-5") in sub_models
+    # the main-stream prose survives; the child's "4" never entered the text
+    assert text == "Four."
+
+
 @pytest.mark.anyio
 async def test_request_returns_text_only_response_and_captures_session():
     model = ClaudeCliModel("sonnet")

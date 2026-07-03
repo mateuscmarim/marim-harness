@@ -472,14 +472,17 @@ class Harness:
 
     def _wire_cli_model(self, model: Model) -> None:
         """Bind the late-bound hooks a ``ClaudeCliModel`` needs — live approval
-        mode, the real workspace (or worktree) cwd, and the TUI tool-card activity
-        side-channel. A no-op for every other provider's model."""
+        mode, the real workspace (or worktree) cwd, the TUI tool-card side-channel,
+        and the sub-agents-screen side-channels for Claude's own Agent/Task spawns.
+        A no-op for every other provider's model."""
         from ..config.claude_cli_model import ClaudeCliModel
 
         if isinstance(model, ClaudeCliModel):
             model.mode_getter = lambda: self.mode.value
             model.cwd = str(self.deps.workspace.root)
             model.on_activity = self.deps.ui.on_cli_activity
+            model.on_subagent = self.deps.ui.on_subagent_event
+            model.on_subagent_model = self.deps.ui.on_subagent_model
 
     @property
     def mode(self) -> Mode:
