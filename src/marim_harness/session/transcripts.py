@@ -89,6 +89,13 @@ class TranscriptStore:
             logger.warning("Failed to read sub-agent transcript %s: %s", stream_id, exc)
             return None
 
+    def has_transcript(self, stream_id: str) -> bool:
+        """Whether ANY sidecar exists for this spawn — v1 or v2 — without reading
+        it. The resume settle uses this to tell a legacy v1 spawn (pre-envelope
+        file: ran and completed, but invisible to ``scan_meta``) apart from a
+        spawn that never executed at all (no file)."""
+        return bool(stream_id) and self._file(stream_id).exists()
+
     def read_meta(self, stream_id: str) -> dict | None:
         """The v2 meta for one spawn, without validating its messages (cheap).
         None for a missing, corrupt, or v1 (bare-list) sidecar."""

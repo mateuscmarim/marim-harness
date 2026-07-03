@@ -122,3 +122,21 @@ async def test_killed_cli_spawn_rests_at_running_with_session_id(tmp_path, monke
     meta = TranscriptStore(store.path, store.session_id).read_meta("sg-dead")
     assert meta is not None
     assert meta["status"] == "running" and meta["cli_session_id"] == "sess-dead"
+
+
+@pytest.mark.anyio
+async def test_cli_final_meta_records_tool_count_and_duration(tmp_path, monkeypatch):
+    """CLI spawns stamp the same stats keys the native terminal meta carries
+    (tool_count/duration), so their cards rehydrate identically on resume."""
+    monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", _fake_cli(tmp_path))
+    _cli_agent(tmp_path)
+    store = SessionStore(path=tmp_path / "sessions" / "t.json", workspace_root=tmp_path,
+                         session_id="t", name="t")
+    harness = _make_harness(
+        FunctionModel(lambda m, i: ModelResponse(parts=[TextPart(content="x")])),
+        _make_deps(tmp_path), store=store,
+    )
+    await harness.subagents.run("cli-worker", "do it", stream_id="sg-cli-stats")
+    meta = TranscriptStore(store.path, store.session_id).read_meta("sg-cli-stats")
+    assert meta["tool_count"] == 1          # the fake CLI's single Read call
+    assert meta["duration"] > 0

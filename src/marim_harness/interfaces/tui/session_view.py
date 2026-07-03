@@ -271,7 +271,8 @@ class SessionView:
             return
         from ...session import TranscriptStore
 
-        metas = TranscriptStore(store.path, store.session_id).scan_meta()
+        transcripts = TranscriptStore(store.path, store.session_id)
+        metas = transcripts.scan_meta()
         jobs = self.app.harness.deps.jobs
         settled = {j.stream_id: j for j in jobs.history if j.stream_id}
         # A background job survives a session switch/rebuild (jobs are process-
@@ -293,6 +294,17 @@ class SessionView:
             job = settled.get(card.stream_id)
             meta = metas.get(card.stream_id)
             meta_status = meta.get("status") if meta else None
+            if card.status == "pending" and meta is not None:
+                # Rehydrate the stats columns (tools/tokens/dur) from whatever the
+                # sidecar meta recorded before any settle arm below finishes the
+                # card. A mid-run ("running") meta carries no stats yet — the
+                # zero defaults then match the card's own zeroed live state.
+                usage = meta.get("usage") or {}
+                card.restore_stats(
+                    tool_count=int(meta.get("tool_count") or 0),
+                    tokens=int(usage.get("input") or 0) + int(usage.get("output") or 0),
+                    duration=meta.get("duration"),
+                )
             if card.status == "pending":
                 # A detached card whose handoff we skipped in _replay_parts.
                 if job is not None:
@@ -315,12 +327,21 @@ class SessionView:
                     # was cut down while working. It has a resumable transcript, so
                     # surface it as interrupted (▸ press r on the ctrl+x screen).
                     card.finish("", status="interrupted")
+                elif transcripts.has_transcript(card.stream_id):
+                    # A sidecar with no meta is a legacy v1 (pre-envelope) file:
+                    # the old write-once scheme saved it only at completion, so
+                    # the spawn ran and finished — settle "done" and let the pane
+                    # lazy-load the transcript. Without this arm, every session
+                    # recorded before the v2 envelope replayed as a bogus
+                    # "spawn never ran" failure. (No stats to restore: v1 files
+                    # predate the meta that carries them.)
+                    card.finish("", status="done")
                 else:
-                    # No settled job AND no sidecar meta: the spawn_agent call never
-                    # actually ran (e.g. Pydantic arg-validation rejected it, leaving
-                    # a RetryPromptPart and no ToolReturnPart/sidecar). There is
-                    # nothing to resume — resume_spawn refuses a card with no meta —
-                    # so finish it "failed" rather than a forever-pending
+                    # No settled job AND no sidecar at all: the spawn_agent call
+                    # never actually ran (e.g. Pydantic arg-validation rejected it,
+                    # leaving a RetryPromptPart and no ToolReturnPart/sidecar).
+                    # There is nothing to resume — resume_spawn refuses a card with
+                    # no meta — so finish it "failed" rather than a forever-pending
                     # "interrupted" ghost that dangles a dead press-r affordance.
                     card.finish(
                         "spawn never ran (no transcript recorded)", status="failed"

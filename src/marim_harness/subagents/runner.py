@@ -129,6 +129,19 @@ def _resumable_history(messages: list) -> list | None:
     return repaired or None
 
 
+def _count_tool_calls(messages: list) -> int:
+    """The number of tool calls in a spawn's transcript — the same tally the live
+    card counts one ``note_tool`` at a time, recomputed from the persisted record
+    for the terminal sidecar meta."""
+    from pydantic_ai.messages import ModelResponse, ToolCallPart
+
+    return sum(
+        1
+        for m in messages if isinstance(m, ModelResponse)
+        for p in m.parts if isinstance(p, ToolCallPart)
+    )
+
+
 @dataclass(frozen=True)
 class _SpawnPrep:
     """Shared state returned by ``_prepare_spawn``: the built sub-agent and all
@@ -500,16 +513,22 @@ class SubagentRunner:
         except Exception as exc:  # noqa: BLE001 - persistence is best-effort
             logger.warning("Failed to save transcript %s: %s", stream_id, exc)
 
-    def _final_meta(self, prep: _SpawnPrep, status: str, usage) -> dict | None:
+    def _final_meta(self, prep: _SpawnPrep, status: str, usage,
+                    messages: list | None = None) -> dict | None:
         """The terminal sidecar meta for a finished spawn: the prep's template
-        stamped with its terminal status and total spend. None when the spawn had
-        no stream id (headless) — the sidecar then stays v1."""
+        stamped with its terminal status, total spend, and run stats (tool tally +
+        wall-clock duration) so a resumed session can rehydrate the sub-agents
+        screen's columns. None when the spawn had no stream id (headless) — the
+        sidecar then stays v1."""
         if prep.meta is None:
             return None
         meta = dict(prep.meta)
         meta["status"] = status
         if usage is not None:
             meta["usage"] = {"input": usage.input_tokens, "output": usage.output_tokens}
+        if messages is not None:
+            meta["tool_count"] = _count_tool_calls(messages)
+        meta["duration"] = time.perf_counter() - prep.t0
         return meta
 
     async def _run_to_completion(self, sub: SubAgent, task: str, run_deps: Deps,
@@ -840,7 +859,7 @@ class SubagentRunner:
         await self.hooks.subagent_stop(type, task, result.output)
         self._save_transcript(
             stream_id, result.all_messages(),
-            meta=self._final_meta(prep, "finished", result.usage),
+            meta=self._final_meta(prep, "finished", result.usage, result.all_messages()),
         )
         self.session.usage += result.usage
         # A foreground spawn's spend is persisted by run_turn's _persist.
@@ -914,7 +933,7 @@ class SubagentRunner:
         await self.hooks.subagent_stop(type, stop_task, result.output)
         self._save_transcript(
             stream_id, result.all_messages(),
-            meta=self._final_meta(prep, "finished", result.usage),
+            meta=self._final_meta(prep, "finished", result.usage, result.all_messages()),
         )
         self.session.usage += result.usage
         # A background spawn finishes off-turn, so no run_turn will fold in its
@@ -954,6 +973,11 @@ class SubagentRunner:
         the session, and a background spawn persists immediately since no run_turn
         will fold its spend."""
         hook_task = original_task or task
+        # Wall-clock start for the terminal meta's duration stat. The native path
+        # reads prep.t0 (stamped in _execute_spawn); the CLI early-return branches
+        # before prep exists, so stamp its own here. A resumed leg times only
+        # itself — same rule as native.
+        t0 = time.perf_counter()
         meta: dict | None = None
         checkpoint: Callable[[list, str | None], None] | None = None
         if stream_id:
@@ -1023,6 +1047,9 @@ class SubagentRunner:
                     self._teardown_worktree(iso, force=True)
             raise
         await self.hooks.subagent_stop(defn.name, hook_task, result.output)
+        # Same prefix rule as the checkpoint above: the final write is also
+        # tail-only for a resumed run, so prepend the pre-interrupt segment.
+        full_transcript = (transcript_prefix or []) + result.transcript
         final_meta = None
         if meta is not None:
             final_meta = {
@@ -1031,11 +1058,10 @@ class SubagentRunner:
                 "cli_session_id": result.session_id or meta["cli_session_id"],
                 "usage": {"input": result.usage.input_tokens,
                           "output": result.usage.output_tokens},
+                "tool_count": _count_tool_calls(full_transcript),
+                "duration": time.perf_counter() - t0,
             }
-        # Same prefix rule as the checkpoint above: the final write is also
-        # tail-only for a resumed run, so prepend the pre-interrupt segment.
-        self._save_transcript(stream_id, (transcript_prefix or []) + result.transcript,
-                              meta=final_meta)
+        self._save_transcript(stream_id, full_transcript, meta=final_meta)
         # Claude-side sub-agents (the CLI's own Agent/Task spawns) each get a
         # sidecar under their stream id — the same id their live card streamed
         # under — so the sub-agents screen can replay them after a resume.

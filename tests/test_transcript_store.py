@@ -96,3 +96,15 @@ def test_write_stamps_updated_timestamp(tmp_path):
     ts = TranscriptStore(tmp_path / "s.json", "sid")
     ts.write("sg1", _msgs_v2(), 2000, meta=_meta("sg1"))
     assert ts.read_meta("sg1")["updated"]        # non-empty ISO stamp
+
+
+def test_has_transcript_true_for_v1_and_v2_false_for_missing(tmp_path):
+    """``has_transcript`` answers "did this spawn leave ANY sidecar" — the settle
+    join uses it to tell a legacy v1 (pre-envelope) spawn that ran to completion
+    apart from a spawn that never executed at all (no file)."""
+    ts = TranscriptStore(tmp_path / "s.json", "sid")
+    ts.write("sg-v1", _msgs_v2(), 2000)                       # v1 bare list
+    ts.write("sg-v2", _msgs_v2(), 2000, meta=_meta("sg-v2"))  # v2 envelope
+    assert ts.has_transcript("sg-v1")
+    assert ts.has_transcript("sg-v2")
+    assert not ts.has_transcript("sg-none")

@@ -659,3 +659,97 @@ async def test_never_ran_spawn_card_finishes_failed_not_interrupted(tmp_path: Pa
         card = next(w for w in app.stream.subagents if w.stream_id == "sg-never")
         assert card.status == "failed"
         assert "spawn never ran" in card.report
+
+
+@pytest.mark.anyio
+async def test_v1_sidecar_spawn_settles_done_not_never_ran(tmp_path: Path):
+    """A pre-envelope (v1 bare-list) sidecar proves the spawn ran and completed
+    under the old write-once scheme — scan_meta can't see it (no meta), but the
+    settle join must NOT mislabel it "spawn never ran". Regression for resumed
+    sessions recorded before the v2 envelope landed: their cards settled failed
+    with a bogus never-ran report while the transcript sat readable on disk."""
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ModelResponse,
+        TextPart,
+        ToolCallPart,
+        ToolReturnPart,
+    )
+
+    from marim_harness.session import TranscriptStore
+
+    app = _app_with_store(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        store = app.harness.session.store
+        assert store is not None
+        ts = TranscriptStore(store.path, store.session_id)
+        ts.write("sg-legacy", [ModelResponse(parts=[TextPart(content="did it")])],
+                 2000)  # no meta → v1 bare list, exactly what pre-envelope code wrote
+        app.harness.session.history = [
+            ModelResponse(parts=[ToolCallPart(
+                tool_name="spawn_agent",
+                args={"type": "general", "task": "t", "background": True},
+                tool_call_id="sg-legacy",
+            )]),
+            ModelRequest(parts=[ToolReturnPart(
+                tool_name="spawn_agent",
+                content="Started job-1 (agent) — general: t",
+                tool_call_id="sg-legacy",
+            )]),
+        ]
+        await app.session.render_session("note")
+        await pilot.pause()
+
+        card = next(w for w in app.stream.subagents if w.stream_id == "sg-legacy")
+        assert card.status == "done"
+        assert "spawn never ran" not in card.report
+
+
+@pytest.mark.anyio
+async def test_settle_rehydrates_card_stats_from_meta(tmp_path: Path):
+    """A finished v2 sidecar's meta carries usage/tool_count/duration; the settle
+    join must rehydrate the card's stats columns from it — otherwise a resumed
+    sub-agents screen shows 0 toolcalls / 0 tokens / 0s for work that plainly
+    happened."""
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ModelResponse,
+        TextPart,
+        ToolCallPart,
+        ToolReturnPart,
+    )
+
+    from marim_harness.session import TranscriptStore
+
+    app = _app_with_store(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        store = app.harness.session.store
+        assert store is not None
+        ts = TranscriptStore(store.path, store.session_id)
+        meta = {**_spawn_meta("sg-stats", "t", status="finished"),
+                "usage": {"input": 900, "output": 100},
+                "tool_count": 7, "duration": 65.0}
+        ts.write("sg-stats", [ModelResponse(parts=[TextPart(content="done")])],
+                 2000, meta=meta)
+        app.harness.session.history = [
+            ModelResponse(parts=[ToolCallPart(
+                tool_name="spawn_agent",
+                args={"type": "general", "task": "t", "background": True},
+                tool_call_id="sg-stats",
+            )]),
+            ModelRequest(parts=[ToolReturnPart(
+                tool_name="spawn_agent",
+                content="Started job-1 (agent) — general: t",
+                tool_call_id="sg-stats",
+            )]),
+        ]
+        await app.session.render_session("note")
+        await pilot.pause()
+
+        card = next(w for w in app.stream.subagents if w.stream_id == "sg-stats")
+        assert card.status == "done"
+        assert card.tool_count == 7
+        assert card.tokens == 1000
+        assert card._duration() == "1m 5s"  # frozen from meta, not replay wall-clock

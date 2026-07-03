@@ -395,3 +395,17 @@ async def test_resume_cli_refusals(tmp_path, monkeypatch):
              meta={**_cli_meta("sg-flip"), "type": "flipped"})
     job_id, msg = await harness.subagents.resume_spawn("sg-flip")
     assert job_id is None and "no longer claude-cli" in msg
+
+
+@pytest.mark.anyio
+async def test_final_meta_records_tool_count_and_duration(tmp_path):
+    """The terminal sidecar meta carries the run's tool tally and wall-clock
+    duration alongside usage, so a resumed session can rehydrate the sub-agents
+    screen's stats columns instead of showing 0 / 0s."""
+    store = _session_store(tmp_path)
+    harness = _make_harness(_tool_then_text_model(), _make_deps(tmp_path), store=store)
+    await harness.subagents.run("general", "look around", stream_id="sg-stats")
+    meta = TranscriptStore(store.path, store.session_id).read_meta("sg-stats")
+    assert meta["status"] == "finished"
+    assert meta["tool_count"] == 1          # the single list_files call
+    assert meta["duration"] > 0

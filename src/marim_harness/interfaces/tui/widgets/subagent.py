@@ -151,6 +151,10 @@ class SubAgentWidget(Vertical):
         self.blocked_by: str | None = None
         self._t0 = time.monotonic()
         self._t_end: float | None = None
+        # A resumed card's real run duration, restored from its sidecar meta.
+        # _t0/_t_end measure *replay* wall-clock on a resumed session (both stamp
+        # at settle time → "0s"), so _duration() prefers this when set.
+        self._restored_duration: float | None = None
         # Live token usage. The total + cost ride on the card; the full cache split
         # is forwarded to the pane's usage line, where there's room for it.
         self.tokens = 0
@@ -273,6 +277,8 @@ class SubAgentWidget(Vertical):
         self._header.update(Content.assemble(*parts))
 
     def _duration(self) -> str:
+        if self._restored_duration is not None:
+            return _fmt_duration(self._restored_duration)
         end = self._t_end if self._t_end is not None else time.monotonic()
         return _fmt_duration(end - self._t0)
 
@@ -345,6 +351,18 @@ class SubAgentWidget(Vertical):
             if cost_text:
                 detail = f"{detail} · {cost_text}" if detail else cost_text
             self.pane.set_usage_line(detail)
+
+    def restore_stats(self, tool_count: int = 0, tokens: int = 0,
+                      duration: float | None = None) -> None:
+        """Rehydrate the run stats a resumed spawn's sidecar meta persisted
+        (see the runner's _final_meta): the tool tally and token total the live
+        stream would have accumulated, and the real run duration to show instead
+        of the meaningless replay-epoch _t0/_t_end delta. Cost is deliberately
+        not restored — pricing needs the model catalog, and a stale price is
+        worse than a blank cell."""
+        self.tool_count = tool_count
+        self.set_tokens(tokens)
+        self._restored_duration = duration
 
     def note_tool(self, tool_name: str = "", args: dict | None = None) -> None:
         """Record that the sub-agent just called ``tool_name`` (with its ``args``):
