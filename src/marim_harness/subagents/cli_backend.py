@@ -5,7 +5,9 @@ process in headless stream-json mode instead of the in-process Pydantic AI loop.
 This module is backend-only: the pure translation helpers (binary resolve, argv
 build, harness→Claude-Code tool-name mapping, permission-mode selection, usage
 synthesis), the stream-event translator, and the thin `ClaudeCliRunner` that
-spawns the process and forwards its activity to the UI. The harness wrapping
+spawns the process and forwards its activity to the UI — including handing the
+CLI's own Agent/Task sub-agent traffic off to `cli_demux.CliSubagentDemux` so it
+renders as native cards. The harness wrapping
 (worktree, hooks bracketing, output cap, background persist) stays in
 `subagents.py`, so this module is unit-tested without the rest of the harness.
 """

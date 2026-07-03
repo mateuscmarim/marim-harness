@@ -544,6 +544,49 @@ async def test_list_renders_child_indented_under_parent(tmp_path):
         assert cell(2).startswith("coding —")        # sibling root, not indented
 
 
+@pytest.mark.anyio
+async def test_claude_cli_spawn_events_drive_a_native_card(tmp_path):
+    from datetime import datetime, timezone
+
+    from pydantic_ai.messages import (
+        FunctionToolCallEvent,
+        FunctionToolResultEvent,
+        PartDeltaEvent,
+        PartStartEvent,
+        TextPart,
+        TextPartDelta,
+        ToolCallPart,
+        ToolReturnPart,
+    )
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        call = FunctionToolCallEvent(part=ToolCallPart(
+            tool_name="spawn_agent",
+            args={"type": "Explore", "task": "What is 2+2?", "description": "math"},
+            tool_call_id="tsub",
+        ))
+        await app.stream.on_cli_activity([call])
+        await pilot.pause()
+        assert len(app.stream.subagents) == 1
+        card = app.stream.subagents[0]
+        assert card.stream_id == "tsub" and card.agent_type == "Explore"
+
+        await app.stream.on_subagent_event(
+            "tsub", PartStartEvent(index=0, part=TextPart(content="")))
+        await app.stream.on_subagent_event(
+            "tsub", PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="4")))
+        await pilot.pause()
+
+        ret = FunctionToolResultEvent(part=ToolReturnPart(
+            tool_name="spawn_agent", content="4", tool_call_id="tsub",
+            timestamp=datetime.now(tz=timezone.utc), outcome="success",
+        ))
+        await app.stream.on_cli_activity([ret])
+        await pilot.pause()
+        assert card.status == "done"
+
+
 def test_repaint_list_survives_uncomposed_view():
     """A flush tick can fire between the view being created and its compose
     children mounting, so ``view.list`` raises NoMatches. ``_repaint_list`` must

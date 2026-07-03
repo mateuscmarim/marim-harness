@@ -7,7 +7,10 @@ stream-json mode, lets Claude run its own tools internally, and returns a single
 **text-only** ``ModelResponse``. Emitting ``ToolCallPart``s here would make
 pydantic_ai's agent graph try to execute Claude's tool calls a second time, so
 Claude's internal tool activity is folded into the streamed text instead (see
-``format_activity_line`` / ``consume_cli_stream``).
+``format_activity_line`` / ``consume_cli_stream``). Claude's own Agent/Task
+sub-agent spawns are the exception: they are split off onto side-channels
+(``on_cli_activity`` / ``on_subagent_event``) via ``cli_demux.CliSubagentDemux``
+so the TUI can render them as first-class cards instead of flattened text.
 
 This module reuses the pure helpers in ``subagents.cli_backend`` (binary resolve,
 argv build, ndjson reader) and only depends on ``pydantic_ai`` + ``..usage``, so
