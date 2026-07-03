@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -119,6 +120,9 @@ class CliResult:
     usage: RunUsage
     transcript: list = field(default_factory=list)
     child_transcripts: dict = field(default_factory=dict)
+    # The Claude session id captured from the stream's init event — the resume
+    # key for `claude -p --resume`. None when the stream never reported one.
+    session_id: str | None = None
 
 
 def resolve_cli_binary() -> str | None:
@@ -428,11 +432,18 @@ class ClaudeCliRunner:
     async def run(
         self, *, binary: str, prompt: str, system_prompt: str, cwd: str,
         allow_gated: bool, allowed_tools, model: str | None, stream_id: str,
+        checkpoint: Callable[[list, str | None], None] | None = None,
+        resume_session_id: str | None = None,
     ) -> CliResult:
         argv = build_cli_argv(
             binary, prompt, system_prompt,
             cli_permission_mode(allow_gated),
             map_tools_to_cc(allowed_tools), model,
+            resume_session_id=resume_session_id,
+            # A resumed session already carries its system prompt from creation;
+            # re-appending would duplicate it (same rule as ClaudeCliModel's
+            # resumed turns — see build_cli_argv's docstring).
+            append_system=resume_session_id is None,
         )
         proc = await asyncio.create_subprocess_exec(
             *argv, cwd=cwd,
@@ -451,8 +462,22 @@ class ClaudeCliRunner:
             output = ""
             results: list[dict] = []
             model_sent = False
+            session_id: str | None = None
+            last_ckpt_len = 0
             assert proc.stdout is not None
             async for raw in _iter_ndjson_lines(proc.stdout):
+                # Checkpoint the transcript accumulated so far whenever it has
+                # grown. Placed at the top of the iteration (not the bottom) so a
+                # single call site covers every path the loop body takes — the
+                # translate branch, the demux record_call/record_return path, and
+                # all the `continue`s. The cost is a one-line lag: a kill mid-
+                # stream loses at most the final line's content, and a clean run's
+                # completion-time write supersedes the last checkpoint anyway.
+                if checkpoint is not None:
+                    snapshot = translator.transcript()
+                    if len(snapshot) != last_ckpt_len:
+                        last_ckpt_len = len(snapshot)
+                        checkpoint(snapshot, session_id)
                 line = raw.strip()
                 if not line:
                     continue
@@ -460,6 +485,10 @@ class ClaudeCliRunner:
                     obj = json.loads(line)
                 except json.JSONDecodeError:
                     continue  # non-JSON noise on stdout — skip
+                if session_id is None:
+                    sid = obj.get("session_id")
+                    if isinstance(sid, str) and sid:
+                        session_id = sid
                 # Claude-side sub-agent traffic (Agent/Task spawns, their child
                 # streams, task lifecycle events) is demuxed into per-card
                 # streams; whatever remains is this spawn's own main stream.
@@ -493,6 +522,10 @@ class ClaudeCliRunner:
                 for event in translator.translate(obj):
                     if self._on_event is not None and stream_id:
                         await self._on_event(stream_id, event, None)
+            if checkpoint is not None:
+                snapshot = translator.transcript()
+                if len(snapshot) != last_ckpt_len:
+                    checkpoint(snapshot, session_id)
             stderr_bytes = await stderr_task if stderr_task is not None else b""
             stderr_task = None  # consumed — don't cancel it in finally
             code = await proc.wait()
@@ -504,6 +537,7 @@ class ClaudeCliRunner:
                 usage=synth_usage(*sum_result_usages(results)),
                 transcript=translator.transcript(),
                 child_transcripts=demux.child_transcripts(),
+                session_id=session_id,
             )
         finally:
             # On an exceptional/cancelled exit, reap the child so an auto-mode CLI

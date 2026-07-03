@@ -1,4 +1,11 @@
-from marim_harness.subagents.cli_backend import build_cli_argv
+import json
+import stat
+import sys
+from pathlib import Path
+
+import pytest
+
+from marim_harness.subagents.cli_backend import ClaudeCliRunner, build_cli_argv
 
 
 def test_build_cli_argv_resume_and_no_system():
@@ -32,3 +39,67 @@ def test_build_cli_argv_safe_mode():
     # (e.g. agentmemory's cross-session context injection) don't pollute the turn.
     argv = build_cli_argv("claude", "task", "SYSTEM", "plan", [], None, safe_mode=True)
     assert "--safe-mode" in argv
+
+
+_FAKE_STREAM = '''#!{python}
+import json, sys
+for o in [
+    {{"type": "system", "subtype": "init", "session_id": "sess-abc",
+      "model": "claude-test"}},
+    {{"type": "assistant", "message": {{"content": [
+        {{"type": "text", "text": "step one"}}]}}}},
+    {{"type": "assistant", "message": {{"content": [
+        {{"type": "text", "text": "step two"}}]}}}},
+    {{"type": "result", "subtype": "success", "result": "done", "num_turns": 1,
+      "usage": {{"input_tokens": 1, "output_tokens": 1}}}},
+]:
+    sys.stdout.write(json.dumps(o) + "\\n")
+'''
+
+
+def _script(tmp_path: Path, body: str) -> str:
+    p = tmp_path / "fake_claude.py"
+    p.write_text(body.format(python=sys.executable))
+    p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IRWXU)
+    return str(p)
+
+
+@pytest.mark.anyio
+async def test_run_captures_session_id_and_checkpoints(tmp_path):
+    seen: list[tuple[int, str | None]] = []
+
+    def ckpt(messages: list, session_id: str | None) -> None:
+        seen.append((len(messages), session_id))
+
+    runner = ClaudeCliRunner(None, None)
+    result = await runner.run(
+        binary=_script(tmp_path, _FAKE_STREAM), prompt="task", system_prompt="sys",
+        cwd=str(tmp_path), allow_gated=False, allowed_tools=[], model=None,
+        stream_id="sg-cli", checkpoint=ckpt,
+    )
+    assert result.session_id == "sess-abc"
+    # The transcript grew twice (two assistant messages); each growth checkpointed,
+    # and every checkpoint after the init line carries the captured session id.
+    assert [n for n, _ in seen] == [1, 2]
+    assert all(sid == "sess-abc" for _, sid in seen)
+
+
+@pytest.mark.anyio
+async def test_resume_session_id_threads_into_argv(tmp_path):
+    argv_file = tmp_path / "argv.json"
+    body = (
+        "#!{python}\n"
+        "import json, sys\n"
+        f"open({str(argv_file)!r}, 'w').write(json.dumps(sys.argv))\n"
+        'sys.stdout.write(json.dumps({{"type": "result", "subtype": "success",'
+        ' "result": "ok", "num_turns": 1, "usage": {{}}}}) + "\\n")\n'
+    )
+    runner = ClaudeCliRunner(None, None)
+    await runner.run(
+        binary=_script(tmp_path, body), prompt="continue", system_prompt="sys",
+        cwd=str(tmp_path), allow_gated=False, allowed_tools=[], model=None,
+        stream_id="sg-cli", resume_session_id="sess-abc",
+    )
+    argv = json.loads(argv_file.read_text())
+    assert "--resume" in argv and argv[argv.index("--resume") + 1] == "sess-abc"
+    assert "--append-system-prompt" not in argv  # session already has its prompt
