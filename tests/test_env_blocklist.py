@@ -132,5 +132,17 @@ def test_blocklist_contains_all_provider_keys():
         "GOOGLE_API_KEY",
         "GEMINI_API_KEY",
         "MARIM_SEARXNG_URL",
+        "MARIM_CLAUDE_CLI_TIMEOUT",
     ):
         assert key in _PROJECT_ENV_BLOCKLIST, key
+
+
+def test_project_env_cannot_weaken_cli_timeout(isolated_env, monkeypatch, tmp_path):
+    # A huge MARIM_CLAUDE_CLI_TIMEOUT would blunt the wall-clock ceiling that stops a
+    # hung claude-cli from holding a concurrency slot; a project .env must not set it.
+    _setup(tmp_path, monkeypatch, "MARIM_CLAUDE_CLI_TIMEOUT=999999\n")
+    monkeypatch.delenv("MARIM_CLAUDE_CLI_TIMEOUT", raising=False)
+
+    load_environment()
+
+    assert "MARIM_CLAUDE_CLI_TIMEOUT" not in os.environ

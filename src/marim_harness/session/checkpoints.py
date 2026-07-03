@@ -118,6 +118,12 @@ class CheckpointManager:
         # restore, so a redo/recovery has a baseline for the post-rewind work that
         # undo would otherwise overwrite.
         self._pre_undo_commit: str | None = None
+        # Checkpoints a rewind dropped (index > the rewind target). Kept — with their
+        # git refs alive — until the undo window closes, so undo_rewind can restore
+        # them. Without this, rewinding to #3 then undoing brought the conversation
+        # back but left checkpoints #4+ (and their snapshots) gone for good. In-memory
+        # only, like the history stash above (a process restart still loses undo).
+        self._pre_rewind_checkpoints: list[Checkpoint] | None = None
         self.reload()
 
     # --- persistence -----------------------------------------------------
@@ -146,6 +152,13 @@ class CheckpointManager:
         """Load the checkpoint list for the current session (called on
         resume/switch/new). A missing or corrupt sidecar yields an empty list."""
         self._checkpoints = []
+        # Abandon the in-memory undo stash (it belongs to the session we're leaving).
+        # Clear the fields WITHOUT deleting refs: _discard_undo_stash would target the
+        # current (post-switch) session id, deleting the wrong namespace's refs. The
+        # old session's dropped refs are re-derivable from its own sidecar if reloaded.
+        self._pre_rewind_history = None
+        self._pre_restore_commit = None
+        self._pre_rewind_checkpoints = None
         path = self._sidecar_path()
         if path is None or not path.exists():
             return
@@ -181,10 +194,31 @@ class CheckpointManager:
         recoverable, mirroring how rewind() guards its own restore."""
         return f"{_REF_PREFIX}/{self._session_id()}/_pre_undo"
 
+    def _discard_undo_stash(self) -> None:
+        """Close the undo window: the last rewind can no longer be undone, so delete
+        the git refs of the checkpoints it dropped (now truly orphaned — they aren't in
+        ``_checkpoints`` anymore) and clear every rewind stash. Called when the user
+        moves forward (a new snapshot), rewinds again, or the session is cleared —
+        anything that supersedes the pending undo. Uses the CURRENT session id, so it
+        must not run across a session switch (see ``reload``, which clears the stash
+        without deleting refs to avoid targeting the wrong session's namespace)."""
+        if self._pre_rewind_checkpoints:
+            for cp in self._pre_rewind_checkpoints:
+                if cp.commit is not None:
+                    self.snapshotter.delete(self._ref(cp.index))
+        self._pre_rewind_checkpoints = None
+        self._pre_rewind_history = None
+        self._pre_restore_commit = None
+
     def snapshot(self, prompt_preview: str) -> int:
         """Capture a checkpoint of the current state before a turn runs. Returns
         the new checkpoint's index so the caller can ``discard`` it if the turn
         then fails without producing anything."""
+        # Capturing a new checkpoint means the user moved forward from any prior
+        # rewind, so its undo window closes here — the dropped checkpoints it was
+        # holding for undo are released (and their refs freed before the new index,
+        # which may reuse one of theirs, is captured).
+        self._discard_undo_stash()
         index = (self._checkpoints[-1].index + 1) if self._checkpoints else 0
         commit = self.snapshotter.capture(
             self._ref(index), f"marim checkpoint {index}"
@@ -244,6 +278,10 @@ class CheckpointManager:
         cp = next((c for c in self._checkpoints if c.index == index), None)
         if cp is None:
             raise KeyError(index)
+        # A new rewind supersedes any pending undo from a PRIOR rewind (undo is
+        # single-level), so close that window first — its dropped checkpoints become
+        # unrecoverable now and their refs are freed.
+        self._discard_undo_stash()
         restored = False
         restore_failed = False
         pre_restore_commit: str | None = None
@@ -269,11 +307,13 @@ class CheckpointManager:
         self._pre_rewind_history = list(self.session.history)
         self.session.set_history(self.session.history[: cp.history_len])
         self.session.persist(force=True)
-        # Drop the now-orphaned later checkpoints AND delete their git refs, so
-        # refs/marim/checkpoints/... doesn't leak and block GC (mirrors _prune).
-        for c in self._checkpoints:
-            if c.index > index and c.commit is not None:
-                self.snapshotter.delete(self._ref(c.index))
+        # Stash the later checkpoints instead of deleting them: keep their git refs
+        # alive so undo_rewind can restore them to the list (rewinding to #3 then
+        # undoing must bring #4+ back, not lose them for good). Their refs are deleted
+        # only when the undo window closes — a new snapshot, a later rewind, or clear
+        # (see _discard_undo_stash), mirroring the leak-safety _prune provides, just
+        # deferred past the undo window.
+        self._pre_rewind_checkpoints = [c for c in self._checkpoints if c.index > index]
         self._checkpoints = [c for c in self._checkpoints if c.index <= index]
         self._save()
         return RewindResult(
@@ -316,10 +356,26 @@ class CheckpointManager:
                     "skipping undo file restore: pre-undo safety snapshot failed"
                 )
             self._pre_restore_commit = None
+        # Bring the dropped later checkpoints back into the list (their refs were kept
+        # alive for exactly this), so after undoing a rewind the user can rewind to a
+        # LATER point again. Merge and re-sort by index; skip any index a post-rewind
+        # snapshot already reused.
+        if self._pre_rewind_checkpoints is not None:
+            existing = {c.index for c in self._checkpoints}
+            self._checkpoints.extend(
+                c for c in self._pre_rewind_checkpoints if c.index not in existing
+            )
+            self._checkpoints.sort(key=lambda c: c.index)
+            self._pre_rewind_checkpoints = None
+            self._save()
+            undone = True
         return undone
 
     def _delete_all_refs(self) -> None:
-        """Delete every checkpoint's git ref and clear the list."""
+        """Delete every checkpoint's git ref and clear the list. Also closes any open
+        undo window, since its stashed dropped checkpoints (not in ``_checkpoints``)
+        would otherwise leak their refs."""
+        self._discard_undo_stash()
         for cp in self._checkpoints:
             if cp.commit is not None:
                 self.snapshotter.delete(self._ref(cp.index))

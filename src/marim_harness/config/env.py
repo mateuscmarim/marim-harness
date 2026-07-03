@@ -86,6 +86,11 @@ _PROJECT_ENV_BLOCKLIST = frozenset(
         # into the agent's context (a prompt-injection channel). Operator-controlled
         # only, same as MARIM_BASE_URL above.
         "MARIM_SEARXNG_URL",
+        # The claude-cli per-spawn wall-clock ceiling (subagents.cli_backend). It caps
+        # how long a hung CLI can hold a concurrency slot; a cloned repo's .env setting
+        # it huge would blunt that safety limit, so it too comes only from the shell
+        # env / trusted global config.
+        "MARIM_CLAUDE_CLI_TIMEOUT",
     }
 )
 

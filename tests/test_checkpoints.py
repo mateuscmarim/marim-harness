@@ -385,23 +385,62 @@ class _FailPreRestoreSnap(_FakeSnap):
         return f"commit:{ref}"
 
 
-def test_rewind_deletes_dropped_checkpoint_refs(tmp_path: Path):
-    # Later checkpoints removed by a rewind must have their git refs deleted, not
-    # just dropped from the in-memory list — otherwise refs/marim/... leaks and
-    # blocks git GC (mirrors what _prune already does).
+def _mgr_with_three(tmp_path: Path):
+    """A manager with checkpoints #0, #1, #2 (each with a real commit)."""
     s = _session(tmp_path)
     snap = _DeleteRecordingSnap()
     mgr = CheckpointManager(s, snap)
-    mgr.snapshot("t0")  # index 0 (kept)
+    mgr.snapshot("t0")
     s.set_history(["u1", "a1"])
-    mgr.snapshot("t1")  # index 1 (dropped)
+    mgr.snapshot("t1")
     s.set_history(["u1", "a1", "u2", "a2"])
-    mgr.snapshot("t2")  # index 2 (dropped)
+    mgr.snapshot("t2")
+    return s, snap, mgr
+
+
+def test_rewind_defers_dropped_checkpoint_ref_deletion(tmp_path: Path):
+    # Later checkpoints removed by a rewind are STASHED (refs kept alive), not deleted
+    # immediately, so undo_rewind can restore them. Deleting on rewind (the old
+    # behavior) made "rewind too far, then undo" lose #1/#2 for good.
+    _s, snap, mgr = _mgr_with_three(tmp_path)
     mgr.rewind(0)
     assert [c.index for c in mgr.list()] == [0]
+    assert not any(r.endswith("/1") for r in snap.deleted)
+    assert not any(r.endswith("/2") for r in snap.deleted)
+
+
+def test_undo_rewind_restores_dropped_checkpoints(tmp_path: Path):
+    # The core fix: rewinding then undoing brings the later checkpoints back so a user
+    # who rewound too far can still reach a later point.
+    _s, snap, mgr = _mgr_with_three(tmp_path)
+    mgr.rewind(0)
+    assert [c.index for c in mgr.list()] == [0]
+    assert mgr.undo_rewind() is True
+    assert [c.index for c in mgr.list()] == [0, 1, 2]
+    assert not any(r.endswith("/1") for r in snap.deleted)
+    assert not any(r.endswith("/2") for r in snap.deleted)
+
+
+def test_moving_forward_after_rewind_closes_undo_and_frees_refs(tmp_path: Path):
+    # Moving forward (a new turn snapshots) instead of undoing closes the undo window:
+    # the dropped checkpoints are released, their refs deleted, and undo is a no-op.
+    s, snap, mgr = _mgr_with_three(tmp_path)
+    mgr.rewind(0)
+    s.set_history(["u1p", "a1p"])
+    mgr.snapshot("moved-forward")
     assert any(r.endswith("/1") for r in snap.deleted)
     assert any(r.endswith("/2") for r in snap.deleted)
-    assert not any(r.endswith("/0") for r in snap.deleted)  # the kept one survives
+    assert mgr.undo_rewind() is False
+
+
+def test_second_rewind_frees_the_first_rewinds_dropped_refs(tmp_path: Path):
+    # Undo is single-level: a second rewind supersedes the first's undo, so the first
+    # rewind's dropped checkpoint refs are freed (not leaked).
+    _s, snap, mgr = _mgr_with_three(tmp_path)
+    mgr.rewind(1)  # drops #2, keeps [0, 1]
+    assert not any(r.endswith("/2") for r in snap.deleted)
+    mgr.rewind(0)  # supersedes the first undo → frees #2's ref
+    assert any(r.endswith("/2") for r in snap.deleted)
 
 
 def test_rewind_aborts_restore_when_safety_snapshot_fails(tmp_path: Path):
