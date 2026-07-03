@@ -1829,6 +1829,10 @@ dependencies = [
     { name = "pydantic-ai" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
+]
+
+[package.optional-dependencies]
+tui = [
     { name = "textual" },
 ]
 
@@ -1839,6 +1843,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
+    { name = "textual" },
 ]
 
 [package.metadata]
@@ -1850,8 +1855,9 @@ requires-dist = [
     { name = "pydantic-ai", specifier = ">=1.107,<2" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "pyyaml", specifier = ">=6" },
-    { name = "textual", specifier = ">=0.80" },
+    { name = "textual", marker = "extra == 'tui'", specifier = ">=0.80" },
 ]
+provides-extras = ["tui"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1860,6 +1866,7 @@ dev = [
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-cov", specifier = ">=5" },
     { name = "ruff", specifier = ">=0.6" },
+    { name = "textual", specifier = ">=0.80" },
 ]
 
 [[package]]

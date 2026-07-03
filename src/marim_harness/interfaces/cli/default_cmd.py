@@ -4,6 +4,7 @@ headlessly and print the result."""
 
 import argparse
 import asyncio
+import importlib.util
 import os
 import sys
 from pathlib import Path
@@ -71,6 +72,12 @@ def _is_headless(prompt, *, stdin_isatty: bool, textual_driver: bool = False) ->
     return not stdin_isatty
 
 
+def _tui_available() -> bool:
+    """Whether the optional TUI dependency is installed. textual ships in the
+    ``tui`` extra, not the core dependencies, so a bare install is headless-only."""
+    return importlib.util.find_spec("textual") is not None
+
+
 def _enter_worktree(workspace, branch, err):
     """Resolve `workspace` to a git worktree for `branch`. Returns the worktree
     path, or None after printing an error to `err`."""
@@ -126,6 +133,15 @@ def run_default(argv, *, stdin=None, out=None, err=None) -> int:
         return asyncio.run(
             run_headless(harness, prompt, args.output_format, out=out, err=err)
         )
+
+    if not _tui_available():
+        print(
+            "the interactive TUI needs the optional 'textual' dependency.\n"
+            "Install the extra:  pip install 'marim-harness[tui]'\n"
+            'Or run headless:    marim -p "your prompt"',
+            file=err,
+        )
+        return 2
 
     # Route logs to a file before Textual takes the screen — the stderr handler
     # installed at startup still points at the real tty and would paint WARNING+

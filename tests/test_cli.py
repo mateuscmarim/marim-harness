@@ -200,6 +200,42 @@ def test_empty_prompt_returns_error():
     assert "no prompt" in err.getvalue().lower()
 
 
+def test_tui_without_textual_prints_install_hint(monkeypatch, tmp_path: Path):
+    # textual is an optional extra: an interactive launch on a bare install must
+    # fail with an actionable message, before any heavy wiring is built.
+    import marim_harness.runtime.bootstrap as bootstrap
+
+    def boom(*args, **kwargs):  # the harness must never be built on this path
+        raise AssertionError("build_harness reached despite missing textual")
+
+    monkeypatch.setattr(bootstrap, "build_harness", boom)
+    monkeypatch.setattr(default_cmd, "_tui_available", lambda: False)
+    out, err = io.StringIO(), io.StringIO()
+    stdin = io.StringIO()
+    stdin.isatty = lambda: True  # interactive -> wants the TUI
+    code = default_cmd.run_default([], stdin=stdin, out=out, err=err)
+    assert code == 2
+    assert "marim-harness[tui]" in err.getvalue()
+    assert "-p" in err.getvalue()  # points at the headless escape hatch
+
+
+def test_headless_works_without_textual(monkeypatch, tmp_path: Path):
+    # The bare install is headless-only: -p must not care that textual is absent.
+    import marim_harness.runtime.bootstrap as bootstrap
+
+    monkeypatch.setattr(
+        bootstrap, "build_harness",
+        lambda workspace, *, mode, resume: _cli_harness(tmp_path, "bare-ok"),
+    )
+    monkeypatch.setattr(default_cmd, "_tui_available", lambda: False)
+    out = io.StringIO()
+    stdin = io.StringIO()
+    stdin.isatty = lambda: True
+    code = default_cmd.run_default(["-p", "hi"], stdin=stdin, out=out)
+    assert code == 0
+    assert out.getvalue().strip() == "bare-ok"
+
+
 def test_management_stubs_return_nonzero():
     from marim_harness.interfaces.cli import config, models, sessions
 

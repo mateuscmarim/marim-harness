@@ -12,9 +12,13 @@ dependencies = [
     "beautifulsoup4>=4.12",
     "python-dotenv>=1.2.2",
     "pyyaml>=6",
-    "textual>=0.80",
     "multilspy>=0.0.10",
 ]
+
+[project.optional-dependencies]
+# The interactive TUI. A bare install is headless-only (`marim -p`); the `marim`
+# interactive launch prints an install hint when textual is absent.
+tui = ["textual>=0.80"]
 
 [project.scripts]
 marim = "marim_harness.__main__:main"
@@ -27,6 +31,9 @@ dev = [
     "anyio>=4",
     "ruff>=0.6",
     "pyright>=1.1.390",
+    # The TUI tests (Textual Pilot) need textual even though it moved to the
+    # optional `tui` extra, so plain `uv sync` keeps developing/CI working.
+    "textual>=0.80",
 ]
 
 [build-system]

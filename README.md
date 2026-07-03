@@ -30,10 +30,15 @@ headless mode for one-shot prompts and scripting.
 ## Install
 
 ```bash
-uv sync            # or: pip install -e .
+uv sync            # or: pip install -e '.[tui]'
 ```
 
 This exposes the `marim` (and `marim-harness`) console scripts.
+
+The interactive TUI lives in the optional `tui` extra; a bare
+`pip install marim-harness` is headless-only (`marim -p "..."`). `uv sync`
+installs the dev group, which includes textual, so a development checkout
+always has the full TUI.
 
 ## Usage
 
