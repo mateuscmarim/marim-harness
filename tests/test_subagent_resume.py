@@ -6,6 +6,8 @@ death mid-run lost the transcript entirely. The runner now flushes a v2 envelope
 finalizes it with a terminal status, so a crashed spawn leaves a resumable trail.
 """
 
+import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -257,3 +259,89 @@ async def test_resume_refuses_when_isolation_branch_is_gone(tmp_path):
     ts.write("sg-iso", _dangling_history(), 2000, meta=meta)
     job_id, msg = await harness.subagents.resume_spawn("sg-iso")
     assert job_id is None and "subagent/gone" in msg
+
+
+def _cli_meta(sid: str, session: str | None = "sess-abc") -> dict:
+    return {"stream_id": sid, "type": "cli-worker", "task": "original cli task",
+            "model": None, "mcp": None, "depth": 1, "max_output_chars": None,
+            "isolation": None, "status": "running",
+            "backend": "claude-cli", "cli_session_id": session}
+
+
+def _cli_agent(tmp_path):
+    d = tmp_path / ".marim" / "agents"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "cli-worker.md").write_text(
+        "---\ndescription: w\nbackend: claude-cli\ntools: read_file\n---\nWork.\n"
+    )
+
+
+def _resume_fake_cli(tmp_path, argv_file):
+    p = tmp_path / "fake_claude_resume.py"
+    p.write_text(
+        f"#!{sys.executable}\n"
+        "import json, sys\n"
+        f"open({str(argv_file)!r}, 'w').write(json.dumps(sys.argv))\n"
+        'sys.stdout.write(json.dumps({"type": "system", "subtype": "init",'
+        ' "session_id": "sess-abc", "model": "m"}) + "\\n")\n'
+        # An assistant text event so the translated transcript is non-empty —
+        # TranscriptStore.write no-ops on an empty message list (see
+        # transcripts.py), which would otherwise leave the sidecar's status
+        # stuck at "running". Mirrors every other fake-CLI fixture in this repo
+        # (test_subagent_cli_spawn.py, test_subagent_transcript_capture.py).
+        'sys.stdout.write(json.dumps({"type": "assistant", "message": {"content":'
+        ' [{"type": "text", "text": "resuming"}]}}) + "\\n")\n'
+        'sys.stdout.write(json.dumps({"type": "result", "subtype": "success",'
+        ' "result": "resumed-cli-ok", "num_turns": 1,'
+        ' "usage": {"input_tokens": 1, "output_tokens": 1}}) + "\\n")\n'
+    )
+    p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IRWXU)
+    return str(p)
+
+
+@pytest.mark.anyio
+async def test_resume_cli_spawn_relaunches_with_resume_flag(tmp_path, monkeypatch):
+    argv_file = tmp_path / "argv.json"
+    monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", _resume_fake_cli(tmp_path, argv_file))
+    _cli_agent(tmp_path)
+    store = _session_store(tmp_path)
+    harness = _make_harness(_resume_model(), _make_deps(tmp_path), store=store)
+    ts = TranscriptStore(store.path, store.session_id)
+    ts.write("sg-cli", _dangling_history(), 2000, meta=_cli_meta("sg-cli"))
+    job_id, message = await harness.subagents.resume_spawn("sg-cli")
+    assert job_id is not None, message
+    report = await harness.deps.jobs.wait(job_id)
+    assert report == "resumed-cli-ok"
+    import json as _json
+    argv = _json.loads(argv_file.read_text())
+    assert "--resume" in argv and argv[argv.index("--resume") + 1] == "sess-abc"
+    assert "--append-system-prompt" not in argv
+    assert argv[argv.index("-p") + 1].startswith("You were interrupted")
+    meta = ts.read_meta("sg-cli")
+    assert meta["status"] == "finished"
+    assert meta["task"] == "original cli task"  # continuation prompt never leaks in
+
+
+@pytest.mark.anyio
+async def test_resume_cli_refusals(tmp_path, monkeypatch):
+    _cli_agent(tmp_path)
+    store = _session_store(tmp_path)
+    harness = _make_harness(_resume_model(), _make_deps(tmp_path), store=store)
+    ts = TranscriptStore(store.path, store.session_id)
+    # No session id recorded (killed before init) → refuse, don't run the CLI.
+    ts.write("sg-nosid", _dangling_history(), 2000,
+             meta=_cli_meta("sg-nosid", session=None))
+    job_id, msg = await harness.subagents.resume_spawn("sg-nosid")
+    assert job_id is None and "never recorded" in msg
+    # Agent type vanished → refuse.
+    ts.write("sg-gone", _dangling_history(), 2000,
+             meta={**_cli_meta("sg-gone"), "type": "no-such-agent"})
+    job_id, msg = await harness.subagents.resume_spawn("sg-gone")
+    assert job_id is None and "no-such-agent" in msg
+    # Backend changed out from under the sidecar → refuse.
+    d = tmp_path / ".marim" / "agents"
+    (d / "flipped.md").write_text("---\ndescription: w\ntools: read_file\n---\nWork.\n")
+    ts.write("sg-flip", _dangling_history(), 2000,
+             meta={**_cli_meta("sg-flip"), "type": "flipped"})
+    job_id, msg = await harness.subagents.resume_spawn("sg-flip")
+    assert job_id is None and "no longer claude-cli" in msg

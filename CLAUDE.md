@@ -34,7 +34,9 @@ Claude subscription — marim acts as a launcher (Claude runs its own tools/loop
 own tools/approval/LSP/MCP do not apply in that provider. Claude's own Agent/Task
 sub-agents, however, are demuxed out of the stream (`subagents/cli_demux.py`) and
 rendered as first-class cards in the sub-agents screen, for both the main-loop
-provider and `backend: claude-cli` spawns.
+provider and `backend: claude-cli` spawns. Interrupted `claude-cli` spawns
+resume via the CLI's own `--resume` (the session id is checkpointed in the
+spawn's sidecar meta).
 
 ## Architecture
 

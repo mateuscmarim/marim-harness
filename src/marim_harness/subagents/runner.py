@@ -1211,6 +1211,12 @@ class SubagentRunner:
             for job in self.deps.jobs.list():
                 if job.stream_id == stream_id and job.status == "running":
                     return None, f"Already resuming as {job.id}."
+            # A claude-cli spawn resumes through the CLI's own session machinery,
+            # not the native transcript-repair path: the CLI owns its history and
+            # marim's sidecar is a display copy, so reading/repairing it here
+            # would be wasted work at best and engine-swapping at worst.
+            if meta.get("backend") == "claude-cli":
+                return await self._resume_cli_spawn(stream_id, meta)
             messages = store.read(stream_id)
             history = _resumable_history(messages or [])
             if history is None:
@@ -1251,3 +1257,51 @@ class SubagentRunner:
             return job_id, f"Resumed as {job_id}."
         finally:
             self._resuming.discard(stream_id)
+
+    async def _resume_cli_spawn(self, stream_id: str,
+                                meta: dict) -> tuple[str | None, str]:
+        """Resume an interrupted claude-cli spawn by relaunching the CLI with
+        ``--resume`` on its recorded session id, as a background job. The caller
+        (resume_spawn) already holds the ``_resuming`` guard and has verified the
+        sidecar status and the absence of a live job. There is deliberately no
+        pre-flight check that the CLI session file still exists — its on-disk
+        scheme is CLI-internal, so a stale session surfaces as the CLI's own
+        error on the failed job instead of a brittle path probe here."""
+        session_id = meta.get("cli_session_id")
+        if not session_id:
+            return None, ("The CLI session id was never recorded (the spawn died "
+                          "before its session started) — nothing to resume; "
+                          "spawn it again instead.")
+        type_ = str(meta.get("type") or "")
+        task = str(meta.get("task") or "")
+        defn = find_agent(self.deps.workspace.root, type_)
+        if defn is None:
+            return None, f"No sub-agent type {type_!r} anymore — can't resume."
+        if defn.backend != "claude-cli":
+            return None, (f"Sub-agent type {type_!r} is no longer claude-cli "
+                          "backed — can't resume its CLI session.")
+        iso = None
+        branch = meta.get("isolation")
+        if branch:
+            repo = repo_root(self.deps.workspace.root)
+            if repo is None or not branch_exists(repo, branch):
+                return None, (f"Isolation branch {branch!r} no longer exists — "
+                              "can't resume this isolated spawn.")
+            try:
+                path = create_or_reuse_worktree(repo, branch)
+            except WorktreeError as exc:
+                return None, f"Couldn't reopen the isolated worktree: {exc}"
+            iso = {"repo": repo, "branch": branch, "path": path}
+        label = f"{type_}: resumed — {task}"
+        job_id = self.deps.jobs.register(
+            "agent", label,
+            self._execute_cli_spawn(
+                defn, self._CONTINUATION_PROMPT,
+                iso["path"] if iso else None, iso,
+                None, meta.get("max_output_chars"), meta.get("model"), stream_id,
+                background=True, resume_session_id=session_id,
+                original_task=task,
+            ),
+            stream_id=stream_id,
+        )
+        return job_id, f"Resumed as {job_id}."
