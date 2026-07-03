@@ -13,6 +13,11 @@ from ..atomic_io import atomic_write_text
 from ..workspace.fs import ReadLedger, WorkspaceError, resolve_in_workspace
 from .offload import MAX_OUTPUT_CHARS, offload_if_large
 
+# Capture the process umask once at import time so we never need to manipulate
+# os.umask() at runtime — that API is process-global and not thread-safe.
+_DEFAULT_UMASK: int = os.umask(0o022)
+os.umask(_DEFAULT_UMASK)
+
 # When no explicit ``limit`` is given, a read is capped at this many lines so a
 # blind read of a huge file can't flood the context. Pass ``offset``/``limit``
 # to page through the rest. An explicit ``limit`` overrides this cap.
@@ -197,9 +202,7 @@ def _atomic_write_preserving_mode(p: Path, content: str) -> None:
     if original is not None:
         os.chmod(p, original)
     else:
-        umask = os.umask(0)
-        os.umask(umask)
-        os.chmod(p, 0o666 & ~umask)
+        os.chmod(p, 0o666 & ~_DEFAULT_UMASK)
 
 
 def write_file(
