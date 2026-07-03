@@ -261,6 +261,49 @@ async def test_resume_refuses_when_isolation_branch_is_gone(tmp_path):
     assert job_id is None and "subagent/gone" in msg
 
 
+@pytest.mark.anyio
+async def test_resume_build_failure_keeps_isolation_branch(tmp_path, monkeypatch):
+    """A resumed isolated spawn whose build fails must NOT destroy its branch — the
+    branch holds the interrupted run's committed work. _prepare_spawn owns the
+    failure teardown and, on a resume, must keep the branch (drop only the checkout).
+    The old code called iso.discard() unconditionally, deleting the branch, so the
+    resume call site's keep-the-branch teardown ran only after the branch was gone."""
+    import subprocess
+
+    def git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True,
+                       capture_output=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "Test")
+    (tmp_path / "README.md").write_text("hi\n")
+    git("add", ".")
+    git("commit", "-qm", "init")
+    git("branch", "subagent/sg-keep")  # the prior run's deliverable branch
+
+    store = _session_store(tmp_path)
+    harness = _make_harness(_resume_model(), _make_deps(tmp_path), store=store)
+    ts = TranscriptStore(store.path, store.session_id)
+    meta = {**_interrupted_meta("sg-keep"), "isolation": "subagent/sg-keep"}
+    ts.write("sg-keep", _dangling_history(), 2000, meta=meta)
+
+    # Force the sub-agent build to fail during resume (e.g. the agent definition
+    # was deleted since, or a model override no longer resolves).
+    monkeypatch.setattr(harness.subagents, "build",
+                        lambda *a, **k: (None, "build failed"))
+
+    job_id, msg = await harness.subagents.resume_spawn("sg-keep")
+    assert job_id is None and "build failed" in msg
+    branches = subprocess.run(
+        ["git", "branch", "--list", "subagent/sg-keep"],
+        cwd=tmp_path, capture_output=True, text=True).stdout
+    assert branches.strip() != "", \
+        "the failed resume destroyed the prior-work branch it was meant to keep"
+    assert not (tmp_path / ".worktrees" / "subagent" / "sg-keep").exists(), \
+        "the checkout must still be torn down on failure"
+
+
 def _cli_meta(sid: str, session: str | None = "sess-abc") -> dict:
     return {"stream_id": sid, "type": "cli-worker", "task": "original cli task",
             "model": None, "mcp": None, "depth": 1, "max_output_chars": None,

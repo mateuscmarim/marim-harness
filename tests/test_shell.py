@@ -97,7 +97,7 @@ async def test_bash_times_out(tmp_path: Path):
 async def test_bash_timeout_is_total_not_idle(tmp_path: Path):
     """The timeout is a TOTAL wall-clock ceiling, not a per-line idle gap. A
     command that emits output continuously (never idle) must still stop at the
-    limit; a per-readline timeout would reset on every line and run unbounded."""
+    limit; a per-read timeout would reset on every chunk and run unbounded."""
     loop = asyncio.get_event_loop()
     start = loop.time()
     out = await shell.run_bash(
@@ -155,7 +155,7 @@ async def test_bash_timeout_reaps_child_processes(tmp_path: Path):
 async def test_bash_timeout_drain_is_bounded(tmp_path: Path, monkeypatch):
     """After a timeout kills the process, the post-kill drain must finish within a
     bounded wall-clock budget even when the process keeps flushing short lines: the
-    per-readline timeout resets on every line, so a steady burst would let the drain
+    per-read timeout resets on every chunk, so a steady burst would let the drain
     run forever. We drive run_bash with a fake process whose stdout never EOFs and
     always returns a line quickly — exactly that pathological burst — and assert the
     drain loop respects the wall-clock budget instead of looping unbounded.
@@ -171,10 +171,10 @@ async def test_bash_timeout_drain_is_bounded(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(shell, "_DRAIN_BUDGET", shrunk_budget)
 
     class _FloodStdout:
-        """A stdout that always has another line available almost instantly — the
-        burst that resets the per-readline timeout indefinitely."""
+        """A stdout that always has another chunk available almost instantly — the
+        burst that resets the per-read timeout indefinitely."""
 
-        async def readline(self):
+        async def read(self, n):
             await asyncio.sleep(0.001)
             return b"tick\n"
 
@@ -315,6 +315,39 @@ async def test_background_wait_offloads_but_live_output_truncates(tmp_path, monk
     assert len(saved) == 1 and saved[0].read_text().count("line ") == 500
     # the live preview path stays bounded by max_output (head+tail truncation)
     assert len(bp.output()) <= 80 + 64  # cap + the "… (N chars truncated) …" marker
+
+
+@pytest.mark.anyio
+async def test_run_bash_survives_single_line_over_64kib(tmp_path: Path):
+    """A single output line longer than asyncio's default 64 KiB StreamReader
+    buffer must not crash the tool. readline() raises ValueError on such a line
+    (and discards the buffered bytes); the read loop must not depend on line
+    boundaries, so the turn survives and the whole line is captured — a `cat` of a
+    minified bundle or any long-single-line output would otherwise blow up despite
+    the multi-MB MAX_OUTPUT_CHARS budget."""
+    n = 100_000  # well past the 64 KiB (65536) StreamReader limit
+    out = await shell.run_bash(tmp_path, f"python3 -c \"print('A'*{n})\"")
+    # It completed instead of crashing; the large output was offloaded to a file
+    # whose body carries the whole long line — nothing lost.
+    assert "full output saved to" in out
+    saved = list((tmp_path / ".marim" / "output").glob("bash-*.txt"))
+    assert len(saved) == 1
+    body = saved[0].read_text()
+    assert body.startswith("exit 0\n")
+    assert body.count("A") == n
+
+
+@pytest.mark.anyio
+async def test_background_wait_survives_single_line_over_64kib(tmp_path: Path):
+    """BashProcess.wait() reads output the same way run_bash does; a single line
+    past the 64 KiB StreamReader limit must not crash it either."""
+    n = 100_000
+    bp = await shell.start_bash(tmp_path, f"python3 -c \"print('A'*{n})\"")
+    final = await bp.wait()
+    _ = final
+    saved = list((tmp_path / ".marim" / "output").glob("bash-*.txt"))
+    assert len(saved) == 1
+    assert saved[0].read_text().count("A") == n
 
 
 @pytest.mark.anyio

@@ -633,12 +633,18 @@ class SubagentRunner:
         max_output_chars: int | None, model: str | None,
         iso: SpawnWorktree | None, work_root, stream_id: str,
         *, debug: bool, t0: float, defn=None, depth: int = 0,
+        resumed: bool = False,
     ) -> _SpawnPrep | str:
         """Build the sub-agent, grant MCP servers, fire the start hook, and wire the
         event handler. Returns a ``_SpawnPrep`` struct on success, or an error string
         the caller can return directly. Called after worktree open and CLI early-return.
         ``defn`` is the definition the caller already resolved, threaded into ``build``
-        so discovery isn't walked twice per spawn."""
+        so discovery isn't walked twice per spawn.
+
+        ``resumed`` selects the isolated-worktree teardown a build failure follows:
+        a fresh spawn discards branch and checkout, a resumed spawn keeps the branch
+        (it holds the interrupted run's committed work). This method owns that
+        teardown so the branch distinction can't be lost — see the build-failure arm."""
         mask_trigger = await self._mask_trigger_for(model)
         meta: dict | None = None
         checkpoint = None
@@ -672,7 +678,11 @@ class SubagentRunner:
                               checkpoint=checkpoint)
         if sub is None:
             if iso:
-                iso.discard()
+                # Own the failure teardown HERE rather than at the caller: a resumed
+                # spawn must keep its branch (prior work), a fresh spawn discards
+                # both. If the caller tried to keep the branch after us, it couldn't —
+                # a plain discard() here would already have deleted it.
+                iso.teardown_after_failure(resumed=resumed)
             return err or f"Failed to build sub-agent {type!r}."
         t_built = time.perf_counter()
         # Apply the same tool-search deferral the main agent uses: a large granted
@@ -1162,12 +1172,13 @@ class SubagentRunner:
                 type_, task, meta.get("mcp"), meta.get("max_output_chars"),
                 meta.get("model"), iso, iso.path if iso else None, stream_id,
                 debug=logger.isEnabledFor(logging.DEBUG), t0=time.perf_counter(),
-                depth=int(meta.get("depth") or 1),
+                depth=int(meta.get("depth") or 1), resumed=True,
             )
             if isinstance(prep, str):
-                if iso:
-                    # Keep the branch — it's prior work; only the checkout goes.
-                    iso.teardown_after_failure(resumed=True)
+                # _prepare_spawn already tore down the checkout on build failure and,
+                # because resumed=True, kept the branch (the interrupted run's work).
+                # No teardown here — doing it before was a no-op that ran only after
+                # discard() had already deleted the branch it meant to preserve.
                 return None, prep
             label = f"{type_}: resumed — {task}"
             job_id = self.deps.jobs.register(

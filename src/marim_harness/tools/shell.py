@@ -1,4 +1,5 @@
 import asyncio
+import codecs
 import contextlib
 import os
 import signal
@@ -15,11 +16,19 @@ _DEFAULT_MAX_OUTPUT = 20_000
 # is bytes, but for the flood case this is a cosmetic count, matching the existing
 # "chars" wording).
 _TRUNC_MARKER = "\n… ({dropped} chars truncated) …\n"
-# Overall wall-clock ceiling for the post-kill drain. The per-readline timeout
-# below bounds a single read, but a process flushing a burst of short lines keeps
-# resetting that window — this caps the whole drain loop so the timeout path can't
-# stall (we keep what we got and move on).
+# Overall wall-clock ceiling for the post-kill drain. The per-read timeout below
+# bounds a single read, but a process flushing a burst of output keeps resetting that
+# window — this caps the whole drain loop so the timeout path can't stall (we keep
+# what we got and move on).
 _DRAIN_BUDGET = 2.0  # seconds
+# asyncio's StreamReader.readline() raises ValueError on a single line longer than
+# its buffer (64 KiB by default) AND discards the buffered bytes — so `cat
+# bundle.min.js`, `jq -c .`, or any long-single-line output would crash the tool
+# despite the generous MAX_OUTPUT_CHARS budget above. Read fixed-size chunks instead:
+# read() never raises on line length, so no output can defeat the read loop. Chunks no
+# longer align to line boundaries, which costs only a cosmetic replacement char at a
+# multi-MB truncation seam (see the decode notes in run_bash / BashProcess.wait).
+_READ_CHUNK = 65536  # bytes per stream read
 
 
 def _truncate_middle(text: str, max_output: int) -> str:
@@ -67,15 +76,22 @@ class _BoundedOutput:
         n = len(chunk)
         self._total += n
         if self._head_len < self._head_cap:
-            # Fill the head with WHOLE chunks (lines) until it reaches the cap; let
-            # the crossing chunk push slightly past it rather than slice mid-line, so
-            # the head always ends on a line boundary (clean to decode, no split
-            # multibyte char). Subsequent chunks feed the sliding tail below.
-            self._head.append(chunk)
-            self._head_len += n
-            return
-        # One oversized chunk (a long line with no newline) could blow the tail by
-        # itself — keep only its last ``tail_cap`` so a single chunk can't exceed it.
+            # Fill the head up to its cap. A read chunk can be far larger than the cap
+            # (up to _READ_CHUNK), so slice it at the cap and let the remainder fall
+            # through to the sliding tail — appending it whole would overshoot the head
+            # by ~64 KiB and blow the memory budget. Chunks are no longer line-aligned,
+            # so slicing mid-chunk is fine (decode uses errors="replace").
+            room = self._head_cap - self._head_len
+            if n <= room:
+                self._head.append(chunk)
+                self._head_len += n
+                return
+            self._head.append(chunk[:room])
+            self._head_len += room
+            chunk = chunk[room:]
+            n = len(chunk)
+        # One oversized chunk could blow the tail by itself — keep only its last
+        # ``tail_cap`` so a single chunk can't exceed it.
         if n > self._tail_cap:
             chunk = chunk[n - self._tail_cap:]
             n = self._tail_cap
@@ -138,11 +154,11 @@ async def run_bash(
     chunks = _BoundedOutput(MAX_OUTPUT_CHARS)
     timed_out = False
     if proc.stdout is not None:
-        # ``timeout`` is a TOTAL wall-clock ceiling, not a per-line idle gap. A
+        # ``timeout`` is a TOTAL wall-clock ceiling, not a per-read idle gap. A
         # chatty command (e.g. ``pytest -v``) emits output continuously, so a
-        # per-readline timeout would reset on every line and let the command run
+        # per-read timeout would reset on every chunk and let the command run
         # unbounded — only a silent command would ever trip it. Track one deadline
-        # and shrink each readline's budget to the time remaining so the whole run
+        # and shrink each read's budget to the time remaining so the whole run
         # is bounded regardless of how talkative the command is.
         loop = asyncio.get_event_loop()
         deadline = loop.time() + timeout
@@ -152,10 +168,11 @@ async def run_bash(
                 if remaining <= 0:
                     timed_out = True
                     break
-                line = await asyncio.wait_for(proc.stdout.readline(), timeout=remaining)
-                if not line:
+                chunk = await asyncio.wait_for(proc.stdout.read(_READ_CHUNK),
+                                               timeout=remaining)
+                if not chunk:
                     break  # EOF — process exited
-                chunks.add(line)
+                chunks.add(chunk)
         except asyncio.TimeoutError:
             timed_out = True
     else:
@@ -171,9 +188,9 @@ async def run_bash(
                 proc.kill()
         # Drain anything the dying process flushed to the pipe before the kill
         # propagated.  A short deadline keeps the timeout path fast.  The
-        # per-readline timeout alone isn't a real ceiling: a process spewing many
-        # short lines resets that 1s window on every line, so the drain could run
-        # for as long as it keeps flushing.  Bound the whole loop with a fixed
+        # per-read timeout alone isn't a real ceiling: a process spewing output
+        # resets that 1s window on every chunk, so the drain could run for as long
+        # as it keeps flushing.  Bound the whole loop with a fixed
         # wall-clock budget so the timeout path stays snappy regardless of volume.
         if proc.stdout is not None:
             drain_deadline = asyncio.get_event_loop().time() + _DRAIN_BUDGET
@@ -182,11 +199,11 @@ async def run_bash(
                     remaining = drain_deadline - asyncio.get_event_loop().time()
                     if remaining <= 0:
                         break
-                    line = await asyncio.wait_for(proc.stdout.readline(),
-                                                  timeout=min(1, remaining))
-                    if not line:
+                    chunk = await asyncio.wait_for(proc.stdout.read(_READ_CHUNK),
+                                                   timeout=min(1, remaining))
+                    if not chunk:
                         break
-                    chunks.add(line)
+                    chunks.add(chunk)
             except (asyncio.TimeoutError, OSError):
                 pass
     # Reap the process. After EOF (clean exit) or the SIGKILL above this returns
@@ -199,9 +216,11 @@ async def run_bash(
     head_b, tail_b = chunks.parts(b"")
     dropped = chunks.dropped
     if dropped > 0:
-        # Decode the two ends separately (each ends/starts on a line boundary) and
-        # splice in the truncated-middle marker, the same head+tail presentation the
-        # final cap has always produced — but now memory never exceeded the budget.
+        # Decode the two ends separately and splice in the truncated-middle marker,
+        # the same head+tail presentation the final cap has always produced — memory
+        # never exceeded the budget. A chunk boundary can fall mid-multibyte-char, so
+        # an end may show a stray replacement char at the seam; harmless, and only in
+        # output already past the multi-MB truncation threshold.
         text = (head_b.decode(errors="replace")
                 + _TRUNC_MARKER.format(dropped=dropped)
                 + tail_b.decode(errors="replace"))
@@ -259,13 +278,19 @@ class BashProcess:
         # Normally stdout is a PIPE; guard rather than assert so a process built
         # without one degrades to "no output" instead of crashing the caller.
         if self._proc.stdout is not None:
+            # Decode incrementally: read() chunks split on a fixed byte count, not on
+            # line boundaries, so a multibyte char can straddle two chunks. An
+            # incremental decoder carries the partial char across instead of emitting
+            # a replacement char at every chunk seam (readline never split a char).
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
             while True:
-                chunk = await self._proc.stdout.readline()
+                chunk = await self._proc.stdout.read(_READ_CHUNK)
                 if not chunk:
                     break
                 # add() keeps memory bounded; we keep reading to EOF regardless so the
                 # child never deadlocks on a full pipe.
-                self._buffer.add(chunk.decode(errors="replace"))
+                self._buffer.add(decoder.decode(chunk))
+            self._buffer.add(decoder.decode(b"", final=True))  # flush a trailing partial
         await self._proc.wait()
         head, tail = self._buffer.parts("")
         dropped = self._buffer.dropped
