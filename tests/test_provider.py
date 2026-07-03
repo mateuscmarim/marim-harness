@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic_ai import Agent, ModelRetry
@@ -255,6 +256,9 @@ def _job_ctx(tmp_path):
         def list(self):
             calls["list"] = True
             return []
+
+        def get(self, id):
+            return None  # no running job → the poll guard stays out of the way
 
         def output(self, id, *, mark_seen=False):
             calls["output"] = id
@@ -732,3 +736,125 @@ async def test_present_plan_uses_threaded_session_id_for_filename(tmp_path):
     assert len(files) == 1
     assert files[0].name.startswith("sess-xyz-")  # slug of the real session id
     assert "session: sess-XYZ" in files[0].read_text()
+
+
+async def _poll_ctx(tmp_path):
+    """A ctx over a REAL JobRegistry holding one gated running agent job."""
+    import asyncio
+
+    from marim_harness.jobs import JobRegistry
+
+    deps = _make_deps(tmp_path)
+    deps.jobs = JobRegistry()
+    gate = asyncio.Event()
+
+    async def _work() -> str:
+        await gate.wait()
+        return "done!"
+
+    jid = deps.jobs.register("agent", "explore: map it", _work())
+    return SimpleNamespace(deps=deps), gate, jid
+
+
+@pytest.mark.anyio
+async def test_jobs_listing_appends_wake_note_when_interactive(tmp_path):
+    from marim_harness.tools.provider import jobs as jobs_tool
+
+    ctx, gate, jid = await _poll_ctx(tmp_path)
+    ctx.deps.ui.interactive = True
+    out = jobs_tool(ctx)
+    assert jid in out
+    assert "wake you on completion" in out
+    gate.set()
+    await ctx.deps.jobs.wait(jid, 5)
+
+
+@pytest.mark.anyio
+async def test_poll_guard_escalates_warn_then_replace(tmp_path):
+    from marim_harness.tools.provider import jobs as jobs_tool
+
+    ctx, gate, jid = await _poll_ctx(tmp_path)
+    ctx.deps.ui.interactive = True
+    first = jobs_tool(ctx)
+    assert "No change since your last check" not in first
+    second = jobs_tool(ctx)
+    assert jid in second  # table still present on the first repeat…
+    assert "end your turn" in second  # …plus the warning
+    third = jobs_tool(ctx)
+    assert "(poll 3)" in third and "Stop polling" in third
+    assert jid not in third  # the table is withheld, not decorated
+    gate.set()
+    await ctx.deps.jobs.wait(jid, 5)
+
+
+@pytest.mark.anyio
+async def test_poll_guard_headless_appends_and_never_replaces(tmp_path):
+    from marim_harness.tools.provider import jobs as jobs_tool
+
+    ctx, gate, jid = await _poll_ctx(tmp_path)
+    assert ctx.deps.ui.interactive is False  # headless default
+    jobs_tool(ctx)
+    second = jobs_tool(ctx)
+    third = jobs_tool(ctx)
+    for out in (second, third):
+        assert jid in out  # headless never loses the data
+        assert "wait_for_job" in out  # …and is pointed at blocking instead
+        assert "end your turn" not in out  # no wake loop headless
+    assert "wake you on completion" not in third  # standing note is TUI-only
+    gate.set()
+    await ctx.deps.jobs.wait(jid, 5)
+
+
+@pytest.mark.anyio
+async def test_settled_listing_is_a_result_read_not_a_poll(tmp_path):
+    from marim_harness.tools.provider import jobs as jobs_tool
+
+    ctx, gate, jid = await _poll_ctx(tmp_path)
+    ctx.deps.ui.interactive = True
+    gate.set()
+    await ctx.deps.jobs.wait(jid, 5)
+    out = ""
+    for _ in range(3):
+        out = jobs_tool(ctx)
+        assert "No change since your last check" not in out
+        assert jid in out
+    assert "wake you on completion" not in out  # nothing running
+
+
+@pytest.mark.anyio
+async def test_static_output_marker_triggers_guard(tmp_path):
+    from marim_harness.tools.provider import job_output
+
+    ctx, gate, jid = await _poll_ctx(tmp_path)
+    ctx.deps.ui.interactive = True
+    first = job_output(ctx, jid)  # "(still running)" — an agent job has no output_fn
+    assert "No change since your last check" not in first
+    assert "end your turn" in job_output(ctx, jid)  # identical marker → warn
+    gate.set()
+    await ctx.deps.jobs.wait(jid, 5)
+
+
+@pytest.mark.anyio
+async def test_growing_output_is_progress_not_polling(tmp_path):
+    import asyncio
+
+    from marim_harness.jobs import JobRegistry
+    from marim_harness.tools.provider import job_output
+
+    deps = _make_deps(tmp_path)
+    deps.jobs = JobRegistry()
+    deps.ui.interactive = True
+    ctx = SimpleNamespace(deps=deps)
+    gate = asyncio.Event()
+    buf = ["a"]
+
+    async def _work() -> str:
+        await gate.wait()
+        return "ok"
+
+    jid = deps.jobs.register("bash", "tail -f", _work(), output_fn=lambda: "".join(buf))
+    assert "No change since your last check" not in job_output(ctx, jid)
+    buf.append("b")  # the buffer grew — that's progress
+    assert "No change since your last check" not in job_output(ctx, jid)
+    gate.set()
+    await deps.jobs.wait(jid, 5)
