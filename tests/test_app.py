@@ -1183,6 +1183,8 @@ def test_blocked_by_id_parses_prerequisite_failures():
     assert blocked_by_id("prerequisite job-3 failed — boom") == "job-3"
     assert blocked_by_id("PrerequisiteFailed: prerequisite job-7 cancelled") == "job-7"
     assert blocked_by_id("Sub-agent 'merge' failed: ValueError: boom") is None
+    assert blocked_by_id("prerequisite job-2 no longer exists") == "job-2"
+    assert blocked_by_id("prerequisite check failed — flaky infra") is None
 
 
 def test_detached_job_id_round_trips_with_the_handoff():

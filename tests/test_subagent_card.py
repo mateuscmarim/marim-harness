@@ -118,3 +118,13 @@ def test_blocked_card_names_the_culprit_in_header():
     header = str(w._header.render())
     assert "blocked by job-3" in header
     assert "✕" in header
+
+
+def test_finish_clears_stale_waiting_state():
+    w = SubAgentWidget("merge", "Combine the reports", "sonnet")
+    w.after_ids = ["job-3"]
+    w.set_waiting(True)
+    w.finish("report", status="done")
+    assert w.waiting is False
+    header = str(w._header.render())
+    assert "⧗" not in header and "after" not in header

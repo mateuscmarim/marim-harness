@@ -364,6 +364,9 @@ class SubAgentWidget(Vertical):
         sink's interface."""
 
     def finish(self, report: str, status: str = "done") -> None:
+        # A terminal card never shows the waiting glyph/tag, whatever ordering
+        # the settle events arrived in — finish() repaints both lines anyway.
+        self.waiting = False
         self.status = status
         self.report = report
         self._t_end = time.monotonic()  # freeze the duration

@@ -137,7 +137,7 @@ def _deps_pending(after_ids: list[str], jobs) -> bool:
     )
 
 
-_PREREQ_RE = re.compile(r"prerequisite (\S+) (?:failed|cancelled)")
+_PREREQ_RE = re.compile(r"prerequisite (job-\d+) (?:failed|cancelled|no longer exists)")
 
 
 def blocked_by_id(content: str) -> str | None:
@@ -480,11 +480,10 @@ class StreamRenderer:
             status = "failed"
             # A PrerequisiteFailed report names the job that killed this
             # dependent; surface it on the header tag (the red ↳ line already
-            # carries the full message). Clear waiting so the tag branch flips.
+            # carries the full message).
             culprit = blocked_by_id(report)
             if culprit:
                 widget.blocked_by = culprit
-            widget.waiting = False
         else:
             status = "done"
         widget.finish(report, status=status)
