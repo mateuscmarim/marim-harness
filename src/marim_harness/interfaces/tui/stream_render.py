@@ -5,6 +5,7 @@ AssistantMessage / ToolCallWidget / SubAgentWidget tree. Owns all per-turn strea
 state; reaches the app and the status presenter through ``self.app``."""
 
 import abc
+import re
 from dataclasses import dataclass, field
 from typing import cast
 
@@ -54,12 +55,15 @@ def status_from_part(part) -> str:
 # Prefixes of the strings a failed foreground spawn *returns* (it contains its
 # error rather than raising, so the spawn_agent tool call's outcome is still
 # "success"). The card would otherwise render a ✓; matching these flips it to ✕.
+# Tool-level after= rejections are included so a refused dependent renders ✕, not a green ✓.
 _SUBAGENT_FAIL_PREFIXES = (
     "No sub-agent type ",
     "Can't run sub-agent ",
     "Failed to build sub-agent",
     "Isolated spawn needs ",
     "Couldn't create an isolated worktree",
+    "Cannot spawn with after=",
+    "after= requires a detached spawn",
 )
 
 
@@ -109,6 +113,40 @@ def _wait_subagent_label(args: dict, jobs) -> str | None:
     if job is None or job.kind != "agent":
         return None
     return job.label or None
+
+
+def _after_ids(args: dict) -> list[str]:
+    """The spawn's after= prerequisite job ids from its tool args, normalized
+    (str → 1-list; entries stripped, empties dropped). Local on purpose — the
+    tool layer has its own normalizer, but the TUI shouldn't import tools."""
+    raw = args.get("after")
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    return [s for s in (str(x).strip() for x in raw) if s]
+
+
+def _deps_pending(after_ids: list[str], jobs) -> bool:
+    """True while any prerequisite job is still running. A missing/pruned id
+    counts as settled so a card can never block forever on a forgotten job —
+    mirrors JobRegistry.await_settled's semantics for display purposes."""
+    return any(
+        (job := jobs.get(jid)) is not None and job.status == "running"
+        for jid in after_ids
+    )
+
+
+_PREREQ_RE = re.compile(r"prerequisite (\S+) (?:failed|cancelled)")
+
+
+def blocked_by_id(content: str) -> str | None:
+    """The culprit job id from a PrerequisiteFailed report, or None. Matches the
+    message _run_after raises ("prerequisite job-3 failed — …"), which may reach
+    the card prefixed by the exception class name; only the head is scanned so a
+    report that merely quotes the phrase deep in its body doesn't match."""
+    m = _PREREQ_RE.search(content[:300])
+    return m.group(1) if m else None
 
 
 def _stream_hidden(widget: Widget, host: "SubAgentDetailHost | None") -> bool:
@@ -414,11 +452,16 @@ class StreamRenderer:
         activity — no 'no live transcript' placeholder. ``widget.detached`` here
         means 'ran as a background job' and drives only the quiet ``bg`` marker on
         the card and list row. Fills at once if the job already settled (a fast job
-        can finish before its handoff renders)."""
+        can finish before its handoff renders). An after= dependent also records
+        its own job id and enters the derived *waiting* display state while any
+        prerequisite still runs (spec 2026-07-02-after-deps-tui-design)."""
         job_id = _detached_job_id(content)
         if job_id is None:
             return False
         widget.detached = True  # bg marker; the live stream fills the tally + pane
+        widget.job_id = job_id
+        if widget.after_ids and _deps_pending(widget.after_ids, jobs):
+            widget.set_waiting(True)
         self._detached_cards[job_id] = widget
         self._fill_detached_card(job_id, jobs)
         return True
@@ -435,6 +478,13 @@ class StreamRenderer:
         report = job.result or ""
         if job.status in ("failed", "cancelled") or subagent_failed(report):
             status = "failed"
+            # A PrerequisiteFailed report names the job that killed this
+            # dependent; surface it on the header tag (the red ↳ line already
+            # carries the full message). Clear waiting so the tag branch flips.
+            culprit = blocked_by_id(report)
+            if culprit:
+                widget.blocked_by = culprit
+            widget.waiting = False
         else:
             status = "done"
         widget.finish(report, status=status)
@@ -443,6 +493,12 @@ class StreamRenderer:
     def fill_finished_detached_cards(self, jobs) -> None:
         """Fill every mapped detached card whose job has settled. Called from the
         job-registry change hook so cards update live as background jobs complete."""
+        # Waiting→running sweep: a settle may have unblocked an after=
+        # dependent whose own job keeps running. set_waiting no-ops when
+        # unchanged, so sweeping every card is cheap.
+        for widget in self.subagents:
+            if widget.waiting and not _deps_pending(widget.after_ids, jobs):
+                widget.set_waiting(False)
         for job_id in list(self._detached_cards):
             self._fill_detached_card(job_id, jobs)
         # A settling background job changes a card's status/stats; repaint the
@@ -644,6 +700,7 @@ class StreamRenderer:
             description=str(args.get("description") or ""),
         )
         self.subagents.append(widget)
+        widget.after_ids = _after_ids(args)
         return widget
 
     def ensure_pane(self, widget: SubAgentWidget) -> "SubAgentPane | None":

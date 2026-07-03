@@ -636,3 +636,76 @@ async def test_summary_bar_shows_waiting_segment_only_when_nonzero():
             [FakeAgent(status="done")], cost_of=lambda a: 0.0,
         ))
         assert "waiting" not in str(summ.render())
+
+
+@pytest.mark.anyio
+async def test_after_dependent_card_waits_then_flips(tmp_path):
+    """A dependent spawn renders as waiting (⧗, 'after' tag, waiting line, list
+    glyph) while its prerequisite runs, and flips to running rendering when the
+    jobs-change sweep sees the prerequisite settle. status stays 'pending'
+    throughout — waiting is display-only."""
+    from types import SimpleNamespace
+
+    from marim_harness.interfaces.tui.widgets.subagent_stats import row_cells
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        r = app.stream
+        w = r.mount_spawn_widget({
+            "type": "merge", "description": "combine reports",
+            "after": ["job-1"],
+        })
+        w.stream_id = "call_1"
+        r.tool_widgets["call_1"] = w
+        r.ensure_pane(w)
+        await app.query_one("#log").mount(w)
+        await pilot.pause()
+        assert w.after_ids == ["job-1"]
+
+        prereq = {"status": "running"}
+        jobs = SimpleNamespace(get=lambda jid: SimpleNamespace(**prereq)
+                               if jid == "job-1" else None)
+        kept = r.note_detached_spawn(
+            "Started detached sub-agent job-2, running in the background.", w, jobs
+        )
+        await pilot.pause()
+        assert kept is True
+        assert w.job_id == "job-2"
+        assert w.waiting is True and w.status == "pending"
+        assert "⧗" in str(w._header.render())
+        assert row_cells(w)[0] == "⧗"
+
+        prereq["status"] = "done"
+        r.fill_finished_detached_cards(jobs)
+        await pilot.pause()
+        assert w.waiting is False and w.status == "pending"
+        assert "⧗" not in str(w._header.render())
+        assert row_cells(w)[0] == "▸"
+
+
+@pytest.mark.anyio
+async def test_failed_prerequisite_attributes_blocker(tmp_path):
+    """When the dependent's own job dies with PrerequisiteFailed, the filled card
+    is failed and names the culprit in its header tag."""
+    from types import SimpleNamespace
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        r = app.stream
+        w = r.mount_spawn_widget({
+            "type": "merge", "description": "combine reports", "after": ["job-1"],
+        })
+        w.stream_id = "call_1"
+        r.tool_widgets["call_1"] = w
+        r.ensure_pane(w)
+        await app.query_one("#log").mount(w)
+        await pilot.pause()
+
+        report = "PrerequisiteFailed: prerequisite job-1 failed — boom"
+        job = SimpleNamespace(status="failed", result=report)
+        jobs = SimpleNamespace(get=lambda jid: job if jid == "job-2" else None)
+        r.note_detached_spawn("Started detached sub-agent job-2, …", w, jobs)
+        await pilot.pause()
+        assert w.status == "failed"
+        assert w.blocked_by == "job-1"
+        assert "blocked by job-1" in str(w._header.render())

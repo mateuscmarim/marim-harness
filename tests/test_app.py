@@ -1146,6 +1146,45 @@ def test_subagent_failed_detects_runner_error_text():
     assert subagent_failed("Here is my report. The sub-agent system looks fine.") is False
 
 
+def test_subagent_failed_detects_after_rejections():
+    from marim_harness.interfaces.tui.stream_render import subagent_failed
+
+    assert subagent_failed("Cannot spawn with after=['job-9']: no such job(s).") is True
+    assert subagent_failed("after= requires a detached spawn. Pass background=True…") is True
+
+
+def test_after_ids_normalizes_str_and_list():
+    from marim_harness.interfaces.tui.stream_render import _after_ids
+
+    assert _after_ids({"after": "job-1"}) == ["job-1"]
+    assert _after_ids({"after": ["job-1", " job-2 ", ""]}) == ["job-1", "job-2"]
+    assert _after_ids({"after": None}) == []
+    assert _after_ids({}) == []
+
+
+def test_deps_pending_only_while_a_prerequisite_runs():
+    from types import SimpleNamespace
+
+    from marim_harness.interfaces.tui.stream_render import _deps_pending
+
+    jobs = SimpleNamespace(get=lambda jid: {
+        "job-1": SimpleNamespace(status="running"),
+        "job-2": SimpleNamespace(status="done"),
+    }.get(jid))
+    assert _deps_pending(["job-1", "job-2"], jobs) is True
+    assert _deps_pending(["job-2"], jobs) is False
+    # A pruned/unknown id counts as settled — never blocks a card forever.
+    assert _deps_pending(["job-gone"], jobs) is False
+
+
+def test_blocked_by_id_parses_prerequisite_failures():
+    from marim_harness.interfaces.tui.stream_render import blocked_by_id
+
+    assert blocked_by_id("prerequisite job-3 failed — boom") == "job-3"
+    assert blocked_by_id("PrerequisiteFailed: prerequisite job-7 cancelled") == "job-7"
+    assert blocked_by_id("Sub-agent 'merge' failed: ValueError: boom") is None
+
+
 def test_detached_job_id_round_trips_with_the_handoff():
     from marim_harness.interfaces.tui.stream_render import _detached_job_id
     from marim_harness.tools.provider import _detach_handoff
