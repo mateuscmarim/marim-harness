@@ -30,7 +30,12 @@ from marim_harness.runtime.errors import (
     is_transient_model_error,
     provider_error_payload,
 )
-from marim_harness.runtime.harness import Harness, HarnessConfig, _actionable_error_note
+from marim_harness.runtime.harness import (
+    Harness,
+    HarnessConfig,
+    _actionable_error_note,
+    _has_unanswered_tool_calls,
+)
 from marim_harness.tools.provider import BuiltinToolProvider
 from tests.conftest import _make_deps
 
@@ -295,6 +300,91 @@ async def test_run_turn_overflow_retries_only_once(tmp_path):
     with pytest.raises(APIError):
         await harness.run_turn("now do it")
     assert calls["n"] == 2  # original attempt + exactly one retry
+
+
+_OVERFLOW_BODY = {
+    "error": {"code": "context_length_exceeded",
+              "message": "maximum context length exceeded"}
+}
+
+_SIX_TURN_HISTORY = [
+    ModelRequest(parts=[UserPromptPart(content="u1")]),
+    ModelResponse(parts=[TextPart(content="a1")]),
+    ModelRequest(parts=[UserPromptPart(content="u2")]),
+    ModelResponse(parts=[TextPart(content="a2")]),
+    ModelRequest(parts=[UserPromptPart(content="u3")]),
+    ModelResponse(parts=[TextPart(content="a3")]),
+]
+
+
+@pytest.mark.anyio
+async def test_overflow_forced_compaction_invalidates_checkpoints(tmp_path):
+    """A mid-turn forced compaction restructures the history, so every
+    checkpoint captured against the old absolute indices is stale — rewinding
+    to one would slice the compacted history at a wrong boundary and corrupt
+    the conversation. The overflow retry must drop them, exactly like the
+    between-turn compaction sites do (via _maybe_compact)."""
+    calls = {"n": 0}
+
+    def fn(messages, info):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _api_error(_OVERFLOW_BODY)
+        return ModelResponse(parts=[TextPart(content="ok after compaction")])
+
+    harness = Harness(
+        model=FunctionModel(fn),
+        provider=BuiltinToolProvider(),
+        deps=_make_deps(tmp_path),
+        instructions="x",
+        config=HarnessConfig(keep_last_messages=1),
+    )
+    harness.session.history = list(_SIX_TURN_HISTORY)
+    # A rewind point from an earlier turn, indexed into the pre-compaction history.
+    harness.checkpoints.snapshot("an earlier turn")
+    out = await harness.run_turn("now do it")
+    assert out == "ok after compaction"
+    assert harness.checkpoints.list() == []
+
+
+@pytest.mark.anyio
+async def test_overflow_in_continuation_round_does_not_retry(tmp_path):
+    """An overflow on an approval-continuation round must fail the turn, not
+    force-compact and retry: at that point the in-memory history deliberately
+    ends with the round's unanswered tool calls, and maybe_compact persists
+    what it compacts — exactly the dirty state the approval loop promises is
+    never written to disk. The normal failure path repairs and persists a
+    resumable history instead."""
+    calls = {"n": 0}
+
+    def fn(messages, info):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # A gated tool: the round returns DeferredToolRequests, auto mode
+            # approves it, and the continuation round carries the tool result.
+            return ModelResponse(parts=[
+                ToolCallPart(tool_name="write_file",
+                             args={"path": "o.txt", "content": "hi"},
+                             tool_call_id="tc-w"),
+            ])
+        if calls["n"] == 2:
+            raise _api_error(_OVERFLOW_BODY)
+        # Only reachable if the overflow retry (wrongly) fires on the
+        # continuation round.
+        return ModelResponse(parts=[TextPart(content="retried")])
+
+    harness = Harness(
+        model=FunctionModel(fn),
+        provider=BuiltinToolProvider(),
+        deps=_make_deps(tmp_path),
+        instructions="x",
+        config=HarnessConfig(keep_last_messages=1),
+    )
+    harness.session.history = list(_SIX_TURN_HISTORY)
+    with pytest.raises(APIError):
+        await harness.run_turn("write it")
+    assert calls["n"] == 2  # no compact-and-retry off the back of a dirty round
+    assert not _has_unanswered_tool_calls(harness.session.history)
 
 
 @pytest.mark.anyio

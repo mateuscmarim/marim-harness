@@ -305,14 +305,20 @@ class TurnController:
             total -= len(c) + len(o)
             self._shell_results_dropped += 1
 
-    async def _maybe_compact(self) -> None:
+    async def _maybe_compact(self, *, force: bool = False) -> bool:
         # When compaction actually shrinks the history, the checkpoints captured
         # against the old (absolute) indices are stale — rewinding to one would
         # slice the restructured history at the wrong boundary. Drop them so a
-        # later rewind can't corrupt the conversation. (run_turn re-snapshots
-        # after this, so the current turn keeps a valid rewind point.)
-        if await self.session.maybe_compact():
+        # later rewind can't corrupt the conversation. (At the between-turn call
+        # sites run_turn re-snapshots after this, so the current turn keeps a
+        # valid rewind point; the mid-turn overflow retry instead loses this
+        # turn's rewind point — a missing checkpoint beats a corrupting one.)
+        # Every compaction must go through here rather than calling
+        # session.maybe_compact directly, or the invalidation is skipped.
+        compacted = await self.session.maybe_compact(force=force)
+        if compacted:
             self.checkpoints.invalidate_after_compaction()
+        return compacted
 
     async def _flush_resumable(
         self, captured: list[ModelMessage], resumable: list[ModelMessage]
@@ -539,11 +545,22 @@ class TurnController:
                     # run once. Only when the compaction actually shrank the history
                     # (else a retry would just fail identically). The compacted
                     # history is persisted by maybe_compact, so it also becomes the
-                    # rollback baseline for the retry.
+                    # rollback baseline for the retry. Two guards beyond the retry
+                    # flag: (1) never on a continuation round (deferred_results
+                    # set) — the in-memory history then deliberately ends with the
+                    # round's unanswered tool calls, and compacting would persist
+                    # exactly the dirty state the approval loop promises never
+                    # touches disk; the normal failure path below repairs and
+                    # persists a resumable history instead. (2) go through
+                    # _maybe_compact, not session.maybe_compact, so the stale
+                    # checkpoints are invalidated — their absolute indices point
+                    # into the pre-compaction history and a later /rewind through
+                    # one would slice at a wrong boundary.
                     if (
                         not overflow_retried
+                        and deferred_results is None
                         and is_context_overflow_error(exc)
-                        and await self.session.maybe_compact(force=True)
+                        and await self._maybe_compact(force=True)
                     ):
                         overflow_retried = True
                         resumable = list(self.session.history)
