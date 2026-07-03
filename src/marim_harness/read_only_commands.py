@@ -34,13 +34,48 @@ _FIND_MUTATING = frozenset(
      "-fprint", "-fprint0", "-fls", "-fprintf"}
 )
 
-# ``git`` is read-only only for these subcommands.
+# ``git`` is read-only only for these subcommands. branch/tag/remote are dual
+# use — they list by default but mutate with the right arguments — so
+# ``_git_is_read_only`` screens their arguments instead of trusting the name.
 _ALLOWED_GIT_SUBCMDS = frozenset(
     {
         "status", "log", "diff", "show", "branch", "remote", "tag",
         "describe", "blame", "rev-parse", "ls-files", "shortlog",
     }
 )
+
+# The only ``git branch`` / ``git tag`` arguments accepted as read-only: bare
+# listing flags. Anything else — a positional (creates a branch/tag), a delete/
+# move flag, even a flag that takes a separate value — is treated as mutating.
+# Conservative by design; research needs no more than these.
+_BRANCH_SAFE_FLAGS = frozenset(
+    {"-a", "--all", "-r", "--remotes", "-v", "-vv", "--verbose",
+     "-l", "--list", "--show-current"}
+)
+_TAG_SAFE_FLAGS = frozenset({"-l", "--list"})
+
+# ``git remote`` sub-actions that only read; add/remove/rename/set-url/prune/
+# update all mutate the repo or the network config.
+_REMOTE_SAFE_ACTIONS = frozenset({"-v", "--verbose", "show", "get-url"})
+
+
+def _git_is_read_only(args: list[str]) -> bool:
+    """True when ``git <args...>`` only reads. ``args`` excludes ``git``."""
+    if not args or args[0] not in _ALLOWED_GIT_SUBCMDS:
+        return False
+    sub, rest = args[0], args[1:]
+    # --output/-o redirect diff-family output to a file — a write with no
+    # shell redirection for _UNSAFE to catch (verified live: `git diff
+    # --output=x` creates x). Denied for every subcommand.
+    if any(tok in ("-o", "--output") or tok.startswith("--output=") for tok in rest):
+        return False
+    if sub == "branch":
+        return all(tok in _BRANCH_SAFE_FLAGS for tok in rest)
+    if sub == "tag":
+        return all(tok in _TAG_SAFE_FLAGS for tok in rest)
+    if sub == "remote":
+        return not rest or rest[0] in _REMOTE_SAFE_ACTIONS
+    return True
 
 
 def is_read_only(command: str) -> bool:
@@ -54,7 +89,7 @@ def is_read_only(command: str) -> bool:
     parts = cmd.split()
     program = parts[0]
     if program == "git":
-        return len(parts) >= 2 and parts[1] in _ALLOWED_GIT_SUBCMDS
+        return _git_is_read_only(parts[1:])
     if program == "find":
         return not any(tok in _FIND_MUTATING for tok in parts[1:])
     return program in _ALLOWED_PROGRAMS
