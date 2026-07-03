@@ -49,6 +49,12 @@ jobs:
       - name: Test (pytest)
         run: uv run pytest
 
+      # Catch packaging regressions (missing metadata, broken includes) before a
+      # release does. One leg is enough — the artifacts are version-independent.
+      - name: Build sdist + wheel
+        if: matrix.python-version == '3.12'
+        run: uv build
+
       # Pinned to v3: upload-artifact@v4 uses the @actions/artifact v2 API, which
       # the Gitea act_runner (GHES-like) does not support — it fails the step with
       # "GHESNotSupportedError". v3 uses the older artifact protocol Gitea implements.

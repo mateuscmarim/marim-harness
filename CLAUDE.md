@@ -19,12 +19,13 @@ uv run pytest tests/test_agent.py::test_name # one test
 uv run pytest --no-cov tests/test_x.py       # skip coverage for a fast single run
 uv run ruff check src tests      # lint
 uv run ruff check --fix src tests
-uv run pyright                   # type-check (basic mode, src only)
+uv run pyright                   # type-check (standard mode, src only)
 ```
 
-CI (`.gitea/workflows/ci.yml`) runs ruff → pyright → pytest on Python 3.10 and 3.12.
-Match that order locally before claiming work is done. `requires-python` is `>=3.10`,
-so avoid 3.11+ only syntax.
+CI (`.gitea/workflows/ci.yml`) runs ruff → pyright → pytest on Python 3.10, 3.12,
+and 3.14 (plus a `uv build` packaging check on the 3.12 leg). Match that order
+locally before claiming work is done. `requires-python` is `>=3.10`, so avoid
+3.11+ only syntax.
 
 Set `MARIM_DEBUG=1` for DEBUG logging. Provider config lives in env vars / `.env`
 (see `.env.example`): `MARIM_PROVIDER` (`openrouter`|`local`|`google`|`claude-cli`), `MARIM_MODEL`,

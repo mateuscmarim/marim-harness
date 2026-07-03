@@ -48,7 +48,7 @@ marim /path/to/workspace    # ...in a specific workspace
 marim --resume              # resume this workspace's latest session
 
 # Headless: -p with a prompt, or pipe one on stdin
-marim -p "summarize src/marim_harness/agent.py"
+marim -p "summarize src/marim_harness/runtime/harness.py"
 echo "what does run_turn do?" | marim
 marim -p "list the tools" --output-format json --mode plan
 ```
@@ -232,5 +232,6 @@ uv run ruff check    # lint
 ```
 
 The codebase is organized into bounded subpackages under `src/marim_harness/`:
-`config/`, `session/`, `mcp/`, `workspace/`, `tools/`, and `interfaces/`
-(`tui/` and `cli/`). The agent loop lives in `agent.py`.
+`runtime/` (the turn engine — `Harness`, `TurnController`, bootstrap), `config/`,
+`session/`, `subagents/`, `tools/`, `workspace/`, `mcp/`, `lsp/`, `hooks/`,
+`plugins/`, and `interfaces/` (`tui/` and `cli/`).

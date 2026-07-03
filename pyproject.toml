@@ -2,8 +2,23 @@
 name = "marim-harness"
 version = "0.1.0"
 description = "A terminal coding agent on Pydantic AI + Textual"
+readme = "README.md"
 authors = [{ name = "Mateus Coutinho Marim", email = "mateus@marim.dev" }]
 license = { file = "LICENSE" }
+keywords = ["agent", "llm", "tui", "coding-assistant", "pydantic-ai", "textual"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development",
+]
 requires-python = ">=3.10"
 dependencies = [
     "pydantic-ai>=1.107,<2",
@@ -20,6 +35,9 @@ dependencies = [
 # interactive launch prints an install hint when textual is absent.
 tui = ["textual>=0.80"]
 
+[project.urls]
+Repository = "https://git.marim.dev/mateuscmarim/marim-harness"
+
 [project.scripts]
 marim = "marim_harness.__main__:main"
 marim-harness = "marim_harness.__main__:main"
@@ -34,6 +52,9 @@ dev = [
     # The TUI tests (Textual Pilot) need textual even though it moved to the
     # optional `tui` extra, so plain `uv sync` keeps developing/CI working.
     "textual>=0.80",
+    # Fail a hung test (a stuck Pilot app, a deadlocked worker) instead of
+    # stalling the whole CI leg until the runner's job timeout.
+    "pytest-timeout>=2",
 ]
 
 [build-system]
@@ -43,6 +64,10 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 addopts = "-q --cov=marim_harness --cov-report=term-missing --cov-report=xml --cov-fail-under=90"
 testpaths = ["tests"]
+# Per-test ceiling (pytest-timeout): generous — the slowest Pilot tests run a
+# few seconds — so only a genuine hang trips it. The thread method kills the
+# hung test with a stack dump instead of stalling the CI leg.
+timeout = 120
 markers = [
     # Opt-in tests that hit a real provider over the network and spend money.
     # They self-skip unless the relevant API key is exported (never from .env),
