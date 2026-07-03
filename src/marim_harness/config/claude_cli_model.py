@@ -183,6 +183,8 @@ _ACTIVITY_ARG = {
     "Glob": "pattern",
     "WebSearch": "query",
     "WebFetch": "url",
+    "Agent": "description",
+    "Task": "description",
 }
 
 
@@ -256,19 +258,47 @@ def _flatten_result_content(content) -> str:
 
 
 async def consume_cli_stream(objs: AsyncIterator[dict]) -> AsyncIterator:
-    """Turn parsed stream-json objects into structured chunks then one ``DoneChunk``.
+    """Turn parsed stream-json objects into structured chunks then one or more
+    ``DoneChunk``s.
 
     Assistant ``text`` blocks become ``TextChunk``s; ``tool_use`` blocks become
     ``ToolUseChunk``s; ``tool_result`` blocks (in ``user`` messages) become
     ``ToolResultChunk``s. Keeping tool activity structured (rather than pre-folded
     into text) lets the TUI render native tool cards, while the headless paths fold
-    it back to ``▸`` lines via ``fold_chunk_text``. The terminal ``result`` event
-    yields a ``DoneChunk`` with usage + session id; a stream that ends without one
-    yields ``DoneChunk(complete=False)``."""
+    it back to ``▸`` lines via ``fold_chunk_text``.
+
+    Objects tagged ``parent_tool_use_id`` belong to a Claude-side sub-agent, not
+    the main turn; headless there is no demux to route them to, so they are
+    dropped here — otherwise a child's prose would leak into the main response
+    text. ``task_started``/``task_updated``/``task_notification`` system events are
+    the same sub-agent's lifecycle noise and are skipped too.
+
+    A ``result`` event used to end the generator with ``return``. That's a bug:
+    closing the generator runs ``spawn_cli_objects``'s ``finally``, which kills the
+    CLI process — but `claude -p` can emit MULTIPLE ``result`` events in one
+    process, because an async sub-agent's completion re-invokes the main agent for
+    another turn, ending in another ``result``. Returning early killed the CLI
+    while that sub-agent was still running. So each ``result`` now yields a
+    ``DoneChunk`` (usage folded across every result seen so far via
+    ``sum_result_usages``, cost = the last result's cumulative total) and the loop
+    keeps reading to EOF; consumers keep the LAST ``DoneChunk`` (``request()``
+    already ``continue``s past each one). A stream that ends without any ``result``
+    yields a trailing ``DoneChunk(complete=False)``."""
+    from ..subagents.cli_backend import sum_result_usages
+
     session_id: str | None = None
+    results: list[dict] = []
     async for obj in objs:
+        if obj.get("parent_tool_use_id"):
+            # Sub-agent-internal traffic. With a UI the demux tee (see
+            # ClaudeCliStreamedResponse) consumes it before we ever see it;
+            # headless it is dropped so a child's prose never pollutes the
+            # main response text.
+            continue
         kind = obj.get("type")
         if kind == "system":
+            if obj.get("subtype") in ("task_started", "task_updated", "task_notification"):
+                continue  # sub-agent lifecycle noise (the demux path renders it)
             session_id = session_id or obj.get("session_id")
         elif kind == "assistant":
             for block in (obj.get("message") or {}).get("content") or []:
@@ -293,13 +323,18 @@ async def consume_cli_stream(objs: AsyncIterator[dict]) -> AsyncIterator:
                     )
         elif kind == "result":
             session_id = session_id or obj.get("session_id")
+            results.append(obj)
+            summed, _turns, cost = sum_result_usages(results)
+            # Do NOT return: an async sub-agent's completion re-invokes the
+            # main agent, so more turns (and another result) may follow.
+            # Consumers keep the LAST DoneChunk.
             yield DoneChunk(
                 session_id=session_id,
-                usage=request_usage_from_cli(obj.get("usage"), obj.get("total_cost_usd")),
+                usage=request_usage_from_cli(summed, cost),
                 complete=True,
             )
-            return
-    yield DoneChunk(session_id=session_id, usage=RequestUsage(), complete=False)
+    if not results:
+        yield DoneChunk(session_id=session_id, usage=RequestUsage(), complete=False)
 
 
 def fold_chunk_text(chunk, *, leading: bool) -> str:
@@ -580,6 +615,13 @@ class ClaudeCliStreamedResponse(StreamedResponse):
         # Mirror ``request()``: a stream that ends without a proper ``result`` event
         # (Claude crashed / produced no result) is a FAILED turn — raise after the
         # loop so the harness flushes its resumable baseline (clean failure).
+        #
+        # Finalization (usage/session id/``_finished``) is deferred until AFTER the
+        # loop, not applied as each DoneChunk arrives: `claude -p` can emit several
+        # ``result`` events in one process (an async sub-agent's completion
+        # re-invokes the main agent for another turn), and marking the stream
+        # finished on the first one would cut the run short. The last DoneChunk
+        # wins.
         done: DoneChunk | None = None
         async for chunk in consume_cli_stream(self._objs):
             if isinstance(chunk, TextChunk):
@@ -605,14 +647,13 @@ class ClaudeCliStreamedResponse(StreamedResponse):
                             yield ev
                         folded_any = True
             elif isinstance(chunk, DoneChunk):
-                done = chunk
-                self._usage = chunk.usage
-                if chunk.session_id and self._set_session is not None:
-                    self._set_session(chunk.session_id)
-                if chunk.complete:
-                    self._finished = True
+                done = chunk  # last one wins (multi-result runs)
         if done is None or not done.complete:
             raise CliModelError("claude produced no result (crash or bad output).")
+        self._usage = done.usage
+        if done.session_id and self._set_session is not None:
+            self._set_session(done.session_id)
+        self._finished = True
 
     @property
     def model_name(self) -> str:

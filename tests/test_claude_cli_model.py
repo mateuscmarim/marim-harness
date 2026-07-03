@@ -408,6 +408,49 @@ async def test_consume_marks_incomplete_when_no_result():
     assert done.complete is False
 
 
+@pytest.mark.anyio
+async def test_consume_skips_subagent_child_traffic():
+    chunks = await _collect([
+        {"type": "assistant", "parent_tool_use_id": "t1",
+         "message": {"content": [{"type": "text", "text": "CHILD TEXT"}]}},
+        {"type": "system", "subtype": "task_started", "tool_use_id": "t1"},
+        {"type": "system", "subtype": "task_notification", "tool_use_id": "t1",
+         "status": "completed", "summary": "4"},
+        {"type": "result", "subtype": "success", "result": "ok", "num_turns": 1,
+         "usage": {"input_tokens": 1, "output_tokens": 1}},
+    ])
+    texts = [c.delta for c in chunks if isinstance(c, TextChunk)]
+    assert texts == []  # a child's text never leaks into the main response
+
+
+@pytest.mark.anyio
+async def test_consume_survives_multiple_results_and_folds_usage():
+    chunks = await _collect([
+        {"type": "result", "subtype": "success", "result": "waiting",
+         "num_turns": 2, "total_cost_usd": 0.04,
+         "usage": {"input_tokens": 18, "output_tokens": 1083}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "Four."}]}},
+        {"type": "result", "subtype": "success", "result": "Four.",
+         "num_turns": 1, "total_cost_usd": 0.05,
+         "usage": {"input_tokens": 10, "output_tokens": 48}},
+    ])
+    # text AFTER the first result still streams (the generator no longer
+    # returns early, which used to kill the CLI mid-async-sub-agent)
+    assert any(isinstance(c, TextChunk) and c.delta == "Four." for c in chunks)
+    dones = [c for c in chunks if isinstance(c, DoneChunk)]
+    assert len(dones) == 2 and all(d.complete for d in dones)
+    assert dones[-1].usage.output_tokens == 1083 + 48
+    from marim_harness.usage import COST_DETAIL_KEY
+    assert dones[-1].usage.details[COST_DETAIL_KEY] == 50_000
+
+
+def test_activity_line_names_agent_spawns():
+    assert format_activity_line(
+        "Agent", {"description": "Answer 2+2", "subagent_type": "Explore"}
+    ) == "▸ Agent Answer 2+2"
+
+
 def _fake_objs(objs):
     async def _spawn(argv, cwd):
         for o in objs:
