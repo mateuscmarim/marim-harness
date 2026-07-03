@@ -14,7 +14,9 @@ from tests.conftest import _last_instructions, _make_deps, _make_harness
 def _spawn_once_model() -> FunctionModel:
     """Main agent: emit one spawn_agent (background omitted), then finish."""
     def fn(messages, info):
-        if "sub-agent" in _last_instructions(messages):
+        # Discriminate by the sub-agent prompt's workspace line — a bare
+        # "sub-agent" substring also matches the main agent's spawn index.
+        if "You are operating inside the workspace at" in _last_instructions(messages):
             return ModelResponse(parts=[TextPart(content="SUB")])
         for m in messages:
             for p in getattr(m, "parts", []):
@@ -205,7 +207,7 @@ def _bg_described_spawn_model() -> FunctionModel:
     """Main agent: emit one explicit background spawn with a short description,
     then finish. The sub-agent itself returns immediately."""
     def fn(messages, info):
-        if "sub-agent" in _last_instructions(messages):
+        if "You are operating inside the workspace at" in _last_instructions(messages):
             return ModelResponse(parts=[TextPart(content="SUB")])
         for m in messages:
             for p in getattr(m, "parts", []):

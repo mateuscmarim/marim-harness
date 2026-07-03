@@ -233,6 +233,20 @@ def is_context_overflow_error(exc: BaseException) -> bool:
         err = _error_dict(api) or {}
         if err.get("code") == "context_length_exceeded":
             return True
+        # Marker-phrase matching is status-gated like the ModelHTTPError branch
+        # below: a 429/5xx message can mention "context window" in prose (a
+        # rate limit advising a smaller request, an upstream quote) without the
+        # request being oversized, and an unguarded match here force-compacts on
+        # a hiccup a plain backoff retry fixes. The status rides either on the
+        # exception (APIStatusError) or as an int code in the body; a shape with
+        # no status at all (LM Studio's plain APIError) stays eligible — its
+        # message is the only signal there is.
+        status = getattr(api, "status_code", None)
+        if status is None:
+            code = err.get("code")
+            status = code if isinstance(code, int) else None
+        if status is not None and status not in (400, 413, 422):
+            return False
         haystack = [str(api), str(err.get("message") or "")]
         meta = err.get("metadata")
         if isinstance(meta, dict):

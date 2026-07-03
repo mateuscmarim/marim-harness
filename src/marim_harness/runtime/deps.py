@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 from ..ask_user import Question
 from ..jobs import JobRegistry
 from ..tasks import TaskList
+from ..tools.names import SUBAGENT_MAX_DEPTH
 from ..workspace.fs import ReadLedger
 from .permissions import Mode
 
@@ -111,7 +112,10 @@ class HarnessServices:
 
 @dataclass
 class WorkspaceConfig:
-    """Immutable workspace identity. Set once at construction, never mutated."""
+    """Workspace identity plus the session's approval mode. Every field but
+    ``mode`` is set once at construction and never mutated; ``mode`` is live —
+    Harness.set_mode/cycle_mode rewrite it in place so every reader (tools,
+    sub-agent reach, plan gating) sees the switch immediately."""
 
     root: Path
     mode: Mode = Mode.ask
@@ -159,6 +163,12 @@ class Deps:
     # Zero-indexed nesting depth: 0 for the main agent, 1 for its sub-agents,
     # 2 for grandchildren. Used by spawn_agent to enforce the depth limit.
     subagent_depth: int = 0
+    # The nesting ceiling spawn_agent enforces (spawning at depth d is refused
+    # when d + 1 >= this). Deliberately NOT a tool parameter: anything in the
+    # advertised schema is model-writable, so exposing it would let the model
+    # raise its own ceiling. SubagentRunner stamps its configured ceiling here
+    # when building a child's deps.
+    subagent_max_depth: int = SUBAGENT_MAX_DEPTH
 
     def replace(self, **kw) -> "Deps":
         """Return a shallow copy with specified fields replaced."""

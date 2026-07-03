@@ -21,7 +21,10 @@ def _spawn_then_done_model() -> FunctionModel:
     model backs the sub-agent, so it's told apart by its instructions."""
     def fn(messages, info):
         instr = _last_instructions(messages)
-        if "sub-agent" in instr:
+        # Discriminate by the sub-agent prompt's workspace line, which the main
+        # agent's instructions never contain — a bare "sub-agent" substring
+        # also matches the main agent's spawn-index block.
+        if "You are operating inside the workspace at" in instr:
             return ModelResponse(parts=[TextPart(content="SUBREPORT")])
         ret = None
         for m in messages:
@@ -209,6 +212,10 @@ async def test_agent_index_injected(tmp_path: Path, monkeypatch):
     assert "spawn_agent" in instr
     assert "explore" in instr
     assert "general" in instr
+    # The index must state the mode-reach rule: outside auto mode, gated
+    # (workspace-mutating) tools are stripped from spawns. Without this the
+    # orchestrator delegates edits to a sub-agent that silently can't edit.
+    assert "auto mode" in instr
 
 
 @pytest.mark.anyio

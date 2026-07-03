@@ -443,22 +443,14 @@ class SubagentRunner:
         self.provider.register_subagent(sub, effective_tools(defn, allow_gated=allow_gated))
         # Nested spawning: only register spawn_agent if the child would be
         # able to spawn (depth+1 < max_depth). At the leaf depth, the tool
-        # is absent — the grandchild simply cannot recurse.
+        # is absent — the grandchild simply cannot recurse. The ceiling itself
+        # rides on the child's Deps (subagent_max_depth, stamped alongside
+        # subagent_depth at spawn time), never on the tool signature: a
+        # partial-bound keyword loses to a caller kwarg, so a model that
+        # passed its own max_depth could override the binding.
         if depth + 1 < self._max_depth:
-            from functools import partial
-
             from ..tools.provider import spawn_agent
-            # Bind the *absolute* ceiling, not a decrementing remainder. The tool
-            # body compares ``ctx.deps.subagent_depth + 1 >= effective_max`` against
-            # the child's own (correct) depth, so it needs the same fixed ceiling at
-            # every level — a "remaining" count would shrink as depth grows and make
-            # the check refuse spawns that are still within the limit.
-            bound = partial(spawn_agent, max_depth=self._max_depth)
-            # functools.partial accepts arbitrary attributes at runtime, but its
-            # type stub doesn't declare __name__/__qualname__ — hence the ignores.
-            bound.__name__ = "spawn_agent"  # type: ignore[attr-defined]
-            bound.__qualname__ = "spawn_agent"  # type: ignore[attr-defined]
-            sub.tool(bound)
+            sub.tool(spawn_agent)
         return sub, None
 
     def _cap_output(self, output: str, max_output_chars: int | None, ref: str) -> str:
@@ -821,7 +813,13 @@ class SubagentRunner:
         else:
             run_deps = self.deps
         if prep.depth > 0:
-            run_deps = replace(run_deps, subagent_depth=prep.depth)
+            # Stamp the runner's ceiling alongside the depth: spawn_agent
+            # reads both from Deps (see subagent_max_depth in runtime/deps.py
+            # for why it is not a tool parameter).
+            run_deps = replace(
+                run_deps, subagent_depth=prep.depth,
+                subagent_max_depth=self._max_depth,
+            )
         try:
             # Bound concurrent model runs (the part that hits the provider) so a
             # wide fan-out queues instead of slamming a rate-limited route at once.
@@ -886,7 +884,13 @@ class SubagentRunner:
         # redirects its file ops into the worktree. Every other Deps field stays shared.
         run_deps = replace(self.deps, tasks=TaskList())
         if prep.depth > 0:
-            run_deps = replace(run_deps, subagent_depth=prep.depth)
+            # Stamp the runner's ceiling alongside the depth: spawn_agent
+            # reads both from Deps (see subagent_max_depth in runtime/deps.py
+            # for why it is not a tool parameter).
+            run_deps = replace(
+                run_deps, subagent_depth=prep.depth,
+                subagent_max_depth=self._max_depth,
+            )
         if prep.iso:
             run_deps = replace(
                 run_deps, workspace=replace(run_deps.workspace, root=prep.iso["path"])

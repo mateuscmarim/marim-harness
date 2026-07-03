@@ -271,6 +271,13 @@ class TurnController:
         # Live RunContext for mid-turn steering.
         self._active_run_ctx: RunContext[Deps] | None = None
         self._steer_buffer: list[tuple[str, list[tuple[bytes, str]] | None]] = []
+        # Steers flushed onto the current round's ctx but not yet confirmed
+        # delivered. Flushing only *schedules* a steer (pydantic-ai drains
+        # 'asap' content at the next request boundary), so a round that fails —
+        # or finishes — before one would silently drop it. The round's end
+        # reconciles this list against the messages that actually went out and
+        # re-buffers the rest (see _reclaim_undelivered_steers).
+        self._inflight_steers: list[tuple[str, list[tuple[bytes, str]] | None]] = []
 
     def apply_session_start_context(self, ctx: str) -> None:
         """Stash SessionStart-injected context for the next turn's prompt."""
@@ -442,7 +449,33 @@ class TurnController:
                 *(BinaryContent(data=d, media_type=m) for d, m in (atts or [])),
                 priority="asap",
             )
+            self._inflight_steers.append((text, atts))
         self._steer_buffer = []
+
+    def _reclaim_undelivered_steers(self, messages: Sequence[ModelMessage]) -> None:
+        """Re-buffer any flushed steer that never reached the model.
+
+        Called at each round's end (success or failure) with the round's
+        messages. A steer whose text shows up in a user part was delivered;
+        the rest were enqueued onto a run that ended before its next request
+        boundary and would otherwise vanish. Reclaimed steers go to the front
+        of the buffer, so the next flush (continuation round) or the TUI's
+        take_buffered_steers (turn end) sees them in their original order."""
+        if not self._inflight_steers:
+            return
+        delivered: set[str] = set()
+        for m in messages or []:
+            for p in getattr(m, "parts", []):
+                if type(p).__name__ != "UserPromptPart":
+                    continue
+                content = getattr(p, "content", None)
+                if isinstance(content, str):
+                    delivered.add(content)
+                elif isinstance(content, (list, tuple)):
+                    delivered.update(x for x in content if isinstance(x, str))
+        undelivered = [s for s in self._inflight_steers if s[0] not in delivered]
+        self._inflight_steers = []
+        self._steer_buffer = undelivered + self._steer_buffer
 
     def take_buffered_steers(
         self,
@@ -540,6 +573,11 @@ class TurnController:
                     # attempt on the overflow-retry path too: those tokens were
                     # spent before the compaction-and-retry below.
                     self.session.usage += round_usage
+                    # A steer flushed into this round may never have reached a
+                    # request boundary; put it back in the buffer (for the
+                    # overflow retry below, or the TUI's turn-end pickup) before
+                    # deciding how this failure resolves.
+                    self._reclaim_undelivered_steers(captured)
                     # Context-overflow recovery: the request exceeded the real
                     # window despite our estimate. Force a compaction and retry the
                     # run once. Only when the compaction actually shrank the history
@@ -598,6 +636,10 @@ class TurnController:
             # delivered to the next round's fresh ctx, rather than being enqueued
             # onto a completed RunContext.
             self._active_run_ctx = None
+            # A steer flushed near the round's end may have missed its last
+            # request boundary; re-buffer it so the continuation round (or the
+            # TUI's turn-end pickup) delivers it instead of dropping it.
+            self._reclaim_undelivered_steers(result.all_messages())
             # The run reached the model and returned, so this turn's one-shot
             # consumables (hook context / jobs digest) were genuinely delivered.
             # Clear the restore-on-failure stash so a later approval-round failure
@@ -640,7 +682,17 @@ class TurnController:
                     # on-disk file is already this exact state — nothing is lost.
                     # The bare `raise` re-raises the still-active exception across
                     # the await, so the original error/cancel propagates intact.
-                    await asyncio.to_thread(self.session.persist)
+                    # The write itself is best-effort: a disk error here must not
+                    # replace the in-flight exception (an OSError surfacing
+                    # instead of a Ctrl-C cancel would make shutdown look like a
+                    # crash). Only Exception is swallowed — a cancellation of the
+                    # rollback write still propagates.
+                    try:
+                        await asyncio.to_thread(self.session.persist)
+                    except Exception:
+                        logger.warning(
+                            "approval rollback persist failed", exc_info=True
+                        )
                     raise
                 user_prompt = None  # continuation is driven by deferred_results
                 continue
@@ -695,40 +747,48 @@ class TurnController:
         # best-effort flush, so it must complete — and a thread can't block the loop
         # however long git takes.
         checkpoint_index = await asyncio.to_thread(self.checkpoints.snapshot, prompt)
-        user_prompt: str | list[str | BinaryContent] | None = await self._assemble_prompt(prompt)
-        if attachments and user_prompt is not None:
-            user_prompt = [user_prompt, *(BinaryContent(data=d, media_type=m)
-                                          for d, m in attachments)]
-        # Tool-search policy: defer the MCP/plugin surface behind Pydantic AI's
-        # auto-injected ToolSearch when the policy/threshold call for it, else load
-        # the live MCP toolsets as before. Builtins (on the Agent) are unaffected.
-        toolsets = await self.mcp.toolsets_for(
-            self.deps.workspace.tool_search,
-            self.deps.workspace.tool_search_threshold,
-        )
-        # When hooks are configured, intercept each streamed tool event to fire
-        # Pre/PostToolUse, then forward to the original handler (or drain if none).
-        event_stream_handler = self._build_hooked_handler(event_stream_handler)
-        # Self-heal a session left mid-exchange by an earlier aborted turn or a
-        # flaky model. Two distinct malformations both make every provider reject
-        # the next request and wedge the session: a nameless ToolCallPart (a
-        # partial tool call whose function name never streamed) and a ToolCallPart
-        # with no matching return ("unprocessed tool calls"). Strip the former,
-        # then repair the latter, before running so the session resumes instead.
-        sanitized = _drop_nameless_tool_calls(self.session.history)
-        repaired = _repair_unanswered_tool_calls(sanitized)
-        if repaired is not self.session.history:
-            self.session.history = repaired
-            # Offload the sanitizing write off the event loop, consistent with
-            # the success/rollback sites below.
-            await asyncio.to_thread(self.session.persist)
-        # The last persisted, resumable history — guaranteed free of unanswered
-        # tool calls. Captured once here and refreshed only after a clean
-        # persist; the deferred-approval round below deliberately holds a dirty
-        # history in self.session.history, so this must NOT be recomputed from it
-        # per iteration (that poisoned the rollback baseline across rounds).
-        resumable = list(self.session.history)
+        # Everything from prompt assembly onward runs under the try: assembly
+        # drains the one-shot consumables and toolsets_for can raise on a flaky
+        # MCP server, so a failure anywhere past this point must hit the same
+        # restore-and-discard path as a failed run — outside the try it would
+        # permanently eat the hook context / jobs digest and leak the dead
+        # checkpoint snapshotted above.
         try:
+            user_prompt: str | list[str | BinaryContent] | None = (
+                await self._assemble_prompt(prompt)
+            )
+            if attachments and user_prompt is not None:
+                user_prompt = [user_prompt, *(BinaryContent(data=d, media_type=m)
+                                              for d, m in attachments)]
+            # Tool-search policy: defer the MCP/plugin surface behind Pydantic AI's
+            # auto-injected ToolSearch when the policy/threshold call for it, else load
+            # the live MCP toolsets as before. Builtins (on the Agent) are unaffected.
+            toolsets = await self.mcp.toolsets_for(
+                self.deps.workspace.tool_search,
+                self.deps.workspace.tool_search_threshold,
+            )
+            # When hooks are configured, intercept each streamed tool event to fire
+            # Pre/PostToolUse, then forward to the original handler (or drain if none).
+            event_stream_handler = self._build_hooked_handler(event_stream_handler)
+            # Self-heal a session left mid-exchange by an earlier aborted turn or a
+            # flaky model. Two distinct malformations both make every provider reject
+            # the next request and wedge the session: a nameless ToolCallPart (a
+            # partial tool call whose function name never streamed) and a ToolCallPart
+            # with no matching return ("unprocessed tool calls"). Strip the former,
+            # then repair the latter, before running so the session resumes instead.
+            sanitized = _drop_nameless_tool_calls(self.session.history)
+            repaired = _repair_unanswered_tool_calls(sanitized)
+            if repaired is not self.session.history:
+                self.session.history = repaired
+                # Offload the sanitizing write off the event loop, consistent with
+                # the success/rollback sites below.
+                await asyncio.to_thread(self.session.persist)
+            # The last persisted, resumable history — guaranteed free of unanswered
+            # tool calls. Captured once here and refreshed only after a clean
+            # persist; the deferred-approval round below deliberately holds a dirty
+            # history in self.session.history, so this must NOT be recomputed from it
+            # per iteration (that poisoned the rollback baseline across rounds).
+            resumable = list(self.session.history)
             return await self._run_with_approval(
                 user_prompt, deferred_results=None, toolsets=toolsets,
                 event_stream_handler=event_stream_handler, resumable=resumable,

@@ -91,25 +91,35 @@ def test_build_at_depth_0_registers_spawn_agent(tmp_path: Path):
     assert "spawn_agent" in tool_names
 
 
+def test_spawn_agent_does_not_expose_max_depth():
+    """The depth ceiling must not be a tool parameter: anything in the
+    advertised schema is model-writable, so exposing it let the model raise
+    its own nesting ceiling (and override the partial-bound value — partial
+    keyword bindings lose to caller kwargs). The ceiling rides on Deps."""
+    import inspect
+
+    from marim_harness.tools.provider import spawn_agent
+
+    assert "max_depth" not in inspect.signature(spawn_agent).parameters
+
+
 def test_spawn_agent_refuses_at_depth_limit():
-    """At depth 2 with max_depth=3, spawning would produce depth 3 → refused."""
+    """At depth 2 with ceiling 3, spawning would produce depth 3 → refused."""
     import asyncio
     from types import SimpleNamespace
 
     from marim_harness.tools.provider import spawn_agent
 
-    deps = _make_deps(Path("/tmp"), subagent_depth=2)
+    deps = _make_deps(Path("/tmp"), subagent_depth=2, subagent_max_depth=3)
     ctx = SimpleNamespace(deps=deps, tool_call_id="tc1")
 
-    result = asyncio.run(spawn_agent(
-        ctx, type="explore", task="do thing", max_depth=3
-    ))
+    result = asyncio.run(spawn_agent(ctx, type="explore", task="do thing"))
     assert "Cannot spawn" in result
     assert "depth 2" in result
 
 
 def test_spawn_agent_allows_below_depth_limit():
-    """At depth 1 with max_depth=3, spawning produces depth 2 → allowed."""
+    """At depth 1 with ceiling 3, spawning produces depth 2 → allowed."""
     # This test verifies the depth check passes; the actual spawn
     # will fail because services.run_subagent is None in the test context,
     # but the depth check should not be the thing that blocks it.
@@ -118,12 +128,10 @@ def test_spawn_agent_allows_below_depth_limit():
 
     from marim_harness.tools.provider import spawn_agent
 
-    deps = _make_deps(Path("/tmp"), subagent_depth=1)
+    deps = _make_deps(Path("/tmp"), subagent_depth=1, subagent_max_depth=3)
     ctx = SimpleNamespace(deps=deps, tool_call_id="tc1")
 
-    result = asyncio.run(spawn_agent(
-        ctx, type="explore", task="do thing", max_depth=3
-    ))
+    result = asyncio.run(spawn_agent(ctx, type="explore", task="do thing"))
     # Should NOT contain "Cannot spawn" — it should fail for another reason
     # (no subagent runner wired in test context)
     assert "Cannot spawn" not in result
@@ -140,7 +148,7 @@ def test_spawn_agent_refuses_background_at_depth():
     ctx = SimpleNamespace(deps=deps, tool_call_id="tc1")
 
     result = asyncio.run(spawn_agent(
-        ctx, type="explore", task="do thing", background=True, max_depth=3
+        ctx, type="explore", task="do thing", background=True
     ))
     assert "Background spawning is only available to the top-level agent" in result
 
@@ -156,7 +164,7 @@ def test_spawn_agent_allows_background_at_depth_zero():
     ctx = SimpleNamespace(deps=deps, tool_call_id="tc1")
 
     result = asyncio.run(spawn_agent(
-        ctx, type="explore", task="do thing", background=True, max_depth=3
+        ctx, type="explore", task="do thing", background=True
     ))
     # Should NOT be refused — it should either succeed or fail for infra reasons
     # (no run_background_agent wired), but NOT because of the depth guard.
@@ -272,3 +280,28 @@ async def test_nested_spawn_runtime_chain_propagates_depth(tmp_path: Path):
     await h.subagents.run("explore", "top task", "sid", caller_depth=0)
 
     assert depths == [1, 2]
+
+
+@pytest.mark.anyio
+async def test_child_deps_carry_runner_ceiling(tmp_path: Path):
+    """The runner's configured ceiling reaches the child through Deps
+    (subagent_max_depth) — the replacement for the old partial-bound tool
+    parameter, which the model could override with its own kwarg."""
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content="done")])
+
+    deps = _make_deps(tmp_path)
+    h = _make_harness(FunctionModel(fn), deps)
+    h.subagents._max_depth = 5
+    ceilings: list[int] = []
+    orig = h.subagents._run_to_completion
+
+    async def spy(sub, task, run_deps, granted, handler, stream_id=None):
+        ceilings.append(run_deps.subagent_max_depth)
+        return await orig(sub, task, run_deps, granted, handler, stream_id)
+
+    h.subagents._run_to_completion = spy
+
+    await h.subagents.run("explore", "do it", "sid", caller_depth=0)
+
+    assert ceilings == [5]

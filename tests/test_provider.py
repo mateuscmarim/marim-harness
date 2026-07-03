@@ -119,6 +119,35 @@ async def test_bash_tool_accepts_timeout_arg(tmp_path: Path):
     assert "timed out after 1s" in out
 
 
+@pytest.mark.anyio
+async def test_bash_background_refused_for_subagents(tmp_path: Path):
+    # Sub-agents have no job tools (job_output/wait_for_job/cancel_job are
+    # main-agent only) and no wake loop, so a background job they start is
+    # unretrievable by them — its digest would land on the main agent instead.
+    # Mirror the spawn_agent background guard: refuse with a redirect.
+    from types import SimpleNamespace
+
+    from marim_harness.tools.provider import bash
+
+    ctx = SimpleNamespace(deps=_make_deps(tmp_path, mode=Mode.auto, subagent_depth=1))
+    out = await bash(ctx, "sleep 5", background=True)
+    assert "top-level agent" in out
+    assert "Started" not in out  # no job was launched
+
+
+@pytest.mark.anyio
+async def test_bash_background_still_available_to_main_agent(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from marim_harness.tools.provider import bash, cancel_job
+
+    ctx = SimpleNamespace(deps=_make_deps(tmp_path, mode=Mode.auto))
+    out = await bash(ctx, "sleep 5", background=True)
+    assert "Started" in out
+    job_id = out.split()[1]
+    await cancel_job(ctx, job_id)
+
+
 def test_read_tool_executes_via_agent(tmp_path: Path):
     (tmp_path / "a.txt").write_text("content")
     agent = _build_agent()

@@ -487,3 +487,39 @@ async def test_failed_continuation_after_approval_persists_resumable(tmp_path):
     # The dangling read_file (and any leftover edit) must be repaired, not
     # persisted raw — otherwise the next prompt raises the UserError.
     assert not _has_unanswered_tool_calls(harness.session.history)
+
+
+async def test_rollback_persist_failure_does_not_mask_cancel(tmp_path):
+    """Ctrl-C during the approval wait cancels the turn; the rollback persist
+    that follows is best-effort. If it hits a disk error, the ORIGINAL
+    CancelledError must still propagate — an OSError surfacing instead would
+    swallow the cancel and make shutdown look like a crash."""
+    import asyncio
+
+    (tmp_path / "a.txt").write_text("foo")
+
+    def fn(messages, info):
+        for m in messages:
+            for p in getattr(m, "parts", []):
+                if type(p).__name__ == "ToolReturnPart" and \
+                        getattr(p, "tool_name", "") == "edit_file":
+                    return ModelResponse(parts=[TextPart(content="done")])
+        return ModelResponse(parts=[ToolCallPart(
+            tool_name="edit_file",
+            args={"path": "a.txt",
+                  "edits": [{"old_string": "foo", "new_string": "bar"}]},
+        )])
+
+    async def cancel_on_ask(_call):
+        raise asyncio.CancelledError
+
+    deps = _make_deps(tmp_path, mode=Mode.ask, request_approval=cancel_on_ask)
+    harness = _harness(FunctionModel(fn), deps)
+
+    def broken_persist(*args, **kwargs):
+        raise OSError("disk full")
+
+    harness.session.persist = broken_persist
+
+    with pytest.raises(asyncio.CancelledError):
+        await harness.run_turn("change foo to bar")

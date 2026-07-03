@@ -145,6 +145,47 @@ async def test_steer_during_approval_gap_buffers_not_stale_ctx(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_steer_flushed_into_failing_round_is_reclaimed(tmp_path):
+    """A steer flushed onto a live round is only *scheduled*: pydantic-ai
+    delivers 'asap' content at the next request boundary. A round that dies
+    before reaching one used to silently drop the steer — the buffer was
+    already cleared and the run was gone. It must be re-buffered so
+    take_buffered_steers hands it back to the queue."""
+    from pydantic_ai.messages import ModelResponse, TextPart
+    from pydantic_ai.models.function import FunctionModel
+
+    from marim_harness.runtime.harness import Harness
+    from marim_harness.tools.provider import BuiltinToolProvider
+
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content="unused")])
+
+    async def stream_fn(messages, info):
+        yield "partial "
+        raise RuntimeError("round boom")
+
+    harness = Harness(
+        FunctionModel(fn, stream_function=stream_fn), BuiltinToolProvider(),
+        _make_deps(tmp_path), instructions="test",
+    )
+
+    steered = {"done": False}
+
+    async def handler(stream_ctx, events):
+        async for _ in events:
+            if not steered["done"]:
+                steered["done"] = True
+                harness.steer("important correction")
+
+    with pytest.raises(RuntimeError):
+        await harness.run_turn("go", event_stream_handler=handler)
+
+    assert steered["done"], "test never steered"
+    # The steer never reached a request boundary; it must be reclaimed, not lost.
+    assert harness.take_buffered_steers() == [("important correction", None)]
+
+
+@pytest.mark.anyio
 async def test_alt_enter_posts_steer_message(tmp_path):
     from textual.app import App, ComposeResult
 

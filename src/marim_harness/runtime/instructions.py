@@ -231,10 +231,18 @@ def register_instructions(
         text = agents_index_text(discover_agents(ctx.deps.workspace.root))
         if not text:
             return ""
+        # The mode-reach rule is stated statically (not "the current mode is
+        # X") so this block stays byte-stable across mode switches and the
+        # system prompt keeps its cache hits.
         return (
             "Sub-agents you can delegate to with the spawn_agent tool (each "
             "runs in isolation and reports back; spawn several in one turn to "
-            "fan out independent work):\n\n" + text
+            "fan out independent work):\n\n" + text + "\n\n"
+            "Sub-agent reach follows the session mode: outside auto mode, "
+            "workspace-mutating tools (write_file, edit_file, bash) are "
+            "stripped from every spawn — even from types described as full-"
+            "toolset — so sub-agents run read-only there. Don't delegate "
+            "edits to a sub-agent unless the session is in auto mode."
         )
 
     @agent.instructions

@@ -104,3 +104,50 @@ async def test_successful_turn_consumes_hook_context(tmp_path: Path):
     await harness.run_turn("hello")
     assert "ONE-SHOT" in captured["prompt"]
     assert harness.turn_controller._pending_hook_context is None
+
+
+@pytest.mark.anyio
+async def test_pre_run_failure_restores_consumables_and_checkpoint(
+    tmp_path: Path, monkeypatch
+):
+    """A raise AFTER prompt assembly but BEFORE the run — e.g. flaky MCP in
+    toolsets_for — must restore the one-shot consumables and roll back the
+    turn's dead checkpoint, exactly like a run failure. This window used to sit
+    outside run_turn's try block, losing both."""
+    deps = _make_deps(tmp_path)
+    captured: dict = {}
+
+    def fn(messages, info):
+        latest = ""
+        for m in messages:
+            for p in getattr(m, "parts", []):
+                if type(p).__name__ == "UserPromptPart":
+                    latest = str(p.content)
+        captured["prompt"] = latest
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    harness = _make_harness(FunctionModel(fn), deps)
+    ctrl = harness.turn_controller
+    ctrl._pending_hook_context = "HOOK-CONTEXT-MARKER"
+
+    orig = ctrl.mcp.toolsets_for
+    calls = {"n": 0}
+
+    async def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("mcp boom")
+        return await orig(*args, **kwargs)
+
+    monkeypatch.setattr(ctrl.mcp, "toolsets_for", flaky)
+
+    checkpoints_before = len(harness.checkpoints.list())
+    with pytest.raises(RuntimeError):
+        await harness.run_turn("first request")
+    # The failed turn must not have eaten the injected context ...
+    assert ctrl._pending_hook_context == "HOOK-CONTEXT-MARKER"
+    # ... and must not leak a dead checkpoint (the turn produced no response).
+    assert len(harness.checkpoints.list()) == checkpoints_before
+
+    await harness.run_turn("second request")
+    assert "HOOK-CONTEXT-MARKER" in captured["prompt"]

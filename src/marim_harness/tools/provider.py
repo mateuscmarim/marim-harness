@@ -1,5 +1,4 @@
 import asyncio
-import functools
 import json
 import logging
 import re
@@ -605,7 +604,6 @@ async def spawn_agent(
     context: str | None = None,
     model: str | None = None,
     isolation: str | None = None,
-    max_depth: int | None = None,
 ) -> str:
     """Delegate a sub-task to an isolated sub-agent that runs on the same model
     and reports back. `type` is a built-in — `explore` (read-only investigation;
@@ -682,12 +680,7 @@ async def spawn_agent(
     tree. Its changes are committed to a branch (named in the report) and the
     worktree is removed — merge or review the branch afterward. The worktree
     branches from the last commit, so it won't see uncommitted changes in your
-    tree. Only needed when spawns write in parallel; omit for read-only work.
-
-    `max_depth` is the depth ceiling for nested spawning. The main agent starts
-    at depth 0. Each spawn increments depth by 1. When `depth + 1 >= max_depth`,
-    the tool refuses. This parameter is pre-filled by the harness — callers should
-    omit it."""
+    tree. Only needed when spawns write in parallel; omit for read-only work."""
     mcp_names = _coerce_names(mcp)
     after_ids = _coerce_names(after)
     if after_ids is not None:
@@ -695,11 +688,12 @@ async def spawn_agent(
         # prerequisite id twice (e.g. after=[a, a]) would otherwise inject
         # that prerequisite's report twice into the dependent's task.
         after_ids = list(dict.fromkeys(after_ids))
-    # Depth enforcement: refuse spawns that would exceed the depth ceiling.
-    # max_depth is None for the main agent (defaults to SUBAGENT_MAX_DEPTH).
-    # Sub-agents get it bound via functools.partial by SubagentRunner.build().
-    from .names import SUBAGENT_MAX_DEPTH
-    effective_max = max_depth if max_depth is not None else SUBAGENT_MAX_DEPTH
+    # Depth enforcement: refuse spawns that would exceed the depth ceiling. The
+    # ceiling rides on Deps (SubagentRunner stamps its configured value into a
+    # child's deps) rather than being a tool parameter — a parameter would sit
+    # in the advertised schema, where the model could override it and raise its
+    # own ceiling.
+    effective_max = ctx.deps.subagent_max_depth
     if ctx.deps.subagent_depth + 1 >= effective_max:
         return (
             f"Cannot spawn sub-agent: already at depth "
@@ -880,10 +874,23 @@ async def bash(
     with a job id instead of blocking. Check on it later with job_output /
     wait_for_job, or stop it with cancel_job. A foreground run (the default) waits
     for the command and is subject to a timeout, so use background for anything
-    that won't finish promptly."""
+    that won't finish promptly. Background runs are top-level-agent only:
+    sub-agents run everything in the foreground (raise `timeout` for slow
+    commands instead)."""
     reason = ctx.deps.workspace.command_policy.check(command)
     if reason is not None:
         return f"Blocked by command policy: {reason}"
+    # Background jobs are main-agent-only, like background spawns: sub-agents
+    # have no job tools (job_output/wait_for_job/cancel_job are not in
+    # SUBAGENT_TOOLS) and no wake loop, so a job they started would be
+    # unretrievable by them — its completion digest would land on the main
+    # agent, who never asked for it.
+    if background and ctx.deps.subagent_depth > 0:
+        return (
+            "Background commands are only available to the top-level agent. "
+            "Run this in the foreground instead — raise `timeout` if it is "
+            "slow — or report back and let the main agent start it."
+        )
     if background:
         bp = await shell.start_bash(ctx.deps.workspace.root, command)
         job_id = ctx.deps.jobs.register(
@@ -1121,12 +1128,9 @@ class BuiltinToolProvider:
         agent.tool(update_tasks)
         agent.tool(ask_user)
         agent.tool(present_plan)
-        bound_spawn = functools.partial(spawn_agent, max_depth=SUBAGENT_MAX_DEPTH)
-        # functools.partial accepts arbitrary attributes at runtime, but its type
-        # stub doesn't declare __name__/__qualname__ — hence the ignores.
-        bound_spawn.__name__ = "spawn_agent"  # type: ignore[attr-defined]
-        bound_spawn.__qualname__ = "spawn_agent"  # type: ignore[attr-defined]
-        agent.tool(bound_spawn)
+        # The nesting ceiling isn't bound here: it rides on Deps
+        # (subagent_max_depth), where the model can't touch it.
+        agent.tool(spawn_agent)
         if self._combined_job_tool:
             agent.tool(job)
         else:
@@ -1142,7 +1146,8 @@ class BuiltinToolProvider:
         """Register exactly ``tool_names`` onto a sub-agent. Gated tools are
         registered *plain* (no approval round) — reach is decided up front by
         which names the Harness grants, not by prompting mid-run. spawn_agent is
-        never among them, so sub-agents can't recurse."""
+        never among them — nested spawning is granted separately by
+        SubagentRunner.build, and only above the leaf depth."""
         for name in sorted(set(tool_names)):
             if not self._register_lsp_tools and name in LSP_TOOLS:
                 continue

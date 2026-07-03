@@ -233,6 +233,26 @@ def test_is_context_overflow_false_for_other_provider_and_plain_errors():
     assert is_context_overflow_error(ValueError("boom")) is False
 
 
+def test_is_context_overflow_ignores_marker_prose_on_transient_statuses():
+    """A 429/5xx whose message mentions a marker phrase in prose (a rate limit
+    advising a 'smaller context window', an upstream 502 quoting the request)
+    must NOT classify as overflow: the runner checks overflow BEFORE the
+    transient classifier, so a match here would force-compact / shed context on
+    a hiccup that a plain backoff retry fixes. Mirrors the ModelHTTPError
+    branch's status gate. LM Studio's status-less shape (tested above) still
+    matches — only a positively-identified transient status is excluded."""
+    rate_limited = _api_error(
+        {"error": {"message": "rate limited — retry with a smaller context window",
+                   "code": 429}}
+    )
+    assert is_context_overflow_error(rate_limited) is False
+    upstream_5xx = _api_error(
+        {"error": {"message": "Provider returned error", "code": 502,
+                   "metadata": {"raw": "upstream timeout at maximum context"}}}
+    )
+    assert is_context_overflow_error(upstream_5xx) is False
+
+
 @pytest.mark.anyio
 async def test_run_turn_force_compacts_and_retries_on_context_overflow(tmp_path):
     """The char/4 estimate can undershoot the real window. When the provider
