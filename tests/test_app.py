@@ -3886,3 +3886,58 @@ async def test_bang_sudo_prompts_for_password_and_cancel_skips_run(
         assert len(seen) == 1
         assert isinstance(seen[0], SudoPasswordModal)
         assert app.harness.turn_controller._pending_shell_results == []
+
+
+@pytest.mark.anyio
+async def test_idle_steer_routes_like_a_submission(tmp_path: Path):
+    """A steer fired while no turn runs is just a submission: it must go
+    through the same slash routing (and history recall) as Enter, not bypass
+    straight into a turn — which would send '/mode auto' to the model as
+    prose instead of executing it."""
+    from marim_harness.interfaces.tui.widgets.prompt import PromptInput
+    from marim_harness.runtime.permissions import Mode
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.harness.mode is not Mode.plan
+        await app.on_prompt_input_steer(PromptInput.Steer("/mode plan", []))
+        await pilot.pause()
+        assert app.harness.mode is Mode.plan, "idle steer bypassed slash routing"
+        assert not app.turn_busy  # a command, not a model turn
+
+
+@pytest.mark.anyio
+async def test_quit_warning_rearms_on_new_queued_message(tmp_path: Path):
+    """The confirm-once quit latch must reset when NEW work is queued after the
+    warning — otherwise, once a user has been warned a single time, any later
+    accidental Ctrl+C silently discards a fresh queue."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._enqueue("first")
+        assert app._maybe_warn_pending_quit() is True  # warns
+        assert app._maybe_warn_pending_quit() is False  # confirmed quit proceeds
+        app._enqueue("second")
+        assert app._maybe_warn_pending_quit() is True, (
+            "new queued work after the warning must re-arm the quit guard"
+        )
+
+
+@pytest.mark.anyio
+async def test_model_command_refused_mid_turn(tmp_path: Path):
+    """/model applies immediately (rebuilds the per-turn model and full-persists
+    session metadata); mid-turn that races the running turn exactly like /clear
+    and /new — it must be refused with the same guidance."""
+    from marim_harness.interfaces.tui.commands import dispatch
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        calls: list = []
+        app.harness.set_model = lambda mid: calls.append(mid)
+        app._turn_worker = object()  # simulate a running turn
+        await dispatch(app, "/model some/other-model")
+        await pilot.pause()
+        app._turn_worker = None
+        assert calls == [], "/model applied mid-turn"

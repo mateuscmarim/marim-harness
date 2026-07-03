@@ -14,8 +14,6 @@ from textual.containers import VerticalScroll
 from textual.content import Content
 from textual.widgets import ContentSwitcher, Static
 
-_DETACHED_NOTE = "detached — ran in background, no live transcript"
-
 
 def pane_id(stream_id: str) -> str:
     """A valid Textual widget id for a pane keyed by a spawn's tool_call_id.
@@ -73,11 +71,9 @@ class SubAgentPane(VerticalScroll):
         self._task_body.display = False
         self._usage_line = Static("", classes="subagent-usage")
         self._usage_line.display = False
-        self._placeholder = Static(Content(_DETACHED_NOTE), classes="subagent-detached")
-        self._placeholder.display = False
         super().__init__(
             self._header, self._subhead, self._task_toggle, self._task_body,
-            self._usage_line, self._placeholder,
+            self._usage_line,
             id=pane_id(stream_id), classes="subagent-pane",
         )
 
@@ -123,10 +119,6 @@ class SubAgentPane(VerticalScroll):
         """A failed spawn returns its error rather than streaming it; mount it so
         the transcript ends with the reason."""
         self.mount(Static(Content(report), classes="subagent-error"))
-
-    def placeholder(self) -> None:
-        """Show the 'no live transcript' note (a detached agent, pre-Phase 2)."""
-        self._placeholder.display = True
 
 
 class SubAgentDetailHost(ContentSwitcher):

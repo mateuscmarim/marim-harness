@@ -1,6 +1,6 @@
 """The sub-agents screen's master list: one row per spawned sub-agent, with live
 status/stats columns. Pure presentation — the app drives it via ``refresh_rows``
-and reads the cursor via ``selected_index``; row selection (the DataTable cursor)
+and reads the cursor via ``cursor_row``; row selection (the DataTable cursor)
 chooses which transcript the detail host shows."""
 
 from textual.widgets import DataTable
@@ -50,6 +50,3 @@ class SubAgentList(DataTable):
                 self.add_row(*row_cells(tr.agent, _row_prefix(tr.depth, tr.is_last)))
             if self.row_count:
                 self.move_cursor(row=max(0, min(keep, self.row_count - 1)))
-
-    def selected_index(self) -> int:
-        return self.cursor_row

@@ -158,6 +158,12 @@ async def _cmd_mode(app: HarnessApp, arg: str) -> None:
 
 
 async def _cmd_model(app: HarnessApp, arg: str) -> None:
+    # Refused mid-turn like /clear and /new: set_model rebuilds the per-turn
+    # model and patches session metadata, racing the turn that is still
+    # streaming on the old model.
+    if app.turn_busy:
+        await app.post_system("Can't switch models while a turn is running. Press Esc first.")
+        return
     arg = arg.strip()
     if arg:
         app.harness.set_model(arg)

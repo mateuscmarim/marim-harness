@@ -111,7 +111,6 @@ SubAgentWidget.-hovered .subagent-activity { color: white; text-style: bold; }
 .subagent-pane { height: 1fr; padding: 0 1; }
 .subagent-pane:focus { background: $boost; }
 #subagent-hints { height: 1; padding: 0 1; color: $text-muted; background: $panel; }
-.subagent-detached { color: $text-muted; text-style: italic; margin: 1 0; }
 
 /* Indent the group's children and drop their inter-row gap so a run of tools
    reads as one compact cluster (the per-child accent rail still separates them)

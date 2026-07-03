@@ -204,7 +204,7 @@ async def test_only_the_current_pane_is_visible():
 
 
 @pytest.mark.anyio
-async def test_pane_streams_and_placeholder():
+async def test_pane_streams_mounted_children():
     app = _Host()
     async with app.run_test() as pilot:
         host = app.query_one(SubAgentDetailHost)
@@ -213,6 +213,3 @@ async def test_pane_streams_and_placeholder():
         pane.set_usage_line("in 1.0k · out 0.2k · $0.01")
         await pilot.pause()
         assert len(pane.query(Static)) >= 2  # body header + the mounted child
-        pane.placeholder()
-        await pilot.pause()
-        assert pane._placeholder.display is True

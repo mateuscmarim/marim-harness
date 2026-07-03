@@ -57,7 +57,7 @@ async def test_list_rows_and_summary(monkeypatch):
         summ.refresh_totals(aggregate(agents, cost_of=lambda a: 0.0))
         await pilot.pause()
         assert lst.row_count == 2
-        assert lst.selected_index() == 1
+        assert lst.cursor_row == 1
         # Every column has a FIXED width so the stat columns (tools/tokens/cost/dur)
         # stay visible and aligned instead of being pushed off the pane by a long
         # "{type} — title" cell (which DataTable truncates to the agent width).
@@ -172,7 +172,6 @@ async def test_detached_spawn_streams_live_with_bg_marker(tmp_path):
         await pilot.pause()
         assert kept is True
         assert w.detached is True                     # marked as a background run
-        assert w.pane._placeholder.display is False    # no placeholder — it streams
         assert "bg" in str(w._header.render())         # bg marker on the card
         assert row_cells(w)[1].startswith("bg · ")     # bg marker on the list row
 
@@ -709,3 +708,59 @@ async def test_failed_prerequisite_attributes_blocker(tmp_path):
         assert w.status == "failed"
         assert w.blocked_by == "job-1"
         assert "blocked by job-1" in str(w._header.render())
+
+
+@pytest.mark.anyio
+async def test_transcript_loader_worker_survives_exclusive_turn_worker(tmp_path, monkeypatch):
+    """The lazy transcript loader must not run in the default worker group.
+
+    The turn worker runs exclusive=True in the default group, and Textual
+    cancels every worker sharing a group when an exclusive worker joins it —
+    so a turn starting while a resumed transcript replays would truncate the
+    replay with ``transcript_loaded`` already set, leaving no retry. Same
+    hazard the shell-passthrough worker documents in app.py."""
+    import asyncio
+
+    from marim_harness.interfaces.tui.subagents_viewer import SubAgentsViewer
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    cancelled = []
+
+    async def fake_load(self, pane, stream_id):
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled.append(stream_id)
+            raise
+
+    monkeypatch.setattr(SubAgentsViewer, "_load_transcript", fake_load)
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        r = app.stream
+        w = r.mount_spawn_widget({"type": "research", "description": "map it"})
+        w.stream_id = "call_1"
+        r.tool_widgets["call_1"] = w
+        pane = r.ensure_pane(w)
+        await app.query_one("#log").mount(w)
+        await pilot.pause()
+        # A live spawn's pane is born loaded; a resumed card's pane starts
+        # unloaded. Arm the lazy loader the way the resume path leaves it.
+        pane.transcript_loaded = False
+
+        await pilot.press("ctrl+x")  # opens the screen -> launches the loader
+        await asyncio.wait_for(started.wait(), timeout=5)
+
+        # A turn starts: an exclusive worker joins the DEFAULT group (exactly
+        # what _start_turn does). The loader must survive the sweep.
+        async def noop():
+            pass
+
+        app.run_worker(noop(), exclusive=True)
+        await pilot.pause()
+        assert not cancelled, "turn start cancelled the in-flight transcript replay"
+
+        release.set()
+        await pilot.pause()

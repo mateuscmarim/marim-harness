@@ -89,7 +89,11 @@ class SubAgentsViewer:
         card = ordered[self.index]
         if card.status != "interrupted":
             return
-        self.app.run_worker(self._resume(card))
+        # Own group + exit_on_error=False, same rationale as the transcript
+        # loader below: the default group belongs to the exclusive turn worker.
+        self.app.run_worker(
+            self._resume(card), group="subagent-resume", exit_on_error=False
+        )
 
     async def _resume(self, card) -> None:
         resume = self.app.harness.deps.services.resume_subagent
@@ -145,8 +149,18 @@ class SubAgentsViewer:
             # keeps later ticks from relaunching it.
             if not current.pane.transcript_loaded:
                 current.pane.transcript_loaded = True
+                # group="subagent-transcripts": the turn worker runs
+                # exclusive=True in the DEFAULT group, and Textual cancels every
+                # worker sharing a group when an exclusive worker joins it — a
+                # turn starting mid-replay would truncate the transcript with
+                # the loaded-guard already set, leaving no retry (the same sweep
+                # hazard the shell-passthrough worker in app.py documents).
+                # exit_on_error=False: a replay of arbitrary persisted data must
+                # degrade to a broken pane, never take down the whole session.
                 app.run_worker(
-                    self._load_transcript(current.pane, current.stream_id)
+                    self._load_transcript(current.pane, current.stream_id),
+                    group="subagent-transcripts",
+                    exit_on_error=False,
                 )
 
     async def _load_transcript(self, pane, stream_id: str) -> None:

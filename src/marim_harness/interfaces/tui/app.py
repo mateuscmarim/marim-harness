@@ -512,6 +512,10 @@ class HarnessApp(App):
     ) -> None:
         """Buffer a submission to run after the current turn."""
         self._queue.enqueue(text, attachments)
+        # New queued work re-arms the quit warning: the confirm-once latch
+        # covers the queue the user was warned about, not messages added later
+        # — an accidental Ctrl+C after fresh work must warn again.
+        self._quit_armed = False
         self._render_queue()
 
     async def _drain_next(self) -> None:
@@ -884,8 +888,13 @@ class HarnessApp(App):
         if not text and not event.attachments:
             return  # nothing to steer
         if not self.turn_busy:
-            # No turn running (or starting) — just run it normally.
-            await self._start_turn(text, event.attachments)
+            # No turn running (or starting) — an idle steer is just a
+            # submission, so it takes the same path as Enter: history recall,
+            # slash/! routing, image gate. Bypassing that sent "/help" to the
+            # model as prose and lost the entry from prompt history.
+            self._hide_autocomplete()
+            self._history.add(text)
+            await self._route_submission(text, event.attachments)
             return
         reason = self._image_block_reason(event.attachments)
         if reason is not None:
@@ -902,23 +911,30 @@ class HarnessApp(App):
             return
         self._history.add(text)  # capture every submission, commands included
         self.query_one(PromptInput).text = ""
+        await self._route_submission(text, event.attachments)
+
+    async def _route_submission(
+        self, text: str, attachments: list[tuple[bytes, str]] | None
+    ) -> None:
+        """Shared routing for submitted prompt text (Enter and idle steer):
+        slash commands, `!` passthrough, image gate, then queue-or-start."""
         if text.startswith("/"):
             await dispatch(self, text)
             return
         if (command := parse_bang(text)) is not None:
             await self._handle_bang(command)
             return
-        reason = self._image_block_reason(event.attachments)
+        reason = self._image_block_reason(attachments)
         if reason is not None:
             self._append_log(NoticeMessage(reason))
             return
         if self.turn_busy:
             # turn_busy (not _turn_worker) so a submit landing in the start-up gap
             # is queued rather than racing a second exclusive worker.
-            self._enqueue(text, event.attachments)
+            self._enqueue(text, attachments)
             return
         self._queue.paused = False
-        await self._start_turn(text, event.attachments)
+        await self._start_turn(text, attachments)
 
     async def _handle_bang(self, command: str) -> None:
         """Route a `!` submission: usage hint for a bare `!`, refusal mid-turn,

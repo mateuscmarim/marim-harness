@@ -47,7 +47,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--mode", choices=["plan", "auto"], default=None,
-        help="headless permission mode (default: auto). 'ask' needs the TUI",
+        help="initial permission mode (headless default: auto; interactive "
+             "default: MARIM_DEFAULT_MODE). 'ask' needs the TUI",
     )
     p.add_argument(
         "--worktree", metavar="BRANCH", default=None,
@@ -152,8 +153,11 @@ def run_default(argv, *, stdin=None, out=None, err=None) -> int:
 
     from ..tui.app import HarnessApp
 
-    # No explicit mode: the interactive session starts in the configured default
-    # (MARIM_DEFAULT_MODE, default "ask"), resolved inside build_harness.
-    harness = build_harness(workspace, resume=args.resume)
+    # An explicit --mode carries into the interactive session too (it used to
+    # be silently ignored on a tty); without one, the session starts in the
+    # configured default (MARIM_DEFAULT_MODE, default "ask"), resolved inside
+    # build_harness.
+    mode = Mode(args.mode) if args.mode else None
+    harness = build_harness(workspace, mode=mode, resume=args.resume)
     HarnessApp(harness, history=PromptHistory(default_history_path())).run()
     return 0
