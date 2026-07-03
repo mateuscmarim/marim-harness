@@ -86,3 +86,35 @@ def test_finish_failure_appends_to_pane_when_present():
     w.finish("Sub-agent 'x' failed: boom", status="failed")
     assert w.pane.errors == ["Sub-agent 'x' failed: boom"]
     assert w._fail_reason == "boom"
+
+
+def test_waiting_card_shows_hourglass_after_tag_and_waiting_line():
+    w = SubAgentWidget("merge", "Combine the reports", "sonnet")
+    w.detached = True
+    w.after_ids = ["job-3", "job-4"]
+    w.set_waiting(True)
+    header = str(w._header.render())
+    assert "⧗" in header                      # static hourglass, not the spinner
+    assert "after job-3, job-4" in header     # dim prerequisite tag
+    assert "bg" in header                     # existing marker preserved
+    assert "waiting on job-3, job-4" in str(w._activity.render())
+
+
+def test_set_waiting_flip_restores_running_rendering():
+    w = SubAgentWidget("merge", "Combine the reports", "sonnet")
+    w.after_ids = ["job-3"]
+    w.set_waiting(True)
+    w.set_waiting(False)
+    header = str(w._header.render())
+    assert "⧗" not in header and "after" not in header
+    assert "working…" in str(w._activity.render())
+
+
+def test_blocked_card_names_the_culprit_in_header():
+    w = SubAgentWidget("merge", "Combine the reports", "sonnet")
+    w.after_ids = ["job-3"]
+    w.blocked_by = "job-3"
+    w.finish("PrerequisiteFailed: prerequisite job-3 failed — boom", status="failed")
+    header = str(w._header.render())
+    assert "blocked by job-3" in header
+    assert "✕" in header

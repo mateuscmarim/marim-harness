@@ -138,6 +138,17 @@ class SubAgentWidget(Vertical):
         # Set by the renderer when the card is mapped to a background job
         # (note_detached_spawn).
         self.detached = False
+        # after= dependency display (spec 2026-07-02-after-deps-tui-design).
+        # ``after_ids`` are the prerequisite background-job ids from the spawn's
+        # tool args; ``job_id`` is this card's own background job (parsed from
+        # the detach handoff); ``waiting`` is DERIVED display state — status
+        # stays "pending", so nothing that switches on status changes; and
+        # ``blocked_by`` names the failed prerequisite once one kills the run.
+        # All set post-construction by the renderer, like stream_id/parent_id.
+        self.after_ids: list[str] = []
+        self.job_id: str | None = None
+        self.waiting = False
+        self.blocked_by: str | None = None
         self._t0 = time.monotonic()
         self._t_end: float | None = None
         # Live token usage. The total + cost ride on the card; the full cache split
@@ -209,6 +220,8 @@ class SubAgentWidget(Vertical):
             return "✓"
         if self.status in ("denied", "failed"):
             return "✕"
+        if self.waiting:
+            return "⧗"
         return _SPINNER[self._spin]
 
     def display_title(self) -> str:
@@ -229,6 +242,17 @@ class SubAgentWidget(Vertical):
         suffix the Claude CLI appends, which isn't present in the price table."""
         self.model_label = model_label
 
+    def set_waiting(self, waiting: bool) -> None:
+        """Flip the derived waiting display state (an after= spawn blocked on
+        prerequisites) and repaint both card lines. Display-only: ``status``
+        stays "pending". No-op when unchanged, so jobs-change sweeps can call
+        it unconditionally."""
+        if self.waiting == waiting:
+            return
+        self.waiting = waiting
+        self._paint_header()
+        self._paint_activity()
+
     def _paint_header(self) -> None:
         # A derived title (not the raw prompt); CSS clips it with an ellipsis to the
         # card width. Content.assemble keeps the (untrusted) title a literal — never
@@ -239,6 +263,10 @@ class SubAgentWidget(Vertical):
         parts: list = [(f"{self._glyph()} ", glyph_style)]
         if self.detached:
             parts.append(("bg ", "dim"))
+        if self.waiting and self.after_ids:
+            parts.append((f"after {', '.join(self.after_ids)} ", "dim"))
+        elif self.blocked_by:
+            parts.append((f"blocked by {self.blocked_by} ", "dim red"))
         parts.append(f"{self.agent_type} Task — {self.display_title()}")
         self._header.update(Content.assemble(*parts))
 
@@ -248,8 +276,16 @@ class SubAgentWidget(Vertical):
 
     def _paint_activity(self) -> None:
         if self.status == "pending":
-            # Show the current tool while running; "working…" before the first call.
-            self._activity.update(Content(f"↳ {self.activity or 'working…'}"))
+            if self.waiting and self.after_ids:
+                # Blocked on prerequisites: say so instead of "working…", so a
+                # stalled dependent is tellable from a busy one at a glance.
+                self._activity.update(
+                    Content(f"↳ waiting on {', '.join(self.after_ids)}")
+                )
+            else:
+                # Show the current tool while running; "working…" before the
+                # first call.
+                self._activity.update(Content(f"↳ {self.activity or 'working…'}"))
         elif self.status in ("failed", "denied"):
             # Surface why it failed (literal + red). The line is clipped to one row
             # by default; if the reason was clipped, a ▸/▾ marks it click-to-expand
