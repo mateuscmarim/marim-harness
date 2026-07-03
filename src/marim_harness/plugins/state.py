@@ -8,6 +8,7 @@ from pathlib import Path
 
 from ..atomic_io import atomic_write_text
 from ..config import config_dir
+from .manifest import valid_plugin_name
 
 
 @dataclass
@@ -72,7 +73,15 @@ def load_state(plugins_dir: Path) -> dict[str, "InstalledPlugin"]:
         return {}
     out: dict[str, InstalledPlugin] = {}
     for name, entry in plugins.items():
-        if isinstance(entry, dict):
+        # A registry name is used verbatim as a path component downstream
+        # (``plugins_dir / name`` in discovery, install, and remove). A *project*
+        # registry (``.marim/plugins/plugins.json``) is committed to the repo, so
+        # on a freshly cloned repo an attacker controls these keys — a traversal
+        # name like ``../../../home/user/x`` would let discovery read manifests
+        # out of tree and turn a user-invoked remove into an out-of-tree rmtree.
+        # Refuse anything that isn't a plain kebab-case identifier at this load
+        # boundary, so no such name ever reaches a path join.
+        if isinstance(entry, dict) and valid_plugin_name(name):
             out[name] = InstalledPlugin.from_dict(name, entry)
     return out
 

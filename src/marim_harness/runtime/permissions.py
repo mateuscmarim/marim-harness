@@ -6,6 +6,7 @@ from pydantic_ai import DeferredToolRequests, DeferredToolResults, ToolDenied
 from pydantic_ai.tools import DeferredToolApprovalResult
 
 from ..read_only_commands import is_read_only
+from ..tools.names import NET_TOOLS
 
 
 class Mode(str, Enum):
@@ -36,10 +37,23 @@ def _plan_decision(call: object) -> "bool | ToolDenied":
     """Plan mode is read-only. Deny mutations, but let a read-only ``bash``
     command through so the agent can research before presenting a plan
     (see read_only_commands.is_read_only — best-effort, not a sandbox)."""
-    if getattr(call, "tool_name", None) == "bash" and is_read_only(_bash_command(call)):
+    tool_name = getattr(call, "tool_name", None)
+    if tool_name == "bash" and is_read_only(_bash_command(call)):
         return True
-    if getattr(call, "tool_name", None) == "bash":
+    if tool_name == "bash":
         return ToolDenied("plan mode: read-only commands only")
+    # Outbound network tools (fetch_url/web_search) are gated like mutations, so
+    # in plan mode they land here rather than being auto-allowed. Plan mode is
+    # presented to the user as read-only *local* research; a prompt-injected agent
+    # could otherwise read any host file and exfiltrate it through a fetch URL or
+    # search query with zero approval. Deny with wording that names egress, since
+    # a bare "read-only" reads to a model as "fetching is fine" — switch to ask/
+    # auto mode to actually reach the network.
+    if tool_name in NET_TOOLS:
+        return ToolDenied(
+            "plan mode is local-research only; outbound network "
+            "(fetch_url/web_search) is disabled here — switch out of plan mode to fetch"
+        )
     return ToolDenied("read-only plan mode")
 
 

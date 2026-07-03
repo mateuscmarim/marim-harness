@@ -38,6 +38,72 @@ class _FakeCtx:
         self.calls.append((content, priority))
 
 
+def _mk_user(text: str):
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    return ModelRequest(parts=[UserPromptPart(content=text)])
+
+
+def test_reclaim_rebuffers_undelivered_steer_matching_earlier_history(tmp_path):
+    """The dropped-steer bug: a steer whose text equals an EARLIER user message
+    must still be reclaimed when this round never delivered it. Matching against
+    the whole session (the old behaviour) read the earlier occurrence as a
+    delivery and silently dropped the enqueue — common for short steers like
+    'yes' / 'continue' / 'stop' repeated across a session."""
+    from pydantic_ai.messages import ModelResponse, TextPart
+
+    h = _harness(tmp_path)
+    tc = h.turn_controller
+    # An earlier turn already said "continue"; it is the pre-round baseline.
+    h.session.history = [_mk_user("continue")]
+    tc._inflight_steers = [("continue", None)]
+    # This round asked "go" and finished — it never delivered a fresh "continue".
+    messages = [
+        _mk_user("continue"),  # baseline (prior history), must NOT count
+        _mk_user("go"),
+        ModelResponse(parts=[TextPart(content="done")]),
+    ]
+    tc._reclaim_undelivered_steers(messages)
+    assert tc._steer_buffer == [("continue", None)]  # reclaimed, not dropped
+    assert tc._inflight_steers == []
+
+
+def test_reclaim_keeps_delivered_steer_even_if_it_echoes_history(tmp_path):
+    """A steer with text equal to an earlier user message is still recognised as
+    delivered when it WAS delivered this round — the matching fresh user part in
+    the new-message window is consumed, so it is not spuriously re-buffered."""
+    from pydantic_ai.messages import ModelResponse, TextPart
+
+    h = _harness(tmp_path)
+    tc = h.turn_controller
+    h.session.history = [_mk_user("continue")]
+    tc._inflight_steers = [("continue", None)]
+    # The round delivered a fresh "continue" user part beyond the baseline.
+    messages = [
+        _mk_user("continue"),  # baseline
+        _mk_user("go"),
+        _mk_user("continue"),  # the actually-delivered steer
+        ModelResponse(parts=[TextPart(content="done")]),
+    ]
+    tc._reclaim_undelivered_steers(messages)
+    assert tc._steer_buffer == []  # delivered → not reclaimed
+    assert tc._inflight_steers == []
+
+
+def test_reclaim_counts_identical_steers_not_membership(tmp_path):
+    """Two identical steers in one round, only one delivered: the delivered one is
+    consumed and the other reclaimed. A set keyed by text (the old behaviour)
+    conflated them and dropped both."""
+    h = _harness(tmp_path)
+    tc = h.turn_controller
+    h.session.history = []
+    tc._inflight_steers = [("yes", None), ("yes", None)]
+    messages = [_mk_user("yes")]  # only one "yes" actually drained this round
+    tc._reclaim_undelivered_steers(messages)
+    assert tc._steer_buffer == [("yes", None)]  # exactly one reclaimed
+    assert tc._inflight_steers == []
+
+
 def test_steer_enqueues_on_active_ctx(tmp_path):
     h = _harness(tmp_path)
     ctx = _FakeCtx()

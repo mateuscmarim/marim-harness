@@ -223,6 +223,27 @@ async def test_start_bash_output_keeps_head_and_tail(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_start_bash_live_output_marks_dropped_middle(tmp_path: Path, monkeypatch):
+    """When the running buffer has already elided the middle of a flood, output()
+    must splice the truncation marker in rather than glue head onto tail as if the
+    stream were continuous. With a large preview cap the only marker that can
+    appear comes from the buffer drop, so its presence proves the seam is shown."""
+    monkeypatch.setattr(shell, "MAX_OUTPUT_CHARS", 200)  # tiny running buffer → drops
+    bp = await shell.start_bash(
+        tmp_path,
+        "echo HEAD-MARKER; for i in $(seq 1 2000); do echo filler$i; done; "
+        "echo TAIL-VERDICT",
+        max_output=1_000_000,  # preview cap far above head+tail → no _truncate_middle marker
+    )
+    await bp.wait()
+    assert bp._buffer.dropped > 0  # the buffer genuinely elided a middle
+    live = bp.output()
+    assert "HEAD-MARKER" in live
+    assert "TAIL-VERDICT" in live
+    assert "chars truncated" in live  # the seam is marked, not silently glued
+
+
+@pytest.mark.anyio
 async def test_start_bash_streams_buffer_then_final(tmp_path: Path):
     bp = await shell.start_bash(tmp_path, "echo one; echo two")
     final = await bp.wait()

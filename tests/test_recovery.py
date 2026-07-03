@@ -327,6 +327,117 @@ async def test_resume_heals_dangling_tool_call_then_runs(tmp_path):
     assert not _has_unanswered_tool_calls(harness.session.history)
 
 
+# --- the turn-start checkpoint records the SANITIZED history length -----------
+
+
+async def test_checkpoint_records_sanitized_length_for_clean_rewind(tmp_path):
+    """A Checkpoint's ``history_len`` is an absolute index, and the turn-start
+    sanitize/repair changes history length (the repair inserts a synthesized
+    return for the dangling call). The checkpoint must be captured AFTER that
+    sanitize, so a later /rewind slices on a clean boundary — not mid-pair,
+    stranding the tool call from the very return the repair just added, which is
+    the unresumable shape this subsystem exists to prevent.
+
+    Regression: the snapshot used to run before the sanitize, recording the
+    pre-repair length (2 here), so rewinding sliced ``history[:2]`` right back to
+    the dangling call.
+    """
+    deps = _make_deps(tmp_path)
+
+    def reply(messages, info):
+        return ModelResponse(parts=[TextPart(content="resumed")])
+
+    harness = _harness(FunctionModel(reply), deps)
+    # Incoming history ends in an unanswered tool call (2 messages, the wedged shape).
+    harness.session.history = _dangling_history()
+
+    out = await harness.run_turn("continue")
+    assert out == "resumed"
+
+    cps = harness.checkpoints.list()
+    assert len(cps) == 1
+    # The repair inserted a synthesized return before the turn ran, so the
+    # sanitized baseline is 3 messages — the checkpoint must have recorded that,
+    # not the pre-sanitize 2 (which would slice off the tool call's return).
+    assert cps[0].history_len == 3
+
+    harness.checkpoints.rewind(cps[0].index)
+    # Rewinding lands on a resumable boundary, never back on a dangling tool call.
+    assert not _has_unanswered_tool_calls(harness.session.history)
+    assert len(harness.session.history) == 3
+
+
+# --- an orphaned resumable-flush persist can't clobber a newer write ----------
+
+
+async def test_orphaned_flush_persist_does_not_clobber_newer_write(tmp_path):
+    """``_flush_resumable`` runs ``persist`` under a 0.25s deadline and *abandons*
+    the worker thread on timeout without stopping it. If that orphan later
+    completes, it must NOT overwrite a newer on-disk session with its stale
+    recovered history. ``SessionController.persist`` serializes writers under a
+    lock and re-checks a monotonic ``history_version`` inside it, so the abandoned
+    orphan either finishes before the newer write (which then overwrites it) or
+    no-ops. This pins that guarantee for the exact orphan-then-newer ordering the
+    flush can produce.
+    """
+    import threading
+
+    from marim_harness.session.ctrl import SessionController
+
+    deps = _make_deps(tmp_path)
+
+    class _BlockingStore:
+        """Records each save's history snapshot in write order; the FIRST save
+        blocks (simulating the stalled disk that made the flush orphan its
+        thread) until the test releases it."""
+
+        session_id = "s"
+        model = None
+
+        def __init__(self) -> None:
+            self.saved: list[list] = []
+            self.entered = threading.Event()
+            self.release = threading.Event()
+            self._blocked = False
+
+        def save(self, history, usage, tasks, *, duration_seconds, jobs) -> None:
+            snapshot = list(history)
+            if not self._blocked:
+                self._blocked = True
+                self.entered.set()
+                self.release.wait(2.0)
+            self.saved.append(snapshot)
+
+    store = _BlockingStore()
+    ctrl = SessionController(store, None, deps, 100_000, 20)
+
+    stale = [ModelRequest(parts=[UserPromptPart(content="STALE recovered")])]
+    newer = [ModelRequest(parts=[UserPromptPart(content="NEWER turn")])]
+
+    # The orphaned flush: sets the recovered history and persists on a thread that
+    # blocks inside store.save, holding the persist lock.
+    ctrl.history = stale
+    orphan = threading.Thread(target=ctrl.persist)
+    orphan.start()
+    assert store.entered.wait(2.0)  # orphan is now "writing" the stale history
+
+    # A newer turn lands a newer history and its own persist while the orphan is
+    # still stuck. Its write blocks on the lock the orphan holds.
+    ctrl.history = newer
+    newer_writer = threading.Thread(target=ctrl.persist)
+    newer_writer.start()
+
+    store.release.set()  # let the orphan finish, then the newer writer proceeds
+    orphan.join(2.0)
+    newer_writer.join(2.0)
+    assert not orphan.is_alive() and not newer_writer.is_alive()
+
+    # Both writes happened (orphan first), but the NEWER history landed LAST — the
+    # abandoned orphan never clobbered it.
+    assert store.saved == [stale, newer]
+    assert store.saved[-1] == newer
+
+
 # --- a failed, output-less turn rolls back its own checkpoint ----------------
 
 

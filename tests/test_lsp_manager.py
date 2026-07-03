@@ -322,6 +322,102 @@ async def test_hover_clamps_huge_docstring(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_start_racing_aclose_leaves_no_registered_server(tmp_path, monkeypatch):
+    """A cold start still in flight when aclose() runs must not register its server
+    into the just-cleared pool — otherwise the language-server process leaks past
+    shutdown. aclose() cancels/reaps in-flight starts, so the hung start is unwound
+    and nothing lands in _servers."""
+    import asyncio
+
+    from marim_harness.lsp import registry
+
+    monkeypatch.setattr(
+        registry, "availability", lambda lang: registry.Availability(True, "")
+    )
+
+    in_start = asyncio.Event()
+    release = asyncio.Event()  # never set: the start hangs like a real cold start
+
+    class _Cold(_FakeServer):
+        @contextlib.asynccontextmanager
+        async def start_server(self):
+            self.started += 1
+            in_start.set()
+            await release.wait()  # hang mid cold start until cancelled
+            yield self  # pragma: no cover — cancelled before it registers
+
+    (tmp_path / "m.py").write_text("x = 1\n")
+    mgr = LspManager(tmp_path, server_factory=lambda lang, root: _Cold(tmp_path))
+
+    start = asyncio.create_task(mgr.goto_definition("m.py", 1, 1))
+    await in_start.wait()  # the cold start is in flight
+
+    await mgr.aclose()  # cancels + reaps the in-flight start
+
+    assert mgr._closed is True
+    assert mgr._servers == {}  # nothing registered from the racing start
+    assert mgr._starts == {}  # the in-flight start map was cleared, not leaked
+
+    # The racing request rode the cancelled shared start down — expected at
+    # shutdown; the point is that no server leaked into the pool.
+    with pytest.raises(asyncio.CancelledError):
+        await start
+
+
+@pytest.mark.anyio
+async def test_start_language_refuses_to_register_once_closed(tmp_path):
+    """Even if a start finishes its enter after aclose latched closed (past its only
+    await, so cancellation can't reach it), it must decline to register — the
+    entered server is reaped by the stack, never cached into the dead pool."""
+    fakes: list = []
+    mgr = _manager(tmp_path, fakes)
+    mgr._closed = True
+
+    err = await mgr._start_language("python")
+    assert err is not None and "closing" in err.lower()
+    assert "python" not in mgr._servers  # refused to register
+    await mgr.aclose()
+
+
+@pytest.mark.anyio
+async def test_dead_server_is_evicted_and_restarted(tmp_path, monkeypatch):
+    """A warm server whose process died (server_started → False) must be evicted on
+    next use and a fresh one cold-started, rather than routing every later request
+    to the corpse for the rest of the session."""
+    from marim_harness.lsp import registry
+
+    monkeypatch.setattr(
+        registry, "availability", lambda lang: registry.Availability(True, "")
+    )
+
+    fakes: list = []
+
+    class _Mortal(_FakeServer):
+        def __init__(self, root):
+            super().__init__(root)
+            self.server_started = True  # alive after a real start_server
+
+    def factory(language, root):
+        srv = _Mortal(root)
+        fakes.append(srv)
+        return srv
+
+    (tmp_path / "m.py").write_text("x = 1\n")
+    mgr = LspManager(tmp_path, server_factory=factory)
+
+    await mgr.goto_definition("m.py", 1, 1)
+    assert len(fakes) == 1  # one server started
+
+    fakes[0].server_started = False  # its process dies mid-session
+
+    out = await mgr.goto_definition("m.py", 1, 1)
+    assert "target.py" in out  # served by a fresh server, not the dead cached error
+    assert len(fakes) == 2  # a second server was cold-started
+    assert mgr._servers["python"] is fakes[1]  # the live one is now cached
+    await mgr.aclose()
+
+
+@pytest.mark.anyio
 async def test_diagnostics_wakes_on_publish_before_settle(tmp_path):
     """The non-Python diagnostics push path must return the moment the server
     publishes for the opened URI, treating ``settle`` as a ceiling rather than a

@@ -48,6 +48,10 @@ def isolated_home(tmp_path, monkeypatch):
     whatever marim ships as built-ins."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # These tests assert on project-local `.marim/skills`, so run them as a
+    # TRUSTED workspace — project skills are otherwise gated (see the untrusted
+    # tests below and workspace.skills._project_trusted).
+    monkeypatch.setenv("MARIM_TRUST_PROJECT_HOOKS", "1")
     monkeypatch.setattr(
         "marim_harness.workspace.skills.builtin_root",
         lambda: tmp_path / "no-builtin",
@@ -61,6 +65,7 @@ def isolated_project(tmp_path, monkeypatch):
     bundled built-in root, so a test can assert on shipped built-in skills."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("MARIM_TRUST_PROJECT_HOOKS", "1")
     return tmp_path
 
 
@@ -277,3 +282,58 @@ def test_project_skill_shadows_builtin_deep_research(isolated_project):
     skill = find_skill(ws, "deep-research")
     assert skill.source == "project"
     assert skill.description == "Custom override."
+
+
+# -- project-local trust gate -------------------------------------------------
+# A cloned untrusted repo's `.marim/skills` must NOT load: skill descriptions are
+# injected into the system prompt every turn and bodies on activation, so loading
+# them before consent is a prompt-injection vector (the same threat hooks/MCP gate
+# behind MARIM_TRUST_PROJECT_HOOKS).
+
+
+@pytest.fixture
+def untrusted_home(tmp_path, monkeypatch):
+    """Like isolated_home but WITHOUT the trust flag — the default, untrusted
+    posture a freshly cloned repo runs under."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("MARIM_TRUST_PROJECT_HOOKS", raising=False)
+    monkeypatch.setattr(
+        "marim_harness.workspace.skills.builtin_root",
+        lambda: tmp_path / "no-builtin",
+    )
+    return tmp_path
+
+
+def test_untrusted_project_skill_not_loaded(untrusted_home):
+    ws = untrusted_home / "ws"
+    _make_skill(ws / ".marim" / "skills", "sneaky", description="Injected.")
+    # Default (env unset) is untrusted: the project skill is invisible.
+    assert discover_skills(ws) == []
+    assert find_skill(ws, "sneaky") is None
+
+
+def test_untrusted_project_skill_excluded_from_index(untrusted_home):
+    ws = untrusted_home / "ws"
+    _make_skill(ws / ".marim" / "skills", "sneaky", description="Injected desc.")
+    assert "sneaky" not in skills_index_text(discover_skills(ws))
+    assert "Injected desc." not in skills_index_text(discover_skills(ws))
+
+
+def test_trusted_project_skill_loaded(untrusted_home, monkeypatch):
+    ws = untrusted_home / "ws"
+    _make_skill(ws / ".marim" / "skills", "welcome", description="Legit.")
+    # The env flag (the same signal hooks/MCP use) trusts the project.
+    monkeypatch.setenv("MARIM_TRUST_PROJECT_HOOKS", "1")
+    skills = discover_skills(ws)
+    assert [s.name for s in skills] == ["welcome"]
+
+
+def test_explicit_trust_project_param_overrides_env(untrusted_home, monkeypatch):
+    ws = untrusted_home / "ws"
+    _make_skill(ws / ".marim" / "skills", "welcome", description="Legit.")
+    # Explicit True loads it even with the env unset...
+    assert [s.name for s in discover_skills(ws, trust_project=True)] == ["welcome"]
+    # ...and explicit False gates it even when the env would trust it.
+    monkeypatch.setenv("MARIM_TRUST_PROJECT_HOOKS", "1")
+    assert discover_skills(ws, trust_project=False) == []

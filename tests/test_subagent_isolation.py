@@ -269,10 +269,13 @@ async def test_failed_fresh_isolated_background_spawn_drops_branch(repo: Path):
 
 
 @pytest.mark.anyio
-async def test_isolated_spawn_cancel_cleans_up_worktree_and_branch(repo: Path):
-    """A cancelled isolated spawn (CancelledError is a BaseException, e.g. shutdown
-    tearing down a running job) must still discard its worktree + branch — and let
-    the cancellation propagate rather than contain it as an error string."""
+async def test_isolated_spawn_cancel_preserves_in_progress_work(repo: Path):
+    """A cancelled isolated spawn with in-progress work (CancelledError is a
+    BaseException, e.g. a Ctrl-C tearing down a running spawn) must PRESERVE its
+    branch so the run stays resumable — a graceful cancel must lose no more than a
+    hard `kill -9`, which leaves the worktree intact. The cancellation still
+    propagates (it is not contained as an error string), and the worktree checkout
+    is torn down, but the committed work lives on the branch."""
     import asyncio
 
     deps = _make_deps(repo)
@@ -281,6 +284,38 @@ async def test_isolated_spawn_cancel_cleans_up_worktree_and_branch(repo: Path):
     class _CancelAgent:
         async def run(self, task, **kwargs):
             fs.write_file(kwargs["deps"].workspace.root, "partial.txt", "half\n")
+            raise asyncio.CancelledError
+
+    h.subagents.build = lambda type, max_output_chars=None, model=None, \
+        workspace_root=None, defn=None, depth=0, mask_trigger=None, \
+        checkpoint=None: (_CancelAgent(), None)
+
+    with pytest.raises(asyncio.CancelledError):
+        await h.subagents.run("general", "do it", "tc1", isolation="worktree")
+    # The checkout is gone, but the branch survives with the in-progress work
+    # committed — reopen() can resume it (contrast the crash path, which discards).
+    assert not (repo / ".worktrees" / "subagent" / "tc1").exists()
+    assert _branch_exists(repo, "subagent/tc1")
+    show = subprocess.run(
+        ["git", "show", "--stat", "subagent/tc1"], cwd=repo,
+        capture_output=True, text=True,
+    )
+    assert show.returncode == 0
+    assert "partial.txt" in show.stdout
+
+
+@pytest.mark.anyio
+async def test_isolated_spawn_cancel_with_no_changes_drops_branch(repo: Path):
+    """The other half of the cancel policy: a genuinely-throwaway spawn that was
+    cancelled before changing anything must leave NO dead branch behind — close()
+    drops an empty branch, so preserving work never accretes junk branches."""
+    import asyncio
+
+    deps = _make_deps(repo)
+    h = _make_harness(_text_model(), deps)
+
+    class _CancelAgent:
+        async def run(self, task, **kwargs):
             raise asyncio.CancelledError
 
     h.subagents.build = lambda type, max_output_chars=None, model=None, \

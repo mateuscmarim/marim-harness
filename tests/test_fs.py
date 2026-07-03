@@ -196,6 +196,29 @@ def test_edit_file_empty_edits_raises(tmp_path: Path):
         fs.edit_file(tmp_path, "a.txt", [])
 
 
+def test_edit_file_empty_old_string_is_rejected(tmp_path: Path):
+    """An empty old_string must be refused outright, not treated as a match. Left
+    unguarded, ``"".count`` is len+1 so the ambiguity path would advise
+    ``replace_all`` — and ``str.replace("", new)`` would then splice new_string
+    between every character, silently corrupting the whole file."""
+    p = tmp_path / "a.txt"
+    p.write_text("hello")
+    with pytest.raises(ModelRetry) as exc:
+        fs.edit_file(tmp_path, "a.txt", [_edit("", "X")])
+    assert "empty" in str(exc.value).lower()
+    assert p.read_text() == "hello"  # file untouched, not corrupted
+
+
+def test_edit_file_empty_old_string_rejected_even_with_replace_all(tmp_path: Path):
+    """replace_all must not become an escape hatch for the empty-string corruption
+    (``str.replace("", X, ...)`` inserts between every char just the same)."""
+    p = tmp_path / "a.txt"
+    p.write_text("hello")
+    with pytest.raises(ModelRetry):
+        fs.edit_file(tmp_path, "a.txt", [_edit("", "X", replace_all=True)])
+    assert p.read_text() == "hello"
+
+
 def test_glob_lists_matching_files(tmp_path: Path):
     (tmp_path / "a.py").write_text("")
     (tmp_path / "b.txt").write_text("")

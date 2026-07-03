@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 
 from .discovery import has_executable, plugin_bundle_summary
-from .manifest import ManifestError, PluginManifest, load_manifest
+from .manifest import ManifestError, PluginManifest, load_manifest, valid_plugin_name
 from .state import (
     InstalledPlugin,
     global_plugins_dir,
@@ -63,21 +63,43 @@ def _run_git(args: list[str], cwd: Path | None = None) -> str:
     return out.stdout.strip()
 
 
+def _reject_option_like(value: str, kind: str) -> None:
+    """Refuse a git ``source``/``ref`` that begins with ``-``.
+
+    Both flow in from the plugin registry, and a *project* registry
+    (``.marim/plugins/plugins.json``) is committed to the repo — so a hostile
+    repo controls these strings and ``marim plugin update`` on a clone would use
+    them verbatim. Git reads a leading-dash argument as an option, so a recorded
+    url like ``--upload-pack=<cmd>`` makes ``git clone`` execute an arbitrary
+    command. The ``--`` separator added in ``_clone_git`` stops a *positional*
+    from being parsed as an option, but ``ref`` lands in an option slot
+    (``--branch <ref>``) where ``--`` can't protect it, so a leading-dash value
+    must be rejected outright before either token is handed to git."""
+    if value.startswith("-"):
+        raise InstallError(f"refusing {kind} that looks like a git option: {value!r}")
+
+
 def _clone_git(source: str, dest: Path, ref: str | None) -> dict:
     """Clone ``source`` into ``dest`` and return a source record with the resolved SHA."""
+    _reject_option_like(source, "git source")
+    if ref is not None:
+        _reject_option_like(ref, "git ref")
     if ref:
         # Try ``ref`` as a branch/tag first (cheap shallow clone). A commit SHA
         # is not a valid ``--branch`` argument, so on failure fall back to a full
-        # clone + checkout, which resolves any ref including a SHA.
+        # clone + checkout, which resolves any ref including a SHA. ``--`` before
+        # the positional url/dest keeps a crafted url from being read as an option.
         try:
-            _run_git(["clone", "--depth", "1", "--branch", ref, source, str(dest)])
+            _run_git(["clone", "--depth", "1", "--branch", ref, "--", source, str(dest)])
         except InstallError:
             if dest.exists():
                 shutil.rmtree(dest)
-            _run_git(["clone", source, str(dest)])
+            _run_git(["clone", "--", source, str(dest)])
+            # ``ref`` was validated above not to start with ``-``, so it can't be
+            # mistaken for an option here.
             _run_git(["checkout", "--detach", ref], cwd=dest)
     else:
-        _run_git(["clone", "--depth", "1", source, str(dest)])
+        _run_git(["clone", "--depth", "1", "--", source, str(dest)])
     sha = _run_git(["rev-parse", "HEAD"], cwd=dest)
     record: dict = {"type": "git", "url": source, "sha": sha}
     if ref:
@@ -136,6 +158,12 @@ def install_plugin(
 
         manifest = _validated_manifest(staging)
         name = name_override or manifest.name
+        # ``name`` is used below as a path component (``target_root / name``).
+        # ``manifest.name`` was already validated by load_manifest, but a CLI
+        # ``--name`` override bypasses that check, so a value like ``../../x``
+        # would escape the scope dir. Refuse any non-identifier name here.
+        if not valid_plugin_name(name):
+            raise InstallError(f"invalid plugin name: {name!r}")
         summary = plugin_bundle_summary(manifest)
         is_linked = bool(link and not use_git)
         if is_linked:  # noqa: SIM108 — a flattened nested ternary would hurt readability
@@ -197,6 +225,12 @@ def set_trusted(name: str, *, scope: str, workspace_root, trusted: bool) -> bool
 
 
 def remove_plugin(name: str, *, scope: str, workspace_root) -> bool:
+    # ``name`` reaches ``shutil.rmtree(target_root / name)`` below, so a traversal
+    # value like ``../../../home/user/x`` would delete out of tree. load_state
+    # already drops such names from the registry, but validate at this boundary
+    # too so an invalid name is refused before any path is built from it.
+    if not valid_plugin_name(name):
+        return False
     target_root = scope_dir(scope, workspace_root)
     state = load_state(target_root)
     if name not in state:
@@ -226,6 +260,10 @@ def _has_executable_surface(plugin_dir: Path) -> bool:
 def update_plugin(name: str, *, scope: str, workspace_root, now: str) -> InstalledPlugin:
     """Re-fetch a git-sourced plugin to the latest of its ref. Local/linked
     plugins cannot be updated this way."""
+    # ``name`` is used as a path component (``target_root / name``); refuse a
+    # traversal value before it can be joined onto the scope dir.
+    if not valid_plugin_name(name):
+        raise InstallError(f"invalid plugin name: {name!r}")
     target_root = scope_dir(scope, workspace_root)
     state = load_state(target_root)
     rec = state.get(name)

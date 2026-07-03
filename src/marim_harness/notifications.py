@@ -2,10 +2,15 @@
 native OS notifications for agent events (turn complete, error, approval
 needed, ask user, background job finished).
 
-Notifications are opt-in (``MARIM_NOTIFICATIONS=1``) and each event can be
-individually toggled via ``MARIM_NOTIFICATION_EVENTS``. The notifier never
-raises — a missing notification daemon or a failed ``subprocess`` call is
-silently swallowed so it can never break the agent loop.
+Notifications are enabled by default (``MARIM_NOTIFICATIONS`` defaults on; set
+it to a falsy value to opt out) and each event can be individually toggled via
+``MARIM_NOTIFICATION_EVENTS``. The notifier never raises — a missing
+notification daemon or a failed ``subprocess`` call is silently swallowed so it
+can never break the agent loop.
+
+Because notifications default on and their title/body carry model-influenced
+text, the platform backends must never let that text escape its data slot — the
+argv/stdin builders below quote it defensively (see ``_osascript_cmd``).
 
 No third-party dependencies: Linux uses ``notify-send``, macOS uses
 ``osascript``, and Windows uses a PowerShell toast via ``subprocess``.
@@ -54,6 +59,14 @@ def parse_events(raw: str) -> set[str]:
         return set(DEFAULT_EVENTS)
     parts = {p.strip() for p in raw.replace("\n", ",").split(",") if p.strip()}
     return parts & set(ALL_EVENTS) or set(DEFAULT_EVENTS)
+
+
+def _escape_applescript(text: str) -> str:
+    """Escape ``text`` for splicing into an AppleScript double-quoted string
+    literal. Backslashes are doubled BEFORE quotes are escaped so an input
+    already containing ``\\"`` cannot break out of the literal (see
+    ``Notifier._osascript_cmd`` for the injection this prevents)."""
+    return text.replace("\\", "\\\\").replace('"', '\\"')
 
 
 @dataclass
@@ -187,17 +200,25 @@ class Notifier:
     def _notify_send_cmd(title: str, body: str) -> tuple[list[str], bytes | None] | None:
         if shutil.which("notify-send") is None:
             return None
-        return ["notify-send", "--app-name=marim", title, body], None
+        # ``--`` terminates option parsing so a title/body starting with ``-``
+        # (model-influenced text) is treated as a positional arg, never a flag.
+        return ["notify-send", "--app-name=marim", "--", title, body], None
 
     @staticmethod
     def _osascript_cmd(title: str, body: str) -> tuple[list[str], bytes | None] | None:
         if shutil.which("osascript") is None:
             return None
-        # Pass the script on stdin to avoid shell interpretation entirely —
-        # no escaping of title/body needed since they never touch a shell.
+        # Pass the script on stdin to avoid shell interpretation entirely, but the
+        # text is still spliced into an AppleScript *string literal*, so it must be
+        # escaped for that grammar. Order matters: escape backslashes FIRST, then
+        # quotes — otherwise a body containing ``\"`` would become ``\\"`` (a
+        # literal backslash followed by a real, unescaped closing quote), which
+        # terminates the string early and lets the remainder run as AppleScript
+        # (which can ``do shell script``). Escaping backslashes first turns that
+        # into ``\\\"`` — an escaped backslash plus an escaped quote.
         script = (
-            'display notification "' + body.replace('"', '\\"') + '" '
-            'with title "marim" subtitle "' + title.replace('"', '\\"') + '"'
+            'display notification "' + _escape_applescript(body) + '" '
+            'with title "marim" subtitle "' + _escape_applescript(title) + '"'
         )
         return ["osascript", "-"], script.encode()
 

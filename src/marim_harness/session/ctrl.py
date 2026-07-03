@@ -153,6 +153,13 @@ class SessionController:
         # No annotation here: it would redeclare the property and shadow it.
         self.history = []
         self.usage: RunUsage = RunUsage()
+        # The provider-reported input-token count of the most recent request, i.e.
+        # the ACTUAL size of the context last sent — the authoritative signal for
+        # the compaction trigger. ``usage`` (above) is a session-cumulative total
+        # and must NOT be used for this; this field is the single last request's
+        # value, set by the turn runner after each run. None until the first run
+        # reports usage, in which case the gate falls back to the char/4 estimate.
+        self.last_input_tokens: int | None = None
         self.duration_seconds: float = 0.0
         self._segment_start: float = 0.0
         self.on_compact: Callable[[int, int], None] | None = None
@@ -269,13 +276,28 @@ class SessionController:
         if self.titler is not None:
             self.titler = make_titler(model)
 
-    def _load_active_store(self) -> int:
-        """Load history/usage/tasks/duration from ``self.store`` (assumed set) into
-        this controller and (re)start the active-time clock. Shared by ``resume``
-        and ``switch_session`` so the load sequence can't drift between them.
-        Returns the loaded message count."""
-        assert self.store is not None  # callers guard; narrows for the type checker
-        self.history, self.usage, tasks, prev_duration, jobs = self.store.load()
+    def _load_active_store(self, store: SessionStore) -> int:
+        """Load history/usage/tasks/duration from ``store`` into this controller,
+        rebind ``self.store`` to it, and (re)start the active-time clock. Shared by
+        ``resume`` and ``switch_session`` so the load sequence can't drift between
+        them. Returns the loaded message count.
+
+        ``store.load()`` runs FIRST, into locals, and is the only step that can
+        raise (a corrupt/version-skewed file is a designed ``SessionLoadError``
+        path). ``self.store`` and the in-memory history/usage are mutated only
+        AFTER it succeeds — so a failed switch leaves the controller wholly on the
+        previous session. Rebinding ``self.store`` before the load (the old bug)
+        left store=target but history=previous, and the next ``persist()`` wrote
+        the previous session's history over the target's file."""
+        history, usage, tasks, prev_duration, jobs = store.load()  # may raise
+        self.store = store
+        self.history = history
+        self.usage = usage
+        # Per-request context size isn't persisted, and it belongs to the process
+        # that made the request — a resumed/switched session hasn't sent one yet,
+        # so drop any carried-over value and let the estimate gate until the first
+        # run of this session reports usage.
+        self.last_input_tokens = None
         self.deps.tasks.load(tasks)
         self.deps.jobs.import_history(jobs)
         self.duration_seconds = prev_duration or 0.0
@@ -285,7 +307,7 @@ class SessionController:
     def resume(self) -> int:
         if self.store is None:
             return 0
-        return self._load_active_store()
+        return self._load_active_store(self.store)
 
     def ensure_segment_started(self) -> None:
         """Start the active-time segment clock if it isn't already running.
@@ -312,6 +334,7 @@ class SessionController:
         self.cancel_autoname()
         self.history = []
         self.usage = RunUsage()
+        self.last_input_tokens = None
         self.duration_seconds = 0.0
         self._segment_start = 0.0
         self.deps.tasks.clear()
@@ -328,6 +351,7 @@ class SessionController:
             self.store.model = model_id
         self.history = []
         self.usage = RunUsage()
+        self.last_input_tokens = None
         self.duration_seconds = 0.0
         self._segment_start = time.monotonic()
         self.deps.tasks.clear()
@@ -335,9 +359,15 @@ class SessionController:
     def switch_session(self, session_id: str) -> int:
         if self.manager is None:
             return 0
+        # Load the target BEFORE touching any controller state: _load_active_store
+        # rebinds self.store only after store.load() succeeds, so a corrupt target
+        # (SessionLoadError) propagates with the controller still coherently on the
+        # current session — nothing to clobber the target's file later. The old
+        # session's in-flight autoname is dropped only once the switch commits, so
+        # a failed switch doesn't needlessly cancel titling we're staying with.
+        result = self._load_active_store(self.manager.store(session_id))
         self.cancel_autoname()
-        self.store = self.manager.store(session_id)
-        return self._load_active_store()
+        return result
 
     async def maybe_compact(self, *, force: bool = False) -> bool:
         """Compact the history when over budget (or unconditionally when ``force``,
@@ -362,9 +392,14 @@ class SessionController:
             model_id = self.get_model_id() if self.get_model_id else None
             await self.limits.resolve(model_id)
         threshold = self.compact_threshold
+        # Gate on the larger of the char/4 estimate and the provider's real
+        # last-request input-token count (last_input_tokens): the estimate
+        # undershoots dense code/JSON by ~25%, so on its own it lets a session
+        # sail past the true window. When no request has reported usage yet the
+        # helper falls back to the estimate alone (legacy behavior).
         tail_start = _plan_tail_start(
             self.history, threshold, self.keep_last_messages,
-            force=force,
+            force=force, measured_tokens=self.last_input_tokens,
         )
         going = force or tail_start is not None
         # Fire PreCompact *before* the compaction work, while the transcript is

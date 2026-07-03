@@ -89,6 +89,36 @@ def _isolated_config(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(cfg))
 
 
+# Suites whose tests exercise project-local ``.marim/skills`` / ``.marim/agents``.
+# Those roots now load only in a TRUSTED workspace (gated behind
+# MARIM_TRUST_PROJECT_HOOKS, matching the hooks/MCP gate — a cloned untrusted repo's
+# skills/agents are not injected into the agent). These suites predate the gate and
+# assume a user working in their own project, so they run trusted. The gate itself
+# and the untrusted default are covered explicitly in test_skills.py / test_agents.py;
+# test_skills_tool.py carries its own local trust fixture.
+_TRUST_PROJECT_SUITES = frozenset({
+    "test_agent_backend_field.py",
+    "test_agent_hooks.py",
+    "test_agent_instructions.py",
+    "test_commands.py",
+    "test_plugin_skills.py",
+    "test_subagent_cli_spawn.py",
+    "test_subagent_resume.py",
+    "test_subagent_safety.py",
+    "test_subagent_transcript_capture.py",
+})
+
+
+@pytest.fixture(autouse=True)
+def _trust_project_local_suites(request, monkeypatch):
+    """Mark the workspace trusted for the suites in ``_TRUST_PROJECT_SUITES`` so their
+    project-local skills/agents load. Scoped by filename rather than applied suite-wide
+    because other suites (test_hooks_config.py, test_mcp.py, test_mcp_cli.py) assert the
+    UNtrusted default and must keep seeing the env unset."""
+    if Path(str(request.node.fspath)).name in _TRUST_PROJECT_SUITES:
+        monkeypatch.setenv("MARIM_TRUST_PROJECT_HOOKS", "1")
+
+
 def _edit_then_done_model() -> FunctionModel:
     """Read a.txt, then edit it, then reply 'done'. The read step satisfies the
     read-before-edit guard (edit_file refuses to modify a file the agent hasn't

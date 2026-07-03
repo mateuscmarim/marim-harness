@@ -226,7 +226,20 @@ class McpManager:
     async def connect(self) -> dict:
         if self._connected or not self.mcp_servers:
             return self.mcp_status.to_dict()
-        servers = [s for s in self.mcp_servers if self.server_name(s) not in self.disabled]
+        # Skip servers already live from an earlier, interrupted connect(). A
+        # KeyboardInterrupt/cancel mid-connect re-raises below with ``_connected``
+        # still False, yet the servers that already succeeded stay in
+        # ``_live_servers``. Without this guard the retry re-enters those same
+        # servers via _connect_one, which *appends unconditionally*, so
+        # live_toolsets() ends up with duplicates → duplicate tool names handed to
+        # agent.run. Match enable_server's already-live check so a retry only
+        # connects what's still missing.
+        live_names = {self.server_name(s) for s in self._live_servers}
+        servers = [
+            s
+            for s in self.mcp_servers
+            if self.server_name(s) not in self.disabled and self.server_name(s) not in live_names
+        ]
         if servers:
             # Connect concurrently: startup latency is the slowest server, not the
             # sum across all of them. Create the shared AsyncExitStack ONCE up front

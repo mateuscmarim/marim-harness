@@ -1119,8 +1119,14 @@ class BuiltinToolProvider:
             agent.tool(document_symbols)
             agent.tool(workspace_symbols)
             agent.tool(diagnostics)
-        agent.tool(web_search)
-        agent.tool(fetch_url)
+        # Outbound network tools are gated (like write/edit/bash), not ungated
+        # like the local reads above: they are an exfiltration boundary (see
+        # names.NET_TOOLS). Gating routes them through resolve_approvals, so auto
+        # mode still runs them un-prompted (frictionless), ask mode prompts per
+        # call, and — the point — plan mode denies them instead of silently
+        # allowing an un-approved fetch that could carry a secret off the host.
+        agent.tool(requires_approval=True)(web_search)
+        agent.tool(requires_approval=True)(fetch_url)
         agent.tool(remember)
         agent.tool(recall)
         agent.tool(activate_skill)

@@ -97,10 +97,23 @@ class _BoundedOutput:
             n = self._tail_cap
         self._tail.append(chunk)
         self._tail_len += n
-        # Evict the oldest tail chunks while the most recent still cover ``tail_cap``,
-        # so memory stays bounded but we always retain the freshest tail_cap of output.
-        while self._tail and self._tail_len - len(self._tail[0]) >= self._tail_cap:
-            self._tail_len -= len(self._tail.popleft())
+        # Trim the front so the tail holds EXACTLY the most recent ``tail_cap`` bytes
+        # (the freshest verdict): evict whole oldest chunks, then slice the boundary
+        # chunk. Whole-chunk-only eviction (the old approach) could leave up to
+        # ~2*tail_cap when a big read() chunk was the oldest, so the capped output
+        # size depended on OS pipe-chunking timing — a flaky budget overshoot. Slicing
+        # mid-chunk is fine here (the ends decode with errors="replace").
+        excess = self._tail_len - self._tail_cap
+        while excess > 0:
+            oldest = self._tail[0]
+            if len(oldest) <= excess:
+                self._tail.popleft()
+                self._tail_len -= len(oldest)
+                excess -= len(oldest)
+            else:
+                self._tail[0] = oldest[excess:]
+                self._tail_len -= excess
+                excess = 0
 
     @property
     def dropped(self) -> int:
@@ -262,6 +275,21 @@ class BashProcess:
     def output(self) -> str:
         """The combined output captured so far, truncated (head+tail) to the cap."""
         head, tail = self._buffer.parts("")
+        dropped = self._buffer.dropped
+        if dropped > 0:
+            # The buffer already elided the middle (a >budget flood). Gluing head
+            # straight onto tail here would present two discontinuous regions as
+            # one continuous stream, and _truncate_middle can't rescue it — head+tail
+            # may already be within the cap, so no marker gets spliced. Mirror wait():
+            # splice the same elided-middle marker in, bounding each end to half the
+            # preview cap so the marker survives (a plain slice, not _truncate_middle,
+            # avoids nesting a second marker inside an end).
+            head_cap = self._max_output // 2
+            return (
+                head[:head_cap]
+                + _TRUNC_MARKER.format(dropped=dropped)
+                + (tail[-(self._max_output - head_cap):] if head_cap < self._max_output else "")
+            )
         return _truncate_middle(head + tail, self._max_output)
 
     def kill(self) -> None:

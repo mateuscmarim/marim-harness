@@ -169,3 +169,42 @@ async def test_cli_backend_persists_child_transcripts(tmp_path: Path, monkeypatc
     out = await runner.run("cli-worker", "do the thing", stream_id="s1")
     assert "Done" in out
     assert "s1" in saved and "tsub" in saved  # parent sidecar AND the child's
+
+
+@pytest.mark.anyio
+async def test_cli_runner_times_out_on_hung_cli(tmp_path: Path, monkeypatch):
+    # A `claude -p` that never EOFs (network hang, an interactive prompt on the
+    # inherited stdin) must not pin its concurrency slot forever: the wall-clock
+    # timeout SIGKILLs the group and fails the spawn promptly. A fake CLI that just
+    # sleeps (emitting no result) can only be ended by the timeout.
+    import time as _time
+
+    from marim_harness.subagents.cli_backend import ClaudeCliRunner, CliRunError
+
+    script = tmp_path / "hang.py"
+    script.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(30)\n", encoding="utf-8")
+    script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IRWXU)
+    monkeypatch.setenv("MARIM_CLAUDE_CLI_TIMEOUT", "0.3")
+
+    runner = ClaudeCliRunner(None, None)
+    start = _time.monotonic()
+    with pytest.raises(CliRunError) as exc:
+        await runner.run(
+            binary=str(script), prompt="p", system_prompt="s", cwd=str(tmp_path),
+            allow_gated=False, allowed_tools=[], model=None, stream_id="s1",
+        )
+    elapsed = _time.monotonic() - start
+    assert "timed out" in str(exc.value)
+    assert elapsed < 5  # killed at the ~0.3s deadline, not after the 30s sleep
+
+
+def test_cli_timeout_env_falls_back_on_garbage(monkeypatch):
+    # A non-positive / unparseable override must not disable the guard.
+    from marim_harness.subagents.cli_backend import _DEFAULT_CLI_TIMEOUT, _cli_timeout
+
+    monkeypatch.setenv("MARIM_CLAUDE_CLI_TIMEOUT", "not-a-number")
+    assert _cli_timeout() == _DEFAULT_CLI_TIMEOUT
+    monkeypatch.setenv("MARIM_CLAUDE_CLI_TIMEOUT", "0")
+    assert _cli_timeout() == _DEFAULT_CLI_TIMEOUT
+    monkeypatch.setenv("MARIM_CLAUDE_CLI_TIMEOUT", "42")
+    assert _cli_timeout() == 42.0

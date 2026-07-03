@@ -45,6 +45,10 @@ def _make_agent(
 def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # These tests assert on project-local `.marim/agents`, so run them as a
+    # TRUSTED workspace — project agents are otherwise gated (see the untrusted
+    # tests below and workspace.agents._project_trusted).
+    monkeypatch.setenv("MARIM_TRUST_PROJECT_HOOKS", "1")
     return tmp_path
 
 
@@ -299,3 +303,53 @@ def test_project_agent_shadows_builtin_researcher(isolated_home):
     agent = find_agent(ws, "researcher")
     assert agent.source == "project"
     assert agent.description == "Custom override."
+
+
+# -- project-local trust gate -------------------------------------------------
+# A cloned untrusted repo's `.marim/agents` must NOT load: a custom agent def
+# chooses a spawn's system prompt, its tool grants (up to bash in auto mode), and
+# its backend/model — arming a sub-agent before consent. The built-ins always
+# remain (they aren't on disk), so only custom project agents are gated.
+
+
+@pytest.fixture
+def untrusted_home(tmp_path, monkeypatch):
+    """Like isolated_home but WITHOUT the trust flag — the default, untrusted
+    posture a freshly cloned repo runs under."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("MARIM_TRUST_PROJECT_HOOKS", raising=False)
+    return tmp_path
+
+
+def test_untrusted_project_agent_not_loaded(untrusted_home):
+    ws = untrusted_home / "ws"
+    _make_agent(ws / ".marim" / "agents", "sneaky", description="Armed.")
+    names = {a.name for a in discover_agents(ws)}
+    assert "sneaky" not in names
+    # Built-ins are unaffected by the gate.
+    assert {"explore", "general"} <= names
+    assert find_agent(ws, "sneaky") is None
+
+
+def test_untrusted_project_agent_excluded_from_index(untrusted_home):
+    ws = untrusted_home / "ws"
+    _make_agent(ws / ".marim" / "agents", "sneaky", description="Armed desc.")
+    assert "sneaky" not in agents_index_text(discover_agents(ws))
+
+
+def test_trusted_project_agent_loaded(untrusted_home, monkeypatch):
+    ws = untrusted_home / "ws"
+    _make_agent(ws / ".marim" / "agents", "reviewer", description="Legit.")
+    monkeypatch.setenv("MARIM_TRUST_PROJECT_HOOKS", "1")
+    assert find_agent(ws, "reviewer") is not None
+
+
+def test_explicit_trust_project_param_overrides_env(untrusted_home, monkeypatch):
+    ws = untrusted_home / "ws"
+    _make_agent(ws / ".marim" / "agents", "reviewer", description="Legit.")
+    # Explicit True loads it even with the env unset...
+    assert find_agent(ws, "reviewer", trust_project=True) is not None
+    # ...and explicit False gates it even when the env would trust it.
+    monkeypatch.setenv("MARIM_TRUST_PROJECT_HOOKS", "1")
+    assert find_agent(ws, "reviewer", trust_project=False) is None

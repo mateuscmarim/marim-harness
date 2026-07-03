@@ -197,6 +197,88 @@ def test_restore_returns_false_when_a_stale_file_cannot_be_removed(
     assert snap.restore(commit) is False
 
 
+def test_restore_succeeds_with_nested_worktree(tmp_path: Path):
+    """Regression: a nested git repo in the workspace — including marim's own
+    ``.worktrees/<branch>`` spawn worktrees, which nothing gitignores — is staged
+    as a gitlink (``.worktrees/feat``) but reported by ``ls-files --others`` with a
+    trailing slash (``.worktrees/feat/``). The mismatch made the set difference mark
+    it for deletion; unlink() of a directory raised, and restore() returned False on
+    EVERY rewind forever. Now the nested worktree is left alone and restore
+    succeeds."""
+    repo = _init_repo(tmp_path)
+    # A prior sub-agent spawn left a nested worktree; it exists at capture time.
+    _git(repo, "worktree", "add", "-q", str(repo / ".worktrees" / "feat"), "-b", "feat")
+    snap = GitSnapshotter(repo)
+    commit = snap.capture("refs/marim/checkpoints/s/0", "cp 0")
+    assert commit
+    (repo / "a.txt").write_text("MODIFIED\n")
+    assert snap.restore(commit) is True          # not False-forever
+    assert (repo / "a.txt").read_text() == "one\n"  # the file restore still worked
+    assert (repo / ".worktrees" / "feat").is_dir()  # nested worktree untouched
+
+
+def test_restore_succeeds_with_nested_repo_created_after_checkpoint(tmp_path: Path):
+    """The nested repo can also post-date the checkpoint (absent from the tree).
+    It must still never be treated as a deletable file — restore leaves it and
+    reports success."""
+    repo = _init_repo(tmp_path)
+    snap = GitSnapshotter(repo)
+    commit = snap.capture("refs/marim/checkpoints/s/0", "cp 0")
+    assert commit
+    _git(repo, "worktree", "add", "-q", str(repo / ".worktrees" / "feat"), "-b", "feat")
+    assert snap.restore(commit) is True
+    assert (repo / ".worktrees" / "feat").is_dir()
+
+
+def test_capture_works_without_git_identity(tmp_path: Path, monkeypatch):
+    """Regression: commit-tree ran with no committer identity, so on a machine/CI
+    without user.name/user.email it raised → capture returned None → checkpoints
+    and file-rewind were silently dead. An inline identity makes it work
+    regardless of git config."""
+    empty = tmp_path / "empty.cfg"
+    empty.write_text("")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(empty))
+    for var in (
+        "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+        "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    repo = tmp_path / "ws"
+    repo.mkdir()
+    # NOTE: no `git config user.*` — the whole point is an identity-less repo.
+    _git(repo, "init", "-q")
+    (repo / "a.txt").write_text("one\n")
+
+    commit = GitSnapshotter(repo).capture("refs/marim/checkpoints/s/0", "cp")
+    assert commit is not None  # commit-tree no longer needs configured identity
+
+
+def test_restore_does_not_delete_a_file_ignored_at_capture(tmp_path: Path):
+    """Regression / data-safety: a file git-ignored at CAPTURE time (never in the
+    snapshot) that becomes un-ignored at RESTORE time — because the agent deleted
+    .gitignore — used to be listed by ``ls-files --others`` and silently deleted on
+    rewind (.env, local DBs). Restoring the captured tree (which reinstates the
+    capture-time .gitignore) before computing extras keeps such files safe."""
+    repo = _init_repo(tmp_path)
+    (repo / ".gitignore").write_text(".env\n")
+    (repo / ".env").write_text("SECRET\n")  # ignored — never captured
+    _git(repo, "add", ".gitignore")
+    _git(repo, "commit", "-qm", "ignore env")
+
+    snap = GitSnapshotter(repo)
+    commit = snap.capture("refs/marim/checkpoints/s/0", "cp")
+    assert commit
+    # After the checkpoint the agent deletes .gitignore and edits a tracked file.
+    (repo / ".gitignore").unlink()
+    (repo / "a.txt").write_text("MODIFIED\n")
+
+    assert snap.restore(commit) is True
+    assert (repo / ".env").read_text() == "SECRET\n"       # NOT deleted
+    assert (repo / "a.txt").read_text() == "one\n"          # tracked file reverted
+    assert (repo / ".gitignore").read_text() == ".env\n"    # gitignore restored
+
+
 def test_capture_restore_act_on_linked_worktree(tmp_path: Path):
     """Regression: GitSnapshotter(wt) must capture/restore the LINKED worktree,
     not the main worktree toplevel returned by repo_root()."""

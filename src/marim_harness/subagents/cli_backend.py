@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -48,6 +49,44 @@ logger = logging.getLogger(__name__)
 
 CLI_BINARY_ENV = "MARIM_CLAUDE_CLI_BIN"
 CLI_MODEL_ENV = "MARIM_CLAUDE_CLI_MODEL"
+CLI_TIMEOUT_ENV = "MARIM_CLAUDE_CLI_TIMEOUT"
+
+# Wall-clock ceiling for one CLI spawn. `claude -p` inherits stdin, so a network
+# hang, an unexpected interactive prompt, or a wedged tool would otherwise never
+# EOF: run() would never return, and the spawn would hold its concurrency slot
+# forever, starving every later spawn. This bounds the whole run. It is generous
+# (a real sub-agent task legitimately takes minutes) and overridable via
+# MARIM_CLAUDE_CLI_TIMEOUT (seconds); a non-positive / unparseable override falls
+# back to the default rather than disabling the guard.
+_DEFAULT_CLI_TIMEOUT = 600.0
+
+
+def _cli_timeout() -> float:
+    """The per-spawn wall-clock timeout in seconds (``MARIM_CLAUDE_CLI_TIMEOUT``,
+    else ``_DEFAULT_CLI_TIMEOUT``). Garbage / non-positive values fall back to the
+    default so a bad env can never remove the ceiling."""
+    raw = os.environ.get(CLI_TIMEOUT_ENV)
+    if raw is None:
+        return _DEFAULT_CLI_TIMEOUT
+    try:
+        value = float(raw.strip())
+    except ValueError:
+        logger.warning("Ignoring invalid %s=%r; using default.", CLI_TIMEOUT_ENV, raw)
+        return _DEFAULT_CLI_TIMEOUT
+    return value if value > 0 else _DEFAULT_CLI_TIMEOUT
+
+
+def _kill_process_group(proc) -> None:
+    """SIGKILL the spawn's whole process group so any children (Claude's own tool
+    subprocesses) die with it, falling back to killing just the child when the
+    group signal can't be delivered. Mirrors ``tools/shell.py``'s timeout kill."""
+    if proc.returncode is not None:
+        return
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
 
 # Harness tool name → Claude Code tool name. Names with no Claude Code equivalent
 # (tree, the LSP navigation tools) are absent on purpose: the CLI has its own
@@ -445,10 +484,14 @@ class ClaudeCliRunner:
             # resumed turns — see build_cli_argv's docstring).
             append_system=resume_session_id is None,
         )
+        # start_new_session so the child leads its own process group: a timeout can
+        # then SIGKILL the whole group (Claude + any tool subprocesses it spawned),
+        # not just the top process — see _kill_process_group.
         proc = await asyncio.create_subprocess_exec(
             *argv, cwd=cwd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
         )
         # Drain stderr concurrently: if the child floods stderr past the OS pipe
         # buffer before finishing stdout, a sequential "read stdout then stderr"
@@ -465,7 +508,29 @@ class ClaudeCliRunner:
             session_id: str | None = None
             last_ckpt_len = 0
             assert proc.stdout is not None
-            async for raw in _iter_ndjson_lines(proc.stdout):
+            # Bound the whole read loop by a single wall-clock deadline rather than a
+            # per-read idle gap: a chatty spawn keeps resetting a per-read window and
+            # could run unbounded, so we shrink each read to the time remaining. On
+            # expiry we SIGKILL the group and fail the spawn — a hung `claude -p`
+            # (network hang, an interactive prompt on the inherited stdin) must not
+            # pin its concurrency slot forever.
+            line_iter = _iter_ndjson_lines(proc.stdout)
+            loop = asyncio.get_event_loop()
+            timeout = _cli_timeout()
+            deadline = loop.time() + timeout
+            timeout_msg = f"claude timed out after {timeout:.0f}s with no result (killed)"
+            while True:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    _kill_process_group(proc)
+                    raise CliRunError(timeout_msg)
+                try:
+                    raw = await asyncio.wait_for(line_iter.__anext__(), timeout=remaining)
+                except StopAsyncIteration:
+                    break
+                except (TimeoutError, asyncio.TimeoutError):
+                    _kill_process_group(proc)
+                    raise CliRunError(timeout_msg) from None
                 # Checkpoint the transcript accumulated so far whenever it has
                 # grown. Placed at the top of the iteration (not the bottom) so a
                 # single call site covers every path the loop body takes — the
@@ -549,8 +614,7 @@ class ClaudeCliRunner:
                 with contextlib.suppress(BaseException):
                     await stderr_task
             if proc.returncode is None:
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
+                _kill_process_group(proc)
                 with contextlib.suppress(BaseException):
                     await proc.wait()
 

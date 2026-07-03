@@ -16,6 +16,7 @@ from marim_harness.notifications import (
     EVENT_TURN_COMPLETE,
     NotificationConfig,
     Notifier,
+    _escape_applescript,
     parse_events,
 )
 from marim_harness.runtime.permissions import Mode
@@ -186,6 +187,61 @@ def test_notify_send_macos_calls_osascript():
         script = (mock_run.call_args.kwargs.get("input") or mock_run.call_args[1]["input"]).decode()
         assert "display notification" in script
         assert 'with title "marim"' in script
+
+
+def test_notify_send_linux_uses_dashdash_separator():
+    """A title/body starting with ``-`` (model-influenced text) must not be parsed
+    as a notify-send option: the ``--`` separator ends option parsing."""
+    n = Notifier(NotificationConfig(enabled=True, events={"turn_complete"}))
+    n._platform = "linux"
+    with patch("marim_harness.notifications.shutil.which", return_value="/usr/bin/notify-send"), \
+         patch("marim_harness.notifications.subprocess.run") as mock_run:
+        n.send("--attacker-flag", "body", EVENT_TURN_COMPLETE)
+        argv = mock_run.call_args[0][0]
+        # The title/body sit AFTER a `--` terminator, positionally.
+        assert "--" in argv
+        sep = argv.index("--")
+        assert argv[sep + 1] == "--attacker-flag"
+        assert argv[sep + 2] == "body"
+
+
+def _has_bare_quote(escaped: str) -> bool:
+    """Whether ``escaped`` contains a double-quote that is NOT backslash-escaped —
+    i.e. one that would terminate an AppleScript string literal early. Consumes
+    every backslash-escaped pair (``\\\\`` and ``\\"``) first; a leftover ``"``
+    is a break-out."""
+    import re
+
+    return '"' in re.sub(r"\\.", "", escaped)
+
+
+def test_escape_applescript_escapes_backslash_before_quote():
+    # A raw backslash+quote must become escaped-backslash + escaped-quote, NOT a
+    # doubled backslash followed by a bare (string-terminating) quote.
+    assert _escape_applescript('\\"') == '\\\\\\"'
+    assert not _has_bare_quote(_escape_applescript('\\"'))
+
+
+def test_osascript_body_cannot_break_out_of_string():
+    """A malicious body carrying ``\\"`` (which the old escape mishandled) must not
+    escape the AppleScript string literal and run as code."""
+    n = Notifier(NotificationConfig(enabled=True, events={"turn_complete"}))
+    n._platform = "darwin"
+    # The classic break-out: close the string, then inject `do shell script`.
+    body = 'pwned\\" & (do shell script "touch /tmp/pwned") & "'
+    with patch("marim_harness.notifications.shutil.which", return_value="/usr/bin/osascript"), \
+         patch("marim_harness.notifications.subprocess.run") as mock_run:
+        n.send("marim", body, EVENT_TURN_COMPLETE)
+        script = (mock_run.call_args.kwargs.get("input")
+                  or mock_run.call_args[1]["input"]).decode()
+    # The whole body stays a single, properly-terminated string literal: after the
+    # `display notification "` opener, its escaped payload has no bare quote.
+    opener = 'display notification "'
+    tail = script[len(opener):]
+    body_segment = tail[: tail.index('" with title "marim"')]
+    assert not _has_bare_quote(body_segment)
+    # And the escaped payload preserves the (now-inert) injection text as data.
+    assert "do shell script" in body_segment
 
 
 # ---------------------------------------------------------------------------

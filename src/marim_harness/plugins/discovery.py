@@ -123,6 +123,10 @@ def discover_plugins(workspace_root) -> list[ResolvedPlugin]:
         for name, record in load_state(plugins_dir).items():
             if name in seen:
                 continue
+            # ``name`` is joined onto ``plugins_dir`` and its manifest is read, so
+            # a traversal name would read manifests out of tree. load_state
+            # guarantees every returned name is a valid kebab-case identifier, so
+            # this join stays inside the scope dir.
             root = plugins_dir / name
             manifest = try_load_manifest(root)
             if manifest is None:

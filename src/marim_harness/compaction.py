@@ -83,17 +83,39 @@ def _is_user_turn(message) -> bool:
     )
 
 
+def _measured_or_estimated(history: list, measured_tokens: int | None) -> int:
+    """The context size to gate compaction on: the larger of the char/4 estimate
+    and the provider-reported ``measured_tokens`` (the ACTUAL input-token count of
+    the last request), when one is supplied.
+
+    The estimate divides raw chars by a flat 4, but dense code/JSON tokenizes at
+    ~3 chars/token, so it undershoots the real window by ~25% and lets a session
+    sail past the true limit before compaction fires. When the caller has the
+    provider's real last-request count on hand it is authoritative, so prefer it —
+    but take ``max`` rather than replacing outright, because ``history`` may have
+    grown (the newest assistant reply) since that request was measured, and the
+    estimate captures that tail the measurement predates. With no measurement
+    (fresh session, provider that omits usage) we fall back to the estimate alone —
+    exactly the legacy behavior."""
+    estimated = estimate_tokens(history)
+    if measured_tokens is None:
+        return estimated
+    return max(estimated, measured_tokens)
+
+
 def _plan_tail_start(
-    history: list, max_tokens: int, keep_last_messages: int, *, force: bool = False
+    history: list, max_tokens: int, keep_last_messages: int, *, force: bool = False,
+    measured_tokens: int | None = None,
 ) -> int | None:
     """Index where the kept tail should begin, or None if no compaction is needed.
 
     The tail always starts at a user-turn boundary so tool returns stay paired.
-    ``force`` skips the token-estimate gate (used after a provider context-overflow
+    ``force`` skips the token-size gate (used after a provider context-overflow
     error, where the estimate is known to have undershot the real window) and
     compacts down to the tail regardless — but still returns None when there is
-    nothing meaningful to drop."""
-    if not force and estimate_tokens(history) <= max_tokens:
+    nothing meaningful to drop. ``measured_tokens`` is the provider's real
+    last-request input-token count when available; see ``_measured_or_estimated``."""
+    if not force and _measured_or_estimated(history, measured_tokens) <= max_tokens:
         return None
 
     user_turns = [i for i, m in enumerate(history) if _is_user_turn(m) and i > 0]
@@ -142,7 +164,20 @@ def compact_history(
     )
     if start is None:
         return history, False
-    return history[:1] + history[start:], True
+    compacted = history[:1] + history[start:]
+    # Post-compaction sanity check: the tail planner can only cut on user-turn
+    # boundaries, so when the overflow lives inside a single enormous turn the
+    # "compacted" head+tail can still exceed the budget. This helper can't fix that
+    # (it has no summarizer or masking lever), but the caller can (SessionController
+    # masks stale observations on the forced-overflow path). Surface it so a still-
+    # over-budget result isn't mistaken for a clean shrink.
+    if estimate_tokens(compacted) > max_tokens:
+        logger.debug(
+            "compaction left history at ~%d tokens, still over the %d budget "
+            "(likely one oversized turn the tail planner can't split)",
+            estimate_tokens(compacted), max_tokens,
+        )
+    return compacted, True
 
 
 # Replaces a stale tool observation's body. Kept short and explicit so the model

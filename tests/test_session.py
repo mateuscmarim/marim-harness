@@ -442,6 +442,82 @@ def test_create_no_model_when_no_sessions(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# switch_session failure atomicity
+# ---------------------------------------------------------------------------
+
+
+def test_switch_to_corrupt_session_does_not_clobber_target(tmp_path):
+    """Regression: switch_session rebound self.store to the target BEFORE load().
+    If the target is corrupt (a designed SessionLoadError path), the controller was
+    left with store=target but history=source, and the next persist() wrote the
+    SOURCE's history over the TARGET's file. Now a failed switch leaves the
+    controller wholly on the source session and never mutates the target's file."""
+    from marim_harness.session.store import SessionLoadError
+
+    mgr = _manager(tmp_path)
+
+    # Source session A: real history, currently active.
+    source = mgr.create("source")
+    source_history = _history()
+    source.save(source_history, RunUsage(input_tokens=11, output_tokens=7))
+
+    # Target session B: exists on disk but is corrupt/unreadable.
+    target = mgr.create("target")
+    target.save(_history(), RunUsage(input_tokens=99, output_tokens=99))
+    target.path.write_text("{ not valid json")
+    corrupt_bytes = target.path.read_text()
+
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+    ctrl = SessionController(source, mgr, deps, max_context_tokens=100_000, keep_last_messages=20)
+    ctrl.resume()  # load source into the controller
+    assert len(ctrl.history) == len(source_history)
+
+    with pytest.raises(SessionLoadError):
+        ctrl.switch_session(target.session_id)
+
+    # The controller stayed coherently on the SOURCE session.
+    assert ctrl.store is source
+    assert ctrl.store.session_id == source.session_id
+    assert len(ctrl.history) == len(source_history)
+
+    # A later persist writes the source's file, NOT the target's.
+    ctrl.persist(force=True)
+    assert target.path.read_text() == corrupt_bytes  # target file untouched
+    reloaded_source, _, _, _, _ = mgr.store(source.session_id).load()
+    assert len(reloaded_source) == len(source_history)
+
+
+@pytest.mark.anyio
+async def test_maybe_compact_gates_on_measured_last_request_tokens(tmp_path):
+    """maybe_compact prefers the real last-request input-token count
+    (last_input_tokens) over the char/4 estimate. A history the estimate says fits
+    but the provider says overflowed must still compact; with no measurement the
+    estimate governs (legacy behavior)."""
+    from marim_harness.compaction import estimate_tokens
+
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+
+    def _fresh_ctrl():
+        c = SessionController(
+            None, None, deps, max_context_tokens=1000, keep_last_messages=1
+        )
+        c.history = [
+            ModelRequest(parts=[UserPromptPart(content="a" * 400)]),
+            ModelRequest(parts=[UserPromptPart(content="b" * 400)]),
+            ModelRequest(parts=[UserPromptPart(content="c" * 400)]),
+        ]
+        return c
+
+    baseline = _fresh_ctrl()
+    assert estimate_tokens(baseline.history) <= 1000  # estimate says it fits
+    assert await baseline.maybe_compact() is False     # so with no measurement: no-op
+
+    measured = _fresh_ctrl()
+    measured.last_input_tokens = 5000  # provider reported the real context is huge
+    assert await measured.maybe_compact() is True      # gated on the real count
+
+
+# ---------------------------------------------------------------------------
 # PreCompact hook tests
 # ---------------------------------------------------------------------------
 

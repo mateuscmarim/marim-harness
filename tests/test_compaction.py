@@ -141,6 +141,38 @@ def test_will_compact_matches_compact_history_decision(n_rounds, max_tokens, kee
     assert will_compact(history, max_tokens=max_tokens, keep_last_messages=keep_last) is did
 
 
+def test_measured_tokens_trigger_compaction_the_estimate_would_miss():
+    """The gate prefers the provider's real last-request input-token count over the
+    char/4 estimate, which undershoots dense code/JSON by ~25%. A history whose
+    estimate is under budget must still compact when the measured count overflows."""
+    from marim_harness.compaction import _plan_tail_start
+
+    history = _history(6, content_size=20)  # small enough that the estimate fits
+    budget = estimate_tokens(history) + 500  # estimate alone: comfortably under
+    # No measurement -> estimate governs -> nothing to compact.
+    assert _plan_tail_start(history, budget, keep_last_messages=4) is None
+    # A real measured count above the budget -> compaction is planned.
+    assert (
+        _plan_tail_start(
+            history, budget, keep_last_messages=4, measured_tokens=budget + 1
+        )
+        is not None
+    )
+
+
+def test_measured_tokens_below_estimate_does_not_lower_the_gate():
+    """max(estimate, measured): a measured count SMALLER than the estimate (e.g. the
+    history grew since the request) must never mask an over-budget estimate."""
+    from marim_harness.compaction import _plan_tail_start
+
+    history = _history(20)
+    # estimate is well over a tiny budget; a small measured count must not rescue it.
+    assert (
+        _plan_tail_start(history, 1, keep_last_messages=8, measured_tokens=0)
+        is not None
+    )
+
+
 def test_head_is_preserved():
     history = _history(20)
     result, did = compact_history(history, max_tokens=1, keep_last_messages=8)

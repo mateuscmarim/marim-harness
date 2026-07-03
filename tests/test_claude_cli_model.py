@@ -33,7 +33,10 @@ def _fake_cli_binary(monkeypatch):
 
 def test_permission_mode_mapping():
     assert permission_mode_for("auto") == "acceptEdits"
-    assert permission_mode_for("ask") == "acceptEdits"
+    # 'ask' (per-tool gating) has no headless equivalent, so it must degrade to the
+    # safe read-only 'plan' rather than silently escalating to unattended edits
+    # while marim's UI still says "ask".
+    assert permission_mode_for("ask") == "plan"
     assert permission_mode_for("plan") == "plan"
     # Unknown falls back to the safe read-only plan mode.
     assert permission_mode_for("weird") == "plan"
@@ -687,3 +690,57 @@ async def test_request_stream_yields_text_events():
     assert any(isinstance(e, (PartStartEvent, PartDeltaEvent)) for e in events)
     assert final.parts[0].content == "streamed"
     assert model.session_id == "S1"
+
+
+@pytest.mark.anyio
+async def test_request_error_includes_stderr_from_sentinel():
+    # consume_cli_stream folds the __cli_error__ sentinel (a tail of the failing
+    # CLI's stderr) onto the terminal DoneChunk, and the raised CliModelError
+    # surfaces it instead of a bare "no result".
+    from pydantic_ai.models import ModelRequestParameters
+
+    model = ClaudeCliModel("sonnet")
+    model.spawn = _fake_objs(
+        [{"type": "__cli_error__", "stderr": "boom: not logged in", "returncode": 1}]
+    )
+    with pytest.raises(CliModelError) as exc:
+        await model.request(_user("hi"), None, ModelRequestParameters())
+    assert "boom: not logged in" in str(exc.value)
+
+
+@pytest.mark.anyio
+async def test_request_stream_error_includes_stderr_from_sentinel():
+    # The streamed path raises the same enriched error as request().
+    from pydantic_ai.models import ModelRequestParameters
+
+    model = ClaudeCliModel("sonnet")
+    model.spawn = _fake_objs(
+        [{"type": "__cli_error__", "stderr": "segfault tail", "returncode": 139}]
+    )
+    with pytest.raises(CliModelError) as exc:
+        async with model.request_stream(_user("hi"), None, ModelRequestParameters()) as stream:
+            async for _ in stream:
+                pass
+    assert "segfault tail" in str(exc.value)
+
+
+@pytest.mark.anyio
+async def test_request_surfaces_real_cli_stderr_on_nonzero_exit(monkeypatch, tmp_path):
+    # End-to-end over the REAL spawn_cli_objects: a CLI that writes only to stderr
+    # and exits nonzero must have that stderr reach the CliModelError (the whole
+    # point of fix #4 — a not-logged-in / crashing CLI is otherwise undebuggable).
+    from pydantic_ai.models import ModelRequestParameters
+
+    script = tmp_path / "claude"
+    script.write_text(
+        "#!/bin/sh\necho 'Invalid API key - please run /login' >&2\nexit 1\n"
+    )
+    script.chmod(0o755)
+    monkeypatch.setattr(
+        "marim_harness.subagents.cli_backend.resolve_cli_binary", lambda: str(script)
+    )
+    model = ClaudeCliModel("sonnet")
+    model.cwd = str(tmp_path)
+    with pytest.raises(CliModelError) as exc:
+        await model.request(_user("hi"), None, ModelRequestParameters())
+    assert "Invalid API key" in str(exc.value)

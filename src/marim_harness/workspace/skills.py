@@ -15,6 +15,7 @@ never fatal.
 """
 
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -29,6 +30,28 @@ from .identifiers import valid_name
 logger = logging.getLogger(__name__)
 
 _SKILL_FILE = "SKILL.md"
+
+# Truthy spellings for MARIM_TRUST_PROJECT_HOOKS, mirroring config.model._TRUTHY.
+_TRUTHY = {"1", "true", "on", "yes"}
+
+
+def _project_trusted(trust_project: bool | None) -> bool:
+    """Whether project-local ``.marim/skills`` may load. Project-local skill
+    descriptions are injected into the system prompt every turn and their bodies
+    on activation, so a *cloned untrusted repo* could prompt-inject the main
+    agent before any consent — the same threat the hooks/MCP subsystems gate.
+
+    An explicit caller decision (threaded from ``cfg.trust_project_hooks``) wins.
+    Absent one, we fall back to the *same signal* those subsystems use — the
+    ``MARIM_TRUST_PROJECT_HOOKS`` env var — read here rather than threaded so the
+    gate holds for the several un-wired call sites (instructions/provider/tui)
+    without a functional regression for trusted repos. This is safe by default:
+    a project's own ``.env`` is forbidden from setting that key (see
+    config/env._PROJECT_ENV_BLOCKLIST), so a cloned repo cannot self-trust —
+    the value comes only from the real shell env or the user's global config."""
+    if trust_project is not None:
+        return trust_project
+    return os.getenv("MARIM_TRUST_PROJECT_HOOKS", "").strip().lower() in _TRUTHY
 
 
 @dataclass(frozen=True)
@@ -105,13 +128,22 @@ def _parse_skill(source: str, directory: Path, plugin: str | None = None) -> Ski
     )
 
 
-def _all_skill_roots(workspace_root) -> list[tuple[str, Path, str | None]]:
+def _all_skill_roots(
+    workspace_root, *, trust_project: bool
+) -> list[tuple[str, Path, str | None]]:
     """Discovery roots in precedence order as ``(source, root, plugin)``: user
-    roots (project, then global) first, then plugin roots as ``plugin:name``."""
+    roots (project, then global) first, then plugin roots as ``plugin:name``.
+
+    The project root is dropped unless ``trust_project`` — global and plugin
+    skills always load; only the untrusted ``.marim/skills`` is gated. Because
+    the cache signature is computed over this list, dropping a root also changes
+    the fingerprint, so trusted and untrusted callers can't poison one cache."""
     from ..plugins import plugin_skill_roots
 
     roots: list[tuple[str, Path, str | None]] = [
-        (source, root, None) for source, root in skill_roots(workspace_root)
+        (source, root, None)
+        for source, root in skill_roots(workspace_root)
+        if source != "project" or trust_project
     ]
     roots += [
         (f"plugin:{name}", root, name) for name, root in plugin_skill_roots(workspace_root)
@@ -148,16 +180,19 @@ def _discovery_signature(roots: list[tuple[str, Path, str | None]]) -> tuple:
     return tuple(sig)
 
 
-def discover_skills(workspace_root) -> list[Skill]:
+def discover_skills(workspace_root, *, trust_project: bool | None = None) -> list[Skill]:
     """All effective skills for a workspace, deduped by qualified name with the
     first root in precedence order winning, sorted for stable display. User
     roots (bare names) come first, then plugin roots (``plugin:name``), so a
     user's own skill always beats a plugin's same-named one.
 
+    ``trust_project`` gates the project-local ``.marim/skills`` root (see
+    ``_project_trusted``); ``None`` defaults to the safe, env-derived signal.
+
     Cached per workspace root and reused while the SKILL.md files on disk are
     unchanged (by name/mtime/size), so repeated calls within a turn — and across
     turns that didn't touch a skill — don't re-walk and re-parse them."""
-    roots = _all_skill_roots(workspace_root)
+    roots = _all_skill_roots(workspace_root, trust_project=_project_trusted(trust_project))
     return cached_discover(
         workspace_root, roots,
         _discovery_signature,
@@ -181,9 +216,13 @@ def _collect_skills(seen: dict, source: str, root: Path, plugin: str | None) -> 
         seen[skill.qualified_name] = skill
 
 
-def find_skill(workspace_root, name: str) -> Skill | None:
-    """The effective skill whose qualified name is ``name``, or None."""
-    for skill in discover_skills(workspace_root):
+def find_skill(
+    workspace_root, name: str, *, trust_project: bool | None = None
+) -> Skill | None:
+    """The effective skill whose qualified name is ``name``, or None. Honors the
+    same project-trust gate as ``discover_skills`` so an untrusted project's
+    skill can't be activated by name either."""
+    for skill in discover_skills(workspace_root, trust_project=trust_project):
         if skill.qualified_name == name:
             return skill
     return None

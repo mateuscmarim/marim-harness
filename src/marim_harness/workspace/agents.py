@@ -16,6 +16,7 @@ YAML, missing description, name/file mismatch, illegal name) is skipped.
 """
 
 import dataclasses
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,6 +27,30 @@ from ..tools.names import GATED_TOOLS, NET_TOOLS, READ_TOOLS, SUBAGENT_TOOLS
 from ._discovery import cached_discover
 from ._frontmatter import FRONTMATTER_RE
 from .identifiers import valid_name
+
+# Truthy spellings for MARIM_TRUST_PROJECT_HOOKS, mirroring config.model._TRUTHY.
+_TRUTHY = {"1", "true", "on", "yes"}
+
+
+def _project_trusted(trust_project: bool | None) -> bool:
+    """Whether project-local ``.marim/agents`` may load. A custom agent def
+    chooses a sub-agent's system prompt, its tool grants (up to ``bash`` in auto
+    mode), and its backend/model — so a *cloned untrusted repo* dropping one in
+    could steer or arm a spawn before any consent, the same threat the hooks/MCP
+    subsystems gate. The built-ins (explore/general) are unaffected: they live in
+    ``_builtins()``, not on disk.
+
+    An explicit caller decision (threaded from ``cfg.trust_project_hooks``) wins.
+    Absent one, we fall back to the *same signal* those subsystems use — the
+    ``MARIM_TRUST_PROJECT_HOOKS`` env var — read here rather than threaded so the
+    gate holds for the un-wired call sites (instructions/runner) without a
+    functional regression for trusted repos. Safe by default: a project's own
+    ``.env`` is forbidden from setting that key (config/env._PROJECT_ENV_BLOCKLIST),
+    so a cloned repo cannot self-trust — the value comes only from the real shell
+    env or the user's global config."""
+    if trust_project is not None:
+        return trust_project
+    return os.getenv("MARIM_TRUST_PROJECT_HOOKS", "").strip().lower() in _TRUTHY
 
 # What the built-in ``explore`` role may reach: local reads plus network egress
 # (web lookups are genuinely useful mid-investigation), but nothing that mutates.
@@ -164,13 +189,22 @@ def _parse_agent(source: str, path: Path, plugin: str | None = None) -> AgentDef
     )
 
 
-def _all_roots(workspace_root) -> list[tuple[str, Path, str | None]]:
+def _all_roots(
+    workspace_root, *, trust_project: bool
+) -> list[tuple[str, Path, str | None]]:
     """The discovery roots in precedence order as ``(source, root, plugin)``:
-    user roots (project, then global), then plugin roots."""
+    user roots (project, then global), then plugin roots.
+
+    The project root is dropped unless ``trust_project`` — global and plugin
+    agents always load; only the untrusted ``.marim/agents`` is gated. Since the
+    cache signature is computed over this list, dropping a root also changes the
+    fingerprint, so trusted and untrusted callers can't poison one cache."""
     from ..plugins import plugin_agent_roots
 
     roots: list[tuple[str, Path, str | None]] = [
-        (source, root, None) for source, root in agent_roots(workspace_root)
+        (source, root, None)
+        for source, root in agent_roots(workspace_root)
+        if source != "project" or trust_project
     ]
     roots += [
         (f"plugin:{name}", root, name)
@@ -210,18 +244,22 @@ def _discovery_signature(roots: list[tuple[str, Path, str | None]]) -> tuple:
     return tuple(sig)
 
 
-def discover_agents(workspace_root) -> list[AgentDef]:
+def discover_agents(workspace_root, *, trust_project: bool | None = None) -> list[AgentDef]:
     """All effective sub-agents: custom definitions (user roots first, then
     plugin roots as ``plugin:name``) layered over the built-ins, deduped by
     qualified name with the highest-precedence root winning. Sorted by
     qualified name for stable display.
+
+    ``trust_project`` gates the project-local ``.marim/agents`` root (see
+    ``_project_trusted``); ``None`` defaults to the safe, env-derived signal.
+    The built-ins are always present regardless.
 
     Cached per workspace root and reused while the agent files on disk are
     unchanged (by name/mtime/size), so repeated calls within a turn — and across
     turns that didn't touch an agent file — don't re-walk and re-parse them."""
     # Resolve the key so different spellings of the same dir (symlinks, trailing
     # slash, relative vs absolute) share one cache entry instead of duplicating.
-    roots = _all_roots(workspace_root)
+    roots = _all_roots(workspace_root, trust_project=_project_trusted(trust_project))
     return cached_discover(
         workspace_root, roots,
         _discovery_signature,
@@ -246,9 +284,13 @@ def _collect_agents(seen: dict, source: str, root: Path, plugin: str | None) -> 
         seen[agent.qualified_name] = agent
 
 
-def find_agent(workspace_root, name: str) -> AgentDef | None:
-    """The effective sub-agent whose qualified name is ``name``, or None."""
-    for agent in discover_agents(workspace_root):
+def find_agent(
+    workspace_root, name: str, *, trust_project: bool | None = None
+) -> AgentDef | None:
+    """The effective sub-agent whose qualified name is ``name``, or None. Honors
+    the same project-trust gate as ``discover_agents`` so an untrusted project's
+    agent def can't be spawned by name either (built-ins remain reachable)."""
+    for agent in discover_agents(workspace_root, trust_project=trust_project):
         if agent.qualified_name == name:
             return agent
     return None

@@ -53,6 +53,15 @@ def _default_factory(language: str, root: Path):
     return LanguageServer.create(config, MultilspyLogger(), str(root))
 
 
+def _server_alive(server: Any) -> bool:
+    """Whether a warm multilspy server's process is still up. multilspy sets
+    ``server_started`` True while the LSP subprocess runs and flips it False when
+    the start_server context exits / the process is gone. When the attribute is
+    absent (a stub or older multilspy) we assume alive: only a *known*-dead server
+    is ever evicted, never one we merely can't inspect."""
+    return bool(getattr(server, "server_started", True))
+
+
 def _path_to_uri(root: Path, relpath: str) -> str:
     return (root / relpath).resolve().as_uri()
 
@@ -85,6 +94,7 @@ class LspManager:
         self._request_timeout = request_timeout
         self._start_timeout = start_timeout
         self._stack = AsyncExitStack()
+        self._closed = False
         self._servers: dict[str, Any] = {}
         self._collectors: dict[str, DiagnosticsCollector] = {}
         # Per-URI publish waiters for the diagnostics push path. A diagnostics()
@@ -149,6 +159,13 @@ class LspManager:
         except Exception as exc:  # noqa: BLE001 — degrade to a message
             logger.debug("failed to start %s server: %s", language, exc)
             return f"Could not start the {language} language server: {exc}"
+        if self._closed:
+            # Lost the race with aclose(): our server entered ``_stack`` but the
+            # session is tearing down. Registering now would resurrect it into the
+            # just-cleared pool and leak the process past aclose() (a cold start can
+            # take up to start_timeout, well past a Ctrl-C shutdown). The stack's
+            # own aclose() reaps what we entered, so decline instead of caching it.
+            return f"Could not start the {language} language server: manager is closing."
         collector = DiagnosticsCollector()
         collector.attach(server)
         self._servers[language] = server
@@ -209,7 +226,16 @@ class LspManager:
         # binaries (a PATH scan), and there's no point paying that on the hot path
         # when the server is already up. Availability only gates the cold start.
         if language in self._servers:
-            return self._servers[language], language, None
+            server = self._servers[language]
+            if _server_alive(server):
+                return server, language, None
+            # The server was up but its process is gone (multilspy flipped
+            # ``server_started`` False). Left cached, every later request for this
+            # language would route to a corpse and return the same error for the
+            # rest of the session, with no restart path. Evict it so the cold-start
+            # path below re-spawns a fresh one — the single-flight in
+            # _ensure_started still coalesces concurrent callers onto one restart.
+            self._evict(language)
         avail = registry.availability(language)
         if not avail.available:
             return None, language, f"No {language} language server available; {avail.hint}."
@@ -218,8 +244,33 @@ class LspManager:
             return None, language, err
         return self._servers[language], language, None
 
+    def _evict(self, language: str) -> None:
+        """Drop a language's cached server/collector so the next request cold-starts
+        a fresh one. Used when a warm server is found dead."""
+        self._servers.pop(language, None)
+        self._collectors.pop(language, None)
+
     async def aclose(self) -> None:
         """Shut down every started language server. Safe to call when none ran."""
+        # Latch closed *first* so a cold start still in flight (a start can take up
+        # to start_timeout — 60s — well past a Ctrl-C shutdown) refuses to register
+        # its server after the pool is torn down. Without this a start racing
+        # shutdown finishes after _stack.aclose(), re-populates the cleared
+        # _servers, and its language-server process leaks until harness exit.
+        self._closed = True
+        # Cancel and reap in-flight single-flight starts. A start suspended in
+        # enter_async_context is unwound by the cancel (its half-entered server
+        # never lands on the stack); one already past that await is caught by the
+        # _closed guard in _start_language. Either way nothing new enters _servers
+        # after this. Reap before _stack.aclose() so no start can still be touching
+        # the stack while we close it. (_starts is otherwise never cleared, so a
+        # dead task would linger for the manager's lifetime.)
+        for task in list(self._starts.values()):
+            task.cancel()
+        for task in list(self._starts.values()):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        self._starts.clear()
         try:
             await self._stack.aclose()
         except Exception as exc:  # noqa: BLE001

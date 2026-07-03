@@ -23,6 +23,17 @@ from .worktree import repo_root
 
 logger = logging.getLogger(__name__)
 
+# Committer identity passed inline to commit-tree so a snapshot commit succeeds
+# even when neither the repo nor the global git config sets user.name/user.email
+# (fresh machines, CI). Without it commit-tree raises CalledProcessError,
+# capture() returns None, and checkpoints + file-rewind go silently dead for the
+# whole session. worktree.py solves the same problem the same way (its
+# ``_SUBAGENT_IDENTITY``); this is the snapshot-side twin.
+_COMMITTER_IDENTITY = (
+    "-c", "user.name=marim checkpoint",
+    "-c", "user.email=checkpoint@marim.local",
+)
+
 
 @contextmanager
 def _temp_index() -> Iterator[str]:
@@ -144,7 +155,11 @@ class GitSnapshotter:
                 # .gitignore) into the throwaway index, then snapshot it.
                 self._run("add", "-A", env=env)
                 tree = self._run("write-tree", env=env)
-                commit = self._run("commit-tree", tree, "-m", message, env=env)
+                # Pass the committer identity inline (see _COMMITTER_IDENTITY) so
+                # this never depends on the user's git config being set.
+                commit = self._run(
+                    *_COMMITTER_IDENTITY, "commit-tree", tree, "-m", message, env=env
+                )
             # Keep the commit reachable so GC won't drop it.
             self._run("update-ref", ref, commit)
             # Record the content fingerprint so the next clean turn at this HEAD
@@ -179,7 +194,16 @@ class GitSnapshotter:
         for blob in (tracked, untracked):
             if blob:
                 files.update(self._split_nul(blob))
-        return files
+        # git reports an untracked directory that is itself a git repo — a
+        # submodule, or one of marim's own ``.worktrees/<branch>`` spawn worktrees
+        # (nothing gitignores them) — as a single entry with a TRAILING SLASH
+        # (``.worktrees/feat/``), while ``add -A`` stages the same path as a gitlink
+        # in the snapshot tree WITHOUT the slash (``.worktrees/feat``). A POSIX path
+        # can never legitimately end in ``/``, so stripping it is always safe and
+        # makes the two representations compare equal — otherwise the set difference
+        # in _remove_extra_files marks the nested repo for deletion, unlink() of a
+        # directory raises, and restore() reports failure on *every* rewind forever.
+        return {f.rstrip("/") for f in files}
 
     def delete(self, ref: str) -> None:
         if not ref.startswith("refs/marim/"):
@@ -199,8 +223,18 @@ class GitSnapshotter:
         _present_files and intentionally left untouched."""
         failed: list[str] = []
         for rel in self._present_files() - target:
+            path = self.workspace_root / rel
+            if path.is_dir():
+                # A directory here is a nested git repo/worktree gitlink (see
+                # _present_files): it is outside what the snapshot captured (a
+                # gitlink, not tracked content), and recursively deleting a spawn
+                # worktree on rewind would be destructive. Never our file to
+                # remove — leave it in place. (Belt-and-suspenders with the
+                # trailing-slash normalization: this also covers a nested repo
+                # that post-dates the checkpoint and so is absent from the tree.)
+                continue
             try:
-                (self.workspace_root / rel).unlink()
+                path.unlink()
             except FileNotFoundError:
                 pass  # already gone — that's the goal, not a failure
             except OSError as exc:
@@ -221,14 +255,24 @@ class GitSnapshotter:
         if self._repo() is None:
             return False
         try:
-            # 1. Remove files that exist now but not in the target snapshot.
-            failed = self._remove_extra_files(self._tree_files(commit))
-            # 2. Restore tracked + untracked content via a throwaway index, so
-            #    the user's real index/HEAD are untouched.
+            # 1. Restore tracked + untracked captured content via a throwaway index,
+            #    so the user's real index/HEAD are untouched. Done FIRST — before
+            #    computing which present files are "extra" — for two reasons:
+            #    (a) it reinstates the capture-time .gitignore on disk, so the
+            #        _present_files() listing below re-honors it. Without this, a
+            #        file that was git-ignored at capture (never in the snapshot)
+            #        but un-ignored at restore because the agent deleted .gitignore
+            #        would show up as "extra" and be silently deleted (.env, local
+            #        DBs) — real data loss. With the captured .gitignore back,
+            #        --exclude-standard filters such files out and they survive.
+            #    (b) a bad/absent commit fails here before any deletion runs, so a
+            #        failed restore never leaves files removed.
             with _temp_index() as idx:
                 env = {**os.environ, "GIT_INDEX_FILE": idx}
                 self._run("read-tree", commit, env=env)
                 self._run("checkout-index", "-a", "-f", env=env)
+            # 2. Remove files that exist now but not in the target snapshot.
+            failed = self._remove_extra_files(self._tree_files(commit))
             if failed:
                 logger.debug(
                     "checkpoint restore left %d file(s) behind: %s", len(failed), failed

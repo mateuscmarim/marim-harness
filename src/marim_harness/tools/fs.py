@@ -239,6 +239,18 @@ class Edit(BaseModel):
 def _apply_edit(text: str, edit: Edit, path: str, index: int) -> str:
     """Apply one edit to ``text``, raising ModelRetry (naming the edit) on a bad
     match. ``index`` is 1-based for human-readable messages."""
+    # An empty old_string is a trap, not a valid edit: ``"".count`` in ``text``
+    # is len+1 (every gap between chars matches), so the ambiguity guard below
+    # would tell the model to "set replace_all" — and a model that obeys gets
+    # ``text.replace("", new)``, which splices new_string between *every*
+    # character of the file: silent, total corruption via the tool's own
+    # guidance. Refuse up front; an edit must name the exact text it replaces.
+    if edit.old_string == "":
+        raise ModelRetry(
+            f"edit {index}: old_string is empty. Provide the exact text to "
+            f"replace; to insert, anchor new_string to a surrounding non-empty "
+            f"snippet (old_string must appear in the file)."
+        )
     count = text.count(edit.old_string)
     if count == 0:
         raise ModelRetry(

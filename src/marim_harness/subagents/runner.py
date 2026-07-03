@@ -757,12 +757,22 @@ class SubagentRunner:
                 )
             return f"Sub-agent {type!r} failed: {exc.__class__.__name__}: {exc}"
         except BaseException:
-            # Cancellation/interrupt (e.g. shutdown tearing down a running job) is
-            # a BaseException, so it slips past the contain-as-error handler above.
-            # Discard the worktree before it propagates — otherwise an isolated
-            # spawn leaks its worktree + branch on every cancel.
+            # Cancellation/interrupt (e.g. Ctrl-C, or shutdown tearing down a
+            # running job) is a BaseException, so it slips past the contain-as-
+            # error handler above. Do NOT discard() the isolated worktree here:
+            # discard force-removes the branch AND the dirty checkout, so a
+            # graceful Ctrl-C would lose strictly MORE than a hard `kill -9`
+            # (which runs no teardown at all, leaving the worktree intact so the
+            # spawn resumes fine). The mid-run sidecar still says "running" and
+            # offers a resume, but reopen() would then refuse it ("branch no
+            # longer exists"). Instead close() the worktree: it commits the
+            # in-progress work and KEEPS the branch as the resumable deliverable —
+            # and drops the branch only when nothing was produced, so a genuinely
+            # throwaway spawn still leaves no dead branch behind. This makes a
+            # cancel no worse than a crash and keeps resume working. The returned
+            # merge-note is irrelevant on a re-raise.
             if prep.iso:
-                prep.iso.discard()
+                prep.iso.close()
             raise
         self._log_spawn_timing(type, prep.t0, prep.t_built, prep.first_event_at, failed=False)
         await self.hooks.subagent_stop(type, task, result.output)

@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
@@ -9,6 +10,14 @@ from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
 from tests.conftest import _make_deps
+
+
+@pytest.fixture(autouse=True)
+def _trust_project(monkeypatch):
+    """Every test here exercises project-local ``.marim/skills``, which now load
+    only in a TRUSTED workspace (see workspace.skills._project_trusted — a cloned
+    untrusted repo's skills are gated). Run them as trusted."""
+    monkeypatch.setenv("MARIM_TRUST_PROJECT_HOOKS", "1")
 
 
 def _agent() -> Agent:

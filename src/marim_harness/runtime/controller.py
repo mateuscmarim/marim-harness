@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections import Counter
 from collections.abc import AsyncIterable, Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
@@ -169,6 +170,23 @@ def _turn_produced_response(history: list[ModelMessage], since: int) -> bool:
     from pydantic_ai.messages import ModelResponse
 
     return any(isinstance(m, ModelResponse) for m in history[since:])
+
+
+def _last_request_input_tokens(history: list[ModelMessage]) -> int | None:
+    """The provider-reported input-token count of the LAST model request in a run —
+    the true size of the prompt as the provider tokenized it, i.e. the real current
+    context size. The compaction gate uses this as a measured floor over its chars/4
+    estimate, which undershoots dense code/JSON ~25% (see SessionController.maybe_compact
+    and compaction._measured_or_estimated). NOT the run's cumulative ``result.usage``
+    input tokens — that sums every step of a multi-request turn and would overshoot the
+    live context size. Returns ``None`` when no response carries usage (some
+    providers/streams omit it), which leaves the gate on the estimate alone."""
+    for message in reversed(history):
+        usage = getattr(message, "usage", None)
+        tokens = getattr(usage, "input_tokens", None)
+        if tokens:
+            return int(tokens)
+    return None
 
 
 _INTERRUPTED_TOOL_NOTE = (
@@ -455,25 +473,51 @@ class TurnController:
     def _reclaim_undelivered_steers(self, messages: Sequence[ModelMessage]) -> None:
         """Re-buffer any flushed steer that never reached the model.
 
-        Called at each round's end (success or failure) with the round's
-        messages. A steer whose text shows up in a user part was delivered;
-        the rest were enqueued onto a run that ended before its next request
-        boundary and would otherwise vanish. Reclaimed steers go to the front
-        of the buffer, so the next flush (continuation round) or the TUI's
-        take_buffered_steers (turn end) sees them in their original order."""
+        Called at each round's end (success or failure) with the round's full
+        message list (input history + everything the run generated). A flushed
+        steer is only *scheduled*: pydantic-ai drains 'asap' content at the next
+        request boundary as a fresh ``UserPromptPart``, so a steer is delivered
+        iff a matching user part shows up among the messages this round ADDED.
+        The rest were enqueued onto a run that ended before its next boundary and
+        would otherwise vanish; reclaimed steers go to the front of the buffer so
+        the next flush (continuation round) or the TUI's take_buffered_steers
+        (turn end) sees them in their original order.
+
+        Two subtleties the old whole-history text-set got wrong, both of which
+        silently DROPPED a live steer:
+          - Baseline. The delivered check must look only at parts BEYOND the
+            pre-round history (``self.session.history`` still holds it at both
+            call sites — the success path reclaims before it reassigns history).
+            Scanning the entire session would read a short steer ('yes',
+            'continue', 'stop') as delivered merely because an *earlier* turn
+            used the same word, dropping an enqueue that never actually drained.
+          - Identity by count, not membership. pydantic-ai gives us no delivery
+            receipt, so a steer's only identity in the returned stream is its
+            text at its position — but a set can't tell two identical steers (or
+            one steer vs. its own echo) apart. A multiset consumed once per
+            match reconciles each inflight steer against exactly one new user
+            part, in FIFO order, so duplicates aren't conflated."""
         if not self._inflight_steers:
             return
-        delivered: set[str] = set()
-        for m in messages or []:
+        # Only the parts this round appended (index >= the pre-round length) can
+        # be steer deliveries; the prefix is prior history we must not match on.
+        baseline = len(self.session.history)
+        delivered: Counter[str] = Counter()
+        for m in list(messages)[baseline:]:
             for p in getattr(m, "parts", []):
                 if type(p).__name__ != "UserPromptPart":
                     continue
                 content = getattr(p, "content", None)
                 if isinstance(content, str):
-                    delivered.add(content)
+                    delivered[content] += 1
                 elif isinstance(content, (list, tuple)):
                     delivered.update(x for x in content if isinstance(x, str))
-        undelivered = [s for s in self._inflight_steers if s[0] not in delivered]
+        undelivered: list[tuple[str, list[tuple[bytes, str]] | None]] = []
+        for steer in self._inflight_steers:
+            if delivered[steer[0]] > 0:
+                delivered[steer[0]] -= 1  # consume this delivery; don't reuse it
+            else:
+                undelivered.append(steer)
         self._inflight_steers = []
         self._steer_buffer = undelivered + self._steer_buffer
 
@@ -648,6 +692,13 @@ class TurnController:
             self._consumed_this_turn = _ConsumedContext()
             self.session.history = result.all_messages()
             self.session.usage += result.usage
+            # Record the last request's real input-token count so the next
+            # compaction check gates on the provider's measurement rather than the
+            # chars/4 estimate alone (which undershoots dense code ~25% and can sail
+            # the session past the real window). Updated every round on the current
+            # history; reset to None on clear/switch so a resumed session falls back
+            # to the estimate until its first request reports usage again.
+            self.session.last_input_tokens = _last_request_input_tokens(self.session.history)
             if isinstance(result.output, DeferredToolRequests):
                 # This history ends with unanswered tool calls; keep it in memory
                 # for the continuation run but do NOT persist it. A cancel or
@@ -735,9 +786,37 @@ class TurnController:
         """Run the agent until it produces a final text answer, looping through
         any approval rounds. Returns the final text output."""
         await self._maybe_compact()
+        # Self-heal a session left mid-exchange by an earlier aborted turn or a
+        # flaky model, BEFORE snapshotting this turn's rewind point. Two distinct
+        # malformations both make every provider reject the next request and wedge
+        # the session: a nameless ToolCallPart (a partial tool call whose function
+        # name never streamed) and a ToolCallPart with no matching return
+        # ("unprocessed tool calls"). Strip the former, then repair the latter, so
+        # the session resumes instead of raising on the next request.
+        #
+        # Ordering is load-bearing: the repair INSERTS a synthesized return and the
+        # strip can REMOVE messages, so both change len(history). A Checkpoint
+        # records an *absolute* history_len, so it must be taken AFTER this sanitize
+        # — otherwise it captures the pre-sanitize length and a later /rewind slices
+        # history[:stale_len] at a wrong boundary, stranding a tool call from its
+        # return: exactly the unresumable, mid-pair history this whole subsystem
+        # exists to prevent. Sanitizing here rather than inside the try below is
+        # safe: it drains no one-shot consumables and precedes the checkpoint, so a
+        # failure here leaks neither the hook context / jobs digest nor a dead
+        # checkpoint (there is none yet).
+        sanitized = _drop_nameless_tool_calls(self.session.history)
+        repaired = _repair_unanswered_tool_calls(sanitized)
+        if repaired is not self.session.history:
+            self.session.history = repaired
+            # Offload the sanitizing write off the event loop, consistent with the
+            # success/rollback sites below.
+            await asyncio.to_thread(self.session.persist)
         # Capture a rewind point for this turn before any work runs. Remember where
-        # the history stood and which checkpoint this is, so a turn that fails
-        # without producing any model output can roll its (dead) checkpoint back.
+        # the (now-sanitized) history stands and which checkpoint this is, so a turn
+        # that fails without producing any model output can roll its (dead)
+        # checkpoint back. pre_turn_len is the *post-sanitize* length, so both the
+        # checkpoint's history_len and _turn_produced_response measure new model
+        # output against the identical boundary.
         pre_turn_len = len(self.session.history)
         # snapshot() shells out to git (``git add -A`` over the whole working tree,
         # then write-tree/commit-tree) — synchronous subprocess work whose cost
@@ -770,19 +849,6 @@ class TurnController:
             # When hooks are configured, intercept each streamed tool event to fire
             # Pre/PostToolUse, then forward to the original handler (or drain if none).
             event_stream_handler = self._build_hooked_handler(event_stream_handler)
-            # Self-heal a session left mid-exchange by an earlier aborted turn or a
-            # flaky model. Two distinct malformations both make every provider reject
-            # the next request and wedge the session: a nameless ToolCallPart (a
-            # partial tool call whose function name never streamed) and a ToolCallPart
-            # with no matching return ("unprocessed tool calls"). Strip the former,
-            # then repair the latter, before running so the session resumes instead.
-            sanitized = _drop_nameless_tool_calls(self.session.history)
-            repaired = _repair_unanswered_tool_calls(sanitized)
-            if repaired is not self.session.history:
-                self.session.history = repaired
-                # Offload the sanitizing write off the event loop, consistent with
-                # the success/rollback sites below.
-                await asyncio.to_thread(self.session.persist)
             # The last persisted, resumable history — guaranteed free of unanswered
             # tool calls. Captured once here and refreshed only after a clean
             # persist; the deferred-approval round below deliberately holds a dirty

@@ -44,10 +44,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # marim approval mode -> Claude Code --permission-mode. Headless `claude -p`
-# cannot pop a per-tool prompt, so marim's "ask" has no faithful equivalent; we
-# treat it like "auto" (acceptEdits) and warn once (see note_ask_limitation_once).
-# Anything unrecognized degrades to the safe read-only "plan".
-_MODE_MAP = {"auto": "acceptEdits", "ask": "acceptEdits", "plan": "plan"}
+# cannot pop a per-tool prompt, so marim's "ask" (gate each mutation) has no
+# faithful equivalent. Mapping it to "acceptEdits" would let the CLI edit files
+# with NO gating while marim's UI still says "ask" — a silent authority
+# escalation the user never consented to (the only disclosure was a
+# once-per-process log line a TUI user never sees). So an unconsented "ask"
+# degrades to the safe read-only "plan": the CLI can read/plan but not mutate,
+# which is the conservative reading of "don't act without my approval". Only the
+# explicit "auto" mode maps to acceptEdits. "ask" isn't listed, so it falls
+# through to the ``.get(..., "plan")`` default alongside any unknown mode.
+_MODE_MAP = {"auto": "acceptEdits", "plan": "plan"}
 
 
 def permission_mode_for(mode: str) -> str:
@@ -240,11 +246,15 @@ class ToolResultChunk:
 @dataclass
 class DoneChunk:
     """Terminal chunk: Claude's session id, usage, and whether a proper ``result``
-    event was seen (``complete=False`` ⇒ crash/bad output)."""
+    event was seen (``complete=False`` ⇒ crash/bad output). ``error_detail`` carries
+    a tail of the CLI's stderr when the process failed, so the raised
+    ``CliModelError`` can report *why* (a crash, a not-logged-in CLI, a bad flag)
+    instead of a bare "no result"; it is ignored on a complete run."""
 
     session_id: str | None
     usage: RequestUsage
     complete: bool
+    error_detail: str = ""
 
 
 def _flatten_result_content(content) -> str:
@@ -291,6 +301,7 @@ async def consume_cli_stream(objs: AsyncIterator[dict]) -> AsyncIterator:
 
     session_id: str | None = None
     results: list[dict] = []
+    error_detail = ""
     async for obj in objs:
         if obj.get("parent_tool_use_id"):
             # Sub-agent-internal traffic. With a UI the demux tee (see
@@ -299,6 +310,12 @@ async def consume_cli_stream(objs: AsyncIterator[dict]) -> AsyncIterator:
             # main response text.
             continue
         kind = obj.get("type")
+        if kind == "__cli_error__":
+            # Synthetic sentinel from spawn_cli_objects at EOF carrying a tail of
+            # the CLI's stderr (and exit code) when the process failed. Not a real
+            # stream event — captured here so a "no result" turn can explain itself.
+            error_detail = str(obj.get("stderr") or "").strip() or error_detail
+            continue
         if kind == "system":
             if obj.get("subtype") in ("task_started", "task_updated", "task_notification"):
                 continue  # sub-agent lifecycle noise (the demux path renders it)
@@ -337,7 +354,12 @@ async def consume_cli_stream(objs: AsyncIterator[dict]) -> AsyncIterator:
                 complete=True,
             )
     if not results:
-        yield DoneChunk(session_id=session_id, usage=RequestUsage(), complete=False)
+        yield DoneChunk(
+            session_id=session_id,
+            usage=RequestUsage(),
+            complete=False,
+            error_detail=error_detail,
+        )
 
 
 def fold_chunk_text(chunk, *, leading: bool) -> str:
@@ -397,14 +419,16 @@ _ask_noticed = False
 
 
 def note_ask_limitation_once(mode: str) -> None:
-    """Warn once per process that ``ask`` can't do per-tool gating in this provider
-    (it is treated like ``auto``). Kept out of the pure mapping so tests stay quiet."""
+    """Warn once per process that ``ask`` can't do per-tool gating in this provider,
+    so it runs read-only (``plan``) rather than silently escalating to unattended
+    edits. Kept out of the pure mapping so tests stay quiet."""
     global _ask_noticed
     if mode == "ask" and not _ask_noticed:
         _ask_noticed = True
         logger.warning(
             "claude-cli provider: 'ask' mode cannot gate individual tools "
-            "(headless claude can't prompt) — running like 'auto' (acceptEdits)."
+            "(headless claude can't prompt) — running read-only ('plan'). "
+            "Switch to 'auto' to let this provider edit files."
         )
 
 
@@ -412,10 +436,32 @@ class CliModelError(Exception):
     """The claude CLI was unavailable or produced no terminal result."""
 
 
+def _no_result_message(done: DoneChunk | None) -> str:
+    """The error text for a turn that ended without a proper ``result`` event.
+    Appends the CLI's stderr tail (captured on the terminal ``DoneChunk``) when
+    present so a crash / not-logged-in / bad-flag failure carries a real
+    diagnostic instead of a bare, undebuggable line."""
+    base = "claude produced no result (crash or bad output)"
+    detail = done.error_detail if done is not None else ""
+    return f"{base}: {detail}" if detail else f"{base}."
+
+
+# How much of a failing CLI's stderr to fold into the raised error. Enough to carry
+# a real diagnostic (a stack tail, "Invalid API key", "not logged in") without
+# dumping an unbounded log into the message.
+_STDERR_TAIL_CHARS = 2000
+
+
 async def spawn_cli_objects(argv: list[str], cwd: str) -> AsyncIterator[dict]:
     """Spawn ``claude`` and yield each stream-json line as a parsed dict. Reaps the
     child on exit; drains stderr to avoid a pipe-buffer deadlock. Non-JSON noise is
-    skipped. This is the only I/O seam — tests replace it via ``model.spawn``."""
+    skipped. This is the only I/O seam — tests replace it via ``model.spawn``.
+
+    On a nonzero exit the drained stderr is not discarded: a tail of it is yielded
+    as a synthetic ``{"type": "__cli_error__", ...}`` sentinel so ``consume_cli_stream``
+    can attach it to the terminal ``DoneChunk`` and the "no result" ``CliModelError``
+    can explain the failure (crash, bad flag, not logged in) instead of staying
+    silent."""
     from ..subagents.cli_backend import _iter_ndjson_lines
 
     proc = await asyncio.create_subprocess_exec(  # pragma: no cover
@@ -437,10 +483,14 @@ async def spawn_cli_objects(argv: list[str], cwd: str) -> AsyncIterator[dict]:
                 yield json.loads(line)
             except json.JSONDecodeError:
                 continue
+        stderr_bytes = b""
         if stderr_task is not None:
-            await stderr_task
+            stderr_bytes = await stderr_task
             stderr_task = None
-        await proc.wait()
+        code = await proc.wait()
+        if code not in (0, None):
+            detail = stderr_bytes.decode("utf-8", "replace").strip()[-_STDERR_TAIL_CHARS:]
+            yield {"type": "__cli_error__", "stderr": detail, "returncode": code}
     finally:  # pragma: no cover
         if stderr_task is not None:
             stderr_task.cancel()
@@ -559,7 +609,7 @@ class ClaudeCliModel(Model):
             if segment:
                 parts.append(segment)
         if done is None or not done.complete:
-            raise CliModelError("claude produced no result (crash or bad output).")
+            raise CliModelError(_no_result_message(done))
         if done.session_id and not self.ephemeral:
             self.session_id = done.session_id
         return ModelResponse(
@@ -690,7 +740,7 @@ class ClaudeCliStreamedResponse(StreamedResponse):
             elif isinstance(chunk, DoneChunk):
                 done = chunk  # last one wins (multi-result runs)
         if done is None or not done.complete:
-            raise CliModelError("claude produced no result (crash or bad output).")
+            raise CliModelError(_no_result_message(done))
         self._usage = done.usage
         if done.session_id and self._set_session is not None:
             self._set_session(done.session_id)
