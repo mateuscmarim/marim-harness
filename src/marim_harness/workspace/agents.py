@@ -376,7 +376,19 @@ def cap_transcript(messages: list, cap: int, *, cap_reasoning: bool = False) -> 
             if isinstance(part, cappable):
                 text = part.content if isinstance(part.content, str) else str(part.content)
                 if len(text) > cap:
-                    part = dataclasses.replace(part, content=_clip(text))
+                    if isinstance(part, ThinkingPart):
+                        # The provider's signature validates the FULL original
+                        # content; once we've clipped it, the signature no longer
+                        # matches. pydantic-ai re-sends a thinking block verbatim
+                        # whenever provider_name matches and signature is not
+                        # None, so a stale signature on truncated content 400s on
+                        # the very next resumed request. Null it — pydantic-ai
+                        # then omits the block instead of re-sending it broken.
+                        part = dataclasses.replace(
+                            part, content=_clip(text), signature=None
+                        )
+                    else:
+                        part = dataclasses.replace(part, content=_clip(text))
             new_parts.append(part)
         out.append(dataclasses.replace(message, parts=new_parts))
     return out

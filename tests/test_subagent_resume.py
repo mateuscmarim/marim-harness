@@ -199,7 +199,8 @@ async def test_checkpoint_clips_oversized_reasoning(tmp_path):
     def fn(messages, info):
         if len(messages) == 1:
             return ModelResponse(parts=[
-                ThinkingPart(content="T" * 6000),
+                ThinkingPart(content="T" * 6000, signature="sig-123",
+                             provider_name="anthropic"),
                 ToolCallPart(tool_name="list_files", args={"path": "."},
                              tool_call_id="t1"),
             ])
@@ -216,6 +217,10 @@ async def test_checkpoint_clips_oversized_reasoning(tmp_path):
     assert thoughts, "the checkpoint must have captured the thinking part"
     assert all(len(str(p.content)) < 6000 for p in thoughts)
     assert any("truncated, 6000 chars" in str(p.content) for p in thoughts)
+    # A clipped thinking block's signature no longer matches its (now-shorter)
+    # content — Anthropic validates the signature against the FULL content, so a
+    # stale signature on truncated content 400s on resume. Must be nulled.
+    assert all(p.signature is None for p in thoughts)
 
 
 @pytest.mark.anyio

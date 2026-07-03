@@ -442,9 +442,12 @@ class StreamRenderer:
         self.dirty_streams.clear()
 
     def adopt_resumed_card(self, card: "SubAgentWidget", job_id: str) -> None:
-        """Re-arm an interrupted card whose spawn was just resumed as ``job_id``:
-        flip it live, route the resumed run's stream back into it, and map the
-        job so the settle fills it like any detached spawn."""
+        """Re-arm an interrupted-or-still-live card onto background job
+        ``job_id``: flip it live, route the resumed run's stream back into it,
+        and map the job so the settle fills it like any detached spawn. Called
+        both when a spawn is just resumed and, on the settle path, to re-arm a
+        still-running job's card during replay (``session_view.
+        finish_replayed_cards``)."""
         card.status = "pending"
         card._t0 = time.monotonic()
         card._t_end = None
