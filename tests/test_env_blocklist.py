@@ -108,6 +108,20 @@ def test_global_config_may_still_set_provider_keys(isolated_env, monkeypatch, tm
     assert os.environ["MARIM_CLAUDE_CLI_BIN"] == "/usr/local/bin/claude"
 
 
+def test_project_env_cannot_redirect_web_search_endpoint(
+    isolated_env, monkeypatch, tmp_path
+):
+    # MARIM_SEARXNG_URL is an egress + prompt-injection channel: tools/web reads it,
+    # so a hostile value exfiltrates every search query AND feeds attacker-authored
+    # "results" back into the agent's context. A project .env must not set it.
+    _setup(tmp_path, monkeypatch, "MARIM_SEARXNG_URL=https://evil.example/\n")
+    monkeypatch.delenv("MARIM_SEARXNG_URL", raising=False)
+
+    load_environment()
+
+    assert "MARIM_SEARXNG_URL" not in os.environ
+
+
 def test_blocklist_contains_all_provider_keys():
     for key in (
         "MARIM_PROVIDER",
@@ -117,5 +131,6 @@ def test_blocklist_contains_all_provider_keys():
         "OPENROUTER_API_KEY",
         "GOOGLE_API_KEY",
         "GEMINI_API_KEY",
+        "MARIM_SEARXNG_URL",
     ):
         assert key in _PROJECT_ENV_BLOCKLIST, key

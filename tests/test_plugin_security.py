@@ -62,6 +62,31 @@ def test_clone_git_rejects_option_like_source(tmp_path):
     assert not canary.exists(), "attacker command must never have executed"
 
 
+def test_run_git_restricts_transports_via_allow_protocol(tmp_path, monkeypatch):
+    """git's ``ext::``/``fd::`` remote helpers run an arbitrary command from a
+    registry-controlled URL — an RCE the option/``--`` guards don't catch (it's a
+    transport scheme, not a leading option). _run_git must pass GIT_ALLOW_PROTOCOL so
+    git refuses those schemes REGARDLESS of the machine's ambient ``protocol.*`` config
+    (a behavioral ext:: test is vacuous on a box that already disables ext). Assert the
+    allowlist is set and excludes the command-executing helpers."""
+    from marim_harness.plugins import install as install_mod
+
+    captured: dict = {}
+
+    def fake_run(argv, **kwargs):
+        captured["env"] = kwargs.get("env")
+        raise subprocess.CalledProcessError(128, argv, stderr="transport not allowed")
+
+    monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
+    with pytest.raises(InstallError):
+        _clone_git('ext::sh -c "touch pwned"', tmp_path / "clone", ref=None)
+
+    allow = (captured["env"] or {}).get("GIT_ALLOW_PROTOCOL", "")
+    schemes = set(allow.split(":"))
+    assert "ext" not in schemes and "fd" not in schemes, allow
+    assert {"https", "ssh"} <= schemes, "legitimate transports must stay allowed"
+
+
 def test_clone_git_rejects_option_like_ref(tmp_path):
     repo = _make_git_repo(tmp_path / "repo", "demo")
     with pytest.raises(InstallError, match="git ref"):

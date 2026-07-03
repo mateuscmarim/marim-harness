@@ -8,6 +8,7 @@ Git sources are shallow-cloned to a temp dir and copied in, recording the
 resolved commit SHA."""
 
 import logging
+import os
 import shutil
 import subprocess
 import tempfile
@@ -48,6 +49,15 @@ def is_git_source(source: str) -> bool:
 
 
 def _run_git(args: list[str], cwd: Path | None = None) -> str:
+    # Restrict git to safe transports. A plugin's clone URL comes from a registry a
+    # cloned repo can commit (.marim/plugins/plugins.json), and git's ``ext::`` / ``fd::``
+    # remote helpers run an arbitrary command taken from the URL — an RCE the ``--`` and
+    # option-reject guards above do NOT stop, because the payload is a transport scheme,
+    # not a leading option (``ext::sh -c "…"`` passes both). GIT_ALLOW_PROTOCOL is an
+    # allowlist: anything unlisted (ext, fd, …) is refused regardless of the machine's
+    # ambient ``protocol.*`` config; file/git/http/https/ssh cover every legitimate
+    # plugin source.
+    env = {**os.environ, "GIT_ALLOW_PROTOCOL": "file:git:http:https:ssh"}
     try:
         out = subprocess.run(
             ["git", *args],
@@ -55,6 +65,7 @@ def _run_git(args: list[str], cwd: Path | None = None) -> str:
             check=True,
             capture_output=True,
             text=True,
+            env=env,
         )
     except FileNotFoundError as exc:
         raise InstallError("git is not installed") from exc

@@ -836,10 +836,16 @@ class SubagentRunner:
             raise
         except BaseException:
             # Cancellation (e.g. cancel_all() tearing down jobs on shutdown) is a
-            # BaseException and skips the handler above; tear down the isolated
-            # worktree before it propagates so a cancelled spawn leaves none behind.
+            # BaseException and skips the handler above. Mirror the foreground cancel
+            # path: close() rather than discard the worktree, so a cancelled spawn
+            # commits its in-progress work and KEEPS the branch as the resumable
+            # deliverable. discard() would drop the branch, making a graceful shutdown
+            # lose strictly more than a hard kill and leaving the still-"running"
+            # sidecar's resume offer broken (reopen refuses a deleted branch). Drops
+            # the branch only when nothing was produced. Applies to a resumed spawn
+            # too — committing the continuation onto its branch keeps it resumable.
             if prep.iso:
-                prep.iso.teardown_after_failure(resumed=resumed)
+                prep.iso.close()
             raise
         self._log_spawn_timing(type, prep.t0, prep.t_built, prep.first_event_at, failed=False)
         # The stop hook must see the SAME task the start hook got. subagent_start

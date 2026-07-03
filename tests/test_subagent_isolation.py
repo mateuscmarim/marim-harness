@@ -326,3 +326,37 @@ async def test_isolated_spawn_cancel_with_no_changes_drops_branch(repo: Path):
         await h.subagents.run("general", "do it", "tc1", isolation="worktree")
     assert not _branch_exists(repo, "subagent/tc1")
     assert not (repo / ".worktrees" / "subagent" / "tc1").exists()
+
+
+@pytest.mark.anyio
+async def test_isolated_background_spawn_cancel_preserves_in_progress_work(repo: Path):
+    """The background twin of the foreground cancel policy: a cancelled background
+    isolated spawn (e.g. cancel_all() tearing down jobs on shutdown) must PRESERVE its
+    branch with the in-progress work committed so it stays resumable — discarding would
+    lose more than a hard kill and break the still-"running" sidecar's resume offer."""
+    import asyncio
+
+    deps = _make_deps(repo)
+    h = _make_harness(_text_model(), deps)
+
+    class _CancelAgent:
+        async def run(self, task, **kwargs):
+            fs.write_file(kwargs["deps"].workspace.root, "partial.txt", "half\n")
+            raise asyncio.CancelledError
+
+    h.subagents.build = lambda type, max_output_chars=None, model=None, \
+        workspace_root=None, defn=None, depth=0, mask_trigger=None, \
+        checkpoint=None: (_CancelAgent(), None)
+
+    with pytest.raises(asyncio.CancelledError):
+        await h.subagents.run_background(
+            "general", "do it", isolation="worktree", stream_id="bgc6",
+        )
+    # Checkout gone, branch kept with the committed work — reopen() can resume it.
+    assert not (repo / ".worktrees" / "subagent" / "bgc6").exists()
+    assert _branch_exists(repo, "subagent/bgc6")
+    show = subprocess.run(
+        ["git", "show", "--stat", "subagent/bgc6"], cwd=repo,
+        capture_output=True, text=True,
+    )
+    assert show.returncode == 0 and "partial.txt" in show.stdout
