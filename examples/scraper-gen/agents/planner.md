@@ -56,7 +56,8 @@ shape:**
 
 ## Task: <kebab-case-name>
 - script: scrape_<snake_case_name>.py
-- strategy: http | api | browser | blocked
+- strategy: http | api | browser | derive | blocked
+- depends_on: [<task-name>, ...]   # optional — only for derive tasks
 - entry_urls:
   - <url>
 - pagination: <rule, e.g. "?page=N until empty" | none>
@@ -65,6 +66,14 @@ shape:**
   - <field_name>: type=<str|int|float|bool>, required=<yes|no>, from=<selector or JSON path>
 - notes: <headers, quirks, blocked-reason, anything a generator needs>
 ```
+
+A **derive** task is pure post-processing — merge, join, or enrich the output
+of other tasks. It fetches nothing: its inputs are the sample files
+(`scrapers/samples/<task>.jsonl`) of the tasks named in `depends_on`, and its
+`fields`/`min_records` validate the derived records the same way. Use it
+whenever the user asks for combined or cross-referenced data; never fold a
+merge into a scraping task. `depends_on` may only name tasks defined in this
+plan.
 
 One `## Task:` block per scraper. Keep tasks focused — one page type or
 endpoint family each. Your final report to the spawner: the plan path plus a

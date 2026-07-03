@@ -3,7 +3,7 @@ import functools
 import json
 import logging
 import re
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from datetime import datetime, timezone
 from typing import Annotated, Literal, Protocol, TypeVar
 
@@ -11,7 +11,7 @@ from pydantic import BeforeValidator
 from pydantic_ai import ModelRetry, RunContext
 
 from ..ask_user import Choice, Question, answers_to_json, coerce_questions
-from ..jobs import render_jobs
+from ..jobs import JobRegistry, PrerequisiteFailed, _one_line, render_jobs
 from ..runtime.deps import Deps, HarnessAgent, SubAgent
 from ..runtime.permissions import Mode
 from ..tasks import Task, summarize
@@ -513,8 +513,8 @@ async def web_search(
     return await web.web_search(query, categories=categories, max_results=max_results)
 
 
-def _coerce_mcp(mcp: "list[str] | str | None") -> list[str] | None:
-    """Normalize the `mcp` grant into a list of server names, or None.
+def _coerce_names(mcp: "list[str] | str | None") -> list[str] | None:
+    """Normalize a name-list argument (mcp grant, after ids) into a list, or None.
 
     Weaker models often serialize the array argument as a JSON string
     (``'["mddocs"]'``) or a comma-separated string (``'mddocs, sentry'``)
@@ -544,6 +544,42 @@ def _coerce_mcp(mcp: "list[str] | str | None") -> list[str] | None:
     return cleaned or None
 
 
+async def _run_after(
+    jobs: "JobRegistry",
+    after_ids: list[str],
+    task: str,
+    start_inner: "Callable[[str], Awaitable[str]]",
+    state: dict,
+) -> str:
+    """Body of a dependent background job: wait for prerequisites, fail fast if
+    any didn't succeed, then run the real sub-agent with their reports appended
+    to its task.
+
+    ``start_inner`` creates the inner run_background_agent coroutine *lazily* —
+    the prompt can't be finalized until the prerequisites' reports exist, and an
+    eagerly-created coroutine would leak un-awaited on a cancel-before-start
+    (the same concern JobRegistry.register's docstring guards). ``state`` is
+    shared with the job's output_fn so the jobs panel can show the waiting
+    phase without a new job status."""
+    settled = await jobs.await_settled(after_ids)
+    bad = next((j for j in settled if j.status != "done"), None)
+    if bad is not None:
+        tail = " ".join((bad.result or "").split())[-160:]
+        raise PrerequisiteFailed(
+            f"prerequisite {bad.id} {bad.status}" + (f" — {tail}" if tail else "")
+        )
+    # Clip the heading to one line: a background spawn's label falls back to
+    # the full composed (multi-section) task when `description` was omitted,
+    # so without _one_line a dependent would receive its prerequisite's entire
+    # prompt embedded inside its own "### job-N — ..." heading.
+    sections = [
+        f"### {j.id} — {_one_line(j.label)}\n{j.result or '(no output)'}" for j in settled
+    ]
+    full_task = task + "\n\n## Results of prerequisite jobs\n\n" + "\n\n".join(sections)
+    state["waiting"] = False
+    return await start_inner(full_task)
+
+
 def _detach_handoff(job_id: str) -> str:
     """The return for an auto-detached spawn: tell the agent it's running in the
     background and that it may end its turn (wake will deliver the report) or wait."""
@@ -562,6 +598,7 @@ async def spawn_agent(
     description: str | None = None,
     background: bool | None = None,
     mcp: list[str] | str | None = None,
+    after: "list[str] | str | None" = None,
     max_output_chars: int | None = None,
     returns: str | None = None,
     constraints: str | None = None,
@@ -595,6 +632,15 @@ async def spawn_agent(
     `mcp=["mddocs"]` lets the sub-agent use that server's tools, gated the same
     way your own MCP calls are. Unknown or disabled names are ignored and noted
     in the report.
+
+    `after` names background job ids (earlier detached spawns or bash jobs) that
+    must finish before this spawn starts — use it to chain dependent work, e.g. a
+    merge step after the jobs producing its inputs. It requires a detached spawn
+    (`background=True`, or auto-detach). The prerequisites' final reports are
+    appended to this sub-agent's task under "Results of prerequisite jobs"; size
+    them with `max_output_chars` on the *prerequisite* spawns — injection never
+    truncates. If a prerequisite fails or is cancelled, this job fails without
+    starting (zero tokens spent) and the failure surfaces in the jobs digest.
 
     `max_output_chars` caps the report this spawn returns into your context — set
     it when you're fanning out and want bounded inflow. It's a budget the
@@ -639,7 +685,13 @@ async def spawn_agent(
     at depth 0. Each spawn increments depth by 1. When `depth + 1 >= max_depth`,
     the tool refuses. This parameter is pre-filled by the harness — callers should
     omit it."""
-    mcp_names = _coerce_mcp(mcp)
+    mcp_names = _coerce_names(mcp)
+    after_ids = _coerce_names(after)
+    if after_ids is not None:
+        # Dedupe while preserving order: a model that lists the same
+        # prerequisite id twice (e.g. after=[a, a]) would otherwise inject
+        # that prerequisite's report twice into the dependent's task.
+        after_ids = list(dict.fromkeys(after_ids))
     # Depth enforcement: refuse spawns that would exceed the depth ceiling.
     # max_depth is None for the main agent (defaults to SUBAGENT_MAX_DEPTH).
     # Sub-agents get it bound via functools.partial by SubagentRunner.build().
@@ -674,6 +726,20 @@ async def spawn_agent(
         and ctx.deps.ui.detach_fanout
         and ctx.deps.ui.interactive
     )
+    if after_ids is not None:
+        unknown = [jid for jid in after_ids if ctx.deps.jobs.get(jid) is None]
+        if unknown:
+            return (
+                f"Cannot spawn with after={unknown}: no such job(s). "
+                "after only accepts ids of already-started background jobs "
+                "(see the jobs panel or the digest for valid ids)."
+            )
+        if not (background or auto_detached):
+            return (
+                "after= requires a detached spawn. Pass background=True (top-level "
+                "agent only), or drop after and wait_for_job the prerequisite "
+                "before a foreground spawn."
+            )
     if background or auto_detached:
         if ctx.deps.services.run_background_agent is None:
             return "Background sub-agents are not available in this context."
@@ -687,13 +753,36 @@ async def spawn_agent(
         # Prefer the short `description` for the job label (the jobs panel and the
         # wait row read it) — the composed `task` is a full multi-section prompt.
         label = f"{type}: {description or task}"
-        job_id = ctx.deps.jobs.register(
-            "agent", label,
-            ctx.deps.services.run_background_agent(
-                type, task, mcp_names, budget, model, isolation,
-                ctx.tool_call_id or "", ctx.deps.subagent_depth,
-            ),
-        )
+        if after_ids:
+            state = {"waiting": True}
+            waiting_note = f"(waiting on {', '.join(after_ids)})"
+            # Type guard: we've already checked run_background_agent is not None
+            # in the guard above, so this is safe.
+            run_bg = ctx.deps.services.run_background_agent
+            assert run_bg is not None
+
+            def _waiting_output() -> str:
+                return waiting_note if state["waiting"] else "(still running)"
+
+            def _start_inner(full_task: str) -> "Awaitable[str]":
+                return run_bg(
+                    type, full_task, mcp_names, budget, model, isolation,
+                    ctx.tool_call_id or "", ctx.deps.subagent_depth,
+                )
+
+            job_id = ctx.deps.jobs.register(
+                "agent", label,
+                _run_after(ctx.deps.jobs, after_ids, task, _start_inner, state),
+                output_fn=_waiting_output,
+            )
+        else:
+            job_id = ctx.deps.jobs.register(
+                "agent", label,
+                ctx.deps.services.run_background_agent(
+                    type, task, mcp_names, budget, model, isolation,
+                    ctx.tool_call_id or "", ctx.deps.subagent_depth,
+                ),
+            )
         if auto_detached:
             return _detach_handoff(job_id)
         return f"Started {job_id} (agent) — {label[:60]}"

@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from marim_harness.jobs import Job, JobRegistry, render_jobs
+from marim_harness.jobs import Job, JobRegistry, PrerequisiteFailed, render_jobs
 
 
 async def _settled(reg: JobRegistry, *, tries: int = 400) -> None:
@@ -436,6 +436,132 @@ async def test_clear_history_empty_registry_is_safe():
     reg = JobRegistry()
     reg.clear_history()  # must not raise on an empty registry
     assert reg.list() == []
+
+
+async def _ev_job(ev: asyncio.Event, result: str = "ok") -> str:
+    await ev.wait()
+    return result
+
+
+@pytest.mark.anyio
+async def test_await_settled_orders_results_and_consumes_wake():
+    reg = JobRegistry()
+    e1, e2 = asyncio.Event(), asyncio.Event()
+    j1 = reg.register("agent", "a", _ev_job(e1, "one"))
+    j2 = reg.register("agent", "b", _ev_job(e2, "two"))
+    waiter = asyncio.ensure_future(reg.await_settled([j2, j1]))
+    await asyncio.sleep(0)
+    assert not waiter.done()
+    e1.set()
+    e2.set()
+    settled = await asyncio.wait_for(waiter, 5)
+    # Order of the ids given, not completion/registration order.
+    assert [j.id for j in settled] == [j2, j1]
+    assert [j.result for j in settled] == ["two", "one"]
+    assert all(j.status == "done" for j in settled)
+    # Wake-consumed (no redundant autonomous turn) but digest preserved.
+    assert reg.has_finished_pending() is False
+    digest = reg.take_finished_digest()
+    assert j1 in digest and "done" in digest
+
+
+@pytest.mark.anyio
+async def test_await_settled_immediate_for_terminal_jobs():
+    reg = JobRegistry()
+    ev = asyncio.Event()
+    jid = reg.register("agent", "a", _ev_job(ev, "early"))
+    ev.set()
+    await reg.wait(jid, 5)
+    settled = await asyncio.wait_for(reg.await_settled([jid]), 1)
+    assert settled[0].status == "done" and settled[0].result == "early"
+
+
+@pytest.mark.anyio
+async def test_await_settled_cancelled_waiter_leaves_job_running():
+    reg = JobRegistry()
+    ev = asyncio.Event()
+    jid = reg.register("agent", "a", _ev_job(ev))
+    waiter = asyncio.ensure_future(reg.await_settled([jid]))
+    await asyncio.sleep(0)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert reg.get(jid).status == "running"  # the shield's guarantee
+    ev.set()
+    await reg.wait(jid, 5)
+
+
+@pytest.mark.anyio
+async def test_await_settled_returns_cancelled_dependency_as_settled():
+    reg = JobRegistry()
+    ev = asyncio.Event()
+    jid = reg.register("agent", "a", _ev_job(ev))
+    waiter = asyncio.ensure_future(reg.await_settled([jid]))
+    await asyncio.sleep(0)
+    await reg.cancel(jid)
+    settled = await asyncio.wait_for(waiter, 5)
+    assert settled[0].status == "cancelled"  # returned, not raised
+
+
+@pytest.mark.anyio
+async def test_await_settled_missing_id_raises_prerequisite_failed():
+    reg = JobRegistry()
+    with pytest.raises(PrerequisiteFailed):
+        await reg.await_settled(["job-99"])
+
+
+@pytest.mark.anyio
+async def test_await_settled_holds_job_refs_across_clear_history():
+    """await_settled resolves every id to its Job object in one pass before
+    waiting on any of them, so a /clear (clear_history) that prunes an
+    already-finished prerequisite out of the registry mid-wait can't turn a
+    legitimately held reference into a spurious 'no longer exists' failure."""
+    reg = JobRegistry()
+    ev = asyncio.Event()
+    a = reg.register("agent", "a", _ev_job(ev, "slow-result"))
+    b = reg.register("agent", "b", _sleep_then("fast-result", 0.01))
+    await reg.wait(b, 5)  # B finishes first, while A is still gated
+    assert reg.get(b).status == "done"
+
+    waiter = asyncio.ensure_future(reg.await_settled([a, b]))
+    await asyncio.sleep(0)
+    assert not waiter.done()  # blocked on A
+
+    reg.clear_history()  # drops the now-terminal B out of self._jobs
+    assert reg.get(b) is None  # confirms B is really gone from the registry
+
+    ev.set()
+    settled = await asyncio.wait_for(waiter, 5)
+    assert [j.id for j in settled] == [a, b]
+    assert settled[0].result == "slow-result"
+    assert settled[1].result == "fast-result"  # B's Job object held through the clear
+
+
+@pytest.mark.anyio
+async def test_cancel_all_settles_dependent_cancelled_not_failed():
+    """cancel_all cancels in reverse launch order. A dependent job's
+    await_settled call blocks on a still-running prerequisite; cancelling the
+    prerequisite first would let the dependent observe it as `cancelled` and
+    raise PrerequisiteFailed, settling the dependent `failed` via the ordinary
+    done-callback (never wake-consumed) — exactly the teardown wake race F1
+    guards against. Cancelling in reverse order cancels the dependent's own
+    task directly, settling it `cancelled` and wake-consumed before its
+    prerequisite is ever touched."""
+    reg = JobRegistry()
+    dep_id = reg.register("agent", "prereq", _sleep_then("never", 5))
+
+    async def _waiter() -> str:
+        await reg.await_settled([dep_id])
+        return "waiter done"
+
+    waiter_id = reg.register("agent", "waiter", _waiter())
+    await asyncio.sleep(0)  # let the waiter reach await_settled and shield dep_id
+
+    await reg.cancel_all()
+
+    assert reg.get(dep_id).status == "cancelled"
+    assert reg.get(waiter_id).status == "cancelled"
+    assert reg.has_finished_pending() is False
 
 
 def _sleep_then(value, seconds):

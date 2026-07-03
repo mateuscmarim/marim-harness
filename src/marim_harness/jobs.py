@@ -16,6 +16,8 @@ and are cancelled on exit. The agent reaches results by *pulling*
 (``job_output`` / ``wait_for_job``); nothing wakes a turn on its own.
 """
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import logging
@@ -26,6 +28,13 @@ from typing import Literal
 logger = logging.getLogger(__name__)
 
 Status = Literal["running", "done", "failed", "cancelled"]
+
+
+class PrerequisiteFailed(RuntimeError):
+    """A dependent background job's prerequisite settled failed/cancelled (or
+    vanished), so the dependent never started. Raised by the spawn wrapper and
+    formatted by the registry's done-callback into the job's ``failed`` result."""
+
 
 _GLYPH = {"running": "▸", "done": "+", "failed": "x", "cancelled": "x"}
 
@@ -111,7 +120,7 @@ class JobRegistry:
         # means asyncio closes it cleanly even on a cancel-before-start.
         task = asyncio.ensure_future(coro)
 
-        def _on_done(t: "asyncio.Task") -> None:
+        def _on_done(t: asyncio.Task) -> None:
             if t.cancelled():
                 self._settle(job, "cancelled")
                 return
@@ -181,6 +190,69 @@ class JobRegistry:
         self._wake_consumed.add(job_id)
         return job.result if job.result is not None else f"({job.status})"
 
+    async def await_settled(self, ids: list[str]) -> list[Job]:
+        """Block until every job in ``ids`` reaches a terminal state, then return
+        their ``Job`` objects in the order the ids were given. No timeout — a
+        dependent job legitimately waits as long as its prerequisites run.
+
+        Each id is marked wake-consumed exactly as :meth:`wait` does: the waiter
+        is the consumer, so an intermediate completion in a chain must not fire a
+        redundant autonomous wake (digest entries are preserved, so the model
+        still sees the full chain history next turn).
+
+        Cancellation is two-sided and must not be conflated: a *dependency*
+        being cancelled settles it and is returned like any terminal state (the
+        caller decides what a cancelled prerequisite means), while the *waiter*
+        being cancelled re-raises so the wrapper job itself settles cancelled.
+        The shield makes the waiter's cancellation leave the dependency running.
+
+        Every id is resolved to its ``Job`` object *before* waiting on any of
+        them — two passes, not one lazy lookup per iteration. A chain step
+        (``after=[A, B]``) can block arbitrarily long on an earlier id; if a
+        later id (already finished, say B) were looked up only once the loop
+        reached it, an intervening ``/clear`` (:meth:`clear_history` prunes
+        terminal jobs out of ``self._jobs``) while still waiting on A would drop
+        B from the registry, turning a legitimate held reference into a
+        spurious "prerequisite no longer exists". Resolving up front means the
+        held ``Job`` objects survive a concurrent ``clear_history`` regardless
+        of how long the wait takes — the ``after=`` promise is to the objects,
+        not to a lookup repeated over the course of the wait.
+        """
+        jobs: list[Job] = []
+        for jid in ids:
+            job = self._jobs.get(jid)
+            if job is None:
+                # Spawn-time validation guarantees existence; a vanished id means
+                # the registry was swapped/cleared out from under the chain.
+                raise PrerequisiteFailed(f"prerequisite {jid} no longer exists")
+            jobs.append(job)
+
+        settled: list[Job] = []
+        for jid, job in zip(ids, jobs, strict=True):
+            while job.status == "running":
+                if job.task is None:
+                    # Unreachable via register(): a job's ``task`` is always set
+                    # before the job is published into ``self._jobs``, so no
+                    # caller can observe status == "running" with task is None.
+                    break
+                try:
+                    await asyncio.shield(job.task)
+                except asyncio.CancelledError:
+                    # Ambiguous by construction: shield raises CancelledError both
+                    # when the dependency's task was cancelled and when *we* were.
+                    # The dependency's task state disambiguates.
+                    if not job.task.cancelled():
+                        raise  # the waiter itself was cancelled — propagate
+                except Exception:  # noqa: BLE001 — job failures settle via the
+                    pass  # done-callback; status is read below, never the exc.
+                # The done-callback that settles the job runs *after* the await
+                # returns; yield once so status is terminal before we re-check
+                # (otherwise this loop would spin on a done-but-unsettled task).
+                await asyncio.sleep(0)
+            self._wake_consumed.add(jid)
+            settled.append(job)
+        return settled
+
     async def cancel(self, job_id: str) -> str:
         """Stop a running job: kill its OS process if any, then cancel the task."""
         job = self._jobs.get(job_id)
@@ -204,8 +276,25 @@ class JobRegistry:
         return f"cancelled {job_id}"
 
     async def cancel_all(self) -> None:
-        """Cancel every running job (called on shutdown)."""
-        for job in list(self._jobs.values()):
+        """Cancel every running job (called on shutdown).
+
+        Iterates in *reverse* launch order — this matters. A dependent job
+        (``after=``) always registers after its prerequisite, so forward order
+        cancels the prerequisite first; the dependent's ``await_settled`` then
+        observes the prerequisite as ``cancelled`` and raises
+        ``PrerequisiteFailed``, which settles the dependent ``failed`` via the
+        ordinary done-callback path — *not* via this method's own ``cancel()``
+        call, so it's never marked wake-consumed. A ``failed`` job with a
+        pending (unconsumed) digest entry is exactly what
+        ``has_finished_pending()`` looks for, so teardown could fire a
+        redundant autonomous wake turn (and a desktop notification) for a job
+        that only "failed" because we were shutting down. Cancelling in
+        reverse order visits each dependent while its prerequisites are still
+        running: cancelling the dependent's own task directly settles it
+        ``cancelled`` and wake-consumed (via this method's ``cancel()`` call)
+        *before* its prerequisites are ever touched, so the race can't occur.
+        """
+        for job in reversed(list(self._jobs.values())):
             if job.status == "running":
                 await self.cancel(job.id)
 

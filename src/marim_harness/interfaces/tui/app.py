@@ -686,8 +686,10 @@ class HarnessApp(App):
 
     async def rewind_to_checkpoint(self, index: int) -> None:
         """Rewind the session to checkpoint ``index`` and rebuild the log.
-        Refused mid-turn — rewinding under a running turn would race history."""
-        if self.status.busy:
+        Refused mid-turn — rewinding under a running turn would race history.
+        Checks both busy flags: ``turn_busy`` covers the turn worker, and
+        ``status.busy`` guards any other flow that marks the app busy without it."""
+        if self.turn_busy or self.status.busy:
             await self.post_system("Can't rewind while a turn is running. Press Esc first.")
             return
         try:
@@ -709,8 +711,9 @@ class HarnessApp(App):
     async def undo_rewind(self) -> None:
         """Undo the last rewind, restoring the conversation (and the working tree, if
         the rewind touched files) to their pre-rewind state. Re-renders the log since
-        the conversation changed. Refused mid-turn."""
-        if self.status.busy:
+        the conversation changed. Refused mid-turn (same double-flag check as
+        ``rewind_to_checkpoint``)."""
+        if self.turn_busy or self.status.busy:
             await self.post_system(
                 "Can't undo a rewind while a turn is running. Press Esc first."
             )
@@ -1005,4 +1008,13 @@ class HarnessApp(App):
         finally:
             self._turn_worker = None
             self.status.set_busy(False)
+            # Guard against an orphaned compaction notice if maybe_compact raised
+            # between on_compact_start() and on_compact(). Always try to clean up.
+            if self._compacting_notice is not None:
+                try:
+                    self._compacting_notice.remove()
+                except ValueError:
+                    pass  # widget already removed; safe to ignore
+                finally:
+                    self._compacting_notice = None
             await self._after_turn()  # drain next queued item, or wake on jobs

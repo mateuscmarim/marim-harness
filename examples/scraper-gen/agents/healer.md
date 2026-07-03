@@ -14,9 +14,13 @@ files — if something seems missing, report it instead.
 
 **Procedure:**
 
-1. Read `specs/plan.md` for each task's strategy, schema, and `min_records`.
-2. Run every `scrape_*.py`: `cd scrapers && uv run python <script> --limit
-   10 --out samples/<task>.jsonl`. Where the task has pagination, vary the
+1. Read `scrapers/specs/plan.md` for each task's strategy, schema,
+   `min_records`, and `depends_on`.
+2. Run every `scrape_*.py` in dependency order — tasks named in another
+   task's `depends_on` first, `derive` scripts last — so downstream scripts
+   always heal against fresh upstream samples:
+   `cd scrapers && uv run python <script> --limit 10 --out
+   samples/<task>.jsonl`. Where the task has pagination, vary the
    entry offset/page from what generation likely used, so selectors that
    only worked on page 1 get caught.
 3. For each failure: read stderr and the script, diagnose (site drift, wrong

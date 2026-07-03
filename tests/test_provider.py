@@ -447,9 +447,9 @@ async def test_spawn_agent_default_mcp_is_none(tmp_path):
     ],
 )
 def test_coerce_mcp(raw, expected):
-    from marim_harness.tools.provider import _coerce_mcp
+    from marim_harness.tools.provider import _coerce_names
 
-    assert _coerce_mcp(raw) == expected
+    assert _coerce_names(raw) == expected
 
 
 @pytest.mark.anyio

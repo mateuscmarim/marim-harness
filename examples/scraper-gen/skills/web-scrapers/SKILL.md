@@ -17,8 +17,10 @@ every script exits 0.
 - The agents need gated `bash`/`write_file`/`edit_file`, which marim strips
   from sub-agents outside **auto** mode. Not in auto mode? Say so and stop.
 - Check the MCP servers enabled in this session (the MCP-servers index lists
-  them). If one is a browser-automation server (Playwright MCP or similar),
-  remember its name — you will grant it to the planner. If none, proceed
+  them). If one is a browser-automation server — pick one whose tools include
+  `browser_navigate`/`browser_snapshot`, preferring a general-purpose server
+  (e.g. `playwright`) over the `playwright_test` run-test server — remember
+  its name: you will grant it to the planner. If none, proceed
   anyway and note it: browser-strategy tasks will be planned as *inferred*
   and corrected by the healer's live runs.
 - This skill relies on marim's sub-agent + MCP machinery, so it applies on
@@ -48,23 +50,47 @@ Spawn the planner with the user's request verbatim:
 task="Plan scrapers for: <the user's data request>. Work in scrapers/; write
 scrapers/specs/plan.md.")`
 
-Read the returned `specs/plan.md` yourself, then show the user a short
+Read the returned `scrapers/specs/plan.md` yourself, then show the user a short
 summary — each task's name, strategy (http/api/browser/blocked), fields, and
 min_records — and get their nod before generating. This is the cheap moment
 to catch "I wanted the price *history*, not the current price." Surface any
 `blocked` tasks (robots.txt, auth walls, CAPTCHAs) now; do not generate them.
 
-## Step 3 — generate, fan out
+## Step 3 — generate, fan out with dependencies
 
-One generator spawn per non-blocked task. Each task owns its own script
-file, so they are independent — spawn them all in one turn (leave
-`background` unset; that already runs them in parallel):
-`spawn_agent(type="scraper-gen:generator", task=<the full task block pasted
-verbatim, plus the plan's header lines (base_url, robots, politeness)>,
-returns="script path, final exit code, record count, deviations from plan")`.
+One generator spawn per non-blocked task; never batch two tasks into one
+spawn. Each spawn's task is the full task block pasted verbatim plus the
+plan's header lines (base_url, robots, politeness), with
+`returns="script path, final exit code, record count, deviations from plan"`.
+Also pass a short `description` (e.g. the task name) on every spawn — without
+it the job label falls back to the full composed task, which makes the jobs
+panel and any injected `after=` headings unreadable.
 
-Don't batch two tasks into one spawn. If two tasks ever share a script file,
-run those sequentially.
+How you spawn depends on the plan:
+
+- **No `depends_on` anywhere:** spawn all generators in one turn (leave
+  `background` unset; that already runs them in parallel) — unless the
+  same-host cap below applies.
+- **Any task has `depends_on`:** spawn every generator as a background job
+  (`background=True`) so each has a job id, and give each dependent task
+  `after=[<job ids of the generators for the tasks it depends on>]` — the
+  harness holds it until its inputs exist and injects the prerequisites'
+  reports into its prompt. Then end your turn (reports arrive in the digest)
+  or `wait_for_job` the terminal jobs.
+
+**Same-host politeness:** each script sleeps between its own requests, but
+that guarantee is per-script — N parallel generators against one host is
+still ~N requests/second plus their fix-and-rerun cycles. Tasks on
+*different* hosts (and `derive` tasks, which never touch the network) fan
+out freely; for tasks on the *same* host run at most 2–3 generators at a
+time (spawn in waves), and if any generator reports 429/rate-limit
+responses, drop to fully sequential for that host. A rate-limited site makes
+generators "fix" working selectors and later trips the healer's pass-twice
+rule into false flakiness. To run waves even when no task has
+`depends_on`, spawn same-host generators as background jobs and chain
+each wave with `after=[<previous wave's job ids>]` — the politeness cap
+uses the same mechanism as data dependencies; different-host and `derive`
+tasks need no chaining.
 
 ## Step 4 — heal
 
@@ -78,7 +104,8 @@ broken.
 
 ## Step 5 — report
 
-- Diff `find scrapers -type f | sort` against the Step 2 snapshot; flag any
+- Diff `find scrapers -type f | sort` against the earlier file snapshot
+  (taken in Step 2, or in Step 1 when entering in repair mode); flag any
   file not accounted for by the plan instead of folding it in silently.
 - Give the user: a table of task → script → strategy → sample record count;
   how to run each script for real (`cd scrapers && uv run python
