@@ -55,6 +55,7 @@ def test_build_services_populates_and_assigns(tmp_path):
     class _Subs:
         async def run(self, *a, **k): ...
         async def run_background(self, *a, **k): ...
+        async def resume_spawn(self, *a, **k): ...
 
     subs = _Subs()
     services = build_services(deps, lsp=lsp, turn_hooks=turn_hooks, subagents=subs)
@@ -68,6 +69,7 @@ def test_build_services_populates_and_assigns(tmp_path):
     # the brief intends.
     assert services.run_subagent == subs.run
     assert services.run_background_agent == subs.run_background
+    assert services.resume_subagent == subs.resume_spawn
     # The container is also installed on deps (the late binding).
     assert deps.services is services
 
@@ -100,6 +102,7 @@ def test_build_services_threads_get_session_id(tmp_path):
     class _Subs:
         async def run(self, *a, **k): ...
         async def run_background(self, *a, **k): ...
+        async def resume_spawn(self, *a, **k): ...
 
     deps = _make_deps(tmp_path, mode=Mode.ask)
     services = build_services(

@@ -80,6 +80,31 @@ class SubAgentsViewer:
         app.query_one("#log", VerticalScroll).display = True
         app.query_one(PromptInput).focus()
 
+    def resume_selected(self) -> None:
+        """The `r` key: resume the selected interrupted spawn as a background
+        job. A no-op on any other status."""
+        ordered = self._ordered()
+        if not ordered or not (0 <= self.index < len(ordered)):
+            return
+        card = ordered[self.index]
+        if card.status != "interrupted":
+            return
+        self.app.run_worker(self._resume(card))
+
+    async def _resume(self, card) -> None:
+        resume = self.app.harness.deps.services.resume_subagent
+        if resume is None:
+            return
+        job_id, message = await resume(card.stream_id)
+        if job_id is None:
+            # Refused: surface the reason in the card's pane; the card stays
+            # interrupted so the user can retry after fixing the cause.
+            if card.pane is not None:
+                card.pane.append_error(message)
+        else:
+            self.app.stream.adopt_resumed_card(card, job_id)
+        self._repaint_list()
+
     def _repaint_list(self, select: int | None = None) -> None:
         """Repaint the list/summary scalars and show the selected agent's pane.
         Closes the screen if the list emptied. Does NOT flush transcripts — the

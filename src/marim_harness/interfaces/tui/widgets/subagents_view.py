@@ -17,7 +17,7 @@ from .subagent_detail import SubAgentDetailHost
 from .subagent_stats import SummaryStats, aggregate
 from .subagent_viewer import SubAgentList
 
-_HINTS = "Esc back · ↑↓ select · Tab switch pane · t task"
+_HINTS = "Esc back · ↑↓ select · Tab switch pane · t task · r resume"
 
 
 class SubAgentSummary(Static):
@@ -50,6 +50,7 @@ class SubAgentsView(Vertical):
         Binding("tab", "focus_next_pane", "Switch pane", show=False),
         Binding("shift+tab", "focus_next_pane", "Switch pane", show=False),
         Binding("t", "toggle_task", "Task", show=False),
+        Binding("r", "resume_agent", "Resume", show=False),
     ]
 
     def __init__(self) -> None:
@@ -94,6 +95,10 @@ class SubAgentsView(Vertical):
                 self.host.query_one(f"#{self.host.current}").focus()
         else:
             self.list.focus()
+
+    def action_resume_agent(self) -> None:
+        """Resume the selected interrupted sub-agent (the 'r' key)."""
+        self.app.subagents.resume_selected()  # type: ignore[attr-defined]
 
     def action_toggle_task(self) -> None:
         """Expand/collapse the full-task disclosure on the visible pane (the 't'

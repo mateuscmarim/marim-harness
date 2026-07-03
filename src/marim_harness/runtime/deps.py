@@ -58,6 +58,11 @@ BackgroundAgentRunner = Callable[
     [str, str, list[str] | None, int | None, str | None, str | None, str, int],
     Awaitable[str],
 ]
+# (stream_id) -> (job_id, message). Lets the sub-agents screen resume an
+# interrupted spawn from its persisted transcript as a background job: a
+# non-None job_id on success (message is a user-renderable confirmation), or
+# None with a user-renderable refusal reason otherwise.
+ResumeSubagent = Callable[[str], Awaitable[tuple[str | None, str]]]
 
 # (questions) -> {header: answer}, where answer is a str (single-select) or a
 # list[str] (multi-select); None when the user cancelled. Wired by the TUI; None
@@ -94,6 +99,9 @@ class HarnessServices:
     run_subagent: SubAgentRunner | None = None
     # Lets spawn_agent(background=True) run a sub-agent as a detached job.
     run_background_agent: BackgroundAgentRunner | None = None
+    # Lets the sub-agents screen resume an interrupted spawn from its persisted
+    # transcript as a background job (spec 2026-07-03-subagent-resume, §4).
+    resume_subagent: Optional["ResumeSubagent"] = None
     # Returns the active session's id live (it changes on session switch), or None
     # when no session is active. Lets a tool stamp session-scoped artifacts (e.g.
     # plan files) without reaching into the session controller. None in headless /

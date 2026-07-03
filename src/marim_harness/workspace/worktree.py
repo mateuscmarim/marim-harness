@@ -90,7 +90,7 @@ def _validate_branch(branch: str) -> None:
         raise WorktreeError(f"invalid branch name: {branch!r}")
 
 
-def _branch_exists(repo_root: Path, branch: str) -> bool:
+def branch_exists(repo_root: Path, branch: str) -> bool:
     return _git(
         repo_root, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"
     ).returncode == 0
@@ -144,7 +144,7 @@ def create_or_reuse_worktree(repo_root: Path, branch: str) -> Path:
         if info.branch == branch:
             return info.path
     target = repo_root / WORKTREES_DIRNAME / branch
-    if _branch_exists(repo_root, branch):
+    if branch_exists(repo_root, branch):
         _check(_git(repo_root, "worktree", "add", str(target), branch))
     else:
         _check(_git(repo_root, "worktree", "add", "-b", branch, str(target)))

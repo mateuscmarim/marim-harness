@@ -155,6 +155,7 @@ def build_services(
         turn_hooks=turn_hooks,
         run_subagent=subagents.run,
         run_background_agent=subagents.run_background,
+        resume_subagent=subagents.resume_spawn,
         get_session_id=get_session_id,
     )
     deps.services = services

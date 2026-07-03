@@ -6,6 +6,7 @@ state; reaches the app and the status presenter through ``self.app``."""
 
 import abc
 import re
+import time
 from dataclasses import dataclass, field
 from typing import cast
 
@@ -439,6 +440,20 @@ class StreamRenderer:
         self.subagents.clear()
         self._detached_cards.clear()
         self.dirty_streams.clear()
+
+    def adopt_resumed_card(self, card: "SubAgentWidget", job_id: str) -> None:
+        """Re-arm an interrupted card whose spawn was just resumed as ``job_id``:
+        flip it live, route the resumed run's stream back into it, and map the
+        job so the settle fills it like any detached spawn."""
+        card.status = "pending"
+        card._t0 = time.monotonic()
+        card._t_end = None
+        card.detached = True
+        card.job_id = job_id
+        self.tool_widgets[card.stream_id] = card
+        self._detached_cards[job_id] = card
+        card._paint_header()
+        card._paint_activity()
 
     def note_detached_spawn(self, content: str, widget: "SubAgentWidget", jobs) -> bool:
         """If ``content`` is a detached-spawn handoff, mark the card as a background

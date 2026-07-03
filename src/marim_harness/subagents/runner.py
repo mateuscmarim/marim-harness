@@ -53,6 +53,7 @@ from ..workspace import (
 )
 from ..workspace.worktree import (
     WorktreeError,
+    branch_exists,
     commit_worktree,
     create_or_reuse_worktree,
     delete_branch,
@@ -504,7 +505,8 @@ class SubagentRunner:
 
     async def _run_to_completion(self, sub: SubAgent, task: str, run_deps: Deps,
                                  granted: list[Any], handler: EventStreamHandler[Deps] | None,
-                                 stream_id: str | None = None) -> AgentRunResult[str]:
+                                 stream_id: str | None = None,
+                                 history: list | None = None) -> AgentRunResult[str]:
         """Run a built sub-agent to its final result, retrying *transient* model
         errors (gateway/server hiccups, timeouts, rate limits) with backoff. A
         permanent error, or exhausting the retry budget, re-raises for the caller's
@@ -526,7 +528,14 @@ class SubagentRunner:
         A context-overflow rejection (a permanent 4xx the transient path would
         surface) gets one recovery attempt of its own: the captured conversation
         is resumed with stale tool observations masked (see ``_shed_context``);
-        a repeat overflow, or one with nothing left to shed, surfaces normally."""
+        a repeat overflow, or one with nothing left to shed, surfaces normally.
+
+        ``history``, when given, is a persisted transcript to resume from (an
+        interrupted spawn continuing after a restart) — the first attempt sends
+        both ``task`` (the continuation prompt) as the run's input AND
+        ``message_history=history``, so pydantic-ai appends the prompt on top of
+        the prior conversation. A later transient-retry resume within the same
+        call takes over from ``resume_history`` instead, exactly as before."""
         attempt = 0
         overflow_shed = False
         resume_history: list | None = None
@@ -548,7 +557,8 @@ class SubagentRunner:
                 with _fresh_capture() as captured:
                     return await sub.run(
                         task if resume_history is None else None,
-                        message_history=resume_history,
+                        message_history=(resume_history if resume_history is not None
+                                         else history),
                         deps=run_deps, toolsets=granted,
                         event_stream_handler=handler,
                         usage=run_usage,
@@ -827,11 +837,16 @@ class SubagentRunner:
     async def _execute_background_spawn(
         self, type: str, task: str, stream_id: str,
         max_output_chars: int | None, prep: _SpawnPrep,
+        history: list | None = None,
     ) -> str:
         """Run a background spawn to completion. Exceptions propagate to the job
         registry (marking the job failed). Usage is persisted immediately since no
         ``run_turn`` will fold the spend. Deps get an isolated ``TaskList()`` so
-        multi-step work never mutates the user's session checklist."""
+        multi-step work never mutates the user's session checklist.
+
+        ``history``, when given, is a persisted transcript to resume from (see
+        ``resume_spawn``); it also changes how a failed run's isolated worktree
+        is torn down — see the except arms below."""
         # A background sub-agent runs detached and concurrently with the user's
         # turn. Give it its own empty TaskList so its multi-step work never mutates
         # — or persists as — the user's session checklist; an isolated run also
@@ -847,11 +862,18 @@ class SubagentRunner:
             async with self._slot():
                 result = await self._run_to_completion(
                     prep.sub, task, run_deps, prep.granted, prep.handler, stream_id,
+                    history=history,
                 )
         except Exception:  # noqa: BLE001
             self._log_spawn_timing(type, prep.t0, prep.t_built, prep.first_event_at, failed=True)
             if prep.iso:
-                self._discard_worktree(prep.iso)
+                if history is None:
+                    self._discard_worktree(prep.iso)
+                else:
+                    # A resumed spawn's branch holds prior committed work; a
+                    # failed resume must not destroy it. Tear down only the
+                    # worktree checkout and keep the branch.
+                    self._teardown_worktree(prep.iso, force=True)
             # A background crash is intentionally NOT contained: it propagates
             # to the job registry, which marks the job failed.
             raise
@@ -860,7 +882,12 @@ class SubagentRunner:
             # BaseException and skips the handler above; discard the isolated
             # worktree before it propagates so a cancelled spawn leaves none behind.
             if prep.iso:
-                self._discard_worktree(prep.iso)
+                if history is None:
+                    self._discard_worktree(prep.iso)
+                else:
+                    # See the except Exception arm above: a resumed spawn's
+                    # branch must survive a cancelled resume too.
+                    self._teardown_worktree(prep.iso, force=True)
             raise
         self._log_spawn_timing(type, prep.t0, prep.t_built, prep.first_event_at, failed=False)
         await self.hooks.subagent_stop(type, task, result.output)
@@ -1072,3 +1099,70 @@ class SubagentRunner:
             type, task, mcp_names, max_output_chars, model, isolation,
             background=True, stream_id=stream_id, caller_depth=caller_depth,
         )
+
+    _CONTINUATION_PROMPT = (
+        "You were interrupted before finishing. The conversation above is your "
+        "own earlier progress on this task — continue from where it leaves off "
+        "and finish the task, then report as usual."
+    )
+
+    async def resume_spawn(self, stream_id: str) -> tuple[str | None, str]:
+        """Continue an interrupted spawn from its persisted sidecar as a
+        background job. Returns ``(job_id, message)`` on success or
+        ``(None, reason)`` on refusal — the reason is always user-renderable.
+
+        Always background, even for an originally-foreground spawn: its owning
+        turn is gone after a restart (the main history's dangling spawn_agent
+        call was repaired with a synthetic return), so the finished-job digest
+        is the only report consumer that still exists — and it already works."""
+        store = self._transcript_store()
+        if store is None:
+            return None, "No session store — can't resume."
+        meta = store.read_meta(stream_id)
+        if meta is None:
+            return None, ("No resumable transcript for this spawn (missing or "
+                          "pre-envelope sidecar).")
+        status = meta.get("status")
+        if status not in ("running", "interrupted"):
+            return None, f"Spawn already {status} — nothing to resume."
+        for job in self.deps.jobs.list():
+            if job.stream_id == stream_id and job.status == "running":
+                return None, f"Already resuming as {job.id}."
+        messages = store.read(stream_id)
+        history = _resumable_history(messages or [])
+        if history is None:
+            return None, "Transcript unreadable or empty — can't resume."
+        type_ = str(meta.get("type") or "")
+        task = str(meta.get("task") or "")
+        iso = None
+        branch = meta.get("isolation")
+        if branch:
+            repo = repo_root(self.deps.workspace.root)
+            if repo is None or not branch_exists(repo, branch):
+                return None, (f"Isolation branch {branch!r} no longer exists — "
+                              "can't resume this isolated spawn.")
+            try:
+                path = create_or_reuse_worktree(repo, branch)
+            except WorktreeError as exc:
+                return None, f"Couldn't reopen the isolated worktree: {exc}"
+            iso = {"repo": repo, "branch": branch, "path": path}
+        prep = await self._prepare_spawn(
+            type_, task, meta.get("mcp"), meta.get("max_output_chars"),
+            meta.get("model"), iso, iso["path"] if iso else None, stream_id,
+            debug=logger.isEnabledFor(logging.DEBUG), t0=time.perf_counter(),
+            depth=int(meta.get("depth") or 1),
+        )
+        if isinstance(prep, str):
+            if iso:
+                self._teardown_worktree(iso)  # keep the branch — it's prior work
+            return None, prep
+        label = f"{type_}: resumed — {task}"
+        job_id = self.deps.jobs.register(
+            "agent", label,
+            self._execute_background_spawn(
+                type_, self._CONTINUATION_PROMPT, stream_id,
+                meta.get("max_output_chars"), prep, history=history,
+            ),
+            stream_id=stream_id,
+        )
+        return job_id, f"Resumed as {job_id}."
