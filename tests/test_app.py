@@ -1950,6 +1950,7 @@ async def test_autoname_posts_notice_after_first_turn(tmp_path: Path):
     async with app.run_test() as pilot:
         await pilot.pause()
         await app.harness.run_turn("hello")
+        await app.harness.session.wait_autoname()  # the rename runs in the background
         await pilot.pause()
         assert app.harness.session.session_name == "Auto Title"
         assert "Auto Title" in _log_text(app)

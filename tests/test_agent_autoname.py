@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -59,6 +60,7 @@ async def test_autoname_after_first_turn(tmp_path: Path):
     h.session.on_rename = lambda old, new: renames.append((old, new))
 
     await h.run_turn("hello there")
+    await h.session.wait_autoname()  # the rename runs in the background
     assert h.session.session_name == "Generated Title"
     assert h.session.store.auto_named is False
     assert renames and renames[-1][1] == "Generated Title"
@@ -83,9 +85,102 @@ async def test_autoname_happens_only_once(tmp_path: Path):
 
     h = _autoname_harness(tmp_path, counting_titler)
     await h.run_turn("first")
+    await h.session.wait_autoname()
     await h.run_turn("second")
+    await h.session.wait_autoname()
     assert calls["n"] == 1
     assert h.session.session_name == "Title 1"
+
+
+def _gated_titler(title: str):
+    """A titler blocked on an event, so tests control exactly when the
+    background autoname's LLM round-trip 'returns'."""
+    gate = asyncio.Event()
+
+    async def titler(messages) -> str:
+        await gate.wait()
+        return title
+
+    return gate, titler
+
+
+@pytest.mark.anyio
+async def test_autoname_does_not_block_the_turn(tmp_path: Path):
+    gate, titler = _gated_titler("Generated Title")
+    h = _autoname_harness(tmp_path, titler)
+    placeholder = h.session.session_name
+
+    await h.run_turn("hello")
+    # The turn returned while the titler is still blocked — naming is off the
+    # turn's critical path.
+    assert h.session.session_name == placeholder
+    assert h.session.store.auto_named is True
+
+    gate.set()
+    await h.session.wait_autoname()
+    assert h.session.session_name == "Generated Title"
+    assert h.session.manager.store(h.session.store.session_id).name == "Generated Title"
+
+
+@pytest.mark.anyio
+async def test_new_session_cancels_inflight_autoname(tmp_path: Path):
+    gate, titler = _gated_titler("Old Transcript Title")
+    h = _autoname_harness(tmp_path, titler)
+    old_store = h.session.store
+
+    await h.run_turn("hello")
+    h.session.new_session()  # switch away while the titler is still in flight
+    gate.set()
+    await h.session.wait_autoname()
+
+    # The old transcript's title must not land on the new session; the old
+    # session stays auto_named so a later resume retries.
+    assert h.session.session_name != "Old Transcript Title"
+    assert h.session.store.auto_named is True
+    assert old_store.name != "Old Transcript Title"
+    assert old_store.auto_named is True
+
+
+@pytest.mark.anyio
+async def test_autoname_apply_guard_on_store_rebind(tmp_path: Path):
+    """The apply-side guard inside maybe_autoname itself: even without the
+    cancel (e.g. a direct call), a store rebound during the titler await means
+    the title belongs to another transcript and is dropped."""
+    gate, titler = _gated_titler("Old Transcript Title")
+    h = _autoname_harness(tmp_path, titler)
+    old_store = h.session.store
+    h.session.history = ["u1"]  # any non-empty history; the gated titler ignores it
+
+    task = asyncio.ensure_future(h.session.maybe_autoname())
+    await asyncio.sleep(0)  # let the worker capture the store and block on the gate
+    h.session.store = h.session.manager.create()
+    gate.set()
+    await task
+
+    assert old_store.name != "Old Transcript Title"
+    assert h.session.store.name != "Old Transcript Title"
+
+
+@pytest.mark.anyio
+async def test_manual_rename_beats_inflight_autoname(tmp_path: Path):
+    gate, titler = _gated_titler("Generated Title")
+    h = _autoname_harness(tmp_path, titler)
+
+    await h.run_turn("hello")
+    await asyncio.sleep(0)  # let the background task start and block on the gate
+    assert await h.rename_session("My Name") == "My Name"
+    gate.set()
+    await h.session.wait_autoname()
+
+    # rename() flipped auto_named, so the generated title is dropped on apply.
+    assert h.session.session_name == "My Name"
+
+
+@pytest.mark.anyio
+async def test_wait_and_cancel_autoname_are_noops_when_idle(tmp_path: Path):
+    h = _autoname_harness(tmp_path, _fake_titler, name="named")
+    await h.session.wait_autoname()
+    h.session.cancel_autoname()
 
 
 @pytest.mark.anyio

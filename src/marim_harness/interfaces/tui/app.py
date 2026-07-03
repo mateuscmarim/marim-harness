@@ -270,6 +270,9 @@ class HarnessApp(App):
         # even when history is unchanged (an idle exit would otherwise skip the
         # cache-gated persist and lose it).
         session = self.harness.session
+        # Don't hold exit hostage to an in-flight background autoname (a titler
+        # LLM call). auto_named stays True, so the next resume simply retries.
+        session.cancel_autoname()
         session.finalize_active_time()
         session.persist(force=True)
         # Show a brief session summary in the terminal after exit.

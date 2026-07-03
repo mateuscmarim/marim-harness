@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Callable
@@ -153,6 +154,9 @@ class SessionController:
         self.on_compact: Callable[[int, int], None] | None = None
         self.on_compact_start: Callable[[], None] | None = None
         self.on_rename: Callable[[str, str], None] | None = None
+        # The in-flight background autoname, if any (see schedule_autoname).
+        # Doubles as the strong reference that keeps the task alive.
+        self._autoname_task: asyncio.Task[None] | None = None
 
     @property
     def session_name(self) -> str | None:
@@ -272,6 +276,7 @@ class SessionController:
             self._segment_start = 0.0
 
     def reset(self) -> None:
+        self.cancel_autoname()
         self.history = []
         self.usage = RunUsage()
         self.duration_seconds = 0.0
@@ -284,6 +289,7 @@ class SessionController:
         if self.manager is None:
             self.reset()
             return
+        self.cancel_autoname()
         self.store = self.manager.create(name)
         if model_id is not None:
             self.store.model = model_id
@@ -296,6 +302,7 @@ class SessionController:
     def switch_session(self, session_id: str) -> int:
         if self.manager is None:
             return 0
+        self.cancel_autoname()
         self.store = self.manager.store(session_id)
         return self._load_active_store()
 
@@ -393,21 +400,85 @@ class SessionController:
             or not self.history
         ):
             return
-        old = self.store.name
+        # Capture the store and snapshot the history up front: this usually runs
+        # as a background task (schedule_autoname), so by the time the titler's
+        # LLM round-trip returns, the user may have switched sessions (self.store
+        # rebound) and the next turn may be rewriting self.history under us.
+        store = self.store
+        history = list(self.history)
+        old = store.name
         try:
-            title = await self.titler(self.history)
+            title = await self.titler(history)
         except Exception as exc:
             logger.warning("autoname titler failed: %s", exc)
             return
         if not title:
             return
-        self.store.name = title
-        self.store.auto_named = False
-        # Metadata-only change — history didn't move, so the version didn't
-        # bump. Force the persist so the rename survives a restart.
-        self.persist(force=True)
+        # Re-check after the await. A session switch rebound self.store — this
+        # title belongs to the *old* transcript, so applying it now would name
+        # the wrong session. And an explicit rename() flipped auto_named — the
+        # user's chosen name must win over the generated one.
+        if self.store is not store or not store.auto_named:
+            return
+        store.name = title
+        store.auto_named = False
+        # Metadata-only on-disk patch, deliberately NOT a full persist: running
+        # in the background means this can land mid-turn, when the in-memory
+        # history may end in unanswered tool calls that must never reach disk
+        # (the approval-round invariant in TurnController._run_with_approval).
+        # save_meta rewrites just the name/auto header, never the messages.
+        store.save_meta()
         if self.on_rename is not None:
             self.on_rename(old, title)
+
+    def schedule_autoname(self) -> None:
+        """Run ``maybe_autoname`` as a background task.
+
+        The titler is a full LLM round-trip whose result is cosmetic metadata —
+        nothing in the turn depends on it — so the turn (and the TUI's busy
+        spinner / queued-prompt drain behind it) must not block on it. At most
+        one task is in flight; ``auto_named`` only flips off on success, so a
+        skipped schedule simply retries at the next turn's end. Headless callers
+        settle the task before teardown via ``wait_autoname``."""
+        if self._autoname_task is not None and not self._autoname_task.done():
+            return
+        if (
+            self.titler is None
+            or self.store is None
+            or not self.store.auto_named
+            or not self.history
+        ):
+            return
+        task = asyncio.get_running_loop().create_task(self.maybe_autoname())
+        # _autoname_task is the strong reference keeping the task from being
+        # GC'd mid-flight; the callback clears it and surfaces failures —
+        # maybe_autoname already swallows titler errors, so anything escaping
+        # is a real bug that must not vanish into a never-awaited task.
+        task.add_done_callback(self._on_autoname_done)
+        self._autoname_task = task
+
+    def _on_autoname_done(self, task: asyncio.Task[None]) -> None:
+        if self._autoname_task is task:
+            self._autoname_task = None
+        if not task.cancelled() and task.exception() is not None:
+            logger.warning("background autoname failed", exc_info=task.exception())
+
+    async def wait_autoname(self) -> None:
+        """Block until any in-flight background autoname settles. Headless runs
+        call this before teardown: the process exits right after the turn, and
+        an unawaited task would silently never title the session. asyncio.wait
+        never re-raises, so a failed or cancelled task can't break the caller."""
+        if self._autoname_task is not None:
+            await asyncio.wait([self._autoname_task])
+
+    def cancel_autoname(self) -> None:
+        """Drop any in-flight background autoname. Called when the session being
+        titled stops being current (new/switch/reset) and on TUI exit, where
+        quit must stay snappy rather than wait out a titler call. ``auto_named``
+        stays True, so the next resume's first turn retries."""
+        if self._autoname_task is not None:
+            self._autoname_task.cancel()
+            self._autoname_task = None
 
     async def rename(self, name: str | None = None) -> str | None:
         if self.store is None:

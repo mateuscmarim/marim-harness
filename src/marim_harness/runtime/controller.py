@@ -314,9 +314,6 @@ class TurnController:
         if await self.session.maybe_compact():
             self.checkpoints.invalidate_after_compaction()
 
-    async def _maybe_autoname(self) -> None:
-        await self.session.maybe_autoname()
-
     async def _flush_resumable(
         self, captured: list[ModelMessage], resumable: list[ModelMessage]
     ) -> None:
@@ -653,7 +650,11 @@ class TurnController:
                 await self.hooks.stop()
             except Exception:  # noqa: BLE001 — a Stop hook must never crash a completed turn
                 logger.warning("stop hook failed", exc_info=True)
-            await self._maybe_autoname()
+            # Autoname is *scheduled*, not awaited: it's a full titler LLM
+            # round-trip producing cosmetic metadata, so the turn (and the TUI's
+            # busy state / queued-prompt drain behind it) must not block on it.
+            # Headless settles the task before teardown via wait_autoname.
+            self.session.schedule_autoname()
             return output
 
     async def run_turn(

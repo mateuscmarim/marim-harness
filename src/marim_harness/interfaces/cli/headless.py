@@ -149,6 +149,12 @@ async def run_headless(
             print(json.dumps({"type": "error", "error": detail}), file=out, flush=True)
         return 1
     finally:
+        # The turn end only *schedules* the background autoname; this one-shot
+        # process would exit before it lands, so settle it here — before the
+        # final persist and the result rendering below (which reports the
+        # session name). A no-op when nothing was scheduled (e.g. the error
+        # path, or an already-named session).
+        await _safe_async(harness.session.wait_autoname)
         # Fold this run's active time into the total and force a persist so the
         # final segment lands even when history is unchanged — the TUI does the
         # same in on_unmount before teardown. Then run lifecycle teardown.

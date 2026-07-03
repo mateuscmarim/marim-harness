@@ -53,6 +53,35 @@ def test_create_save_and_load_roundtrip(tmp_path: Path):
     assert tasks == []
 
 
+def test_save_meta_patches_name_without_touching_messages(tmp_path: Path):
+    mgr = _manager(tmp_path)
+    store = mgr.create()  # unnamed -> auto_named placeholder
+    history = _history()
+    store.save(history, RunUsage(input_tokens=3, output_tokens=4))
+
+    store.name = "Autonamed Title"
+    store.auto_named = False
+    store.save_meta()
+
+    again = mgr.store(store.session_id)
+    assert again.name == "Autonamed Title"
+    assert again.auto_named is False
+    # The messages array on disk is untouched by the metadata patch.
+    messages, usage, _, _ = again.load()
+    assert len(messages) == len(history)
+    assert usage.total_tokens == 7
+
+
+def test_save_meta_is_noop_when_file_missing(tmp_path: Path):
+    # A rename before the first full save has nothing to patch: save_meta must
+    # neither create a file nor raise — the next save() carries the name.
+    mgr = _manager(tmp_path)
+    store = mgr.create()
+    store.name = "Renamed"
+    store.save_meta()
+    assert not store.path.exists()
+
+
 def test_image_bytes_survive_save_and_load(tmp_path: Path, monkeypatch):
     """A pasted image must come back byte-identical after a save/load. pydantic_ai
     serializes BinaryContent.data as URL-safe base64, so the cache round-trip must

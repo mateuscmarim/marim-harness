@@ -248,7 +248,8 @@ class SessionView:
 
     def on_rename(self, old: str, new: str) -> None:
         """Note an automatic session title in the log. Called synchronously from
-        run_turn; mount without awaiting."""
+        the background autoname task (on the app's event loop); mount without
+        awaiting."""
         log = self.app.query_one("#log", VerticalScroll)
         log.mount(NoticeMessage(f"session renamed: {new}"))
         self.app.status.refresh_title()  # the new name shows in the terminal title

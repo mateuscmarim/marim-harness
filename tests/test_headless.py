@@ -47,6 +47,38 @@ async def test_text_format_prints_final_output(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_headless_settles_background_autoname_before_exit(tmp_path: Path):
+    """The turn only *schedules* the autoname; run_headless must await it before
+    teardown so the one-shot process reports (and persists) the generated name."""
+    import json
+
+    from pydantic_ai.models.test import TestModel
+
+    from marim_harness.interfaces.cli.headless import run_headless
+    from marim_harness.runtime.harness import Harness, HarnessConfig
+    from marim_harness.session import SessionManager
+    from marim_harness.tools.provider import BuiltinToolProvider
+
+    async def titler(messages):
+        return "Headless Title"
+
+    deps = _make_deps(tmp_path)
+    manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
+    store = manager.create()  # unnamed -> eligible for autonaming
+    harness = Harness(
+        TestModel(call_tools=[], custom_output_text="done"), BuiltinToolProvider(), deps,
+        instructions="test",
+        config=HarnessConfig(store=store, manager=manager, titler=titler),
+    )
+
+    out = io.StringIO()
+    code = await run_headless(harness, "do the thing", "json", out=out)
+    assert code == 0
+    assert json.loads(out.getvalue())["name"] == "Headless Title"
+    assert manager.store(store.session_id).name == "Headless Title"
+
+
+@pytest.mark.anyio
 async def test_headless_command_policy_denylist_blocks_bash(tmp_path: Path, monkeypatch):
     """Regression guard: headless mode wires command_policy through to the bash
     tool. A denylisted command is refused with a clear message, even though the

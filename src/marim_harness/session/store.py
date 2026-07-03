@@ -126,6 +126,27 @@ class SessionStore:
         with file_lock(self.path):
             atomic_write_text(self.path, json.dumps(payload))
 
+    def save_meta(self) -> None:
+        """Patch this session's on-disk name/auto-named header without rewriting
+        the messages array.
+
+        ``save`` serializes the entire in-memory history, which is only safe at a
+        moment the history is known-clean. A background rename (autoname) can land
+        mid-turn, when the in-memory history may end in unanswered tool calls that
+        must never reach disk (see ``TurnController._run_with_approval``), so it
+        patches just the metadata under the same advisory lock ``save`` takes —
+        whichever writer runs second converges, because the in-memory name is
+        updated before either write. No-op when the file doesn't exist yet or is
+        unreadable: the next full ``save`` carries the in-memory fields anyway."""
+        with file_lock(self.path):
+            try:
+                data = json.loads(self.path.read_text())
+            except (json.JSONDecodeError, OSError):
+                return
+            data["name"] = self.name
+            data["auto"] = self.auto_named
+            atomic_write_text(self.path, json.dumps(data))
+
     def load(self) -> tuple[list, RunUsage, list, float | None]:
         """Return ``(messages, usage, tasks, duration_seconds)``. Files written
         before task/duration tracking simply have no key and load as defaults."""
