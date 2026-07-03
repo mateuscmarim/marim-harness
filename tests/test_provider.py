@@ -858,3 +858,17 @@ async def test_growing_output_is_progress_not_polling(tmp_path):
     assert "No change since your last check" not in job_output(ctx, jid)
     gate.set()
     await deps.jobs.wait(jid, 5)
+
+
+@pytest.mark.anyio
+async def test_combined_job_tool_routes_through_the_guard(tmp_path):
+    from marim_harness.tools.provider import job
+
+    ctx, gate, jid = await _poll_ctx(tmp_path)
+    ctx.deps.ui.interactive = True
+    first = await job(ctx, "list")
+    assert jid in first and "wake you on completion" in first
+    second = await job(ctx, "list")
+    assert "end your turn" in second  # same guard as the standalone jobs() tool
+    gate.set()
+    await ctx.deps.jobs.wait(jid, 5)
