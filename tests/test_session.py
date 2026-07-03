@@ -157,6 +157,24 @@ def test_load_corrupt_json_raises_clear_error(tmp_path: Path):
     assert str(store.path) in str(ei.value)  # the message points at the file
 
 
+def test_load_version_skewed_messages_raise_session_load_error(tmp_path: Path):
+    """Valid JSON whose messages array no longer validates (a session written by
+    a different marim/pydantic-ai version) must raise the same actionable
+    SessionLoadError as corrupt JSON — not a raw pydantic ValidationError
+    traceback."""
+    from marim_harness.session.store import SessionLoadError
+
+    mgr = _manager(tmp_path)
+    store = mgr.create()
+    store.save(_history(), RunUsage(), [])
+    data = json.loads(store.path.read_text())
+    data["messages"] = [{"kind": "from-the-future", "parts": []}]
+    store.path.write_text(json.dumps(data))
+    with pytest.raises(SessionLoadError) as ei:
+        store.load()
+    assert str(store.path) in str(ei.value)
+
+
 def test_list_skips_corrupt_while_load_raises(tmp_path: Path):
     """The asymmetry is intentional: a corrupt sibling shouldn't break the picker,
     but resuming that specific session should not silently start empty."""
@@ -169,6 +187,27 @@ def test_list_skips_corrupt_while_load_raises(tmp_path: Path):
     assert mgr.list() == []  # picker skips it
     with pytest.raises(SessionLoadError):
         store.load()
+
+
+def test_list_reads_header_without_parsing_messages(tmp_path: Path):
+    """list() renders picker rows from the header fields alone — save() writes
+    the (potentially multi-MB) messages array last precisely so the picker
+    never pays for parsing it. Proven behaviorally: a file whose messages
+    portion is invalid JSON still lists correctly off its header (load() of
+    that session still fails loudly, tested elsewhere)."""
+    mgr = _manager(tmp_path)
+    store = mgr.create("big")
+    history = _history()
+    store.save(history, RunUsage(input_tokens=2, output_tokens=3), [])
+    raw = store.path.read_text()
+    head, sep, _tail = raw.partition('"messages":')
+    assert sep, "save() layout changed: messages array is no longer last"
+    store.path.write_text(head + '"messages": [THIS IS NOT JSON')
+
+    infos = mgr.list()
+    assert [i.name for i in infos] == ["big"]
+    assert infos[0].message_count == len(history)  # the header count
+    assert infos[0].tokens == 5
 
 
 def test_list_skips_checkpoint_sidecar(tmp_path: Path):
@@ -838,3 +877,102 @@ def test_session_store_without_jobs_key_loads_empty(tmp_path):
     store.save([], RunUsage())      # no jobs kwarg — old-style file
     *_, jobs = store.load()
     assert jobs == []
+
+
+def test_delete_removes_all_session_artifacts(tmp_path: Path, monkeypatch):
+    """Deleting a session must remove everything keyed by its id — not just the
+    JSON: the checkpoints sidecar, the sub-agent transcript dir, the image
+    cache dir, and the refs/marim/checkpoints/<id>/* git refs. The refs matter
+    most: they pin whole-working-tree snapshot commits (including untracked
+    files, potentially secrets) in .git indefinitely."""
+    import shutil
+    import subprocess
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=workspace, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=workspace, check=True)
+    (workspace / "secret.txt").write_text("hunter2")
+
+    monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path / "imgcache"))
+
+    mgr = SessionManager(workspace, base_dir=tmp_path / "data")
+    store = mgr.create("doomed")
+    store.save(_history(), RunUsage(), [])
+    sid = store.session_id
+
+    # Sidecars a real session accumulates.
+    checkpoints_sidecar = mgr.dir / f"{sid}.checkpoints.json"
+    checkpoints_sidecar.write_text("[]")
+    transcripts_dir = mgr.dir / f"{sid}.subagents"
+    transcripts_dir.mkdir()
+    (transcripts_dir / "call_1.json").write_text("[]")
+    image_dir = tmp_path / "imgcache" / sid
+    image_dir.mkdir(parents=True)
+    (image_dir / "abc.png").write_bytes(b"png")
+
+    # A checkpoint snapshot ref pinning the working tree (secret included).
+    from marim_harness.workspace.snapshot import GitSnapshotter
+
+    snap = GitSnapshotter(workspace)
+    commit = snap.capture(f"refs/marim/checkpoints/{sid}/1", "cp 1")
+    assert commit is not None
+
+    mgr.delete(sid)
+
+    assert not store.path.exists()
+    assert not checkpoints_sidecar.exists()
+    assert not transcripts_dir.exists()
+    assert not image_dir.exists()
+    refs = subprocess.run(
+        ["git", "for-each-ref", f"refs/marim/checkpoints/{sid}"],
+        cwd=workspace, capture_output=True, text=True, check=True,
+    ).stdout
+    assert refs.strip() == "", "snapshot refs still pin the session's commits"
+
+
+@pytest.mark.anyio
+async def test_forced_compaction_falls_back_to_masking_single_huge_turn(tmp_path):
+    """The overflow-retry lever of last resort: a forced compaction that finds
+    no droppable prefix (the whole overflow lives in ONE enormous turn) must
+    still shrink something — it masks stale tool observations — or the retry
+    fails identically and the session wedges until a manual /clear."""
+    from pydantic_ai.messages import (
+        ModelResponse,
+        TextPart,
+        ToolCallPart,
+        ToolReturnPart,
+    )
+
+    from marim_harness.compaction import MASKED_OBSERVATION
+
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+    ctrl = SessionController(
+        None, None, deps, max_context_tokens=100_000, keep_last_messages=20,
+        mask_keep_recent=1,
+    )
+    ctrl.history = [
+        ModelRequest(parts=[UserPromptPart(content="one giant turn")]),
+        ModelResponse(parts=[ToolCallPart(
+            tool_name="read_file", args={}, tool_call_id="t1")]),
+        ModelRequest(parts=[ToolReturnPart(
+            tool_name="read_file", content="A" * 100_000, tool_call_id="t1")]),
+        ModelResponse(parts=[ToolCallPart(
+            tool_name="read_file", args={}, tool_call_id="t2")]),
+        ModelRequest(parts=[ToolReturnPart(
+            tool_name="read_file", content="B" * 100_000, tool_call_id="t2")]),
+        ModelResponse(parts=[TextPart(content="working")]),
+    ]
+
+    did = await ctrl.maybe_compact(force=True)
+
+    assert did is True, "forced compaction had no lever for a single huge turn"
+    returns = [
+        p for m in ctrl.history for p in m.parts
+        if type(p).__name__ == "ToolReturnPart"
+    ]
+    assert returns[0].content == MASKED_OBSERVATION  # stale observation elided
+    assert returns[-1].content != MASKED_OBSERVATION  # most recent kept intact

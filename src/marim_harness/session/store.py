@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from pydantic import ValidationError
 from pydantic_ai.messages import ModelMessagesTypeAdapter
 from pydantic_ai.usage import RunUsage
 
@@ -52,6 +53,41 @@ def _now_slug() -> str:
 
 def _total_tokens(tok: dict) -> int:
     return tok.get("input", 0) + tok.get("output", 0)
+
+
+# How much of a session file the picker fast path reads. The header (id, name,
+# updated, tokens, tasks, jobs, message_count) is normally well under this; a
+# header that overflows it just falls back to the full parse.
+_HEADER_PROBE_CHARS = 65536
+
+
+def _header_fields(path: Path) -> dict | None:
+    """Parse just the pre-``messages`` header of a session file, or None when
+    the fast path can't apply (old layout, oversized header, unreadable file).
+
+    ``save`` writes the messages array *last* precisely so picker rows never
+    pay for parsing it — on a long session that array is multi-MB while the
+    header is a few hundred bytes. The cut point is self-validating: the raw
+    sequence ``, "messages":`` can't occur inside a JSON string (its quotes
+    would be escaped), and a nested-dict occurrence sits at bracket depth ≥ 2,
+    so closing the object there leaves unbalanced JSON that fails to parse and
+    falls back to the full read. Requiring ``message_count`` keeps pre-header
+    files (which would need the messages array anyway) on the fallback path."""
+    try:
+        with path.open(encoding="utf-8") as f:
+            head = f.read(_HEADER_PROBE_CHARS)
+    except (OSError, UnicodeDecodeError):
+        return None
+    idx = head.find(', "messages":')
+    if idx == -1:
+        return None
+    try:
+        data = json.loads(head[:idx] + "}")
+    except json.JSONDecodeError:
+        return None
+    if isinstance(data, dict) and "message_count" in data:
+        return data
+    return None
 
 
 @dataclass
@@ -129,17 +165,18 @@ class SessionStore:
             atomic_write_text(self.path, json.dumps(payload))
 
     def save_meta(self) -> None:
-        """Patch this session's on-disk name/auto-named header without rewriting
-        the messages array.
+        """Patch this session's on-disk name/auto-named/model header without
+        rewriting the messages array.
 
         ``save`` serializes the entire in-memory history, which is only safe at a
-        moment the history is known-clean. A background rename (autoname) can land
-        mid-turn, when the in-memory history may end in unanswered tool calls that
-        must never reach disk (see ``TurnController._run_with_approval``), so it
-        patches just the metadata under the same advisory lock ``save`` takes —
-        whichever writer runs second converges, because the in-memory name is
-        updated before either write. No-op when the file doesn't exist yet or is
-        unreadable: the next full ``save`` carries the in-memory fields anyway."""
+        moment the history is known-clean. A background rename (autoname) or a
+        mid-turn ``/model`` switch can land mid-turn, when the in-memory history
+        may end in unanswered tool calls that must never reach disk (see
+        ``TurnController._run_with_approval``), so it patches just the metadata
+        under the same advisory lock ``save`` takes — whichever writer runs
+        second converges, because the in-memory fields are updated before either
+        write. No-op when the file doesn't exist yet or is unreadable: the next
+        full ``save`` carries the in-memory fields anyway."""
         with file_lock(self.path):
             try:
                 data = json.loads(self.path.read_text())
@@ -147,6 +184,7 @@ class SessionStore:
                 return
             data["name"] = self.name
             data["auto"] = self.auto_named
+            data["model"] = self.model
             atomic_write_text(self.path, json.dumps(data))
 
     def load(self) -> tuple[list, RunUsage, list, float | None, list]:
@@ -166,7 +204,18 @@ class SessionStore:
                 f"start a fresh session."
             ) from exc
         raw_messages = rehydrate_images(data.get("messages", []), self.session_id)
-        messages = ModelMessagesTypeAdapter.validate_python(raw_messages)
+        try:
+            messages = ModelMessagesTypeAdapter.validate_python(raw_messages)
+        except ValidationError as exc:
+            # Valid JSON whose messages no longer validate — a session written
+            # by a different marim/pydantic-ai version. Same contract as the
+            # corrupt-JSON branch above: fail loudly with an actionable path,
+            # not a raw pydantic traceback.
+            raise SessionLoadError(
+                f"can't read session {self.path}: its messages don't match this "
+                f"version's schema ({type(exc).__name__}). Move the file aside "
+                f"or start a fresh session."
+            ) from exc
         tok = data.get("tokens", {})
         # Old files predate the extra fields, so each defaults to 0 / {}.
         usage = RunUsage(
@@ -217,11 +266,15 @@ class SessionManager:
             # hiding the real, interrupted session and its spawns.
             if path.name.endswith(".checkpoints.json"):
                 continue
-            try:
-                data = json.loads(path.read_text())
-            except (json.JSONDecodeError, OSError) as exc:
-                logger.debug("skipping corrupt session file %s: %s", path, exc)
-                continue
+            # Fast path: parse only the header (see _header_fields) so listing
+            # never deserializes every session's full messages array.
+            data = _header_fields(path)
+            if data is None:
+                try:
+                    data = json.loads(path.read_text())
+                except (json.JSONDecodeError, OSError) as exc:
+                    logger.debug("skipping corrupt session file %s: %s", path, exc)
+                    continue
             infos.append(
                 SessionInfo(
                     id=data.get("id", path.stem),
@@ -301,4 +354,24 @@ class SessionManager:
         return latest.model if latest is not None else None
 
     def delete(self, session_id: str) -> None:
+        """Remove a session and every sidecar keyed by its id: the JSON file,
+        the checkpoints sidecar, the sub-agent transcript dir, the image cache
+        dir, and the ``refs/marim/checkpoints/<id>/*`` git refs (which pin
+        whole-working-tree snapshot commits — untracked files included — in
+        ``.git`` indefinitely). Each step is independent and best-effort, so a
+        missing artifact never blocks removing the rest."""
+        import shutil
+
+        # Imported here, not at module top: transcripts imports from workspace,
+        # and keeping store's top-level imports lean avoids widening the
+        # session package's import surface for embedders that only list/save.
+        from ..images import image_cache_root
+        from ..workspace.snapshot import delete_checkpoint_refs
+        from .transcripts import TranscriptStore
+
         self._path(session_id).unlink(missing_ok=True)
+        with_suffix = self.dir / f"{session_id}.checkpoints.json"
+        with_suffix.unlink(missing_ok=True)
+        TranscriptStore(self._path(session_id), session_id).delete_all()
+        shutil.rmtree(image_cache_root() / session_id, ignore_errors=True)
+        delete_checkpoint_refs(self.workspace_root, session_id)

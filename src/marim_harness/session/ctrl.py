@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, SupportsIndex
@@ -143,6 +144,9 @@ class SessionController:
         self.get_model_id = get_model_id
         self.history_version: int = 0
         self._last_persisted_version: int = -1
+        # Serializes concurrent persist() writers — see persist() for why an
+        # unserialized abandoned writer can clobber a newer write.
+        self._persist_lock = threading.Lock()
         # ``history`` is a property; the underlying list lives in ``_history``.
         # The setter bumps ``history_version`` so the persist cache can detect
         # no-op writes — set both fields before the first assignment below.
@@ -212,13 +216,30 @@ class SessionController:
             # mutations (rename, auto_named flip) that don't touch ``history``.
             if not force and self.history_version == self._last_persisted_version:
                 return
-            elapsed = (time.monotonic() - self._segment_start) if self._segment_start else 0.0
-            self.store.save(
-                self.history, self.usage, self.deps.tasks.to_payload(),
-                duration_seconds=self.duration_seconds + elapsed,
-                jobs=self.deps.jobs.export_settled(),
-            )
-            self._last_persisted_version = self.history_version
+            # Serialize the writers. persist() runs from worker threads
+            # (asyncio.to_thread), and the Ctrl-C flush path *abandons* its
+            # worker after a short deadline without stopping it — on a stalled
+            # disk that orphan resumes later and, unserialized, would land its
+            # stale snapshot over a newer persist. The lock forces the orphan
+            # to either finish before the newer write (which then overwrites
+            # it) or re-check the cache below and no-op. Capture the version
+            # *inside* the lock and stamp that captured value after the save:
+            # stamping the then-current self.history_version instead would mark
+            # history the orphan never wrote as persisted, cache-skipping the
+            # write that should heal the disk.
+            with self._persist_lock:
+                version = self.history_version
+                if not force and version == self._last_persisted_version:
+                    return
+                elapsed = (
+                    (time.monotonic() - self._segment_start) if self._segment_start else 0.0
+                )
+                self.store.save(
+                    self.history, self.usage, self.deps.tasks.to_payload(),
+                    duration_seconds=self.duration_seconds + elapsed,
+                    jobs=self.deps.jobs.export_settled(),
+                )
+                self._last_persisted_version = version
 
     @property
     def saved_model_id(self) -> str | None:
@@ -228,7 +249,17 @@ class SessionController:
     def set_model(self, model_id: str) -> None:
         if self.store is not None:
             self.store.model = model_id
-            self.persist(force=True)
+            if self.store.path.exists():
+                # Metadata-only on-disk patch, NOT a full persist: a model
+                # switch can land mid-turn, when the in-memory history may end
+                # in unanswered tool calls that must never reach disk — the
+                # same dirty-history rule rename/autoname follow.
+                self.store.save_meta()
+            else:
+                # No session file yet (nothing persisted, so no clean baseline
+                # to protect): save_meta would silently no-op and the choice
+                # would be lost on an immediate session switch. Create the file.
+                self.persist(force=True)
 
     def update_model(self, model: Model) -> None:
         """Rebuild aux agents (summarizer/titler) for a new model. Only
@@ -385,6 +416,25 @@ class SessionController:
             # turns would lose it and leave the rollback baseline diverged from
             # disk. The setter bumped the version, so a plain persist() writes.
             self.persist()
+        elif force:
+            # Forced (post-overflow) compaction found no droppable prefix: the
+            # overflow lives inside a single enormous turn, which the tail
+            # planner can't split. Without a fallback the retry fails
+            # identically and the session wedges until a manual /clear — so
+            # mask stale tool observations instead, the one lever that shrinks
+            # a turn in place. Runs regardless of the mask_observations toggle:
+            # that flag governs routine compaction hygiene, while this is a
+            # recovery of last resort (and the cache concern is moot — the
+            # request just failed, there is no warm tail to protect).
+            masked_history, masked = mask_stale_observations(
+                self.history,
+                self.mask_keep_recent,
+                min_chars=self.mask_min_chars,
+            )
+            if masked:
+                self.history = masked_history
+                self.persist()
+                compacted = True
         # on_compact both reports the result AND clears the "compacting…" notice,
         # so it must fire whenever the notice was shown — not only when history
         # shrank. A forced compaction (post-overflow) can run without shrinking;

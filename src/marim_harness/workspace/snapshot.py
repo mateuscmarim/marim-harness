@@ -238,3 +238,31 @@ class GitSnapshotter:
         except subprocess.CalledProcessError as exc:
             logger.debug("checkpoint restore failed: %s", exc.stderr or exc)
             return False
+
+
+def delete_checkpoint_refs(workspace_root, session_id: str) -> None:
+    """Best-effort: delete every ``refs/marim/checkpoints/<session_id>/*`` ref.
+
+    Used by session deletion. A session's checkpoint refs pin whole-working-tree
+    snapshot commits — including untracked files, potentially secrets — in
+    ``.git`` forever; without this, deleting the session leaks all of them.
+    Silently a no-op when the workspace isn't a git repo or git is missing —
+    session deletion must not fail over ref hygiene."""
+    prefix = f"refs/marim/checkpoints/{session_id}"
+    try:
+        out = subprocess.run(
+            ["git", "for-each-ref", "--format=%(refname)", prefix],
+            cwd=workspace_root, capture_output=True, text=True, check=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return
+    for ref in out.splitlines():
+        ref = ref.strip()
+        # Same guard as GitSnapshotter.delete: never delete outside our
+        # namespace, even if for-each-ref returns something unexpected.
+        if not ref.startswith("refs/marim/"):
+            continue
+        subprocess.run(
+            ["git", "update-ref", "-d", ref],
+            cwd=workspace_root, capture_output=True, text=True,
+        )

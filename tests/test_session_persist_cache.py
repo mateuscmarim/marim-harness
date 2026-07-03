@@ -1,6 +1,9 @@
 """Persist should skip the encode/decode round-trip and the disk write when
 history hasn't changed between calls — saves several MB per turn on long
 sessions."""
+import threading
+
+from pydantic_ai.messages import ModelRequest, UserPromptPart
 from pydantic_ai.usage import RunUsage
 
 from marim_harness.runtime.permissions import Mode
@@ -131,3 +134,100 @@ def test_in_place_history_mutation_invalidates_cache(tmp_path):
     ctrl.history[0] = {"role": "user", "content": "a2"}
     ctrl.persist()
     assert len(save_calls) == 4, "item assignment should invalidate cache"
+
+
+def test_set_model_mid_turn_patches_metadata_only(tmp_path):
+    """set_model can land mid-turn (the model picker is reachable while a turn
+    runs), when the in-memory history may end in unanswered tool calls that
+    must never reach disk. It must patch the model header WITHOUT serializing
+    the in-memory messages — the same metadata-only discipline as rename and
+    autoname."""
+    import json
+
+    workspace = tmp_path
+    manager = SessionManager(workspace)
+    store = manager.create("s6")
+    deps = _make_deps(workspace, mode=Mode.ask)
+    ctrl = SessionController(store, manager, deps, 100_000, 20)
+
+    def _msg(text):
+        return ModelRequest(parts=[UserPromptPart(content=text)])
+
+    ctrl.set_history([_msg("clean")])
+    ctrl.persist()
+
+    # Mid-turn: the in-memory history has advanced past the persisted state.
+    ctrl.history.append(_msg("dirty-in-flight"))
+    ctrl.set_model("model-x")
+
+    data = json.loads(store.path.read_text())
+    assert data["model"] == "model-x"
+    assert len(data["messages"]) == 1, "set_model full-persisted a dirty history"
+
+    # The dirty state still reaches disk on the next real persist — the
+    # metadata patch must not satisfy the persist cache.
+    ctrl.persist()
+    data = json.loads(store.path.read_text())
+    assert len(data["messages"]) == 2
+
+
+def test_abandoned_slow_persist_cannot_clobber_newer_write(tmp_path):
+    """The Ctrl-C flush path abandons its persist worker after a short deadline
+    but cannot stop it. If the disk stalls, that orphaned writer used to land
+    its stale history *after* a newer persist and then stamp the cache with the
+    *current* version — so the next persist was cache-skipped while the disk
+    held stale data (the one path where an acknowledged-persisted turn could
+    silently vanish). Writers must serialize and each must stamp only the
+    version it actually wrote."""
+    workspace = tmp_path
+    manager = SessionManager(workspace)
+    store = manager.create("s5")
+    deps = _make_deps(workspace, mode=Mode.ask)
+    ctrl = SessionController(store, manager, deps, 100_000, 20)
+
+    original_save = store.save
+    first_entered = threading.Event()
+    stall = threading.Event()
+    second_done = threading.Event()
+
+    def stalling_save(*args, **kwargs):
+        # The first save (the abandoned flush write) stalls until released,
+        # simulating a hung disk; later saves run normally.
+        if not first_entered.is_set():
+            first_entered.set()
+            assert stall.wait(timeout=5), "test stall never released"
+            return original_save(*args, **kwargs)
+        result = original_save(*args, **kwargs)
+        second_done.set()
+        return result
+
+    store.save = stalling_save
+
+    def _msg(text):
+        return ModelRequest(parts=[UserPromptPart(content=text)])
+
+    # The flush write: captures the old one-message history, then stalls.
+    ctrl.set_history([_msg("old")])
+    t1 = threading.Thread(target=ctrl.persist)
+    t1.start()
+    assert first_entered.wait(timeout=5)
+
+    # The turn moves on: history is REPLACED (as _flush_resumable and the
+    # turn-end path do) and persisted from another worker thread.
+    ctrl.set_history([_msg("old"), _msg("new")])
+    t2 = threading.Thread(target=ctrl.persist)
+    t2.start()
+    # Give the newer write a moment to land first (it does when writers are
+    # unserialized — the bug); with serialized writers it just blocks here.
+    second_done.wait(timeout=0.5)
+
+    stall.set()
+    t1.join(timeout=5)
+    t2.join(timeout=5)
+    assert not t1.is_alive() and not t2.is_alive()
+
+    # A plain persist must leave the newest history on disk — either the cache
+    # is honest (disk already newest, skip is fine) or it rewrites.
+    ctrl.persist()
+    history, *_ = store.load()
+    assert len(history) == 2, "stale abandoned write clobbered the newer persist"
