@@ -98,7 +98,7 @@ def test_spawn_agent_does_not_expose_max_depth():
     keyword bindings lose to caller kwargs). The ceiling rides on Deps."""
     import inspect
 
-    from marim_harness.tools.provider import spawn_agent
+    from marim_harness.tools.spawn_tools import spawn_agent
 
     assert "max_depth" not in inspect.signature(spawn_agent).parameters
 
@@ -108,7 +108,7 @@ def test_spawn_agent_refuses_at_depth_limit():
     import asyncio
     from types import SimpleNamespace
 
-    from marim_harness.tools.provider import spawn_agent
+    from marim_harness.tools.spawn_tools import spawn_agent
 
     deps = _make_deps(Path("/tmp"), subagent_depth=2, subagent_max_depth=3)
     ctx = SimpleNamespace(deps=deps, tool_call_id="tc1")
@@ -126,7 +126,7 @@ def test_spawn_agent_allows_below_depth_limit():
     import asyncio
     from types import SimpleNamespace
 
-    from marim_harness.tools.provider import spawn_agent
+    from marim_harness.tools.spawn_tools import spawn_agent
 
     deps = _make_deps(Path("/tmp"), subagent_depth=1, subagent_max_depth=3)
     ctx = SimpleNamespace(deps=deps, tool_call_id="tc1")
@@ -142,7 +142,7 @@ def test_spawn_agent_refuses_background_at_depth():
     import asyncio
     from types import SimpleNamespace
 
-    from marim_harness.tools.provider import spawn_agent
+    from marim_harness.tools.spawn_tools import spawn_agent
 
     deps = _make_deps(Path("/tmp"), subagent_depth=1)
     ctx = SimpleNamespace(deps=deps, tool_call_id="tc1")
@@ -158,7 +158,7 @@ def test_spawn_agent_allows_background_at_depth_zero():
     import asyncio
     from types import SimpleNamespace
 
-    from marim_harness.tools.provider import spawn_agent
+    from marim_harness.tools.spawn_tools import spawn_agent
 
     deps = _make_deps(Path("/tmp"), subagent_depth=0)
     ctx = SimpleNamespace(deps=deps, tool_call_id="tc1")
