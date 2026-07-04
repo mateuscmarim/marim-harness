@@ -10,9 +10,10 @@ reports.
 
 ## 1. Scope, then plan
 Restate the question. Then do a quick SCOPING pass yourself — this is the one place you
-research inline. If the domain is unfamiliar, run a couple of `WebSearch` calls to learn the
+research inline. If the domain is unfamiliar, run a couple of `web_search` calls to learn the
 field's terminology, map the shape of the debate, and see what the real axes of disagreement
 are. Skip the pass for topics you already know well; do NOT let it grow into full research.
+(`web_search` is approval-gated — one more reason to keep the pass to a couple of queries.)
 
 Scope FIRST because it makes any question to the user sharper — you only interrupt once, so
 spend that interruption on what the landscape shows actually matters, not generic guesses.
@@ -30,24 +31,31 @@ In a SINGLE turn, call `spawn_agent` once per sub-question:
 - `type`: `researcher`
 - `task`: the sub-question, stated precisely
 - `context`: the overall research question and why this sub-question matters
-- `returns`: "A list of findings; each = CLAIM + source URL + type
-  (meta-analysis/RCT/observational/other) + quality (high/medium/low)."
+- `returns`: "A list of findings; each = CLAIM + source URL + evidence type +
+  quality (high/medium/low). Type each finding by what's authoritative FOR THIS
+  DOMAIN — e.g. meta-analysis/RCT/observational for science, standard/RFC/official
+  doc vs blog for technical, primary vs secondary source for history."
+
+The `researcher` agent already defines this findings format; the `returns` above just
+restates the domain-typing so a spawn on a non-medical sub-question doesn't default to
+the science taxonomy.
 
 Spawn them together so they run concurrently. Do NOT research inline.
 
 ## 3. Verify (adversarial)
-Collect the workers' findings. For each load-bearing claim — the ones your conclusion
-depends on — call `spawn_agent` with `type`: `explore` and a task to REFUTE it: find
-counter-evidence and confirm the cited source actually supports the claim. Drop or
-downgrade any claim that does not survive.
+Collect the workers' findings. For the handful of load-bearing claims your conclusion
+actually rests on — NOT every claim — call `spawn_agent` with `type`: `explore` and a
+task to REFUTE it: find counter-evidence and confirm the cited source actually supports
+the claim. Drop or downgrade any claim that does not survive.
 
 ## 4. Synthesize
 Write ONE report:
 - Every nontrivial claim keeps its citation.
 - Where good sources genuinely DISAGREE, say so and explain why (effect size, trial
   quality, population) — do not flatten into a single verdict.
-- End with: (a) 5 bullets "established vs. hyped", and (b) a per-sub-question
-  confidence rating (high/medium/low) with the main limiting factor.
+- End with: (a) 5 bullets separating what's well-supported from what's shaky or
+  overstated, and (b) a per-sub-question confidence rating (high/medium/low) with
+  the main limiting factor.
 
 ## Example
 Topic: "Evidence on creatine for cognition (not muscle)." Sub-questions → researchers:
