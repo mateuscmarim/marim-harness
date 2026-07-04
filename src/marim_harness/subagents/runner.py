@@ -51,6 +51,7 @@ from ..workspace import (
     find_agent,
     subagent_instructions,
 )
+from .backend import SpawnRun
 from .isolation import SpawnWorktree
 from .masking import ObservationMasker
 from .persistence import SpawnTranscripts, count_tool_calls
@@ -401,6 +402,49 @@ class SubagentRunner:
         if spill is not None:
             fs.write_file(self.deps.workspace.root, rel, spill)
         return text
+
+    async def _finalize_spawn(
+        self, run: SpawnRun, *, stream_id: str, name: str, stop_task: str,
+        note: str, iso: SpawnWorktree | None, max_output_chars: int | None,
+        persist_bg: bool, timing: tuple[float, float, list[float]] | None = None,
+    ) -> str:
+        """The one success tail every spawn shares, regardless of backend or mode.
+
+        Fires the stop hook, persists the spawn's transcript (and any CLI-demuxed
+        child transcripts) with its terminal meta, folds spend into the session,
+        applies the lossless output cap, and closes the worktree — returning the
+        backend ``note`` + capped report + worktree merge-note.
+
+        ``persist_bg`` selects the two mode-axis behaviors a background spawn
+        needs: an immediate ``persist(force=True)`` (no ``run_turn`` will fold its
+        off-turn spend) and a ``bg-N`` spill ref (a background run has no stream id
+        to key its output-spill file on). A foreground spawn passes ``False`` and
+        spills under its ``stream_id``. ``timing`` is the native path's phase
+        stats; the CLI path passes ``None`` (it keeps no time-to-first-token)."""
+        if timing is not None:
+            self._log_spawn_timing(name, *timing, failed=False)
+        await self.hooks.subagent_stop(name, stop_task, run.output)
+        self._transcripts.save(stream_id, run.transcript, meta=run.final_meta)
+        # Claude-side sub-agents (CLI Agent/Task spawns) each persist under the
+        # stream id their live card streamed on, so the screen can replay them
+        # after a resume. Empty for native spawns — a no-op there.
+        for child_id, msgs in run.child_transcripts.items():
+            self._transcripts.save(child_id, msgs)
+        self.session.usage += run.usage
+        if persist_bg:
+            # A background spawn finishes off-turn, so no run_turn folds its spend;
+            # persist right away. force=True: the persist cache keys off
+            # history_version, which a background completion never bumps, so an
+            # unforced persist would be silently skipped (losing the spend and the
+            # settled-jobs history entry).
+            self.session.persist(force=True)
+            self._bg_seq += 1
+            spill_ref = f"bg-{self._bg_seq}"
+        else:
+            spill_ref = stream_id
+        capped = self._cap_output(run.output, max_output_chars, spill_ref)
+        iso_note = iso.close() if iso else ""
+        return note + capped + iso_note
 
     # Backoff before a transient-error retry: exponential from a small base, capped,
     # so a brief upstream blip is ridden out without stalling the spawn for long.
@@ -774,18 +818,21 @@ class SubagentRunner:
             if prep.iso:
                 prep.iso.close()
             raise
-        self._log_spawn_timing(type, prep.t0, prep.t_built, prep.first_event_at, failed=False)
-        await self.hooks.subagent_stop(type, task, result.output)
-        self._transcripts.save(
-            stream_id, result.all_messages(),
-            meta=self._transcripts.final_meta(
+        # A foreground spawn's spend is persisted by run_turn's _persist, so
+        # persist_bg=False (no immediate persist; spill keys off the stream id).
+        run = SpawnRun(
+            output=result.output,
+            transcript=result.all_messages(),
+            usage=result.usage,
+            final_meta=self._transcripts.final_meta(
                 prep.meta, "finished", result.usage, prep.t0, result.all_messages()),
         )
-        self.session.usage += result.usage
-        # A foreground spawn's spend is persisted by run_turn's _persist.
-        capped = self._cap_output(result.output, max_output_chars, stream_id)
-        iso_note = prep.iso.close() if prep.iso else ""
-        return self.mcp.grant_note(prep.unknown) + capped + iso_note
+        return await self._finalize_spawn(
+            run, stream_id=stream_id, name=type, stop_task=task,
+            note=self.mcp.grant_note(prep.unknown), iso=prep.iso,
+            max_output_chars=max_output_chars, persist_bg=False,
+            timing=(prep.t0, prep.t_built, prep.first_event_at),
+        )
 
     async def _execute_background_spawn(
         self, type: str, task: str, stream_id: str,
@@ -847,7 +894,6 @@ class SubagentRunner:
             if prep.iso:
                 prep.iso.close()
             raise
-        self._log_spawn_timing(type, prep.t0, prep.t_built, prep.first_event_at, failed=False)
         # The stop hook must see the SAME task the start hook got. subagent_start
         # fires in _prepare_spawn with the sidecar-meta task; on a resumed spawn the
         # local ``task`` here is the internal _CONTINUATION_PROMPT, so read the
@@ -855,31 +901,26 @@ class SubagentRunner:
         # For a non-resumed background spawn prep.meta["task"] == task, so this is a
         # no-op there.
         stop_task = prep.meta["task"] if prep.meta else task
-        await self.hooks.subagent_stop(type, stop_task, result.output)
-        self._transcripts.save(
-            stream_id, result.all_messages(),
-            meta=self._transcripts.final_meta(
+        # persist_bg=True: a background spawn finishes off-turn (no run_turn folds
+        # its spend) and has no stream id to key its output spill on — _finalize_spawn
+        # persists immediately and spills under a bg-N ref. (Known asymmetry: a
+        # /switch mid-flight makes self.session a DIFFERENT session, so the spend +
+        # settled-jobs entry land in the current session's payload; jobs are
+        # process-scoped, not session-scoped, so the summary follows the active
+        # session — accepted.)
+        run = SpawnRun(
+            output=result.output,
+            transcript=result.all_messages(),
+            usage=result.usage,
+            final_meta=self._transcripts.final_meta(
                 prep.meta, "finished", result.usage, prep.t0, result.all_messages()),
         )
-        self.session.usage += result.usage
-        # A background spawn finishes off-turn, so no run_turn will fold in its
-        # spend — persist right away so the saved session reflects it even if the
-        # process exits before the next turn. force=True: the persist cache keys
-        # off history_version, which a background completion never bumps, so an
-        # unforced persist here would be silently skipped (losing the spend and,
-        # since Task 3, the settled-jobs history entry).
-        #
-        # Known asymmetry (by design): if the user ran /switch while this job was
-        # in flight, self.session now points at a DIFFERENT session, so this
-        # settle's spend + settled-jobs entry persist into the CURRENT session's
-        # payload, not the one that spawned it. Jobs are process-scoped, not
-        # session-scoped, so the summary follows the active session — accepted.
-        self.session.persist(force=True)
-        self._bg_seq += 1
-        spill_ref = f"bg-{self._bg_seq}"
-        capped = self._cap_output(result.output, max_output_chars, spill_ref)
-        iso_note = prep.iso.close() if prep.iso else ""
-        return self.mcp.grant_note(prep.unknown) + capped + iso_note
+        return await self._finalize_spawn(
+            run, stream_id=stream_id, name=type, stop_task=stop_task,
+            note=self.mcp.grant_note(prep.unknown), iso=prep.iso,
+            max_output_chars=max_output_chars, persist_bg=True,
+            timing=(prep.t0, prep.t_built, prep.first_event_at),
+        )
 
     async def _execute_cli_spawn(
         self, defn, task: str, work_root, iso,
@@ -964,7 +1005,6 @@ class SubagentRunner:
             if iso:
                 iso.teardown_after_failure(resumed=resumed)
             raise
-        await self.hooks.subagent_stop(defn.name, hook_task, result.output)
         # Same prefix rule as the checkpoint above: the final write is also
         # tail-only for a resumed run, so prepend the pre-interrupt segment.
         full_transcript = (transcript_prefix or []) + result.transcript
@@ -979,22 +1019,22 @@ class SubagentRunner:
                 "tool_count": count_tool_calls(full_transcript),
                 "duration": time.perf_counter() - t0,
             }
-        self._transcripts.save(stream_id, full_transcript, meta=final_meta)
-        # Claude-side sub-agents (the CLI's own Agent/Task spawns) each get a
-        # sidecar under their stream id — the same id their live card streamed
-        # under — so the sub-agents screen can replay them after a resume.
-        for child_id, msgs in result.child_transcripts.items():
-            self._transcripts.save(child_id, msgs)
-        self.session.usage += result.usage
-        if background:
-            self.session.persist(force=True)
-            self._bg_seq += 1
-            spill_ref = f"bg-{self._bg_seq}"
-        else:
-            spill_ref = stream_id
-        capped = self._cap_output(result.output, max_output_chars, spill_ref)
-        iso_note = iso.close() if iso else ""
-        return self._cli_mcp_note(mcp_names) + capped + iso_note
+        # persist_bg=background mirrors the native background tail; timing=None
+        # because a CLI spawn keeps no time-to-first-token stat. child_transcripts
+        # carries the demuxed Claude-side Agent/Task sub-agents for _finalize_spawn
+        # to persist under their own stream ids.
+        run = SpawnRun(
+            output=result.output,
+            transcript=full_transcript,
+            usage=result.usage,
+            final_meta=final_meta,
+            child_transcripts=result.child_transcripts,
+        )
+        return await self._finalize_spawn(
+            run, stream_id=stream_id, name=defn.name, stop_task=hook_task,
+            note=self._cli_mcp_note(mcp_names), iso=iso,
+            max_output_chars=max_output_chars, persist_bg=background, timing=None,
+        )
 
     @staticmethod
     def _cli_mcp_note(mcp_names: list[str] | None) -> str:
