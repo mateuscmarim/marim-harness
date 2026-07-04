@@ -41,7 +41,12 @@ from .context import (
     render_shell_results_block,
     wrap_turn_context,
 )
-from .errors import dump_provider_error, is_context_overflow_error
+from .errors import (
+    CONTEXT_OVERFLOW_HELP,
+    ContextWindowExceededError,
+    dump_provider_error,
+    is_context_overflow_error,
+)
 from .permissions import Mode, resolve_approvals
 
 logger = logging.getLogger(__name__)
@@ -673,6 +678,14 @@ class TurnController:
                         )
                     except Exception:
                         logger.debug("failed to dump provider error", exc_info=True)
+                    # Reaching here with an overflow error means recovery failed
+                    # (nothing droppable — the classic first-turn case — or the
+                    # one retry above already overflowed again, or it was a dirty
+                    # continuation round). Swap the terse provider text for an
+                    # actionable diagnostic; the original is chained and already
+                    # spilled to disk above.
+                    if is_context_overflow_error(exc):
+                        raise ContextWindowExceededError(CONTEXT_OVERFLOW_HELP) from exc
                     raise
             # This round's streaming ends the moment run() returns, so the
             # captured ctx is now stale. Null it before the approval modal /

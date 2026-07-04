@@ -17,6 +17,30 @@ from pathlib import Path
 
 from ..atomic_io import atomic_write_text
 
+# The screen message for an unrecoverable context overflow. Deliberately
+# provider-agnostic (the `local` server, OpenRouter, or a direct API can all
+# raise it) and action-first: when the request overflows and compaction has
+# nothing left to drop — the classic case being the very first turn, whose
+# system prompt + injected context alone can exceed a small window — the raw
+# provider text ("Context size has been exceeded.") tells the user nothing they
+# can do. This does.
+CONTEXT_OVERFLOW_HELP = (
+    "The request exceeded the model's context window, and there was nothing left "
+    "to compact — on the first turn the system prompt and injected context alone "
+    "can already be too large for a small window. Increase the model's served "
+    "context window, set MARIM_CONTEXT_WINDOW to the real window, or switch to a "
+    "model with a larger window."
+)
+
+
+class ContextWindowExceededError(RuntimeError):
+    """An unrecoverable context overflow: the request exceeded the model's real
+    window and a forced compaction could not shrink the history enough to fit
+    (or there was nothing to shrink). Raised in place of the terse provider
+    error so the on-screen message is something the *user* can act on. The
+    original provider exception is chained as ``__cause__`` and still spills to
+    ``.marim/last-provider-error.json`` for debugging."""
+
 
 def _find_in_chain(exc: BaseException, exc_class):
     """Walk ``exc``'s ``__cause__``/``__context__`` chain; return the first
@@ -273,6 +297,12 @@ def format_provider_error(exc: BaseException) -> str | None:
     upstream message, code, provider name, and raw detail. None when ``exc``
     isn't a provider error with a structured body — the caller then keeps its own
     ``f"{type(exc).__name__}: {exc}"`` fallback."""
+    # Our own overflow diagnostic wins over the provider error it wraps: the
+    # message is already screen-safe and actionable, and the chained APIError
+    # (which _find_api_error would otherwise surface) is the terse text we are
+    # deliberately replacing.
+    if isinstance(exc, ContextWindowExceededError):
+        return str(exc)
     api = _find_api_error(exc)
     if api is None:
         return None

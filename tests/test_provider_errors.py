@@ -24,6 +24,8 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.function import FunctionModel
 
 from marim_harness.runtime.errors import (
+    CONTEXT_OVERFLOW_HELP,
+    ContextWindowExceededError,
     dump_provider_error,
     format_provider_error,
     is_context_overflow_error,
@@ -293,7 +295,8 @@ async def test_run_turn_force_compacts_and_retries_on_context_overflow(tmp_path)
 @pytest.mark.anyio
 async def test_run_turn_overflow_retries_only_once(tmp_path):
     """If the request still overflows after a forced compaction, the turn raises
-    rather than looping forever."""
+    rather than looping forever — and raises the actionable diagnostic, not the
+    terse provider text."""
     calls = {"n": 0}
 
     def fn(messages, info):
@@ -317,9 +320,54 @@ async def test_run_turn_overflow_retries_only_once(tmp_path):
         ModelRequest(parts=[UserPromptPart(content="u3")]),
         ModelResponse(parts=[TextPart(content="a3")]),
     ]
-    with pytest.raises(APIError):
+    with pytest.raises(ContextWindowExceededError) as excinfo:
         await harness.run_turn("now do it")
     assert calls["n"] == 2  # original attempt + exactly one retry
+    assert isinstance(excinfo.value.__cause__, APIError)  # original chained
+
+
+@pytest.mark.anyio
+async def test_first_turn_overflow_with_nothing_to_compact_raises_diagnostic(tmp_path):
+    """The screenshot case: the very first turn overflows because the prompt
+    alone exceeds a small window. There is no prior history to compact, so the
+    forced compaction can't help and the retry never fires — the turn must raise
+    the actionable ContextWindowExceededError (not the terse provider text) and
+    hit the model exactly once."""
+    calls = {"n": 0}
+
+    def fn(messages, info):
+        calls["n"] += 1
+        raise _api_error(
+            {"error": {"message": "Context size has been exceeded."}}
+        )
+
+    harness = Harness(
+        model=FunctionModel(fn),
+        provider=BuiltinToolProvider(),
+        deps=_make_deps(tmp_path),
+        instructions="x",
+        config=HarnessConfig(keep_last_messages=1),
+    )
+    # Fresh session: no droppable prefix, so maybe_compact(force=True) is a no-op.
+    with pytest.raises(ContextWindowExceededError) as excinfo:
+        await harness.run_turn("first prompt")
+    assert calls["n"] == 1  # no retry — there was nothing to compact
+    assert isinstance(excinfo.value.__cause__, APIError)
+    # The screen renders the diagnostic, not the raw provider wording.
+    assert format_provider_error(excinfo.value) == CONTEXT_OVERFLOW_HELP
+    assert "Context size has been exceeded" not in CONTEXT_OVERFLOW_HELP
+
+
+def test_format_provider_error_prefers_overflow_diagnostic_over_chained_api_error():
+    """format_provider_error must surface our diagnostic verbatim even though the
+    ContextWindowExceededError chains a real APIError — otherwise the terse
+    provider text would leak back onto the screen."""
+    try:
+        raise _api_error({"error": {"message": "Context size has been exceeded."}})
+    except APIError as original:
+        wrapped = ContextWindowExceededError(CONTEXT_OVERFLOW_HELP)
+        wrapped.__cause__ = original
+    assert format_provider_error(wrapped) == CONTEXT_OVERFLOW_HELP
 
 
 _OVERFLOW_BODY = {
@@ -401,7 +449,7 @@ async def test_overflow_in_continuation_round_does_not_retry(tmp_path):
         config=HarnessConfig(keep_last_messages=1),
     )
     harness.session.history = list(_SIX_TURN_HISTORY)
-    with pytest.raises(APIError):
+    with pytest.raises(ContextWindowExceededError):
         await harness.run_turn("write it")
     assert calls["n"] == 2  # no compact-and-retry off the back of a dirty round
     assert not _has_unanswered_tool_calls(harness.session.history)

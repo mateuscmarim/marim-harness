@@ -198,11 +198,19 @@ def test_parse_google_models_keeps_input_token_limit():
     assert entry.context_window == 1048576
 
 
-def test_parse_lmstudio_models_prefers_loaded_context_length():
-    """The exact shape LM Studio's /api/v0/models returns (verified live):
+def test_parse_lmstudio_models_reports_only_the_served_window():
+    """The exact shape the enhanced /api/v0/models returns (verified live):
     a loaded model carries loaded_context_length — the true serving window,
     which can be far below max_context_length — while a not-loaded model
-    only advertises its max."""
+    only advertises its weights' max.
+
+    Only the *served* window (loaded_context_length) is trusted. A model's
+    max_context_length is what the weights support, NOT what the server will
+    accept: advertising it as the window inflated the compaction threshold to
+    ~0.8x the weights-max while the server rejected anything past its much
+    smaller loaded window — requests overflowed while the gauge read 12%. So a
+    row without loaded_context_length is omitted (window unknown → the caller
+    falls back to its conservative default threshold)."""
     payload = {"data": [
         {"id": "qwen/qwen3.5-9b", "state": "loaded",
          "max_context_length": 262144, "loaded_context_length": 101039},
@@ -211,8 +219,8 @@ def test_parse_lmstudio_models_prefers_loaded_context_length():
         {"id": "junk", "max_context_length": "nope"},
     ]}
     windows = parse_lmstudio_models(payload)
-    assert windows["qwen/qwen3.5-9b"] == 101039   # loaded beats max
-    assert windows["ornith-1.0-35b"] == 262144    # max is the only signal
+    assert windows["qwen/qwen3.5-9b"] == 101039   # the served window
+    assert "ornith-1.0-35b" not in windows        # weights-max is not servable
     assert "junk" not in windows
 
 

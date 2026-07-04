@@ -168,14 +168,19 @@ async def fetch_local_models(
 
 
 def parse_lmstudio_models(payload: dict) -> dict[str, int]:
-    """Model id → context window from LM Studio's enhanced ``/api/v0/models``.
+    """Model id → *served* context window from the enhanced ``/api/v0/models``.
 
-    Prefers ``loaded_context_length`` — the window the model is *actually
-    serving* — over ``max_context_length`` (what the weights support). The two
-    can differ wildly: a model advertising 262k loaded at ~101k is exactly the
-    mismatch that let requests overflow while the token gauge read 12%.
-    ``loaded_context_length`` only exists on rows with ``state: "loaded"``;
-    for everything else the max is the best available signal."""
+    Trusts only ``loaded_context_length`` — the window the model is *actually
+    serving* — and never ``max_context_length`` (what the weights support). The
+    two can differ wildly, and the difference is the whole bug: a model whose
+    weights support 262k may be loaded to serve only ~101k, so reporting the max
+    as the window inflated the compaction threshold to ~0.8x the weights-max
+    while the server rejected anything past the smaller served window — requests
+    overflowed while the token gauge read 12%. ``loaded_context_length`` only
+    exists on rows with ``state: "loaded"``; a row without it is omitted (window
+    *unknown*, not "the weights-max"), so the caller falls back to its
+    conservative default threshold rather than to an over-optimistic number the
+    server will not honor."""
     rows = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(rows, list):
         return {}
@@ -187,8 +192,6 @@ def parse_lmstudio_models(payload: dict) -> dict[str, int]:
         if not isinstance(model_id, str) or not model_id:
             continue
         ctx = row.get("loaded_context_length")
-        if not (isinstance(ctx, int) and ctx > 0):
-            ctx = row.get("max_context_length")
         if isinstance(ctx, int) and ctx > 0:
             windows[model_id] = ctx
     return windows
