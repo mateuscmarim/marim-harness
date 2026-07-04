@@ -8,11 +8,19 @@ Produce a thorough, cited research report by DELEGATING — do NOT do the resear
 yourself in this turn. Your job is to orchestrate sub-agents and synthesize their
 reports.
 
-## 1. Plan
-Restate the question, then decompose it into 3–6 INDEPENDENT sub-questions that can be
-researched in parallel. If the question is too vague to research well (missing scope,
-constraints, region, or timeframe), ask the user 1–3 clarifying questions FIRST, then
-continue.
+## 1. Scope, then plan
+Restate the question. If it is too vague to research well (missing scope, constraints,
+region, or timeframe), ask the user 1–3 clarifying questions FIRST, then continue.
+
+Before decomposing, do a quick SCOPING pass yourself — this is the one place you research
+inline. If the domain is unfamiliar, run a couple of `WebSearch` calls to learn the field's
+terminology, map the shape of the debate, and see what the real axes of disagreement are.
+Skip the pass for topics you already know well; do NOT let it grow into full research.
+
+Then decompose into 3–6 INDEPENDENT sub-questions that can be researched in parallel,
+grounded in what the scoping pass surfaced — split along the seams you actually found (not
+guessed), phrase each with the domain's real vocabulary, and check the set for gaps and
+overlap so no two researchers cover the same ground.
 
 ## 2. Fan out (parallel)
 In a SINGLE turn, call `spawn_agent` once per sub-question:
