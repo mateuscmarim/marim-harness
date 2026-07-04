@@ -31,8 +31,8 @@ In a SINGLE turn, call `spawn_agent` once per sub-question:
 - `type`: `researcher`
 - `task`: the sub-question, stated precisely
 - `context`: the overall research question and why this sub-question matters
-- `returns`: "A list of findings; each = CLAIM + source URL + evidence type +
-  quality (high/medium/low). Type each finding by what's authoritative FOR THIS
+- `returns`: "A list of findings; each = CLAIM + source (URL or workspace file path) +
+  evidence type + quality (high/medium/low). Type each finding by what's authoritative FOR THIS
   DOMAIN — e.g. meta-analysis/RCT/observational for science, standard/RFC/official
   doc vs blog for technical, primary vs secondary source for history."
 
