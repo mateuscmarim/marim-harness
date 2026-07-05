@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from ..atomic_io import atomic_write_text
+from ..atomic_io import atomic_write_text, file_lock
 
 if TYPE_CHECKING:
     from .ctrl import SessionController
@@ -144,7 +144,15 @@ class CheckpointManager:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             payload = {"checkpoints": [c.to_dict() for c in self._checkpoints]}
-            atomic_write_text(path, json.dumps(payload))
+            # Serialize the write behind the same advisory lock the sibling
+            # session-state writers use (store.py, memory.py), so two processes on
+            # the same session id don't race their sidecar writes bare. (The write
+            # is already torn-safe via atomic_write_text's mkstemp+replace; the lock
+            # brings it in line with the other locked writers. The residual
+            # last-writer-wins between two processes sharing a session id is the
+            # separate unnamed-session id-collision finding.)
+            with file_lock(path):
+                atomic_write_text(path, json.dumps(payload))
         except OSError as exc:
             logger.debug("failed to persist checkpoints: %s", exc)
 
