@@ -88,7 +88,7 @@ async def test_headless_command_policy_denylist_blocks_bash(tmp_path: Path, monk
     from types import SimpleNamespace
 
     from marim_harness.command_policy import CommandPolicy
-    from marim_harness.tools.provider import bash
+    from marim_harness.tools.edit_tools import bash
 
     monkeypatch.setenv("MARIM_COMMAND_DENYLIST", "dangerous")
     harness = _harness(tmp_path)

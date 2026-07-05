@@ -3,7 +3,7 @@ import pytest
 
 from marim_harness.runtime.deps import Deps, HarnessServices
 from marim_harness.runtime.permissions import Mode
-from marim_harness.tools import names, provider
+from marim_harness.tools import edit_tools, fs_tools, lsp_tools, names, provider
 from tests.conftest import _make_deps
 
 
@@ -46,7 +46,7 @@ class _Ctx:
 async def test_goto_definition_tool_delegates(tmp_path):
     lsp = _FakeLsp()
     ctx = _Ctx(_make_deps(tmp_path, mode=Mode.ask, services=HarnessServices(lsp=lsp)))
-    out = await provider.goto_definition(ctx, "m.py", 10, 5)
+    out = await lsp_tools.goto_definition(ctx, "m.py", 10, 5)
     assert out == "target.py:10:5"
     assert lsp.calls == [("def", "m.py", 10, 5)]
 
@@ -54,14 +54,14 @@ async def test_goto_definition_tool_delegates(tmp_path):
 @pytest.mark.anyio
 async def test_tools_report_unavailable_without_lsp(tmp_path):
     ctx = _Ctx(_make_deps(tmp_path, mode=Mode.ask, services=HarnessServices(lsp=None)))
-    out = await provider.find_references(ctx, "m.py", 1, 1)
+    out = await lsp_tools.find_references(ctx, "m.py", 1, 1)
     assert "not available" in out.lower()
 
 
 @pytest.mark.anyio
 async def test_diagnostics_tool_delegates(tmp_path):
     ctx = _Ctx(_make_deps(tmp_path, mode=Mode.ask, services=HarnessServices(lsp=_FakeLsp())))
-    out = await provider.diagnostics(ctx, "m.py")
+    out = await lsp_tools.diagnostics(ctx, "m.py")
     assert "no diagnostics" in out
 
 
@@ -106,8 +106,8 @@ async def test_edit_appends_diagnostics(tmp_path):
     lsp = _DiagLsp("m.py:1:1: error: bad")
     ctx = _Ctx(_make_deps(tmp_path, mode=Mode.ask, services=HarnessServices(lsp=lsp)))
     from marim_harness.tools import fs
-    provider.read_file(ctx, "m.py")  # read-before-edit guard
-    out = await provider.edit_file(ctx, "m.py", [fs.Edit(old_string="x = 1", new_string="y = 2")])
+    fs_tools.read_file(ctx, "m.py")  # read-before-edit guard
+    out = await edit_tools.edit_file(ctx, "m.py", [fs.Edit(old_string="x = 1", new_string="y = 2")])
     assert "edited m.py" in out
     assert "m.py:1:1: error: bad" in out
     assert lsp.seen and lsp.seen[0][0] == "m.py"
@@ -117,7 +117,7 @@ async def test_edit_appends_diagnostics(tmp_path):
 async def test_write_appends_diagnostics(tmp_path):
     lsp = _DiagLsp("n.py:2:3: warning: meh")
     ctx = _Ctx(_make_deps(tmp_path, mode=Mode.ask, services=HarnessServices(lsp=lsp)))
-    out = await provider.write_file(ctx, "n.py", "z = 3\n")
+    out = await edit_tools.write_file(ctx, "n.py", "z = 3\n")
     assert "wrote n.py" in out
     assert "n.py:2:3: warning: meh" in out
 
@@ -129,8 +129,8 @@ async def test_edit_no_diagnostics_block_when_clean(tmp_path):
     lsp = _DiagLsp("m.py: no diagnostics")
     ctx = _Ctx(_make_deps(tmp_path, mode=Mode.ask, services=HarnessServices(lsp=lsp)))
     from marim_harness.tools import fs
-    provider.read_file(ctx, "m.py")  # read-before-edit guard
-    out = await provider.edit_file(ctx, "m.py", [fs.Edit(old_string="x = 1", new_string="y = 2")])
+    fs_tools.read_file(ctx, "m.py")  # read-before-edit guard
+    out = await edit_tools.edit_file(ctx, "m.py", [fs.Edit(old_string="x = 1", new_string="y = 2")])
     # A clean file adds no noise.
     assert "no diagnostics" not in out
     assert out.strip().endswith("edit)")
@@ -139,7 +139,7 @@ async def test_edit_no_diagnostics_block_when_clean(tmp_path):
 @pytest.mark.anyio
 async def test_write_without_lsp_is_unchanged(tmp_path):
     ctx = _Ctx(_make_deps(tmp_path, mode=Mode.ask, services=HarnessServices(lsp=None)))
-    out = await provider.write_file(ctx, "n.py", "z = 3\n")
+    out = await edit_tools.write_file(ctx, "n.py", "z = 3\n")
     assert out == "wrote n.py (6 bytes, 6 chars)"
 
 
@@ -151,7 +151,7 @@ async def test_diagnostics_exception_returns_unchanged_result(tmp_path):
             raise RuntimeError("boom")
 
     ctx = _Ctx(_make_deps(tmp_path, mode=Mode.ask, services=HarnessServices(lsp=_FailingLsp())))
-    out = await provider.write_file(ctx, "n.py", "z = 3\n")
+    out = await edit_tools.write_file(ctx, "n.py", "z = 3\n")
     # No diagnostics block; result unchanged
     assert out == "wrote n.py (6 bytes, 6 chars)"
     assert "boom" not in out
@@ -163,7 +163,7 @@ async def test_real_diagnostic_not_suppressed_by_path_containing_disabled(tmp_pa
     # Real diagnostic line for a path containing "disabled"
     lsp = _DiagLsp("feature_disabled.py:3:1: error: undefined name")
     ctx = _Ctx(_make_deps(tmp_path, mode=Mode.ask, services=HarnessServices(lsp=lsp)))
-    out = await provider.write_file(ctx, "feature_disabled.py", "bad code\n")
+    out = await edit_tools.write_file(ctx, "feature_disabled.py", "bad code\n")
     # The real diagnostic must be appended
     assert "diagnostics:" in out
     assert "undefined name" in out
@@ -174,7 +174,7 @@ async def test_clean_report_suppresses_diagnostics_block(tmp_path):
     """A 'no diagnostics' clean report must not append a diagnostics block."""
     lsp = _DiagLsp("n.py: no diagnostics")
     ctx = _Ctx(_make_deps(tmp_path, mode=Mode.ask, services=HarnessServices(lsp=lsp)))
-    out = await provider.write_file(ctx, "n.py", "z = 3\n")
+    out = await edit_tools.write_file(ctx, "n.py", "z = 3\n")
     # No diagnostics block appended
     assert "diagnostics:" not in out
     assert "no diagnostics" not in out

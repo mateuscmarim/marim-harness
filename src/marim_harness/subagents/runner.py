@@ -387,7 +387,7 @@ class SubagentRunner:
         # partial-bound keyword loses to a caller kwarg, so a model that
         # passed its own max_depth could override the binding.
         if depth + 1 < self._max_depth:
-            from ..tools.provider import spawn_agent
+            from ..tools.spawn_tools import spawn_agent
             sub.tool(spawn_agent)
         return sub, None
 

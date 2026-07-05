@@ -10,7 +10,7 @@ import pytest
 
 from marim_harness.runtime.deps import HarnessServices
 from marim_harness.runtime.permissions import Mode
-from marim_harness.tools.provider import spawn_agent
+from marim_harness.tools.spawn_tools import spawn_agent
 from tests.conftest import _make_deps
 
 pytestmark = pytest.mark.anyio

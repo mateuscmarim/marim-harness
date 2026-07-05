@@ -95,7 +95,7 @@ async def test_bash_tool_accepts_description_arg(tmp_path: Path):
     # is metadata only — it must not affect execution.
     from types import SimpleNamespace
 
-    from marim_harness.tools.provider import bash
+    from marim_harness.tools.edit_tools import bash
 
     ctx = SimpleNamespace(deps=_make_deps(tmp_path, mode=Mode.ask))
     out = await bash(ctx, "echo hi", description="Say hi")
@@ -109,7 +109,7 @@ async def test_bash_tool_accepts_timeout_arg(tmp_path: Path):
     # `extra_forbidden`, and a per-call value must actually bound a foreground run.
     from types import SimpleNamespace
 
-    from marim_harness.tools.provider import bash
+    from marim_harness.tools.edit_tools import bash
 
     ctx = SimpleNamespace(deps=_make_deps(tmp_path, mode=Mode.ask))
     out = await bash(ctx, "echo quick", timeout=5)
@@ -127,7 +127,7 @@ async def test_bash_background_refused_for_subagents(tmp_path: Path):
     # Mirror the spawn_agent background guard: refuse with a redirect.
     from types import SimpleNamespace
 
-    from marim_harness.tools.provider import bash
+    from marim_harness.tools.edit_tools import bash
 
     ctx = SimpleNamespace(deps=_make_deps(tmp_path, mode=Mode.auto, subagent_depth=1))
     out = await bash(ctx, "sleep 5", background=True)
@@ -139,7 +139,8 @@ async def test_bash_background_refused_for_subagents(tmp_path: Path):
 async def test_bash_background_still_available_to_main_agent(tmp_path: Path):
     from types import SimpleNamespace
 
-    from marim_harness.tools.provider import bash, cancel_job
+    from marim_harness.tools.edit_tools import bash
+    from marim_harness.tools.job_tools import cancel_job
 
     ctx = SimpleNamespace(deps=_make_deps(tmp_path, mode=Mode.auto))
     out = await bash(ctx, "sleep 5", background=True)
@@ -184,7 +185,7 @@ async def test_present_plan_auto_flips_mode_and_writes_artifact(tmp_path):
     from types import SimpleNamespace
 
     from marim_harness.runtime.permissions import Mode
-    from marim_harness.tools import provider
+    from marim_harness.tools import planning_tools
     from marim_harness.workspace.plans import plans_dir
 
     deps = _make_deps(tmp_path, mode=Mode.plan)
@@ -195,7 +196,7 @@ async def test_present_plan_auto_flips_mode_and_writes_artifact(tmp_path):
     deps.ui.ask_user = fake_ask
     ctx = SimpleNamespace(deps=deps)
 
-    out = await provider.present_plan(ctx, "Refactor the parser", ["step one", "step two"])
+    out = await planning_tools.present_plan(ctx, "Refactor the parser", ["step one", "step two"])
 
     assert deps.workspace.mode is Mode.auto
     assert len(deps.tasks.items) == 2
@@ -210,7 +211,7 @@ async def test_present_plan_keep_planning_stays_in_plan_mode(tmp_path):
     from types import SimpleNamespace
 
     from marim_harness.runtime.permissions import Mode
-    from marim_harness.tools import provider
+    from marim_harness.tools import planning_tools
 
     deps = _make_deps(tmp_path, mode=Mode.plan)
 
@@ -220,7 +221,7 @@ async def test_present_plan_keep_planning_stays_in_plan_mode(tmp_path):
     deps.ui.ask_user = fake_ask
     ctx = SimpleNamespace(deps=deps)
 
-    await provider.present_plan(ctx, "Refactor", ["a"])
+    await planning_tools.present_plan(ctx, "Refactor", ["a"])
     assert deps.workspace.mode is Mode.plan
 
 
@@ -229,14 +230,14 @@ async def test_present_plan_headless_defaults_to_keep_planning(tmp_path):
     from types import SimpleNamespace
 
     from marim_harness.runtime.permissions import Mode
-    from marim_harness.tools import provider
+    from marim_harness.tools import planning_tools
     from marim_harness.workspace.plans import plans_dir
 
     deps = _make_deps(tmp_path, mode=Mode.plan)
     deps.ui.ask_user = None  # no interactive UI
     ctx = SimpleNamespace(deps=deps)
 
-    out = await provider.present_plan(ctx, "Refactor", ["a"])
+    out = await planning_tools.present_plan(ctx, "Refactor", ["a"])
     assert deps.workspace.mode is Mode.plan  # never auto-executes headless
     assert list(plans_dir(tmp_path).glob("*.md"))  # artifact still written
     assert "plan" in out.lower()
@@ -249,12 +250,12 @@ async def test_present_plan_empty_steps_asks_for_retry(tmp_path):
     from pydantic_ai import ModelRetry
 
     from marim_harness.runtime.permissions import Mode
-    from marim_harness.tools import provider
+    from marim_harness.tools import planning_tools
 
     deps = _make_deps(tmp_path, mode=Mode.plan)
     ctx = SimpleNamespace(deps=deps)
     with pytest.raises(ModelRetry):
-        await provider.present_plan(ctx, "Refactor", [])
+        await planning_tools.present_plan(ctx, "Refactor", [])
 
 
 @pytest.mark.anyio
@@ -262,7 +263,7 @@ async def test_present_plan_ask_flips_to_ask_mode(tmp_path):
     from types import SimpleNamespace
 
     from marim_harness.runtime.permissions import Mode
-    from marim_harness.tools import provider
+    from marim_harness.tools import planning_tools
 
     deps = _make_deps(tmp_path, mode=Mode.plan)
 
@@ -272,7 +273,7 @@ async def test_present_plan_ask_flips_to_ask_mode(tmp_path):
     deps.ui.ask_user = fake_ask
     ctx = SimpleNamespace(deps=deps)
 
-    await provider.present_plan(ctx, "Refactor", ["a"])
+    await planning_tools.present_plan(ctx, "Refactor", ["a"])
     assert deps.workspace.mode is Mode.ask
 
 
@@ -309,7 +310,7 @@ def _job_ctx(tmp_path):
 
 @pytest.mark.anyio
 async def test_job_dispatches_each_action(tmp_path):
-    from marim_harness.tools.provider import job
+    from marim_harness.tools.job_tools import job
 
     ctx, calls = _job_ctx(tmp_path)
     assert await job(ctx, "list") == "No background jobs."
@@ -325,7 +326,7 @@ async def test_job_dispatches_each_action(tmp_path):
 
 @pytest.mark.anyio
 async def test_job_requires_id_for_targeted_actions(tmp_path):
-    from marim_harness.tools.provider import job
+    from marim_harness.tools.job_tools import job
 
     ctx, _ = _job_ctx(tmp_path)
     for action in ("output", "wait", "cancel"):
@@ -337,7 +338,7 @@ async def test_job_requires_id_for_targeted_actions(tmp_path):
 async def test_spawn_agent_forwards_mcp_foreground(tmp_path):
     from types import SimpleNamespace
 
-    from marim_harness.tools.provider import spawn_agent
+    from marim_harness.tools.spawn_tools import spawn_agent
 
     calls = {}
 
@@ -364,7 +365,7 @@ async def test_spawn_agent_composes_structured_task(tmp_path):
     the sub-agent gets the spawner's output contract, boundaries, and context."""
     from types import SimpleNamespace
 
-    from marim_harness.tools.provider import spawn_agent
+    from marim_harness.tools.spawn_tools import spawn_agent
 
     calls = {}
 
@@ -394,7 +395,7 @@ async def test_spawn_agent_composes_structured_task(tmp_path):
 async def test_spawn_agent_without_structured_fields_passes_task_verbatim(tmp_path):
     from types import SimpleNamespace
 
-    from marim_harness.tools.provider import spawn_agent
+    from marim_harness.tools.spawn_tools import spawn_agent
 
     calls = {}
 
@@ -417,7 +418,7 @@ async def test_spawn_agent_without_structured_fields_passes_task_verbatim(tmp_pa
 async def test_spawn_agent_forwards_mcp_background(tmp_path):
     from types import SimpleNamespace
 
-    from marim_harness.tools.provider import spawn_agent
+    from marim_harness.tools.spawn_tools import spawn_agent
 
     captured = {}
 
@@ -445,7 +446,7 @@ async def test_spawn_agent_forwards_mcp_background(tmp_path):
 async def test_spawn_agent_default_mcp_is_none(tmp_path):
     from types import SimpleNamespace
 
-    from marim_harness.tools.provider import spawn_agent
+    from marim_harness.tools.spawn_tools import spawn_agent
 
     calls = {}
 
@@ -482,7 +483,7 @@ async def test_spawn_agent_default_mcp_is_none(tmp_path):
     ],
 )
 def test_coerce_mcp(raw, expected):
-    from marim_harness.tools.provider import _coerce_names
+    from marim_harness.tools.spawn_tools import _coerce_names
 
     assert _coerce_names(raw) == expected
 
@@ -493,7 +494,7 @@ async def test_spawn_agent_coerces_stringified_mcp(tmp_path):
     server, not fail the turn on schema validation."""
     from types import SimpleNamespace
 
-    from marim_harness.tools.provider import spawn_agent
+    from marim_harness.tools.spawn_tools import spawn_agent
 
     calls = {}
 
@@ -516,7 +517,7 @@ async def test_spawn_agent_coerces_stringified_mcp(tmp_path):
 async def test_spawn_agent_coerces_comma_separated_mcp_background(tmp_path):
     from types import SimpleNamespace
 
-    from marim_harness.tools.provider import spawn_agent
+    from marim_harness.tools.spawn_tools import spawn_agent
 
     captured = {}
 
@@ -548,7 +549,7 @@ async def test_bash_blocks_denylisted_command(tmp_path: Path):
     from types import SimpleNamespace
 
     from marim_harness.command_policy import CommandPolicy
-    from marim_harness.tools import provider
+    from marim_harness.tools import edit_tools
 
     sentinel = tmp_path / "ran.txt"
     deps = Deps(
@@ -557,7 +558,7 @@ async def test_bash_blocks_denylisted_command(tmp_path: Path):
         ),
     )
     ctx = SimpleNamespace(deps=deps)
-    out = await provider.bash(ctx, f"touch {sentinel}")
+    out = await edit_tools.bash(ctx, f"touch {sentinel}")
     assert "Blocked by command policy" in out
     assert not sentinel.exists()  # the shell never ran
 
@@ -567,13 +568,13 @@ def test_resolve_bash_timeout_treats_value_as_ms_and_clamps():
     range, then converted to whole seconds for run_bash. A bogus huge value (e.g. a
     model passing 180000 meaning '3 min' but landing as 180000ms) must not become
     hours; None falls back to the default."""
-    from marim_harness.tools import provider
+    from marim_harness.tools import edit_tools
 
-    assert provider._resolve_bash_timeout_seconds(None) == 30  # default 30000ms
-    assert provider._resolve_bash_timeout_seconds(120_000) == 120  # 2 min, not 33h
-    assert provider._resolve_bash_timeout_seconds(180_000) == 180
-    assert provider._resolve_bash_timeout_seconds(10_000_000) == 600  # clamped to max
-    assert provider._resolve_bash_timeout_seconds(50) == 1  # floored to 1s, not 0
+    assert edit_tools._resolve_bash_timeout_seconds(None) == 30  # default 30000ms
+    assert edit_tools._resolve_bash_timeout_seconds(120_000) == 120  # 2 min, not 33h
+    assert edit_tools._resolve_bash_timeout_seconds(180_000) == 180
+    assert edit_tools._resolve_bash_timeout_seconds(10_000_000) == 600  # clamped to max
+    assert edit_tools._resolve_bash_timeout_seconds(50) == 1  # floored to 1s, not 0
 
 
 @pytest.mark.anyio
@@ -582,11 +583,11 @@ async def test_bash_timeout_is_milliseconds(tmp_path: Path):
     milliseconds (clamped to 1s), not as 500 seconds."""
     from types import SimpleNamespace
 
-    from marim_harness.tools import provider
+    from marim_harness.tools import edit_tools
 
     deps = _make_deps(tmp_path, mode=Mode.ask)
     ctx = SimpleNamespace(deps=deps)
-    out = await provider.bash(ctx, "sleep 2", timeout=500)
+    out = await edit_tools.bash(ctx, "sleep 2", timeout=500)
     assert "timed out" in out
 
 
@@ -595,22 +596,22 @@ def test_grep_dash_i_flag_is_case_insensitive(tmp_path: Path):
     it arrives via **flags); grep must honor it as case-insensitive."""
     from types import SimpleNamespace
 
-    from marim_harness.tools import provider
+    from marim_harness.tools import fs_tools
 
     (tmp_path / "a.txt").write_text("Alpha\n")
     ctx = SimpleNamespace(deps=_make_deps(tmp_path, mode=Mode.ask))
-    assert provider.grep(ctx, "alpha") == "(no matches)"
-    assert "a.txt:1:Alpha" in provider.grep(ctx, "alpha", **{"-i": True})
+    assert fs_tools.grep(ctx, "alpha") == "(no matches)"
+    assert "a.txt:1:Alpha" in fs_tools.grep(ctx, "alpha", **{"-i": True})
 
 
 def test_grep_context_flags_map_to_before_after(tmp_path: Path):
     from types import SimpleNamespace
 
-    from marim_harness.tools import provider
+    from marim_harness.tools import fs_tools
 
     (tmp_path / "a.txt").write_text("one\ntwo\nMATCH\nfour\n")
     ctx = SimpleNamespace(deps=_make_deps(tmp_path, mode=Mode.ask))
-    out = provider.grep(ctx, "MATCH", **{"-C": 1})
+    out = fs_tools.grep(ctx, "MATCH", **{"-C": 1})
     assert "a.txt-2-two" in out
     assert "a.txt:3:MATCH" in out
     assert "a.txt-4-four" in out
@@ -621,22 +622,22 @@ def test_grep_unknown_flag_raises_model_retry(tmp_path: Path):
     options — not a silent no-op and not a 500."""
     from types import SimpleNamespace
 
-    from marim_harness.tools import provider
+    from marim_harness.tools import fs_tools
 
     ctx = SimpleNamespace(deps=_make_deps(tmp_path, mode=Mode.ask))
     with pytest.raises(ModelRetry):
-        provider.grep(ctx, "x", **{"--nonsense": True})
+        fs_tools.grep(ctx, "x", **{"--nonsense": True})
 
 
 @pytest.mark.anyio
 async def test_bash_allows_permitted_command(tmp_path: Path):
     from types import SimpleNamespace
 
-    from marim_harness.tools import provider
+    from marim_harness.tools import edit_tools
 
     deps = _make_deps(tmp_path, mode=Mode.ask)  # empty policy -> allow all
     ctx = SimpleNamespace(deps=deps)
-    out = await provider.bash(ctx, "echo hello")
+    out = await edit_tools.bash(ctx, "echo hello")
     assert "hello" in out
 
 
@@ -649,7 +650,7 @@ async def test_diagnostics_failure_is_logged_at_debug(caplog, tmp_path):
     from types import SimpleNamespace
     from unittest.mock import MagicMock
 
-    from marim_harness.tools.provider import _with_diagnostics
+    from marim_harness.tools.edit_tools import _with_diagnostics
 
     deps = _make_deps(tmp_path, mode=Mode.ask)
     fake_lsp = MagicMock()
@@ -657,13 +658,15 @@ async def test_diagnostics_failure_is_logged_at_debug(caplog, tmp_path):
     deps.services.lsp = fake_lsp
 
     ctx = SimpleNamespace(deps=deps)
-    with caplog.at_level(logging.DEBUG, logger="marim_harness.tools.provider"):
+    # _with_diagnostics now lives in tools.edit_tools, so its DEBUG record
+    # carries that logger name (the tool is still importable via provider).
+    with caplog.at_level(logging.DEBUG, logger="marim_harness.tools.edit_tools"):
         result = await _with_diagnostics(ctx, "x.py", "wrote")
     assert result == "wrote"  # never raises; result is preserved
     assert any(
-        r.name == "marim_harness.tools.provider" and r.levelno == logging.DEBUG
+        r.name == "marim_harness.tools.edit_tools" and r.levelno == logging.DEBUG
         for r in caplog.records
-    ), f"no DEBUG record from provider: {[(r.name, r.levelname) for r in caplog.records]}"
+    ), f"no DEBUG record from edit_tools: {[(r.name, r.levelname) for r in caplog.records]}"
 
 
 @pytest.mark.parametrize(
@@ -749,7 +752,7 @@ async def test_present_plan_uses_threaded_session_id_for_filename(tmp_path):
     from types import SimpleNamespace
 
     from marim_harness.runtime.permissions import Mode
-    from marim_harness.tools import provider
+    from marim_harness.tools import planning_tools
     from marim_harness.workspace.plans import plans_dir
 
     deps = _make_deps(tmp_path, mode=Mode.plan)
@@ -761,7 +764,7 @@ async def test_present_plan_uses_threaded_session_id_for_filename(tmp_path):
     deps.ui.ask_user = fake_ask
     ctx = SimpleNamespace(deps=deps)
 
-    await provider.present_plan(ctx, "Refactor X", ["a"])
+    await planning_tools.present_plan(ctx, "Refactor X", ["a"])
 
     files = list(plans_dir(tmp_path).glob("*.md"))
     assert len(files) == 1
@@ -789,7 +792,7 @@ async def _poll_ctx(tmp_path):
 
 @pytest.mark.anyio
 async def test_jobs_listing_appends_wake_note_when_interactive(tmp_path):
-    from marim_harness.tools.provider import jobs as jobs_tool
+    from marim_harness.tools.job_tools import jobs as jobs_tool
 
     ctx, gate, jid = await _poll_ctx(tmp_path)
     ctx.deps.ui.interactive = True
@@ -802,7 +805,7 @@ async def test_jobs_listing_appends_wake_note_when_interactive(tmp_path):
 
 @pytest.mark.anyio
 async def test_poll_guard_escalates_warn_then_replace(tmp_path):
-    from marim_harness.tools.provider import jobs as jobs_tool
+    from marim_harness.tools.job_tools import jobs as jobs_tool
 
     ctx, gate, jid = await _poll_ctx(tmp_path)
     ctx.deps.ui.interactive = True
@@ -820,7 +823,7 @@ async def test_poll_guard_escalates_warn_then_replace(tmp_path):
 
 @pytest.mark.anyio
 async def test_poll_guard_headless_appends_and_never_replaces(tmp_path):
-    from marim_harness.tools.provider import jobs as jobs_tool
+    from marim_harness.tools.job_tools import jobs as jobs_tool
 
     ctx, gate, jid = await _poll_ctx(tmp_path)
     assert ctx.deps.ui.interactive is False  # headless default
@@ -838,7 +841,7 @@ async def test_poll_guard_headless_appends_and_never_replaces(tmp_path):
 
 @pytest.mark.anyio
 async def test_settled_listing_is_a_result_read_not_a_poll(tmp_path):
-    from marim_harness.tools.provider import jobs as jobs_tool
+    from marim_harness.tools.job_tools import jobs as jobs_tool
 
     ctx, gate, jid = await _poll_ctx(tmp_path)
     ctx.deps.ui.interactive = True
@@ -854,7 +857,7 @@ async def test_settled_listing_is_a_result_read_not_a_poll(tmp_path):
 
 @pytest.mark.anyio
 async def test_static_output_marker_triggers_guard(tmp_path):
-    from marim_harness.tools.provider import job_output
+    from marim_harness.tools.job_tools import job_output
 
     ctx, gate, jid = await _poll_ctx(tmp_path)
     ctx.deps.ui.interactive = True
@@ -870,7 +873,7 @@ async def test_growing_output_is_progress_not_polling(tmp_path):
     import asyncio
 
     from marim_harness.jobs import JobRegistry
-    from marim_harness.tools.provider import job_output
+    from marim_harness.tools.job_tools import job_output
 
     deps = _make_deps(tmp_path)
     deps.jobs = JobRegistry()
@@ -893,7 +896,7 @@ async def test_growing_output_is_progress_not_polling(tmp_path):
 
 @pytest.mark.anyio
 async def test_combined_job_tool_routes_through_the_guard(tmp_path):
-    from marim_harness.tools.provider import job
+    from marim_harness.tools.job_tools import job
 
     ctx, gate, jid = await _poll_ctx(tmp_path)
     ctx.deps.ui.interactive = True
@@ -907,7 +910,7 @@ async def test_combined_job_tool_routes_through_the_guard(tmp_path):
 
 @pytest.mark.anyio
 async def test_wait_timeout_appends_end_turn_nudge_when_interactive(tmp_path):
-    from marim_harness.tools.provider import wait_for_job
+    from marim_harness.tools.job_tools import wait_for_job
 
     ctx, gate, jid = await _poll_ctx(tmp_path)
     ctx.deps.ui.interactive = True
@@ -920,7 +923,7 @@ async def test_wait_timeout_appends_end_turn_nudge_when_interactive(tmp_path):
 
 @pytest.mark.anyio
 async def test_wait_timeout_headless_keeps_bare_note(tmp_path):
-    from marim_harness.tools.provider import wait_for_job
+    from marim_harness.tools.job_tools import wait_for_job
 
     ctx, gate, jid = await _poll_ctx(tmp_path)
     assert ctx.deps.ui.interactive is False  # headless default: no wake loop
@@ -933,7 +936,7 @@ async def test_wait_timeout_headless_keeps_bare_note(tmp_path):
 
 @pytest.mark.anyio
 async def test_wait_success_has_no_nudge(tmp_path):
-    from marim_harness.tools.provider import wait_for_job
+    from marim_harness.tools.job_tools import wait_for_job
 
     ctx, gate, jid = await _poll_ctx(tmp_path)
     ctx.deps.ui.interactive = True
@@ -944,7 +947,7 @@ async def test_wait_success_has_no_nudge(tmp_path):
 
 @pytest.mark.anyio
 async def test_wait_unknown_job_has_no_nudge(tmp_path):
-    from marim_harness.tools.provider import wait_for_job
+    from marim_harness.tools.job_tools import wait_for_job
 
     ctx, gate, jid = await _poll_ctx(tmp_path)
     ctx.deps.ui.interactive = True
@@ -956,7 +959,7 @@ async def test_wait_unknown_job_has_no_nudge(tmp_path):
 
 @pytest.mark.anyio
 async def test_combined_job_wait_timeout_nudges(tmp_path):
-    from marim_harness.tools.provider import job
+    from marim_harness.tools.job_tools import job
 
     ctx, gate, jid = await _poll_ctx(tmp_path)
     ctx.deps.ui.interactive = True

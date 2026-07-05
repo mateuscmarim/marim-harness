@@ -1189,7 +1189,7 @@ def test_blocked_by_id_parses_prerequisite_failures():
 
 def test_detached_job_id_round_trips_with_the_handoff():
     from marim_harness.interfaces.tui.stream_render import _detached_job_id
-    from marim_harness.tools.provider import _detach_handoff
+    from marim_harness.tools.spawn_tools import _detach_handoff
 
     assert _detached_job_id(_detach_handoff("job-7")) == "job-7"
     # A normal report is not a handoff.
@@ -1224,7 +1224,7 @@ async def test_detached_card_stays_pending_then_fills_on_settle(tmp_path: Path):
     )
 
     from marim_harness.interfaces.tui.widgets import SubAgentWidget
-    from marim_harness.tools.provider import _detach_handoff
+    from marim_harness.tools.spawn_tools import _detach_handoff
 
     app = _app(tmp_path)
     reg = app.harness.deps.jobs
@@ -1279,7 +1279,7 @@ async def test_detached_card_fills_failed_when_job_fails(tmp_path: Path):
     )
 
     from marim_harness.interfaces.tui.widgets import SubAgentWidget
-    from marim_harness.tools.provider import _detach_handoff
+    from marim_harness.tools.spawn_tools import _detach_handoff
 
     app = _app(tmp_path)
     reg = app.harness.deps.jobs
@@ -3676,7 +3676,7 @@ async def test_detached_card_fills_automatically_when_job_settles(tmp_path: Path
         ToolReturnPart,
     )
 
-    from marim_harness.tools.provider import _detach_handoff
+    from marim_harness.tools.spawn_tools import _detach_handoff
 
     app = _app(tmp_path)
     reg = app.harness.deps.jobs

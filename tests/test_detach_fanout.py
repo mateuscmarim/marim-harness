@@ -7,7 +7,7 @@ import pytest
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
-from marim_harness.tools.provider import _DETACH_OUTPUT_BUDGET
+from marim_harness.tools.spawn_tools import _DETACH_OUTPUT_BUDGET
 from tests.conftest import _last_instructions, _make_deps, _make_harness
 
 
@@ -95,7 +95,7 @@ async def test_subagent_unset_spawn_runs_inline_not_detached(tmp_path: Path):
     ends (the job registry, never the spawner, owns the report)."""
     from types import SimpleNamespace
 
-    from marim_harness.tools.provider import spawn_agent
+    from marim_harness.tools.spawn_tools import spawn_agent
 
     calls = {"inline": False, "bg": False}
 
@@ -198,7 +198,7 @@ def test_spawn_agent_accepts_a_description_param():
     one); spawn_agent must accept it so a fan-out doesn't fail validation."""
     import inspect
 
-    from marim_harness.tools.provider import spawn_agent
+    from marim_harness.tools.spawn_tools import spawn_agent
 
     assert "description" in inspect.signature(spawn_agent).parameters
 

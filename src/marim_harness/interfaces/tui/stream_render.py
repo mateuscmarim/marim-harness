@@ -88,7 +88,7 @@ def _detached_job_id(content: str) -> str | None:
     other tool return. Recognizes both producers so the card fills for either
     detach path: an *auto-detached* handoff (``_detach_handoff`` →
     ``"Started detached sub-agent <id>, …"``) and an *explicit* ``background=True``
-    spawn (``provider.spawn_agent`` → ``"Started <id> (agent) — <label>"``). A bash
+    spawn (``spawn_tools.spawn_agent`` → ``"Started <id> (agent) — <label>"``). A bash
     background job (``"Started <id> (bash) …"``) is intentionally not matched — it's
     not a sub-agent card. Round-trip tests pin both formats."""
     text = content.lstrip()
