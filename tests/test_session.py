@@ -53,6 +53,31 @@ def test_create_save_and_load_roundtrip(tmp_path: Path):
     assert tasks == []
 
 
+def test_concurrent_unnamed_sessions_get_distinct_ids(tmp_path: Path, monkeypatch):
+    """Two processes starting an unnamed session in the same second must not
+    collide. Each manager's ``_reserved`` is in-memory and the session file isn't
+    written until the first save, so a bare second-resolution id would hand both
+    the same id — and they'd then clobber each other's session JSON, checkpoints
+    sidecar, transcript dir, image cache, and ``refs/marim/checkpoints/<id>`` git
+    refs. The id must carry a per-process-unique suffix."""
+    from marim_harness.session import store as store_mod
+
+    # Freeze the timestamp so both managers derive the SAME base slug — the exact
+    # condition the old second-resolution id collided under.
+    monkeypatch.setattr(store_mod, "_now_slug", lambda: "20260704-120000")
+
+    # Two managers over the SAME dir = two independent "processes" (separate
+    # _reserved sets), neither having saved its session file yet.
+    m1 = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
+    m2 = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
+    s1 = m1.create()
+    s2 = m2.create()
+
+    assert s1.session_id != s2.session_id
+    # The human-facing display still leads with the clean timestamp.
+    assert s1.name.startswith("20260704-120000")
+
+
 def test_save_meta_patches_name_without_touching_messages(tmp_path: Path):
     mgr = _manager(tmp_path)
     store = mgr.create()  # unnamed -> auto_named placeholder
