@@ -360,3 +360,46 @@ async def test_isolated_background_spawn_cancel_preserves_in_progress_work(repo:
         capture_output=True, text=True,
     )
     assert show.returncode == 0 and "partial.txt" in show.stdout
+
+
+@pytest.mark.anyio
+async def test_isolated_cli_spawn_cancel_preserves_in_progress_work(repo: Path):
+    """A cancelled isolated ``claude-cli`` spawn must KEEP its branch, exactly like
+    the native path — it historically ``discard()``ed here, dropping the branch and
+    breaking the still-"running" sidecar's own resume offer (parallel-agents review
+    finding). Now the CLI path rides the shared ``_run_spawn_lifecycle``, so a
+    graceful cancel ``close()``s the worktree: in-progress work is committed and the
+    branch survives as the resumable deliverable."""
+    import asyncio
+
+    agents = repo / ".marim" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / "cli-worker.md").write_text(
+        "---\ndescription: CLI worker\nbackend: claude-cli\ntools: read_file\n---\n"
+        "You are a CLI worker.\n",
+        encoding="utf-8",
+    )
+    deps = _make_deps(repo)
+    h = _make_harness(_text_model(), deps)
+
+    async def _cancel_cli(defn, task, work_root, model, stream_id,
+                          checkpoint=None, resume_session_id=None):
+        # Produce work in the worktree, then cancel mid-run (BaseException).
+        fs.write_file(work_root, "partial.txt", "half\n")
+        raise asyncio.CancelledError
+
+    h.subagents._run_cli = _cancel_cli
+
+    with pytest.raises(asyncio.CancelledError):
+        await h.subagents.run_background(
+            "cli-worker", "do it", isolation="worktree", stream_id="clic6",
+        )
+    # Checkout gone, branch kept with the committed work — reopen() can resume it.
+    # (Before the fix this branch was discarded.)
+    assert not (repo / ".worktrees" / "subagent" / "clic6").exists()
+    assert _branch_exists(repo, "subagent/clic6")
+    show = subprocess.run(
+        ["git", "show", "--stat", "subagent/clic6"], cwd=repo,
+        capture_output=True, text=True,
+    )
+    assert show.returncode == 0 and "partial.txt" in show.stdout

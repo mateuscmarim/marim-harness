@@ -215,9 +215,9 @@ def _depth_spy(runner):
     depths: list[int] = []
     orig = runner._run_to_completion
 
-    async def spy(sub, task, run_deps, granted, handler, stream_id=None):
+    async def spy(sub, task, run_deps, granted, handler, stream_id=None, history=None):
         depths.append(run_deps.subagent_depth)
-        return await orig(sub, task, run_deps, granted, handler, stream_id)
+        return await orig(sub, task, run_deps, granted, handler, stream_id, history=history)
 
     runner._run_to_completion = spy
     return depths
@@ -296,9 +296,9 @@ async def test_child_deps_carry_runner_ceiling(tmp_path: Path):
     ceilings: list[int] = []
     orig = h.subagents._run_to_completion
 
-    async def spy(sub, task, run_deps, granted, handler, stream_id=None):
+    async def spy(sub, task, run_deps, granted, handler, stream_id=None, history=None):
         ceilings.append(run_deps.subagent_max_depth)
-        return await orig(sub, task, run_deps, granted, handler, stream_id)
+        return await orig(sub, task, run_deps, granted, handler, stream_id, history=history)
 
     h.subagents._run_to_completion = spy
 
