@@ -1,7 +1,7 @@
 from pydantic_ai import RunContext
 
 from ..runtime.deps import Deps
-from . import fetch, web
+from .impl import fetch, web
 
 
 async def fetch_url(

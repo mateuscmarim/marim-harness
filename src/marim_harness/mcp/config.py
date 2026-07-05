@@ -31,8 +31,8 @@ from pathlib import Path
 from ..atomic_io import atomic_write_text
 from ..config import config_dir
 from ..runtime.permissions import Mode
-from ..tools.coerce import coerce_by_schema
-from ..tools.offload import _INLINE_CHAR_LIMIT, offload_if_large
+from ..tools.impl.coerce import coerce_by_schema
+from ..tools.impl.offload import _INLINE_CHAR_LIMIT, offload_if_large
 
 # Per-tool retry budget for MCP servers, matched to the agent's ``retries=2`` (the
 # main agent and every sub-agent are built with it). pydantic-ai defaults an MCP

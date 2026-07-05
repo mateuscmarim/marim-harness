@@ -12,7 +12,7 @@ from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.usage import RunUsage
 
-from marim_harness.tools import fs
+from marim_harness.tools.impl import fs
 from tests.conftest import _last_instructions, _make_deps, _make_harness, _text_model
 
 

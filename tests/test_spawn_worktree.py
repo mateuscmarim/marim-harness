@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from marim_harness.subagents.isolation import SpawnWorktree
-from marim_harness.tools import fs
+from marim_harness.tools.impl import fs
 
 
 @pytest.fixture

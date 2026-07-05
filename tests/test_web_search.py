@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from marim_harness.tools.web import web_search
+from marim_harness.tools.impl.web import web_search
 
 # --- unit tests (no network) ---
 
@@ -35,7 +35,7 @@ async def test_web_search_success():
     mock_resp.raise_for_status = lambda: None
     mock_resp.json = lambda: payload
 
-    with patch("marim_harness.tools.web.httpx.AsyncClient") as mock_cls:
+    with patch("marim_harness.tools.impl.web.httpx.AsyncClient") as mock_cls:
         client = AsyncMock()
         client.get = AsyncMock(return_value=mock_resp)
         client.__aenter__ = AsyncMock(return_value=client)
@@ -59,7 +59,7 @@ async def test_web_search_empty():
     mock_resp.raise_for_status = lambda: None
     mock_resp.json = lambda: payload
 
-    with patch("marim_harness.tools.web.httpx.AsyncClient") as mock_cls:
+    with patch("marim_harness.tools.impl.web.httpx.AsyncClient") as mock_cls:
         client = AsyncMock()
         client.get = AsyncMock(return_value=mock_resp)
         client.__aenter__ = AsyncMock(return_value=client)
@@ -85,7 +85,7 @@ async def test_web_search_http_error():
 
     mock_resp.raise_for_status = _raise
 
-    with patch("marim_harness.tools.web.httpx.AsyncClient") as mock_cls:
+    with patch("marim_harness.tools.impl.web.httpx.AsyncClient") as mock_cls:
         client = AsyncMock()
         client.get = AsyncMock(return_value=mock_resp)
         client.__aenter__ = AsyncMock(return_value=client)
@@ -104,7 +104,7 @@ async def test_web_search_categories_forwarded():
     mock_resp.raise_for_status = lambda: None
     mock_resp.json = lambda: payload
 
-    with patch("marim_harness.tools.web.httpx.AsyncClient") as mock_cls:
+    with patch("marim_harness.tools.impl.web.httpx.AsyncClient") as mock_cls:
         client = AsyncMock()
         client.get = AsyncMock(return_value=mock_resp)
         client.__aenter__ = AsyncMock(return_value=client)
@@ -133,7 +133,7 @@ async def test_web_search_max_results_clamped():
     mock_resp.raise_for_status = lambda: None
     mock_resp.json = lambda: payload
 
-    with patch("marim_harness.tools.web.httpx.AsyncClient") as mock_cls:
+    with patch("marim_harness.tools.impl.web.httpx.AsyncClient") as mock_cls:
         client = AsyncMock()
         client.get = AsyncMock(return_value=mock_resp)
         client.__aenter__ = AsyncMock(return_value=client)
@@ -159,7 +159,7 @@ async def test_web_search_non_json_response():
 
     mock_resp.json = _bad_json
 
-    with patch("marim_harness.tools.web.httpx.AsyncClient") as mock_cls:
+    with patch("marim_harness.tools.impl.web.httpx.AsyncClient") as mock_cls:
         client = AsyncMock()
         client.get = AsyncMock(return_value=mock_resp)
         client.__aenter__ = AsyncMock(return_value=client)
@@ -179,7 +179,7 @@ async def test_web_search_non_dict_json():
     mock_resp.raise_for_status = lambda: None
     mock_resp.json = lambda: ["not", "an", "object"]
 
-    with patch("marim_harness.tools.web.httpx.AsyncClient") as mock_cls:
+    with patch("marim_harness.tools.impl.web.httpx.AsyncClient") as mock_cls:
         client = AsyncMock()
         client.get = AsyncMock(return_value=mock_resp)
         client.__aenter__ = AsyncMock(return_value=client)
@@ -199,7 +199,7 @@ async def test_web_search_base_url_from_env(monkeypatch):
     mock_resp.raise_for_status = lambda: None
     mock_resp.json = lambda: {"results": []}
 
-    with patch("marim_harness.tools.web.httpx.AsyncClient") as mock_cls:
+    with patch("marim_harness.tools.impl.web.httpx.AsyncClient") as mock_cls:
         client = AsyncMock()
         client.get = AsyncMock(return_value=mock_resp)
         client.__aenter__ = AsyncMock(return_value=client)
@@ -218,7 +218,7 @@ async def test_web_search_sets_user_agent():
     mock_resp.raise_for_status = lambda: None
     mock_resp.json = lambda: {"results": []}
 
-    with patch("marim_harness.tools.web.httpx.AsyncClient") as mock_cls:
+    with patch("marim_harness.tools.impl.web.httpx.AsyncClient") as mock_cls:
         client = AsyncMock()
         client.get = AsyncMock(return_value=mock_resp)
         client.__aenter__ = AsyncMock(return_value=client)
@@ -245,7 +245,7 @@ async def test_web_search_snippet_truncated():
     mock_resp.raise_for_status = lambda: None
     mock_resp.json = lambda: payload
 
-    with patch("marim_harness.tools.web.httpx.AsyncClient") as mock_cls:
+    with patch("marim_harness.tools.impl.web.httpx.AsyncClient") as mock_cls:
         client = AsyncMock()
         client.get = AsyncMock(return_value=mock_resp)
         client.__aenter__ = AsyncMock(return_value=client)
@@ -270,7 +270,7 @@ async def test_web_search_http_error_includes_body():
 
     mock_resp.raise_for_status = _raise
 
-    with patch("marim_harness.tools.web.httpx.AsyncClient") as mock_cls:
+    with patch("marim_harness.tools.impl.web.httpx.AsyncClient") as mock_cls:
         client = AsyncMock()
         client.get = AsyncMock(return_value=mock_resp)
         client.__aenter__ = AsyncMock(return_value=client)
@@ -286,7 +286,7 @@ async def test_web_search_http_error_includes_body():
 @pytest.mark.anyio
 async def test_web_search_max_results_capped_at_50():
     """max_results above 50 should be clamped to 50."""
-    with patch("marim_harness.tools.web.httpx.AsyncClient") as mock_cls:
+    with patch("marim_harness.tools.impl.web.httpx.AsyncClient") as mock_cls:
         client = AsyncMock()
         client.get = AsyncMock(return_value=AsyncMock(
             raise_for_status=lambda: None,

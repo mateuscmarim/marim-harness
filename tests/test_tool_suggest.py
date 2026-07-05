@@ -9,7 +9,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from marim_harness.tools.suggest import (
+from marim_harness.tools.impl.suggest import (
     nearest_tool_name,
     suggest_unknown_tool_retry,
 )

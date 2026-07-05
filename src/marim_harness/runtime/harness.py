@@ -31,9 +31,9 @@ from ..notifications import NotificationConfig
 from ..session import SessionController, SessionManager, SessionStore
 from ..session.checkpoints import CheckpointManager
 from ..subagents import MaskingPolicy, RetryPolicy, SubagentRunner
+from ..tools.impl.suggest import suggest_unknown_tool_retry
 from ..tools.names import SUBAGENT_MAX_DEPTH
 from ..tools.provider import ToolProvider
-from ..tools.suggest import suggest_unknown_tool_retry
 from ..workspace.snapshot import GitSnapshotter
 from .context import (
     actionable_error_note as _actionable_error_note,  # noqa: F401 — re-exported for tests
