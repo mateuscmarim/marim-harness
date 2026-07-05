@@ -6,6 +6,7 @@ The package re-exports :class:`SubagentRunner` so callers keep importing it from
 ``marim_harness.subagents`` exactly as before the split into two modules.
 """
 
+from .policies import MaskingPolicy, RetryPolicy
 from .runner import SubagentRunner
 
-__all__ = ["SubagentRunner"]
+__all__ = ["MaskingPolicy", "RetryPolicy", "SubagentRunner"]
