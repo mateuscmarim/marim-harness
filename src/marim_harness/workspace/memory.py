@@ -43,6 +43,16 @@ def project_scope(workspace_root) -> MemoryScope:
     return MemoryScope("project", Path(workspace_root) / ".marim" / "memory")
 
 
+def _single_line(text: str) -> str:
+    """Collapse a model-controlled value to a single line (all whitespace runs,
+    including newlines, become one space; ends trimmed). ``description`` and
+    ``title`` are written into the YAML frontmatter and the always-injected
+    MEMORY.md index; a raw newline there injects a spurious frontmatter key or an
+    orphan index line — the latter silently defeats the upsert dedup and
+    accumulates in the index. The body is exempt (multi-line markdown is fine)."""
+    return " ".join((text or "").split())
+
+
 def _slugify(name: str) -> str:
     """Reduce a title to a filesystem-safe ASCII slug, falling back to ``memory``.
     Accents are transliterated (``usuário`` -> ``usuario``) so accented and
@@ -137,6 +147,10 @@ def save_memory(
     Returns the path to the memory file. Creates the scope dir on demand."""
     scope.root.mkdir(parents=True, exist_ok=True)
     slug = _slugify(name)
+    # Clamp the single-line fields before they reach the frontmatter / index; the
+    # body keeps its newlines.
+    description = _single_line(description)
+    title = _single_line(title)
 
     frontmatter = _render_frontmatter(slug=slug, description=description, mem_type=mem_type)
     path = scope.root / f"{slug}.md"
