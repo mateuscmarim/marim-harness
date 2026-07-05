@@ -9,7 +9,7 @@ agent can page with ``read_file``/``grep``. Mirrors ``fetch``'s offload pattern.
 import hashlib
 from pathlib import Path
 
-from ..atomic_io import atomic_write_text
+from ...atomic_io import atomic_write_text
 
 _INLINE_CHAR_LIMIT = 25_000      # at/below this, return inline (~6k tokens)
 # Measured in characters (~bytes for ASCII); producers stop collecting here and callers may offload.

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from marim_harness.tools import shell
+from marim_harness.tools.impl import shell
 
 
 def _pid_alive(pid: int) -> bool:
@@ -281,7 +281,7 @@ async def test_start_bash_kill_stops_process(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_run_bash_offloads_large_output(tmp_path, monkeypatch):
-    from marim_harness.tools import offload
+    from marim_harness.tools.impl import offload
     monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 100)
     out = await shell.run_bash(tmp_path, "for i in $(seq 1 500); do echo line $i; done")
     assert "full output saved to" in out and "bash result" in out
@@ -303,7 +303,7 @@ async def test_run_bash_foreground_caps_running_memory(tmp_path, monkeypatch):
     """A flood must be middle-truncated to the running budget (not buffered whole):
     both ends survive, the marker is present, and the saved body stays ~budget-sized."""
     monkeypatch.setattr(shell, "MAX_OUTPUT_CHARS", 2_000)
-    from marim_harness.tools import offload
+    from marim_harness.tools.impl import offload
     monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 100)
     out = await shell.run_bash(
         tmp_path,
@@ -325,7 +325,7 @@ async def test_run_bash_foreground_caps_running_memory(tmp_path, monkeypatch):
 
 @pytest.mark.anyio
 async def test_background_wait_offloads_but_live_output_truncates(tmp_path, monkeypatch):
-    from marim_harness.tools import offload
+    from marim_harness.tools.impl import offload
     monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 100)
     bp = await shell.start_bash(
         tmp_path, "for i in $(seq 1 500); do echo line $i; done", max_output=80

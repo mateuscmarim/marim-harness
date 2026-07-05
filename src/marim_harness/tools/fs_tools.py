@@ -4,7 +4,7 @@ from pydantic_ai import ModelRetry, RunContext
 
 from ..runtime.deps import Deps
 from ..workspace.skills import discover_skills
-from . import fs
+from .impl import fs
 
 
 def read_file(

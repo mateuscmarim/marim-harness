@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from pydantic_ai import ModelRetry
 
-from marim_harness.tools import fs
+from marim_harness.tools.impl import fs
 
 
 def test_read_file_adds_line_numbers(tmp_path: Path):
@@ -431,7 +431,7 @@ def test_glob_skips_worktrees(tmp_path: Path):
 
 
 def test_grep_offloads_large_result(tmp_path, monkeypatch):
-    from marim_harness.tools import offload
+    from marim_harness.tools.impl import offload
     monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 50)
     (tmp_path / "big.txt").write_text("\n".join(f"match {i}" for i in range(100)))
     out = fs.grep(tmp_path, "match")
@@ -450,7 +450,7 @@ def test_grep_small_result_still_inline(tmp_path):
 
 
 def test_glob_offloads_large_result(tmp_path, monkeypatch):
-    from marim_harness.tools import offload
+    from marim_harness.tools.impl import offload
     monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 50)
     for i in range(100):
         (tmp_path / f"f{i}.txt").write_text("x")
@@ -462,7 +462,7 @@ def test_glob_offloads_large_result(tmp_path, monkeypatch):
 
 
 def test_tree_offloads_large_listing(tmp_path, monkeypatch):
-    from marim_harness.tools import offload
+    from marim_harness.tools.impl import offload
     monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 50)
     for i in range(100):
         (tmp_path / f"f{i:03d}.txt").write_text("x")

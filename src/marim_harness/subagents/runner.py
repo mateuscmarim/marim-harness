@@ -42,7 +42,7 @@ from ..runtime.deps import Deps, SubAgent
 from ..runtime.errors import is_context_overflow_error, is_transient_model_error
 from ..runtime.permissions import Mode
 from ..tasks import TaskList
-from ..tools import fs
+from ..tools.impl import fs
 from ..workspace import (
     cap_subagent_output,
     discover_agents,

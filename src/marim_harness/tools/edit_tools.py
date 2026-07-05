@@ -5,7 +5,7 @@ import re
 from pydantic_ai import RunContext
 
 from ..runtime.deps import Deps
-from . import fs, shell
+from .impl import fs, shell
 from .lenient import LenientList
 
 logger = logging.getLogger(__name__)

@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from pydantic_ai import ModelRetry
 
-from marim_harness.tools import fs
+from marim_harness.tools.impl import fs
 from marim_harness.workspace.fs import ReadLedger
 
 

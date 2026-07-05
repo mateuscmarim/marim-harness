@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from marim_harness.tools.fetch import fetch_url
+from marim_harness.tools.impl.fetch import fetch_url
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -74,7 +74,7 @@ def _patch_client(mock_resp: AsyncMock) -> "patch":
     client.stream = MagicMock(return_value=stream_cm)  # stream() is a sync call
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=False)
-    return patch("marim_harness.tools.fetch.httpx.AsyncClient", return_value=client)
+    return patch("marim_harness.tools.impl.fetch.httpx.AsyncClient", return_value=client)
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +258,7 @@ async def test_fetch_connection_error():
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("marim_harness.tools.fetch.httpx.AsyncClient", return_value=client):
+    with patch("marim_harness.tools.impl.fetch.httpx.AsyncClient", return_value=client):
         result = await fetch_url("https://198.51.100.1/")
 
     assert "Fetch failed:" in result
@@ -311,7 +311,7 @@ async def test_fetch_schemeless_host_port_not_mistaken_for_scheme():
 async def test_fetch_caps_read_at_max_bytes():
     """A response larger than _MAX_BYTES is read up to the cap and flagged — the
     stream is stopped, not the whole body buffered."""
-    from marim_harness.tools.fetch import _MAX_BYTES
+    from marim_harness.tools.impl.fetch import _MAX_BYTES
 
     big = "x" * (_MAX_BYTES + 500_000)
     resp = _mock_response(text=big, content_type="text/plain")
@@ -328,7 +328,7 @@ async def test_fetch_caps_read_at_max_bytes():
 async def test_fetch_aborts_when_content_length_exceeds_limit(tmp_path):
     """If the server *declares* a size over _MAX_DOWNLOAD, bail before reading
     the body — return a clear error, write nothing, offload nothing."""
-    from marim_harness.tools.fetch import _MAX_DOWNLOAD
+    from marim_harness.tools.impl.fetch import _MAX_DOWNLOAD
 
     resp = _mock_response(
         text="ignored — we never read this",
@@ -440,7 +440,7 @@ async def test_fetch_large_page_offloaded_to_file(tmp_path):
 
 @pytest.mark.anyio
 async def test_fetch_offload_handle_has_title_and_saved_path(tmp_path, monkeypatch):
-    from marim_harness.tools import fetch
+    from marim_harness.tools.impl import fetch
     monkeypatch.setattr(fetch, "_INLINE_CHAR_LIMIT", 20)
     body = "# My Title\n" + "\n".join(f"para {i}" for i in range(50))
     out = fetch._offload(body, "https://example.com/x", tmp_path)
@@ -587,7 +587,7 @@ async def test_pinned_backend_connects_to_validated_ip(monkeypatch):
     """The backend must hand the resolved IP to the inner connect, not the
     hostname — otherwise httpcore would re-resolve and a rebinding server could
     swap in a private address between our check and the connect."""
-    from marim_harness.tools.fetch import _PinnedBackend
+    from marim_harness.tools.impl.fetch import _PinnedBackend
 
     monkeypatch.setattr(socket, "getaddrinfo",
                         lambda host, *_: [(socket.AF_INET, socket.SOCK_STREAM,
@@ -611,7 +611,7 @@ async def test_pinned_backend_refuses_private_ip(monkeypatch):
     (covers redirect hops, which never hit the early pre-check)."""
     import httpcore
 
-    from marim_harness.tools.fetch import _PinnedBackend
+    from marim_harness.tools.impl.fetch import _PinnedBackend
 
     monkeypatch.setattr(socket, "getaddrinfo",
                         lambda host, *_: [(socket.AF_INET, socket.SOCK_STREAM,
@@ -624,7 +624,7 @@ async def test_pinned_backend_refuses_private_ip(monkeypatch):
 
 
 def test_validated_ips_returns_public_addresses(monkeypatch):
-    from marim_harness.tools.fetch import _validated_ips
+    from marim_harness.tools.impl.fetch import _validated_ips
 
     monkeypatch.setattr(socket, "getaddrinfo",
                         lambda host, *_: [(socket.AF_INET, socket.SOCK_STREAM,
@@ -634,7 +634,7 @@ def test_validated_ips_returns_public_addresses(monkeypatch):
 
 def test_validated_ips_raises_when_any_address_blocked(monkeypatch):
     """If a name resolves to a mix of public and private, refuse outright."""
-    from marim_harness.tools.fetch import _validated_ips
+    from marim_harness.tools.impl.fetch import _validated_ips
 
     monkeypatch.setattr(socket, "getaddrinfo",
                         lambda host, *_: [

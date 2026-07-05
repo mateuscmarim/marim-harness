@@ -1,4 +1,4 @@
-from marim_harness.tools.coerce import coerce_by_schema
+from marim_harness.tools.impl.coerce import coerce_by_schema
 
 _OBJ = {"type": "object", "properties": {"n": {"type": "integer"}}}
 

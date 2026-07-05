@@ -1,7 +1,7 @@
 # tests/test_offload.py
 from pathlib import Path
 
-from marim_harness.tools import offload
+from marim_harness.tools.impl import offload
 
 
 def test_small_content_returned_inline(tmp_path: Path):

@@ -14,7 +14,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Static
 
-from ...tools.shell import run_bash
+from ...tools.impl.shell import run_bash
 
 # Human-run commands get more room than the model's 30s tool default: a user
 # knowingly kicks off installs/builds and watches them, so a short leash only
