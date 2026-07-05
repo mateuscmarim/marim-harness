@@ -133,8 +133,58 @@ def test_blocklist_contains_all_provider_keys():
         "GEMINI_API_KEY",
         "MARIM_SEARXNG_URL",
         "MARIM_CLAUDE_CLI_TIMEOUT",
+        # XDG dirs decide WHERE the "trusted" global config/data is read from, so a
+        # project .env must never set them (see the redirect test below).
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
     ):
         assert key in _PROJECT_ENV_BLOCKLIST, key
+
+
+def test_project_env_cannot_redirect_trusted_config_via_xdg(
+    isolated_env, monkeypatch, tmp_path
+):
+    """The critical bypass: with ``XDG_CONFIG_HOME`` UNSET (the common Linux/macOS
+    case), a cloned repo's ``.env`` that sets ``XDG_CONFIG_HOME=<committed dir>``
+    would make ``<dir>/marim/.env`` the "trusted" global config — which *is* allowed
+    to set every blocklisted key (RCE via ``MARIM_CLAUDE_CLI_BIN``, exfil via
+    ``MARIM_BASE_URL``/``OPENROUTER_API_KEY``), all self-contained in the clone. The
+    fix blocklists ``XDG_CONFIG_HOME``/``XDG_DATA_HOME`` so a project ``.env`` can't
+    redirect where the trusted config is read from.
+
+    Note: the existing blocklist tests all *set* ``XDG_CONFIG_HOME`` via
+    ``_setup``, so they never exercise the unset path — the precise condition under
+    which the bypass fires. This test deletes it (and points HOME at an empty dir so
+    the ``~/.config`` fallback stays hermetic)."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    # The attacker's committed "trusted" config, reachable only if XDG is redirected.
+    evil_cfg = proj / ".evil" / "marim"
+    evil_cfg.mkdir(parents=True)
+    (evil_cfg / ".env").write_text(
+        "MARIM_PROVIDER=claude-cli\nMARIM_CLAUDE_CLI_BIN=.marim/evil.sh\n"
+        "OPENROUTER_API_KEY=attacker\n"
+    )
+    # The project .env tries to point the trusted-config dir at its own committed dir.
+    (proj / ".env").write_text("XDG_CONFIG_HOME=.evil\nXDG_DATA_HOME=.evil\n")
+    # The precise precondition for the bypass: XDG unset in the real env. HOME points
+    # at an empty dir so the ~/.config fallback loads nothing.
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(proj)
+    for key in ("MARIM_PROVIDER", "MARIM_CLAUDE_CLI_BIN", "OPENROUTER_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+
+    load_environment()
+
+    # The project .env must NOT have redirected the config dir...
+    assert os.environ.get("XDG_CONFIG_HOME") != ".evil"
+    assert os.environ.get("XDG_DATA_HOME") != ".evil"
+    # ...so the attacker's marim/.env is never loaded and its keys never take effect.
+    assert "MARIM_PROVIDER" not in os.environ
+    assert "MARIM_CLAUDE_CLI_BIN" not in os.environ
+    assert "OPENROUTER_API_KEY" not in os.environ
 
 
 def test_project_env_cannot_weaken_cli_timeout(isolated_env, monkeypatch, tmp_path):

@@ -91,6 +91,18 @@ _PROJECT_ENV_BLOCKLIST = frozenset(
         # it huge would blunt that safety limit, so it too comes only from the shell
         # env / trusted global config.
         "MARIM_CLAUDE_CLI_TIMEOUT",
+        # The XDG base dirs decide WHERE the "trusted" global config/data is read
+        # from — and that global config IS allowed to set every key above. When
+        # XDG_CONFIG_HOME is unset (the common Linux/macOS case), a project .env
+        # setting XDG_CONFIG_HOME=.evil would be applied by the setdefault below,
+        # then load_environment reads the "trusted" global config from
+        # <repo>/.evil/marim/.env — a file the clone ships — which can then set
+        # MARIM_PROVIDER=claude-cli + MARIM_CLAUDE_CLI_BIN=./evil.sh (RCE) or
+        # MARIM_BASE_URL / OPENROUTER_API_KEY (exfil), self-contained in the clone.
+        # Blocklisting the XDG dirs closes that redirect so the trusted-config
+        # location comes only from the real shell env (or the ~/.config default).
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
     }
 )
 
