@@ -446,6 +446,74 @@ class SubagentRunner:
         iso_note = iso.close() if iso else ""
         return note + capped + iso_note
 
+    def _contain_failure(self, name: str, exc: BaseException) -> str:
+        """The error string a *foreground* spawn returns instead of propagating,
+        so a sibling fan-out spawn isn't taken down by its neighbor's crash. A
+        context overflow (the shed-and-resume backstop already ran and it still
+        overflowed) gets an actionable message the orchestrator can act on rather
+        than a bare class name."""
+        if is_context_overflow_error(exc):
+            return (
+                f"Sub-agent {name!r} overflowed its context window even after "
+                "masking stale tool output. Split the task into smaller "
+                "spawns, or narrow the scope so this sub-agent reads less."
+            )
+        return f"Sub-agent {name!r} failed: {exc.__class__.__name__}: {exc}"
+
+    async def _run_spawn_lifecycle(
+        self, run_fn: Callable[[], Any], *, iso: SpawnWorktree | None,
+        resumed: bool, background: bool, name: str, stop_task: str, note: str,
+        max_output_chars: int | None, stream_id: str,
+        timing: tuple[float, float, list[float]] | None = None,
+    ) -> str:
+        """The one run+failure+finalize lifecycle every spawn shares — native or
+        CLI, foreground or background, fresh or resumed. ``run_fn`` is the
+        backend-specific coroutine factory that runs the spawn under the
+        concurrency slot and returns a ``SpawnRun``; everything around it is
+        invariant:
+
+        - **Regular failure** (``Exception``): tear the worktree down — throwaway
+          for a fresh spawn, checkout-only for a resumed one (keeps its committed
+          work). A background spawn then re-raises to the job registry; a
+          foreground spawn is *contained* as an error string so a sibling fan-out
+          spawn survives.
+        - **Cancellation** (``BaseException`` — Ctrl-C / shutdown): ``close()`` the
+          worktree, committing in-progress work and KEEPING the branch as the
+          resumable deliverable (dropped only if nothing was produced). This makes
+          a cancel no worse than a hard kill and keeps resume working — for the CLI
+          path too, which historically ``discard()``ed here and broke its own
+          resume offer.
+        - **Success**: hand off to the shared ``_finalize_spawn`` tail.
+
+        ``background`` selects both the failure disposition (re-raise vs contain)
+        and, via ``persist_bg``, the finalize behaviors a detached spawn needs.
+        ``timing`` is the native phase stats (``None`` for CLI, which keeps none)."""
+        try:
+            # Bound concurrent model runs (the part that hits the provider) so a
+            # wide fan-out queues instead of slamming a rate-limited route at once.
+            async with self._slot():
+                run = await run_fn()
+        except Exception as exc:  # noqa: BLE001
+            if timing is not None:
+                self._log_spawn_timing(name, *timing, failed=True)
+            if iso:
+                iso.teardown_after_failure(resumed=resumed)
+            if background:
+                # A background crash propagates to the job registry (marks it
+                # failed) rather than being contained — no turn to protect.
+                raise
+            await self.hooks.subagent_stop(name, stop_task, f"error: {exc}")
+            return self._contain_failure(name, exc)
+        except BaseException:
+            if iso:
+                iso.close()
+            raise
+        return await self._finalize_spawn(
+            run, stream_id=stream_id, name=name, stop_task=stop_task, note=note,
+            iso=iso, max_output_chars=max_output_chars, persist_bg=background,
+            timing=timing,
+        )
+
     # Backoff before a transient-error retry: exponential from a small base, capped,
     # so a brief upstream blip is ridden out without stalling the spawn for long.
     _RETRY_BASE_DELAY = 0.5
@@ -620,11 +688,12 @@ class SubagentRunner:
         max_output_chars: int | None, model: str | None, isolation: str | None,
         *, background: bool, stream_id: str, caller_depth: int = 0,
     ) -> str:
-        """Dispatch a spawn through shared setup then the foreground or background tail.
+        """Dispatch a spawn through shared setup then the shared run lifecycle.
 
         Handles worktree open and the CLI early-return inline (both need ``iso``
         before the branch), then delegates everything else to ``_prepare_spawn``
-        and either ``_execute_foreground_spawn`` or ``_execute_background_spawn``.
+        and ``_execute_native_spawn`` (which drives ``_run_spawn_lifecycle`` for
+        both the foreground and background cases).
 
         ``caller_depth`` is the depth of the agent that called spawn_agent; the
         child runs at ``caller_depth + 1``. It comes from the caller's deps, NOT
@@ -645,11 +714,10 @@ class SubagentRunner:
                 return err
         work_root = iso.path if iso else None
         # CLI-backed agents run an external `claude` process instead of the
-        # in-process Pydantic AI loop. Branch here so the native build+run flow
-        # below is unchanged. The CLI path mirrors the same wrapper (hooks
-        # bracketing, output cap, worktree, background persist) in
-        # _execute_cli_spawn — duplicated deliberately to keep the native flow
-        # untouched; both halves are small and evolve independently.
+        # in-process Pydantic AI loop, so they skip the native build+MCP prepare.
+        # Branch here to _execute_cli_spawn, which builds its own meta/checkpoint
+        # and then rejoins the SAME _run_spawn_lifecycle the native tails use — the
+        # run+failure+finalize wrapper is written once, not duplicated per backend.
         # Resolve the agent definition ONCE here (a filesystem discovery walk) and
         # thread it through to _prepare_spawn/build so a native spawn doesn't pay the
         # walk a second time — it matters on a fan-out (2N walks → N).
@@ -666,11 +734,9 @@ class SubagentRunner:
         )
         if isinstance(prep, str):
             return prep
-        if background:
-            return await self._execute_background_spawn(
-                type, task, stream_id, max_output_chars, prep,
-            )
-        return await self._execute_foreground_spawn(type, task, stream_id, max_output_chars, prep)
+        return await self._execute_native_spawn(
+            type, task, stream_id, max_output_chars, prep, background=background,
+        )
 
     async def _prepare_spawn(
         self, type: str, task: str, mcp_names: list[str] | None,
@@ -753,172 +819,65 @@ class SubagentRunner:
             depth=depth, meta=meta,
         )
 
-    async def _execute_foreground_spawn(
+    async def _execute_native_spawn(
         self, type: str, task: str, stream_id: str,
         max_output_chars: int | None, prep: _SpawnPrep,
+        *, background: bool, history: list | None = None,
     ) -> str:
-        """Run a foreground spawn to completion and return its capped report.
-        Exceptions are contained as an error string so sibling fan-out spawns
-        aren't taken down. Usage is folded into the session but NOT persisted —
-        the caller's ``run_turn`` persists it."""
-        if prep.iso:
-            run_deps = replace(
-                self.deps, workspace=replace(self.deps.workspace, root=prep.iso.path)
-            )
-        else:
-            run_deps = self.deps
-        if prep.depth > 0:
-            # Stamp the runner's ceiling alongside the depth: spawn_agent
-            # reads both from Deps (see subagent_max_depth in runtime/deps.py
-            # for why it is not a tool parameter).
-            run_deps = replace(
-                run_deps, subagent_depth=prep.depth,
-                subagent_max_depth=self._max_depth,
-            )
-        try:
-            # Bound concurrent model runs (the part that hits the provider) so a
-            # wide fan-out queues instead of slamming a rate-limited route at once.
-            async with self._slot():
-                result = await self._run_to_completion(
-                    prep.sub, task, run_deps, prep.granted, prep.handler, stream_id,
-                )
-        except Exception as exc:  # noqa: BLE001
-            self._log_spawn_timing(type, prep.t0, prep.t_built, prep.first_event_at, failed=True)
-            if prep.iso:
-                prep.iso.discard()
-            # A foreground spawn runs inside the turn's tool execution; letting
-            # its crash propagate would fail the whole turn and take down any
-            # sibling spawns fanning out alongside it. Contain it.
-            await self.hooks.subagent_stop(type, task, f"error: {exc}")
-            if is_context_overflow_error(exc):
-                # The shed-and-resume backstop already ran and it still
-                # overflowed: tell the orchestrator what to DO, not just what
-                # broke — this string is what the model reads and acts on.
-                return (
-                    f"Sub-agent {type!r} overflowed its context window even after "
-                    "masking stale tool output. Split the task into smaller "
-                    "spawns, or narrow the scope so this sub-agent reads less."
-                )
-            return f"Sub-agent {type!r} failed: {exc.__class__.__name__}: {exc}"
-        except BaseException:
-            # Cancellation/interrupt (e.g. Ctrl-C, or shutdown tearing down a
-            # running job) is a BaseException, so it slips past the contain-as-
-            # error handler above. Do NOT discard() the isolated worktree here:
-            # discard force-removes the branch AND the dirty checkout, so a
-            # graceful Ctrl-C would lose strictly MORE than a hard `kill -9`
-            # (which runs no teardown at all, leaving the worktree intact so the
-            # spawn resumes fine). The mid-run sidecar still says "running" and
-            # offers a resume, but reopen() would then refuse it ("branch no
-            # longer exists"). Instead close() the worktree: it commits the
-            # in-progress work and KEEPS the branch as the resumable deliverable —
-            # and drops the branch only when nothing was produced, so a genuinely
-            # throwaway spawn still leaves no dead branch behind. This makes a
-            # cancel no worse than a crash and keeps resume working. The returned
-            # merge-note is irrelevant on a re-raise.
-            if prep.iso:
-                prep.iso.close()
-            raise
-        # A foreground spawn's spend is persisted by run_turn's _persist, so
-        # persist_bg=False (no immediate persist; spill keys off the stream id).
-        run = SpawnRun(
-            output=result.output,
-            transcript=result.all_messages(),
-            usage=result.usage,
-            final_meta=self._transcripts.final_meta(
-                prep.meta, "finished", result.usage, prep.t0, result.all_messages()),
-        )
-        return await self._finalize_spawn(
-            run, stream_id=stream_id, name=type, stop_task=task,
-            note=self.mcp.grant_note(prep.unknown), iso=prep.iso,
-            max_output_chars=max_output_chars, persist_bg=False,
-            timing=(prep.t0, prep.t_built, prep.first_event_at),
-        )
+        """Run a native (in-process) spawn to completion through the shared
+        ``_run_spawn_lifecycle``. Foreground and background differ only in three
+        knobs, all threaded into the lifecycle here:
 
-    async def _execute_background_spawn(
-        self, type: str, task: str, stream_id: str,
-        max_output_chars: int | None, prep: _SpawnPrep,
-        history: list | None = None,
-    ) -> str:
-        """Run a background spawn to completion. Exceptions propagate to the job
-        registry (marking the job failed). Usage is persisted immediately since no
-        ``run_turn`` will fold the spend. Deps get an isolated ``TaskList()`` so
-        multi-step work never mutates the user's session checklist.
-
-        ``history``, when given, is a persisted transcript to resume from (see
-        ``resume_spawn``); it also changes how a failed run's isolated worktree
-        is torn down — see the except arms below."""
-        # A background sub-agent runs detached and concurrently with the user's
-        # turn. Give it its own empty TaskList so its multi-step work never mutates
-        # — or persists as — the user's session checklist; an isolated run also
-        # redirects its file ops into the worktree. Every other Deps field stays shared.
-        run_deps = replace(self.deps, tasks=TaskList())
-        if prep.depth > 0:
-            # Stamp the runner's ceiling alongside the depth: spawn_agent
-            # reads both from Deps (see subagent_max_depth in runtime/deps.py
-            # for why it is not a tool parameter).
-            run_deps = replace(
-                run_deps, subagent_depth=prep.depth,
-                subagent_max_depth=self._max_depth,
-            )
+        - **Deps** — a background spawn gets its own empty ``TaskList`` so its
+          multi-step work never mutates (or persists as) the user's session
+          checklist; a foreground spawn shares the session deps. Both redirect
+          file ops into the worktree when isolated.
+        - **Failure disposition & persist** — carried by ``background`` (contain
+          vs re-raise; immediate force-persist for the off-turn spend).
+        - **Resume** — ``history`` (a persisted transcript to continue from) is
+          background-only; it also keeps a resumed spawn's branch on failure."""
+        run_deps = replace(self.deps, tasks=TaskList()) if background else self.deps
         if prep.iso:
             run_deps = replace(
                 run_deps, workspace=replace(run_deps.workspace, root=prep.iso.path)
             )
-        # A resumed spawn (history set) keeps its branch on failure — it holds
-        # prior committed work; a fresh spawn's branch is throwaway. See
-        # SpawnWorktree.teardown_after_failure.
+        if prep.depth > 0:
+            # Stamp the runner's ceiling alongside the depth: spawn_agent reads both
+            # from Deps (see subagent_max_depth in runtime/deps.py for why it is not
+            # a tool parameter).
+            run_deps = replace(
+                run_deps, subagent_depth=prep.depth,
+                subagent_max_depth=self._max_depth,
+            )
+        # A resumed spawn (history set) keeps its branch on failure — it holds prior
+        # committed work. The stop hook must see the SAME task the start hook got;
+        # on a resumed spawn the local ``task`` is the internal continuation prompt,
+        # so read the original off prep.meta (for a fresh spawn prep.meta["task"] ==
+        # task, so this is a no-op).
         resumed = history is not None
-        try:
-            async with self._slot():
-                result = await self._run_to_completion(
-                    prep.sub, task, run_deps, prep.granted, prep.handler, stream_id,
-                    history=history,
-                )
-        except Exception:  # noqa: BLE001
-            self._log_spawn_timing(type, prep.t0, prep.t_built, prep.first_event_at, failed=True)
-            if prep.iso:
-                prep.iso.teardown_after_failure(resumed=resumed)
-            # A background crash is intentionally NOT contained: it propagates
-            # to the job registry, which marks the job failed.
-            raise
-        except BaseException:
-            # Cancellation (e.g. cancel_all() tearing down jobs on shutdown) is a
-            # BaseException and skips the handler above. Mirror the foreground cancel
-            # path: close() rather than discard the worktree, so a cancelled spawn
-            # commits its in-progress work and KEEPS the branch as the resumable
-            # deliverable. discard() would drop the branch, making a graceful shutdown
-            # lose strictly more than a hard kill and leaving the still-"running"
-            # sidecar's resume offer broken (reopen refuses a deleted branch). Drops
-            # the branch only when nothing was produced. Applies to a resumed spawn
-            # too — committing the continuation onto its branch keeps it resumable.
-            if prep.iso:
-                prep.iso.close()
-            raise
-        # The stop hook must see the SAME task the start hook got. subagent_start
-        # fires in _prepare_spawn with the sidecar-meta task; on a resumed spawn the
-        # local ``task`` here is the internal _CONTINUATION_PROMPT, so read the
-        # original task off prep.meta to keep the start/stop hook payloads coherent.
-        # For a non-resumed background spawn prep.meta["task"] == task, so this is a
-        # no-op there.
         stop_task = prep.meta["task"] if prep.meta else task
-        # persist_bg=True: a background spawn finishes off-turn (no run_turn folds
-        # its spend) and has no stream id to key its output spill on — _finalize_spawn
-        # persists immediately and spills under a bg-N ref. (Known asymmetry: a
-        # /switch mid-flight makes self.session a DIFFERENT session, so the spend +
-        # settled-jobs entry land in the current session's payload; jobs are
-        # process-scoped, not session-scoped, so the summary follows the active
-        # session — accepted.)
-        run = SpawnRun(
-            output=result.output,
-            transcript=result.all_messages(),
-            usage=result.usage,
-            final_meta=self._transcripts.final_meta(
-                prep.meta, "finished", result.usage, prep.t0, result.all_messages()),
-        )
-        return await self._finalize_spawn(
-            run, stream_id=stream_id, name=type, stop_task=stop_task,
-            note=self.mcp.grant_note(prep.unknown), iso=prep.iso,
-            max_output_chars=max_output_chars, persist_bg=True,
+
+        async def _run() -> SpawnRun:
+            result = await self._run_to_completion(
+                prep.sub, task, run_deps, prep.granted, prep.handler, stream_id,
+                history=history,
+            )
+            return SpawnRun(
+                output=result.output,
+                transcript=result.all_messages(),
+                usage=result.usage,
+                final_meta=self._transcripts.final_meta(
+                    prep.meta, "finished", result.usage, prep.t0, result.all_messages()),
+            )
+
+        # (Background persist has a known asymmetry: a /switch mid-flight points
+        # self.session at a DIFFERENT session, so the spend + settled-jobs entry
+        # land in the current session's payload; jobs are process-scoped, so the
+        # summary follows the active session — accepted.)
+        return await self._run_spawn_lifecycle(
+            _run, iso=prep.iso, resumed=resumed, background=background, name=type,
+            stop_task=stop_task, note=self.mcp.grant_note(prep.unknown),
+            max_output_chars=max_output_chars, stream_id=stream_id,
             timing=(prep.t0, prep.t_built, prep.first_event_at),
         )
 
@@ -985,55 +944,45 @@ class SubagentRunner:
         # A resumed CLI spawn (resume_session_id set) keeps its branch on failure —
         # native-resume parity; a fresh spawn's branch is throwaway.
         resumed = resume_session_id is not None
-        try:
-            async with self._slot():
-                result = await self._run_cli(
-                    defn, task, work_root, model, stream_id,
-                    checkpoint=checkpoint, resume_session_id=resume_session_id,
-                )
-        except Exception as exc:  # noqa: BLE001
-            if iso:
-                iso.teardown_after_failure(resumed=resumed)
-            if background:
-                raise
-            await self.hooks.subagent_stop(defn.name, hook_task, f"error: {exc}")
-            return f"Sub-agent {defn.name!r} failed: {exc.__class__.__name__}: {exc}"
-        except BaseException:
-            # Cancellation/interrupt slips past the contain-as-error handler above
-            # (it's a BaseException). Tear down the worktree before it propagates so
-            # a cancelled isolated CLI spawn doesn't leak its worktree + branch.
-            if iso:
-                iso.teardown_after_failure(resumed=resumed)
-            raise
-        # Same prefix rule as the checkpoint above: the final write is also
-        # tail-only for a resumed run, so prepend the pre-interrupt segment.
-        full_transcript = (transcript_prefix or []) + result.transcript
-        final_meta = None
-        if meta is not None:
-            final_meta = {
-                **meta,
-                "status": "finished",
-                "cli_session_id": result.session_id or meta["cli_session_id"],
-                "usage": {"input": result.usage.input_tokens,
-                          "output": result.usage.output_tokens},
-                "tool_count": count_tool_calls(full_transcript),
-                "duration": time.perf_counter() - t0,
-            }
-        # persist_bg=background mirrors the native background tail; timing=None
-        # because a CLI spawn keeps no time-to-first-token stat. child_transcripts
-        # carries the demuxed Claude-side Agent/Task sub-agents for _finalize_spawn
-        # to persist under their own stream ids.
-        run = SpawnRun(
-            output=result.output,
-            transcript=full_transcript,
-            usage=result.usage,
-            final_meta=final_meta,
-            child_transcripts=result.child_transcripts,
-        )
-        return await self._finalize_spawn(
-            run, stream_id=stream_id, name=defn.name, stop_task=hook_task,
-            note=self._cli_mcp_note(mcp_names), iso=iso,
-            max_output_chars=max_output_chars, persist_bg=background, timing=None,
+        async def _run() -> SpawnRun:
+            result = await self._run_cli(
+                defn, task, work_root, model, stream_id,
+                checkpoint=checkpoint, resume_session_id=resume_session_id,
+            )
+            # Same prefix rule as the checkpoint above: the final write is also
+            # tail-only for a resumed run, so prepend the pre-interrupt segment.
+            full_transcript = (transcript_prefix or []) + result.transcript
+            final_meta = None
+            if meta is not None:
+                final_meta = {
+                    **meta,
+                    "status": "finished",
+                    "cli_session_id": result.session_id or meta["cli_session_id"],
+                    "usage": {"input": result.usage.input_tokens,
+                              "output": result.usage.output_tokens},
+                    "tool_count": count_tool_calls(full_transcript),
+                    "duration": time.perf_counter() - t0,
+                }
+            # child_transcripts carries the demuxed Claude-side Agent/Task
+            # sub-agents for _finalize_spawn to persist under their own stream ids.
+            return SpawnRun(
+                output=result.output,
+                transcript=full_transcript,
+                usage=result.usage,
+                final_meta=final_meta,
+                child_transcripts=result.child_transcripts,
+            )
+
+        # The CLI path now rides the SAME lifecycle as native — the deliberate
+        # duplication (and its `if background` fork) is gone. timing=None (a CLI
+        # spawn keeps no time-to-first-token); note is the not-forwarded-MCP note.
+        # A cancelled CLI spawn now close()s its worktree like native (committing
+        # in-progress work, keeping the branch) instead of discard()ing it — fixing
+        # the resume-after-cancel divergence.
+        return await self._run_spawn_lifecycle(
+            _run, iso=iso, resumed=resumed, background=background, name=defn.name,
+            stop_task=hook_task, note=self._cli_mcp_note(mcp_names),
+            max_output_chars=max_output_chars, stream_id=stream_id, timing=None,
         )
 
     @staticmethod
@@ -1239,9 +1188,10 @@ class SubagentRunner:
             label = f"{type_}: resumed — {task}"
             job_id = self.deps.jobs.register(
                 "agent", label,
-                self._execute_background_spawn(
+                self._execute_native_spawn(
                     type_, self._CONTINUATION_PROMPT, stream_id,
-                    meta.get("max_output_chars"), prep, history=history,
+                    meta.get("max_output_chars"), prep,
+                    background=True, history=history,
                 ),
                 stream_id=stream_id,
             )
