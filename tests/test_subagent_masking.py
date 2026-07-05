@@ -138,13 +138,15 @@ async def test_built_subagent_masks_stale_observations_in_requests(tmp_path):
         return ModelResponse(parts=[TextPart(content="done")])
 
     from marim_harness.config.context_limits import ContextLimits
+    from marim_harness.subagents.policies import MaskingPolicy
 
     deps = _make_deps(tmp_path)
     runner = _make_harness(FunctionModel(fn), deps).subagents
     # threshold = 0.8 * 400 = 320 tokens; each blob is ~500 tokens.
-    runner._limits = ContextLimits(budget=None, window_override=400)
-    runner._mask_keep_recent = 1
-    runner._mask_min_chars = 100
+    runner._masking = MaskingPolicy(
+        limits=ContextLimits(budget=None, window_override=400),
+        keep_recent=1, min_chars=100,
+    )
     mask_trigger = await runner._mask_trigger_for(None)
     sub, err = runner.build("general", mask_trigger=mask_trigger)
     assert err is None, err
@@ -178,12 +180,15 @@ async def test_spawn_trigger_follows_the_loaded_window_not_the_budget(tmp_path):
     ~101k while the configured budget said 180k — the spawn's mask trigger
     must follow 0.8 × the LOADED window, resolved per spawn."""
     from marim_harness.config.context_limits import ContextLimits
+    from marim_harness.subagents.policies import MaskingPolicy
 
     async def fake_local():
         return {"qwen/qwen3.5-9b": 101_039}
 
     deps = _make_deps(tmp_path)
     runner = _make_harness(_text_model(), deps).subagents
-    runner._limits = ContextLimits(budget=180_000, fetch_local=fake_local)
+    runner._masking = MaskingPolicy(
+        limits=ContextLimits(budget=180_000, fetch_local=fake_local)
+    )
     trigger = await runner._mask_trigger_for("qwen/qwen3.5-9b")
     assert trigger == int(0.8 * 101_039)

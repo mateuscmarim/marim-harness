@@ -30,7 +30,7 @@ from ..mcp import McpManager
 from ..notifications import NotificationConfig
 from ..session import SessionController, SessionManager, SessionStore
 from ..session.checkpoints import CheckpointManager
-from ..subagents import SubagentRunner
+from ..subagents import MaskingPolicy, RetryPolicy, SubagentRunner
 from ..tools.names import SUBAGENT_MAX_DEPTH
 from ..tools.provider import ToolProvider
 from ..tools.suggest import suggest_unknown_tool_retry
@@ -255,8 +255,10 @@ def build_collaborators(
         provider, mcp, deps, hooks, session,
         get_model=get_model,
         model_settings=_DEFAULT_MODEL_SETTINGS,
-        request_limit=cfg.subagent_request_limit,
-        retry_attempts=cfg.subagent_retry_attempts,
+        retry=RetryPolicy(
+            request_limit=cfg.subagent_request_limit,
+            attempts=cfg.subagent_retry_attempts,
+        ),
         concurrency=cfg.subagent_concurrency,
         transcript_cap=cfg.subagent_transcript_cap,
         max_depth=SUBAGENT_MAX_DEPTH,
@@ -264,10 +266,12 @@ def build_collaborators(
         # knobs: one discovery cache governs both the main history and spawned
         # runs, but each spawn resolves its own threshold through it — a
         # per-spawn model override resolves that model's window/budget.
-        limits=limits,
-        mask_observations=cfg.mask_observations,
-        mask_keep_recent=cfg.mask_keep_recent,
-        mask_min_chars=cfg.mask_min_chars,
+        masking=MaskingPolicy(
+            limits=limits,
+            enabled=cfg.mask_observations,
+            keep_recent=cfg.mask_keep_recent,
+            min_chars=cfg.mask_min_chars,
+        ),
         build_model=(
             # Bind the narrowed (non-None) source as a default so the
             # deferred closure keeps it typed; ``cfg.model_source`` alone

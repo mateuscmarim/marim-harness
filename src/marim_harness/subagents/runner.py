@@ -37,7 +37,6 @@ if TYPE_CHECKING:
     from .cli_backend import CliResult
 
 from ..compaction import mask_stale_observations
-from ..config.context_limits import ContextLimits
 from ..hooks.dispatch import TurnHooks
 from ..runtime.deps import Deps, SubAgent
 from ..runtime.errors import is_context_overflow_error, is_transient_model_error
@@ -53,8 +52,8 @@ from ..workspace import (
 )
 from .backend import SpawnRun
 from .isolation import SpawnWorktree
-from .masking import ObservationMasker
 from .persistence import SpawnTranscripts, count_tool_calls
+from .policies import MaskingPolicy, RetryPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -148,16 +147,12 @@ class SubagentRunner:
                  hooks: TurnHooks, session: SessionController,
                  get_model: Callable[[], Model],
                  model_settings: ModelSettings | None = None,
-                 request_limit: int = 50,
-                 retry_attempts: int = 2,
                  build_model: Callable[[str], Model] | None = None,
                  concurrency: int | None = None,
                  transcript_cap: int = 2000,
                  max_depth: int = 3,
-                 limits: ContextLimits | None = None,
-                 mask_observations: bool = True,
-                 mask_keep_recent: int = 4,
-                 mask_min_chars: int = 200) -> None:
+                 retry: RetryPolicy | None = None,
+                 masking: MaskingPolicy | None = None) -> None:
         self.provider = provider
         self.mcp = mcp
         self.deps = deps
@@ -165,12 +160,10 @@ class SubagentRunner:
         self.session = session
         self._get_model = get_model
         self._model_settings = model_settings
-        self._request_limit = request_limit
-        # How many times a sub-agent run is re-issued after a *transient* model
-        # error (gateway/server hiccup, request timeout, rate limit) before the
-        # failure is allowed to surface. A permanent error (malformed request,
-        # auth) is never retried — see is_transient_model_error.
-        self._retry_attempts = retry_attempts
+        # Transient-error retry policy (attempts + backoff) and per-run request
+        # cap. A permanent error (malformed request, auth) is never retried — see
+        # is_transient_model_error.
+        self._retry = retry or RetryPolicy()
         # Resolves a per-spawn model id to a model object on the current provider.
         # None when the harness has no model source (e.g. a fixed-model embed), in
         # which case a spawn that asks for an override is told it can't be honored.
@@ -197,18 +190,13 @@ class SubagentRunner:
         # Context masking for spawned sub-agents. A sub-agent does the read-heavy
         # fan-out work, so its history is dominated by tool observations; past a
         # token trigger those are masked per-request by an ObservationMasker (one
-        # per spawn — see masking.py for why the state matters). The trigger is
-        # resolved per spawn from this runner's ContextLimits (see
+        # per spawn — see masking.py for why the state matters). The MaskingPolicy
+        # owns the resolver + knobs and the per-spawn trigger resolution (see
         # _mask_trigger_for): a per-spawn model override resolves its own window
-        # and budget rather than inheriting the session model's, and a spawn on
-        # the session model resolves the session model's — falling back to the
-        # historical 75k (see _FALLBACK_MASK_TRIGGER) when no resolver is wired.
-        # The reactive overflow backstop in _run_to_completion still covers any
-        # late trigger a resolution miss leaves behind.
-        self._limits = limits
-        self._mask_observations = mask_observations
-        self._mask_keep_recent = mask_keep_recent
-        self._mask_min_chars = mask_min_chars
+        # and budget rather than inheriting the session model's. The reactive
+        # overflow backstop in _run_to_completion still covers any late trigger a
+        # resolution miss leaves behind.
+        self._masking = masking or MaskingPolicy()
         # Stream ids of spawns whose resume is in flight but not yet registered as
         # a job. resume_spawn awaits (limits resolve, subagent_start hook, MCP
         # grants) between its guards and jobs.register, so two rapid `r` presses
@@ -273,19 +261,15 @@ class SubagentRunner:
 
         return handler
 
-    # The historical default trigger (0.75 × the old 100k budget), used only
-    # when no ContextLimits is wired (bare embedders / legacy constructions).
-    _FALLBACK_MASK_TRIGGER = 75_000
-
     async def _mask_trigger_for(self, model_id: str | None) -> int:
-        """The masking trigger for a spawn: the resolver's threshold for the
-        spawn's OWN model (a per-spawn override budgets/windows as itself, not
-        as the session model), warmed here because spawn prep is async."""
-        if self._limits is None:
-            return self._FALLBACK_MASK_TRIGGER
-        if model_id is None:
+        """The masking trigger for a spawn, warmed here because spawn prep is
+        async. Resolves the spawn's OWN model id (falling back to the session
+        model when the spawn didn't override it) and hands it to the
+        MaskingPolicy, which applies its resolver — or the fallback when none is
+        wired, in which case the model id is never consulted."""
+        if self._masking.limits is not None and model_id is None:
             model_id = getattr(self._get_model(), "model_name", None)
-        return await self._limits.resolve(model_id)
+        return await self._masking.trigger_for(model_id)
 
     def build(
         self, type: str, max_output_chars: int | None = None,
@@ -351,15 +335,11 @@ class SubagentRunner:
         # It runs before EVERY request, so it catches a call buried mid-history
         # that the transient-retry repair (only on the resume path) never sees.
         capabilities.append(ProcessHistory(_drop_nameless_tool_calls))
-        if self._mask_observations:
-            # One masker PER SPAWN: it holds the run's committed mask set, and
-            # sharing an instance across spawns would leak one run's masked
-            # tool_call_ids into another's requests.
-            masker = ObservationMasker(
-                mask_trigger if mask_trigger is not None else self._FALLBACK_MASK_TRIGGER,
-                keep_recent=self._mask_keep_recent,
-                min_chars=self._mask_min_chars,
-            )
+        # One masker PER SPAWN (it holds the run's committed mask set, so sharing
+        # would leak one run's masked tool_call_ids into another's requests); None
+        # when masking is disabled.
+        masker = self._masking.masker(mask_trigger)
+        if masker is not None:
             capabilities.append(ProcessHistory(masker.mask))
 
         sub = Agent(
@@ -514,16 +494,11 @@ class SubagentRunner:
             timing=timing,
         )
 
-    # Backoff before a transient-error retry: exponential from a small base, capped,
-    # so a brief upstream blip is ridden out without stalling the spawn for long.
-    _RETRY_BASE_DELAY = 0.5
-    _RETRY_MAX_DELAY = 8.0
-
     async def _retry_backoff(self, attempt: int) -> None:
-        """Sleep before the ``attempt``-th retry (1-based): exponential backoff,
-        capped. Split out so tests can stub it without real time passing."""
-        delay = min(self._RETRY_BASE_DELAY * 2 ** (attempt - 1), self._RETRY_MAX_DELAY)
-        await asyncio.sleep(delay)
+        """Sleep before the ``attempt``-th retry via the RetryPolicy's backoff.
+        Kept as a thin runner method (not an inline ``self._retry.backoff`` call)
+        so a test can stub it to skip the real sleep — see test_subagent_retry."""
+        await self._retry.backoff(attempt)
 
     def _slot(self):
         """Acquire-context bounding concurrent spawn runs to ``_concurrency``; a
@@ -595,7 +570,7 @@ class SubagentRunner:
                         deps=run_deps, toolsets=granted,
                         event_stream_handler=handler,
                         usage=run_usage,
-                        usage_limits=UsageLimits(request_limit=self._request_limit),
+                        usage_limits=UsageLimits(request_limit=self._retry.request_limit),
                     )
             except Exception as exc:  # noqa: BLE001
                 # Context overflow is a permanent 4xx, so the transient path below
@@ -616,7 +591,7 @@ class SubagentRunner:
                         )
                         await self._notice_overflow(stream_id)
                         continue
-                if attempt >= self._retry_attempts or not is_transient_model_error(exc):
+                if attempt >= self._retry.attempts or not is_transient_model_error(exc):
                     # Surfacing the failure loses the result object but must not
                     # lose the spend: the provider billed the failed attempts'
                     # tokens regardless, so bank the accumulator before the
@@ -629,7 +604,7 @@ class SubagentRunner:
                 logger.info(
                     "sub-agent hit a transient error (%s); resuming, retry %d/%d "
                     "after backoff", exc.__class__.__name__, attempt,
-                    self._retry_attempts,
+                    self._retry.attempts,
                 )
                 await self._notice_retry(stream_id, exc, attempt)
                 await self._retry_backoff(attempt)
@@ -644,7 +619,7 @@ class SubagentRunner:
         await cb(
             stream_id,
             f"transient error ({exc.__class__.__name__}) — "
-            f"retrying {attempt}/{self._retry_attempts}…",
+            f"retrying {attempt}/{self._retry.attempts}…",
         )
 
     # Shed settings for the overflow backstop: spare only the newest observation
