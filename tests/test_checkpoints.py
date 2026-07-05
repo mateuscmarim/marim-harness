@@ -76,6 +76,35 @@ class _FakeSnap:
         self.deleted.append(ref)
 
 
+def test_save_writes_sidecar_under_file_lock(tmp_path: Path, monkeypatch):
+    """The checkpoint sidecar write goes through ``file_lock``, matching the
+    sibling session-state writers (``store.py``, ``memory.py``). Serializing the
+    write keeps a concurrent same-session writer from racing the bare rename."""
+    import contextlib
+
+    from marim_harness.session import checkpoints as cp
+
+    locked: list[Path] = []
+    real = cp.file_lock
+
+    @contextlib.contextmanager
+    def spy(path):
+        locked.append(Path(path))
+        with real(path):
+            yield
+
+    monkeypatch.setattr(cp, "file_lock", spy)
+
+    s = _session(tmp_path)
+    mgr = CheckpointManager(s)
+    mgr.snapshot("do it")
+
+    assert locked, "checkpoint save did not acquire the file lock"
+    assert locked[-1].name == "sess.checkpoints.json"
+    # The write still round-trips: a fresh manager reloads the persisted checkpoint.
+    assert len(CheckpointManager(s).list()) == 1
+
+
 def test_snapshot_records_history_length_and_preview(tmp_path: Path):
     s = _session(tmp_path)
     s.set_history(["m0", "m1"])
