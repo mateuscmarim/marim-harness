@@ -362,6 +362,26 @@ def test_tree_escape_raises(tmp_path: Path):
         fs.tree(tmp_path, "..", depth=1)
 
 
+def test_tree_does_not_descend_symlinked_dir_out_of_workspace(tmp_path: Path):
+    """A symlinked directory must be listed but NOT descended into: following it
+    would enumerate paths OUTSIDE the workspace sandbox (every sibling read tool
+    guards this; ``tree`` was the outlier). The symlink name stays visible (it's
+    inside the workspace); its target's contents do not leak."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("top secret")
+    (ws / "link_out").symlink_to(outside, target_is_directory=True)
+    (ws / "real.txt").write_text("ok")
+
+    out = fs.tree(ws, ".", depth=3)
+
+    assert "real.txt" in out            # ordinary entries still shown
+    assert "link_out" in out            # the symlink itself is listed
+    assert "secret.txt" not in out      # its external target is NOT enumerated
+
+
 def test_tree_empty_dir(tmp_path: Path):
     assert fs.tree(tmp_path, ".", depth=1) == "(empty)"
 

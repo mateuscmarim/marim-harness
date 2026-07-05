@@ -334,8 +334,14 @@ def _walk_tree(directory: Path, depth: int, level: int, lines: list[str]) -> boo
                 line = f"{indent}{entry.name}/"
                 lines.append(line)
                 size += len(line) + 1
+                # Never descend a symlinked directory: it can point OUTSIDE the
+                # workspace sandbox, and recursing would enumerate paths there
+                # (``entry.is_dir()`` follows the link, so a symlink-to-dir reaches
+                # here). List the symlink name, but stop — matching os.walk, which
+                # every sibling read tool relies on for the same containment.
                 if (
                     entry.name not in _NOISE_DIRS
+                    and not entry.is_symlink()
                     and level + 1 < depth
                     and _recurse(entry, level + 1)
                 ):
