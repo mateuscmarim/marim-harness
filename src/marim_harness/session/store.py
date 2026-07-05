@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import secrets
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -326,8 +327,18 @@ class SessionManager:
             display = name
             auto = False
         else:
-            base_slug = _now_slug()
-            display = base_slug
+            ts = _now_slug()
+            display = ts
+            # A bare second-resolution id collides when two processes start an
+            # unnamed session in the same second: each manager's _reserved is
+            # in-memory and the session file doesn't exist until the first save, so
+            # _unique_id (which only checks _reserved + on-disk) hands both the same
+            # id — and they then clobber each other's session JSON, checkpoints
+            # sidecar, transcript dir, image cache, and git refs. A short random
+            # token makes concurrent unnamed ids distinct while the display keeps
+            # the clean timestamp. (_unique_id still guards the astronomically
+            # unlikely same-token case.)
+            base_slug = f"{ts}-{secrets.token_hex(3)}"
             auto = True
         store = self.store(self._unique_id(base_slug), display)
         store.auto_named = auto
