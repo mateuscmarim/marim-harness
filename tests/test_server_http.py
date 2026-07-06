@@ -275,3 +275,21 @@ def test_unknown_workspace_and_session_404(client):
     assert test_client.get("/v1/workspaces/nope/sessions", headers=AUTH).status_code == 404
     assert test_client.post("/v1/workspaces/nope/sessions/x/messages", headers=AUTH,
                             json={"prompt": "hi"}).status_code == 404
+
+
+def test_malformed_base64_attachment_returns_400(client):
+    test_client, tmp_path = client
+    ws_id, sid, _ = _setup_workspace_and_session(test_client, tmp_path)
+    base = f"/v1/workspaces/{ws_id}/sessions/{sid}"
+
+    # POST a message with an attachment containing malformed base64
+    response = test_client.post(f"{base}/messages", headers=AUTH, json={
+        "prompt": "process this",
+        "attachments": [
+            {"data_b64": "not-valid-base64!!!", "media_type": "image/png"}
+        ]
+    })
+    assert response.status_code == 400
+    error_body = response.json()
+    assert error_body["error"]["code"] == "bad_request"
+    assert "base64" in error_body["error"]["message"]

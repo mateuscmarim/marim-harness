@@ -209,9 +209,12 @@ async def post_message(request: Request) -> Response:
         return _error(400, "bad_request", str(exc))
     attachments = None
     if body.attachments:
-        attachments = [
-            (base64.b64decode(a.data_b64), a.media_type) for a in body.attachments
-        ]
+        try:
+            attachments = [
+                (base64.b64decode(a.data_b64), a.media_type) for a in body.attachments
+            ]
+        except ValueError:
+            return _error(400, "bad_request", "invalid base64 in attachment data_b64")
     host = await _supervisor(request).host_for(record, session_id)
     try:
         turn_id = host.submit(body.prompt, attachments)
