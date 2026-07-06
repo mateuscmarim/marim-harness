@@ -253,6 +253,13 @@ class SessionManager:
     def _path(self, session_id: str) -> Path:
         return self.dir / f"{session_id}.json"
 
+    def session_path(self, session_id: str) -> Path:
+        """Public path lookup for a session's JSON file (which may not exist
+        yet). Read-only callers — the server's history endpoint — use this to
+        read persisted messages without opening a SessionStore (whose
+        construction reserves the id)."""
+        return self._path(session_id)
+
     def list(self) -> list[SessionInfo]:
         """All saved sessions for this workspace, newest first."""
         infos: list[SessionInfo] = []

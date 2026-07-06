@@ -1077,3 +1077,11 @@ async def test_forced_compaction_falls_back_to_masking_single_huge_turn(tmp_path
     ]
     assert returns[0].content == MASKED_OBSERVATION  # stale observation elided
     assert returns[-1].content != MASKED_OBSERVATION  # most recent kept intact
+
+
+def test_session_path_is_public_and_matches_store(tmp_path):
+    from marim_harness.session import SessionManager
+
+    manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "base")
+    store = manager.create("named")
+    assert manager.session_path(store.session_id) == store.path

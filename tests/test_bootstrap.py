@@ -357,6 +357,37 @@ def test_build_harness_wires_claude_cli_mode_getter(tmp_path, monkeypatch):
     assert harness.current_model.on_subagent_model is _on_subagent_model
 
 
+def test_build_harness_opens_specific_session(tmp_path: Path, monkeypatch):
+    _stub_model_plumbing(monkeypatch)
+    sessions_base = _isolate_sessions(monkeypatch, tmp_path)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+
+    # Seed a named session with one prior exchange, then a newer decoy session
+    # (so "latest" would pick the wrong one if session_id were ignored).
+    seed_manager = SessionManager(ws, base_dir=sessions_base)
+    target = seed_manager.create("target")
+    target.save(_history(), RunUsage())
+    decoy = seed_manager.create("decoy")
+    decoy.save(_history(), RunUsage())
+
+    harness = bootstrap.build_harness(ws, mode=Mode.auto, session_id=target.session_id)
+    assert harness.session.store is not None
+    assert harness.session.store.session_id == target.session_id
+    assert len(harness.session.history) > 0  # history replayed
+
+
+def test_build_harness_rejects_resume_plus_session_id(tmp_path: Path, monkeypatch):
+    _stub_model_plumbing(monkeypatch)
+    _isolate_sessions(monkeypatch, tmp_path)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    import pytest
+
+    with pytest.raises(ValueError):
+        bootstrap.build_harness(ws, resume=True, session_id="whatever")
+
+
 def test_build_harness_claude_cli_default_model_is_blank_not_none(tmp_path, monkeypatch):
     """With claude-cli and MARIM_MODEL unset, cfg.model is None — the composed
     model id must round-trip to a *blank* bare id, never the literal "None"

@@ -33,6 +33,7 @@ def build_harness(
     *,
     mode: Mode | None = None,
     resume: bool = False,
+    session_id: str | None = None,
 ) -> Harness:
     """Construct a ready-to-run Harness for ``workspace``. Shared by the TUI and
     the headless CLI so both wire up the model, session store, and aux agents
@@ -42,7 +43,11 @@ def build_harness(
     ``mode`` is the initial approval mode. Pass it explicitly to force a mode
     (the headless ``--mode`` flag does this); leave it ``None`` to use the
     configured default (``MARIM_DEFAULT_MODE``, falling back to ``ask``) — the
-    interactive TUI takes this path."""
+    interactive TUI takes this path.
+
+    ``session_id`` opens exactly that session (used by the server, which picks
+    sessions explicitly rather than "latest"); it replays any saved history,
+    and is mutually exclusive with ``resume``."""
     cfg = load_config()
     if mode is None:
         mode = Mode(cfg.default_mode)
@@ -73,13 +78,20 @@ def build_harness(
         ui=UIHooks(detach_fanout=cfg.subagent.detach_fanout, notifier=notifier),
     )
 
-    manager = SessionManager(workspace)
-    latest = manager.latest() if resume else None
-    store = manager.store(latest.id) if latest is not None else manager.create()
+    if resume and session_id is not None:
+        raise ValueError("pass resume or session_id, not both")
 
-    # When not resuming, pick up the model from the most recent session so the
-    # user doesn't have to re-select it after every restart.
-    if not resume and store.model and store.model != model_id:
+    manager = SessionManager(workspace)
+    if session_id is not None:
+        store = manager.store(session_id)
+    else:
+        latest = manager.latest() if resume else None
+        store = manager.store(latest.id) if latest is not None else manager.create()
+
+    # When starting fresh (not resuming, no explicit session), pick up the model
+    # from the most recent session so the user doesn't have to re-select it after
+    # every restart. Resumed/explicit sessions get theirs via harness.resume().
+    if not resume and session_id is None and store.model and store.model != model_id:
         model_id = store.model
         model = model_source.build(model_id)
 
@@ -151,7 +163,7 @@ def build_harness(
             notifications=cfg.notifications,
         ),
     )
-    if resume:
+    if resume or session_id is not None:
         harness.resume()
 
     # The claude-cli provider needs late-bound hooks (live approval mode, the real
