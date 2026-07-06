@@ -1082,7 +1082,7 @@ Bus event vocabulary published by the host (Task 9's SSE carries these verbatim)
 
 - [ ] **Step 1: Write the failing tests**
 
-The tests build a real `Harness` over `FunctionModel`, mirroring `tests/conftest.py`'s `_make_deps`/`_make_harness` helpers (module-level in conftest — import them: existing suites do `from conftest import ...` since pytest puts the rootdir on `sys.path`; if that import fails in this repo, copy the two helpers into the test file body verbatim from `tests/conftest.py:40` and `:185`).
+The tests build a real `Harness` over `FunctionModel`. `tests/conftest.py` has a `_make_deps`/`_make_harness` pair (lines 40 and 185) that do exactly this, but **`from conftest import ...` does NOT work in this repo** — `tests/__init__.py` exists, so pytest's default import mode puts the project root (not `tests/`) on `sys.path`, and `conftest` is never importable as a bare top-level module (verified: raises `ModuleNotFoundError: No module named 'conftest'`). So this test file defines its own copies of the two helpers (byte-identical logic to conftest's) rather than importing them.
 
 ```python
 # tests/test_server_host.py
@@ -1091,17 +1091,43 @@ turn queue, parked asks, interrupt, steer — observed through the event bus."""
 
 import asyncio
 import json as _json
+from pathlib import Path
 
 import pytest
-from conftest import _make_deps, _make_harness
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
+from marim_harness.runtime.deps import Deps, UIHooks, WorkspaceConfig
+from marim_harness.runtime.harness import Harness
 from marim_harness.runtime.permissions import Mode
 from marim_harness.server.bus import EventBus
 from marim_harness.server.host import SessionHost, TurnQueueFull
+from marim_harness.tools.provider import BuiltinToolProvider
 
 pytestmark = pytest.mark.anyio
+
+_UI_HOOK_FIELDS = {
+    "request_approval", "ask_user", "on_subagent_event", "on_subagent_notice",
+    "on_subagent_model", "on_subagent_usage", "detach_fanout", "interactive",
+    "notifier",
+}
+
+
+def _make_deps(root: Path, mode: Mode = Mode.auto, **kw) -> Deps:
+    """Local copy of tests/conftest.py's helper (bare `conftest` import doesn't
+    work here — see the note above)."""
+    ui_kw = {k: kw.pop(k) for k in list(kw) if k in _UI_HOOK_FIELDS}
+    return Deps(
+        workspace=WorkspaceConfig(root=root, mode=mode),
+        ui=UIHooks(**ui_kw) if ui_kw else UIHooks(),
+        **kw,
+    )
+
+
+def _make_harness(model, deps, **config_kwargs) -> Harness:
+    """Local copy of tests/conftest.py's helper."""
+    return Harness(model=model, provider=BuiltinToolProvider(), deps=deps,
+                   instructions="You are a coding agent.", **config_kwargs)
 
 
 def _text_only_model() -> FunctionModel:
@@ -1579,7 +1605,7 @@ class SessionHost:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest --no-cov tests/test_server_host.py -v`
-Expected: PASS (if the `from conftest import ...` import errors, inline the two helpers as noted in Step 1)
+Expected: PASS
 
 - [ ] **Step 5: Lint, typecheck, commit**
 
@@ -1605,19 +1631,46 @@ git commit -m "feat(server): SessionHost — turn queue, parked asks, interrupt/
 
 ```python
 # tests/test_server_supervisor.py
+"""Note: this file defines its own `_make_deps`/`_make_harness` copies rather
+than importing them from tests/conftest.py — bare `from conftest import ...`
+does not resolve in this repo (tests/__init__.py makes the project root, not
+tests/, the sys.path entry; verified with ModuleNotFoundError)."""
+
 import asyncio
 from pathlib import Path
 
 import pytest
-from conftest import _make_deps, _make_harness
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.function import FunctionModel
 
+from marim_harness.runtime.deps import Deps, UIHooks, WorkspaceConfig
+from marim_harness.runtime.harness import Harness
 from marim_harness.runtime.permissions import Mode
 from marim_harness.server.supervisor import SessionSupervisor
 from marim_harness.server.workspaces import WorkspaceRecord
+from marim_harness.tools.provider import BuiltinToolProvider
 
 pytestmark = pytest.mark.anyio
+
+_UI_HOOK_FIELDS = {
+    "request_approval", "ask_user", "on_subagent_event", "on_subagent_notice",
+    "on_subagent_model", "on_subagent_usage", "detach_fanout", "interactive",
+    "notifier",
+}
+
+
+def _make_deps(root: Path, mode: Mode = Mode.auto, **kw) -> Deps:
+    ui_kw = {k: kw.pop(k) for k in list(kw) if k in _UI_HOOK_FIELDS}
+    return Deps(
+        workspace=WorkspaceConfig(root=root, mode=mode),
+        ui=UIHooks(**ui_kw) if ui_kw else UIHooks(),
+        **kw,
+    )
+
+
+def _make_harness(model, deps, **config_kwargs) -> Harness:
+    return Harness(model=model, provider=BuiltinToolProvider(), deps=deps,
+                   instructions="You are a coding agent.", **config_kwargs)
 
 
 def _model() -> FunctionModel:
@@ -1900,25 +1953,52 @@ Expected: `ok`
 
 Uses Starlette's TestClient (runs the ASGI app in a worker thread with a real
 event loop, so SessionHost worker tasks run) and a FunctionModel harness
-factory — no network, no real providers."""
+factory — no network, no real providers.
+
+Note: this file defines its own `_make_deps`/`_make_harness` copies rather
+than importing them from tests/conftest.py — bare `from conftest import ...`
+does not resolve in this repo (tests/__init__.py makes the project root, not
+tests/, the sys.path entry; verified with ModuleNotFoundError)."""
 
 import json as _json
 import time
 from pathlib import Path
 
 import pytest
-from conftest import _make_deps, _make_harness
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from starlette.testclient import TestClient
 
+from marim_harness.runtime.deps import Deps, UIHooks, WorkspaceConfig
+from marim_harness.runtime.harness import Harness
 from marim_harness.runtime.permissions import Mode
 from marim_harness.server.http import create_app
 from marim_harness.server.supervisor import SessionSupervisor
 from marim_harness.server.workspaces import WorkspaceRegistry
+from marim_harness.tools.provider import BuiltinToolProvider
 
 TOKEN = "test-token"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
+
+_UI_HOOK_FIELDS = {
+    "request_approval", "ask_user", "on_subagent_event", "on_subagent_notice",
+    "on_subagent_model", "on_subagent_usage", "detach_fanout", "interactive",
+    "notifier",
+}
+
+
+def _make_deps(root: Path, mode: Mode = Mode.auto, **kw) -> Deps:
+    ui_kw = {k: kw.pop(k) for k in list(kw) if k in _UI_HOOK_FIELDS}
+    return Deps(
+        workspace=WorkspaceConfig(root=root, mode=mode),
+        ui=UIHooks(**ui_kw) if ui_kw else UIHooks(),
+        **kw,
+    )
+
+
+def _make_harness(model, deps, **config_kwargs) -> Harness:
+    return Harness(model=model, provider=BuiltinToolProvider(), deps=deps,
+                   instructions="You are a coding agent.", **config_kwargs)
 
 
 def _edit_model() -> FunctionModel:
