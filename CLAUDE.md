@@ -20,6 +20,7 @@ uv run pytest --no-cov tests/test_x.py       # skip coverage for a fast single r
 uv run ruff check src tests      # lint
 uv run ruff check --fix src tests
 uv run pyright                   # type-check (standard mode, src only)
+uv run marim serve --port 8642   # HTTP daemon (REST + SSE); needs the [serve] extra
 ```
 
 CI (`.gitea/workflows/ci.yml`) runs ruff → pyright → pytest on Python 3.10, 3.12,

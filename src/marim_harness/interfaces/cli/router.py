@@ -10,7 +10,7 @@ from ...config import load_environment
 
 # Reserved first-token keywords. argparse subparsers would claim the workspace
 # positional, so we route manually before any parser sees the args.
-_MANAGEMENT = {"sessions", "config", "models", "plugin", "mcp"}
+_MANAGEMENT = {"sessions", "config", "models", "plugin", "mcp", "serve"}
 
 
 def _setup_logging() -> None:
