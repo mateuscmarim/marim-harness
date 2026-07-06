@@ -10,6 +10,7 @@ import json
 import re
 import shutil
 import subprocess
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -118,7 +119,8 @@ class WorkspaceRegistry:
             raise KeyError(ws_id)
         if purge and record.kind != "managed":
             raise ValueError("purge applies only to managed workspaces")
+        if purge:
+            with suppress(FileNotFoundError):
+                shutil.rmtree(record.path)
         del self._records[ws_id]
         self._save()
-        if purge:
-            shutil.rmtree(record.path, ignore_errors=True)

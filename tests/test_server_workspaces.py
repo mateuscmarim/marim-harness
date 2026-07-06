@@ -1,5 +1,7 @@
 import json
+import shutil
 import subprocess
+from unittest import mock
 
 import pytest
 
@@ -104,3 +106,24 @@ def test_state_file_is_json(tmp_path):
     reg.register("proj", project)
     data = json.loads((tmp_path / "state" / "workspaces.json").read_text())
     assert data["workspaces"][0]["id"] == "proj"
+
+
+def test_purge_failure_leaves_workspace_registered(tmp_path):
+    """Verify that if rmtree fails, the workspace stays registered and exception propagates."""
+    reg = _registry(tmp_path)
+    managed = reg.create_managed("m")
+    ws_id = managed.id
+
+    # Simulate rmtree failure (other than FileNotFoundError)
+    with mock.patch.object(shutil, "rmtree", side_effect=PermissionError("no permission")), \
+         pytest.raises(PermissionError, match="no permission"):
+        reg.delete(ws_id, purge=True)
+
+    # Workspace must still be registered
+    assert reg.get(ws_id) == managed
+    assert ws_id in [r.id for r in reg.list()]
+
+    # Subsequent retry with a working rmtree should succeed
+    reg.delete(ws_id, purge=True)
+    assert not (tmp_path / "managed" / "m").exists()
+    assert reg.get(ws_id) is None
