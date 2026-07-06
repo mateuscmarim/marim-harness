@@ -37,6 +37,10 @@ class TurnQueueFull(Exception):
     """submit() refused: the per-session turn queue is at capacity."""
 
 
+class HostClosed(Exception):
+    """submit() refused: the host has already been torn down."""
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -110,6 +114,8 @@ class SessionHost:
 
     # ----------------------------------------------------------- control --
     def submit(self, prompt: str, attachments: list | None = None) -> str:
+        if self._closing:
+            raise HostClosed()
         turn_id = secrets.token_hex(8)
         try:
             self._queue.put_nowait((turn_id, prompt, attachments))
@@ -127,6 +133,12 @@ class SessionHost:
     def steer(self, text: str) -> None:
         self.harness.steer(text)
         self.bus.publish("steer.accepted", {"text": text})
+
+    def touch(self) -> None:
+        """Reset the idle clock. Called by the supervisor when handing out an
+        already-live host, so a fresh checkout is never immediately mistaken
+        for continued inactivity by the idle-eviction sweep."""
+        self._idle_since = asyncio.get_running_loop().time()
 
     def pending_asks(self) -> list[dict]:
         return [ask.as_dict() for ask in self._pending.values()]

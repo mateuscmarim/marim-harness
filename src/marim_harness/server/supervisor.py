@@ -79,6 +79,7 @@ class SessionSupervisor:
         async with lock:
             host = self._hosts.get(key)
             if host is not None:
+                host.touch()
                 return host
             harness = await self._factory(Path(record.path), session_id, self._modes.get(key))
             host = SessionHost(harness, self.bus_for(*key))
@@ -90,10 +91,10 @@ class SessionSupervisor:
         lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
             host = self._hosts.pop(key, None)
-        if host is None:
-            return False
-        await host.aclose()
-        return True
+            if host is None:
+                return False
+            await host.aclose()
+            return True
 
     def start_evictor(self) -> None:
         if self._evictor is None:
@@ -109,16 +110,35 @@ class SessionSupervisor:
                 logger.warning("idle-eviction sweep failed", exc_info=True)
 
     async def evict_idle(self) -> None:
-        for key, host in list(self._hosts.items()):
+        for key in list(self._hosts):
+            await self._evict_if_idle(key)
+
+    async def _evict_if_idle(self, key: tuple[str, str]) -> bool:
+        """Re-check idle eligibility under the per-key lock, in the same
+        critical section as the pop+close. This is what makes eviction
+        race-free against host_for: whichever of the two acquires the lock
+        first for this key establishes the truth the other observes — a
+        host_for that touches the host first makes this check see fresh
+        (non-idle) state and abort; an eviction that closes first leaves
+        nothing in self._hosts, so host_for correctly rebuilds instead of
+        reusing a host mid-teardown."""
+        lock = self._locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            host = self._hosts.get(key)
+            if host is None:
+                return False
             bus = self._buses.get(key)
             subscribers = bus.subscriber_count if bus is not None else 0
             if (
-                not host.busy
-                and host.queued == 0
-                and subscribers == 0
-                and host.idle_seconds >= self.idle_ttl
+                host.busy
+                or host.queued != 0
+                or subscribers != 0
+                or host.idle_seconds < self.idle_ttl
             ):
-                await self.close_host(*key)
+                return False
+            del self._hosts[key]
+            await host.aclose()
+            return True
 
     async def aclose(self) -> None:
         if self._evictor is not None:
