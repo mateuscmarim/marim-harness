@@ -141,8 +141,21 @@ async def test_evicted_host_rejects_late_submit_instead_of_hanging(tmp_path):
 async def test_host_for_waits_for_concurrent_close_before_rebuilding(tmp_path):
     """close_host now holds the per-key lock through the full aclose(), so a
     host_for() racing a slow close must wait for it to finish rather than
-    building a second Harness while the first is still tearing down."""
+    building a second Harness while the first is still tearing down. This
+    is proven by ORDERING (timestamps), not just by object identity/counts —
+    a version that pops-then-releases-the-lock-then-acloses would let the
+    second build start immediately, before the artificial delay elapses.
+
+    The "second build returned" timestamp is captured from *inside* the task
+    that awaits host_for() (via timed_host_for below), not by timing after a
+    later `await close_task` in the test body. Timing it after a sequential
+    `await close_task; await host_for_task` would bound the recorded time
+    below by close_task's own completion regardless of when host_for_task
+    actually finished internally — that shape passes even against the buggy
+    pop-then-release-lock-then-aclose implementation, which defeats the
+    point of the assertion (verified empirically while writing this test)."""
     created: list = []
+    timestamps: dict = {}
     sup = SessionSupervisor(_factory(created))
     record = _record(tmp_path)
     host = await sup.host_for(record, "s1")
@@ -151,16 +164,29 @@ async def test_host_for_waits_for_concurrent_close_before_rebuilding(tmp_path):
 
     async def slow_aclose():
         await asyncio.sleep(0.1)
+        timestamps["aclose_done"] = asyncio.get_running_loop().time()
         await original_aclose()
 
     host.aclose = slow_aclose
 
+    async def timed_host_for():
+        result = await sup.host_for(record, "s1")
+        timestamps["second_build_returned"] = asyncio.get_running_loop().time()
+        return result
+
     close_task = asyncio.create_task(sup.close_host("ws", "s1"))
     await asyncio.sleep(0.01)  # let close_host acquire the lock and start aclose
-    host_for_task = asyncio.create_task(sup.host_for(record, "s1"))
+    host_for_task = asyncio.create_task(timed_host_for())
 
     await close_task
     new_host = await host_for_task
 
     assert new_host is not host  # rebuilt fresh, not reused mid-teardown
     assert len(created) == 2  # exactly one rebuild, not a race of two builds
+    # The decisive assertion: the second build could only complete (timestamped
+    # the instant host_for() itself returned, not after some later sequential
+    # await) AFTER the slow aclose finished. Without the lock-holds-through-
+    # aclose fix, host_for would race ahead and this would be violated
+    # (second_build_returned would land near t=0.01-0.03, long before
+    # aclose_done at t=0.1).
+    assert timestamps["second_build_returned"] >= timestamps["aclose_done"]
