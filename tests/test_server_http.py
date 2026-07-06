@@ -293,3 +293,29 @@ def test_malformed_base64_attachment_returns_400(client):
     error_body = response.json()
     assert error_body["error"]["code"] == "bad_request"
     assert "base64" in error_body["error"]["message"]
+
+
+def test_sse_resume_with_last_event_id(client):
+    test_client, tmp_path = client
+    ws_id, sid, _ = _setup_workspace_and_session(test_client, tmp_path, mode="auto")
+    base = f"/v1/workspaces/{ws_id}/sessions/{sid}"
+    test_client.post(f"{base}/messages", headers=AUTH, json={"prompt": "go"})
+    _poll(test_client, base, lambda s: s["status"] == "idle")
+
+    # First read: take only the first event and note its id.
+    first_id = None
+    with test_client.stream("GET", f"{base}/events?access_token={TOKEN}",
+                            headers={"Last-Event-ID": "0"}) as stream:
+        for line in stream.iter_lines():
+            if line.startswith("id: "):
+                first_id = int(line.removeprefix("id: "))
+                break
+    assert first_id is not None
+
+    # Reconnect after that id: replay resumes strictly after it.
+    with test_client.stream("GET", f"{base}/events?access_token={TOKEN}",
+                            headers={"Last-Event-ID": str(first_id)}) as stream:
+        for line in stream.iter_lines():
+            if line.startswith("id: "):
+                assert int(line.removeprefix("id: ")) == first_id + 1
+                break
