@@ -34,6 +34,9 @@ dependencies = [
 # The interactive TUI. A bare install is headless-only (`marim -p`); the `marim`
 # interactive launch prints an install hint when textual is absent.
 tui = ["textual>=0.80"]
+# The `marim serve` HTTP daemon (REST + SSE). Bare installs print an install
+# hint when starlette/uvicorn are absent.
+serve = ["starlette>=0.40", "uvicorn>=0.30"]
 
 [project.urls]
 Repository = "https://git.marim.dev/mateuscmarim/marim-harness"
@@ -55,6 +58,11 @@ dev = [
     # Fail a hung test (a stuck Pilot app, a deadlocked worker) instead of
     # stalling the whole CI leg until the runner's job timeout.
     "pytest-timeout>=2",
+    # The `marim serve` tests (Starlette TestClient) need these even though
+    # they moved to the optional `serve` extra, so plain `uv sync` keeps
+    # developing/CI working.
+    "starlette>=0.40",
+    "uvicorn>=0.30",
 ]
 
 [build-system]

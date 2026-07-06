@@ -1832,6 +1832,10 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+serve = [
+    { name = "starlette" },
+    { name = "uvicorn" },
+]
 tui = [
     { name = "textual" },
 ]
@@ -1844,7 +1848,9 @@ dev = [
     { name = "pytest-cov" },
     { name = "pytest-timeout" },
     { name = "ruff" },
+    { name = "starlette" },
     { name = "textual" },
+    { name = "uvicorn" },
 ]
 
 [package.metadata]
@@ -1856,9 +1862,11 @@ requires-dist = [
     { name = "pydantic-ai", specifier = ">=1.107,<2" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "pyyaml", specifier = ">=6" },
+    { name = "starlette", marker = "extra == 'serve'", specifier = ">=0.40" },
     { name = "textual", marker = "extra == 'tui'", specifier = ">=0.80" },
+    { name = "uvicorn", marker = "extra == 'serve'", specifier = ">=0.30" },
 ]
-provides-extras = ["tui"]
+provides-extras = ["tui", "serve"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1868,7 +1876,9 @@ dev = [
     { name = "pytest-cov", specifier = ">=5" },
     { name = "pytest-timeout", specifier = ">=2" },
     { name = "ruff", specifier = ">=0.6" },
+    { name = "starlette", specifier = ">=0.40" },
     { name = "textual", specifier = ">=0.80" },
+    { name = "uvicorn", specifier = ">=0.30" },
 ]
 
 [[package]]
