@@ -1,4 +1,5 @@
 import json
+import logging
 import shutil
 import subprocess
 from unittest import mock
@@ -106,6 +107,16 @@ def test_state_file_is_json(tmp_path):
     reg.register("proj", project)
     data = json.loads((tmp_path / "state" / "workspaces.json").read_text())
     assert data["workspaces"][0]["id"] == "proj"
+
+
+def test_corrupt_state_file_logs_warning_and_starts_empty(tmp_path, caplog):
+    state_file = tmp_path / "state" / "workspaces.json"
+    state_file.parent.mkdir(parents=True)
+    state_file.write_text("not valid json{")
+    with caplog.at_level(logging.WARNING):
+        reg = WorkspaceRegistry(state_file, tmp_path / "managed")
+    assert reg.list() == []
+    assert "workspace registry state file unreadable" in caplog.text
 
 
 def test_purge_failure_leaves_workspace_registered(tmp_path):

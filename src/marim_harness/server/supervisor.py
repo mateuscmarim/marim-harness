@@ -96,6 +96,17 @@ class SessionSupervisor:
             await host.aclose()
             return True
 
+    def forget(self, ws_id: str, session_id: str) -> None:
+        """Fully reclaim all state for a session that has been permanently
+        deleted (not merely idle-evicted) — buses, locks, and any stored mode.
+        Idle eviction must NOT call this: a bus intentionally outlives an
+        idle-evicted host so a client can still resume/replay a live session's
+        stream; this is only for a session that no longer exists at all."""
+        key = (ws_id, session_id)
+        self._buses.pop(key, None)
+        self._locks.pop(key, None)
+        self._modes.pop(key, None)
+
     def start_evictor(self) -> None:
         if self._evictor is None:
             self._evictor = asyncio.get_running_loop().create_task(self._evict_loop())

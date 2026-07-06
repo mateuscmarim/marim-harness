@@ -35,6 +35,11 @@ def main(argv: list[str], *, out=sys.stdout, err=sys.stderr) -> int:
 
     try:
         import uvicorn
+
+        from ...server.auth import load_or_create_token
+        from ...server.http import create_app
+        from ...server.supervisor import SessionSupervisor
+        from ...server.workspaces import WorkspaceRegistry
     except ImportError:
         print(
             "marim serve requires the server extra. Install with:\n"
@@ -42,10 +47,6 @@ def main(argv: list[str], *, out=sys.stdout, err=sys.stderr) -> int:
             file=err,
         )
         return 1
-    from ...server.auth import load_or_create_token
-    from ...server.http import create_app
-    from ...server.supervisor import SessionSupervisor
-    from ...server.workspaces import WorkspaceRegistry
 
     state_dir = _default_state_dir()
     token = load_or_create_token(state_dir)

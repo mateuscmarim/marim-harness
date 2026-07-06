@@ -138,6 +138,26 @@ async def test_evicted_host_rejects_late_submit_instead_of_hanging(tmp_path):
         host.submit("hello")
 
 
+async def test_forget_reclaims_bus_lock_and_mode(tmp_path):
+    """forget() is for a session that's been permanently deleted, not idle
+    eviction — it must discard the bus (so a later bus_for mints a fresh
+    one, proving the old one was actually dropped, not just no-op), plus
+    the lock and any stored mode."""
+    sup = SessionSupervisor(_factory([]))
+    record = _record(tmp_path)
+    sup.set_mode("ws", "s1", Mode.plan)
+    original_bus = sup.bus_for("ws", "s1")
+    await sup.host_for(record, "s1")
+    await sup.close_host("ws", "s1")
+    assert ("ws", "s1") in sup._locks  # close_host alone leaves the lock resident
+
+    sup.forget("ws", "s1")
+
+    assert sup.bus_for("ws", "s1") is not original_bus
+    assert ("ws", "s1") not in sup._locks
+    assert ("ws", "s1") not in sup._modes
+
+
 async def test_host_for_waits_for_concurrent_close_before_rebuilding(tmp_path):
     """close_host now holds the per-key lock through the full aclose(), so a
     host_for() racing a slow close must wait for it to finish rather than

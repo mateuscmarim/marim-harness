@@ -190,6 +190,7 @@ async def delete_session(request: Request) -> Response:
         return _error(409, "busy", "session has a running turn; interrupt it first")
     await _supervisor(request).close_host(record.id, session_id)
     SessionManager(Path(record.path)).delete(session_id)
+    _supervisor(request).forget(record.id, session_id)
     return JSONResponse({"deleted": True})
 
 
@@ -296,6 +297,8 @@ async def get_events(request: Request) -> Response:
     if record is None:
         return _error(404, "not_found", "unknown workspace")
     session_id = request.path_params["sid"]
+    if not _session_exists(record, session_id):
+        return _error(404, "not_found", "unknown session")
     bus = _supervisor(request).bus_for(record.id, session_id)
     last = request.headers.get("last-event-id", "")
     after_seq = int(last) if last.isdigit() else None

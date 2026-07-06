@@ -295,6 +295,21 @@ def test_malformed_base64_attachment_returns_400(client):
     assert "base64" in error_body["error"]["message"]
 
 
+def test_get_events_unknown_session_returns_404(client):
+    test_client, tmp_path = client
+    project = tmp_path / "proj"
+    project.mkdir()
+    ws = test_client.post("/v1/workspaces", headers=AUTH,
+                          json={"name": "proj", "path": str(project)}).json()
+    # A real workspace, but a session id that was never created via POST
+    # /sessions — get_events must 404 instead of lazily minting a bus.
+    response = test_client.get(
+        f"/v1/workspaces/{ws['id']}/sessions/nope/events?access_token={TOKEN}"
+    )
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
 def test_sse_resume_with_last_event_id(client):
     test_client, tmp_path = client
     ws_id, sid, _ = _setup_workspace_and_session(test_client, tmp_path, mode="auto")

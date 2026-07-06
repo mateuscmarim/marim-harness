@@ -7,6 +7,7 @@ may be purged on delete. Persisted as one JSON file under the server state
 dir."""
 
 import json
+import logging
 import re
 import shutil
 import subprocess
@@ -16,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..atomic_io import atomic_write_text
+
+logger = logging.getLogger(__name__)
 
 _CLONE_TIMEOUT_SECONDS = 600
 
@@ -52,7 +55,8 @@ class WorkspaceRegistry:
             return {}
         try:
             data = json.loads(self._file.read_text())
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("workspace registry state file unreadable, starting empty: %s", exc)
             return {}
         records = {}
         for raw in data.get("workspaces", []):
