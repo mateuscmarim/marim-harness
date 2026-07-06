@@ -8,19 +8,9 @@ import sys
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
-from pydantic_ai.messages import (
-    FunctionToolCallEvent,
-    FunctionToolResultEvent,
-    PartDeltaEvent,
-    PartStartEvent,
-    TextPart,
-    TextPartDelta,
-    ThinkingPart,
-    ThinkingPartDelta,
-)
-
 from ...runtime.errors import format_provider_error
 from ...runtime.harness import Harness
+from ...stream_events import event_to_dict
 from ...usage import usage_summary
 
 logger = logging.getLogger(__name__)
@@ -82,33 +72,6 @@ def _result_obj(harness: Harness, output: str) -> dict:
     }
 
 
-def _event_obj(event) -> dict | None:
-    """Map a Pydantic AI streaming event to a JSON-serializable line, or None to
-    skip events we don't surface."""
-    if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
-        return {"type": "text", "text": event.part.content or ""}
-    if isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
-        return {"type": "text", "text": event.delta.content_delta or ""}
-    if isinstance(event, PartStartEvent) and isinstance(event.part, ThinkingPart):
-        return {"type": "thinking", "text": event.part.content or ""}
-    if isinstance(event, PartDeltaEvent) and isinstance(event.delta, ThinkingPartDelta):
-        return {"type": "thinking", "text": event.delta.content_delta or ""}
-    if isinstance(event, FunctionToolCallEvent):
-        return {
-            "type": "tool_call",
-            "name": event.part.tool_name,
-            "args": event.part.args_as_dict(),
-            "id": event.part.tool_call_id,
-        }
-    if isinstance(event, FunctionToolResultEvent):
-        return {
-            "type": "tool_result",
-            "id": event.tool_call_id,
-            "content": str(getattr(event.part, "content", "")),
-        }
-    return None
-
-
 async def run_headless(
     harness: Harness,
     prompt: str,
@@ -131,7 +94,7 @@ async def run_headless(
         async for event in events:
             if output_format != "stream-json":
                 continue  # drain to force a streaming request; emit nothing
-            obj = _event_obj(event)
+            obj = event_to_dict(event)
             if obj is not None:
                 print(json.dumps(obj), file=out, flush=True)
 
