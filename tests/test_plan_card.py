@@ -1,0 +1,78 @@
+# tests/test_plan_card.py
+"""PlanCard inline panel: renders summary + steps + choices, resolves to the
+chosen label, defaults to 'Keep planning' on Escape."""
+
+import pytest
+from textual.app import App, ComposeResult
+from textual.containers import VerticalScroll
+from textual.widgets import Static
+
+from marim_harness.ask_user import Choice
+from marim_harness.interfaces.tui.interaction_panel import run_panel
+from marim_harness.interfaces.tui.plan_card import PlanCard
+
+pytestmark = pytest.mark.anyio
+
+_CHOICES = [
+    Choice("Execute hands-off (auto)", "Run the whole plan."),
+    Choice("Execute step-by-step (ask)", "Approve each change."),
+    Choice("Hand off to sub-agent", "Spawn a sub-agent."),
+    Choice("Keep planning", "Save as a draft."),
+]
+
+
+class _Harness(App):
+    def __init__(self, summary, steps, choices):
+        super().__init__()
+        self._args = (summary, steps, choices)
+        self.result = "unset"
+
+    def compose(self) -> ComposeResult:
+        yield VerticalScroll(Static("line\n" * 100), id="log")
+        yield Static("", id="status-bar")
+
+    def on_mount(self) -> None:
+        self.run_worker(self._run())
+
+    async def _run(self) -> None:
+        self.result = await run_panel(self, PlanCard(*self._args))
+
+
+async def test_selects_highlighted_choice():
+    app = _Harness("Refactor parser", ["Extract tokenizer", "Add tests"], _CHOICES)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")  # first option highlighted
+        await pilot.pause()
+    assert app.result == "Execute hands-off (auto)"
+
+
+async def test_selects_second_choice():
+    app = _Harness("Refactor parser", ["Extract tokenizer"], _CHOICES)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("down")
+        await pilot.press("enter")
+        await pilot.pause()
+    assert app.result == "Execute step-by-step (ask)"
+
+
+async def test_escape_keeps_planning():
+    app = _Harness("Refactor parser", ["Extract tokenizer"], _CHOICES)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+    assert app.result == "Keep planning"
+
+
+async def test_renders_summary_and_steps():
+    app = _Harness("Refactor the parser", ["Extract tokenizer", "Add tests"], _CHOICES)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        card = app.query_one(PlanCard)
+        text = card.query_one("#plan-summary", Static).content
+        body = card.query_one("#plan-steps", Static).content
+        assert "Refactor the parser" in str(text)
+        assert "Extract tokenizer" in str(body)
+        assert "1." in str(body)  # steps are numbered
