@@ -107,6 +107,7 @@ class HarnessApp(App):
         self.harness.bind_ui(
             request_approval=self._request_approval,
             ask_user=self._ask_user,
+            on_present_plan=self._present_plan,
             on_subagent_event=self.stream.on_subagent_event,
             on_subagent_notice=self.stream.on_subagent_notice,
             on_subagent_model=self.stream.on_subagent_model,
@@ -835,6 +836,19 @@ class HarnessApp(App):
         prompt = questions[0].question if questions else ""
         self._notify("Question from agent", prompt, "ask_user")
         return await run_panel(self, AskUserPanel(questions))
+
+    async def _present_plan(self, summary, steps, choices):
+        """Put the finished plan to the user as an inline card and return their
+        chosen execution label. Inline panel, not a modal — the transcript stays
+        scrollable; a cancelled turn removes the card via run_panel's finally.
+        The plan's summary/steps already live on deps.plan (set by present_plan),
+        so the pinned title and Ctrl+P overlay stay in sync regardless of the
+        choice made here."""
+        from .plan_card import PlanCard
+
+        self._notify("Plan ready", summary, "ask_user")
+        self._render_tasks()  # refresh the TaskPanel title now that deps.plan is set
+        return await run_panel(self, PlanCard(summary, steps, choices))
 
     # --- Slash-command autocomplete ---
 

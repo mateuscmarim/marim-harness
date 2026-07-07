@@ -55,6 +55,7 @@ from .deps import (
     Deps,
     HarnessAgent,
     HarnessServices,
+    OnPresentPlanFn,
     SubAgentEventCb,
     SubAgentModelCb,
     SubAgentNoticeCb,
@@ -369,6 +370,7 @@ class Harness:
         on_subagent_usage: SubAgentUsageCb | None = None,
         on_cli_activity: CliActivityCb | None = None,
         on_mode_change: Callable[[], None] | None = None,
+        on_present_plan: OnPresentPlanFn | None = None,
         on_tasks_changed: Callable[[], None] | None = None,
         on_jobs_changed: Callable[[], None] | None = None,
         on_compact: Callable[[int, int], None] | None = None,
@@ -397,6 +399,7 @@ class Harness:
         self.deps.ui.on_cli_activity = on_cli_activity
         self._wire_cli_model(self.current_model)
         self.deps.ui.on_mode_change = on_mode_change
+        self.deps.ui.on_present_plan = on_present_plan
         self.deps.tasks.on_change = on_tasks_changed
         self.deps.jobs.on_change = on_jobs_changed
         self.session.on_compact = on_compact
