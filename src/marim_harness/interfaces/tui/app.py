@@ -90,6 +90,7 @@ class HarnessApp(App):
         ("ctrl+t", "cycle_mode", "Cycle mode"),
         ("ctrl+o", "toggle_outputs", "Show all output"),
         ("ctrl+x", "toggle_subagents", "Subagents"),
+        ("ctrl+p", "show_plan", "Plan"),
         ("escape", "cancel_turn", "Cancel turn"),
         ("ctrl+r", "run_queued", "Run queued"),
         ("ctrl+c", "quit", "Quit"),
@@ -442,6 +443,19 @@ class HarnessApp(App):
 
     def action_close_subagents(self) -> None:
         self.subagents.close()
+
+    def action_show_plan(self) -> None:
+        """Open the full plan overlay, or flash a hint when no plan exists yet."""
+        from .plan_screen import PlanScreen
+
+        plan = self.harness.deps.plan
+        if plan is None:
+            self.notify("No plan yet — the agent presents one in plan mode.",
+                        severity="information")
+            return
+        self.push_screen(
+            PlanScreen(plan.summary, plan.path, self.harness.deps.tasks.items)
+        )
 
     def on_data_table_row_highlighted(self, event) -> None:
         # Textual bubbles the DataTable message to the App; forward to the viewer.
