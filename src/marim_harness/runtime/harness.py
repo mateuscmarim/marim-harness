@@ -366,6 +366,7 @@ class Harness:
             hooks=self.hooks,
             mcp=self.mcp,
             deps=self.deps,
+            lsp_toolset=self.provider.lsp_toolset(),
             get_model=lambda: self.current_model,
         )
 

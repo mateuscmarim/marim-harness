@@ -111,9 +111,9 @@ async def test_pre_run_failure_restores_consumables_and_checkpoint(
     tmp_path: Path, monkeypatch
 ):
     """A raise AFTER prompt assembly but BEFORE the run — e.g. flaky MCP in
-    toolsets_for — must restore the one-shot consumables and roll back the
-    turn's dead checkpoint, exactly like a run failure. This window used to sit
-    outside run_turn's try block, losing both."""
+    compose_turn_toolsets (live_tool_count) — must restore the one-shot
+    consumables and roll back the turn's dead checkpoint, exactly like a run
+    failure. This window used to sit outside run_turn's try block, losing both."""
     deps = _make_deps(tmp_path)
     captured: dict = {}
 
@@ -130,7 +130,10 @@ async def test_pre_run_failure_restores_consumables_and_checkpoint(
     ctrl = harness.turn_controller
     ctrl._pending_hook_context = "HOOK-CONTEXT-MARKER"
 
-    orig = ctrl.mcp.toolsets_for
+    # live_tool_count is the async call inside compose_turn_toolsets that can
+    # raise on a flaky MCP server (toolsets_for itself is no longer on the
+    # per-turn path — see runtime/toolsets.py).
+    orig = ctrl.mcp.live_tool_count
     calls = {"n": 0}
 
     async def flaky(*args, **kwargs):
@@ -139,7 +142,7 @@ async def test_pre_run_failure_restores_consumables_and_checkpoint(
             raise RuntimeError("mcp boom")
         return await orig(*args, **kwargs)
 
-    monkeypatch.setattr(ctrl.mcp, "toolsets_for", flaky)
+    monkeypatch.setattr(ctrl.mcp, "live_tool_count", flaky)
 
     checkpoints_before = len(harness.checkpoints.list())
     with pytest.raises(RuntimeError):

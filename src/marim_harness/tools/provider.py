@@ -17,9 +17,14 @@ the module that owns it (``from ..tools.edit_tools import bash``).
 """
 
 from collections.abc import Iterable
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from ..runtime.deps import HarnessAgent, SubAgent
+
+if TYPE_CHECKING:
+    from pydantic_ai.toolsets import FunctionToolset
+
+    from ..runtime.deps import Deps
 from . import (
     edit_tools,
     fs_tools,
@@ -75,6 +80,9 @@ class ToolProvider(Protocol):
     def register_subagent(self, agent: SubAgent, tool_names: Iterable[str]) -> None:
         ...
 
+    def lsp_toolset(self) -> "FunctionToolset[Deps] | None":
+        ...
+
 
 class BuiltinToolProvider:
     """Hand-written fs + shell tools backed by the pure functions in this package."""
@@ -102,13 +110,6 @@ class BuiltinToolProvider:
         agent.tool(fs_tools.glob)
         agent.tool(fs_tools.tree)
         agent.tool(fs_tools.grep)
-        if self._register_lsp_tools:
-            agent.tool(lsp_tools.goto_definition)
-            agent.tool(lsp_tools.find_references)
-            agent.tool(lsp_tools.hover)
-            agent.tool(lsp_tools.document_symbols)
-            agent.tool(lsp_tools.workspace_symbols)
-            agent.tool(lsp_tools.diagnostics)
         # Outbound network tools are gated (like write/edit/bash), not ungated
         # like the local reads above: they are an exfiltration boundary (see
         # names.NET_TOOLS). Gating routes them through resolve_approvals, so auto
@@ -137,6 +138,15 @@ class BuiltinToolProvider:
         agent.tool(requires_approval=True)(edit_tools.write_file)
         agent.tool(requires_approval=True)(edit_tools.edit_file)
         agent.tool(requires_approval=True)(edit_tools.bash)
+
+    def lsp_toolset(self) -> "FunctionToolset[Deps] | None":
+        """The LSP navigation tools as a deferrable toolset for the *main* agent,
+        or None when LSP tools are disabled. Built from the same
+        ``_register_lsp_tools`` flag that used to gate their static registration,
+        so the two never drift. The Harness injects the result into TurnController,
+        which routes it through ``compose_turn_toolsets`` per turn. Sub-agents are
+        unaffected — ``register_subagent`` still name-registers LSP."""
+        return lsp_tools.build_lsp_toolset() if self._register_lsp_tools else None
 
     def register_subagent(self, agent: SubAgent, tool_names: Iterable[str]) -> None:
         """Register exactly ``tool_names`` onto a sub-agent. Gated tools are

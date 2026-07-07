@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from pydantic_ai.messages import AgentStreamEvent
     from pydantic_ai.models import Model
     from pydantic_ai.tools import DeferredToolResults
-    from pydantic_ai.toolsets import AbstractToolset
+    from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 
     from ..hooks.dispatch import TurnHooks
     from ..mcp import McpManager
@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from ..session.checkpoints import CheckpointManager
     from .deps import Deps, HarnessAgent
 
+from ..tools.names import LSP_TOOLS
 from .context import (
     actionable_error_note as _actionable_error_note,
 )
@@ -48,6 +49,7 @@ from .errors import (
     is_context_overflow_error,
 )
 from .permissions import Mode, resolve_approvals
+from .toolsets import compose_turn_toolsets
 
 logger = logging.getLogger(__name__)
 
@@ -270,6 +272,7 @@ class TurnController:
         mcp: McpManager,
         deps: Deps,
         get_model: Callable[[], Model],
+        lsp_toolset: FunctionToolset[Deps] | None = None,
     ) -> None:
         self.agent = agent
         self.session = session
@@ -278,6 +281,7 @@ class TurnController:
         self.mcp = mcp
         self.deps = deps
         self.get_model = get_model
+        self.lsp_toolset = lsp_toolset
 
         # One-shot turn state (consumed by _assemble_prompt, restored on failure).
         self._pending_error_note: str | None = None
@@ -855,7 +859,10 @@ class TurnController:
             # Tool-search policy: defer the MCP/plugin surface behind Pydantic AI's
             # auto-injected ToolSearch when the policy/threshold call for it, else load
             # the live MCP toolsets as before. Builtins (on the Agent) are unaffected.
-            toolsets = await self.mcp.toolsets_for(
+            toolsets = await compose_turn_toolsets(
+                self.mcp,
+                self.lsp_toolset,
+                len(LSP_TOOLS),
                 self.deps.workspace.tool_search,
                 self.deps.workspace.tool_search_threshold,
             )

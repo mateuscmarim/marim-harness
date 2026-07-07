@@ -113,7 +113,10 @@ async def test_run_turn_forwards_live_toolsets(tmp_path: Path):
     from pydantic_ai.usage import RunUsage
 
     deps = _make_deps(tmp_path)
-    h = _make_harness(_text_model(), deps)
+    # LSP disabled: isolates this assertion to MCP forwarding — the LSP toolset
+    # (when enabled) is composed in alongside live MCP toolsets, which is covered
+    # separately by test_lsp_wiring.py.
+    h = _make_harness(_text_model(), deps, provider=BuiltinToolProvider(register_lsp_tools=False))
     sentinel = object()
     h.mcp._live_servers = [sentinel]
 
@@ -154,7 +157,8 @@ async def test_run_turn_omits_disabled_from_toolsets(tmp_path: Path):
     from pydantic_ai.usage import RunUsage
 
     deps = _make_deps(tmp_path)
-    h = _make_harness(_text_model(), deps)
+    # LSP disabled: see test_run_turn_forwards_live_toolsets above.
+    h = _make_harness(_text_model(), deps, provider=BuiltinToolProvider(register_lsp_tools=False))
     live_on, live_off = _FakeServer("on"), _FakeServer("off")
     h.mcp._live_servers = [live_on, live_off]
     h.mcp.disabled = {"off"}

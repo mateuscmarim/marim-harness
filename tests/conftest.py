@@ -182,8 +182,8 @@ def _edit_then_done_model() -> FunctionModel:
     return FunctionModel(fn, stream_function=stream_fn)
 
 
-def _make_harness(model, deps, **config_kwargs) -> Harness:
-    return Harness(model=model, provider=BuiltinToolProvider(), deps=deps,
+def _make_harness(model, deps, provider=None, **config_kwargs) -> Harness:
+    return Harness(model=model, provider=provider or BuiltinToolProvider(), deps=deps,
                    instructions="You are a coding agent.", **config_kwargs)
 
 

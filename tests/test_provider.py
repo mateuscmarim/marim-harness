@@ -22,11 +22,18 @@ def _tool_names(agent: Agent) -> set[str]:
 
 
 def test_register_includes_lsp_tools_by_default():
+    """LSP tools no longer statically register onto the main agent (Task 3) —
+    they arrive via ``lsp_toolset()`` and the per-turn deferral path instead
+    (see tests/test_lsp_wiring.py). ``register_lsp_tools`` still gates whether
+    they are available at all."""
     from marim_harness.tools.names import LSP_TOOLS
 
     agent = Agent(TestModel(), deps_type=Deps)
-    BuiltinToolProvider().register(agent)
-    assert _tool_names(agent) >= LSP_TOOLS
+    provider = BuiltinToolProvider()
+    provider.register(agent)
+    assert not (LSP_TOOLS & _tool_names(agent))
+    ts = provider.lsp_toolset()
+    assert ts is not None and set(ts.tools) >= LSP_TOOLS
 
 
 def test_register_omits_lsp_tools_when_disabled():
