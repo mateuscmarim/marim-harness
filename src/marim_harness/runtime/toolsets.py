@@ -34,11 +34,12 @@ async def compose_turn_toolsets(
     threshold: int,
 ) -> list[AbstractToolset[Deps]]:
     live = mcp.live_toolsets()
-    extras = [lsp_toolset] if lsp_toolset is not None else []
+    has_lsp = lsp_toolset is not None
+    extras = [lsp_toolset] if has_lsp else []
     combined = [*live, *extras]
     if not combined:
         return []
-    count = await mcp.live_tool_count() + (lsp_count if lsp_toolset is not None else 0)
+    count = await mcp.live_tool_count() + (lsp_count if has_lsp else 0)
     if should_defer(policy, count, threshold):
         return [DeferredLoadingToolset(CombinedToolset(combined))]
     return combined

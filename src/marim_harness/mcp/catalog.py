@@ -36,7 +36,7 @@ def render_tool_catalog(groups: dict[str, list[str]]) -> str:
 
 async def tool_catalog_text(mcp, policy: str, threshold: int) -> str:
     """The catalog block to inject when tool search is deferring this run, else "".
-    Gated by the same ``should_defer`` the controller uses for ``toolsets_for``, so
+    Gated by the same ``should_defer`` the controller uses for ``compose_turn_toolsets``, so
     the catalog is shown exactly when the MCP tools are actually deferred. ``mcp`` is
     an ``McpManager`` (duck-typed: needs ``async live_tools_by_server()``)."""
     groups = await mcp.live_tools_by_server()
