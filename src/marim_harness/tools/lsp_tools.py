@@ -1,4 +1,5 @@
 from pydantic_ai import RunContext
+from pydantic_ai.toolsets import FunctionToolset
 
 from ..runtime.deps import Deps
 
@@ -57,3 +58,21 @@ async def diagnostics(ctx: RunContext[Deps], path: str) -> str:
     if ctx.deps.services.lsp is None:
         return _LSP_UNAVAILABLE
     return await ctx.deps.services.lsp.diagnostics(path, deep=True)
+
+
+def build_lsp_toolset() -> FunctionToolset[Deps]:
+    """The six LSP navigation tools as a single deferrable toolset for the main
+    agent. Ungated (they are read-only). Registered here rather than via
+    ``agent.tool`` so they can ride the per-turn tool-search deferral path
+    (see ``runtime.toolsets.compose_turn_toolsets``). Each tool still guards
+    ``ctx.deps.services.lsp is None``, so a toolset built while the manager is
+    unavailable degrades gracefully. Sub-agents do NOT use this — they keep
+    name-based registration (``provider.register_subagent``)."""
+    ts: FunctionToolset[Deps] = FunctionToolset()
+    ts.add_function(goto_definition)
+    ts.add_function(find_references)
+    ts.add_function(hover)
+    ts.add_function(document_symbols)
+    ts.add_function(workspace_symbols)
+    ts.add_function(diagnostics)
+    return ts
