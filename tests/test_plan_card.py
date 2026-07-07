@@ -76,3 +76,27 @@ async def test_renders_summary_and_steps():
         assert "Refactor the parser" in str(text)
         assert "Extract tokenizer" in str(body)
         assert "1." in str(body)  # steps are numbered
+
+
+async def test_escapes_brackets_in_summary_and_steps():
+    """Regression: summary and steps with brackets (e.g. list[str], [/] paths)
+    must not crash with MarkupError or corrupt rendering."""
+    summary = "Refactor to handle list[str] outputs"
+    steps = [
+        "Fix the redirect for [/] to home",
+        "Support [bold] tags in description",
+    ]
+    app = _Harness(summary, steps, _CHOICES)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        card = app.query_one(PlanCard)
+        # Verify the content renders literally, not parsed as markup
+        summary_text = card.query_one("#plan-summary", Static).content
+        assert "list[str]" in str(summary_text)
+        steps_body = card.query_one("#plan-steps", Static).content
+        assert "[/]" in str(steps_body)
+        assert "[bold]" in str(steps_body)
+        # Verify selection still works (no crash, choice resolves)
+        await pilot.press("enter")
+        await pilot.pause()
+    assert app.result == "Execute hands-off (auto)"

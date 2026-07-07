@@ -8,6 +8,7 @@ persists in the PlanScreen overlay (Ctrl+P); this card is the deliberate
 
 from textual.app import ComposeResult
 from textual.content import Content
+from textual.markup import escape
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
@@ -20,7 +21,11 @@ _DISMISS_LABEL = "Keep planning"
 
 
 def _steps_markup(steps: list[str]) -> str:
-    return "\n".join(f"[$accent]{i}.[/] {s}" for i, s in enumerate(steps, 1))
+    # escape() the model-supplied step text so brackets in a step (e.g. "list[str]"
+    # or a "[/]" path) render literally instead of being parsed as Textual markup —
+    # unescaped, an unmatched tag raises MarkupError and crashes the panel. The
+    # numbered prefix stays styled because it is developer-authored.
+    return "\n".join(f"[$accent]{i}.[/] {escape(s)}" for i, s in enumerate(steps, 1))
 
 
 class PlanCard(InteractionPanel):
@@ -44,7 +49,7 @@ class PlanCard(InteractionPanel):
 
     def compose(self) -> ComposeResult:
         yield Static("Plan", id="plan-title")
-        yield Static(self._summary, id="plan-summary")
+        yield Static(self._summary, id="plan-summary", markup=False)
         yield Static(Content.from_markup(_steps_markup(self._steps)), id="plan-steps")
         options = OptionList(id="plan-choices")
         yield options
@@ -52,8 +57,8 @@ class PlanCard(InteractionPanel):
     def on_mount(self) -> None:
         options = self.query_one("#plan-choices", OptionList)
         for i, choice in enumerate(self._choices):
-            suffix = f"\n  [dim]{choice.description}[/]" if choice.description else ""
-            prompt = Content.from_markup(f"{choice.label}{suffix}")
+            suffix = f"\n  [dim]{escape(choice.description)}[/]" if choice.description else ""
+            prompt = Content.from_markup(f"{escape(choice.label)}{suffix}")
             options.add_option(Option(prompt, id=str(i)))
         options.highlighted = 0
         options.focus()
