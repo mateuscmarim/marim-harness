@@ -49,6 +49,10 @@ class PlanScreen(Screen[None]):
             # renders the text literally and safely.
             yield Static(self._summary, id="plan-screen-summary", markup=False)
             yield Static(Content(render_tasks(self._tasks)), id="plan-screen-steps")
+            # Unlike the summary, the path is a slugified-summary-derived filename
+            # (brackets stripped upstream), so escape() alone is sufficient here —
+            # it is never free-form model text that could contain an unterminated
+            # bracket or a bracket + key='value' sequence.
             path_line = (
                 f"[dim]file:[/] {escape(self._path)}" if self._path else "[dim]not saved to disk[/]"
             )

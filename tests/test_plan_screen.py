@@ -44,12 +44,16 @@ async def test_escape_dismisses():
 
 async def test_summary_with_unterminated_bracket_does_not_raise_markup_error():
     """The summary is model-supplied free text and must never be parsed as
-    Textual markup — an unterminated ``[`` must not raise MarkupError, and the
-    bracket text must render literally."""
-    summary = "Handle [edit(old_string=... with no close"
+    Textual markup. This exact bracket + bareword + quoted ``key='value'``
+    pattern, left unterminated, reliably raises MarkupError under Textual's
+    default markup parsing (confirmed empirically against Textual 8.2.7,
+    including with escape() applied) — so this is a genuine regression check:
+    if ``markup=False`` were ever dropped from the summary's Static, this test
+    would fail with MarkupError instead of silently passing."""
+    summary = "Handle [edit id=1 old_string='foo' with no close"
     app = _Harness()
     async with app.run_test() as pilot:
         app.push_screen(PlanScreen(summary, None, [Task(text="x")]))
         await pilot.pause()
         text = " ".join(str(w.content) for w in app.screen.query(Static))
-        assert "Handle [edit(old_string=... with no close" in text
+        assert "Handle [edit id=1 old_string='foo' with no close" in text
