@@ -40,6 +40,11 @@ The interactive TUI lives in the optional `tui` extra; a bare
 installs the dev group, which includes textual, so a development checkout
 always has the full TUI.
 
+The `marim serve` HTTP daemon (REST + SSE) lives in the optional `serve` extra
+(`pip install -e '.[serve]'`, or `.[tui,serve]` for both). `./install.sh`
+installs both `tui` and `serve` by default; pass `--no-tui` and/or `--no-serve`
+to skip either.
+
 ## Usage
 
 ```bash
