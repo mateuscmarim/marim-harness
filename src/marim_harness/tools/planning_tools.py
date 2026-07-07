@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from pydantic_ai import ModelRetry, RunContext
 
 from ..ask_user import Choice, Question, answers_to_json, coerce_questions
-from ..runtime.deps import Deps
+from ..runtime.deps import CurrentPlan, Deps
 from ..runtime.permissions import Mode
 from ..tasks import Task, summarize
 from ..workspace.plans import write_plan
@@ -120,18 +120,28 @@ async def present_plan(
         path = None
 
     ctx.deps.tasks.replace([Task(text=s) for s in clean])
+    # Record the plan narrative so the pinned TaskPanel title and the PlanScreen
+    # overlay can show the "why" after the transient PlanCard scrolls away. Step
+    # progress stays in ctx.deps.tasks (set just above) — the single source of
+    # truth — so this holds only summary/steps/path.
+    ctx.deps.plan = CurrentPlan(summary=summary, steps=clean, path=str(path) if path else None)
 
-    if ctx.deps.ui.ask_user is None:
+    # Prefer the dedicated plan card (on_present_plan) when a UI is attached; it
+    # renders the plan + choices as one deliberate inline moment. Fall back to the
+    # generic ask_user panel if only that is wired, then to the headless path.
+    if ctx.deps.ui.on_present_plan is not None:
+        choice = await ctx.deps.ui.on_present_plan(summary, clean, _PLAN_CHOICES)
+    elif ctx.deps.ui.ask_user is not None:
+        answers = await ctx.deps.ui.ask_user(
+            [Question(question="How should I execute this plan?", header="execution",
+                      options=_PLAN_CHOICES)]
+        )
+        choice = (answers or {}).get("execution", "Keep planning")
+    else:
         return (
             f"Plan saved{f' to {path}' if path else ''}. No interactive UI, so "
             "staying in plan mode — share the plan and await direction."
         )
-
-    answers = await ctx.deps.ui.ask_user(
-        [Question(question="How should I execute this plan?", header="execution",
-                  options=_PLAN_CHOICES)]
-    )
-    choice = (answers or {}).get("execution", "Keep planning")
 
     new_mode = _PLAN_EXEC_MODES.get(choice if isinstance(choice, str) else "")
     if new_mode is not None:
