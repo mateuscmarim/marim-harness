@@ -21,7 +21,7 @@ def _tool_names(agent: Agent) -> set[str]:
     return set(agent._function_toolset.tools.keys())
 
 
-def test_register_includes_lsp_tools_by_default():
+def test_register_excludes_lsp_tools_now_toolset_only():
     """LSP tools no longer statically register onto the main agent (Task 3) —
     they arrive via ``lsp_toolset()`` and the per-turn deferral path instead
     (see tests/test_lsp_wiring.py). ``register_lsp_tools`` still gates whether

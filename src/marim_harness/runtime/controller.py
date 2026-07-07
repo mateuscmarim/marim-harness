@@ -844,8 +844,8 @@ class TurnController:
         # however long git takes.
         checkpoint_index = await asyncio.to_thread(self.checkpoints.snapshot, prompt)
         # Everything from prompt assembly onward runs under the try: assembly
-        # drains the one-shot consumables and toolsets_for can raise on a flaky
-        # MCP server, so a failure anywhere past this point must hit the same
+        # drains the one-shot consumables and compose_turn_toolsets can raise on
+        # a flaky MCP server, so a failure anywhere past this point must hit the same
         # restore-and-discard path as a failed run — outside the try it would
         # permanently eat the hook context / jobs digest and leak the dead
         # checkpoint snapshotted above.
@@ -856,9 +856,9 @@ class TurnController:
             if attachments and user_prompt is not None:
                 user_prompt = [user_prompt, *(BinaryContent(data=d, media_type=m)
                                               for d, m in attachments)]
-            # Tool-search policy: defer the MCP/plugin surface behind Pydantic AI's
-            # auto-injected ToolSearch when the policy/threshold call for it, else load
-            # the live MCP toolsets as before. Builtins (on the Agent) are unaffected.
+            # Tool-search policy: compose_turn_toolsets folds the LSP toolset
+            # (when enabled) and the MCP/plugin surface under one deferral decision.
+            # OTHER builtins (on the Agent) remain unaffected.
             toolsets = await compose_turn_toolsets(
                 self.mcp,
                 self.lsp_toolset,
