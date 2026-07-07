@@ -54,15 +54,17 @@ Each is a function inside `build_forge_toolset`, closing over the selected `back
 |---|---|---|---|
 | `list_prs(state="open", limit=30)` | no | `backend.list_prs(state, limit)` | list of neutral `PullRequest` |
 | `view_pr(number=None)` | no | `backend.view_pr(number or current_branch)` | one `PullRequest` incl. `ci` + mergeable/review detail; clear "no PR for branch X" if none |
-| `ci_status(branch=None, pr=None)` | no | `backend.ci_status(branch or current_branch, pr)` | `CiStatus`: overall + per-run, failing runs first |
+| `ci_status(branch=None, pr=None)` | no | `backend.ci_status(branch or current_branch, pr)` | `CiStatus`: overall (from the branch's PR `ci` field) + recent run rows, most-recent first |
 | `create_pr(title, body="", base=None, draft=False)` | **yes** | preflight, then `backend.create_pr(...)` (head = current branch) | created `PullRequest` (number, url) |
 | `checkout_pr(number, create_branch=True)` | **yes** | `backend.checkout_pr(number, create_branch)` | confirmation of the branch now checked out |
 
-Neutral model shape (`models.py`):
+Neutral model shape (`models.py`), grounded in captured tea output:
 
-- `PullRequest`: `number` (tea's `index` / gh's `number`), `title`, `state`, `author`, `head`, `base`, `mergeable`, `url`, `updated`, optional `ci: CiStatus | None`.
-- `CiRun`: `workflow`, `event`, `status`, `conclusion` (**normalized** to `success`/`failure`/`pending`), `url`.
-- `CiStatus`: `overall` (normalized), `runs: list[CiRun]` (failing first).
+- `PullRequest`: `number: int` (tea's `index` string → int / gh's `number`), `title`, `state`, `author`, `head`, `base`, `mergeable: bool` (tea's `"true"`/`"false"` string → bool), `url`, `updated`, and `ci: str` — the **normalized overall CI conclusion** (`success`/`failure`/`pending`/`unknown`).
+- `CiRun`: `workflow`, `event`, `status` (tea's run status, e.g. `completed`/`running`), `branch`, `started`, and forward-compat optionals `conclusion: str | None` and `url: str | None` — **left `None` by the tea backend** and populated by a future backend (e.g. gh) that exposes per-run pass/fail.
+- `CiStatus`: `overall: str` (normalized `success`/`failure`/`pending`/`unknown`) and `runs: list[CiRun]` (most-recent first).
+
+**tea CI reality (resolved open item):** `tea pr list --fields …,ci` exposes an overall commit-status string per PR (`success`/`failure`/`pending`/`""`) — this is the reliable pass/fail signal and drives `PullRequest.ci` and `CiStatus.overall`. `tea actions runs -o json` returns per-run rows (`id`, `workflow`, `status:"completed"`, `branch`, `event`, `started`, `duration`) but **no per-run conclusion or URL**, so `CiRun.conclusion`/`url` stay `None` on the tea backend and runs are ordered most-recent-first (not failing-first — tea can't rank by conclusion). A future gh backend fills those in via `gh run list --json`. `mergeable` and `ci` come from `tea pr list --fields …`, the one field-rich endpoint that also serves `view_pr` (filtered client-side); `tea pr <n>` has a different, `ci`-less shape and is not used.
 
 Design notes:
 
@@ -151,5 +153,4 @@ No change to `models.py`, `backend.py`, `forge_tools.py`, the toolset wiring, ga
 
 ## Open items for the implementation plan
 
-- Confirm the exact `ci` field shape from `tea pr list --fields …,ci` and the `tea actions runs -o json` schema against captured fixtures; adjust the `CiStatus` mapping and normalization table accordingly.
-- Decide the precise structured shape each tool returns to the model (dict vs. formatted string) during implementation — keep it compact either way.
+- Decide the precise structured shape each tool returns to the model (dict vs. formatted string) during implementation — keep it compact either way. (The `tea` field/schema shapes are resolved above from captured output.)
