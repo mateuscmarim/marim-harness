@@ -152,3 +152,38 @@ async def test_backend_ci_status_overall_from_pr(monkeypatch):
     assert st.overall == "success"
     # runs are filtered by branch; master run excluded for this branch
     assert all(r.branch == "refactor/tools" for r in st.runs)
+
+
+@pytest.mark.anyio
+async def test_backend_create_pr_refetches_by_head(monkeypatch):
+    calls = []
+
+    async def fake_run(args, cwd, timeout=20.0):
+        calls.append(args[:2])
+        if args[:2] == ["pr", "create"]:
+            return "created PR text output"  # tea prints text, not JSON; ignored
+        return PR_JSON  # the re-fetch (list) call
+    monkeypatch.setattr(tb, "_run_tea", fake_run)
+    pr = await tb.TeaBackend(Path(".")).create_pr("T", "B", None, False, "refactor/tools")
+    assert pr.number == 51
+    assert ["pr", "create"] in calls
+
+
+@pytest.mark.anyio
+async def test_backend_create_pr_raises_when_not_refetchable(monkeypatch):
+    async def fake_run(args, cwd, timeout=20.0):
+        if args[:2] == ["pr", "create"]:
+            return ""
+        return PR_JSON  # only head 'refactor/tools' present; 'missing-branch' absent
+    monkeypatch.setattr(tb, "_run_tea", fake_run)
+    with pytest.raises(ForgeError):
+        await tb.TeaBackend(Path(".")).create_pr("T", "B", None, False, "missing-branch")
+
+
+@pytest.mark.anyio
+async def test_backend_checkout_pr_returns_confirmation(monkeypatch):
+    async def fake_run(args, cwd, timeout=20.0):
+        return ""
+    monkeypatch.setattr(tb, "_run_tea", fake_run)
+    msg = await tb.TeaBackend(Path(".")).checkout_pr(7, True)
+    assert "#7" in msg
