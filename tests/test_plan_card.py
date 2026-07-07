@@ -100,3 +100,22 @@ async def test_escapes_brackets_in_summary_and_steps():
         await pilot.press("enter")
         await pilot.pause()
     assert app.result == "Execute hands-off (auto)"
+
+
+async def test_unterminated_bracket_with_quote_does_not_crash():
+    """Regression: escape() only neutralizes bracket sequences that have a
+    closing ']'. An unterminated '[' followed by a quoted key='value' (as a
+    model might emit describing a tool call, e.g. "Apply edit
+    [old_string='foo") slips through escape() unescaped and crashes
+    Content.from_markup with MarkupError. Steps must render as literal text."""
+    summary = "Apply a risky edit"
+    steps = ["Apply edit [old_string='foo", "Verify the change"]
+    app = _Harness(summary, steps, _CHOICES)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        card = app.query_one(PlanCard)
+        steps_body = card.query_one("#plan-steps", Static).content
+        assert "old_string='foo" in str(steps_body)
+        await pilot.press("enter")
+        await pilot.pause()
+    assert app.result == "Execute hands-off (auto)"

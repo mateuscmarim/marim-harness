@@ -20,12 +20,19 @@ from .interaction_panel import InteractionPanel
 _DISMISS_LABEL = "Keep planning"
 
 
-def _steps_markup(steps: list[str]) -> str:
-    # escape() the model-supplied step text so brackets in a step (e.g. "list[str]"
-    # or a "[/]" path) render literally instead of being parsed as Textual markup —
-    # unescaped, an unmatched tag raises MarkupError and crashes the panel. The
-    # numbered prefix stays styled because it is developer-authored.
-    return "\n".join(f"[$accent]{i}.[/] {escape(s)}" for i, s in enumerate(steps, 1))
+def _steps_content(steps: list[str]) -> Content:
+    """Build the numbered step list as literal Content. Only the developer-
+    authored "N." prefix is markup-styled; each model-supplied step string is
+    concatenated as a literal Content (never markup-parsed), so a step containing
+    an unterminated bracket like "edit [old_string='x" renders literally instead
+    of raising MarkupError. escape()+from_markup is NOT safe here — escape only
+    neutralizes bracket sequences that have a closing ']'."""
+    if not steps:
+        return Content("")
+    out = Content.from_markup("[$accent]1.[/] ") + Content(steps[0])
+    for i, s in enumerate(steps[1:], 2):
+        out = out + "\n" + Content.from_markup(f"[$accent]{i}.[/] ") + Content(s)
+    return out
 
 
 class PlanCard(InteractionPanel):
@@ -50,15 +57,19 @@ class PlanCard(InteractionPanel):
     def compose(self) -> ComposeResult:
         yield Static("Plan", id="plan-title")
         yield Static(self._summary, id="plan-summary", markup=False)
-        yield Static(Content.from_markup(_steps_markup(self._steps)), id="plan-steps")
+        yield Static(_steps_content(self._steps), id="plan-steps")
         options = OptionList(id="plan-choices")
         yield options
 
     def on_mount(self) -> None:
         options = self.query_one("#plan-choices", OptionList)
         for i, choice in enumerate(self._choices):
-            suffix = f"\n  [dim]{escape(choice.description)}[/]" if choice.description else ""
-            prompt = Content.from_markup(f"{escape(choice.label)}{suffix}")
+            # label as literal Content (never markup-parsed); the dim styling on the
+            # developer-authored description is the only markup fragment.
+            prompt = Content(choice.label)
+            if choice.description:
+                desc = Content.from_markup(f"[dim]{escape(choice.description)}[/]")
+                prompt = prompt + "\n  " + desc
             options.add_option(Option(prompt, id=str(i)))
         options.highlighted = 0
         options.focus()
