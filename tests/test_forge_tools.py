@@ -33,7 +33,9 @@ class StubBackend:
         self.created_args = None
 
     async def list_prs(self, state, limit):
-        return self._prs
+        if state == "all":
+            return self._prs[:limit]
+        return [p for p in self._prs if p.state == state][:limit]
 
     async def view_pr(self, number, branch):
         return self._existing
@@ -95,9 +97,23 @@ async def test_create_pr_refuses_when_pr_exists(monkeypatch, tmp_path):
     monkeypatch.setattr(ft, "branch_pushed", _aret(True))
     existing = PullRequest(number=9, title="old", state="open", head="feature/x",
                            base="master", mergeable=True, url="u9", ci="pending")
-    ts = ft.build_forge_toolset(StubBackend(existing=existing))
+    ts = ft.build_forge_toolset(StubBackend(prs=[existing]))
     out = await _tool(ts, "create_pr")(_Ctx(tmp_path), "T", "B", None, False)
     assert "already exists" in out and "#9" in out
+
+
+@pytest.mark.anyio
+async def test_create_pr_allows_when_only_closed_pr_exists(monkeypatch, tmp_path):
+    monkeypatch.setattr(ft, "current_branch", _aret("feature/x"))
+    monkeypatch.setattr(ft, "branch_pushed", _aret(True))
+    old = PullRequest(number=9, title="old", state="merged", head="feature/x",
+                      base="master", mergeable=True, url="u9", ci="success")
+    created = PullRequest(number=52, title="T", state="open", head="feature/x",
+                          base="master", mergeable=True, url="u52", ci="pending")
+    backend = StubBackend(prs=[old], created=created)
+    ts = ft.build_forge_toolset(backend)
+    out = await _tool(ts, "create_pr")(_Ctx(tmp_path), "T", "B", None, False)
+    assert "#52" in out and "u52" in out
 
 
 @pytest.mark.anyio
@@ -106,7 +122,7 @@ async def test_create_pr_happy_path(monkeypatch, tmp_path):
     monkeypatch.setattr(ft, "branch_pushed", _aret(True))
     created = PullRequest(number=52, title="T", state="open", head="feature/x",
                           base="master", mergeable=True, url="u52", ci="pending")
-    backend = StubBackend(existing=None, created=created)
+    backend = StubBackend(created=created)
     ts = ft.build_forge_toolset(backend)
     out = await _tool(ts, "create_pr")(_Ctx(tmp_path), "T", "B", None, False)
     assert "#52" in out and "u52" in out

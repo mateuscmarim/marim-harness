@@ -72,7 +72,7 @@ def build_forge_toolset(backend: ForgeBackend) -> FunctionToolset[Deps]:
         draft: bool = False,
     ) -> str:
         """Open a pull request from the current branch. Requires the branch to be
-        pushed first (it will not push for you) and refuses if a PR already
+        pushed first (it will not push for you) and refuses if an open PR already
         exists for it. `base` defaults to the repo's default branch."""
         root = ctx.deps.workspace.root
         branch = await current_branch(root)
@@ -81,9 +81,11 @@ def build_forge_toolset(backend: ForgeBackend) -> FunctionToolset[Deps]:
         if not await branch_pushed(root, branch):
             return f"Branch '{branch}' is not pushed. Run: git push -u origin {branch}"
         try:
-            existing = await backend.view_pr(None, branch)
+            open_prs = await backend.list_prs("open", 50)
+            existing = next((p for p in open_prs if p.head == branch), None)
             if existing is not None:
-                return f"A PR already exists for '{branch}': #{existing.number} {existing.url}"
+                return (f"An open PR already exists for '{branch}': "
+                        f"#{existing.number} {existing.url}")
             pr = await backend.create_pr(title, body, base, draft, branch)
         except ForgeError as exc:
             return f"Forge error: {exc}"
