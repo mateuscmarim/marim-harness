@@ -131,6 +131,7 @@ def build_harness(
         instructions=INSTRUCTIONS,
         config=HarnessConfig(
             lsp_enabled=cfg.lsp_enabled,
+            forge_enabled=cfg.forge_enabled,
             model_label=model_source.label(model_id),
             store=store,
             manager=manager,

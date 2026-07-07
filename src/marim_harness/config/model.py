@@ -108,6 +108,9 @@ class ModelConfig:
     # tools are not registered, but the manager still runs so diagnostics-on-edit
     # keeps grounding the agent after writes.
     lsp_tools_enabled: bool = True
+    # Forge (Gitea/GitHub) tools master switch. False ⇒ forge_toolsets returns []
+    # and no forge tools are attached, regardless of backend availability.
+    forge_enabled: bool = True
     # Prototype: collapse the four job tools (jobs/job_output/wait_for_job/
     # cancel_job) into one job(action, …) tool. Off ⇒ the four separate tools.
     job_tool_combined: bool = False
@@ -199,6 +202,7 @@ def _common_kwargs() -> dict[str, Any]:
         trust_project_hooks=_bool_env("MARIM_TRUST_PROJECT_HOOKS", False),
         lsp_enabled=_bool_env("MARIM_LSP", True),
         lsp_tools_enabled=_bool_env("MARIM_LSP_TOOLS", True),
+        forge_enabled=_bool_env("MARIM_FORGE", True),
         job_tool_combined=_bool_env("MARIM_JOB_TOOL_COMBINED", False),
         command_denylist=split_patterns(os.getenv("MARIM_COMMAND_DENYLIST", "")),
         command_allowlist=split_patterns(os.getenv("MARIM_COMMAND_ALLOWLIST", "")),

@@ -31,6 +31,7 @@ from ..notifications import NotificationConfig
 from ..session import SessionController, SessionManager, SessionStore
 from ..session.checkpoints import CheckpointManager
 from ..subagents import MaskingPolicy, RetryPolicy, SubagentRunner
+from ..tools.forge_tools import forge_toolsets
 from ..tools.impl.suggest import suggest_unknown_tool_retry
 from ..tools.names import SUBAGENT_MAX_DEPTH
 from ..tools.provider import ToolProvider
@@ -114,6 +115,10 @@ class HarnessConfig:
     # diagnostics-on-edit no-ops. Navigation-tool registration is gated separately
     # on the provider (see build_harness), keyed on lsp_enabled and lsp_tools_enabled.
     lsp_enabled: bool = True
+    # Forge (Gitea/GitHub) tools master switch. False ⇒ forge_toolsets returns []
+    # and no forge tools are attached to the Agent, regardless of backend
+    # availability (tea on PATH + a configured login).
+    forge_enabled: bool = True
     # Autonomous wake-on-completion knobs, surfaced to the TUI app. Defaults
     # match ModelConfig: wake on, cap 8.
     autonomous_wake: bool = True
@@ -196,6 +201,10 @@ def build_collaborators(
     without rewiring the sub-agent runner.
     """
     mcp = McpManager(cfg.mcp_servers or [], set(cfg.mcp_disabled or []))
+    # Forge (Gitea/GitHub) tools: attached only when enabled AND a backend is
+    # available (tea on PATH + a configured login); forge_toolsets returns []
+    # otherwise, making toolsets=[] a no-op on the Agent below.
+    forge_ts = forge_toolsets(cfg.forge_enabled, deps.workspace.root)
     agent = Agent(
         model,
         deps_type=Deps,
@@ -206,6 +215,7 @@ def build_collaborators(
         # before the turn fails with UnexpectedModelBehavior.
         retries=2,
         model_settings=_DEFAULT_MODEL_SETTINGS,
+        toolsets=forge_ts,
         # History processors run before EVERY model request (including mid-turn
         # tool-loop continuations and retries), so they catch malformations the
         # turn-start sanitizer in run_turn can't see:

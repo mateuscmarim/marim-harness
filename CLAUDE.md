@@ -124,6 +124,12 @@ to avoid import cycles.
 - `lsp/` — multilspy-backed language-server pool. Two independent switches:
   `lsp_enabled` (the manager + diagnostics-on-edit) and `lsp_tools_enabled` (the six
   navigation tools). Diagnostics are appended to write/edit results best-effort.
+- `forge/` — Gitea/GitHub integration via a `ForgeBackend` seam. `TeaBackend`
+  shells out to the `tea` CLI (`--output json`); five forge-agnostic tools
+  (`tools/forge_tools.py`) list/view PRs, check CI, and open/check out PRs, with
+  create/checkout gated for approval. Attached at build time only when
+  `MARIM_FORGE` is on (default) and a backend is available (`tea` on PATH + a
+  configured login). A `gh` backend is a future drop-in behind the same protocol.
 - `hooks/` — Claude-Code-compatible lifecycle hook engine (session/prompt/tool/
   compaction events). Observe-only except SessionStart/UserPromptSubmit, which inject
   context. Project-local hooks run only when trusted (`MARIM_TRUST_PROJECT_HOOKS`).
