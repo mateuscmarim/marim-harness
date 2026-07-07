@@ -138,7 +138,14 @@ async def present_plan(
                       options=_PLAN_CHOICES)]
         )
         choice = (answers or {}).get("execution", "Keep planning")
-        feedback = None
+        # A free-text answer (not one of the known choice labels) is revise-feedback,
+        # mirroring the PlanCard's feedback field.
+        known = {c.label for c in _PLAN_CHOICES}
+        if isinstance(choice, str) and choice not in known:
+            feedback = choice
+            choice = "Keep planning"
+        else:
+            feedback = None
     else:
         return (
             f"Plan saved{f' to {path}' if path else ''}. No interactive UI, so "

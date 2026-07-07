@@ -84,3 +84,17 @@ async def test_feedback_keeps_planning_and_returns_feedback(tmp_path):
     assert deps.workspace.mode is Mode.plan            # not approved → no flip
     assert "use a dataclass not a dict" in result      # feedback threaded to the model
     assert "revise" in result.lower()                  # instructed to revise
+
+
+async def test_ask_user_freetext_answer_becomes_feedback(tmp_path):
+    async def fake_ask(questions):
+        # A typed free-text answer (not one of the four known choice labels).
+        return {questions[0].header: "please use pytest fixtures instead"}
+
+    deps = _make_deps(tmp_path, mode=Mode.plan, ask_user=fake_ask)  # on_present_plan unset
+    ctx = SimpleNamespace(deps=deps)
+
+    result = await present_plan(ctx, "s", ["one"])
+    assert deps.workspace.mode is Mode.plan                     # free text → no execute
+    assert "please use pytest fixtures instead" in result       # threaded as feedback
+    assert "revise" in result.lower()
