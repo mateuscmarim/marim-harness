@@ -76,7 +76,7 @@ async def test_ci_status_uses_current_branch(monkeypatch, tmp_path):
     st = CiStatus(overall="failure",
                   runs=(CiRun("build", "completed", "push", "feature/x", "t"),))
     ts = ft.build_forge_toolset(StubBackend(status=st))
-    out = await _tool(ts, "ci_status")(_Ctx(tmp_path), None, None)
+    out = await _tool(ts, "ci_status")(_Ctx(tmp_path), None)
     assert "feature/x" in out and "failure" in out and "build" in out
 
 

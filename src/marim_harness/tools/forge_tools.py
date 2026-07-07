@@ -53,9 +53,7 @@ def build_forge_toolset(backend: ForgeBackend) -> FunctionToolset[Deps]:
                 f"{pr.head} → {pr.base}\n"
                 f"mergeable: {pr.mergeable} | ci: {pr.ci}\n{pr.url}")
 
-    async def ci_status(
-        ctx: RunContext[Deps], branch: str | None = None, pr: int | None = None
-    ) -> str:
+    async def ci_status(ctx: RunContext[Deps], branch: str | None = None) -> str:
         """Report CI for a branch (defaults to the current branch). Shows the
         overall conclusion plus recent workflow runs (most recent first)."""
         b = branch or await current_branch(ctx.deps.workspace.root)
