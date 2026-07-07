@@ -130,13 +130,15 @@ async def present_plan(
     # renders the plan + choices as one deliberate inline moment. Fall back to the
     # generic ask_user panel if only that is wired, then to the headless path.
     if ctx.deps.ui.on_present_plan is not None:
-        choice = await ctx.deps.ui.on_present_plan(summary, clean, _PLAN_CHOICES)
+        decision = await ctx.deps.ui.on_present_plan(summary, clean, _PLAN_CHOICES)
+        choice, feedback = decision.choice, decision.feedback
     elif ctx.deps.ui.ask_user is not None:
         answers = await ctx.deps.ui.ask_user(
             [Question(question="How should I execute this plan?", header="execution",
                       options=_PLAN_CHOICES)]
         )
         choice = (answers or {}).get("execution", "Keep planning")
+        feedback = None
     else:
         return (
             f"Plan saved{f' to {path}' if path else ''}. No interactive UI, so "
@@ -160,6 +162,12 @@ async def present_plan(
             f"Plan saved to {path}. To execute, call spawn_agent (type 'general') "
             f"with instructions to implement the steps in {path} in order, then "
             "report back. You remain in plan mode meanwhile."
+        )
+    if feedback:
+        return (
+            "Plan not approved. The user wants you to revise it. Their feedback: "
+            f"{feedback}\n\nRevise the plan accordingly and call present_plan again "
+            "when ready."
         )
     return (
         f"Plan saved{f' to {path}' if path else ''} as a draft. Still in plan mode "

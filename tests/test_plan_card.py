@@ -5,11 +5,12 @@ chosen label, defaults to 'Keep planning' on Escape."""
 import pytest
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
-from textual.widgets import Static
+from textual.widgets import Input, Static
 
 from marim_harness.ask_user import Choice
 from marim_harness.interfaces.tui.interaction_panel import run_panel
 from marim_harness.interfaces.tui.plan_card import PlanCard
+from marim_harness.runtime.deps import PlanDecision
 
 pytestmark = pytest.mark.anyio
 
@@ -44,7 +45,7 @@ async def test_selects_highlighted_choice():
         await pilot.pause()
         await pilot.press("enter")  # first option highlighted
         await pilot.pause()
-    assert app.result == "Execute hands-off (auto)"
+    assert app.result == PlanDecision(choice="Execute hands-off (auto)", feedback=None)
 
 
 async def test_selects_second_choice():
@@ -54,7 +55,7 @@ async def test_selects_second_choice():
         await pilot.press("down")
         await pilot.press("enter")
         await pilot.pause()
-    assert app.result == "Execute step-by-step (ask)"
+    assert app.result == PlanDecision(choice="Execute step-by-step (ask)", feedback=None)
 
 
 async def test_escape_keeps_planning():
@@ -63,7 +64,7 @@ async def test_escape_keeps_planning():
         await pilot.pause()
         await pilot.press("escape")
         await pilot.pause()
-    assert app.result == "Keep planning"
+    assert app.result == PlanDecision(choice="Keep planning", feedback=None)
 
 
 async def test_renders_summary_and_steps():
@@ -99,7 +100,7 @@ async def test_escapes_brackets_in_summary_and_steps():
         # Verify selection still works (no crash, choice resolves)
         await pilot.press("enter")
         await pilot.pause()
-    assert app.result == "Execute hands-off (auto)"
+    assert app.result == PlanDecision(choice="Execute hands-off (auto)", feedback=None)
 
 
 async def test_unterminated_bracket_with_quote_does_not_crash():
@@ -118,4 +119,43 @@ async def test_unterminated_bracket_with_quote_does_not_crash():
         assert "old_string='foo" in str(steps_body)
         await pilot.press("enter")
         await pilot.pause()
-    assert app.result == "Execute hands-off (auto)"
+    assert app.result == PlanDecision(choice="Execute hands-off (auto)", feedback=None)
+
+
+async def test_feedback_input_resolves_keep_planning_with_text():
+    app = _Harness("Refactor parser", ["Extract tokenizer"], _CHOICES)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        card = app.query_one(PlanCard)
+        inp = card.query_one("#plan-feedback", Input)
+        inp.focus()
+        await pilot.pause()
+        inp.value = "please add error handling first"
+        await pilot.press("enter")
+        await pilot.pause()
+    assert app.result == PlanDecision(
+        choice="Keep planning", feedback="please add error handling first"
+    )
+
+
+async def test_empty_feedback_submit_is_ignored():
+    app = _Harness("Refactor parser", ["Extract tokenizer"], _CHOICES)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        card = app.query_one(PlanCard)
+        inp = card.query_one("#plan-feedback", Input)
+        inp.focus()
+        await pilot.pause()
+        inp.value = ""
+        await pilot.press("enter")
+        await pilot.pause()
+        # Empty submit did not resolve — the card is still mounted and awaiting.
+        assert app.query(PlanCard)
+        assert app.result == "unset"
+        # A real choice still works afterward.
+        options = card.query_one("#plan-choices")
+        options.focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+    assert app.result == PlanDecision(choice="Execute hands-off (auto)", feedback=None)

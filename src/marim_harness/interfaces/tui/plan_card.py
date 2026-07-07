@@ -9,10 +9,11 @@ persists in the PlanScreen overlay (Ctrl+P); this card is the deliberate
 from textual.app import ComposeResult
 from textual.content import Content
 from textual.markup import escape
-from textual.widgets import OptionList, Static
+from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 
 from ...ask_user import Choice
+from ...runtime.deps import PlanDecision
 from .interaction_panel import InteractionPanel
 
 # Returned on Escape / dismissal — must match the "keep planning" label in
@@ -36,14 +37,16 @@ def _steps_content(steps: list[str]) -> Content:
 
 
 class PlanCard(InteractionPanel):
-    """Resolves with the chosen execution-choice label (str), or the
-    "Keep planning" label if dismissed with Escape."""
+    """Resolves with a PlanDecision: the chosen execution-choice label, or
+    ("Keep planning", feedback) when the user types revise-feedback, or
+    ("Keep planning", None) when dismissed with Escape."""
 
     DEFAULT_CSS = """
     #plan-title { text-style: bold; color: $accent; margin-bottom: 1; }
     #plan-summary { margin-bottom: 1; }
     #plan-steps { margin-bottom: 1; }
     #plan-choices { height: auto; max-height: 8; }
+    #plan-feedback { margin-top: 1; }
     """
 
     BINDINGS = [("escape", "dismiss_card", "Keep planning")]
@@ -60,6 +63,7 @@ class PlanCard(InteractionPanel):
         yield Static(_steps_content(self._steps), id="plan-steps")
         options = OptionList(id="plan-choices")
         yield options
+        yield Input(placeholder="or type feedback to revise the plan…", id="plan-feedback")
 
     def on_mount(self) -> None:
         options = self.query_one("#plan-choices", OptionList)
@@ -79,7 +83,17 @@ class PlanCard(InteractionPanel):
         # guard in AskUserPanel) — the panel is going away, so ignore it.
         if self.result.done() or event.option.id is None:
             return
-        self.resolve(self._choices[int(event.option.id)].label)
+        self.resolve(PlanDecision(choice=self._choices[int(event.option.id)].label))
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        # Free-text feedback = reject-and-revise: resolve "Keep planning" carrying
+        # the notes. Empty submit is ignored so the user can still pick a choice.
+        # Guard against a stale event after the future already resolved.
+        if self.result.done():
+            return
+        text = event.value.strip()
+        if text:
+            self.resolve(PlanDecision(choice=_DISMISS_LABEL, feedback=text))
 
     def action_dismiss_card(self) -> None:
-        self.resolve(_DISMISS_LABEL)
+        self.resolve(PlanDecision(choice=_DISMISS_LABEL))

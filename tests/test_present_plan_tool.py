@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from marim_harness.runtime.deps import PlanDecision
 from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.planning_tools import _PLAN_CHOICES, present_plan
 from tests.conftest import _make_deps
@@ -19,7 +20,7 @@ async def test_on_present_plan_preferred_and_sets_plan(tmp_path):
         seen["summary"] = summary
         seen["steps"] = steps
         seen["choices"] = [c.label for c in choices]
-        return "Execute hands-off (auto)"
+        return PlanDecision(choice="Execute hands-off (auto)")
 
     deps = _make_deps(tmp_path, mode=Mode.plan, on_present_plan=fake_present)
     ctx = SimpleNamespace(deps=deps)
@@ -63,10 +64,23 @@ async def test_headless_saves_and_stays_in_plan_mode(tmp_path):
 
 async def test_dismissed_card_keeps_planning(tmp_path):
     async def fake_present(summary, steps, choices):
-        return "Keep planning"
+        return PlanDecision(choice="Keep planning")
 
     deps = _make_deps(tmp_path, mode=Mode.plan, on_present_plan=fake_present)
     ctx = SimpleNamespace(deps=deps)
 
     await present_plan(ctx, "s", ["one"])
     assert deps.workspace.mode is Mode.plan  # no flip on "Keep planning"
+
+
+async def test_feedback_keeps_planning_and_returns_feedback(tmp_path):
+    async def fake_present(summary, steps, choices):
+        return PlanDecision(choice="Keep planning", feedback="use a dataclass not a dict")
+
+    deps = _make_deps(tmp_path, mode=Mode.plan, on_present_plan=fake_present)
+    ctx = SimpleNamespace(deps=deps)
+
+    result = await present_plan(ctx, "s", ["one"])
+    assert deps.workspace.mode is Mode.plan            # not approved → no flip
+    assert "use a dataclass not a dict" in result      # feedback threaded to the model
+    assert "revise" in result.lower()                  # instructed to revise

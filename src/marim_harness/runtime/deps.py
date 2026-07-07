@@ -70,12 +70,13 @@ ResumeSubagent = Callable[[str], Awaitable[tuple[str | None, str]]]
 # when there's no interactive UI (headless), so the tool degrades gracefully.
 AskUserFn = Callable[[list[Question]], Awaitable[dict | None]]
 
-# (summary, steps, choices) -> the chosen execution-choice label. Wired by the
-# TUI (mounts a PlanCard inline panel); None when headless, where present_plan
-# falls back to ask_user and then to "save and stay in plan mode". The choices
-# are passed through so the card never hardcodes the plan-execution labels
-# (their single source of truth is tools/planning_tools._PLAN_CHOICES).
-OnPresentPlanFn = Callable[[str, list[str], list[Choice]], Awaitable[str]]
+# (summary, steps, choices) -> the user's decision (chosen label + optional
+# revise-feedback). Wired by the TUI (mounts a PlanCard inline panel); None when
+# headless, where present_plan falls back to ask_user then to "save and stay in
+# plan mode". The choices are passed through so the card never hardcodes the
+# plan-execution labels (their single source of truth is
+# tools/planning_tools._PLAN_CHOICES).
+OnPresentPlanFn = Callable[[str, list[str], list[Choice]], Awaitable["PlanDecision"]]
 
 # (events) -> None. Renders a claude-cli model's own tool_use/tool_result as
 # display-only native tool cards in the MAIN transcript. The claude-cli provider
@@ -129,6 +130,17 @@ class WorkspaceConfig:
     command_policy: CommandPolicy = field(default_factory=CommandPolicy)
     tool_search: str = "auto"
     tool_search_threshold: int = 15
+
+
+@dataclass(frozen=True)
+class PlanDecision:
+    """The outcome of a present_plan handoff. ``choice`` is one of the
+    _PLAN_CHOICES labels (or the "Keep planning" dismiss label). ``feedback`` is
+    the user's revise-notes when they typed feedback instead of picking a choice
+    — always paired with the "Keep planning" choice (reject-and-revise)."""
+
+    choice: str
+    feedback: str | None = None
 
 
 @dataclass(frozen=True)
