@@ -108,16 +108,68 @@ class LivePanel(VerticalScroll):
         self._body.update(Content.from_markup(text) if self._markup else Content(text))
 
 
+def _plan_title_line(summary: str, width: int = 48) -> Content:
+    """One-line plan title for the TaskPanel: first line of the summary,
+    truncated, with the Ctrl+P hint.
+
+    The summary is model-supplied free text, so it is never run through
+    ``Content.from_markup`` — ``escape()`` alone doesn't reliably neutralize
+    every malformed-markup shape (e.g. an unterminated quoted string inside
+    bracket-like text can still raise ``MarkupError``; see the
+    ``survive_markup_like_text`` regression test in test_widgets.py). Instead,
+    following the house pattern used elsewhere (messages.py's ``_label``), only
+    the fixed template fragments are parsed as markup; the untrusted summary is
+    wrapped as literal ``Content`` and concatenated in, so it can never be
+    parsed as markup."""
+    first = summary.splitlines()[0].strip() if summary else ""
+    if len(first) > width:
+        first = first[: width - 1] + "…"
+    return (
+        Content.from_markup("[$accent]▸ Plan:[/] ")
+        + Content(first)
+        + Content.from_markup(" [dim]· ^P for full plan[/]")
+    )
+
+
 class TaskPanel(LivePanel):
-    """The agent's live checklist."""
+    """The agent's live checklist, optionally prefixed with a compact one-line
+    plan title (``▸ Plan: <summary> · ^P for full plan``) when plan mode has
+    produced a plan this session — so the plan's 'why' stays reachable while the
+    bare steps scroll by. The full plan lives in the Ctrl+P PlanScreen overlay."""
 
     def __init__(self) -> None:
         from ....tasks import render_tasks
 
+        # markup stays False on the base panel: this class renders its own body
+        # (below) so it can prepend a markup plan-title line while keeping the
+        # checklist text wrapped as literal (unparsed) Content.
         super().__init__(name="task", title="Tasks", renderer=render_tasks)
+        self._plan_title: str | None = None
 
-    def show_tasks(self, items: list) -> None:
+    def show_tasks(self, items: list, plan_title: str | None = None) -> None:
+        self._plan_title = plan_title
         self._render_items(items)
+
+    def _render_items(self, items: list) -> None:
+        # Fully overrides LivePanel._render_items (does not call super): the
+        # plan-title line is real markup so it can be styled, but the checklist
+        # text (model-supplied, may contain '[' as in "fix [bug]") is wrapped as
+        # literal Content — never parsed as markup — and concatenated in, same
+        # as _plan_title_line's own untrusted-summary handling below. Empty/hide
+        # handling mirrors the base class.
+        from textual.content import Content
+
+        if not items:
+            self.display = False
+            self._header.update("")
+            self._body.update("")
+            return
+        self.display = True
+        self._count = len(items)
+        self._update_header()
+        steps = Content(self._renderer(items))
+        body = _plan_title_line(self._plan_title) + "\n" + steps if self._plan_title else steps
+        self._body.update(body)
 
 
 class JobPanel(LivePanel):

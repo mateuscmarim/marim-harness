@@ -305,12 +305,17 @@ class HarnessApp(App):
         await self.harness.aclose()
 
     def _render_tasks(self) -> None:
-        """Repaint the task panel from the harness's current checklist."""
+        """Repaint the task panel from the harness's current checklist, plus a
+        compact plan title when a plan has been presented this session."""
         try:
             panel = self.query_one(TaskPanel)
         except NoMatches:
             return  # tearing down; nothing to paint
-        panel.show_tasks(self.harness.deps.tasks.items)
+        plan = self.harness.deps.plan
+        panel.show_tasks(
+            self.harness.deps.tasks.items,
+            plan_title=plan.summary if plan is not None else None,
+        )
 
     def _on_tasks_changed(self) -> None:
         """Live callback from the update_tasks tool — repaint as the agent edits
