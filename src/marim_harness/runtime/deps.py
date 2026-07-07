@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from ..lsp.manager import LspManager
     from ..notifications import Notifier
 
-from ..ask_user import Question
+from ..ask_user import Choice, Question
 from ..jobs import JobRegistry
 from ..tasks import TaskList
 from ..tools.names import SUBAGENT_MAX_DEPTH
@@ -69,6 +69,13 @@ ResumeSubagent = Callable[[str], Awaitable[tuple[str | None, str]]]
 # list[str] (multi-select); None when the user cancelled. Wired by the TUI; None
 # when there's no interactive UI (headless), so the tool degrades gracefully.
 AskUserFn = Callable[[list[Question]], Awaitable[dict | None]]
+
+# (summary, steps, choices) -> the chosen execution-choice label. Wired by the
+# TUI (mounts a PlanCard inline panel); None when headless, where present_plan
+# falls back to ask_user and then to "save and stay in plan mode". The choices
+# are passed through so the card never hardcodes the plan-execution labels
+# (their single source of truth is tools/planning_tools._PLAN_CHOICES).
+OnPresentPlanFn = Callable[[str, list[str], list[Choice]], Awaitable[str]]
 
 # (events) -> None. Renders a claude-cli model's own tool_use/tool_result as
 # display-only native tool cards in the MAIN transcript. The claude-cli provider
@@ -124,6 +131,20 @@ class WorkspaceConfig:
     tool_search_threshold: int = 15
 
 
+@dataclass(frozen=True)
+class CurrentPlan:
+    """The plan narrative from the most recent present_plan this session: the
+    summary paragraph, the ordered steps, and the plan-file path (None if the
+    write failed). Step *progress* is NOT here — it lives in ``Deps.tasks``, the
+    single source of truth for done/in-progress/pending. This holds only what
+    the pinned TaskPanel title and the PlanScreen overlay need to show the
+    'why' after the transient PlanCard scrolls away."""
+
+    summary: str
+    steps: list[str]
+    path: str | None
+
+
 @dataclass
 class UIHooks:
     """UI callbacks wired by bind_ui(). All None when headless.
@@ -141,6 +162,7 @@ class UIHooks:
     on_subagent_usage: SubAgentUsageCb | None = None
     on_cli_activity: CliActivityCb | None = None
     on_mode_change: "Callable[[], None] | None" = None
+    on_present_plan: "OnPresentPlanFn | None" = None
     detach_fanout: bool = False
     interactive: bool = False
     notifier: "Notifier | None" = None
@@ -152,6 +174,10 @@ class Deps:
     ui: UIHooks = field(default_factory=UIHooks)
     tasks: TaskList = field(default_factory=TaskList)
     jobs: JobRegistry = field(default_factory=JobRegistry)
+    # The most recent plan presented this session (present_plan sets it); read
+    # by the TaskPanel title and the PlanScreen overlay. None until a plan is
+    # presented. Narrative only — step progress lives in ``tasks``.
+    plan: "CurrentPlan | None" = None
     services: HarnessServices = field(default_factory=HarnessServices)
     hooks: "HookRunner | None" = None
     # Per-session read-before-edit ledger: which files have been read (and their

@@ -31,9 +31,9 @@ def _read_hits(outfile) -> list:
 
 
 _UI_HOOK_FIELDS = {
-    "request_approval", "ask_user", "on_subagent_event", "on_subagent_notice",
-    "on_subagent_model", "on_subagent_usage", "detach_fanout", "interactive",
-    "notifier",
+    "request_approval", "ask_user", "on_present_plan", "on_subagent_event",
+    "on_subagent_notice", "on_subagent_model", "on_subagent_usage",
+    "detach_fanout", "interactive", "notifier",
 }
 
 
