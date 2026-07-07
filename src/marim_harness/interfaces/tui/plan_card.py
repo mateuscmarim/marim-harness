@@ -1,7 +1,8 @@
 # src/marim_harness/interfaces/tui/plan_card.py
 """The inline Plan card behind ``present_plan``: shows the plan's summary and
-numbered steps, then the execution choices, and resolves with the chosen
-label. Mounted above the status bar like the ask/approval panels (not a modal),
+numbered steps, then the execution choices, and resolves with a PlanDecision
+(the chosen execution-choice label, or "Keep planning" with optional revise-feedback).
+Mounted above the status bar like the ask/approval panels (not a modal),
 so the transcript stays scrollable while the user decides. The full plan also
 persists in the PlanScreen overlay (Ctrl+P); this card is the deliberate
 'here's my plan — how should I run it?' moment in the transcript."""

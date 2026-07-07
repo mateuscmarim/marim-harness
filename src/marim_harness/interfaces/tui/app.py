@@ -857,12 +857,12 @@ class HarnessApp(App):
         return await run_panel(self, AskUserPanel(questions))
 
     async def _present_plan(self, summary, steps, choices):
-        """Put the finished plan to the user as an inline card and return their
-        chosen execution label. Inline panel, not a modal — the transcript stays
-        scrollable; a cancelled turn removes the card via run_panel's finally.
-        The plan's summary/steps already live on deps.plan (set by present_plan),
-        so the pinned title and Ctrl+P overlay stay in sync regardless of the
-        choice made here."""
+        """Put the finished plan to the user as an inline card and return a
+        PlanDecision (the chosen execution label, or "Keep planning" with revise-feedback).
+        Inline panel, not a modal — the transcript stays scrollable; a cancelled turn
+        removes the card via run_panel's finally. The plan's summary/steps already live
+        on deps.plan (set by present_plan), so the pinned title and Ctrl+P overlay stay
+        in sync regardless of the choice made here."""
         from .plan_card import PlanCard
 
         self._notify("Plan ready", summary, "ask_user")
