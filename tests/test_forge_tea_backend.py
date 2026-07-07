@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from marim_harness.forge import tea_backend as tb
@@ -62,3 +64,91 @@ def test_loads_raises_forgeerror_on_bad_json():
     with pytest.raises(ForgeError) as exc:
         tb._loads("not json{")
     assert "could not parse" in str(exc.value)
+
+
+class _FakeProc:
+    def __init__(self, out: bytes, err: bytes, code: int):
+        self._out, self._err, self.returncode = out, err, code
+
+    async def communicate(self):
+        return self._out, self._err
+
+    def kill(self):  # pragma: no cover - only hit on timeout path
+        pass
+
+    async def wait(self):  # pragma: no cover
+        pass
+
+
+def _patch_exec(monkeypatch, out=b"", err=b"", code=0):
+    async def fake_exec(*args, **kwargs):
+        return _FakeProc(out, err, code)
+    monkeypatch.setattr(tb.asyncio, "create_subprocess_exec", fake_exec)
+
+
+@pytest.mark.anyio
+async def test_run_tea_returns_stdout_on_success(monkeypatch):
+    _patch_exec(monkeypatch, out=b"[]")
+    assert await tb._run_tea(["pr", "list"], Path(".")) == "[]"
+
+
+@pytest.mark.anyio
+async def test_run_tea_raises_with_stderr_on_nonzero(monkeypatch):
+    _patch_exec(monkeypatch, err=b"boom: not a repo", code=1)
+    with pytest.raises(ForgeError) as exc:
+        await tb._run_tea(["pr", "list"], Path("."))
+    assert "boom: not a repo" in str(exc.value)
+
+
+@pytest.mark.anyio
+async def test_run_tea_raises_when_tea_missing(monkeypatch):
+    async def boom(*a, **k):
+        raise FileNotFoundError("tea")
+    monkeypatch.setattr(tb.asyncio, "create_subprocess_exec", boom)
+    with pytest.raises(ForgeError):
+        await tb._run_tea(["pr", "list"], Path("."))
+
+
+def test_tea_available_false_when_not_on_path(monkeypatch):
+    monkeypatch.setattr(tb.shutil, "which", lambda _: None)
+    assert tb.tea_available() is False
+
+
+def test_tea_available_true_when_path_and_config(monkeypatch, tmp_path):
+    monkeypatch.setattr(tb.shutil, "which", lambda _: "/usr/bin/tea")
+    cfg = tmp_path / "tea"
+    cfg.mkdir()
+    (cfg / "config.yml").write_text("logins: []\n")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert tb.tea_available() is True
+
+
+@pytest.mark.anyio
+async def test_backend_list_prs_maps(monkeypatch):
+    async def fake_run(args, cwd, timeout=20.0):
+        return PR_JSON
+    monkeypatch.setattr(tb, "_run_tea", fake_run)
+    prs = await tb.TeaBackend(Path(".")).list_prs("all", 30)
+    assert len(prs) == 1 and prs[0].number == 51
+
+
+@pytest.mark.anyio
+async def test_backend_view_pr_by_branch(monkeypatch):
+    async def fake_run(args, cwd, timeout=20.0):
+        return PR_JSON
+    monkeypatch.setattr(tb, "_run_tea", fake_run)
+    pr = await tb.TeaBackend(Path(".")).view_pr(None, "refactor/tools")
+    assert pr is not None and pr.number == 51
+    miss = await tb.TeaBackend(Path(".")).view_pr(None, "no-such")
+    assert miss is None
+
+
+@pytest.mark.anyio
+async def test_backend_ci_status_overall_from_pr(monkeypatch):
+    async def fake_run(args, cwd, timeout=20.0):
+        return RUNS_JSON if args[0] == "actions" else PR_JSON
+    monkeypatch.setattr(tb, "_run_tea", fake_run)
+    st = await tb.TeaBackend(Path(".")).ci_status("refactor/tools")
+    assert st.overall == "success"
+    # runs are filtered by branch; master run excluded for this branch
+    assert all(r.branch == "refactor/tools" for r in st.runs)
