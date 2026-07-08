@@ -16,6 +16,7 @@ never fatal.
 
 import logging
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -180,7 +181,10 @@ def _discovery_signature(roots: list[tuple[str, Path, str | None]]) -> tuple:
     return tuple(sig)
 
 
-def discover_skills(workspace_root, *, trust_project: bool | None = None) -> list[Skill]:
+def discover_skills(
+    workspace_root, *, trust_project: bool | None = None,
+    dirs: "Sequence[Path] | None" = None,
+) -> list[Skill]:
     """All effective skills for a workspace, deduped by qualified name with the
     first root in precedence order winning, sorted for stable display. User
     roots (bare names) come first, then plugin roots (``plugin:name``), so a
@@ -189,10 +193,21 @@ def discover_skills(workspace_root, *, trust_project: bool | None = None) -> lis
     ``trust_project`` gates the project-local ``.marim/skills`` root (see
     ``_project_trusted``); ``None`` defaults to the safe, env-derived signal.
 
+    ``dirs``, when given (an embedder's ``WorkspaceConfig.skill_dirs``), replaces
+    discovery entirely: only those directories are scanned, in the given order,
+    and the project/global/plugin roots above are not consulted at all. This is
+    the point, not an accident — an embedder that sets ``dirs`` is opting out of
+    marim's own skill locations in favor of its own.
+
     Cached per workspace root and reused while the SKILL.md files on disk are
     unchanged (by name/mtime/size), so repeated calls within a turn — and across
     turns that didn't touch a skill — don't re-walk and re-parse them."""
-    roots = _all_skill_roots(workspace_root, trust_project=_project_trusted(trust_project))
+    if dirs is not None:
+        roots: list[tuple[str, Path, str | None]] = [
+            ("explicit", Path(d), None) for d in dirs
+        ]
+    else:
+        roots = _all_skill_roots(workspace_root, trust_project=_project_trusted(trust_project))
     return cached_discover(
         workspace_root, roots,
         _discovery_signature,
@@ -217,12 +232,14 @@ def _collect_skills(seen: dict, source: str, root: Path, plugin: str | None) -> 
 
 
 def find_skill(
-    workspace_root, name: str, *, trust_project: bool | None = None
+    workspace_root, name: str, *, trust_project: bool | None = None,
+    dirs: "Sequence[Path] | None" = None,
 ) -> Skill | None:
     """The effective skill whose qualified name is ``name``, or None. Honors the
     same project-trust gate as ``discover_skills`` so an untrusted project's
-    skill can't be activated by name either."""
-    for skill in discover_skills(workspace_root, trust_project=trust_project):
+    skill can't be activated by name either. ``dirs`` passes through to
+    ``discover_skills`` unchanged (see there)."""
+    for skill in discover_skills(workspace_root, trust_project=trust_project, dirs=dirs):
         if skill.qualified_name == name:
             return skill
     return None

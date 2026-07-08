@@ -130,6 +130,11 @@ class WorkspaceConfig:
     command_policy: CommandPolicy = field(default_factory=CommandPolicy)
     tool_search: str = "auto"
     tool_search_threshold: int = 15
+    # Embedder overrides (set by HarnessBuilder; None everywhere in the CLI):
+    # an explicit memory store root replacing the XDG-global/.marim-project
+    # scopes, and explicit skill directories replacing skill discovery.
+    memory_root: Path | None = None
+    skill_dirs: "tuple[Path, ...] | None" = None
 
 
 @dataclass(frozen=True)

@@ -3,7 +3,17 @@ from typing import Literal
 from pydantic_ai import RunContext
 
 from ..runtime.deps import Deps
-from ..workspace.memory import global_scope, project_scope, read_memory, save_memory
+from ..workspace.memory import MemoryScope, global_scope, project_scope, read_memory, save_memory
+
+
+def resolve_scope(ctx: RunContext[Deps], which: str) -> MemoryScope:
+    """Pick the memory scope for ``which`` ("global" | "project"). An explicit
+    ``workspace.memory_root`` (embedders, via HarnessBuilder.with_memory) maps
+    both scopes under one root; otherwise the CLI defaults apply."""
+    root = ctx.deps.workspace.memory_root
+    if root is not None:
+        return MemoryScope(which, root / which)
+    return global_scope() if which == "global" else project_scope(ctx.deps.workspace.root)
 
 
 def remember(
@@ -25,11 +35,7 @@ def remember(
     and reuse the same title to update an existing entry rather than
     adding a duplicate. No approval is needed — this only writes inside
     marim's own memory directory."""
-    sc = (
-        global_scope()
-        if scope == "global"
-        else project_scope(ctx.deps.workspace.root)
-    )
+    sc = resolve_scope(ctx, "global" if scope == "global" else "project")
     path = save_memory(
         sc, name=title, description=description,
         mem_type=type, body=body, title=title,
@@ -46,9 +52,5 @@ def recall(
     "global". When an index hook looks relevant to the task but lacks the
     detail you need, recall it before answering. Memory files are not
     reachable through read_file — always use this."""
-    sc = (
-        global_scope()
-        if scope == "global"
-        else project_scope(ctx.deps.workspace.root)
-    )
+    sc = resolve_scope(ctx, "global" if scope == "global" else "project")
     return read_memory(sc, name)

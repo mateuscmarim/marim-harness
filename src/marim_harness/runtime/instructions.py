@@ -217,7 +217,8 @@ def register_instructions(
 
     @agent.instructions
     def _skill_index(ctx: RunContext[Deps]) -> str:
-        text = skills_index_text(discover_skills(ctx.deps.workspace.root))
+        skills = discover_skills(ctx.deps.workspace.root, dirs=ctx.deps.workspace.skill_dirs)
+        text = skills_index_text(skills)
         if not text:
             return ""
         return (
