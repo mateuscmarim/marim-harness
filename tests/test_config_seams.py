@@ -43,27 +43,92 @@ def fake_forge_backend():
     return _FakeForgeBackend()
 
 
-def test_explicit_forge_backend_attaches_toolset(tmp_path, fake_forge_backend):
-    """An explicit backend attaches forge tools even with no tea CLI configured."""
+@pytest.mark.anyio
+async def test_explicit_forge_backend_attaches_toolset(tmp_path, fake_forge_backend, monkeypatch):
+    """An explicit backend attaches forge tools directly, bypassing
+    select_backend's tea-on-PATH auto-detection entirely — and the specific
+    fake instance passed in is the one actually bound, not a same-named
+    toolset that happened to come from real tea auto-detection (which would
+    also satisfy a bare "list_prs" in toolset_tools" check on a machine where
+    tea is on PATH with a configured login)."""
+    import marim_harness.tools.forge_tools as forge_tools_mod
+
+    def _must_not_run(*a, **k):
+        raise AssertionError(
+            "select_backend (tea auto-detect) ran despite an explicit forge_backend"
+        )
+
+    monkeypatch.setattr(forge_tools_mod, "select_backend", _must_not_run)
+
     h = _harness(tmp_path, forge_enabled=True, forge_backend=fake_forge_backend)
+    toolsets_with_list_prs = [
+        ts for ts in h.agent.toolsets if "list_prs" in getattr(ts, "tools", {})
+    ]
+    assert len(toolsets_with_list_prs) == 1
+    list_prs_tool = toolsets_with_list_prs[0].tools["list_prs"]
+
+    # A real backend (tea auto-detect or otherwise) would either succeed or
+    # raise ForgeError, which list_prs catches and turns into a "Forge
+    # error: ..." string. Our fake raises a bare NotImplementedError, which
+    # list_prs does NOT catch — seeing it propagate here proves the *specific*
+    # fake_forge_backend instance we passed in is the one actually bound.
+    with pytest.raises(NotImplementedError):
+        await list_prs_tool.function(None, "open", 30)
+
+
+def test_explicit_forge_backend_disabled_flag_skips_toolset(tmp_path, fake_forge_backend):
+    """forge_enabled=False must still gate attachment even with an explicit
+    backend given — the flag is a separate switch from backend selection."""
+    h = _harness(tmp_path, forge_enabled=False, forge_backend=fake_forge_backend)
     toolset_tools = {n for ts in h.agent.toolsets for n in getattr(ts, "tools", {})}
-    assert "list_prs" in toolset_tools  # any forge tool name proves attachment
+    assert "list_prs" not in toolset_tools
 
 
 def test_global_instructions_gate(tmp_path, monkeypatch):
-    """global_instructions=False must not read the user-level instructions file."""
+    """global_instructions gates whether the user-level instructions file is
+    ever read: True registers and invokes the closure that reads it; False
+    never even registers it."""
     import marim_harness.runtime.instructions as instr
 
     calls = []
-    monkeypatch.setattr(instr, "load_global_instructions",
-                        lambda: calls.append(1) or "")
-    _harness(tmp_path, global_instructions=False)
-    # Registration is closure-based; forcing instruction evaluation is not needed —
-    # with the gate off the closure must not even be registered. Assert via the
-    # agent's instruction-function count vs a gated-on harness. pydantic-ai keeps
-    # registered @agent.instructions closures in the plain list Agent._instructions
-    # (there is no public accessor); verified against the installed version with
-    # `uv run python -c "from pydantic_ai import Agent; a=Agent('test'); print(a._instructions)"`.
+    monkeypatch.setattr(
+        instr, "load_global_instructions", lambda: calls.append(1) or "global text"
+    )
+
     h_on = _harness(tmp_path, global_instructions=True)
     h_off = _harness(tmp_path, global_instructions=False)
+
+    # pydantic-ai keeps registered @agent.instructions closures in the plain
+    # list Agent._instructions, unwrapped (there is no public accessor);
+    # verified against the installed version with `uv run python -c
+    # "from pydantic_ai import Agent, RunContext
+    # a=Agent('test')
+    # @a.instructions
+    # def foo(ctx: RunContext): return 'x'
+    # print(a._instructions[0] is foo)"` -> True.
+    def _global_closure(agent):
+        return next(
+            (
+                fn for fn in agent._instructions
+                if callable(fn) and getattr(fn, "__name__", None) == "_global_instructions"
+            ),
+            None,
+        )
+
+    on_closure = _global_closure(h_on.agent)
+    off_closure = _global_closure(h_off.agent)
+    assert on_closure is not None, "global_instructions=True must register the closure"
+    assert off_closure is None, "global_instructions=False must not register the closure"
     assert len(h_off.agent._instructions) == len(h_on.agent._instructions) - 1
+
+    # Behavioral: actually evaluate the registered closure (it never touches
+    # ctx, so a plain None stands in for RunContext) and confirm it reaches
+    # load_global_instructions — proving True really does read the file, not
+    # just that a same-named function object exists.
+    result = on_closure(None)
+    assert calls == [1]
+    assert "global text" in result
+
+    # And confirm the gate-off harness truly never invokes it: nothing else
+    # in this test called load_global_instructions, so calls is untouched.
+    assert calls == [1]
