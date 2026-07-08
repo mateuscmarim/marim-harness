@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from pydantic_ai import Agent, DeferredToolRequests
 from pydantic_ai.capabilities import ProcessHistory
@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from pydantic_ai.models import Model
 
     from ..config.model import ModelSource, MultiModelSource
+    from ..forge.backend import ForgeBackend
 
 from ..compaction import (
     Summarizer,
@@ -31,7 +32,7 @@ from ..notifications import NotificationConfig
 from ..session import SessionController, SessionManager, SessionStore
 from ..session.checkpoints import CheckpointManager
 from ..subagents import MaskingPolicy, RetryPolicy, SubagentRunner
-from ..tools.forge_tools import forge_toolsets
+from ..tools.forge_tools import build_forge_toolset, forge_toolsets
 from ..tools.impl.suggest import suggest_unknown_tool_retry
 from ..tools.names import SUBAGENT_MAX_DEPTH
 from ..tools.provider import ToolProvider
@@ -119,6 +120,10 @@ class HarnessConfig:
     # and no forge tools are attached to the Agent, regardless of backend
     # availability (tea on PATH + a configured login).
     forge_enabled: bool = True
+    # Explicit forge backend (HarnessBuilder.with_forge). When set it bypasses
+    # select_backend's tea-on-PATH auto-detection; forge_enabled must still be
+    # True for it to attach.
+    forge_backend: object | None = None
     # Autonomous wake-on-completion knobs, surfaced to the TUI app. Defaults
     # match ModelConfig: wake on, cap 8.
     autonomous_wake: bool = True
@@ -144,6 +149,10 @@ class HarnessConfig:
     # Programmatic sub-agent definitions (HarnessBuilder.with_subagent). Resolved
     # ahead of workspace discovery by SubagentRunner._resolve_agent.
     extra_agents: tuple = ()
+    # Register the user-level global-instructions closure. The CLI keeps this
+    # on; the builder turns it off so an embedded harness never reads the
+    # embedding user's marim config dir.
+    global_instructions: bool = True
 
 
 def build_services(
@@ -204,10 +213,18 @@ def build_collaborators(
     without rewiring the sub-agent runner.
     """
     mcp = McpManager(cfg.mcp_servers or [], set(cfg.mcp_disabled or []))
-    # Forge (Gitea/GitHub) tools: attached only when enabled AND a backend is
-    # available (tea on PATH + a configured login); forge_toolsets returns []
-    # otherwise, making toolsets=[] a no-op on the Agent below.
-    forge_ts = forge_toolsets(cfg.forge_enabled, deps.workspace.root)
+    # Forge (Gitea/GitHub) tools: an explicit backend (embedders) attaches
+    # directly; otherwise attach only when enabled AND a backend is available
+    # (tea on PATH + a configured login); forge_toolsets returns [] otherwise,
+    # making toolsets=[] a no-op on the Agent below.
+    if cfg.forge_backend is not None and cfg.forge_enabled:
+        # forge_backend is typed `object` on HarnessConfig (it's a dataclass
+        # field, not a Protocol-typed one — see the field's docstring); the
+        # cast asserts what forge_backend's caller contract already requires:
+        # an object satisfying ForgeBackend's five async methods.
+        forge_ts = [build_forge_toolset(cast("ForgeBackend", cfg.forge_backend))]
+    else:
+        forge_ts = forge_toolsets(cfg.forge_enabled, deps.workspace.root)
     agent = Agent(
         model,
         deps_type=Deps,
@@ -239,7 +256,9 @@ def build_collaborators(
         ],
     )
     provider.register(agent)
-    register_instructions(agent, mcp, cfg.proactive_memory)
+    register_instructions(
+        agent, mcp, cfg.proactive_memory, global_instructions=cfg.global_instructions
+    )
     # Session-scoped LSP server pool, reachable by the navigation/diagnostics
     # tools through deps. Subagents share this deps object, so they get LSP too.
     lsp = LspManager(deps.workspace.root) if cfg.lsp_enabled else None

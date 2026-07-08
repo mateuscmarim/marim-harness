@@ -182,22 +182,31 @@ def _build_memory_index(global_scope_, project_scope_) -> str:
 
 
 def register_instructions(
-    agent: HarnessAgent, mcp_manager: McpManager, proactive_memory: bool
+    agent: HarnessAgent, mcp_manager: McpManager, proactive_memory: bool,
+    *, global_instructions: bool = True,
 ) -> None:
-    """Register all dynamic instruction closures on ``agent``."""
+    """Register all dynamic instruction closures on ``agent``.
 
-    @agent.instructions
-    def _global_instructions(ctx: RunContext[Deps]) -> str:
-        text = load_global_instructions()
-        if not text:
-            return ""
-        path = global_instructions_path()
-        home = Path.home()
-        shown = f"~/{path.relative_to(home)}" if path.is_relative_to(home) else str(path)
-        return (
-            f"Global instructions from {shown} "
-            f"(apply to every project):\n\n{text}"
-        )
+    ``global_instructions`` gates only the user-level closure below (CLI
+    keeps it on; HarnessBuilder-embedded harnesses turn it off so they never
+    reach into the embedding user's ``~/.config/marim`` directory). Every
+    other closure registers unconditionally, as today.
+    """
+
+    if global_instructions:
+
+        @agent.instructions
+        def _global_instructions(ctx: RunContext[Deps]) -> str:
+            text = load_global_instructions()
+            if not text:
+                return ""
+            path = global_instructions_path()
+            home = Path.home()
+            shown = f"~/{path.relative_to(home)}" if path.is_relative_to(home) else str(path)
+            return (
+                f"Global instructions from {shown} "
+                f"(apply to every project):\n\n{text}"
+            )
 
     @agent.instructions
     def _project_instructions(ctx: RunContext[Deps]) -> str:
