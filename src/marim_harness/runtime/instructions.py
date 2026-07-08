@@ -21,6 +21,14 @@ from ..workspace import (
 )
 from .deps import Deps, HarnessAgent
 
+# The stock system prompt for a built harness. Lives here (not bootstrap) so the
+# builder and the CLI share one source; bootstrap re-exports it as INSTRUCTIONS.
+DEFAULT_INSTRUCTIONS = (
+    "You are a coding agent operating inside a workspace directory. "
+    "Use the provided tools to read, search, and edit files and run commands. "
+    "Always read a file before editing it. Keep changes minimal and focused."
+)
+
 _PROJECT_INSTRUCTIONS_FILE = "AGENTS.md"
 _PROJECT_FALLBACK_FILES = ("AGENTS.md", "CLAUDE.md")
 # The filename memory/ writes its one-line index under (memory._INDEX_FILE). We

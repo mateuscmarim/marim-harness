@@ -17,15 +17,10 @@ from ..session import SessionManager
 from ..tools.provider import BuiltinToolProvider
 from .deps import Deps, UIHooks, WorkspaceConfig
 from .harness import Harness, HarnessConfig
+from .instructions import DEFAULT_INSTRUCTIONS as INSTRUCTIONS
 from .permissions import Mode
 
 logger = logging.getLogger(__name__)
-
-INSTRUCTIONS = (
-    "You are a coding agent operating inside a workspace directory. "
-    "Use the provided tools to read, search, and edit files and run commands. "
-    "Always read a file before editing it. Keep changes minimal and focused."
-)
 
 
 def build_harness(
