@@ -141,6 +141,9 @@ class HarnessConfig:
     # Desktop-notification config. Disabled by default; the TUI and headless
     # runner build a Notifier from this and fire at key event points.
     notifications: NotificationConfig = field(default_factory=NotificationConfig.disabled)
+    # Programmatic sub-agent definitions (HarnessBuilder.with_subagent). Resolved
+    # ahead of workspace discovery by SubagentRunner._resolve_agent.
+    extra_agents: tuple = ()
 
 
 def build_services(
@@ -273,6 +276,7 @@ def build_collaborators(
         concurrency=cfg.subagent_concurrency,
         transcript_cap=cfg.subagent_transcript_cap,
         max_depth=SUBAGENT_MAX_DEPTH,
+        extra_agents=cfg.extra_agents,
         # Sub-agents share the session's context-limits RESOLVER and masking
         # knobs: one discovery cache governs both the main history and spawned
         # runs, but each spawn resolves its own threshold through it — a

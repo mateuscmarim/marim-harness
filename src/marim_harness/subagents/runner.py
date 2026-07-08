@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from ..mcp.manager import McpManager
     from ..session.ctrl import SessionController
     from ..tools.provider import ToolProvider
+    from ..workspace.agents import AgentDef
     from .cli_backend import CliResult
 
 from ..compaction import mask_stale_observations
@@ -152,7 +153,8 @@ class SubagentRunner:
                  transcript_cap: int = 2000,
                  max_depth: int = 3,
                  retry: RetryPolicy | None = None,
-                 masking: MaskingPolicy | None = None) -> None:
+                 masking: MaskingPolicy | None = None,
+                 extra_agents: tuple[AgentDef, ...] = ()) -> None:
         self.provider = provider
         self.mcp = mcp
         self.deps = deps
@@ -160,6 +162,9 @@ class SubagentRunner:
         self.session = session
         self._get_model = get_model
         self._model_settings = model_settings
+        # Programmatic sub-agent defs (HarnessBuilder.with_subagent), resolved
+        # ahead of workspace/built-in discovery — see _resolve_agent.
+        self._extra_agents = tuple(extra_agents)
         # Transient-error retry policy (attempts + backoff) and per-run request
         # cap. A permanent error (malformed request, auth) is never retried — see
         # is_transient_model_error.
@@ -204,6 +209,14 @@ class SubagentRunner:
         # set, added-to before the first await, is the race guard for that window;
         # once the job is registered the jobs.list() running-scan takes over.
         self._resuming: set[str] = set()
+
+    def _resolve_agent(self, type_: str) -> AgentDef | None:
+        """Programmatic defs (HarnessBuilder.with_subagent) take precedence over
+        discovered ones, then fall back to workspace/built-in discovery."""
+        for d in self._extra_agents:
+            if type_ in (d.name, d.qualified_name):
+                return d
+        return find_agent(self.deps.workspace.root, type_)
 
     def _open_worktree(self, stream_id: str) -> tuple[SpawnWorktree | None, str | None]:
         """Open an isolated worktree for a fresh spawn, naming its branch from the
@@ -293,10 +306,11 @@ class SubagentRunner:
         default. Returns ``(agent, None)`` or, for an unknown type or an
         unresolvable model, ``(None, message)``."""
         if defn is None:
-            defn = find_agent(self.deps.workspace.root, type)
+            defn = self._resolve_agent(type)
         if defn is None:
             names = ", ".join(
-                a.qualified_name for a in discover_agents(self.deps.workspace.root)
+                a.qualified_name
+                for a in (*self._extra_agents, *discover_agents(self.deps.workspace.root))
             )
             return None, f"No sub-agent type {type!r}. Available: {names}."
         instr_root = (
@@ -696,7 +710,7 @@ class SubagentRunner:
         # Resolve the agent definition ONCE here (a filesystem discovery walk) and
         # thread it through to _prepare_spawn/build so a native spawn doesn't pay the
         # walk a second time — it matters on a fan-out (2N walks → N).
-        defn = find_agent(self.deps.workspace.root, type)
+        defn = self._resolve_agent(type)
         depth = caller_depth + 1
         if defn is not None and defn.backend == "claude-cli":
             return await self._execute_cli_spawn(
@@ -1190,7 +1204,7 @@ class SubagentRunner:
                           "spawn it again instead.")
         type_ = str(meta.get("type") or "")
         task = str(meta.get("task") or "")
-        defn = find_agent(self.deps.workspace.root, type_)
+        defn = self._resolve_agent(type_)
         if defn is None:
             return None, f"No sub-agent type {type_!r} anymore — can't resume."
         if defn.backend != "claude-cli":
