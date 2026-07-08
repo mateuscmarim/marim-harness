@@ -73,6 +73,13 @@ _BANNER = (
 # as smooth while collapsing many per-token markdown re-parses into one.
 _STREAM_FLUSH_INTERVAL = 0.08
 
+# A second quit attempt (ctrl+c, /exit, /quit) within this many seconds of the
+# first confirms the quit; after it elapses the next attempt warns again. A
+# short deliberate window, not a latch, so the warning always resurfaces after
+# real inactivity instead of being spent once and forgotten for the rest of
+# the process.
+_QUIT_CONFIRM_WINDOW = 2.0
+
 _WELCOME = (
     "Type a message below to start, or `/help` for commands.\n\n"
     "- `/` opens the command menu — `↑`/`↓` to move, `tab` to complete\n"
@@ -80,7 +87,7 @@ _WELCOME = (
     "- `ctrl+t` cycles the approval mode (ask → auto → plan)\n"
     "- `esc` cancels the running turn\n"
     "- `ctrl+g` (or `alt+enter`) steers the running turn\n"
-    "- `/exit` (or `/quit`, `ctrl+c`) quits"
+    "- `/exit` (or `/quit`, `ctrl+c`) quits — press/run twice to confirm"
 )
 
 
@@ -133,10 +140,9 @@ class HarnessApp(App):
         # cleared on every _start_turn exit path.
         self._turn_starting = False
         self._queue = TurnQueue()
-        # Confirm-once quit latch: set True by the first quit attempt that warns
-        # about pending queued messages. One-way for the process — once the user
-        # has been warned, later quits proceed without re-warning.
-        self._quit_armed = False
+        # Confirm-to-quit guard (see _QUIT_CONFIRM_WINDOW): timestamp of the last
+        # unconfirmed quit attempt, or None if there isn't one outstanding.
+        self._quit_warned_at: float | None = None
         # Autonomous wake-on-completion (interactive TUI only). When a background
         # job finishes while the turn worker is idle, fire a digest-only turn so
         # the agent reacts without waiting for the user. Seeded from config;
@@ -532,10 +538,6 @@ class HarnessApp(App):
     ) -> None:
         """Buffer a submission to run after the current turn."""
         self._queue.enqueue(text, attachments)
-        # New queued work re-arms the quit warning: the confirm-once latch
-        # covers the queue the user was warned about, not messages added later
-        # — an accidental Ctrl+C after fresh work must warn again.
-        self._quit_armed = False
         self._render_queue()
 
     async def _drain_next(self) -> None:
@@ -615,20 +617,27 @@ class HarnessApp(App):
             self._turn_worker.cancel()
 
     def _maybe_warn_pending_quit(self) -> bool:
-        """Confirm-once guard for quitting with messages still queued. Returns
-        True if the quit should be cancelled (a warning was just shown); False
-        to let the quit proceed. The queue is process-scoped and dropped on exit,
-        so warn the user before discarding pending work."""
-        if self._queue and not self._quit_armed:
-            self._quit_armed = True
-            self.query_one("#log", VerticalScroll).mount(
-                NoticeMessage(
-                    f"{len(self._queue.items)} queued message(s) will be discarded. "
-                    "Quit again to confirm."
-                )
+        """Confirm-to-quit guard against an accidental Ctrl+C. Returns True if
+        the quit should be cancelled (a warning was just shown); False to let a
+        second attempt within _QUIT_CONFIRM_WINDOW of the first proceed. Always
+        warns on the first attempt, even with an empty queue — a stray keypress
+        is just as disruptive either way."""
+        now = time.monotonic()
+        if (
+            self._quit_warned_at is not None
+            and now - self._quit_warned_at <= _QUIT_CONFIRM_WINDOW
+        ):
+            return False
+        self._quit_warned_at = now
+        if self._queue:
+            message = (
+                f"{len(self._queue.items)} queued message(s) will be discarded. "
+                "Quit again to confirm."
             )
-            return True
-        return False
+        else:
+            message = "Quit again to confirm."
+        self.query_one("#log", VerticalScroll).mount(NoticeMessage(message))
+        return True
 
     async def action_quit(self) -> None:
         if self._maybe_warn_pending_quit():

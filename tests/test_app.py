@@ -547,7 +547,10 @@ async def test_exit_command_quits_app(tmp_path: Path, cmd: str):
     app.run_worker = lambda *a, **k: started.append(a)  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
-        await _submit(app, cmd)
+        await _submit(app, cmd)  # first: warns, cancels
+        await pilot.pause()
+        assert exited == []
+        await _submit(app, cmd)  # second: confirmed, proceeds
         await pilot.pause()
     assert exited == [True]
     assert started == []  # never sent to the model as a prompt
@@ -3908,19 +3911,23 @@ async def test_idle_steer_routes_like_a_submission(tmp_path: Path):
 
 
 @pytest.mark.anyio
-async def test_quit_warning_rearms_on_new_queued_message(tmp_path: Path):
-    """The confirm-once quit latch must reset when NEW work is queued after the
-    warning — otherwise, once a user has been warned a single time, any later
-    accidental Ctrl+C silently discards a fresh queue."""
+async def test_quit_warning_rearms_after_confirm_window(tmp_path: Path, monkeypatch):
+    """The confirm-to-quit guard must re-warn once the confirm window has
+    elapsed — otherwise, once a user has been warned a single time, any later
+    accidental Ctrl+C (however much later) silently quits."""
+    import marim_harness.interfaces.tui.app as app_module
+
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
         app._enqueue("first")
+        clock = [1000.0]
+        monkeypatch.setattr(app_module.time, "monotonic", lambda: clock[0])
         assert app._maybe_warn_pending_quit() is True  # warns
         assert app._maybe_warn_pending_quit() is False  # confirmed quit proceeds
-        app._enqueue("second")
+        clock[0] += app_module._QUIT_CONFIRM_WINDOW + 1
         assert app._maybe_warn_pending_quit() is True, (
-            "new queued work after the warning must re-arm the quit guard"
+            "a quit attempt after the confirm window elapses must warn again"
         )
 
 
