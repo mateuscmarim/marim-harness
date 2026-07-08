@@ -229,6 +229,16 @@ same instance raises `RuntimeError`. Build a new `HarnessBuilder` per
   overrides. Note: provider-error payloads still spill best-effort to
   `<workspace>/.marim/last-provider-error.json` on hard failures — that's
   workspace-local, not XDG, and happens regardless of session config.
+- **No uninvited XDG reads either — with one opt-in exception.** A bare
+  `.build()` never reads `~/.config/marim` at all: the instruction closures
+  that would advertise a tool group (sub-agent roster, skill index, memory
+  index) only register when the matching `with_*` call loaded that group,
+  and the user-level `AGENTS.md` / installed-plugin instructions only
+  register when you opt in (`global_instructions=True` via
+  `with_config_overrides`, or by calling `with_defaults()`, which turns it
+  on along with every other group). `with_defaults()` is therefore the one
+  builder call that performs XDG reads (global `AGENTS.md`, skills, plugins,
+  memory index) — everything else stays workspace-scoped.
 - **No `claude-cli` backend.** That provider shells out to a Claude Code
   subscription as a launcher; it's a CLI-only mode, not part of the builder
   surface.
