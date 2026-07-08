@@ -26,6 +26,8 @@ headless mode for one-shot prompts and scripting.
   results are pulled back into the conversation.
 - **Checkpoints & rewind** — restore the conversation and files to any prior
   turn; snapshots honor `.gitignore` and work gracefully outside git.
+- **Embeddable** — `HarnessBuilder` composes the same agent loop as a library,
+  with explicit config and no env reads; see [`docs/embedding.md`](docs/embedding.md).
 
 ## Install
 

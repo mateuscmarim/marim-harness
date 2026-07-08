@@ -50,10 +50,17 @@ hooks, and LSP identically — keep new wiring there, not duplicated per interfa
 The turn-execution engine lives in the **`runtime/`** package: `harness.py`
 (`Harness`, `build_collaborators`, `build_services`), `controller.py`
 (`TurnController`, the approval/persist loop), `context.py` (per-turn context
-helpers), `deps.py`, `permissions.py` (`Mode`), `errors.py`, `instructions.py`, and
-`bootstrap.py`. Imports target submodules directly (`from .deps import Deps`); the
-package root deliberately re-exports nothing, keeping the deps/services cycle below
-from leaking through `__init__` at import time.
+helpers), `deps.py`, `permissions.py` (`Mode`), `errors.py`, `instructions.py`,
+`builder.py`, and `bootstrap.py`. Imports target submodules directly (`from
+.deps import Deps`); the package root deliberately re-exports nothing, keeping
+the deps/services cycle below from leaking through `__init__` at import time.
+
+`HarnessBuilder` (`builder.py`) is the embedding front door — explicit model,
+explicit tool/session/sub-agent composition, no `MARIM_*` env reads; see
+`docs/embedding.md`. `bootstrap.build_harness` is the CLI preset built on top
+of that same builder (env config, workspace scanning, TUI/headless wiring).
+New construction wiring (a tool group, a config knob) goes in the builder;
+env/discovery reading stays in bootstrap, so the two paths cannot drift.
 
 ### The core turn loop (`runtime/harness.py`)
 
