@@ -130,9 +130,9 @@ async def test_pre_run_failure_restores_consumables_and_checkpoint(
     ctrl = harness.turn_controller
     ctrl._pending_hook_context = "HOOK-CONTEXT-MARKER"
 
-    # live_tool_count is the async call inside compose_turn_toolsets that can
-    # raise on a flaky MCP server (toolsets_for itself is no longer on the
-    # per-turn path — see runtime/toolsets.py).
+    # live_tool_count is the async call inside compose_turn_toolsets (the sole
+    # per-turn toolset composition) that can raise on a flaky MCP server — see
+    # runtime/toolsets.py.
     orig = ctrl.mcp.live_tool_count
     calls = {"n": 0}
 

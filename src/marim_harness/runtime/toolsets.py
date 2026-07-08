@@ -7,8 +7,10 @@ it, MCP and LSP defer together behind one ToolSearch (riding an already-present
 ToolSearch at ~zero marginal cost). Keeping this here — not on ``McpManager`` —
 means the MCP manager never learns about LSP, and the controller stays thin.
 
-With ``lsp_toolset=None`` this reproduces ``McpManager.toolsets_for`` exactly, so
-disabling LSP tools is a no-op on the toolset path.
+With ``lsp_toolset=None`` this yields just the live MCP toolsets — inline, or a
+single deferred+combined toolset above threshold — so disabling LSP tools is a
+no-op on the toolset path. (This is the sole per-turn composition; it subsumed
+the former ``McpManager.toolsets_for``.)
 """
 
 from __future__ import annotations

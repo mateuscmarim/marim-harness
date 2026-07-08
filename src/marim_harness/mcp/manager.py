@@ -130,23 +130,6 @@ class McpManager:
         out.sort(key=lambda pair: pair[0])
         return out
 
-    def deferred_toolsets(self) -> list:
-        """The live MCP toolsets combined and marked deferred, so Pydantic AI's
-        auto-injected ToolSearch capability hides them until the model searches.
-        Empty when there are no live servers."""
-        live = self.live_toolsets()
-        if not live:
-            return []
-        return [DeferredLoadingToolset(CombinedToolset(live))]
-
-    async def toolsets_for(self, policy: str, threshold: int) -> list:
-        """The toolsets to pass to ``agent.run`` for this turn: the plain live MCP
-        toolsets, or — when policy/threshold say so — a single deferred+combined
-        toolset behind tool search."""
-        if should_defer(policy, await self.live_tool_count(), threshold):
-            return self.deferred_toolsets()
-        return self.live_toolsets()
-
     def mcp_index_text(self) -> str:
         names = self.enabled_names()
         if not names:
@@ -189,9 +172,10 @@ class McpManager:
     async def granted_toolsets(
         self, names: list[str] | None, policy: str, threshold: int
     ) -> tuple[list, list[str]]:
-        """Like :meth:`granted_servers`, but applies the same tool-search deferral
-        the main agent's :meth:`toolsets_for` uses — computed over the *granted
-        subset only*. When ``should_defer`` fires for the granted servers'
+        """Like :meth:`granted_servers`, but applies the same ``should_defer``
+        tool-search deferral the main agent's per-turn toolset composition
+        (``runtime.toolsets.compose_turn_toolsets``) uses — computed over the
+        *granted subset only*. When ``should_defer`` fires for the granted servers'
         combined tool count, they are combined behind Pydantic AI's ToolSearch, so
         a sub-agent granted a large MCP surface searches for tools on demand
         instead of carrying every schema in its context; otherwise the raw granted

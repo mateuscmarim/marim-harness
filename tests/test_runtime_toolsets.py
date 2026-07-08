@@ -79,3 +79,25 @@ async def test_policy_on_always_defers():
     mcp = _FakeMcp([a], count=1)
     out = await compose_turn_toolsets(mcp, lsp, 6, "on", 999)
     assert len(out) == 1 and isinstance(out[0], DeferredLoadingToolset)
+
+
+# Reference-behavior cases migrated from the removed McpManager.toolsets_for
+# tests: compose_turn_toolsets is the sole per-turn path, so the policy
+# pass-through it inherits from should_defer lives here now.
+@pytest.mark.anyio
+async def test_policy_off_returns_live_inline():
+    # "off" never defers, even for a large surface — the live toolsets pass
+    # through unwrapped (was test_toolsets_for_off_returns_live_unwrapped).
+    a, b = FunctionToolset(), FunctionToolset()
+    mcp = _FakeMcp([a, b], count=50)
+    out = await compose_turn_toolsets(mcp, None, 6, "off", 15)
+    assert out == [a, b]
+
+
+@pytest.mark.anyio
+async def test_policy_on_empty_short_circuits_to_empty():
+    # Empty combined surface returns [] before the policy check — so even "on"
+    # yields [] (was the on+empty half of test_deferred_toolsets_empty…).
+    mcp = _FakeMcp([], count=0)
+    out = await compose_turn_toolsets(mcp, None, 6, "on", 15)
+    assert out == []

@@ -53,41 +53,11 @@ async def test_live_tool_count_tolerates_failures():
     assert await m.live_tool_count() == 4  # bad server contributes 0, no raise
 
 
-@pytest.mark.anyio
-async def test_toolsets_for_off_returns_live_unwrapped():
-    servers = [_FakeServer("a", 50)]
-    m = _manager_with(servers)
-    result = await m.toolsets_for("off", 15)
-    assert result == servers  # unchanged
-
-
-@pytest.mark.anyio
-async def test_toolsets_for_on_wraps_in_deferred():
-    from pydantic_ai import DeferredLoadingToolset
-
-    m = _manager_with([_FakeServer("a", 50)])
-    result = await m.toolsets_for("on", 15)
-    assert len(result) == 1
-    assert isinstance(result[0], DeferredLoadingToolset)
-
-
-@pytest.mark.anyio
-async def test_toolsets_for_auto_defers_only_above_threshold():
-    from pydantic_ai import DeferredLoadingToolset
-
-    below = _manager_with([_FakeServer("a", 5)])
-    assert await below.toolsets_for("auto", 15) == below.live_toolsets()
-
-    above = _manager_with([_FakeServer("a", 50)])
-    deferred = await above.toolsets_for("auto", 15)
-    assert isinstance(deferred[0], DeferredLoadingToolset)
-
-
-@pytest.mark.anyio
-async def test_deferred_toolsets_empty_when_no_servers():
-    m = _manager_with([])
-    assert m.deferred_toolsets() == []
-    assert await m.toolsets_for("on", 15) == []
+# The main-agent per-turn deferral (off/on/auto pass-through and the empty
+# short-circuit) now lives in runtime.toolsets.compose_turn_toolsets and is
+# covered by tests/test_runtime_toolsets.py. should_defer's policy logic is
+# still tested directly above (test_should_defer). The sub-agent granted path
+# keeps its own deferral tests below.
 
 
 # granted_toolsets: the sub-agent grant path honors the same deferral the main
