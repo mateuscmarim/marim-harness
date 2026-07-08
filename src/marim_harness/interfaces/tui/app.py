@@ -84,6 +84,7 @@ _WELCOME = (
     "Type a message below to start, or `/help` for commands.\n\n"
     "- `/` opens the command menu — `↑`/`↓` to move, `tab` to complete\n"
     "- `enter` sends · `shift+enter` (or `ctrl+j`) inserts a newline\n"
+    "- `ctrl+v` attaches a copied image (the terminal's own paste is text-only)\n"
     "- `ctrl+t` cycles the approval mode (ask → auto → plan)\n"
     "- `esc` cancels the running turn\n"
     "- `ctrl+g` (or `alt+enter`) steers the running turn\n"
