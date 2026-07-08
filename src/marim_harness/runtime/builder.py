@@ -225,17 +225,33 @@ class HarnessBuilder:
                 problems.append(f"custom tool {name!r} registered twice")
             seen_custom.add(name)
 
+        # LSP tool names are only grantable when the LSP toolset is actually
+        # loaded (`with_lsp(tools=True)`) — `grantable` already folds LSP_TOOLS
+        # in exactly under that condition. Do NOT also subtract LSP_TOOLS below:
+        # that used to exempt every LSP tool name unconditionally, so a
+        # sub-agent could be granted e.g. `goto_definition` without LSP tools
+        # ever being enabled. That passed build() cleanly, then
+        # BuiltinToolProvider.register_subagent silently dropped the tool at
+        # spawn time (it checks the same `register_lsp_tools` flag) — the
+        # sub-agent would run missing a tool its own spec promised, with no
+        # error anywhere. Catching the mismatch here instead makes a stale
+        # grant fail fast at build() rather than fail silently at spawn time.
         grantable = builtin_names | (LSP_TOOLS if self._lsp_tools else frozenset())
         for defn in self._subagents:
             unknown = defn.tools - SUBAGENT_TOOLS
             if unknown:
                 problems.append(
                     f"sub-agent {defn.name!r} grants unknown tools: {sorted(unknown)}")
-            missing = (defn.tools & SUBAGENT_TOOLS) - grantable - LSP_TOOLS
+            missing = (defn.tools & SUBAGENT_TOOLS) - grantable
             if missing:
+                lsp_missing = missing & LSP_TOOLS
+                hint = (
+                    " (LSP tools are disabled — call with_lsp(tools=True))"
+                    if lsp_missing and not self._lsp_tools else ""
+                )
                 problems.append(
                     f"sub-agent {defn.name!r} grants tools from disabled groups: "
-                    f"{sorted(missing)}")
+                    f"{sorted(missing)}{hint}")
 
         manager = store = None
         if self._sessions:

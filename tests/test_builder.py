@@ -91,3 +91,19 @@ def test_memory_and_skills_knobs_land_on_workspace(tmp_path: Path):
     assert h.deps.workspace.memory_root == tmp_path / "mem"
     assert h.deps.workspace.skill_dirs == (tmp_path / "sk",)
     assert {"remember", "recall", "activate_skill"} <= _tool_names(h)
+
+
+def test_subagent_lsp_tool_without_lsp_tools_is_builder_error(tmp_path: Path):
+    d = AgentDef(name="nav", description="d", prompt="p",
+                 tools=frozenset({"goto_definition"}), source="programmatic")
+    with pytest.raises(BuilderError) as exc:
+        HarnessBuilder(workspace=tmp_path, model=TestModel()).with_subagent(d).build()
+    assert "goto_definition" in str(exc.value)
+
+
+def test_subagent_lsp_tool_with_lsp_tools_succeeds(tmp_path: Path):
+    d = AgentDef(name="nav", description="d", prompt="p",
+                 tools=frozenset({"goto_definition"}), source="programmatic")
+    h = (HarnessBuilder(workspace=tmp_path, model=TestModel())
+         .with_lsp(tools=True).with_subagent(d).build())
+    assert h.subagents._resolve_agent("nav") is d
