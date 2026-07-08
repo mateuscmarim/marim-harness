@@ -139,6 +139,8 @@ Each `with_*` method maps to one existing seam — no new subsystem code:
 | `.with_mcp_server(x)` | appends to `HarnessConfig.mcp_servers`; accepts a marim spec **or** a ready pydantic-ai MCP server object |
 | `.with_forge(backend=…)` | `forge_enabled` + explicit backend, skipping tea auto-detection |
 | `.with_subagent(spec)` | spawn group on + spec registered alongside workspace-discovered ones |
+| `.with_memory(dir: Path \| None = None)` | memory group on; `dir` is an explicit store root for embedders, `None` keeps today's scopes (XDG global + `.marim/memory` project) for CLI-preset parity |
+| `.with_skills(dirs: list[Path] \| None = None)` | skills group on; `dirs` are explicit skill directories, `None` means today's discovery behavior |
 | `.with_tool(fn, requires_approval=…)` | registered after builtins via the same `agent.tool` path gated builtins use |
 | `.with_hooks(runner)` | `Deps.hooks` — programmatic only; no directory scanning unless `.with_defaults()` |
 | `.with_instructions(extra=…)` / `(replace=…)` | system prompt extension/replacement |
