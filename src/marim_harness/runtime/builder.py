@@ -171,7 +171,10 @@ class HarnessBuilder:
     def with_deps(self, deps) -> HarnessBuilder:
         """Replace the builder-constructed Deps wholesale (the CLI preset builds
         its own to wire notifier/tool-search knobs). Overrides with_memory /
-        with_skills / with_bash policy placement — the caller owns the object."""
+        with_skills / with_bash policy placement / with_hooks — the caller owns
+        the object, so those setters' values never reach it. Set the
+        corresponding fields (``deps.hooks``, etc.) on your own Deps instead;
+        combining with_hooks with with_deps is a build() error (see build())."""
         self._deps_override = deps
         return self
 
@@ -197,7 +200,7 @@ class HarnessBuilder:
 
         from ..compaction import make_summarizer, make_titler
         from ..session import SessionManager
-        from ..tools.names import LSP_TOOLS, SUBAGENT_TOOLS
+        from ..tools.names import FORGE_TOOLS, LSP_TOOLS, SUBAGENT_TOOLS
         from ..tools.provider import ToolGroups
         from .deps import Deps, WorkspaceConfig
         from .harness import Harness, HarnessConfig
@@ -220,15 +223,49 @@ class HarnessBuilder:
             for f in dataclasses.fields(ToolGroups)
         })
         builtin_names = groups.enabled_tool_names()
+        # The full set of names actually loaded on the main agent, for the
+        # custom-tool collision check just below. builtin_names alone missed
+        # two whole toolsets that register outside ToolGroups/BuiltinToolProvider:
+        #   - LSP navigation tools (goto_definition, hover, ...) — registered
+        #     as a separate deferred toolset (provider.lsp_toolset()), gated
+        #     on with_lsp(tools=True) rather than a ToolGroups field.
+        #   - forge tools (list_prs, create_pr, ...) — attached as their own
+        #     pydantic-ai toolset (build_forge_toolset), gated on with_forge().
+        # A custom tool named e.g. "goto_definition" used to pass build()
+        # cleanly and then collide with the LSP toolset mid-run. Folding both
+        # sets in here (only when their gate is actually on) catches that at
+        # build() time instead.
+        #
+        # MCP server tool names are NOT included: MCP servers are connected
+        # lazily (after build(), by the caller — see with_mcp_server's
+        # docstring), so their tool names aren't knowable yet. A collision
+        # between a custom tool and an MCP tool name can still only surface at
+        # connect/run time; that's an accepted gap, not an oversight.
+        loaded_names = builtin_names | (LSP_TOOLS if self._lsp_tools else frozenset())
+        if self._forge_backend is not None:
+            loaded_names |= FORGE_TOOLS
 
         seen_custom: set[str] = set()
         for fn, _gated in self._custom_tools:
             name = fn.__name__
-            if name in builtin_names:
+            if name in loaded_names:
                 problems.append(f"custom tool {name!r} collides with a built-in tool")
             if name in seen_custom:
                 problems.append(f"custom tool {name!r} registered twice")
             seen_custom.add(name)
+
+        # with_hooks sets self._hook_runner, but the hook runner only ever
+        # reaches Deps via the builder-constructed-Deps branch below
+        # (`deps.hooks = self._hook_runner`, further down in build()). When
+        # with_deps() supplies an explicit Deps instead, that assignment is
+        # skipped entirely — with_hooks's runner would be silently dropped,
+        # never wired to the returned Harness at all. Surface that
+        # combination as a build() problem instead of a silent no-op.
+        if self._hook_runner is not None and self._deps_override is not None:
+            problems.append(
+                "with_hooks is ignored when with_deps supplies a Deps — set "
+                "deps.hooks on your Deps instead"
+            )
 
         # LSP tool names are only grantable when the LSP toolset is actually
         # loaded (`with_lsp(tools=True)`) — `grantable` already folds LSP_TOOLS
@@ -304,6 +341,11 @@ class HarnessBuilder:
             forge_enabled=self._forge_backend is not None,
             forge_backend=self._forge_backend,
             global_instructions=self._global_instructions,
+            # Threads the composed ToolGroups through to register_instructions
+            # so instruction closures that advertise a tool group (spawn/
+            # skills/memory) are gated exactly like the tools themselves —
+            # see instructions.register_instructions and HarnessConfig.groups.
+            groups=groups,
             extra_agents=tuple(self._subagents),
             mcp_servers=list(self._mcp_servers),
             store=store,

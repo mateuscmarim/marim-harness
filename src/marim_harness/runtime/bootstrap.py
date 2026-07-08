@@ -169,7 +169,6 @@ def build_harness(
             notifications=cfg.notifications,
         )
     )
-    builder._global_instructions = True       # the CLI always reads user config
     harness = builder.build()
     if resume or session_id is not None:
         harness.resume()
