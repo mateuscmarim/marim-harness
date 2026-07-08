@@ -87,7 +87,10 @@ def test_explicit_forge_backend_disabled_flag_skips_toolset(tmp_path, fake_forge
 def test_global_instructions_gate(tmp_path, monkeypatch):
     """global_instructions gates whether the user-level instructions file is
     ever read: True registers and invokes the closure that reads it; False
-    never even registers it."""
+    never even registers it. It also gates ``_plugin_instructions`` — that
+    closure reads the embedding user's installed-plugin state too (see
+    register_instructions' docstring), so it shares the same gate rather than
+    registering unconditionally."""
     import marim_harness.runtime.instructions as instr
 
     calls = []
@@ -106,20 +109,27 @@ def test_global_instructions_gate(tmp_path, monkeypatch):
     # @a.instructions
     # def foo(ctx: RunContext): return 'x'
     # print(a._instructions[0] is foo)"` -> True.
-    def _global_closure(agent):
+    def _closure(agent, name):
         return next(
             (
                 fn for fn in agent._instructions
-                if callable(fn) and getattr(fn, "__name__", None) == "_global_instructions"
+                if callable(fn) and getattr(fn, "__name__", None) == name
             ),
             None,
         )
 
-    on_closure = _global_closure(h_on.agent)
-    off_closure = _global_closure(h_off.agent)
+    on_closure = _closure(h_on.agent, "_global_instructions")
+    off_closure = _closure(h_off.agent, "_global_instructions")
     assert on_closure is not None, "global_instructions=True must register the closure"
     assert off_closure is None, "global_instructions=False must not register the closure"
-    assert len(h_off.agent._instructions) == len(h_on.agent._instructions) - 1
+
+    plugin_on = _closure(h_on.agent, "_plugin_instructions")
+    plugin_off = _closure(h_off.agent, "_plugin_instructions")
+    assert plugin_on is not None, "global_instructions=True must register _plugin_instructions"
+    assert plugin_off is None, "global_instructions=False must not register _plugin_instructions"
+
+    # Two closures share this gate, so off drops exactly two vs. on.
+    assert len(h_off.agent._instructions) == len(h_on.agent._instructions) - 2
 
     # Behavioral: actually evaluate the registered closure (it never touches
     # ctx, so a plain None stands in for RunContext) and confirm it reaches

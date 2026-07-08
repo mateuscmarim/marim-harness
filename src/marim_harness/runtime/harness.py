@@ -35,7 +35,7 @@ from ..subagents import MaskingPolicy, RetryPolicy, SubagentRunner
 from ..tools.forge_tools import build_forge_toolset, forge_toolsets
 from ..tools.impl.suggest import suggest_unknown_tool_retry
 from ..tools.names import SUBAGENT_MAX_DEPTH
-from ..tools.provider import ToolProvider
+from ..tools.provider import ToolGroups, ToolProvider
 from ..workspace.snapshot import GitSnapshotter
 from .context import (
     actionable_error_note as _actionable_error_note,  # noqa: F401 — re-exported for tests
@@ -153,6 +153,16 @@ class HarnessConfig:
     # on; the builder turns it off so an embedded harness never reads the
     # embedding user's marim config dir.
     global_instructions: bool = True
+    # Gates the instruction closures that advertise a tool group (sub-agent
+    # roster for spawn_agent, skill index for activate_skill, memory index
+    # for recall) so an embedded harness's prompt never mentions a tool it
+    # didn't register — see register_instructions. None ⇒ every group is
+    # treated as on, matching BuiltinToolProvider's own None-means-all
+    # default; HarnessBuilder.build() always passes its composed ToolGroups
+    # explicitly (see builder.py), so this default only matters for a
+    # HarnessConfig built by hand (existing direct callers/tests keep their
+    # historical "everything registers" behavior unchanged).
+    groups: ToolGroups | None = None
 
 
 def build_services(
@@ -257,7 +267,8 @@ def build_collaborators(
     )
     provider.register(agent)
     register_instructions(
-        agent, mcp, cfg.proactive_memory, global_instructions=cfg.global_instructions
+        agent, mcp, cfg.proactive_memory,
+        global_instructions=cfg.global_instructions, groups=cfg.groups,
     )
     # Session-scoped LSP server pool, reachable by the navigation/diagnostics
     # tools through deps. Subagents share this deps object, so they get LSP too.

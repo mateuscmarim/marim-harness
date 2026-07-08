@@ -7,6 +7,7 @@ from pydantic_ai import RunContext
 
 if TYPE_CHECKING:
     from ..mcp import McpManager
+    from ..tools.provider import ToolGroups
 
 from ..config import config_dir
 from ..mcp.catalog import tool_catalog_text
@@ -22,7 +23,7 @@ from ..workspace import (
 from .deps import Deps, HarnessAgent
 
 # The stock system prompt for a built harness. Lives here (not bootstrap) so the
-# builder and the CLI share one source; bootstrap re-exports it as INSTRUCTIONS.
+# builder and the CLI share one source.
 DEFAULT_INSTRUCTIONS = (
     "You are a coding agent operating inside a workspace directory. "
     "Use the provided tools to read, search, and edit files and run commands. "
@@ -191,15 +192,42 @@ def _build_memory_index(global_scope_, project_scope_) -> str:
 
 def register_instructions(
     agent: HarnessAgent, mcp_manager: McpManager, proactive_memory: bool,
-    *, global_instructions: bool = True,
+    *, global_instructions: bool = True, groups: ToolGroups | None = None,
 ) -> None:
     """Register all dynamic instruction closures on ``agent``.
 
-    ``global_instructions`` gates only the user-level closure below (CLI
-    keeps it on; HarnessBuilder-embedded harnesses turn it off so they never
-    reach into the embedding user's ``~/.config/marim`` directory). Every
-    other closure registers unconditionally, as today.
+    Every closure that advertises or reaches for a tool group is gated on
+    that group actually being loaded — a closure describing a tool the model
+    can't call is worse than no closure, since the model will try the tool
+    anyway and get a hard failure. ``groups`` (the same ``ToolGroups`` the
+    provider registers tools from) supplies that gate:
+
+    - ``_agent_index`` (advertises ``spawn_agent`` and the sub-agent roster)
+      is gated on ``groups.spawn``.
+    - ``_skill_index`` (advertises ``activate_skill``) is gated on
+      ``groups.skills``.
+    - ``_memory_indexes`` (advertises ``recall``, and reads MEMORY.md to do
+      so) is gated on ``groups.memory``.
+
+    ``groups=None`` means "all groups on" — the CLI/bootstrap default, and
+    also what a bare ``HarnessConfig()`` gets when constructed directly
+    (matching ``BuiltinToolProvider``'s own None-means-all convention, so the
+    two never drift independently).
+
+    ``global_instructions`` gates the user-level closure *and*
+    ``_plugin_instructions``: both reach into the embedding user's
+    ``~/.config/marim`` directory (plugin instructions also read
+    project-local ``.marim/plugins``, but plugins themselves are only
+    discoverable there once installed through the CLI's global state) — CLI
+    keeps this on; HarnessBuilder-embedded harnesses turn it off so a bare
+    ``.build()`` never reaches outside the workspace for either. Every other
+    closure (project instructions, MCP index, tool catalog, memory policy)
+    registers unconditionally — none of them advertise a gateable tool group
+    or read outside the workspace/what the caller explicitly opted into.
     """
+    spawn_on = groups is None or groups.spawn
+    skills_on = groups is None or groups.skills
+    memory_on = groups is None or groups.memory
 
     if global_instructions:
 
@@ -223,51 +251,59 @@ def register_instructions(
             return ""
         return f"Project-specific instructions:\n\n{text}"
 
-    @agent.instructions
-    def _plugin_instructions(ctx: RunContext[Deps]) -> str:
-        texts = plugin_instruction_texts(ctx.deps.workspace.root)
-        if not texts:
-            return ""
-        blocks = [f"## From plugin '{name}'\n\n{text}" for name, text in texts]
-        return (
-            "Instructions contributed by installed plugins (treat like "
-            "project instructions):\n\n" + "\n\n".join(blocks)
-        )
+    if global_instructions:
 
-    @agent.instructions
-    def _memory_indexes(ctx: RunContext[Deps]) -> str:
-        return _memory_index_block(ctx)
+        @agent.instructions
+        def _plugin_instructions(ctx: RunContext[Deps]) -> str:
+            texts = plugin_instruction_texts(ctx.deps.workspace.root)
+            if not texts:
+                return ""
+            blocks = [f"## From plugin '{name}'\n\n{text}" for name, text in texts]
+            return (
+                "Instructions contributed by installed plugins (treat like "
+                "project instructions):\n\n" + "\n\n".join(blocks)
+            )
 
-    @agent.instructions
-    def _skill_index(ctx: RunContext[Deps]) -> str:
-        skills = discover_skills(ctx.deps.workspace.root, dirs=ctx.deps.workspace.skill_dirs)
-        text = skills_index_text(skills)
-        if not text:
-            return ""
-        return (
-            "Available skills below — each is a packaged workflow. When a "
-            "task matches one's description, load its full instructions with "
-            "the activate_skill tool (by name) and follow them.\n\n" + text
-        )
+    if memory_on:
 
-    @agent.instructions
-    def _agent_index(ctx: RunContext[Deps]) -> str:
-        text = agents_index_text(discover_agents(ctx.deps.workspace.root))
-        if not text:
-            return ""
-        # The mode-reach rule is stated statically (not "the current mode is
-        # X") so this block stays byte-stable across mode switches and the
-        # system prompt keeps its cache hits.
-        return (
-            "Sub-agents you can delegate to with the spawn_agent tool (each "
-            "runs in isolation and reports back; spawn several in one turn to "
-            "fan out independent work):\n\n" + text + "\n\n"
-            "Sub-agent reach follows the session mode: outside auto mode, "
-            "workspace-mutating tools (write_file, edit_file, bash) are "
-            "stripped from every spawn — even from types described as full-"
-            "toolset — so sub-agents run read-only there. Don't delegate "
-            "edits to a sub-agent unless the session is in auto mode."
-        )
+        @agent.instructions
+        def _memory_indexes(ctx: RunContext[Deps]) -> str:
+            return _memory_index_block(ctx)
+
+    if skills_on:
+
+        @agent.instructions
+        def _skill_index(ctx: RunContext[Deps]) -> str:
+            skills = discover_skills(ctx.deps.workspace.root, dirs=ctx.deps.workspace.skill_dirs)
+            text = skills_index_text(skills)
+            if not text:
+                return ""
+            return (
+                "Available skills below — each is a packaged workflow. When a "
+                "task matches one's description, load its full instructions with "
+                "the activate_skill tool (by name) and follow them.\n\n" + text
+            )
+
+    if spawn_on:
+
+        @agent.instructions
+        def _agent_index(ctx: RunContext[Deps]) -> str:
+            text = agents_index_text(discover_agents(ctx.deps.workspace.root))
+            if not text:
+                return ""
+            # The mode-reach rule is stated statically (not "the current mode is
+            # X") so this block stays byte-stable across mode switches and the
+            # system prompt keeps its cache hits.
+            return (
+                "Sub-agents you can delegate to with the spawn_agent tool (each "
+                "runs in isolation and reports back; spawn several in one turn to "
+                "fan out independent work):\n\n" + text + "\n\n"
+                "Sub-agent reach follows the session mode: outside auto mode, "
+                "workspace-mutating tools (write_file, edit_file, bash) are "
+                "stripped from every spawn — even from types described as full-"
+                "toolset — so sub-agents run read-only there. Don't delegate "
+                "edits to a sub-agent unless the session is in auto mode."
+            )
 
     @agent.instructions
     def _mcp_index(ctx: RunContext[Deps]) -> str:
