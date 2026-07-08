@@ -11,13 +11,12 @@ if TYPE_CHECKING:
 from ..config import config_dir
 from ..mcp.catalog import tool_catalog_text
 from ..plugins import plugin_instruction_texts
+from ..tools.memory_tools import resolve_scope
 from ..workspace import (
     agents_index_text,
     discover_agents,
     discover_skills,
-    global_scope,
     load_index,
-    project_scope,
     skills_index_text,
 )
 from .deps import Deps, HarnessAgent
@@ -73,7 +72,8 @@ def _cached_by_stat(cache: dict, key, paths: list[Path], compute):
 
 # Keyed by (resolved workspace root str, filename-or-None); see _cached_by_stat.
 _PROJECT_INSTRUCTIONS_CACHE: dict = {}
-# Keyed by resolved workspace root str (the per-turn memory index block).
+# Keyed by (resolved global scope root str, resolved project scope root str);
+# see _memory_index_block.
 _MEMORY_INDEX_CACHE: dict = {}
 
 _PROACTIVE_MEMORY_POLICY = (
@@ -136,21 +136,27 @@ def load_global_instructions() -> str | None:
     return load_project_instructions(config_dir())
 
 
-def _memory_index_block(workspace_root) -> str:
+def _memory_index_block(ctx: RunContext[Deps]) -> str:
     """The injected memory-index block (global then project), or "" if neither
     has a ``MEMORY.md``.
 
-    Memoized under a stat fingerprint of the two ``MEMORY.md`` files so the
-    per-request ``_memory_indexes`` closure re-reads them only when one changes.
-    load_index still performs the actual read on a miss; we stat the files here
-    purely to key the cache."""
-    global_scope_ = global_scope()
-    project_scope_ = project_scope(workspace_root)
+    Scopes are resolved through :func:`resolve_scope` — the same helper
+    ``remember``/``recall`` use — so an explicit ``workspace.memory_root``
+    (embedders, via HarnessBuilder.with_memory) is honored here too; otherwise
+    this is byte-identical to the historical ``global_scope()``/
+    ``project_scope(root)`` mapping. Memoized under a stat fingerprint of the
+    two ``MEMORY.md`` files so the per-request ``_memory_indexes`` closure
+    re-reads them only when one changes. load_index still performs the actual
+    read on a miss; we stat the files here purely to key the cache."""
+    global_scope_ = resolve_scope(ctx, "global")
+    project_scope_ = resolve_scope(ctx, "project")
     paths = [
         global_scope_.root / _MEMORY_INDEX_FILE,
         project_scope_.root / _MEMORY_INDEX_FILE,
     ]
-    key = str(Path(workspace_root).resolve())
+    # Keyed on the resolved scope roots (not just workspace_root) so a
+    # memory_root change invalidates the cache too.
+    key = (str(global_scope_.root.resolve()), str(project_scope_.root.resolve()))
     return _cached_by_stat(
         _MEMORY_INDEX_CACHE,
         key,
@@ -213,7 +219,7 @@ def register_instructions(
 
     @agent.instructions
     def _memory_indexes(ctx: RunContext[Deps]) -> str:
-        return _memory_index_block(ctx.deps.workspace.root)
+        return _memory_index_block(ctx)
 
     @agent.instructions
     def _skill_index(ctx: RunContext[Deps]) -> str:

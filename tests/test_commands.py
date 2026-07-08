@@ -24,7 +24,9 @@ class _FakeApp:
         self._turn_worker = None
         self.stream = SimpleNamespace(current_assistant="sentinel")
         self.harness = SimpleNamespace(
-            deps=SimpleNamespace(workspace=SimpleNamespace(root=workspace_root)),
+            deps=SimpleNamespace(
+                workspace=SimpleNamespace(root=workspace_root, skill_dirs=None)
+            ),
             checkpoints=SimpleNamespace(list=lambda: []),
         )
 

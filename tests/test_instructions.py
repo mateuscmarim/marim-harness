@@ -1,14 +1,22 @@
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from marim_harness.runtime.deps import Deps, WorkspaceConfig
 from marim_harness.runtime.instructions import (
     _memory_index_block,
     global_instructions_path,
     load_global_instructions,
     load_project_instructions,
 )
+
+
+def _ctx(workspace: Path, **kw) -> SimpleNamespace:
+    """Minimal RunContext[Deps] stand-in: _memory_index_block only reads
+    ctx.deps.workspace, same fixture shape as tests/test_workspace_knobs.py."""
+    return SimpleNamespace(deps=Deps(workspace=WorkspaceConfig(root=workspace, **kw)))
 
 
 def test_reads_agents_md(tmp_path: Path):
@@ -168,10 +176,11 @@ def test_memory_index_block_unchanged_read_served_from_cache(
         return real(*a, **k)
 
     monkeypatch.setattr(instr, "_build_memory_index", counting)
-    assert "entry" in _memory_index_block(ws)
+    ctx = _ctx(ws)
+    assert "entry" in _memory_index_block(ctx)
     first = calls["n"]
     assert first == 1
-    assert "entry" in _memory_index_block(ws)
+    assert "entry" in _memory_index_block(ctx)
     assert calls["n"] == first  # second call served from cache
 
 
@@ -186,6 +195,63 @@ def test_memory_index_block_cache_invalidates_on_edit(
     mem = ws / ".marim" / "memory"
     mem.mkdir(parents=True)
     (mem / "MEMORY.md").write_text("- old entry\n")
-    assert "old entry" in _memory_index_block(ws)
+    ctx = _ctx(ws)
+    assert "old entry" in _memory_index_block(ctx)
     (mem / "MEMORY.md").write_text("- a fresh, different entry\n")
-    assert "fresh, different entry" in _memory_index_block(ws)
+    assert "fresh, different entry" in _memory_index_block(ctx)
+
+
+def test_memory_index_block_honors_memory_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """When workspace.memory_root is set, the index block must reflect entries
+    written under memory_root/{global,project} (what remember/recall actually
+    read via resolve_scope), not the default XDG/.marim/memory locations —
+    otherwise the model sees an index that doesn't match what recall can load."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    ws = tmp_path / "ws"
+
+    # Populate the *default* locations with content that must NOT show up.
+    default_global = tmp_path / "cfg" / "marim" / "memory"
+    default_project = ws / ".marim" / "memory"
+    default_global.mkdir(parents=True)
+    default_project.mkdir(parents=True)
+    (default_global / "MEMORY.md").write_text("- default global entry\n")
+    (default_project / "MEMORY.md").write_text("- default project entry\n")
+
+    # Populate the explicit memory_root locations that resolve_scope maps to.
+    store = tmp_path / "embedder-memstore"
+    (store / "global").mkdir(parents=True)
+    (store / "project").mkdir(parents=True)
+    (store / "global" / "MEMORY.md").write_text("- rooted global entry\n")
+    (store / "project" / "MEMORY.md").write_text("- rooted project entry\n")
+
+    ctx = _ctx(ws, memory_root=store)
+    block = _memory_index_block(ctx)
+    assert "rooted global entry" in block
+    assert "rooted project entry" in block
+    assert "default global entry" not in block
+    assert "default project entry" not in block
+
+
+def test_memory_index_block_memory_root_none_matches_default_scopes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """With memory_root left at its default (None), the block must be
+    byte-identical to reading straight from the pre-embedder-knobs default
+    scopes (global_scope()/project_scope(root)) — the governing invariant that
+    both knobs being None must not change behavior."""
+    from marim_harness.workspace.memory import global_scope, project_scope
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    ws = tmp_path / "ws"
+    g = global_scope()
+    p = project_scope(ws)
+    g.root.mkdir(parents=True)
+    p.root.mkdir(parents=True)
+    (g.root / "MEMORY.md").write_text("- global entry\n")
+    (p.root / "MEMORY.md").write_text("- project entry\n")
+
+    block = _memory_index_block(_ctx(ws))
+    assert "global entry" in block
+    assert "project entry" in block
