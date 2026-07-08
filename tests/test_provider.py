@@ -974,3 +974,65 @@ async def test_combined_job_wait_timeout_nudges(tmp_path):
     assert "still running" in out and "end your turn" in out
     gate.set()
     await ctx.deps.jobs.wait(jid, 5)
+
+
+def test_tool_groups_match_dataclass_fields():
+    """Every ToolGroups field has a names.TOOL_GROUPS entry and vice versa."""
+    import dataclasses
+
+    from marim_harness.tools.names import TOOL_GROUPS
+    from marim_harness.tools.provider import ToolGroups
+
+    assert {f.name for f in dataclasses.fields(ToolGroups)} == set(TOOL_GROUPS)
+
+
+def test_all_groups_on_matches_legacy_registration():
+    """ToolGroups() with all defaults registers exactly what the no-arg provider does."""
+    from marim_harness.tools.provider import ToolGroups
+
+    legacy = Agent(TestModel(), deps_type=Deps)
+    BuiltinToolProvider().register(legacy)
+    grouped = Agent(TestModel(), deps_type=Deps)
+    BuiltinToolProvider(groups=ToolGroups()).register(grouped)
+    assert _tool_names(legacy) == _tool_names(grouped)
+
+
+def test_bare_groups_register_only_file_tools():
+    from marim_harness.tools.provider import ToolGroups
+
+    groups = ToolGroups(bash=False, net=False, memory=False, skills=False,
+                        tasks=False, jobs=False, spawn=False)
+    agent = Agent(TestModel(), deps_type=Deps)
+    BuiltinToolProvider(groups=groups).register(agent)
+    assert _tool_names(agent) == {
+        "read_file", "glob", "tree", "grep", "write_file", "edit_file",
+    }
+
+
+def test_each_group_toggles_exactly_its_tools():
+    """Turning one group off removes exactly that group's tools (jobs uses the
+    non-combined variant, so 'job' is excluded from the expectation)."""
+    import dataclasses
+
+    from marim_harness.tools.names import TOOL_GROUPS
+    from marim_harness.tools.provider import ToolGroups
+
+    baseline_agent = Agent(TestModel(), deps_type=Deps)
+    BuiltinToolProvider(groups=ToolGroups()).register(baseline_agent)
+    baseline = _tool_names(baseline_agent)
+    for field_ in dataclasses.fields(ToolGroups):
+        agent = Agent(TestModel(), deps_type=Deps)
+        groups = ToolGroups(**{field_.name: False})
+        BuiltinToolProvider(groups=groups).register(agent)
+        removed = baseline - _tool_names(agent)
+        assert removed == (TOOL_GROUPS[field_.name] & baseline), field_.name
+
+
+def test_enabled_tool_names_unions_active_groups():
+    from marim_harness.tools.provider import ToolGroups
+
+    groups = ToolGroups(bash=False, net=False, memory=False, skills=False,
+                        tasks=False, jobs=False, spawn=False)
+    assert groups.enabled_tool_names() == frozenset(
+        {"read_file", "glob", "tree", "grep", "write_file", "edit_file"}
+    )

@@ -17,6 +17,7 @@ the module that owns it (``from ..tools.edit_tools import bash``).
 """
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 from ..runtime.deps import HarnessAgent, SubAgent
@@ -47,7 +48,35 @@ from .names import (  # noqa: F401
     READ_TOOLS,
     SUBAGENT_MAX_DEPTH,
     SUBAGENT_TOOLS,
+    TOOL_GROUPS,
 )
+
+
+@dataclass(frozen=True)
+class ToolGroups:
+    """Which built-in tool groups a provider registers. All-on defaults keep the
+    CLI's historical behavior; the HarnessBuilder passes an explicit selection.
+    Field names mirror names.TOOL_GROUPS keys (test-enforced)."""
+
+    files_read: bool = True
+    files_write: bool = True
+    bash: bool = True
+    net: bool = True
+    memory: bool = True
+    skills: bool = True
+    tasks: bool = True
+    jobs: bool = True
+    spawn: bool = True
+
+    def enabled_tool_names(self) -> frozenset[str]:
+        """Union of the tool names in every enabled group (both job-tool shapes
+        included — collision checks want the superset)."""
+        names: frozenset[str] = frozenset()
+        for group, tools in TOOL_GROUPS.items():
+            if getattr(self, group):
+                names |= tools
+        return names
+
 
 # Name -> implementation for the tools a sub-agent may receive. The Harness
 # decides which names to grant; register_subagent registers exactly those.
@@ -87,9 +116,13 @@ class ToolProvider(Protocol):
 class BuiltinToolProvider:
     """Hand-written fs + shell tools backed by the pure functions in this package."""
 
-    def __init__(self, *, register_lsp_tools: bool = True,
+    def __init__(self, groups: ToolGroups | None = None, *,
+                 register_lsp_tools: bool = True,
                  combined_job_tool: bool = False) -> None:
-        """``register_lsp_tools`` gates the six LSP navigation tools for both the
+        """``groups`` selects which built-in tool groups register() installs; None
+        means all — the CLI's historical behavior.
+
+        ``register_lsp_tools`` gates the six LSP navigation tools for both the
         main agent and sub-agents. The harness derives it from the LSP config
         (``lsp_enabled and lsp_tools_enabled``); diagnostics-on-edit is wired
         separately through ``deps.services.lsp`` and is unaffected by this flag.
@@ -97,47 +130,59 @@ class BuiltinToolProvider:
         ``combined_job_tool`` (prototype) swaps the four job tools
         (jobs/job_output/wait_for_job/cancel_job) for a single ``job(action, …)``
         tool. Job tools are main-agent only, so this affects ``register`` only."""
+        self._groups = groups or ToolGroups()
         self._register_lsp_tools = register_lsp_tools
         self._combined_job_tool = combined_job_tool
 
     def register(self, agent: HarnessAgent) -> None:
-        """Register the full main-agent toolset: read tools, the memory / skill /
-        task / spawn tools, and the workspace-mutating tools behind approval."""
+        """Register the enabled main-agent tool groups: read tools, the memory /
+        skill / task / spawn tools, and the workspace-mutating tools behind
+        approval. Group selection comes from ``ToolGroups`` (all-on by default)."""
+        g = self._groups
         # Registered individually rather than via a loop: each tool has a distinct
         # signature, and a loop variable unions them into a type the .tool()
         # overloads can't resolve.
-        agent.tool(fs_tools.read_file)
-        agent.tool(fs_tools.glob)
-        agent.tool(fs_tools.tree)
-        agent.tool(fs_tools.grep)
+        if g.files_read:
+            agent.tool(fs_tools.read_file)
+            agent.tool(fs_tools.glob)
+            agent.tool(fs_tools.tree)
+            agent.tool(fs_tools.grep)
         # Outbound network tools are gated (like write/edit/bash), not ungated
         # like the local reads above: they are an exfiltration boundary (see
         # names.NET_TOOLS). Gating routes them through resolve_approvals, so auto
         # mode still runs them un-prompted (frictionless), ask mode prompts per
         # call, and — the point — plan mode denies them instead of silently
         # allowing an un-approved fetch that could carry a secret off the host.
-        agent.tool(requires_approval=True)(net_tools.web_search)
-        agent.tool(requires_approval=True)(net_tools.fetch_url)
-        agent.tool(memory_tools.remember)
-        agent.tool(memory_tools.recall)
-        agent.tool(skill_tools.activate_skill)
-        agent.tool(skill_tools.read_skill_file)
-        agent.tool(planning_tools.update_tasks)
-        agent.tool(planning_tools.ask_user)
-        agent.tool(planning_tools.present_plan)
+        if g.net:
+            agent.tool(requires_approval=True)(net_tools.web_search)
+            agent.tool(requires_approval=True)(net_tools.fetch_url)
+        if g.memory:
+            agent.tool(memory_tools.remember)
+            agent.tool(memory_tools.recall)
+        if g.skills:
+            agent.tool(skill_tools.activate_skill)
+            agent.tool(skill_tools.read_skill_file)
+        if g.tasks:
+            agent.tool(planning_tools.update_tasks)
+            agent.tool(planning_tools.ask_user)
+            agent.tool(planning_tools.present_plan)
         # The nesting ceiling isn't bound here: it rides on Deps
         # (subagent_max_depth), where the model can't touch it.
-        agent.tool(spawn_tools.spawn_agent)
-        if self._combined_job_tool:
-            agent.tool(job_tools.job)
-        else:
-            agent.tool(job_tools.jobs)
-            agent.tool(job_tools.job_output)
-            agent.tool(job_tools.wait_for_job)
-            agent.tool(job_tools.cancel_job)
-        agent.tool(requires_approval=True)(edit_tools.write_file)
-        agent.tool(requires_approval=True)(edit_tools.edit_file)
-        agent.tool(requires_approval=True)(edit_tools.bash)
+        if g.spawn:
+            agent.tool(spawn_tools.spawn_agent)
+        if g.jobs:
+            if self._combined_job_tool:
+                agent.tool(job_tools.job)
+            else:
+                agent.tool(job_tools.jobs)
+                agent.tool(job_tools.job_output)
+                agent.tool(job_tools.wait_for_job)
+                agent.tool(job_tools.cancel_job)
+        if g.files_write:
+            agent.tool(requires_approval=True)(edit_tools.write_file)
+            agent.tool(requires_approval=True)(edit_tools.edit_file)
+        if g.bash:
+            agent.tool(requires_approval=True)(edit_tools.bash)
 
     def lsp_toolset(self) -> "FunctionToolset[Deps] | None":
         """The LSP navigation tools as a deferrable toolset for the *main* agent,

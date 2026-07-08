@@ -27,3 +27,19 @@ READ_TOOLS = frozenset({"read_file", "glob", "tree", "grep"}) | LSP_TOOLS
 NET_TOOLS = frozenset({"web_search", "fetch_url"})
 GATED_TOOLS = frozenset({"write_file", "edit_file", "bash"})
 SUBAGENT_TOOLS = READ_TOOLS | NET_TOOLS | GATED_TOOLS
+
+# Composition groups for the embeddable builder (see runtime/builder.py). Keys
+# MUST mirror provider.ToolGroups' field names — test_provider asserts this.
+# "jobs" lists both the four split tools and the combined "job" variant; the
+# provider registers one shape or the other, but both belong to the group.
+TOOL_GROUPS: dict[str, frozenset[str]] = {
+    "files_read": frozenset({"read_file", "glob", "tree", "grep"}),
+    "files_write": frozenset({"write_file", "edit_file"}),
+    "bash": frozenset({"bash"}),
+    "net": NET_TOOLS,
+    "memory": frozenset({"remember", "recall"}),
+    "skills": frozenset({"activate_skill", "read_skill_file"}),
+    "tasks": frozenset({"update_tasks", "ask_user", "present_plan"}),
+    "jobs": frozenset({"jobs", "job_output", "wait_for_job", "cancel_job", "job"}),
+    "spawn": frozenset({"spawn_agent"}),
+}
