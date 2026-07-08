@@ -14,10 +14,8 @@ from ..hooks import HookRunner, load_hooks_config
 from ..mcp import build_mcp_servers, disabled_server_names, load_mcp_config
 from ..notifications import Notifier
 from ..session import SessionManager
-from ..tools.provider import BuiltinToolProvider
 from .deps import Deps, UIHooks, WorkspaceConfig
-from .harness import Harness, HarnessConfig
-from .instructions import DEFAULT_INSTRUCTIONS as INSTRUCTIONS
+from .harness import Harness
 from .permissions import Mode
 
 logger = logging.getLogger(__name__)
@@ -116,16 +114,22 @@ def build_harness(
         else model
     )
 
-    harness = Harness(
-        model=model,
-        provider=BuiltinToolProvider(
-            register_lsp_tools=register_lsp_tools,
-            combined_job_tool=cfg.job_tool_combined,
-        ),
-        deps=deps,
-        instructions=INSTRUCTIONS,
-        config=HarnessConfig(
-            lsp_enabled=cfg.lsp_enabled,
+    from .builder import HarnessBuilder
+
+    builder = (
+        HarnessBuilder(workspace=workspace, model=model)
+        .with_defaults()                      # full CLI toolset
+        .with_deps(deps)                       # CLI-built Deps: notifier, tool-search knobs
+        .with_jobs(combined=cfg.job_tool_combined)
+        # with_defaults() turned LSP fully on; re-derive it from the CLI's
+        # two-switch config (manager vs. navigation tools) rather than reach
+        # into builder privates — with_lsp(enabled=False) still folds tools
+        # off too, matching register_lsp_tools's own "both must be true" rule.
+        .with_lsp(enabled=cfg.lsp_enabled, tools=register_lsp_tools)
+        .with_config_overrides(
+            # The builder derives forge_enabled from an explicit backend (None
+            # here), which would turn CLI forge OFF. Pin the config-driven value
+            # so tea auto-detection keeps working — this override must stay.
             forge_enabled=cfg.forge_enabled,
             model_label=model_source.label(model_id),
             store=store,
@@ -144,6 +148,12 @@ def build_harness(
             mask_observations=cfg.mask_observations,
             mask_keep_recent=cfg.mask_keep_recent,
             mask_min_chars=cfg.mask_min_chars,
+            # The aux agents (summarizer/titler) must NOT share a claude-cli main
+            # model: that instance carries the live session_id, so they would
+            # resume — and reply into — the user's real Claude session (and drop
+            # their own instructions). aux_model above is the stateless, ephemeral
+            # clone for that case; this override replaces the builder's own
+            # summarizer/titler (built from the plain `model`) with aux_model's.
             summarizer=make_summarizer(aux_model),
             titler=make_titler(aux_model),
             model_source=model_source,
@@ -157,8 +167,10 @@ def build_harness(
             mcp_servers=mcp_servers,
             mcp_disabled=mcp_disabled,
             notifications=cfg.notifications,
-        ),
+        )
     )
+    builder._global_instructions = True       # the CLI always reads user config
+    harness = builder.build()
     if resume or session_id is not None:
         harness.resume()
 

@@ -103,9 +103,14 @@ class HarnessBuilder:
         self._combined_job_tool = combined
         return self
 
-    def with_lsp(self, *, tools: bool = True) -> HarnessBuilder:
-        self._lsp = True
-        self._lsp_tools = tools
+    def with_lsp(self, *, enabled: bool = True, tools: bool = True) -> HarnessBuilder:
+        """Turn the LSP manager on (default) or off; ``tools`` (only meaningful
+        when ``enabled``) additionally registers the six navigation tools.
+        ``enabled=False`` is the escape hatch the CLI preset needs to honor its
+        two-switch config (manager on, tools off, or neither) without reaching
+        into builder privates — ``with_lsp()`` bare still means "on"."""
+        self._lsp = enabled
+        self._lsp_tools = enabled and tools
         return self
 
     def with_mcp_server(self, server: object) -> HarnessBuilder:
