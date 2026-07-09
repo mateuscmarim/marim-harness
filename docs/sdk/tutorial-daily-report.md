@@ -260,10 +260,10 @@ model = OpenAIChatModel(
 harness = build_reporter_harness(project_root, workspace, repo_names, model=model)
 ```
 
-The local smoke run harvested 115 real commits across 5 repos and produced
-a valid report through the gated write path — the same code that runs in
-production. Design your embedder's model parameter as this kind of seam
-from day one.
+A local smoke run against a real day of commits (5 repos, a hundred-plus
+commits harvested) produced a valid report through the gated write path —
+the same code that runs in production. Design your embedder's model
+parameter as this kind of seam from day one.
 
 ## Scheduling
 
@@ -271,15 +271,25 @@ Headless operation is just the CLI under a systemd user timer:
 
 ```ini
 # ~/.config/systemd/user/daily-report.service
+[Unit]
+Description=Daily trainwithme commit report
+
 [Service]
 Type=oneshot
+WorkingDirectory=%h/Projects/trainwithme/daily-report
 EnvironmentFile=%h/.config/daily-report/env   # OPENROUTER_API_KEY, chmod 600
-ExecStart=/usr/bin/env uv run daily-report
+ExecStart=%h/.local/bin/uv run daily-report
 
 # ~/.config/systemd/user/daily-report.timer
+[Unit]
+Description=Daily trainwithme commit report at 19:00 Sao Paulo
+
 [Timer]
-OnCalendar=*-*-* 19:00 America/Sao_Paulo
+OnCalendar=*-*-* 19:00:00 America/Sao_Paulo
 Persistent=true
+
+[Install]
+WantedBy=timers.target
 ```
 
 Notes that generalize:

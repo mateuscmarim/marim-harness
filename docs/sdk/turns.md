@@ -97,7 +97,11 @@ agent run.
 - **Provider/infra failures** (rate limits, 5xx, network) raise out of
   `run_turn` — wrap it in `try/except` and decide your own retry/report
   policy. An unattended embedder should treat a failed turn as "log and exit
-  non-zero"; nothing partial is committed to the session on a failed turn.
+  non-zero". With persistence on, the aborted turn's completed progress is
+  not discarded: a repaired, resumable snapshot is flushed to the session
+  (see [Resumability](#resumability-persisted-sessions) below), so the next
+  turn can pick up from what already happened rather than from before the
+  turn.
 - **Hard provider failures spill a debug payload** best-effort to
   `<workspace>/.marim/last-provider-error.json` regardless of session
   config. Gitignore `.marim/` if your workspace is a repo — see

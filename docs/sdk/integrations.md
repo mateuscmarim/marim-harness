@@ -15,10 +15,9 @@ from pydantic_ai.mcp import MCPServerStdio
 builder.with_mcp_server(MCPServerStdio("npx", args=["-y", "some-mcp-server"]))
 ```
 
-(`MCPServerStdio`/`MCPServerSSE`/`MCPServerStreamableHTTP` are deprecated in
-pydantic-ai 2.x in favor of `MCPToolset`, but marim's own MCP config layer
-still builds them — see `mcp/config.py` — so they're the tested path here
-too.)
+(`MCPServerStdio`/`MCPServerSSE`/`MCPServerStreamableHTTP` are slated to be
+superseded upstream by `MCPToolset`, but marim's own MCP config layer still
+builds them — see `mcp/config.py` — so they're the tested path here too.)
 
 Servers connect lazily after `build()`. Two consequences:
 
@@ -55,7 +54,7 @@ CLI's `tea`-on-`PATH` auto-detection:
 ```python
 from marim_harness.forge.tea_backend import TeaBackend
 
-builder.with_forge(TeaBackend())
+builder.with_forge(TeaBackend(workspace_root))   # root: the repo `tea` runs in
 ```
 
 A custom tool named like a forge tool fails `build()` when `with_forge` is
