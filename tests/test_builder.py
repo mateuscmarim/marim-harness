@@ -25,6 +25,16 @@ def _instruction_closure_names(harness) -> set[str]:
     }
 
 
+def test_deps_is_a_top_level_export():
+    # Every custom tool's first parameter is RunContext[Deps], so embedders
+    # import Deps constantly — it must not require knowing the runtime
+    # package layout (docs/embedding.md's example uses this import).
+    import marim_harness
+
+    assert marim_harness.Deps is Deps
+    assert "Deps" in dir(marim_harness)
+
+
 def test_bare_build_defaults(tmp_path: Path):
     h = HarnessBuilder(workspace=tmp_path, model=TestModel()).build()
     assert _tool_names(h) == {"read_file", "glob", "tree", "grep",

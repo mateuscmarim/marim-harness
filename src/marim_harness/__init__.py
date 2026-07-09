@@ -3,7 +3,7 @@
 Public SDK surface (lazy — importing marim_harness stays cheap; pydantic_ai
 loads only when a symbol is first touched):
 
-    from marim_harness import HarnessBuilder, BuilderError, Mode
+    from marim_harness import HarnessBuilder, BuilderError, Mode, Deps
 """
 
 from typing import Any
@@ -11,6 +11,10 @@ from typing import Any
 _LAZY = {
     "HarnessBuilder": ("marim_harness.runtime.builder", "HarnessBuilder"),
     "BuilderError": ("marim_harness.runtime.builder", "BuilderError"),
+    # Deps is part of the embedding surface: every custom tool's first
+    # parameter is RunContext[Deps], so embedders need it importable without
+    # knowing the runtime package layout.
+    "Deps": ("marim_harness.runtime.deps", "Deps"),
     "ToolGroups": ("marim_harness.tools.provider", "ToolGroups"),
     "Mode": ("marim_harness.runtime.permissions", "Mode"),
     "CommandPolicy": ("marim_harness.command_policy", "CommandPolicy"),

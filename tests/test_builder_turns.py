@@ -15,8 +15,7 @@ from pydantic_ai import RunContext
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from marim_harness import HarnessBuilder
-from marim_harness.runtime.deps import Deps
+from marim_harness import Deps, HarnessBuilder
 
 pytestmark = pytest.mark.anyio  # tests/test_turn_controller.py uses the same marker
 

@@ -138,7 +138,7 @@ description), same approval path when gated:
 
 ```python
 from pydantic_ai import RunContext
-from marim_harness.runtime.deps import Deps
+from marim_harness import Deps
 
 
 def deploy(ctx: RunContext[Deps], target: str) -> str:
@@ -152,6 +152,13 @@ harness = (
     .build()
 )
 ```
+
+Both imports must be real runtime imports — do **not** move `RunContext` or
+`Deps` under an `if TYPE_CHECKING:` block. pydantic-ai resolves the tool's
+annotations with `get_type_hints()` at registration time (and under
+`from __future__ import annotations` every annotation is a string), so both
+names must exist in your module's actual globals; TYPE_CHECKING-only imports
+fail at `build()` with `NameError`, not at type-check time.
 
 `requires_approval=True` routes the call through `resolve_approvals` against
 the current `Mode`, same as `write_file`/`edit_file`/`bash`: `auto` runs it
@@ -226,9 +233,12 @@ same instance raises `RuntimeError`. Build a new `HarnessBuilder` per
   convention, not marim's.)
 - **No uninvited XDG/workspace writes.** Sessions stay in-memory until
   `with_sessions()`; memory/skills stay on CLI defaults or your `dir=`
-  overrides. Note: provider-error payloads still spill best-effort to
-  `<workspace>/.marim/last-provider-error.json` on hard failures — that's
-  workspace-local, not XDG, and happens regardless of session config.
+  overrides. **One workspace-local exception:** provider-error payloads
+  spill best-effort to `<workspace>/.marim/last-provider-error.json` on hard
+  failures (e.g. a 4xx from your model provider), regardless of session
+  config. If your workspace is a git repo, add `.marim/` to its
+  `.gitignore` — otherwise the first provider failure leaves an untracked
+  directory of raw provider payloads that a broad `git add` would commit.
 - **No uninvited XDG reads either — with one opt-in exception.** A bare
   `.build()` never reads `~/.config/marim` at all: the instruction closures
   that would advertise a tool group (sub-agent roster, skill index, memory
