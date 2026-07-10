@@ -49,6 +49,7 @@ from .errors import (
 )
 from .permissions import Mode, resolve_approvals
 from .toolsets import compose_turn_toolsets
+from .ttft import TtftTrackingModel
 
 logger = logging.getLogger(__name__)
 
@@ -312,6 +313,17 @@ class TurnController:
         self._inflight_steers: list[
             tuple[str, list[tuple[bytes, str]] | None, object, Sequence[object]]
         ] = []
+
+    def _turn_model(self) -> Model:
+        """The model for this run round: the live current model, wrapped for
+        client-side TTFT reporting when a UI is listening. Wrapped fresh per
+        round and never stored, so the raw model object's identity — which
+        /model switching and the claude-cli wiring key on — is untouched."""
+        model = self.get_model()
+        on_ttft = self.deps.ui.on_ttft
+        if on_ttft is not None:
+            model = TtftTrackingModel(model, on_ttft=on_ttft)
+        return model
 
     def apply_session_start_context(self, ctx: str) -> None:
         """Stash SessionStart-injected context for the next turn's prompt."""
@@ -606,7 +618,7 @@ class TurnController:
                 try:
                     result = await self.agent.run(
                         user_prompt,
-                        model=self.get_model(),
+                        model=self._turn_model(),
                         message_history=self.session.history,
                         deps=self.deps,
                         deferred_tool_results=deferred_results,

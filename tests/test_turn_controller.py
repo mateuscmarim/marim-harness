@@ -306,6 +306,26 @@ def _ok_model():
     return FunctionModel(fn)
 
 
+def test_turn_model_is_raw_without_ui_listener(tmp_path):
+    """Headless (no bind_ui): no on_ttft callback, so the round runs on the
+    raw model object with no wrapper in between."""
+    tc = _make_tc(_ok_model(), tmp_path)
+    assert tc._turn_model() is tc.get_model()
+
+
+def test_turn_model_wraps_for_ttft_when_ui_listens(tmp_path):
+    """With bind_ui's on_ttft wired, the round's model is wrapped for TTFT
+    reporting — but the raw model object is never replaced (its identity
+    matters to /model switching and the claude-cli wiring)."""
+    from marim_harness.runtime.ttft import TtftTrackingModel
+
+    tc = _make_tc(_ok_model(), tmp_path)
+    tc.deps.ui.on_ttft = lambda seconds: None
+    round_model = tc._turn_model()
+    assert isinstance(round_model, TtftTrackingModel)
+    assert round_model.wrapped is tc.get_model()  # raw model untouched underneath
+
+
 @pytest.mark.anyio
 async def test_assemble_prompt_injects_pending_shell_results(tmp_path):
     """A queued `!` result rides the next turn's injected prefix, is consumed

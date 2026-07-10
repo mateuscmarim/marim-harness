@@ -178,6 +178,9 @@ class UIHooks:
     on_subagent_model: SubAgentModelCb | None = None
     on_subagent_usage: SubAgentUsageCb | None = None
     on_cli_activity: CliActivityCb | None = None
+    # Latest streamed request's time-to-first-token, in seconds. Reported by
+    # the TtftTrackingModel wrapper the controller adds when this is set.
+    on_ttft: "Callable[[float], None] | None" = None
     on_mode_change: "Callable[[], None] | None" = None
     on_present_plan: "OnPresentPlanFn | None" = None
     detach_fanout: bool = False

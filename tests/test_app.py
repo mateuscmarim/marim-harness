@@ -188,28 +188,20 @@ async def test_status_bar_includes_live_run_tokens_while_streaming(tmp_path: Pat
 
 
 @pytest.mark.anyio
-async def test_on_events_records_time_to_first_token(tmp_path: Path):
-    """Each model request's TTFT is measured client-side: on_events is invoked
-    as the stream opens, so the gap to the first event is the wait the user
-    actually stares at. The latest request overwrites the previous value."""
-    import types
-
-    from pydantic_ai.messages import FunctionToolCallEvent, ToolCallPart
-
-    ctx = types.SimpleNamespace(usage=types.SimpleNamespace(total_tokens=1))
-
-    async def gen():
-        yield FunctionToolCallEvent(
-            part=ToolCallPart(tool_name="read_file", args={}, tool_call_id="c1")
-        )
-
+async def test_bind_ui_wires_ttft_reports_to_the_renderer(tmp_path: Path):
+    """TTFT is reported by the controller's TtftTrackingModel wrapper through
+    bind_ui's on_ttft callback (measuring in on_events would always read ~0:
+    pydantic-ai waits for the first chunk while opening the stream, before the
+    handler is invoked). The app wires that callback to the renderer slot the
+    status bar reads."""
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
+        on_ttft = app.harness.deps.ui.on_ttft
+        assert on_ttft is not None  # bind_ui wired it; the controller wraps only then
         assert app.stream.last_ttft is None  # no request streamed yet
-        await app.stream.on_events(ctx, gen())
-        assert app.stream.last_ttft is not None
-        assert app.stream.last_ttft >= 0.0
+        on_ttft(1.23)  # what the wrapper does after each streamed request
+        assert app.stream.last_ttft == 1.23
 
 
 @pytest.mark.anyio
