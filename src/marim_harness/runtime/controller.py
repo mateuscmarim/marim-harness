@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections import Counter
 from collections.abc import AsyncIterable, Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
@@ -301,10 +300,18 @@ class TurnController:
         # Steers flushed onto the current round's ctx but not yet confirmed
         # delivered. Flushing only *schedules* a steer (pydantic-ai drains
         # 'asap' content at the next request boundary), so a round that fails —
-        # or finishes — before one would silently drop it. The round's end
-        # reconciles this list against the messages that actually went out and
-        # re-buffers the rest (see _reclaim_undelivered_steers).
-        self._inflight_steers: list[tuple[str, list[tuple[bytes, str]] | None]] = []
+        # or finishes — before one would silently drop it. Each entry carries
+        # the steer's (text, attachments) plus its delivery receipt: the
+        # PendingMessage that enqueue appended and the run's shared queue list
+        # (the queue outlives the RunContext, which is nulled before reclaim
+        # runs). The round's end re-buffers whatever is still queued (see
+        # _reclaim_undelivered_steers). The PendingMessage/queue slots are
+        # typed `object`/`Sequence[object]` on purpose — reclaim only ever
+        # identity-checks them, and `pydantic_ai._enqueue.PendingMessage` is
+        # a private name.
+        self._inflight_steers: list[
+            tuple[str, list[tuple[bytes, str]] | None, object, Sequence[object]]
+        ] = []
 
     def apply_session_start_context(self, ctx: str) -> None:
         """Stash SessionStart-injected context for the next turn's prompt."""
@@ -468,65 +475,55 @@ class TurnController:
         self._flush_steers()
 
     def _flush_steers(self) -> None:
-        if self._active_run_ctx is None or not self._steer_buffer:
+        ctx = self._active_run_ctx
+        if ctx is None or not self._steer_buffer:
             return
         for text, atts in self._steer_buffer:
-            self._active_run_ctx.enqueue(
+            # Snapshot the queue length so the receipt below can tell whether
+            # enqueue actually appended: an all-empty enqueue is a documented
+            # no-op, and blindly taking queue[-1] then would alias this steer
+            # to the PREVIOUS one's PendingMessage, falsely reclaiming it.
+            queue = ctx.pending_messages
+            before = len(queue) if queue is not None else 0
+            ctx.enqueue(
                 text,
                 *(BinaryContent(data=d, media_type=m) for d, m in (atts or [])),
                 priority="asap",
             )
-            self._inflight_steers.append((text, atts))
+            # Re-read: enqueue raises if the ctx has no queue, so reaching here
+            # with content means the queue exists and (for non-empty content)
+            # just grew by one — its tail is this steer's delivery receipt.
+            queue = ctx.pending_messages
+            if queue is not None and len(queue) > before:
+                self._inflight_steers.append((text, atts, queue[-1], queue))
         self._steer_buffer = []
 
-    def _reclaim_undelivered_steers(self, messages: Sequence[ModelMessage]) -> None:
+    def _reclaim_undelivered_steers(self) -> None:
         """Re-buffer any flushed steer that never reached the model.
 
-        Called at each round's end (success or failure) with the round's full
-        message list (input history + everything the run generated). A flushed
-        steer is only *scheduled*: pydantic-ai drains 'asap' content at the next
-        request boundary as a fresh ``UserPromptPart``, so a steer is delivered
-        iff a matching user part shows up among the messages this round ADDED.
-        The rest were enqueued onto a run that ended before its next boundary and
-        would otherwise vanish; reclaimed steers go to the front of the buffer so
-        the next flush (continuation round) or the TUI's take_buffered_steers
-        (turn end) sees them in their original order.
-
-        Two subtleties the old whole-history text-set got wrong, both of which
-        silently DROPPED a live steer:
-          - Baseline. The delivered check must look only at parts BEYOND the
-            pre-round history (``self.session.history`` still holds it at both
-            call sites — the success path reclaims before it reassigns history).
-            Scanning the entire session would read a short steer ('yes',
-            'continue', 'stop') as delivered merely because an *earlier* turn
-            used the same word, dropping an enqueue that never actually drained.
-          - Identity by count, not membership. pydantic-ai gives us no delivery
-            receipt, so a steer's only identity in the returned stream is its
-            text at its position — but a set can't tell two identical steers (or
-            one steer vs. its own echo) apart. A multiset consumed once per
-            match reconciles each inflight steer against exactly one new user
-            part, in FIFO order, so duplicates aren't conflated."""
+        Called at each round's end (success or failure). A flushed steer is
+        only *scheduled*: pydantic-ai's drain capability removes its
+        PendingMessage from the run's shared queue (mutated in place) when it
+        folds it into a model request, and a run that ends normally redirects
+        leftover 'asap' messages into one more request — so a steer is
+        stranded only when the round dies (error, cancel) before its next
+        request boundary, or lands in the sliver between the run's final drain
+        and run() returning. Its delivery receipt is object identity: the
+        PendingMessage captured at enqueue time still sitting in that queue
+        means undelivered. No text matching, so a steer that echoes earlier
+        history or duplicates another steer can't be conflated — the pre-2.x
+        heuristic had to reconcile steer texts against the round's new
+        messages (baseline slicing + a multiset) to approximate exactly this.
+        Reclaimed steers go to the front of the buffer so the next flush
+        (continuation round) or the TUI's take_buffered_steers (turn end) sees
+        them in their original order."""
         if not self._inflight_steers:
             return
-        # Only the parts this round appended (index >= the pre-round length) can
-        # be steer deliveries; the prefix is prior history we must not match on.
-        baseline = len(self.session.history)
-        delivered: Counter[str] = Counter()
-        for m in list(messages)[baseline:]:
-            for p in getattr(m, "parts", []):
-                if type(p).__name__ != "UserPromptPart":
-                    continue
-                content = getattr(p, "content", None)
-                if isinstance(content, str):
-                    delivered[content] += 1
-                elif isinstance(content, (list, tuple)):
-                    delivered.update(x for x in content if isinstance(x, str))
-        undelivered: list[tuple[str, list[tuple[bytes, str]] | None]] = []
-        for steer in self._inflight_steers:
-            if delivered[steer[0]] > 0:
-                delivered[steer[0]] -= 1  # consume this delivery; don't reuse it
-            else:
-                undelivered.append(steer)
+        undelivered = [
+            (text, atts)
+            for text, atts, pending, queue in self._inflight_steers
+            if any(entry is pending for entry in queue)
+        ]
         self._inflight_steers = []
         self._steer_buffer = undelivered + self._steer_buffer
 
@@ -630,7 +627,7 @@ class TurnController:
                     # request boundary; put it back in the buffer (for the
                     # overflow retry below, or the TUI's turn-end pickup) before
                     # deciding how this failure resolves.
-                    self._reclaim_undelivered_steers(captured)
+                    self._reclaim_undelivered_steers()
                     # Context-overflow recovery: the request exceeded the real
                     # window despite our estimate. Force a compaction and retry the
                     # run once. Only when the compaction actually shrank the history
@@ -697,10 +694,12 @@ class TurnController:
             # delivered to the next round's fresh ctx, rather than being enqueued
             # onto a completed RunContext.
             self._active_run_ctx = None
-            # A steer flushed near the round's end may have missed its last
-            # request boundary; re-buffer it so the continuation round (or the
-            # TUI's turn-end pickup) delivers it instead of dropping it.
-            self._reclaim_undelivered_steers(result.all_messages())
+            # A successful run redirects queued steers into one more request, so
+            # this is normally a no-op — but a steer enqueued in the sliver
+            # between the run's final drain and run() returning is still sitting
+            # in the queue; re-buffer it so the continuation round (or the TUI's
+            # turn-end pickup) delivers it instead of dropping it.
+            self._reclaim_undelivered_steers()
             # The run reached the model and returned, so this turn's one-shot
             # consumables (hook context / jobs digest) were genuinely delivered.
             # Clear the restore-on-failure stash so a later approval-round failure

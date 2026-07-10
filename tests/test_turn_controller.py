@@ -244,6 +244,13 @@ async def test_run_turn_defers_mcp_when_policy_on(tmp_path, monkeypatch):
         async def list_tools(self):
             return [1, 2, 3]
 
+        def prefixed(self, prefix):
+            # Compose prefixes each live server with its name (see
+            # runtime/toolsets.py); mirror AbstractToolset.prefixed.
+            from pydantic_ai.toolsets.prefixed import PrefixedToolset
+
+            return PrefixedToolset(self, prefix)
+
     tc.mcp._live_servers = [_Srv("a"), _Srv("b")]
     tc.mcp.disabled = set()
 
@@ -273,6 +280,11 @@ async def test_run_turn_passes_plain_toolsets_when_off(tmp_path, monkeypatch):
         async def list_tools(self):
             return [1, 2, 3]
 
+        def prefixed(self, prefix):
+            from pydantic_ai.toolsets.prefixed import PrefixedToolset
+
+            return PrefixedToolset(self, prefix)
+
     servers = [_Srv()]
     tc.mcp._live_servers = servers
     tc.mcp.disabled = set()
@@ -283,7 +295,8 @@ async def test_run_turn_passes_plain_toolsets_when_off(tmp_path, monkeypatch):
 
     monkeypatch.setattr(tc, "_run_with_approval", spy)
     await tc.run_turn("hi")
-    assert captured["toolsets"] == servers  # unwrapped, unchanged
+    # Inline (not behind DeferredLoadingToolset), each prefixed with its name.
+    assert [t.wrapped for t in captured["toolsets"]] == servers
 
 
 def _ok_model():

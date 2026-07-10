@@ -118,6 +118,7 @@ def build_openrouter_model(model_id: str, api_key: str | None):
         OpenRouterModelSettings,
         OpenRouterStreamedResponse,
     )
+    from pydantic_ai.profiles import merge_profile
     from pydantic_ai.providers.openrouter import OpenRouterProvider
 
     class _CostStreamedResponse(OpenRouterStreamedResponse):
@@ -131,7 +132,8 @@ def build_openrouter_model(model_id: str, api_key: str | None):
             # scrub orphan thinking tags the base splitter couldn't pair. Real
             # pairs are already routed to ThinkingParts upstream, so anything
             # left in the text stream is a leaked fragment.
-            if self._model_profile.thinking_tags != MM_THINK_TAGS:
+            # ModelProfile is a TypedDict in pydantic-ai 2.x — key access only.
+            if self._model_profile.get("thinking_tags") != MM_THINK_TAGS:
                 yield from super()._map_text_delta(choice)
                 return
             carry = getattr(self, "_mm_carry", "")
@@ -180,9 +182,10 @@ def build_openrouter_model(model_id: str, api_key: str | None):
     # letting the tags leak into visible text.
     profile = None
     if "minimax" in model_id.lower():
+        # ModelProfile is a TypedDict in 2.x: merge_profile replaces the old
+        # dataclasses.replace, and handles a None base by building from scratch.
         base = provider.model_profile(model_id)
-        if base is not None:
-            profile = dataclasses.replace(base, thinking_tags=MM_THINK_TAGS)
+        profile = merge_profile(base, {"thinking_tags": MM_THINK_TAGS})
     settings = OpenRouterModelSettings(
         openrouter_usage={"include": True},
         openrouter_cache_instructions="5m",

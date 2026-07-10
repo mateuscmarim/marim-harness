@@ -110,6 +110,12 @@ class StatusPresenter:
             Content(tokens_text),
             Content(session_text),
         ]
+        # Time-to-first-token of the latest model request — how snappy the
+        # provider feels right now. Lingers while idle (it describes the last
+        # request, still true); cleared only on a session reset.
+        ttft = self.app.stream.last_ttft
+        if ttft is not None:
+            fields.append(Content(f"ttft {ttft:.1f}s"))
         if self.busy:
             elapsed = format_duration(time.monotonic() - self.turn_start)
             fields.append(Content(f"working… {elapsed}"))

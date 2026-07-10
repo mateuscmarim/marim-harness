@@ -193,50 +193,54 @@ def test_persist_uses_atomic_write_no_temp_residue(tmp_path: Path, monkeypatch):
 
 
 def test_build_stdio_server_from_command():
-    from pydantic_ai.mcp import MCPServerStdio
+    from fastmcp.client.transports import StdioTransport
+    from pydantic_ai.mcp import MCPToolset
 
     servers, warnings = build_mcp_servers(
         {"files": {"command": "npx", "args": ["-y", "fs"], "env": {"A": "1"}}}
     )
     assert warnings == []
     (server,) = servers
-    assert isinstance(server, MCPServerStdio)
-    assert server.command == "npx"
-    assert server.args == ["-y", "fs"]
-    assert server.tool_prefix == "files"  # prefixed by its config name
+    assert isinstance(server, MCPToolset)
+    transport = server.client.transport
+    assert isinstance(transport, StdioTransport)
+    assert transport.command == "npx"
+    assert transport.args == ["-y", "fs"]
+    assert server.id == "files"  # config name; prefixing happens at compose time
     assert server.process_tool_call is not None  # gated
 
 
 def test_build_stdio_server_gets_agent_tool_retry_budget():
     # MCP tools must get the same retry budget the agent gives its builtins
-    # (retries=2). pydantic-ai defaults an MCP server's max_retries to 1, so a
-    # single transient tool error (e.g. a Playwright page-session blip) raised
-    # UnexpectedModelBehavior and killed the spawn on the first miss.
+    # (retries=2). In pydantic-ai 2.x ``max_retries=None`` inherits the agent's
+    # own ``retries`` — exactly that alignment. A hard-coded value here would
+    # silently diverge if the agent's budget ever changed.
     servers, _ = build_mcp_servers({"files": {"command": "npx", "args": ["fs"]}})
     (server,) = servers
-    assert server.max_retries == 2
+    assert server.max_retries is None
 
 
 def test_build_http_server_from_url():
-    from pydantic_ai.mcp import MCPServerStreamableHTTP
+    from fastmcp.client.transports import StreamableHttpTransport
+    from pydantic_ai.mcp import MCPToolset
 
     servers, warnings = build_mcp_servers({"web": {"url": "https://example/mcp"}})
     assert warnings == []
     (server,) = servers
-    assert isinstance(server, MCPServerStreamableHTTP)
-    assert server.tool_prefix == "web"
-    assert server.max_retries == 2  # same budget as stdio + the agent's builtins
+    assert isinstance(server, MCPToolset)
+    assert isinstance(server.client.transport, StreamableHttpTransport)
+    assert server.id == "web"
 
 
 def test_build_sse_server_when_type_sse():
-    from pydantic_ai.mcp import MCPServerSSE
+    from fastmcp.client.transports import SSETransport
 
     servers, _ = build_mcp_servers(
         {"events": {"url": "https://example/sse", "type": "sse"}}
     )
     (server,) = servers
-    assert isinstance(server, MCPServerSSE)
-    assert server.tool_prefix == "events"
+    assert isinstance(server.client.transport, SSETransport)
+    assert server.id == "events"
 
 
 def test_build_skips_malformed_spec():
@@ -244,38 +248,32 @@ def test_build_skips_malformed_spec():
         {"good": {"command": "ok"}, "bad": {"nonsense": True}}
     )
     assert len(servers) == 1  # only the good one built
-    assert servers[0].tool_prefix == "good"
+    assert servers[0].id == "good"
     assert any("bad" in w for w in warnings)  # the bad one is reported, not fatal
 
 
-@pytest.mark.anyio
-async def test_stdio_server_routes_stderr_off_terminal(monkeypatch):
+def test_stdio_server_routes_stderr_off_terminal():
     """A stdio MCP server's stderr must not reach the parent terminal — otherwise
     a server's startup banner (e.g. '[@agentmemory/mcp] proxying to ...') paints
-    over the TUI. The server must hand stdio_client a real, writable errlog that
-    is not ``sys.stderr``."""
+    over the TUI. The transport must carry a log_file destination that is not
+    ``sys.stderr`` (fastmcp wires it to the child's stderr; a ``None`` log_file
+    would inherit the terminal)."""
     import sys
-    from contextlib import asynccontextmanager
 
-    import mcp.client.stdio as mcp_stdio
-
-    captured: dict = {}
-
-    @asynccontextmanager
-    async def fake_stdio_client(server, errlog=sys.stderr):
-        captured["errlog"] = errlog
-        yield ("read", "write")
-
-    monkeypatch.setattr(mcp_stdio, "stdio_client", fake_stdio_client)
+    from marim_harness.mcp.config import mcp_stderr_log_path
 
     servers, _ = build_mcp_servers({"files": {"command": "echo", "args": ["hi"]}})
     (server,) = servers
-    async with server.client_streams() as streams:
-        assert streams == ("read", "write")
-
-    errlog = captured["errlog"]
-    assert errlog is not sys.stderr  # not the terminal
-    assert hasattr(errlog, "write")  # a real writable stream
+    transport = server.client.transport
+    log_file = transport.log_file
+    assert log_file is not None  # None would inherit the terminal
+    assert log_file is not sys.stderr
+    # The happy path points at marim's capture file; the fallback is a writable
+    # null device. Either keeps banners off the TUI.
+    assert log_file == mcp_stderr_log_path() or hasattr(log_file, "write")
+    # Children must be reaped deterministically on disconnect, not kept alive
+    # for cross-session reuse marim never does.
+    assert transport.keep_alive is False
 
 
 # --- McpManager lifecycle --------------------------------------------------

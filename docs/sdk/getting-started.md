@@ -56,6 +56,12 @@ outside it are refused by the tool layer.
   convention per provider (`ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`,
   `OPENAI_API_KEY`, `GEMINI_API_KEY`, …) — marim never reads its own
   `MARIM_*`/`.env` config on this path.
+
+  Note: under pydantic-ai 2.x the `openai:` prefix resolves to the
+  **Responses API** (`OpenAIResponsesModel`). If your endpoint only speaks
+  Chat Completions (most OpenAI-compatible proxies and local servers), use
+  the `openai-chat:` prefix — or pass a constructed `OpenAIChatModel` as
+  below.
 - **An already-constructed `Model` instance.** Use this for local/OpenAI-
   compatible endpoints, or to inject a scripted model in tests:
 

@@ -21,7 +21,13 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "pydantic-ai>=1.107,<2",
+    # slim + explicit extras (v2 packaging): `openai` covers OpenRouter and
+    # local OpenAI-compatible providers, `google` → google-genai, `mcp` →
+    # fastmcp-slim[client] (mcp/config.py imports fastmcp.client.transports
+    # directly). genai-prices is used directly by usage.py, so it is declared
+    # here rather than relied on transitively.
+    "pydantic-ai-slim[openai,google,mcp]>=2.8,<3",
+    "genai-prices>=0.0.70",
     "httpx>=0.27",
     "markdownify>=0.13",
     "beautifulsoup4>=4.12",

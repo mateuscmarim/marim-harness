@@ -4,12 +4,18 @@ import logging
 import os
 import re
 import secrets
+import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from pydantic import ValidationError
-from pydantic_ai.messages import ModelMessagesTypeAdapter
+from pydantic_ai.messages import (
+    ModelMessagesTypeAdapter,
+    ModelResponse,
+    ToolCallPart,
+    sanitize_messages,
+)
 from pydantic_ai.usage import RunUsage
 
 from ..atomic_io import atomic_write_text, file_lock
@@ -54,6 +60,47 @@ def _now_slug() -> str:
 
 def _total_tokens(tok: dict) -> int:
     return tok.get("input", 0) + tok.get("output", 0)
+
+
+def _sanitize_loaded(messages: list, path: Path) -> list:
+    """Inbound hardening on a just-loaded transcript, via pydantic-ai's
+    ``sanitize_messages``. The file is marim's own, but it sits on disk where
+    anything can rewrite it between runs, so re-ingesting it is treated like
+    any other untrusted history: FileUrl parts with non-HTTP schemes are
+    dropped (the model provider fetches those server-side, under whatever
+    credentials it holds), ``force_download`` modes are reset, and
+    uploaded-file references are stripped.
+
+    Two deliberate deviations from ``sanitize_messages``' defaults:
+
+    - ``strip_system_prompts=False`` — any system part in a saved transcript
+      is marim's own; stripping it would silently mutate a resumed
+      conversation (and warn on every load).
+    - Every ToolCallPart id is passed as resolved, which disables the
+      dangling-tail strip entirely. Marim must KEEP a trailing unanswered
+      call: the partial work it carries is preserved by synthesizing its
+      return (``_repair_unanswered_tool_calls``, which runs at the next
+      turn's start) — discarding the call would throw that work away.
+
+    Warnings are demoted to log lines: load runs under a TUI, where a stray
+    stderr warning paints over the screen."""
+    tool_call_ids = [
+        p.tool_call_id
+        for m in messages
+        if isinstance(m, ModelResponse)
+        for p in m.parts
+        if isinstance(p, ToolCallPart)
+    ]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        sanitized = sanitize_messages(
+            messages,
+            strip_system_prompts=False,
+            resolved_tool_call_ids=tool_call_ids,
+        )
+    for w in caught:
+        logger.warning("session %s: sanitized loaded history: %s", path.name, w.message)
+    return sanitized
 
 
 # How much of a session file the picker fast path reads. The header (id, name,
@@ -217,6 +264,7 @@ class SessionStore:
                 f"version's schema ({type(exc).__name__}). Move the file aside "
                 f"or start a fresh session."
             ) from exc
+        messages = _sanitize_loaded(messages, self.path)
         tok = data.get("tokens", {})
         # Old files predate the extra fields, so each defaults to 0 / {}.
         usage = RunUsage(

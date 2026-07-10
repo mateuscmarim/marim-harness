@@ -364,7 +364,13 @@ def build_model(cfg: ModelConfig):
         from pydantic_ai.providers.google import GoogleProvider
 
         assert cfg.model is not None  # google always has a model id
-        return GoogleModel(cfg.model, provider=GoogleProvider(api_key=cfg.api_key))
+        # GoogleProvider's typed overloads (pydantic-ai 2.x) demand a str
+        # api_key, but its runtime implementation accepts None and falls back
+        # to GOOGLE_API_KEY/GEMINI_API_KEY — the same envs _google_config
+        # already read — raising a clear UserError when auth is truly absent.
+        # Passing None through preserves that behavior.
+        provider = GoogleProvider(api_key=cfg.api_key)  # pyright: ignore[reportArgumentType]
+        return GoogleModel(cfg.model, provider=provider)
 
     if cfg.provider == "claude-cli":
         from .claude_cli_model import ClaudeCliModel

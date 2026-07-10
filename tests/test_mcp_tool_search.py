@@ -27,6 +27,13 @@ class _FakeServer:
     async def list_tools(self):
         return list(range(self._n))
 
+    def prefixed(self, prefix):
+        # Mirrors AbstractToolset.prefixed — granted_toolsets prefixes each
+        # granted server with its name at compose time.
+        from pydantic_ai.toolsets.prefixed import PrefixedToolset
+
+        return PrefixedToolset(self, prefix)
+
 
 def _manager_with(servers):
     m = McpManager.__new__(McpManager)  # bypass connect plumbing
@@ -73,11 +80,16 @@ async def test_granted_toolsets_defers_a_large_granted_surface():
 
 
 @pytest.mark.anyio
-async def test_granted_toolsets_under_threshold_returns_raw():
+async def test_granted_toolsets_under_threshold_returns_inline():
+    from pydantic_ai.toolsets.prefixed import PrefixedToolset
+
     small = _FakeServer("pw", 5)
     m = _manager_with([small])
     result, _ = await m.granted_toolsets(["pw"], "auto", 15)
-    assert result == [small]  # not wrapped
+    # Not behind DeferredLoadingToolset — the prefixed server rides inline.
+    (only,) = result
+    assert isinstance(only, PrefixedToolset)
+    assert only.wrapped is small and only.prefix == "pw"
 
 
 @pytest.mark.anyio
@@ -85,7 +97,7 @@ async def test_granted_toolsets_off_never_defers():
     big = _FakeServer("pw", 50)
     m = _manager_with([big])
     result, _ = await m.granted_toolsets(["pw"], "off", 15)
-    assert result == [big]
+    assert [t.wrapped for t in result] == [big]  # inline, not deferred
 
 
 @pytest.mark.anyio
@@ -95,7 +107,7 @@ async def test_granted_toolsets_counts_only_the_granted_subset():
     small, big = _FakeServer("a", 5), _FakeServer("b", 50)
     m = _manager_with([small, big])
     result, _ = await m.granted_toolsets(["a"], "auto", 15)
-    assert result == [small]
+    assert [t.wrapped for t in result] == [small]
 
 
 @pytest.mark.anyio
@@ -150,10 +162,9 @@ async def test_live_tool_count_still_counts_after_refactor():
 
 
 class _InstrServer:
-    """Fake MCP server: tool_prefix + a plain-string instructions attribute."""
+    """Fake MCP server: an id (the server name) + a plain-string instructions attribute."""
     def __init__(self, prefix, instructions):
         self.id = prefix
-        self.tool_prefix = prefix
         self.instructions = instructions
 
 
@@ -161,7 +172,6 @@ class _RaisingInstrServer:
     """Fake whose .instructions raises AttributeError (simulates pre-init)."""
     def __init__(self, prefix):
         self.id = prefix
-        self.tool_prefix = prefix
 
     @property
     def instructions(self):
