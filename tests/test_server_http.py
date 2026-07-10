@@ -202,6 +202,30 @@ def test_session_create_and_list(client):
     assert missing.status_code == 404
 
 
+def test_session_list_includes_status_and_pending_asks(client):
+    test_client, tmp_path = client
+    ws_id, sid, _ = _setup_workspace_and_session(test_client, tmp_path)
+    listed = test_client.get(f"/v1/workspaces/{ws_id}/sessions", headers=AUTH).json()
+    [row] = [s for s in listed["sessions"] if s["id"] == sid]
+    assert row["status"] == "idle"
+    assert row["pending_asks"] == []
+
+    # With a live host parked on an approval, the list row must reflect it —
+    # a client rendering the session list needs this without a per-session
+    # detail request.
+    base = f"/v1/workspaces/{ws_id}/sessions/{sid}"
+    accepted = test_client.post(f"{base}/messages", headers=AUTH, json={"prompt": "edit it"})
+    assert accepted.status_code == 202
+    listed = _poll(
+        test_client, f"/v1/workspaces/{ws_id}/sessions",
+        lambda body: any(s["id"] == sid and s["status"] == "waiting_ask"
+                         for s in body["sessions"]),
+    )
+    [row] = [s for s in listed["sessions"] if s["id"] == sid]
+    [ask] = row["pending_asks"]
+    assert ask["payload"]["tool_name"] == "edit_file"
+
+
 def test_full_turn_with_parked_approval(client):
     test_client, tmp_path = client
     ws_id, sid, project = _setup_workspace_and_session(test_client, tmp_path)
