@@ -128,8 +128,20 @@ async def list_sessions(request: Request) -> Response:
     record = _workspace(request)
     if record is None:
         return _error(404, "not_found", "unknown workspace")
+    # Each row carries the same status/pending_asks a per-session GET would
+    # return, so list consumers (e.g. the mobile app) don't need one detail
+    # request per session. peek() is an in-memory lookup — no host is spawned.
+    supervisor = _supervisor(request)
     infos = SessionManager(Path(record.path)).list()
-    return JSONResponse({"sessions": [asdict(i) for i in infos]})
+    sessions = []
+    for info in infos:
+        host = supervisor.peek(record.id, info.id)
+        sessions.append({
+            **asdict(info),
+            "status": host.status if host else "idle",
+            "pending_asks": host.pending_asks() if host else [],
+        })
+    return JSONResponse({"sessions": sessions})
 
 
 async def create_session(request: Request) -> Response:
