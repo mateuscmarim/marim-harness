@@ -31,77 +31,76 @@ def _harness(tmp_path: Path):
 
 
 class _FakeCtx:
+    """Stands in for a live RunContext: enqueue appends one PendingMessage
+    stand-in to the shared pending_messages queue, mirroring pydantic-ai's
+    contract that _flush_steers builds its delivery receipts on."""
+
     def __init__(self):
         self.calls = []
+        self.pending_messages = []
 
     def enqueue(self, *content, priority="asap"):
         self.calls.append((content, priority))
+        self.pending_messages.append(object())
 
 
-def _mk_user(text: str):
-    from pydantic_ai.messages import ModelRequest, UserPromptPart
-
-    return ModelRequest(parts=[UserPromptPart(content=text)])
-
-
-def test_reclaim_rebuffers_undelivered_steer_matching_earlier_history(tmp_path):
-    """The dropped-steer bug: a steer whose text equals an EARLIER user message
-    must still be reclaimed when this round never delivered it. Matching against
-    the whole session (the old behaviour) read the earlier occurrence as a
-    delivery and silently dropped the enqueue — common for short steers like
-    'yes' / 'continue' / 'stop' repeated across a session."""
-    from pydantic_ai.messages import ModelResponse, TextPart
-
+def test_reclaim_rebuffers_steer_still_in_queue(tmp_path):
+    """A steer whose PendingMessage receipt is still sitting in the run's queue
+    was never drained into a request — the round died first. It must be
+    re-buffered, regardless of what its text looks like (the pre-2.x text
+    heuristic could confuse a short steer like 'continue' with history)."""
     h = _harness(tmp_path)
     tc = h.turn_controller
-    # An earlier turn already said "continue"; it is the pre-round baseline.
-    h.session.history = [_mk_user("continue")]
-    tc._inflight_steers = [("continue", None)]
-    # This round asked "go" and finished — it never delivered a fresh "continue".
-    messages = [
-        _mk_user("continue"),  # baseline (prior history), must NOT count
-        _mk_user("go"),
-        ModelResponse(parts=[TextPart(content="done")]),
-    ]
-    tc._reclaim_undelivered_steers(messages)
+    pm = object()
+    queue = [pm]  # the run died with the steer still queued
+    tc._inflight_steers = [("continue", None, pm, queue)]
+    tc._reclaim_undelivered_steers()
     assert tc._steer_buffer == [("continue", None)]  # reclaimed, not dropped
     assert tc._inflight_steers == []
 
 
-def test_reclaim_keeps_delivered_steer_even_if_it_echoes_history(tmp_path):
-    """A steer with text equal to an earlier user message is still recognised as
-    delivered when it WAS delivered this round — the matching fresh user part in
-    the new-message window is consumed, so it is not spuriously re-buffered."""
-    from pydantic_ai.messages import ModelResponse, TextPart
-
+def test_reclaim_keeps_delivered_steer(tmp_path):
+    """A drained steer's PendingMessage is removed from the queue in place by
+    pydantic-ai's drain capability — the receipt object is gone, so the steer
+    is delivered and must not be re-buffered, even if other messages remain."""
     h = _harness(tmp_path)
     tc = h.turn_controller
-    h.session.history = [_mk_user("continue")]
-    tc._inflight_steers = [("continue", None)]
-    # The round delivered a fresh "continue" user part beyond the baseline.
-    messages = [
-        _mk_user("continue"),  # baseline
-        _mk_user("go"),
-        _mk_user("continue"),  # the actually-delivered steer
-        ModelResponse(parts=[TextPart(content="done")]),
-    ]
-    tc._reclaim_undelivered_steers(messages)
+    pm = object()
+    queue = [object()]  # something else queued; pm itself was drained
+    tc._inflight_steers = [("continue", None, pm, queue)]
+    tc._reclaim_undelivered_steers()
     assert tc._steer_buffer == []  # delivered → not reclaimed
     assert tc._inflight_steers == []
 
 
-def test_reclaim_counts_identical_steers_not_membership(tmp_path):
-    """Two identical steers in one round, only one delivered: the delivered one is
-    consumed and the other reclaimed. A set keyed by text (the old behaviour)
-    conflated them and dropped both."""
+def test_reclaim_distinguishes_identical_steers_by_identity(tmp_path):
+    """Two textually identical steers, one drained: object identity — not text —
+    decides which one comes back. The pre-2.x text multiset approximated this;
+    receipts make it exact."""
     h = _harness(tmp_path)
     tc = h.turn_controller
-    h.session.history = []
-    tc._inflight_steers = [("yes", None), ("yes", None)]
-    messages = [_mk_user("yes")]  # only one "yes" actually drained this round
-    tc._reclaim_undelivered_steers(messages)
+    pm1, pm2 = object(), object()
+    queue = [pm2]  # pm1 drained, pm2 stranded
+    tc._inflight_steers = [("yes", None, pm1, queue), ("yes", None, pm2, queue)]
+    tc._reclaim_undelivered_steers()
     assert tc._steer_buffer == [("yes", None)]  # exactly one reclaimed
     assert tc._inflight_steers == []
+
+
+def test_flush_records_one_receipt_per_steer(tmp_path):
+    """_flush_steers captures each steer's receipt as the queue entry its own
+    enqueue appended — the tail right after that enqueue, not a neighbour's."""
+    h = _harness(tmp_path)
+    tc = h.turn_controller
+    ctx = _FakeCtx()
+    tc._active_run_ctx = ctx
+    tc._steer_buffer = [("first", None), ("second", None)]
+    tc._flush_steers()
+    assert tc._steer_buffer == []
+    assert [t for t, _, _, _ in tc._inflight_steers] == ["first", "second"]
+    receipts = [pm for _, _, pm, _ in tc._inflight_steers]
+    assert receipts == ctx.pending_messages  # each steer got its own entry
+    assert receipts[0] is not receipts[1]
 
 
 def test_steer_enqueues_on_active_ctx(tmp_path):
