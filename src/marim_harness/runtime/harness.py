@@ -420,6 +420,7 @@ class Harness:
         on_subagent_model: SubAgentModelCb | None = None,
         on_subagent_usage: SubAgentUsageCb | None = None,
         on_cli_activity: CliActivityCb | None = None,
+        on_ttft: Callable[[float], None] | None = None,
         on_mode_change: Callable[[], None] | None = None,
         on_present_plan: OnPresentPlanFn | None = None,
         on_tasks_changed: Callable[[], None] | None = None,
@@ -448,6 +449,7 @@ class Harness:
         self.deps.ui.on_subagent_model = on_subagent_model
         self.deps.ui.on_subagent_usage = on_subagent_usage
         self.deps.ui.on_cli_activity = on_cli_activity
+        self.deps.ui.on_ttft = on_ttft
         self._wire_cli_model(self.current_model)
         self.deps.ui.on_mode_change = on_mode_change
         self.deps.ui.on_present_plan = on_present_plan
