@@ -188,6 +188,47 @@ async def test_status_bar_includes_live_run_tokens_while_streaming(tmp_path: Pat
 
 
 @pytest.mark.anyio
+async def test_on_events_records_time_to_first_token(tmp_path: Path):
+    """Each model request's TTFT is measured client-side: on_events is invoked
+    as the stream opens, so the gap to the first event is the wait the user
+    actually stares at. The latest request overwrites the previous value."""
+    import types
+
+    from pydantic_ai.messages import FunctionToolCallEvent, ToolCallPart
+
+    ctx = types.SimpleNamespace(usage=types.SimpleNamespace(total_tokens=1))
+
+    async def gen():
+        yield FunctionToolCallEvent(
+            part=ToolCallPart(tool_name="read_file", args={}, tool_call_id="c1")
+        )
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.stream.last_ttft is None  # no request streamed yet
+        await app.stream.on_events(ctx, gen())
+        assert app.stream.last_ttft is not None
+        assert app.stream.last_ttft >= 0.0
+
+
+@pytest.mark.anyio
+async def test_status_bar_shows_ttft_once_known(tmp_path: Path):
+    """The bar surfaces the latest request's TTFT; before any stream the field
+    is absent entirely (no 'ttft ?' placeholder noise)."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        text = str(app.query_one("#status-bar").render())
+        assert "ttft" not in text  # nothing streamed yet
+        app.stream.last_ttft = 0.83
+        app.status.refresh_status()
+        await pilot.pause()
+        text = str(app.query_one("#status-bar").render())
+        assert "ttft 0.8s" in text
+
+
+@pytest.mark.anyio
 async def test_on_events_tracks_live_run_tokens_from_ctx_usage(tmp_path: Path):
     """The main event handler reads the run's live token total off ctx.usage —
     the same source the sub-agent handler already uses."""

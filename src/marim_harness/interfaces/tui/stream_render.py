@@ -415,6 +415,12 @@ class StreamRenderer:
         # per flush tick rather than inline per delta (see _drain_subagent_usage).
         self.dirty_usage_cards: set[SubAgentWidget] = set()
         self.live_run_tokens = 0
+        # Time-to-first-token of the most recent model request (seconds), or
+        # None before the first stream / after a session reset. Measured
+        # client-side in on_events (handler start → first event), so it works
+        # identically across providers and needs no coupling to pydantic-ai's
+        # instrumentation internals (which only export TTFT as an OTel metric).
+        self.last_ttft: float | None = None
         self.show_all_output = False  # Ctrl+O reveal-all toggle
         # True while a session view is being rebuilt (clear/switch/new). During the
         # rebuild the log's max_scroll_y is briefly stale (old content removed, new
@@ -440,6 +446,7 @@ class StreamRenderer:
         self.subagents.clear()
         self._detached_cards.clear()
         self.dirty_streams.clear()
+        self.last_ttft = None
 
     def adopt_resumed_card(self, card: "SubAgentWidget", job_id: str) -> None:
         """Re-arm an interrupted-or-still-live card onto background job
@@ -751,7 +758,16 @@ class StreamRenderer:
         self.tool_group = None
         self.solo_tool = None
         sink = _TopLevelSink(self, self.app.query_one("#log", VerticalScroll))
+        # This handler is invoked as the model request's stream opens, so the
+        # gap to the first streamed event is the wait the user actually stares
+        # at — a per-request TTFT. Overwritten each request; the status bar
+        # shows the latest.
+        request_start = time.monotonic()
+        saw_first_event = False
         async for event in events:
+            if not saw_first_event:
+                saw_first_event = True
+                self.last_ttft = time.monotonic() - request_start
             # ctx.usage carries the run's live running total (ctx is None in some
             # unit tests); fold it into the status counter via the flush tick.
             self.live_run_tokens = (
