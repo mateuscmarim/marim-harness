@@ -588,10 +588,7 @@ async def test_exit_command_quits_app(tmp_path: Path, cmd: str):
     app.run_worker = lambda *a, **k: started.append(a)  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
-        await _submit(app, cmd)  # first: warns, cancels
-        await pilot.pause()
-        assert exited == []
-        await _submit(app, cmd)  # second: confirmed, proceeds
+        await _submit(app, cmd)  # /exit quits immediately
         await pilot.pause()
     assert exited == [True]
     assert started == []  # never sent to the model as a prompt

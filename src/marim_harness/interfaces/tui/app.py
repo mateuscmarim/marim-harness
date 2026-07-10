@@ -88,7 +88,7 @@ _WELCOME = (
     "- `ctrl+t` cycles the approval mode (ask → auto → plan)\n"
     "- `esc` cancels the running turn\n"
     "- `ctrl+g` (or `alt+enter`) steers the running turn\n"
-    "- `/exit` (or `/quit`, `ctrl+c`) quits — press/run twice to confirm"
+    "- `/exit` (or `/quit`, `ctrl+c`) quits — `ctrl+c` requires a double-press to confirm"
 )
 
 
