@@ -3,6 +3,8 @@ from pathlib import Path
 import pytest
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.function import FunctionModel
+from pydantic_ai.toolsets import FunctionToolset
+from pydantic_ai.toolsets.prefixed import PrefixedToolset
 
 from marim_harness.runtime.harness import Harness
 from marim_harness.tools.provider import BuiltinToolProvider
@@ -117,7 +119,7 @@ async def test_run_turn_forwards_live_toolsets(tmp_path: Path):
     # (when enabled) is composed in alongside live MCP toolsets, which is covered
     # separately by test_lsp_wiring.py.
     h = _make_harness(_text_model(), deps, provider=BuiltinToolProvider(register_lsp_tools=False))
-    sentinel = object()
+    sentinel = FunctionToolset(id="mcp1")
     h.mcp._live_servers = [sentinel]
 
     captured: dict = {}
@@ -131,7 +133,10 @@ async def test_run_turn_forwards_live_toolsets(tmp_path: Path):
     h.agent.run = fake_run
     out = await h.run_turn("hi")
     assert out == "ok"
-    assert captured["toolsets"] == [sentinel]  # live servers reach agent.run
+    # Live servers reach agent.run, prefixed with the server name at compose time.
+    (forwarded,) = captured["toolsets"]
+    assert isinstance(forwarded, PrefixedToolset)
+    assert forwarded.wrapped is sentinel and forwarded.prefix == "mcp1"
 
 
 @pytest.mark.anyio
@@ -159,7 +164,7 @@ async def test_run_turn_omits_disabled_from_toolsets(tmp_path: Path):
     deps = _make_deps(tmp_path)
     # LSP disabled: see test_run_turn_forwards_live_toolsets above.
     h = _make_harness(_text_model(), deps, provider=BuiltinToolProvider(register_lsp_tools=False))
-    live_on, live_off = _FakeServer("on"), _FakeServer("off")
+    live_on, live_off = FunctionToolset(id="on"), FunctionToolset(id="off")
     h.mcp._live_servers = [live_on, live_off]
     h.mcp.disabled = {"off"}
 
@@ -171,7 +176,9 @@ async def test_run_turn_omits_disabled_from_toolsets(tmp_path: Path):
 
     h.agent.run = fake_run
     await h.run_turn("hi")
-    assert captured["toolsets"] == [live_on]  # the disabled one is muted
+    (forwarded,) = captured["toolsets"]  # the disabled one is muted
+    assert isinstance(forwarded, PrefixedToolset)
+    assert forwarded.wrapped is live_on
 
 
 @pytest.mark.anyio
@@ -287,8 +294,8 @@ def test_granted_servers_resolves_named(tmp_path: Path):
 
     deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
-    a = SimpleNamespace(tool_prefix="mddocs")
-    b = SimpleNamespace(tool_prefix="sentry")
+    a = SimpleNamespace(id="mddocs")
+    b = SimpleNamespace(id="sentry")
     h.mcp._live_servers = [a, b]
 
     granted, unknown = h.mcp.granted_servers(["mddocs"])
@@ -303,7 +310,7 @@ def test_granted_servers_none_grants_nothing(tmp_path: Path):
 
     deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
-    h.mcp._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
+    h.mcp._live_servers = [SimpleNamespace(id="mddocs")]
 
     assert h.mcp.granted_servers(None) == ([], [])
     assert h.mcp.granted_servers([]) == ([], [])
@@ -316,7 +323,7 @@ def test_granted_servers_reports_unknown(tmp_path: Path):
 
     deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
-    h.mcp._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
+    h.mcp._live_servers = [SimpleNamespace(id="mddocs")]
 
     granted, unknown = h.mcp.granted_servers(["mddocs", "nope"])
     assert granted == [h.mcp._live_servers[0]]
@@ -330,7 +337,7 @@ def test_granted_servers_excludes_disabled(tmp_path: Path):
 
     deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
-    h.mcp._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
+    h.mcp._live_servers = [SimpleNamespace(id="mddocs")]
     h.mcp.disabled = {"mddocs"}
 
     granted, unknown = h.mcp.granted_servers(["mddocs"])
@@ -345,7 +352,7 @@ def test_granted_servers_dedupes(tmp_path: Path):
 
     deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
-    a = SimpleNamespace(tool_prefix="mddocs")
+    a = SimpleNamespace(id="mddocs")
     h.mcp._live_servers = [a]
 
     granted, unknown = h.mcp.granted_servers(["mddocs", "mddocs"])
@@ -373,8 +380,8 @@ def test_mcp_grant_note_lists_unknown_and_enabled(tmp_path: Path):
     deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
     h.mcp._live_servers = [
-        SimpleNamespace(tool_prefix="mddocs"),
-        SimpleNamespace(tool_prefix="sentry"),
+        SimpleNamespace(id="mddocs"),
+        SimpleNamespace(id="sentry"),
     ]
 
     note = h.mcp.grant_note(["nope"])
@@ -411,8 +418,8 @@ def test_mcp_index_text_lists_enabled(tmp_path: Path):
     deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
     h.mcp._live_servers = [
-        SimpleNamespace(tool_prefix="mddocs"),
-        SimpleNamespace(tool_prefix="sentry"),
+        SimpleNamespace(id="mddocs"),
+        SimpleNamespace(id="sentry"),
     ]
     text = h.mcp.mcp_index_text()
     assert "mddocs" in text and "sentry" in text
@@ -436,8 +443,8 @@ def test_mcp_index_text_excludes_disabled(tmp_path: Path):
     deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
     h.mcp._live_servers = [
-        SimpleNamespace(tool_prefix="mddocs"),
-        SimpleNamespace(tool_prefix="sentry"),
+        SimpleNamespace(id="mddocs"),
+        SimpleNamespace(id="sentry"),
     ]
     h.mcp.disabled = {"sentry"}
     text = h.mcp.mcp_index_text()

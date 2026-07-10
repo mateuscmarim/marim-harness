@@ -16,6 +16,24 @@ from tests.conftest import (
 )
 
 
+def _grantable_server(name: str):
+    """Fake MCP server that supports the grant path: named by id and prefixable
+    (granted_toolsets wraps each granted server in PrefixedToolset)."""
+
+    class _Server:
+        id = name
+
+        def prefixed(self, prefix):
+            from pydantic_ai.toolsets.prefixed import PrefixedToolset
+
+            return PrefixedToolset(self, prefix)
+
+        async def list_tools(self):
+            return []
+
+    return _Server()
+
+
 def _spawn_then_done_model() -> FunctionModel:
     """Main agent: spawn an explore sub-agent, then echo its report. The same
     model backs the sub-agent, so it's told apart by its instructions."""
@@ -395,13 +413,12 @@ def test_parallel_tool_calls_enabled_on_subagent(tmp_path):
 
 @pytest.mark.anyio
 async def test_run_subagent_grants_named_server(tmp_path: Path):
-    from types import SimpleNamespace
-
     from pydantic_ai.models.test import TestModel
+    from pydantic_ai.toolsets.prefixed import PrefixedToolset
 
     deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
-    server = SimpleNamespace(tool_prefix="mddocs")
+    server = _grantable_server("mddocs")
     h.mcp._live_servers = [server]
     cap = _capture_subagent(h)
 
@@ -409,7 +426,10 @@ async def test_run_subagent_grants_named_server(tmp_path: Path):
     assert out == "report"
     # Identity, not just equality: gating relies on the SAME hooked server
     # object reaching run() — a copy would silently drop the approval hook.
-    assert cap["toolsets"][0] is server
+    # (It arrives wrapped in PrefixedToolset, which forwards to the raw server.)
+    (granted,) = cap["toolsets"]
+    assert isinstance(granted, PrefixedToolset)
+    assert granted.wrapped is server
 
 
 @pytest.mark.anyio
@@ -420,7 +440,7 @@ async def test_run_subagent_default_grants_no_servers(tmp_path: Path):
 
     deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
-    h.mcp._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
+    h.mcp._live_servers = [SimpleNamespace(id="mddocs")]
     cap = _capture_subagent(h)
 
     await h.subagents.run("explore", "investigate", "sid")
@@ -443,13 +463,12 @@ async def test_run_subagent_prepends_unknown_note(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_run_background_subagent_grants_named_server(tmp_path: Path):
-    from types import SimpleNamespace
-
     from pydantic_ai.models.test import TestModel
+    from pydantic_ai.toolsets.prefixed import PrefixedToolset
 
     deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
-    server = SimpleNamespace(tool_prefix="mddocs")
+    server = _grantable_server("mddocs")
     h.mcp._live_servers = [server]
     cap = _capture_subagent(h)
 
@@ -457,7 +476,9 @@ async def test_run_background_subagent_grants_named_server(tmp_path: Path):
     assert out == "report"
     # Identity, not just equality: the background path must also forward the
     # SAME hooked server object so its approval gating is preserved.
-    assert cap["toolsets"][0] is server
+    (granted,) = cap["toolsets"]
+    assert isinstance(granted, PrefixedToolset)
+    assert granted.wrapped is server
 
 
 @pytest.mark.anyio
@@ -482,7 +503,7 @@ async def test_run_background_subagent_default_grants_no_servers(tmp_path: Path)
 
     deps = _make_deps(tmp_path)
     h = _make_harness(TestModel(), deps)
-    h.mcp._live_servers = [SimpleNamespace(tool_prefix="mddocs")]
+    h.mcp._live_servers = [SimpleNamespace(id="mddocs")]
     cap = _capture_subagent(h)
 
     await h.subagents.run_background("general", "do it")

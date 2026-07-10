@@ -1,6 +1,7 @@
 import pytest
 from pydantic_ai import DeferredLoadingToolset
 from pydantic_ai.toolsets import FunctionToolset
+from pydantic_ai.toolsets.prefixed import PrefixedToolset
 
 from marim_harness.runtime.toolsets import compose_turn_toolsets
 
@@ -16,6 +17,17 @@ class _FakeMcp:
     async def live_tool_count(self):
         return self._count
 
+    @staticmethod
+    def server_name(server) -> str:
+        # Mirrors McpManager.server_name: the toolset id, soft for doubles.
+        return str(getattr(server, "id", None) or "?")
+
+
+def _unwrap_mcp(out):
+    """Compose wraps each live MCP toolset in PrefixedToolset (named by server);
+    unwrap for identity assertions against the raw fakes."""
+    return [t.wrapped if isinstance(t, PrefixedToolset) else t for t in out]
+
 
 def _lsp():
     ts = FunctionToolset()
@@ -25,10 +37,13 @@ def _lsp():
 
 @pytest.mark.anyio
 async def test_lsp_none_reproduces_live_when_under_threshold():
-    a, b = FunctionToolset(), FunctionToolset()
+    a, b = FunctionToolset(id="a"), FunctionToolset(id="b")
     mcp = _FakeMcp([a, b], count=3)
     out = await compose_turn_toolsets(mcp, None, 6, "auto", 5)
-    assert out == [a, b]
+    # Live MCP toolsets come back wrapped in PrefixedToolset (server-name prefix).
+    assert _unwrap_mcp(out) == [a, b]
+    assert all(isinstance(t, PrefixedToolset) for t in out)
+    assert [t.prefix for t in out] == ["a", "b"]
 
 
 @pytest.mark.anyio
@@ -41,11 +56,14 @@ async def test_lsp_none_defers_live_when_over_threshold():
 
 @pytest.mark.anyio
 async def test_lsp_inline_when_combined_under_threshold():
-    a = FunctionToolset()
+    a = FunctionToolset(id="a")
     lsp = _lsp()
     mcp = _FakeMcp([a], count=3)  # 3 + 6 = 9 <= 10
     out = await compose_turn_toolsets(mcp, lsp, 6, "auto", 10)
-    assert out == [a, lsp]  # lsp present inline
+    # MCP toolset is prefixed; the LSP toolset rides inline UNprefixed.
+    assert _unwrap_mcp(out) == [a, lsp]
+    assert isinstance(out[0], PrefixedToolset)
+    assert out[1] is lsp
 
 
 @pytest.mark.anyio
@@ -87,11 +105,13 @@ async def test_policy_on_always_defers():
 @pytest.mark.anyio
 async def test_policy_off_returns_live_inline():
     # "off" never defers, even for a large surface — the live toolsets pass
-    # through unwrapped (was test_toolsets_for_off_returns_live_unwrapped).
-    a, b = FunctionToolset(), FunctionToolset()
+    # through inline, not behind DeferredLoadingToolset (was
+    # test_toolsets_for_off_returns_live_unwrapped). They are still prefixed.
+    a, b = FunctionToolset(id="a"), FunctionToolset(id="b")
     mcp = _FakeMcp([a, b], count=50)
     out = await compose_turn_toolsets(mcp, None, 6, "off", 15)
-    assert out == [a, b]
+    assert _unwrap_mcp(out) == [a, b]
+    assert all(isinstance(t, PrefixedToolset) for t in out)
 
 
 @pytest.mark.anyio

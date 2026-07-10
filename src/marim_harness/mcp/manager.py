@@ -60,7 +60,9 @@ class McpManager:
 
     @staticmethod
     def server_name(server) -> str:
-        return str(getattr(server, "id", None) or getattr(server, "tool_prefix", "?"))
+        # MCPToolset carries the config name as its ``id`` (see build_mcp_servers);
+        # the getattr stays soft for test doubles and foreign toolsets.
+        return str(getattr(server, "id", None) or "?")
 
     def configured_names(self) -> list[str]:
         return [self.server_name(s) for s in self.mcp_servers]
@@ -115,14 +117,16 @@ class McpManager:
     ) -> list[tuple[str, str]]:
         """For each non-disabled live server whose tools appear in ``discovered``,
         return ``(server_name, instructions)`` — the server's init-time usage guide.
-        Best-effort: a server with no ``tool_prefix``, no/empty instructions, or one
+        ``discovered`` holds the composed (prefixed) tool names, and the prefix is
+        the server name by construction (compose applies ``.prefixed(name)``).
+        Best-effort: a server with no usable name, no/empty instructions, or one
         whose ``.instructions`` raises before init (``getattr`` → ``None``) is
         skipped, so a quiet/half-connected server never breaks a turn. Sorted by
         server name for deterministic output."""
         out: list[tuple[str, str]] = []
         for s in self.live_toolsets():
-            prefix = getattr(s, "tool_prefix", None)
-            if not prefix or not any(t.startswith(f"{prefix}_") for t in discovered):
+            prefix = self.server_name(s)
+            if prefix == "?" or not any(t.startswith(f"{prefix}_") for t in discovered):
                 continue
             text = getattr(s, "instructions", None)
             if isinstance(text, str) and text.strip():
@@ -185,9 +189,13 @@ class McpManager:
         granted, unknown = self.granted_servers(names)
         if not granted:
             return granted, unknown
+        # Prefix here (not at build time) so the manager keeps one raw handle per
+        # server for lifecycle/introspection; the model-facing <name>_<tool> shape
+        # is composed exactly where toolsets are handed to a run.
+        prefixed = [s.prefixed(self.server_name(s)) for s in granted]
         if should_defer(policy, await self._tool_count(granted), threshold):
-            return [DeferredLoadingToolset(CombinedToolset(granted))], unknown
-        return granted, unknown
+            return [DeferredLoadingToolset(CombinedToolset(prefixed))], unknown
+        return prefixed, unknown
 
     def grant_note(self, unknown: list[str]) -> str:
         if not unknown:

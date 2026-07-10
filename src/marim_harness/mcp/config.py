@@ -18,70 +18,28 @@ and the project's ``.marim/mcp.json`` (project wins by name)::
       }
     }
 
-Each server is tool-prefixed with its config name, so its tools surface as
-``<name>_<tool>`` and never collide with the builtins or each other.
+Each server carries its config name as the toolset ``id``; the ``<name>_<tool>``
+prefixing the model sees is applied at compose time (``runtime.toolsets`` /
+``McpManager.granted_toolsets``) via ``AbstractToolset.prefixed``, so raw
+toolsets stay the single lifecycle/introspection handle here.
 """
 
 import json
 import os
-import warnings
-from contextlib import asynccontextmanager
 from pathlib import Path
+
+from fastmcp.client.transports import (
+    SSETransport,
+    StdioTransport,
+    StreamableHttpTransport,
+)
+from pydantic_ai.mcp import MCPToolset
 
 from ..atomic_io import atomic_write_text
 from ..config import config_dir
 from ..runtime.permissions import Mode
 from ..tools.impl.coerce import coerce_by_schema
 from ..tools.impl.offload import _INLINE_CHAR_LIMIT, offload_if_large
-
-# Per-tool retry budget for MCP servers, matched to the agent's ``retries=2`` (the
-# main agent and every sub-agent are built with it). pydantic-ai defaults an MCP
-# server's max_retries to 1, which kills the whole run with UnexpectedModelBehavior
-# on the first tool error — see build_mcp_servers' docstring.
-_MCP_TOOL_RETRIES = 2
-
-# MCPServerStdio/StreamableHTTP/SSE are deprecated in favour of MCPToolset in
-# pydantic-ai 2.x, but they remain the only variants with the simple
-# command/url + tool_prefix kwargs this config maps onto. Suppress import-time
-# and subclass-definition-time DeprecationWarnings here; construction-time
-# suppression lives in build_mcp_servers. Revisit when MCPToolset gains prefix
-# support.
-with warnings.catch_warnings():
-    warnings.simplefilter("ignore", DeprecationWarning)
-    from pydantic_ai.mcp import (
-        MCPServerSSE,
-        MCPServerStdio,
-        MCPServerStreamableHTTP,
-    )
-
-
-class _QuietStdioServer(MCPServerStdio):
-    """``MCPServerStdio`` that routes the child's stderr to a log file
-    instead of inheriting the parent terminal. pydantic-ai builds
-    ``stdio_client`` with the default ``errlog=sys.stderr``; we override
-    ``client_streams`` to pass our own so server banners never paint the
-    TUI. Resolves ``stdio_client`` off its module at call time so the
-    errlog destination stays observable/patchable."""
-
-    @asynccontextmanager
-    async def client_streams(self):
-        import mcp.client.stdio as mcp_stdio
-        from mcp.client.stdio import StdioServerParameters
-
-        params = StdioServerParameters(
-            command=self.command,
-            args=list(self.args),
-            env=self.env,
-            cwd=self.cwd,
-        )
-        errlog = _open_mcp_stderr_log()
-        try:
-            async with mcp_stdio.stdio_client(
-                server=params, errlog=errlog
-            ) as streams:
-                yield streams
-        finally:
-            errlog.close()
 
 
 def _bound_tool_result(result, *, label: str, name: str, args: dict | None,
@@ -146,15 +104,19 @@ def mcp_stderr_log_path() -> Path:
     return config_dir() / "mcp-stderr.log"
 
 
-def _open_mcp_stderr_log():
-    """Open the capture file for an MCP server's stderr. A stdio server's stderr
-    is otherwise inherited from the parent process, so a startup banner (e.g.
+def _mcp_stderr_log_target():
+    """Where to point a stdio MCP server's stderr. A stdio child's stderr is
+    otherwise inherited from the parent process, so a startup banner (e.g.
     ``[@agentmemory/mcp] proxying to ...``) prints straight onto the Textual TUI.
-    Falls back to the null device if the log file can't be created."""
+
+    Returns the log :class:`Path` when its directory is usable — fastmcp's
+    ``StdioTransport`` opens a Path in append mode and owns the handle's
+    lifecycle — and falls back to an opened null device otherwise (a ``TextIO``
+    is used as-is, and leaking one devnull handle on this rare path is benign)."""
     try:
         path = mcp_stderr_log_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        return open(path, "a", encoding="utf-8")
+        return path
     except OSError:
         return open(os.devnull, "w", encoding="utf-8")
 
@@ -395,66 +357,63 @@ def make_approval_hook(label: str, trusted: bool, *, schema_holder: dict | None 
 
 
 def build_mcp_servers(specs: dict) -> tuple[list, list[str]]:
-    """Turn a name->spec mapping into pydantic-ai MCP server toolsets, each gated
-    by an approval hook and tool-prefixed with its name.
+    """Turn a name->spec mapping into pydantic-ai ``MCPToolset``s, each gated by
+    an approval hook and carrying its config name as the toolset ``id``. The
+    ``<name>_<tool>`` prefixing happens at compose time via ``.prefixed(name)``
+    (see the module docstring), so what's built here stays the raw handle.
 
     Returns ``(servers, warnings)``. A spec that is neither stdio (has
     ``command``) nor HTTP/SSE (has ``url``) is skipped with a warning instead of
     crashing, so one bad entry can't take down the rest.
 
-    Each server is given the same per-tool retry budget the agent grants its
-    builtins (``_MCP_TOOL_RETRIES``). pydantic-ai defaults an MCP server's
-    ``max_retries`` to 1, but the agent (and every sub-agent) is built with
-    ``retries=2`` precisely because a budget of 1 kills the whole run on the
-    first tool error — see the runner's Agent construction. A flaky MCP tool
-    (e.g. a Playwright page-session blip) would otherwise raise
-    ``UnexpectedModelBehavior`` and take the spawn down before the model gets a
-    chance to recover. We align the two so MCP tools get the same second chance."""
+    ``max_retries`` is left at ``None``, which in pydantic-ai 2.x inherits the
+    agent's ``retries`` (the main agent and every sub-agent are built with
+    ``retries=2``) — exactly the alignment the old hand-set ``_MCP_TOOL_RETRIES``
+    constant maintained. A flaky MCP tool (e.g. a Playwright page-session blip)
+    thus gets the same second chance as the builtins instead of raising
+    ``UnexpectedModelBehavior`` on the first error.
+
+    Stdio transports are built with ``keep_alive=False`` so disconnecting (the
+    manager's ``aclose``) deterministically reaps the child process; fastmcp's
+    default keeps the child alive for cross-session reuse, which marim never
+    does — it holds one connection for the whole session and reconnects through
+    the manager."""
     servers: list = []
     notes: list[str] = []
-    # Suppress construction-time DeprecationWarning from the deprecated MCP
-    # server classes (see module-level import comment for the full rationale).
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        for name, spec in specs.items():
-            if not isinstance(spec, dict):
-                notes.append(f"MCP server {name!r}: spec must be an object; skipped.")
-                continue
-            holder: dict = {}
-            hook = make_approval_hook(
-                name, bool(spec.get("trust", False)), schema_holder=holder
+    for name, spec in specs.items():
+        if not isinstance(spec, dict):
+            notes.append(f"MCP server {name!r}: spec must be an object; skipped.")
+            continue
+        holder: dict = {}
+        hook = make_approval_hook(
+            name, bool(spec.get("trust", False)), schema_holder=holder
+        )
+        transport: StdioTransport | SSETransport | StreamableHttpTransport
+        if "command" in spec:
+            transport = StdioTransport(
+                command=spec["command"],
+                args=[str(a) for a in spec.get("args", [])],
+                env=spec.get("env"),
+                cwd=spec.get("cwd"),
+                keep_alive=False,
+                log_file=_mcp_stderr_log_target(),
             )
-            if "command" in spec:
-                server = _QuietStdioServer(
-                    command=spec["command"],
-                    args=list(spec.get("args", [])),
-                    env=spec.get("env"),
-                    cwd=spec.get("cwd"),
-                    tool_prefix=name,
-                    process_tool_call=hook,
-                    max_retries=_MCP_TOOL_RETRIES,
-                )
-            elif "url" in spec:
-                kind = (
-                    MCPServerSSE
-                    if spec.get("type") == "sse"
-                    else MCPServerStreamableHTTP
-                )
-                server = kind(
-                    url=spec["url"],
-                    headers=spec.get("headers"),
-                    tool_prefix=name,
-                    process_tool_call=hook,
-                    max_retries=_MCP_TOOL_RETRIES,
-                )
-            else:
-                notes.append(
-                    f"MCP server {name!r}: needs 'command' or 'url'; skipped."
-                )
-                continue
-            # The hook needs the server to read tool inputSchemas, but the server
-            # needs the hook at construction — so hand the hook a holder now and
-            # fill it once the server exists.
-            holder["server"] = server
-            servers.append(server)
+        elif "url" in spec:
+            kind = (
+                SSETransport
+                if spec.get("type") == "sse"
+                else StreamableHttpTransport
+            )
+            transport = kind(url=spec["url"], headers=spec.get("headers"))
+        else:
+            notes.append(
+                f"MCP server {name!r}: needs 'command' or 'url'; skipped."
+            )
+            continue
+        server = MCPToolset(transport, id=name, process_tool_call=hook)
+        # The hook needs the server to read tool inputSchemas, but the server
+        # needs the hook at construction — so hand the hook a holder now and
+        # fill it once the server exists.
+        holder["server"] = server
+        servers.append(server)
     return servers, notes

@@ -370,6 +370,9 @@ class SubagentRunner:
             # timeout in ms, grep's -i/output_mode/head_limit), and a sub-agent at
             # budget 1 dies on the first mispredict where the main agent recovers.
             retries=2,
+            # Match the main agent's pin: v2 defaults to 'graceful'; 'early'
+            # keeps the v1 stop-on-final-result behavior (see harness.py).
+            end_strategy="early",
             model_settings=self._model_settings,
             capabilities=capabilities,
         )

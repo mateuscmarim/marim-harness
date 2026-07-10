@@ -35,7 +35,10 @@ async def compose_turn_toolsets(
     policy: str,
     threshold: int,
 ) -> list[AbstractToolset[Deps]]:
-    live = mcp.live_toolsets()
+    # Compose is where the model-facing <name>_<tool> shape appears: the manager
+    # holds raw MCPToolsets (one stable handle per server for lifecycle and
+    # introspection) and .prefixed(name) wraps them per turn.
+    live = [s.prefixed(mcp.server_name(s)) for s in mcp.live_toolsets()]
     has_lsp = lsp_toolset is not None
     extras = [lsp_toolset] if has_lsp else []
     combined = [*live, *extras]

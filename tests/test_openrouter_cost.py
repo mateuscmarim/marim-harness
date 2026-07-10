@@ -59,13 +59,14 @@ def test_minimax_model_uses_native_thinking_tags():
     # MiniMax's profile must carry its own <mm:think> tags so pydantic-ai splits
     # inline reasoning into ThinkingParts instead of leaking the tags as text.
     model = build_openrouter_model("minimax/minimax-m3", api_key="sk-test")
-    assert model.profile.thinking_tags == MM_THINK_TAGS
+    # ModelProfile is a TypedDict in pydantic-ai 2.x — key access only.
+    assert model.profile.get("thinking_tags") == MM_THINK_TAGS
 
 
 def test_non_minimax_model_keeps_default_thinking_tags():
     # The override is scoped to MiniMax; other models keep the generic profile.
     model = build_openrouter_model("anthropic/claude-sonnet-4-6", api_key="sk-test")
-    assert model.profile.thinking_tags != MM_THINK_TAGS
+    assert model.profile.get("thinking_tags") != MM_THINK_TAGS
 
 
 def test_scrub_removes_orphan_closing_tag():

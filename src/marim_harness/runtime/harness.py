@@ -244,6 +244,12 @@ def build_collaborators(
         # often need a second attempt to correct a malformed tool argument
         # before the turn fails with UnexpectedModelBehavior.
         retries=2,
+        # Pinned: pydantic-ai 2.x flipped the default to 'graceful' (finish the
+        # in-flight tool batch after a final result). 'early' preserves the v1
+        # behavior the approval loop was built against — a final result ends
+        # the run immediately, so no gated tool executes after the model has
+        # already produced its answer.
+        end_strategy="early",
         model_settings=_DEFAULT_MODEL_SETTINGS,
         toolsets=forge_ts,
         # History processors run before EVERY model request (including mid-turn
