@@ -1,0 +1,34 @@
+{
+  "name": "superpowers",
+  "description": "Core skills library (TDD, debugging, brainstorming, collaboration patterns). marim adaptation of obra/superpowers: its skills plus a marim-native SessionStart hook injecting the using-superpowers skill. The original Claude Code hooks are excluded.",
+  "version": "6.1.1",
+  "author": {
+    "name": "Jesse Vincent",
+    "email": "jesse@fsck.com"
+  },
+  "homepage": "https://github.com/obra/superpowers",
+  "repository": "https://github.com/obra/superpowers",
+  "license": "MIT",
+  "keywords": [
+    "skills",
+    "tdd",
+    "debugging",
+    "collaboration",
+    "best-practices",
+    "workflows"
+  ],
+  "skills": "./skills/",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${MARIM_PLUGIN_ROOT}/hooks/marim-session-start.sh\""
+          }
+        ]
+      }
+    ]
+  },
+  "mcpServers": {}
+}
