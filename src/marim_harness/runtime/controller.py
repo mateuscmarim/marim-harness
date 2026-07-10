@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from ..session.checkpoints import CheckpointManager
     from .deps import Deps, HarnessAgent
 
+from ..compaction import estimate_tokens, last_request_input_tokens
 from ..tools.names import LSP_TOOLS
 from .context import (
     actionable_error_note as _actionable_error_note,
@@ -42,10 +43,12 @@ from .context import (
     wrap_turn_context,
 )
 from .errors import (
+    CONTEXT_CONTENTION_HELP,
     CONTEXT_OVERFLOW_HELP,
     ContextWindowExceededError,
     dump_provider_error,
     is_context_overflow_error,
+    overflow_is_contention,
 )
 from .permissions import Mode, resolve_approvals
 from .toolsets import compose_turn_toolsets
@@ -58,6 +61,12 @@ logger = logging.getLogger(__name__)
 # still stack an unbounded prefix onto one prompt — the queue drops oldest
 # entries past this, and the rendered block notes how many were elided.
 _SHELL_RESULTS_BUDGET = 20_000
+
+# How long to wait before the single in-place retry of an overflow classified
+# as pool contention (see _run_with_approval). Long enough for a finishing
+# sub-agent request to release its share of the server's KV pool, short enough
+# that a turn blocked on it still feels responsive.
+_CONTENTION_BACKOFF_SECONDS = 2.0
 
 
 @dataclass
@@ -177,23 +186,6 @@ def _turn_produced_response(history: list[ModelMessage], since: int) -> bool:
     from pydantic_ai.messages import ModelResponse
 
     return any(isinstance(m, ModelResponse) for m in history[since:])
-
-
-def _last_request_input_tokens(history: list[ModelMessage]) -> int | None:
-    """The provider-reported input-token count of the LAST model request in a run —
-    the true size of the prompt as the provider tokenized it, i.e. the real current
-    context size. The compaction gate uses this as a measured floor over its chars/4
-    estimate, which undershoots dense code/JSON ~25% (see SessionController.maybe_compact
-    and compaction._measured_or_estimated). NOT the run's cumulative ``result.usage``
-    input tokens — that sums every step of a multi-request turn and would overshoot the
-    live context size. Returns ``None`` when no response carries usage (some
-    providers/streams omit it), which leaves the gate on the estimate alone."""
-    for message in reversed(history):
-        usage = getattr(message, "usage", None)
-        tokens = getattr(usage, "input_tokens", None)
-        if tokens:
-            return int(tokens)
-    return None
 
 
 _INTERRUPTED_TOOL_NOTE = (
@@ -357,6 +349,13 @@ class TurnController:
             c, o = self._pending_shell_results.pop(0)
             total -= len(c) + len(o)
             self._shell_results_dropped += 1
+
+    async def _contention_backoff(self) -> None:
+        """Pause before retrying an overflow classified as pool contention —
+        the shared KV cache frees up as the concurrent requests (typically
+        parallel sub-agents) finish, so a short wait is the whole recovery.
+        A method (not an inline sleep) so tests can stub the delay out."""
+        await asyncio.sleep(_CONTENTION_BACKOFF_SECONDS)
 
     async def _maybe_compact(self, *, force: bool = False) -> bool:
         # When compaction actually shrinks the history, the checkpoints captured
@@ -597,6 +596,10 @@ class TurnController:
         # provider. If the provider rejects it for length, force a compaction and
         # retry the run once (this flag latches so we never loop on it).
         overflow_retried = False
+        # Separate latch for the contention path below: a pool-contention retry
+        # doesn't touch the history, so it neither consumes nor is consumed by
+        # the compaction retry — each gets its own single shot.
+        contention_retried = False
         while True:
             # capture_run_messages exposes the messages exchanged even when the
             # run aborts (a render error in the event handler, an API failure,
@@ -656,10 +659,38 @@ class TurnController:
                     # checkpoints are invalidated — their absolute indices point
                     # into the pre-compaction history and a later /rewind through
                     # one would slice at a wrong boundary.
+                    # A provider "context exceeded" can also mean POOL CONTENTION,
+                    # not an oversized request: local servers (LM Studio/llama.cpp
+                    # with a unified KV cache) share one window across n_parallel
+                    # slots, and concurrent requests — parallel sub-agents — can
+                    # exhaust the pool and fail EVERY in-flight request, however
+                    # small. Compacting can't help (the request already fits) and
+                    # the "window too small" diagnostic would mislead. When the
+                    # failing request's best-known size (the provider-measured
+                    # last count or the chars/4 estimate, whichever is larger) is
+                    # far below the KNOWN served window, classify as contention
+                    # and retry once in place after a short backoff — sub-agents
+                    # finishing is what frees the pool. Unknown window ⇒ never
+                    # contention, so the classic first-turn overflow keeps the
+                    # old behavior. Safe on continuation rounds too: unlike the
+                    # compaction below, the retry doesn't touch the history.
+                    overflow = is_context_overflow_error(exc)
+                    contention = overflow and overflow_is_contention(
+                        max(
+                            self.session.last_input_tokens or 0,
+                            estimate_tokens(list(captured) or list(self.session.history)),
+                        ),
+                        self.session.known_window,
+                    )
+                    if contention and not contention_retried:
+                        contention_retried = True
+                        await self._contention_backoff()
+                        continue
                     if (
                         not overflow_retried
+                        and not contention
                         and deferred_results is None
-                        and is_context_overflow_error(exc)
+                        and overflow
                         and await self._maybe_compact(force=True)
                     ):
                         overflow_retried = True
@@ -695,10 +726,12 @@ class TurnController:
                     # (nothing droppable — the classic first-turn case — or the
                     # one retry above already overflowed again, or it was a dirty
                     # continuation round). Swap the terse provider text for an
-                    # actionable diagnostic; the original is chained and already
-                    # spilled to disk above.
-                    if is_context_overflow_error(exc):
-                        raise ContextWindowExceededError(CONTEXT_OVERFLOW_HELP) from exc
+                    # actionable diagnostic matching the classification; the
+                    # original is chained and already spilled to disk above.
+                    if overflow:
+                        raise ContextWindowExceededError(
+                            CONTEXT_CONTENTION_HELP if contention else CONTEXT_OVERFLOW_HELP
+                        ) from exc
                     raise
             # This round's streaming ends the moment run() returns, so the
             # captured ctx is now stale. Null it before the approval modal /
@@ -726,7 +759,7 @@ class TurnController:
             # the session past the real window). Updated every round on the current
             # history; reset to None on clear/switch so a resumed session falls back
             # to the estimate until its first request reports usage again.
-            self.session.last_input_tokens = _last_request_input_tokens(self.session.history)
+            self.session.last_input_tokens = last_request_input_tokens(self.session.history)
             if isinstance(result.output, DeferredToolRequests):
                 # This history ends with unanswered tool calls; keep it in memory
                 # for the continuation run but do NOT persist it. A cancel or

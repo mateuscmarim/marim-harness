@@ -73,6 +73,23 @@ def estimate_tokens(history: list[ModelMessage]) -> int:
     return chars // _CHARS_PER_TOKEN + images * _IMAGE_TOKEN_ESTIMATE
 
 
+def last_request_input_tokens(history: list[ModelMessage]) -> int | None:
+    """The provider-reported input-token count of the LAST model request in a run —
+    the true size of the prompt as the provider tokenized it, i.e. the real current
+    context size. The compaction gate uses this as a measured floor over its chars/4
+    estimate, which undershoots dense code/JSON ~25% (see SessionController.maybe_compact
+    and ``_measured_or_estimated``). NOT the run's cumulative ``result.usage``
+    input tokens — that sums every step of a multi-request turn and would overshoot the
+    live context size. Returns ``None`` when no response carries usage (some
+    providers/streams omit it), which leaves the gate on the estimate alone."""
+    for message in reversed(history):
+        usage = getattr(message, "usage", None)
+        tokens = getattr(usage, "input_tokens", None)
+        if tokens:
+            return int(tokens)
+    return None
+
+
 def _is_user_turn(message) -> bool:
     """True for a ModelRequest that opens a user turn (carries a UserPromptPart).
 

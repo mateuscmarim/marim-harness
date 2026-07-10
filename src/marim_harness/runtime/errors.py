@@ -32,6 +32,22 @@ CONTEXT_OVERFLOW_HELP = (
     "model with a larger window."
 )
 
+# The screen message for the OTHER way a provider says "context exceeded": the
+# request itself was far below the served window, so the rejection came from
+# server-side capacity — on a local llama.cpp server (LM Studio), parallel
+# requests share one unified KV-cache pool, and a concurrent sub-agent fan-out
+# can exhaust it, failing every in-flight request at once. Telling the user to
+# enlarge the window or compact would be wrong on every count; this says what
+# actually helps.
+CONTEXT_CONTENTION_HELP = (
+    "The model server rejected the request as exceeding the context window, but "
+    "the request is far smaller than the served window — concurrent requests "
+    "(e.g. parallel sub-agents) likely exhausted the server's shared KV-cache "
+    "pool. The turn was retried once without luck. Wait for background jobs to "
+    "finish and retry, reduce parallel sub-agent fan-out, or serve the model "
+    "with a larger context so concurrent requests fit the shared pool."
+)
+
 
 class ContextWindowExceededError(RuntimeError):
     """An unrecoverable context overflow: the request exceeded the model's real
@@ -290,6 +306,26 @@ def is_context_overflow_error(exc: BaseException) -> bool:
         return False
     blob = f"{http} {getattr(http, 'body', '') or ''}".lower()
     return any(marker in blob for marker in _OVERFLOW_MARKERS)
+
+
+def overflow_is_contention(
+    request_tokens: int | None, window: int | None, *, margin: float = 0.5
+) -> bool:
+    """Whether a provider context-overflow rejection is *pool contention* rather
+    than an oversized request: the request's own size sits far below the KNOWN
+    served window, so the overflow can only come from server-side state — on a
+    local llama.cpp server, concurrent requests draining the shared KV cache.
+
+    ``request_tokens`` is the caller's best measure of the failing request (the
+    last provider-reported input count and/or the char/4 history estimate — pass
+    the max of what's available). ``margin`` is deliberately wide: the char/4
+    estimate undershoots dense content ~25%, so a genuine overflow measures well
+    above half the window, while the contention case (an 8%-full gauge failing)
+    sits far below it. Unknown size or window ⇒ False — without the arithmetic
+    the conservative classification is a genuine overflow."""
+    if not request_tokens or not window:
+        return False
+    return request_tokens < window * margin
 
 
 def format_provider_error(exc: BaseException) -> str | None:

@@ -23,13 +23,16 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import FunctionModel
 
+from marim_harness.config.context_limits import ContextLimits
 from marim_harness.runtime.errors import (
+    CONTEXT_CONTENTION_HELP,
     CONTEXT_OVERFLOW_HELP,
     ContextWindowExceededError,
     dump_provider_error,
     format_provider_error,
     is_context_overflow_error,
     is_transient_model_error,
+    overflow_is_contention,
     provider_error_payload,
 )
 from marim_harness.runtime.harness import (
@@ -548,3 +551,144 @@ def test_overflow_marker_on_413_still_classifies_as_overflow():
     # Some providers reject an oversized request with 413 Payload Too Large.
     err = ModelHTTPError(413, "m", body={"message": "prompt is too long"})
     assert is_context_overflow_error(err) is True
+
+
+# --- shared-pool contention (server-side overflow on a small request) ----------
+#
+# LM Studio's llama.cpp engine can serve one model to several concurrent
+# requests from a single unified KV-cache pool (n_parallel slots, kv_unified).
+# A parallel sub-agent fan-out can then exhaust the POOL and fail every
+# in-flight request with "Context size has been exceeded." even though each
+# request is far below the served window. That rejection is indistinguishable
+# by text from a genuine oversized request — but it IS distinguishable by
+# arithmetic: the failing turn's measured/estimated size sits far below the
+# KNOWN window. These tests pin that classification and the recovery it
+# selects (retry in place — capacity frees when the neighbors finish — rather
+# than force-compacting a history that is nowhere near the window).
+
+
+def test_overflow_is_contention_true_when_request_far_below_known_window():
+    # The incident shape: last request 16k, served window 102k.
+    assert overflow_is_contention(16_118, 102_206) is True
+
+
+def test_overflow_is_contention_false_near_the_window():
+    # A genuine overflow: the estimate undershot and the request hit the top.
+    assert overflow_is_contention(90_000, 102_206) is False
+
+
+def test_overflow_is_contention_false_when_either_side_is_unknown():
+    assert overflow_is_contention(None, 102_206) is False
+    assert overflow_is_contention(0, 102_206) is False
+    assert overflow_is_contention(16_118, None) is False
+
+
+_LMSTUDIO_OVERFLOW = {"error": {"message": "Context size has been exceeded."}}
+
+
+def _contention_harness(tmp_path, fn, window: int = 102_206):
+    """A harness whose resolver KNOWS a large window, with the last measured
+    request far below it — the contention shape."""
+    harness = Harness(
+        model=FunctionModel(fn),
+        provider=BuiltinToolProvider(),
+        deps=_make_deps(tmp_path),
+        instructions="x",
+        config=HarnessConfig(
+            keep_last_messages=1,
+            context_limits=ContextLimits(window_override=window),
+        ),
+    )
+    harness.session.last_input_tokens = 16_118
+    backoffs: list[int] = []
+
+    async def _no_backoff() -> None:
+        backoffs.append(1)
+
+    harness.turn_controller._contention_backoff = _no_backoff
+    return harness, backoffs
+
+
+@pytest.mark.anyio
+async def test_run_turn_retries_contention_overflow_without_compacting(tmp_path):
+    """An overflow rejection on a request far below the KNOWN window is pool
+    contention, not an oversized request: retry in place after a backoff and
+    leave the history alone (compaction would destroy detail for nothing)."""
+    calls = {"n": 0}
+
+    def fn(messages, info):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _api_error(_LMSTUDIO_OVERFLOW)
+        return ModelResponse(parts=[TextPart(content="ok after retry")])
+
+    harness, backoffs = _contention_harness(tmp_path, fn)
+    harness.session.history = list(_SIX_TURN_HISTORY)
+    out = await harness.run_turn("now do it")
+    assert out == "ok after retry"
+    assert calls["n"] == 2
+    assert backoffs == [1]  # backed off once before the in-place retry
+    # NOT compacted: the oldest turn is still in the history verbatim.
+    contents = [
+        str(getattr(p, "content", ""))
+        for m in harness.session.history
+        for p in getattr(m, "parts", [])
+    ]
+    assert "u1" in contents
+
+
+@pytest.mark.anyio
+async def test_contention_overflow_gives_up_with_the_contention_diagnostic(tmp_path):
+    """When the in-place retry ALSO overflows, the turn surfaces the contention
+    diagnostic (parallel requests exhausted the server's shared pool), not the
+    window-too-small text — every suggestion in that one would be wrong here."""
+    calls = {"n": 0}
+
+    def fn(messages, info):
+        calls["n"] += 1
+        raise _api_error(_LMSTUDIO_OVERFLOW)
+
+    harness, backoffs = _contention_harness(tmp_path, fn)
+    # Fresh session: nothing to compact either, so after the one in-place
+    # retry the turn must raise rather than loop.
+    with pytest.raises(ContextWindowExceededError) as excinfo:
+        await harness.run_turn("first prompt")
+    assert calls["n"] == 2  # original attempt + exactly one in-place retry
+    assert backoffs == [1]
+    assert str(excinfo.value) == CONTEXT_CONTENTION_HELP
+    assert format_provider_error(excinfo.value) == CONTEXT_CONTENTION_HELP
+    assert isinstance(excinfo.value.__cause__, APIError)
+
+
+@pytest.mark.anyio
+async def test_overflow_with_unknown_window_still_takes_the_compaction_path(tmp_path):
+    """Without a KNOWN window the contention arithmetic can't run — the
+    long-standing force-compact-and-retry recovery must be untouched."""
+    calls = {"n": 0}
+
+    def fn(messages, info):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _api_error(_OVERFLOW_BODY)
+        return ModelResponse(parts=[TextPart(content="ok after compaction")])
+
+    harness = Harness(
+        model=FunctionModel(fn),
+        provider=BuiltinToolProvider(),
+        deps=_make_deps(tmp_path),
+        instructions="x",
+        config=HarnessConfig(keep_last_messages=1),
+    )
+    harness.session.history = list(_SIX_TURN_HISTORY)
+    harness.session.last_input_tokens = 16_118  # meaningless without a window
+    out = await harness.run_turn("now do it")
+    assert out == "ok after compaction"
+    assert calls["n"] == 2
+    # Compaction DID run: the middle turn was dropped (the head anchor u1 and
+    # the recent tail survive — that's compact_history's shape).
+    contents = [
+        str(getattr(p, "content", ""))
+        for m in harness.session.history
+        for p in getattr(m, "parts", [])
+    ]
+    assert "u2" not in contents

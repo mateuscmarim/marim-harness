@@ -542,3 +542,51 @@ async def test_foreground_overflow_failure_tells_orchestrator_to_split(tmp_path:
     out = await runner.run("general", "task", "sid-1")
     assert "overflowed its context window" in out
     assert "split the task" in out.lower()
+
+
+@pytest.mark.anyio
+async def test_contention_overflow_retries_as_transient_instead_of_shedding(tmp_path: Path):
+    """A shared-KV-pool rejection (parallel spawns exhausting a local server's
+    unified cache) is not this sub-agent's fault: its run is far below the KNOWN
+    window, so masking its observations would destroy context for nothing and
+    the resumed request would meet the same contention anyway. The overflow must
+    take the transient path — backoff, then resume — with nothing masked."""
+    import dataclasses
+
+    from marim_harness.config.context_limits import ContextLimits
+
+    runner, sleeps = _runner(tmp_path)
+    runner._masking = dataclasses.replace(
+        runner._masking, limits=ContextLimits(window_override=200_000)
+    )
+    state = {"raised": False}
+    seen: dict = {}
+
+    def fn(messages, info):
+        parts = [p for m in messages for p in getattr(m, "parts", [])]
+        returns = [p for p in parts if type(p).__name__ == "ToolReturnPart"]
+        if len(returns) < 2:
+            return ModelResponse(parts=[ToolCallPart(
+                tool_name="blob", args={}, tool_call_id=f"t{len(returns)}")])
+        if not state["raised"]:
+            state["raised"] = True
+            raise _overflow()
+        seen["messages"] = messages
+        return ModelResponse(parts=[TextPart(content="done")])
+
+    sub = Agent(FunctionModel(fn))
+
+    @sub.tool_plain
+    def blob() -> str:
+        return "x" * 500
+
+    result = await runner._run_to_completion(sub, "go", None, None, None)
+    assert result.output == "done"
+    assert sleeps == [1]  # backed off like a transient error, not an instant shed
+
+    contents = [
+        str(p.content) for m in seen["messages"]
+        for p in getattr(m, "parts", [])
+        if type(p).__name__ == "ToolReturnPart"
+    ]
+    assert contents == ["x" * 500, "x" * 500]  # nothing masked

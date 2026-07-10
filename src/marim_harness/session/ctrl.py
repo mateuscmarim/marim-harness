@@ -188,6 +188,17 @@ class SessionController:
             return self.limits.threshold(model_id)
         return self.max_context_tokens
 
+    @property
+    def known_window(self) -> int | None:
+        """The KNOWN served context window for the current model (override or
+        discovered), or None. Distinct from ``compact_threshold`` — this is the
+        raw window the overflow-contention classifier needs, not the derived
+        min(budget, 0.8 × window) trigger."""
+        if self.limits is None:
+            return None
+        model_id = self.get_model_id() if self.get_model_id else None
+        return self.limits.window_for(model_id)
+
     # Attribute setter that bumps the version on every history replacement —
     # the persist cache relies on this, so direct ``self.history = x`` (which
     # the property funnel routes through) invalidates the cache too. Sites

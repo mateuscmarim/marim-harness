@@ -37,10 +37,14 @@ if TYPE_CHECKING:
     from ..workspace.agents import AgentDef
     from .cli_backend import CliResult
 
-from ..compaction import mask_stale_observations
+from ..compaction import estimate_tokens, last_request_input_tokens, mask_stale_observations
 from ..hooks.dispatch import TurnHooks
 from ..runtime.deps import Deps, SubAgent
-from ..runtime.errors import is_context_overflow_error, is_transient_model_error
+from ..runtime.errors import (
+    is_context_overflow_error,
+    is_transient_model_error,
+    overflow_is_contention,
+)
 from ..runtime.permissions import Mode
 from ..tasks import TaskList
 from ..tools.impl import fs
@@ -283,6 +287,18 @@ class SubagentRunner:
         if self._masking.limits is not None and model_id is None:
             model_id = getattr(self._get_model(), "model_name", None)
         return await self._masking.trigger_for(model_id)
+
+    def _known_window(self) -> int | None:
+        """The KNOWN served context window for the session model, or None. Feeds
+        the overflow-contention classifier in ``_run_to_completion``; None (no
+        limits wired, or nothing discovered) conservatively disables it. Uses
+        the session model like ``_mask_trigger_for``'s fallback — a per-spawn
+        model override isn't visible here, but a wrong-model window only skews
+        a heuristic margin, never correctness."""
+        if self._masking.limits is None:
+            return None
+        model_id = getattr(self._get_model(), "model_name", None)
+        return self._masking.limits.window_for(model_id)
 
     def build(
         self, type: str, max_output_chars: int | None = None,
@@ -590,6 +606,25 @@ class SubagentRunner:
                         usage_limits=UsageLimits(request_limit=self._retry.request_limit),
                     )
             except Exception as exc:  # noqa: BLE001
+                # An overflow whose request is far below the KNOWN served window
+                # is pool CONTENTION, not an oversized conversation: local
+                # servers (LM Studio/llama.cpp unified KV cache) share one
+                # window across n_parallel slots, and a parallel spawn fan-out
+                # can exhaust the pool and fail every in-flight request at
+                # once. Masking observations can't free pool space held by the
+                # OTHER requests — so skip the shed and ride the transient
+                # retry path below instead: back off, let siblings finish, and
+                # resume the captured conversation intact. An empty capture (a
+                # first-request failure) sizes to 0 ⇒ never contention, and an
+                # unknown window keeps the old behavior everywhere.
+                overflow = is_context_overflow_error(exc)
+                contention = overflow and overflow_is_contention(
+                    max(
+                        last_request_input_tokens(list(captured)) or 0,
+                        estimate_tokens(list(captured)),
+                    ),
+                    self._known_window(),
+                )
                 # Context overflow is a permanent 4xx, so the transient path below
                 # would re-raise it — but unlike a genuine bad request it IS
                 # recoverable: shed the bulky old observations from the captured
@@ -597,7 +632,7 @@ class SubagentRunner:
                 # rewrites only the outgoing request), the shed is folded into the
                 # resume history itself, so the freed tokens stay freed. One shot
                 # only: a second overflow means masking already gave all it had.
-                if not overflow_shed and is_context_overflow_error(exc):
+                if not overflow_shed and overflow and not contention:
                     shed = self._shed_context(list(captured))
                     if shed is not None:
                         overflow_shed = True
@@ -608,7 +643,9 @@ class SubagentRunner:
                         )
                         await self._notice_overflow(stream_id)
                         continue
-                if attempt >= self._retry.attempts or not is_transient_model_error(exc):
+                if attempt >= self._retry.attempts or not (
+                    contention or is_transient_model_error(exc)
+                ):
                     # Surfacing the failure loses the result object but must not
                     # lose the spend: the provider billed the failed attempts'
                     # tokens regardless, so bank the accumulator before the

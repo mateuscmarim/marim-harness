@@ -157,6 +157,14 @@ class ContextLimits:
             return None
         return self._windows.get(model_id) or self._windows.get(_bare_id(model_id))
 
+    def window_for(self, model_id: str | None) -> int | None:
+        """The KNOWN served window for ``model_id`` — override or discovered,
+        raw (no safety ratio, no budget) — or None when nothing is known. This
+        is the number the overflow-contention classifier compares a rejected
+        request's size against; the derived :meth:`threshold` would understate
+        it by the safety ratio. Sync and I/O-free like ``threshold``."""
+        return self._window_for(model_id)
+
     # -- threshold -------------------------------------------------------
 
     def threshold(self, model_id: str | None) -> int:

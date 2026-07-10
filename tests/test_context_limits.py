@@ -247,3 +247,24 @@ async def test_invalidate_mid_fetch_discards_the_stale_result():
     assert limits.threshold("m") == 50_000       # stale window NOT resurrected
     assert await limits.resolve("m") == 8_000    # fresh re-fetch after invalidate
     assert calls["n"] == 2
+
+
+def test_window_for_returns_the_override():
+    limits = ContextLimits(window_override=102_206)
+    assert limits.window_for("any-model") == 102_206
+    assert limits.window_for(None) == 102_206
+
+
+@pytest.mark.anyio
+async def test_window_for_returns_the_discovered_window_or_none():
+    """The raw KNOWN window (no safety ratio, no budget) — the number the
+    contention classifier compares a rejected request's size against."""
+    async def fake_local():
+        return {"ornith-1.0-9b": 102_206}
+
+    limits = ContextLimits(budget=100_000, fetch_local=fake_local)
+    assert limits.window_for("ornith-1.0-9b") is None       # not discovered yet
+    await limits.resolve("ornith-1.0-9b")
+    assert limits.window_for("ornith-1.0-9b") == 102_206    # raw, not 0.8x
+    assert limits.window_for("local:ornith-1.0-9b") == 102_206  # qualified id
+    assert limits.window_for("unknown-model") is None
