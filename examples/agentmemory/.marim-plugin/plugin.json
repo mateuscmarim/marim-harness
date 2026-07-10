@@ -1,0 +1,46 @@
+{
+  "name": "agentmemory",
+  "version": "0.9.27",
+  "description": "Persistent agent memory: auto-capture across the session lifecycle plus recall/save MCP tools, wiring marim into an external agentmemory install (npm package + running server).",
+  "author": {"name": "agentmemory", "url": "https://github.com/marimdev/agentmemory"},
+  "license": "MIT",
+  "keywords": ["memory", "recall", "hooks", "mcp"],
+  "hooks": {
+    "SessionStart": [
+      {"hooks": [{"type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/session-start.mjs\"", "timeout": 10}]}
+    ],
+    "UserPromptSubmit": [
+      {"hooks": [{"type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/prompt-submit.mjs\"", "timeout": 10}]}
+    ],
+    "PreToolUse": [
+      {"matcher": "Edit|Write|Read|Glob|Grep", "hooks": [{"type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/pre-tool-use.mjs\"", "timeout": 5}]}
+    ],
+    "PostToolUse": [
+      {"matcher": "*", "hooks": [{"type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/post-tool-use.mjs\"", "timeout": 5}]}
+    ],
+    "PreCompact": [
+      {"hooks": [{"type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/pre-compact.mjs\"", "timeout": 30}]}
+    ],
+    "SubagentStart": [
+      {"hooks": [{"type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/subagent-start.mjs\"", "timeout": 30}]}
+    ],
+    "SubagentStop": [
+      {"hooks": [{"type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/subagent-stop.mjs\"", "timeout": 30}]}
+    ],
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/stop.mjs\"", "timeout": 30}]}
+    ],
+    "SessionEnd": [
+      {"hooks": [{"type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/session-end.mjs\"", "timeout": 30}]}
+    ]
+  },
+  "mcpServers": {
+    "agentmemory": {
+      "command": "npx",
+      "args": ["-y", "@agentmemory/mcp"],
+      "env": {
+        "AGENTMEMORY_URL": "http://localhost:3111"
+      }
+    }
+  }
+}

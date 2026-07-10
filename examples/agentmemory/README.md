@@ -1,66 +1,79 @@
-# agentmemory integration
+# agentmemory
 
-marim's hook engine speaks Claude Code's hook contract, so agentmemory's bundled
-hook scripts run unmodified. Two layers:
+Persistent agent memory for marim: auto-capture across the session lifecycle
+plus `memory_*` recall/save MCP tools. marim's hook engine speaks Claude Code's
+hook contract, so agentmemory's bundled hook scripts run unmodified.
 
-1. **MCP (`memory_*` tools)** — merge `mcp.json` into `~/.config/marim/mcp.json`.
-   Gives the model agentmemory's tools on demand. Keep this in the **global**
-   config (a project `.marim/mcp.json` from a cloned repo is a supply-chain risk).
-2. **Hooks (auto-capture + recall)** — copy `hooks.json` to
-   `~/.config/marim/hooks.json`. `SessionStart` injects recalled context;
-   `UserPromptSubmit`/`PostToolUse` observe the turn.
+This is a **wiring-only plugin**. It does not vendor agentmemory's code — the
+hook scripts and MCP server live in agentmemory's own npm distribution. The
+plugin only tells marim how to invoke them, so the external install, a running
+server, and the environment below are still prerequisites.
 
-## Setup
+## Prerequisites
 
-1. Run the agentmemory server (default `http://localhost:3111`) and export
-   `AGENTMEMORY_SECRET` in your environment (never commit it).
-2. Set `CLAUDE_PLUGIN_ROOT` to agentmemory's plugin directory, e.g.:
+1. Run the agentmemory server and note its URL (default `http://localhost:3111`).
+2. Install agentmemory and point `CLAUDE_PLUGIN_ROOT` at its plugin directory,
+   then **export it in the environment that launches marim** (add it to your
+   shell profile — a value set in one terminal won't be seen by a marim started
+   elsewhere):
    ```bash
    export CLAUDE_PLUGIN_ROOT="$(npm root -g)/@agentmemory/agentmemory/plugin"
    ```
-   The hook commands resolve `${CLAUDE_PLUGIN_ROOT}` at fire time, so this must
-   be set in the environment that launches marim. Add the `export` to your shell
-   profile (`~/.zshrc`, `~/.bashrc`, …) so it persists across sessions — a value
-   set only in one terminal won't be seen by a marim started later or elsewhere.
-3. Copy `hooks.json` to `~/.config/marim/hooks.json` and merge `mcp.json`
-   into `~/.config/marim/mcp.json`.
-4. Start marim. `/mcp` shows the `agentmemory` server; hooks fire automatically.
+   The hook commands are run through a shell, so `${CLAUDE_PLUGIN_ROOT}` expands
+   from this environment at fire time. Confirm the scripts resolve:
+   ```bash
+   ls "$CLAUDE_PLUGIN_ROOT/scripts"   # session-start.mjs, prompt-submit.mjs, ...
+   ```
 
-## Trust
+## Install
 
-Global hooks (`~/.config/marim/hooks.json`) always run. Project-local
-`.marim/hooks.json` files are **ignored** unless you explicitly set
-`MARIM_TRUST_PROJECT_HOOKS=1`. Project hooks are a supply-chain risk: a cloned
-repository could contain a `.marim/hooks.json` that auto-launches arbitrary
-commands on your machine. Only enable `MARIM_TRUST_PROJECT_HOOKS` in repositories
-you control and trust. The recommended install location for agentmemory is the
-**global** config, not a project file.
+    marim plugin install examples/agentmemory --scope global --trust
+
+The plugin bundles hooks **and** an MCP server (executable surface), so install
+prompts for trust. Install it to **global** scope — never as a project plugin.
+A project-local plugin's hooks/MCP launch code from a cloned repo and are gated
+behind `MARIM_TRUST_PROJECT_HOOKS` precisely because that is a supply-chain risk;
+agentmemory is your own tooling and belongs in the global scope.
+
+After install, `/mcp` shows the `agentmemory_agentmemory` server and the nine
+lifecycle hooks fire automatically — `SessionStart`/`UserPromptSubmit` inject
+recalled context, the tool hooks observe the turn, and the teardown hooks flush
+memory.
+
+## Configuring the server URL and secret
+
+marim passes an MCP server's `env` block to the child process **verbatim — it
+does not expand `${VAR}` references** (the child otherwise inherits only a safe
+default subset of the environment, which excludes `AGENTMEMORY_*`). So the
+committed manifest hardcodes the local default `AGENTMEMORY_URL` and carries **no
+secret** (a secret must never be committed).
+
+If your server needs a different URL or a secret, edit the **installed** copy's
+manifest — `~/.config/marim/plugins/agentmemory/.marim-plugin/plugin.json` — and
+put **literal** values under `mcpServers.agentmemory.env`, e.g.:
+
+```json
+"env": {
+  "AGENTMEMORY_URL": "http://your-host:3111",
+  "AGENTMEMORY_SECRET": "the-actual-secret"
+}
+```
+
+Because that file lives outside the repo, the literal secret is never committed.
+Placeholder syntax like `"${AGENTMEMORY_SECRET}"` will **not** work here — it
+would reach the server as the literal string.
 
 ## Verify against your install
 
-agentmemory's hook scripts are **`.mjs` Node.js ES modules**, not shell scripts.
-The task brief's references to `session-start.sh` / `observe.sh` are inaccurate —
-the real scripts are `session-start.mjs`, `prompt-submit.mjs`, `pre-tool-use.mjs`,
-`post-tool-use.mjs`, etc., invoked via `node`.
-
-Script names, the npm package (`@agentmemory/mcp`), and the port (`3111`) reflect
-agentmemory at the time of writing (package version `0.9.27`). Confirm them against
-your installed version:
+Script names, the npm package (`@agentmemory/mcp`), and the default port (`3111`)
+reflect agentmemory `0.9.27`. Confirm them against your version:
 
 ```bash
-ls "$(npm root -g)"/@agentmemory/agentmemory/plugin/scripts
+ls "$CLAUDE_PLUGIN_ROOT/scripts"
 npm view @agentmemory/mcp version
 ```
 
-## Deviation from task brief
-
-The brief listed `plugin/session-start.sh`, `plugin/observe.sh`, and
-`plugin/pre-tool.sh` as the hook script names. The actual agentmemory repository
-uses `.mjs` ES modules in `plugin/scripts/` with distinct per-event names
-(`session-start.mjs`, `prompt-submit.mjs`, `pre-tool-use.mjs`, `post-tool-use.mjs`,
-etc.). This file reflects the verified reality; the brief's `.sh` names were design
-placeholders.
-
-The `hooks.json` in this directory covers all 9 events supported by marim's engine
-(the brief's minimal 3-event example has been expanded to full coverage, matching
-agentmemory's own `plugin/hooks/hooks.json`).
+The nine wired events (`SessionStart`, `UserPromptSubmit`, `PreToolUse`,
+`PostToolUse`, `PreCompact`, `SubagentStart`, `SubagentStop`, `Stop`,
+`SessionEnd`) are the full set marim's hook engine supports; agentmemory ships a
+script for each.
