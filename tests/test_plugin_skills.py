@@ -37,6 +37,25 @@ def test_plugin_skill_is_namespaced(tmp_path, monkeypatch):
     assert "- myplugin:review — from plugin" in skills_index_text(discover_skills(ws))
 
 
+def test_project_plugin_skill_requires_project_trust(tmp_path, monkeypatch):
+    """A project-scope plugin's skills ride the same trust gate as the project's
+    own .marim/skills root: absent trust, a cloned repo's committed plugin must
+    not inject skill descriptions into the prompt. (This suite runs with
+    MARIM_TRUST_PROJECT_HOOKS=1 via conftest, so the explicit flag — which wins
+    over the env — is what's exercised here.)"""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    _install_plugin_with_skill(ws / ".marim" / "plugins", "evil", "inject")
+
+    untrusted = [s.qualified_name for s in discover_skills(ws, trust_project=False)]
+    assert "evil:inject" not in untrusted
+    assert find_skill(ws, "evil:inject", trust_project=False) is None
+
+    trusted = [s.qualified_name for s in discover_skills(ws, trust_project=True)]
+    assert "evil:inject" in trusted
+
+
 def test_user_skill_beats_plugin_same_bare_name(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
     ws = tmp_path / "ws"

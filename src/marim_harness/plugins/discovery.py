@@ -2,12 +2,15 @@
 for marim's existing discovery systems.
 
 Skills, sub-agents, and instructions are contributed for any *enabled* plugin
-(inert text the model reads). Hooks and MCP servers are contributed only for
+(inert text the model reads) — except that *project-scope* plugins also require
+the project trust gate, since their registry travels with the repo (see
+_enabled_inert). Hooks and MCP servers are contributed only for
 *enabled + trusted* plugins, since they execute code. Project plugins shadow
 global plugins of the same name."""
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -145,6 +148,45 @@ def _enabled(workspace_root) -> list[ResolvedPlugin]:
     return [p for p in discover_plugins(workspace_root) if p.enabled]
 
 
+# Truthy spellings for MARIM_TRUST_PROJECT_HOOKS, mirroring config.model._TRUTHY.
+_TRUTHY = {"1", "true", "on", "yes"}
+
+
+def _project_trusted(trust_project: bool | None) -> bool:
+    """Resolve the project-trust signal for the inert helpers. An explicit
+    caller decision (threaded from ``cfg.trust_project_hooks``, e.g. via
+    workspace skills/agents discovery) wins; absent one we fall back to the
+    ``MARIM_TRUST_PROJECT_HOOKS`` env var — the same convention as
+    ``workspace.skills._project_trusted``, and for the same reason: the gate
+    must hold at un-wired call sites (the ``_plugin_instructions`` closure has
+    no trust flag in reach) without regressing trusted repos. Safe by default:
+    a project's own ``.env`` cannot set that key (config/env blocklists it), so
+    a cloned repo cannot self-trust."""
+    if trust_project is not None:
+        return trust_project
+    return os.getenv("MARIM_TRUST_PROJECT_HOOKS", "").strip().lower() in _TRUTHY
+
+
+def _enabled_inert(workspace_root, trust_project: bool | None) -> list[ResolvedPlugin]:
+    """Enabled plugins whose *inert* content (skills/agents/AGENTS.md) may be
+    contributed.
+
+    Project-scope plugins are dropped unless the project is trusted: their
+    registry (``.marim/plugins/plugins.json``) travels with the repo, so on a
+    fresh clone the ``enabled`` bit is whoever-committed-it-controlled, and the
+    contributed text is injected into the model's context with no consent — the
+    same prompt-injection channel the project's own ``.marim/skills`` /
+    ``.marim/agents`` roots already gate behind ``MARIM_TRUST_PROJECT_HOOKS``
+    (workspace/skills.py, workspace/agents.py); gating the byte-equivalent
+    plugin content keeps the two consistent. Global-scope plugins were
+    installed by an explicit user action into the user's own config dir,
+    outside the repo's reach, and always contribute. The per-plugin ``trusted``
+    bit is deliberately NOT required here — inert text doesn't execute code;
+    the executable surface keeps its stricter gate in _enabled_trusted."""
+    trusted = _project_trusted(trust_project)
+    return [p for p in _enabled(workspace_root) if p.scope != "project" or trusted]
+
+
 def _linked_elevation_revokes_trust(p: ResolvedPlugin) -> bool:
     """Whether a trusted *linked* plugin has gained executable surface (hooks/MCP)
     since trust was granted, so its executable contributions must NOT be honored.
@@ -195,8 +237,9 @@ def _project_scope_untrusted(p: ResolvedPlugin, trust_project: bool) -> bool:
     plugins therefore require *both* the per-plugin trust bit *and* the project
     trust gate. Global plugins are unaffected: they were installed by an explicit
     user action into the user's own config dir, outside the repo's reach. Inert
-    contributions (skills/agents/instructions) are never gated here — they don't
-    execute code."""
+    contributions (skills/agents/instructions) are gated separately, in
+    _enabled_inert — same project gate, but without requiring the per-plugin
+    trust bit, since inert text doesn't execute code."""
     if p.scope != "project" or trust_project:
         return False
     if has_executable(plugin_bundle_summary(p.manifest)):
@@ -218,12 +261,22 @@ def _enabled_trusted(workspace_root, *, trust_project: bool) -> list[ResolvedPlu
     ]
 
 
-def plugin_skill_roots(workspace_root) -> list[tuple[str, Path]]:
-    return [(p.name, p.manifest.skills_dir()) for p in _enabled(workspace_root)]
+def plugin_skill_roots(
+    workspace_root, *, trust_project: bool | None = None
+) -> list[tuple[str, Path]]:
+    return [
+        (p.name, p.manifest.skills_dir())
+        for p in _enabled_inert(workspace_root, trust_project)
+    ]
 
 
-def plugin_agent_roots(workspace_root) -> list[tuple[str, Path]]:
-    return [(p.name, p.manifest.agents_dir()) for p in _enabled(workspace_root)]
+def plugin_agent_roots(
+    workspace_root, *, trust_project: bool | None = None
+) -> list[tuple[str, Path]]:
+    return [
+        (p.name, p.manifest.agents_dir())
+        for p in _enabled_inert(workspace_root, trust_project)
+    ]
 
 
 # Keyed by resolved workspace root. The ``_global_instructions``/plugin closures
@@ -235,8 +288,16 @@ def plugin_agent_roots(workspace_root) -> list[tuple[str, Path]]:
 _INSTRUCTION_TEXT_CACHE: dict[str, tuple[tuple, list[tuple[str, str]]]] = {}
 
 
-def plugin_instruction_texts(workspace_root) -> list[tuple[str, str]]:
-    items = [(p.name, p.manifest.instructions_path()) for p in _enabled(workspace_root)]
+def plugin_instruction_texts(
+    workspace_root, *, trust_project: bool | None = None
+) -> list[tuple[str, str]]:
+    # Dropping a project-scope plugin under _enabled_inert's trust gate also
+    # shrinks ``items`` — and with it the cache signature below — so trusted and
+    # untrusted callers can't poison one cache entry for the other.
+    items = [
+        (p.name, p.manifest.instructions_path())
+        for p in _enabled_inert(workspace_root, trust_project)
+    ]
     sig = tuple((name, _stat_key(path)) for name, path in items)
     key = str(Path(workspace_root).resolve())
     cached = _INSTRUCTION_TEXT_CACHE.get(key)

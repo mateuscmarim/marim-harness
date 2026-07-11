@@ -6,7 +6,8 @@ installed (copied or linked) into a global (``~/.config/marim/plugins/``) or
 project (``<ws>/.marim/plugins/``) scope and tracked in a per-scope
 ``plugins.json`` registry. Discovery contributes a plugin's content into
 marim's existing systems: skills/sub-agents/instructions for any *enabled*
-plugin, hooks/MCP only for *enabled + trusted* ones.
+plugin (project-scope plugins additionally require the project itself to be
+trusted), hooks/MCP only for *enabled + trusted* ones.
 """
 
 from .discovery import (

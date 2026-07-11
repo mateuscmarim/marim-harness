@@ -24,17 +24,21 @@ In the TUI: `/plugin [list | enable <name> | disable <name>]`.
 
 ## Trust
 
-Skills, sub-agents, and instructions load for any enabled plugin. Hooks and MCP
-servers execute code, so they load only for plugins you trust. Installing a
-plugin with hooks/MCP prompts for trust; pass `--trust` to grant it
-non-interactively (e.g. in CI). Trust is recorded per plugin.
+Skills, sub-agents, and instructions load for any enabled plugin — except that
+project-scope plugins also require the project itself to be trusted (see
+below). Hooks and MCP servers execute code, so they load only for plugins you
+trust. Installing a plugin with hooks/MCP prompts for trust; pass `--trust` to
+grant it non-interactively (e.g. in CI). Trust is recorded per plugin.
 
 *Project-scope* plugins additionally require the project itself to be trusted
 (`MARIM_TRUST_PROJECT_HOOKS=1`, the same gate as `.marim/hooks.json` and
-`.marim/mcp.json`) before their hooks/MCP load. Their registry — trust bit
-included — is committed to the repo, so on a freshly cloned repo that bit is
-whoever-committed-it's word, not yours. Skills, sub-agents, and instructions
-from project plugins are unaffected.
+`.marim/mcp.json`) before contributing anything at all. Their registry —
+enabled/trusted bits included — is committed to the repo, so on a freshly
+cloned repo those bits are whoever-committed-it's word, not yours. An
+untrusted project's plugins contribute nothing: skills, sub-agents, and
+instructions are withheld by the project-trust gate alone (no per-plugin trust
+needed, since inert text doesn't execute code), while hooks/MCP additionally
+require the per-plugin trust bit once the project is trusted.
 
 > **Note:** Toggling a plugin-provided MCP server via the MCP UI (e.g. `/mcp
 > disable <name>`) is session-only and not persisted; use `marim plugin disable

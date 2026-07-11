@@ -195,8 +195,12 @@ def _all_roots(
     """The discovery roots in precedence order as ``(source, root, plugin)``:
     user roots (project, then global), then plugin roots.
 
-    The project root is dropped unless ``trust_project`` — global and plugin
-    agents always load; only the untrusted ``.marim/agents`` is gated. Since the
+    The project root is dropped unless ``trust_project`` — global agents always
+    load; only the untrusted ``.marim/agents`` is gated. The same flag is
+    threaded into ``plugin_agent_roots``, which gates *project-scope* plugin
+    agents identically: a committed ``.marim/plugins/`` bundle is the same
+    prompt-injection channel as a committed ``.marim/agents/``, so the two
+    gates must not diverge (global-scope plugin agents always load). Since the
     cache signature is computed over this list, dropping a root also changes the
     fingerprint, so trusted and untrusted callers can't poison one cache."""
     from ..plugins import plugin_agent_roots
@@ -208,7 +212,7 @@ def _all_roots(
     ]
     roots += [
         (f"plugin:{name}", root, name)
-        for name, root in plugin_agent_roots(workspace_root)
+        for name, root in plugin_agent_roots(workspace_root, trust_project=trust_project)
     ]
     return roots
 

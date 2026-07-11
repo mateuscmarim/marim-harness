@@ -143,21 +143,72 @@ def test_global_plugin_executables_ignore_project_trust(tmp_path, monkeypatch):
     assert "mine_web" in plugin_mcp_specs(ws, trust_project=False)
 
 
-def test_untrusted_project_plugin_keeps_inert_contributions(tmp_path, monkeypatch):
-    """Skills/agents/instructions are inert text — they stay available from an
-    untrusted project plugin; only the executable surface is withheld."""
+def test_project_plugin_inert_contributions_require_project_trust(tmp_path, monkeypatch):
+    """The prompt-injection sibling of the hooks/MCP hole: a cloned repo can
+    commit .marim/plugins/ with an enabled plugin whose skills, agent specs, and
+    AGENTS.md inject text into the model's context before any consent — the same
+    channel the project's own .marim/skills root gates. Project-scope inert
+    contributions therefore require the project trust gate too."""
+    monkeypatch.delenv("MARIM_TRUST_PROJECT_HOOKS", raising=False)
     ws = _ws(tmp_path, monkeypatch)
     pdir = ws / ".marim" / "plugins"
     _make_plugin(
         pdir, "shared",
         manifest={},
-        files={**_EXEC_FILES, "skills/s/SKILL.md": "x", "AGENTS.md": "read me"},
+        files={**_EXEC_FILES, "skills/s/SKILL.md": "x", "agents/a.md": "x",
+               "AGENTS.md": "read me"},
     )
     _install(pdir, "shared", enabled=True, trusted=True)
 
-    assert "shared" in dict(plugin_skill_roots(ws))
-    assert plugin_instruction_texts(ws) == [("shared", "read me")]
+    # Untrusted project (the default): nothing is contributed at all.
+    assert dict(plugin_skill_roots(ws)) == {}
+    assert dict(plugin_agent_roots(ws)) == {}
+    assert plugin_instruction_texts(ws) == []
+    assert dict(plugin_skill_roots(ws, trust_project=False)) == {}
+    assert dict(plugin_agent_roots(ws, trust_project=False)) == {}
+    assert plugin_instruction_texts(ws, trust_project=False) == []
+
+    # Trusted project: contributes as before.
+    assert "shared" in dict(plugin_skill_roots(ws, trust_project=True))
+    assert "shared" in dict(plugin_agent_roots(ws, trust_project=True))
+    assert plugin_instruction_texts(ws, trust_project=True) == [("shared", "read me")]
+    # The executable surface keeps its own, stricter gate.
     assert plugin_hook_entries(ws, trust_project=False) == {}
+
+
+def test_project_plugin_inert_honors_env_trust_fallback(tmp_path, monkeypatch):
+    """Un-wired call sites (the _plugin_instructions closure) pass no flag; the
+    helpers fall back to MARIM_TRUST_PROJECT_HOOKS, the same signal (and the
+    same convention) as workspace skills/agents discovery."""
+    ws = _ws(tmp_path, monkeypatch)
+    pdir = ws / ".marim" / "plugins"
+    _make_plugin(pdir, "shared", manifest={}, files={"AGENTS.md": "read me"})
+    _install(pdir, "shared", enabled=True)
+
+    monkeypatch.delenv("MARIM_TRUST_PROJECT_HOOKS", raising=False)
+    assert plugin_instruction_texts(ws) == []
+    assert dict(plugin_skill_roots(ws)) == {}
+    monkeypatch.setenv("MARIM_TRUST_PROJECT_HOOKS", "1")
+    assert plugin_instruction_texts(ws) == [("shared", "read me")]
+    assert "shared" in dict(plugin_skill_roots(ws))
+
+
+def test_global_plugin_inert_ignores_project_trust(tmp_path, monkeypatch):
+    """Global plugins were installed by an explicit user action into the user's
+    own config dir — the project trust gate must not silence their inert
+    contributions."""
+    monkeypatch.delenv("MARIM_TRUST_PROJECT_HOOKS", raising=False)
+    ws = _ws(tmp_path, monkeypatch)
+    gdir = tmp_path / "cfg" / "marim" / "plugins"
+    _make_plugin(
+        gdir, "mine", manifest={},
+        files={"skills/.keep": "", "agents/.keep": "", "AGENTS.md": "hi"},
+    )
+    _install(gdir, "mine", enabled=True)
+
+    assert "mine" in dict(plugin_skill_roots(ws, trust_project=False))
+    assert "mine" in dict(plugin_agent_roots(ws, trust_project=False))
+    assert plugin_instruction_texts(ws, trust_project=False) == [("mine", "hi")]
 
 
 def test_load_configs_gate_project_plugins(tmp_path, monkeypatch):

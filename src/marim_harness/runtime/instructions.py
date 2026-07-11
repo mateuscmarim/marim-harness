@@ -255,6 +255,11 @@ def register_instructions(
 
         @agent.instructions
         def _plugin_instructions(ctx: RunContext[Deps]) -> str:
+            # No trust flag is in reach here, so plugin_instruction_texts falls
+            # back to MARIM_TRUST_PROJECT_HOOKS itself (same convention as the
+            # discover_skills/discover_agents closures below): a cloned repo's
+            # committed project-scope plugin can't inject its AGENTS.md until
+            # the project is trusted.
             texts = plugin_instruction_texts(ctx.deps.workspace.root)
             if not texts:
                 return ""

@@ -135,8 +135,12 @@ def _all_skill_roots(
     """Discovery roots in precedence order as ``(source, root, plugin)``: user
     roots (project, then global) first, then plugin roots as ``plugin:name``.
 
-    The project root is dropped unless ``trust_project`` — global and plugin
-    skills always load; only the untrusted ``.marim/skills`` is gated. Because
+    The project root is dropped unless ``trust_project`` — global skills always
+    load; only the untrusted ``.marim/skills`` is gated. The same flag is
+    threaded into ``plugin_skill_roots``, which gates *project-scope* plugin
+    skills identically: a committed ``.marim/plugins/`` bundle is the same
+    prompt-injection channel as a committed ``.marim/skills/``, so the two
+    gates must not diverge (global-scope plugin skills always load). Because
     the cache signature is computed over this list, dropping a root also changes
     the fingerprint, so trusted and untrusted callers can't poison one cache."""
     from ..plugins import plugin_skill_roots
@@ -147,7 +151,8 @@ def _all_skill_roots(
         if source != "project" or trust_project
     ]
     roots += [
-        (f"plugin:{name}", root, name) for name, root in plugin_skill_roots(workspace_root)
+        (f"plugin:{name}", root, name)
+        for name, root in plugin_skill_roots(workspace_root, trust_project=trust_project)
     ]
     return roots
 

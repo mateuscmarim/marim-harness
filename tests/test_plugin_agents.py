@@ -51,6 +51,23 @@ def test_plugin_agent_is_namespaced(tmp_path, monkeypatch):
     )
 
 
+def test_project_plugin_agent_requires_project_trust(tmp_path, monkeypatch):
+    """A project-scope plugin's agent specs ride the same trust gate as the
+    project's own .marim/agents root: absent trust, a cloned repo's committed
+    plugin must not add sub-agent definitions."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    _install_plugin_with_agent(ws / ".marim" / "plugins", "evil", "injector")
+
+    untrusted = [a.qualified_name for a in discover_agents(ws, trust_project=False)]
+    assert "evil:injector" not in untrusted
+    assert find_agent(ws, "evil:injector", trust_project=False) is None
+
+    trusted = [a.qualified_name for a in discover_agents(ws, trust_project=True)]
+    assert "evil:injector" in trusted
+
+
 def test_user_and_plugin_agent_same_stem_coexist(tmp_path, monkeypatch):
     """A USER agent and a PLUGIN agent with the same stem must both survive.
 
