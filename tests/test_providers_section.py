@@ -4,9 +4,12 @@ layer and the ProvidersPane widget (compose, commit, verify, remove, default).""
 import os
 
 import pytest
+from textual.app import App
+from textual.widgets import Input, Static
 
 from marim_harness.interfaces.tui.providers import (
     PROVIDER_SPECS,
+    ProvidersPane,
     current_default_provider,
     key_hint,
     short_error,
@@ -75,3 +78,169 @@ def test_current_default_provider(isolated_env, monkeypatch):
     assert current_default_provider() == "google"
     monkeypatch.setenv("MARIM_PROVIDER", "azure")  # unknown -> fallback
     assert current_default_provider() == "openrouter"
+
+
+class _PaneHost(App):
+    """Minimal host mirroring what SettingsScreen passes the pane."""
+
+    def __init__(self, *, model_source=None, cli_detected=False):
+        super().__init__()
+        self._model_source = model_source
+        self._cli_detected = cli_detected
+        self.statuses: list[str] = []
+        self.badges: list[str] = []
+
+    def compose(self):
+        yield ProvidersPane(
+            model_source=self._model_source,
+            status=self.statuses.append,
+            set_badge=self.badges.append,
+            cli_detected=self._cli_detected,
+        )
+
+
+@pytest.mark.anyio
+async def test_pane_mounts_all_cards_without_writing_env(
+    isolated_env, monkeypatch, tmp_path
+):
+    """Mounting paints all four cards and must not write .env (mount-time
+    widget events are gated, like the settings screen's _ready flag)."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("MARIM_PROVIDER", "openrouter")
+    app = _PaneHost()
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        pane = app.query_one(ProvidersPane)
+        for name in ("openrouter", "google", "local", "claude-cli"):
+            assert pane.query_one(f"#prov-card-{name}") is not None
+        # Key inputs are password fields that start empty.
+        key = pane.query_one("#prov-key-openrouter", Input)
+        assert key.password is True and key.value == ""
+    assert not (tmp_path / "marim" / ".env").exists()
+
+
+@pytest.mark.anyio
+async def test_key_commit_saves_clears_and_repaints(
+    isolated_env, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    app = _PaneHost()
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        pane = app.query_one(ProvidersPane)
+        inp = pane.query_one("#prov-key-openrouter", Input)
+        inp.value = "sk-or-test-1234abcd"
+        pane._commit("prov-key-openrouter")  # what Enter/blur trigger
+        await pilot.pause()
+        assert os.environ.get("OPENROUTER_API_KEY") == "sk-or-test-1234abcd"
+        env_text = (tmp_path / "marim" / ".env").read_text()
+        assert "OPENROUTER_API_KEY=sk-or-test-1234abcd" in env_text
+        # The secret never lingers in the widget; the placeholder proves state.
+        assert inp.value == ""
+        assert inp.placeholder == "configured · …abcd — type to replace"
+        assert any("OPENROUTER_API_KEY" in s for s in app.statuses)
+
+
+@pytest.mark.anyio
+async def test_empty_commit_is_a_noop(isolated_env, monkeypatch, tmp_path):
+    """Blur with an empty input (the normal focus-pass-through case) writes
+    nothing — a stored key can never be clobbered by navigation."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    app = _PaneHost()
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        pane = app.query_one(ProvidersPane)
+        pane._commit("prov-key-openrouter")
+        await pilot.pause()
+    assert not (tmp_path / "marim" / ".env").exists()
+
+
+@pytest.mark.anyio
+async def test_google_configured_via_gemini_key_but_writes_google_key(
+    isolated_env, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "gm-key-12345678")
+    app = _PaneHost()
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        pane = app.query_one(ProvidersPane)
+        # Configured state (and hint) come from the fallback env name...
+        inp = pane.query_one("#prov-key-google", Input)
+        assert inp.placeholder == "configured · …5678 — type to replace"
+        assert "configured" in str(
+            pane.query_one("#prov-status-google", Static).render()
+        )
+        # ...but a save always writes GOOGLE_API_KEY.
+        inp.value = "AIza-new-key-0000"
+        pane._commit("prov-key-google")
+        await pilot.pause()
+    assert os.environ.get("GOOGLE_API_KEY") == "AIza-new-key-0000"
+    assert "GOOGLE_API_KEY=AIza-new-key-0000" in (
+        tmp_path / "marim" / ".env"
+    ).read_text()
+
+
+@pytest.mark.anyio
+async def test_local_base_url_commit_marks_configured(
+    isolated_env, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("MARIM_BASE_URL", raising=False)
+    app = _PaneHost()
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        pane = app.query_one(ProvidersPane)
+        status = pane.query_one("#prov-status-local", Static)
+        assert "not configured" in str(status.render())
+        url = pane.query_one("#prov-url-local", Input)
+        url.value = "http://localhost:1234/v1"
+        pane._commit("prov-url-local")
+        await pilot.pause()
+        assert os.environ.get("MARIM_BASE_URL") == "http://localhost:1234/v1"
+        assert "not configured" not in str(status.render())
+        # Base URL is not a secret: the value stays visible in the input.
+        assert url.value == "http://localhost:1234/v1"
+
+
+@pytest.mark.anyio
+async def test_commit_refreshes_live_sources(isolated_env, monkeypatch, tmp_path):
+    """A key commit makes the provider active on the live MultiModelSource
+    (the model picker sees it immediately — the whole point of 'live')."""
+    from marim_harness.config import model as _m
+    from marim_harness.config.model import MultiModelSource
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    for k in ("OPENROUTER_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
+              "MARIM_BASE_URL", "MARIM_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setattr(_m, "_claude_cli_available", lambda: False)
+    monkeypatch.setenv("MARIM_PROVIDER", "openrouter")
+    multi = MultiModelSource.from_env()
+    assert "google" not in multi.sources
+    app = _PaneHost(model_source=multi)
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        pane = app.query_one(ProvidersPane)
+        inp = pane.query_one("#prov-key-google", Input)
+        inp.value = "AIza-live-key-0001"
+        pane._commit("prov-key-google")
+        await pilot.pause()
+    assert "google" in multi.sources
+
+
+@pytest.mark.anyio
+async def test_claude_cli_card_reflects_detection(isolated_env, monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    app = _PaneHost(cli_detected=True)
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        pane = app.query_one(ProvidersPane)
+        assert "detected on PATH" in str(
+            pane.query_one("#prov-status-claude-cli", Static).render()
+        )
+        # Nothing stored -> no key field, no remove button.
+        assert not pane.query("#prov-key-claude-cli")
+        assert not pane.query("#prov-remove-claude-cli")
