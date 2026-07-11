@@ -232,6 +232,8 @@ def register_instructions(
       ``groups.skills``.
     - ``_memory_indexes`` (advertises ``recall``, and reads MEMORY.md to do
       so) is gated on ``groups.memory``.
+    - ``_scratchpad`` (advertises that ``write_file``/``edit_file`` writes to
+      the scratchpad bypass approval) is gated on ``groups.files_write``.
 
     ``groups=None`` means "all groups on" — the CLI/bootstrap default, and
     also what a bare ``HarnessConfig()`` gets when constructed directly
@@ -252,6 +254,7 @@ def register_instructions(
     spawn_on = groups is None or groups.spawn
     skills_on = groups is None or groups.skills
     memory_on = groups is None or groups.memory
+    files_write_on = groups is None or groups.files_write
 
     if global_instructions:
 
@@ -275,9 +278,11 @@ def register_instructions(
             return ""
         return f"Project-specific instructions:\n\n{text}"
 
-    @agent.instructions
-    def _scratchpad(ctx: RunContext[Deps]) -> str:
-        return _scratchpad_block(ctx)
+    if files_write_on:
+
+        @agent.instructions
+        def _scratchpad(ctx: RunContext[Deps]) -> str:
+            return _scratchpad_block(ctx)
 
     if global_instructions:
 
