@@ -23,13 +23,12 @@ from textual.content import Content
 from textual.widgets import Button, Input, RadioButton, RadioSet, Static
 
 from ...config import MultiModelSource, save_env_settings
+from ...config.model import KNOWN_PROVIDERS
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from ...config.model import ModelSource
-
-_KNOWN = ("openrouter", "google", "local", "claude-cli")
 
 
 @dataclass(frozen=True)
@@ -109,7 +108,7 @@ def current_default_provider() -> str:
     """MARIM_PROVIDER from the env, normalized like load_config: lowercased,
     unknown values falling back to openrouter (the historical default)."""
     default = os.getenv("MARIM_PROVIDER", "openrouter").lower()
-    return default if default in _KNOWN else "openrouter"
+    return default if default in KNOWN_PROVIDERS else "openrouter"
 
 
 class ProvidersPane(Vertical):
@@ -154,6 +153,15 @@ class ProvidersPane(Vertical):
         # Gate commits until mounted: widget events fired while the initial
         # tree mounts (e.g. the RadioSet preselect) must not persist anything.
         self._ready = False
+        # Last verification verdict per provider ("✓ connected · N models" /
+        # "✗ …"), so repaints (default-radio moves, other cards' saves) don't
+        # regress a live badge back to the static "configured".
+        self._verify_results: dict[str, str] = {}
+        # The initial verify sweep runs on first *display* (on_show), not on
+        # mount: the settings screen mounts every section up front but shows
+        # one at a time, and opening Settings shouldn't cost network calls for
+        # a section the user may never visit.
+        self._verified_once = False
 
     def compose(self) -> ComposeResult:
         yield Static(
@@ -180,7 +188,11 @@ class ProvidersPane(Vertical):
                 yield Static(name, classes="prov-name")
                 yield Static("", id=f"prov-status-{name}", classes="prov-status")
                 if spec.drop_keys:
-                    yield Button("remove", id=f"prov-remove-{name}")
+                    # compact: Button's default style keeps tall top/bottom
+                    # borders that survive a plain `border: none` override; at
+                    # the card head's height of 1 only the border row renders,
+                    # leaving a label-less ▔ strip instead of the word.
+                    yield Button("remove", id=f"prov-remove-{name}", compact=True)
             if spec.base_url_key is not None:
                 with Horizontal(classes="prov-field"):
                     yield Static("Base URL")
@@ -201,16 +213,24 @@ class ProvidersPane(Vertical):
     def on_mount(self) -> None:
         for spec in PROVIDER_SPECS:
             self._paint_card(spec)
-            # Verify already-configured providers up front so the cards open
-            # showing live truth ('✓ connected · N models'), matching what a
-            # save would show — skipped when there's no MultiModelSource
-            # (embedding/tests) and for claude-cli (nothing to fetch).
-            if spec.write_key is not None and self._configured(spec):
-                self._start_verify(spec.name)
         # call_after_refresh (not a bare assignment): the RadioSet's initial
         # Changed message may still be queued when on_mount runs; arming
         # commits only after the first refresh guarantees mount noise is over.
         self.call_after_refresh(self._arm)
+
+    def on_show(self) -> None:
+        # Verify already-configured providers the first time the section is
+        # actually displayed, so the cards show live truth ('✓ connected ·
+        # N models') matching what a save would show — skipped when there's
+        # no MultiModelSource (embedding/tests) and for claude-cli (nothing
+        # to fetch). Once per pane lifetime: rail navigation away and back
+        # must not re-fire network calls (the cache repaints the verdicts).
+        if self._verified_once:
+            return
+        self._verified_once = True
+        for spec in PROVIDER_SPECS:
+            if spec.write_key is not None and self._configured(spec):
+                self._start_verify(spec.name)
 
     def _arm(self) -> None:
         self._ready = True
@@ -247,6 +267,11 @@ class ProvidersPane(Vertical):
     def _status_text(self, spec: ProviderSpec, configured: bool) -> str:
         if spec.name == "claude-cli":
             base = "detected on PATH" if configured else "not found"
+        elif configured and spec.name in self._verify_results:
+            # A live verdict beats the static "configured": repaints (the
+            # default marker moving between cards, another card's save) must
+            # not regress a ✓/✗ badge that verification already earned.
+            base = self._verify_results[spec.name]
         else:
             base = "configured" if configured else "not configured"
         if spec.name == current_default_provider():
@@ -363,9 +388,13 @@ class ProvidersPane(Vertical):
             # report "connected" on a dead server / bad key).
             models = await source.list_models(strict=True)
         except Exception as exc:  # noqa: BLE001 - any fetch failure is a verdict
-            badge.update(f"✗ {short_error(exc)}{default}")
-            return
-        badge.update(f"✓ connected · {len(models)} models{default}")
+            verdict = f"✗ {short_error(exc)}"
+        else:
+            verdict = f"✓ connected · {len(models)} models"
+        # Cached without the default suffix — that marker moves between cards
+        # as MARIM_PROVIDER changes, so _status_text re-derives it per paint.
+        self._verify_results[name] = verdict
+        badge.update(f"{verdict}{default}")
 
     # -- removal -----------------------------------------------------------
 
@@ -384,6 +413,9 @@ class ProvidersPane(Vertical):
         spec = _SPECS[name]
         if not spec.drop_keys or not self._save({}, drop=spec.drop_keys):
             return
+        # A stale ✓ verdict belongs to the removed credentials; drop it before
+        # the repaint below so the card falls back to "not configured".
+        self._verify_results.pop(name, None)
         if spec.base_url_key is not None:
             self.query_one(f"#prov-url-{name}", Input).value = ""
         self._status(f"✓ removed {name} credentials")

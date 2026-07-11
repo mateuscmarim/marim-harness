@@ -8,6 +8,9 @@ from dataclasses import dataclass
 logger = logging.getLogger(__name__)
 
 _OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+# The current-key endpoint: unlike /models (public), this 401s on a bad key,
+# so strict verification probes it to get a real verdict on the credential.
+_OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
 _GOOGLE_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
 
@@ -144,6 +147,13 @@ async def fetch_openrouter_models(
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
+            if strict and api_key:
+                # /models is public, so the catalog fetch below succeeds even
+                # with a garbage key — it can't validate a credential. /key
+                # requires auth (401 on a bad key), so strict verification
+                # probes it first. The non-strict picker path never pays this
+                # extra request.
+                (await client.get(_OPENROUTER_KEY_URL, headers=headers)).raise_for_status()
             response = await client.get(_OPENROUTER_MODELS_URL, headers=headers)
             response.raise_for_status()
             return parse_models(response.json())

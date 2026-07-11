@@ -406,3 +406,110 @@ async def test_down_arrow_switches_section():
         assert screen.active_section == "providers"
         assert screen.query_one("#section-providers").display is True
         assert screen.query_one("#section-session").display is False
+
+
+# -- keyboard focus: rail mode vs edit mode ----------------------------------
+#
+# The screen opens in "rail mode" (nothing focused; ↑↓ switch sections).
+# Enter dives into the active section (focusing its first editable field),
+# escape climbs back out to rail mode, and a second escape closes the screen.
+# While a field has focus, ↑↓ must NOT switch sections under the editor.
+
+
+@pytest.mark.anyio
+async def test_screen_opens_with_no_focus():
+    """Rail mode: auto-focus is disabled so ↑↓ always reach the screen
+    bindings on open (nothing swallows them)."""
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        assert app.screen.focused is None
+
+
+@pytest.mark.anyio
+async def test_enter_focuses_first_field_of_active_section():
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        focused = app.screen.focused
+        assert focused is not None and focused.id == "mode-set"
+
+
+@pytest.mark.anyio
+async def test_enter_on_providers_focuses_key_input():
+    """Buttons are skipped (enter-enter must not accidentally press e.g. the
+    remove button): the first *editable* field gets focus."""
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("down")  # Session -> Providers
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        focused = app.screen.focused
+        assert focused is not None and focused.id == "prov-key-openrouter"
+
+
+@pytest.mark.anyio
+async def test_escape_returns_to_rail_before_closing():
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.screen.focused is not None
+        await pilot.press("escape")  # back to rail mode, screen stays
+        await pilot.pause()
+        assert isinstance(app.screen, SettingsScreen)
+        assert app.screen.focused is None
+        await pilot.press("escape")  # now close
+        await pilot.pause()
+        assert not isinstance(app.screen, SettingsScreen)
+
+
+@pytest.mark.anyio
+async def test_arrows_do_not_switch_section_while_editing():
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("down")  # Session -> Providers
+        await pilot.pause()
+        await pilot.press("enter")  # focus the key input
+        await pilot.pause()
+        assert app.screen.focused is not None
+        await pilot.press("down")  # must not move to Theme under the editor
+        await pilot.pause()
+        assert app.screen.active_section == "providers"
+
+
+@pytest.mark.anyio
+async def test_settings_open_does_not_verify_until_providers_shown(
+    isolated_env, monkeypatch, tmp_path
+):
+    """Opening settings (on Session) must not fire catalog fetches; switching
+    to Providers triggers the one-time verification."""
+    from unittest.mock import AsyncMock
+
+    from marim_harness.config import model as _m
+    from marim_harness.config.model import MultiModelSource
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(_m, "_claude_cli_available", lambda: False)
+    monkeypatch.setenv("MARIM_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-verify-1234")
+    multi = MultiModelSource.from_env()
+    stub = AsyncMock(return_value=[])
+    monkeypatch.setattr(multi.sources["openrouter"], "list_models", stub)
+    harness = _fake_harness()
+    harness.model_source = multi
+    app = _Host(harness, _env_cfg())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        assert stub.await_count == 0
+        await pilot.press("down")  # Session -> Providers
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        assert stub.await_count == 1

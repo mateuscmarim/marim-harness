@@ -24,7 +24,7 @@ _DEFAULT_CLAUDE_CLI_MODEL: str | None = None
 # Every provider load_config knows how to wire. An unknown value falls through to
 # the OpenRouter branch (the historical default), but we warn first so a typo
 # like MARIM_PROVIDER=azure doesn't masquerade as a confusing "missing API key".
-_KNOWN_PROVIDERS = frozenset({"openrouter", "local", "google", "claude-cli"})
+KNOWN_PROVIDERS = frozenset({"openrouter", "local", "google", "claude-cli"})
 
 
 def parse_qualified(
@@ -278,10 +278,10 @@ def detect_active_providers() -> tuple[dict[str, ModelConfig], str]:
     provider (MARIM_PROVIDER). The default is always included so startup has a
     home even if its creds are absent."""
     default = os.getenv("MARIM_PROVIDER", "openrouter").lower()
-    if default not in _KNOWN_PROVIDERS:
+    if default not in KNOWN_PROVIDERS:
         default = "openrouter"
     common = _common_kwargs()
-    active = {p for p in _KNOWN_PROVIDERS if _provider_has_creds(p)}
+    active = {p for p in KNOWN_PROVIDERS if _provider_has_creds(p)}
     active.add(default)
     return {p: _provider_config(p, common) for p in active}, default
 
@@ -294,11 +294,11 @@ def load_config() -> ModelConfig:
     the model id and credentials. Command allow/deny lists come from
     MARIM_COMMAND_DENYLIST / MARIM_COMMAND_ALLOWLIST."""
     provider = os.getenv("MARIM_PROVIDER", "openrouter").lower()
-    if provider not in _KNOWN_PROVIDERS:
+    if provider not in KNOWN_PROVIDERS:
         logger.warning(
             "Unknown MARIM_PROVIDER=%r; falling back to 'openrouter' "
             "(known providers: %s).",
-            provider, ", ".join(sorted(_KNOWN_PROVIDERS)),
+            provider, ", ".join(sorted(KNOWN_PROVIDERS)),
         )
         provider = "openrouter"
     return _provider_config(provider, _common_kwargs())
