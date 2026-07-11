@@ -78,6 +78,36 @@ def _uri_to_rel(root: Path, uri: str) -> str:
         return str(p)
 
 
+async def _await_publishes(server: Any, path: str, event: asyncio.Event, settle: float) -> None:
+    # didOpen makes the server push diagnostics; wake on that publish, then
+    # wait out a short quiet gap (_PUBLISH_QUIESCE) for follow-up publishes
+    # before returning — servers that publish empty-then-real would
+    # otherwise have their empty first push read as "no diagnostics". The
+    # whole wait is bounded by ``settle``, and wait_for always returns or
+    # raises TimeoutError, so this can never hang past that ceiling. We read
+    # collector.latest() after returning, so it always reflects the most
+    # recent publish regardless of how many arrived.
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + settle
+    with server.open_file(path):
+        got_publish = False
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            # Before the first publish, wait the whole remaining window; once
+            # one has landed, only wait out the short quiesce gap for more.
+            timeout = min(_PUBLISH_QUIESCE, remaining) if got_publish else remaining
+            event.clear()
+            try:
+                await asyncio.wait_for(event.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                # settle elapsed with nothing pushed, or publishes quiesced
+                # after at least one — either way we're done.
+                break
+            got_publish = True
+
+
 class LspManager:
     def __init__(
         self,
@@ -391,7 +421,7 @@ class LspManager:
         (best-effort)."""
         await self._ensure_started(language)  # ignore returned error — best-effort
 
-    async def diagnostics(self, path: str, *, settle: float = 1.5, deep: bool = False) -> str:  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
+    async def diagnostics(self, path: str, *, settle: float = 1.5, deep: bool = False) -> str:
         # Python's resident server (jedi) only reports syntax errors, so route it
         # to real external checkers instead — ruff always, plus pyright on a deep
         # check (see lsp.checks). These are stateless subprocesses: no server
@@ -425,37 +455,10 @@ class LspManager:
         event = asyncio.Event()
         self._publish_waiters.setdefault(uri, []).append(event)
 
-        async def _open_and_wait():
-            # didOpen makes the server push diagnostics; wake on that publish, then
-            # wait out a short quiet gap (_PUBLISH_QUIESCE) for follow-up publishes
-            # before returning — servers that publish empty-then-real would
-            # otherwise have their empty first push read as "no diagnostics". The
-            # whole wait is bounded by ``settle``, and wait_for always returns or
-            # raises TimeoutError, so this can never hang past that ceiling. We read
-            # collector.latest() after returning, so it always reflects the most
-            # recent publish regardless of how many arrived.
-            loop = asyncio.get_running_loop()
-            deadline = loop.time() + settle
-            with server.open_file(path):
-                got_publish = False
-                while True:
-                    remaining = deadline - loop.time()
-                    if remaining <= 0:
-                        break
-                    # Before the first publish, wait the whole remaining window; once
-                    # one has landed, only wait out the short quiesce gap for more.
-                    timeout = min(_PUBLISH_QUIESCE, remaining) if got_publish else remaining
-                    event.clear()
-                    try:
-                        await asyncio.wait_for(event.wait(), timeout=timeout)
-                    except asyncio.TimeoutError:
-                        # settle elapsed with nothing pushed, or publishes quiesced
-                        # after at least one — either way we're done.
-                        break
-                    got_publish = True
-
         try:
-            _res, err = await self._call(_open_and_wait(), "diagnostics")
+            _res, err = await self._call(
+                _await_publishes(server, path, event, settle), "diagnostics"
+            )
         finally:
             waiters = self._publish_waiters.get(uri)
             if waiters is not None:
