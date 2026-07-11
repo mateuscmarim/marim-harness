@@ -1,7 +1,13 @@
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
+
+from marim_harness.runtime.deps import Deps, HarnessServices, WorkspaceConfig
 from marim_harness.session.store import _workspace_dir
+from marim_harness.tools import edit_tools, fs_tools
+from marim_harness.tools.impl import fs
 from marim_harness.workspace.scratchpad import (
     ensure_scratchpad,
     scratchpad_base,
@@ -56,3 +62,60 @@ def test_ensure_refuses_symlink_base(tmp_path):
     base = tmp_path / "b"
     base.symlink_to(target)
     assert ensure_scratchpad(Path("/w/proj"), "s1", base=base) is None
+
+
+def _ctx(ws: Path, scratch: Path | None) -> SimpleNamespace:
+    deps = Deps(workspace=WorkspaceConfig(root=ws))
+    deps.services = HarnessServices(
+        get_scratchpad=(lambda: scratch) if scratch is not None else None
+    )
+    return SimpleNamespace(deps=deps)
+
+
+def test_scratch_roots_empty_without_getter(tmp_path):
+    assert fs_tools._scratch_roots(_ctx(tmp_path, None)) == ()
+
+
+def test_scratch_roots_empty_when_getter_returns_none(tmp_path):
+    ctx = _ctx(tmp_path, None)
+    ctx.deps.services = HarnessServices(get_scratchpad=lambda: None)
+    assert fs_tools._scratch_roots(ctx) == ()
+
+
+@pytest.mark.anyio
+async def test_write_tool_reaches_scratchpad(tmp_path):
+    ws = tmp_path / "ws"
+    scratch = tmp_path / "scratch"
+    ws.mkdir()
+    scratch.mkdir()
+    ctx = _ctx(ws, scratch)
+    await edit_tools.write_file(ctx, str(scratch / "note.txt"), "hi")
+    assert (scratch / "note.txt").read_text() == "hi"
+
+
+@pytest.mark.anyio
+async def test_edit_tool_reaches_scratchpad_after_read(tmp_path):
+    ws = tmp_path / "ws"
+    scratch = tmp_path / "scratch"
+    ws.mkdir()
+    scratch.mkdir()
+    (scratch / "note.txt").write_text("hello")
+    ctx = _ctx(ws, scratch)
+    # read first: the ReadLedger guard applies to scratchpad files too.
+    fs_tools.read_file(ctx, str(scratch / "note.txt"))
+    await edit_tools.edit_file(
+        ctx,
+        str(scratch / "note.txt"),
+        [fs.Edit(old_string="hello", new_string="goodbye")],
+    )
+    assert (scratch / "note.txt").read_text() == "goodbye"
+
+
+def test_read_tool_reaches_scratchpad(tmp_path):
+    ws = tmp_path / "ws"
+    scratch = tmp_path / "scratch"
+    ws.mkdir()
+    scratch.mkdir()
+    (scratch / "data.txt").write_text("payload")
+    out = fs_tools.read_file(_ctx(ws, scratch), str(scratch / "data.txt"))
+    assert "payload" in out

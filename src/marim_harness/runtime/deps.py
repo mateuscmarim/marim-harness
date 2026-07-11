@@ -116,6 +116,13 @@ class HarnessServices:
     # plan files) without reaching into the session controller. None in headless /
     # tests, where callers fall back to a workspace-derived id.
     get_session_id: Callable[[], str | None] | None = None
+    # Returns the active session's scratchpad directory (created on demand),
+    # or None when scratchpads are disabled, no session is active, or the dir
+    # can't be provided safely (see workspace/scratchpad.py). Live for the
+    # same reason as get_session_id: the session id changes on switch. The
+    # file tools widen their path guard with it; the approval resolver
+    # auto-approves writes into it; an instructions closure advertises it.
+    get_scratchpad: Callable[[], Path | None] | None = None
 
 
 @dataclass

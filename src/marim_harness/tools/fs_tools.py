@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Literal
 
 from pydantic_ai import ModelRetry, RunContext
@@ -5,6 +6,18 @@ from pydantic_ai import ModelRetry, RunContext
 from ..runtime.deps import Deps
 from ..workspace.skills import discover_skills
 from .impl import fs
+
+
+def _scratch_roots(ctx: RunContext[Deps]) -> tuple[Path, ...]:
+    """The session scratchpad as an extra guard root, or () when unavailable.
+    The live getter is called per tool call (not captured at registration) so
+    the path tracks session switches; any failure inside it already degraded
+    to None (see workspace/scratchpad.py), so this never raises."""
+    getter = ctx.deps.services.get_scratchpad
+    if getter is None:
+        return ()
+    p = getter()
+    return (p,) if p is not None else ()
 
 
 def read_file(
@@ -18,7 +31,9 @@ def read_file(
     read with no `limit` is capped and will tell you how to page on.
 
     Skill directories (which may live outside the workspace) are also readable by
-    their absolute path, so a skill's bundled files can be read this way too."""
+    their absolute path, so a skill's bundled files can be read this way too.
+    Files in the session scratchpad directory are likewise readable by absolute
+    path."""
     # Whitelist every discovered skill's directory for reading, so an agent that
     # reaches for a skill's bundled file by absolute path succeeds even when the
     # skill lives outside the workspace (discover_skills is cached per workspace).
@@ -26,7 +41,7 @@ def read_file(
     skill_roots = tuple(s.root for s in skills)
     return fs.read_file(
         ctx.deps.workspace.root, path, offset=offset, limit=limit,
-        extra_read_roots=skill_roots, ledger=ctx.deps.reads,
+        extra_read_roots=skill_roots + _scratch_roots(ctx), ledger=ctx.deps.reads,
     )
 
 

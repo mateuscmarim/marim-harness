@@ -5,6 +5,7 @@ import re
 from pydantic_ai import RunContext
 
 from ..runtime.deps import Deps
+from .fs_tools import _scratch_roots
 from .impl import fs, shell
 from .lenient import LenientList
 
@@ -60,13 +61,15 @@ async def _with_diagnostics(ctx: RunContext[Deps], path: str, result: str) -> st
 
 
 async def write_file(ctx: RunContext[Deps], path: str, content: str) -> str:
-    """Create or overwrite a file. `path` is relative to the workspace root."""
+    """Create or overwrite a file. `path` is relative to the workspace root, or
+    an absolute path inside the session scratchpad directory."""
     # This is ``async def`` so it can ``await _with_diagnostics`` — but that signature
     # opts out of pydantic-ai's auto thread-offload (it awaits async tools directly on
     # the event loop). ``fs.write_file`` does a blocking read + atomic write + double
     # fsync, so run it in a worker thread to keep the loop free for other tool calls.
     result = await asyncio.to_thread(
-        fs.write_file, ctx.deps.workspace.root, path, content, ctx.deps.reads
+        fs.write_file, ctx.deps.workspace.root, path, content, ctx.deps.reads,
+        _scratch_roots(ctx),
     )
     return await _with_diagnostics(ctx, path, result)
 
@@ -74,12 +77,15 @@ async def write_file(ctx: RunContext[Deps], path: str, content: str) -> str:
 async def edit_file(ctx: RunContext[Deps], path: str, edits: LenientList[fs.Edit]) -> str:
     """Apply one or more find/replace edits to a file, in order and
     all-or-nothing. Each edit is {old_string, new_string, replace_all?};
-    old_string must match exactly once unless replace_all is set."""
+    old_string must match exactly once unless replace_all is set. `path` is
+    relative to the workspace root, or an absolute path inside the session
+    scratchpad directory."""
     # Offload the blocking fs work to a thread (see ``write_file`` above): the async
     # signature exists only to ``await _with_diagnostics``, and would otherwise run the
     # read + atomic write + fsyncs directly on the event loop.
     result = await asyncio.to_thread(
-        fs.edit_file, ctx.deps.workspace.root, path, edits, ctx.deps.reads
+        fs.edit_file, ctx.deps.workspace.root, path, edits, ctx.deps.reads,
+        _scratch_roots(ctx),
     )
     return await _with_diagnostics(ctx, path, result)
 
