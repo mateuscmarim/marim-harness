@@ -65,7 +65,15 @@ Wiring:
   `bootstrap`, composition in `HarnessBuilder`.
 - Workflow spawns run at `subagent_depth + 1`: the existing
   `SUBAGENT_MAX_DEPTH` ceiling and the runner's concurrency semaphore apply
-  unchanged. Spawns render as today's sub-agent cards — no TUI work in MVP.
+  unchanged.
+- **TUI cards need one new seam** *(amended: "spawns render as today's cards
+  with no TUI work" was wrong)*. Cards are created only when a literal
+  `spawn_agent` tool call renders (`stream_render.py` gates on the tool name);
+  events for synthesized stream ids are silently dropped. MVP adds an optional
+  `UIHooks.on_workflow_spawn(stream_id, type, task, parent_tool_call_id)`
+  callback: the engine fires it before launching each child so the TUI claims
+  a card for that stream id (headless leaves it `None` and loses nothing).
+  Child stream ids are synthesized as `"<run_workflow tool_call_id>::wf<n>"`.
 - API note from the spike: `run_monty_async` is deprecated; use
   `Monty.run_async(external_functions={...})`.
 
@@ -93,9 +101,15 @@ log(str(len(results)) + " dimensions reviewed")
 - `await agent(task, *, type="general", model=None, schema=None,
   max_output_chars=None, isolation=None)` — mirrors `spawn_agent`'s vocabulary
   (same `type`/`model`/`isolation` semantics). No `background`/`after`: the
-  script is the scheduler. With `schema`, the sub-agent is built with a
-  Pydantic `output_type` (validation + retries at the model layer) and
-  `agent()` returns a dict; without it, the freeform report string.
+  script is the scheduler. With `schema`, the output contract is appended to
+  the sub-agent's task (respond with only a JSON object matching the schema),
+  and the engine parses + validates the report against the schema, re-spawning
+  once with the validation errors on failure; `agent()` returns a dict.
+  Without `schema`, the freeform report string. *(Amended from "built with a
+  Pydantic `output_type`": the runner's report pipeline — streaming,
+  transcripts, spill-capping — is string-typed end to end, and threading a
+  structured output through it is disproportionate for MVP. Validation lives
+  in the engine, above the runner seam.)*
 - `log(msg)` — progress line via the existing optional UI callback (headless:
   DEBUG log).
 - `args` — the tool call's optional `args` value, injected via Monty `inputs`.
@@ -121,14 +135,22 @@ log(str(len(results)) + " dimensions reviewed")
 ## Limits and cancellation
 
 - `ResourceLimits` on the Monty run: an infinite loop in the script dies
-  deterministically off the event loop.
-- One overall wall-clock timeout (knob on `HarnessConfig`, generous default).
-- **Ctrl-C / turn abort** must propagate through `Monty.run_async` into
-  in-flight spawns and leave the session resumable (the `_flush_resumable`
-  invariants). This is the riskiest integration point → dedicated plan spike:
-  cancel mid-`gather`, assert children cancelled and history clean. Fallback
-  if Monty doesn't propagate cancellation: abandon the VM task (it holds no
-  external resources) while cancelling the child spawns directly.
+  deterministically (`max_duration_secs` counts VM compute only — spike
+  verified it does not tick while awaiting host functions — so it caps
+  runaway compute without limiting long workflows; `max_memory` /
+  `max_allocations` bound the heap).
+- One overall wall-clock timeout via `asyncio` (knob on `HarnessConfig`,
+  generous default).
+- **Ctrl-C / turn abort** *(amended: the spike ran early and the "fallback"
+  is now the primary design)*: cancelling the `run_async` task directly
+  crashes Monty v0.0.18 (GIL fatal error), so the engine NEVER cancels the VM
+  task. Instead, the tool wrapper intercepts `CancelledError`, sets an abort
+  event, and every in-flight `agent()` host call cancels its child spawn and
+  raises `WorkflowCancelled` into the VM — host exceptions are catchable
+  in-script (spike verified), and an uncaught one ends the script promptly.
+  The engine drains the VM task with a short deadline, then abandons it
+  (it holds no external resources once host calls have raised), and re-raises
+  `CancelledError` so the session's `_flush_resumable` invariants hold.
 - Spend: each `agent()` uses the normal spawn path, so per-spawn token
   accounting and cards work unchanged; no separate ledger.
 
