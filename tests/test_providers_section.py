@@ -244,3 +244,66 @@ async def test_claude_cli_card_reflects_detection(isolated_env, monkeypatch, tmp
         # Nothing stored -> no key field, no remove button.
         assert not pane.query("#prov-key-claude-cli")
         assert not pane.query("#prov-remove-claude-cli")
+
+
+def _multi_with_fake_openrouter(monkeypatch, *, entries=None, error=None):
+    """A real MultiModelSource whose openrouter source has a stubbed
+    list_models — real enough for isinstance checks, no network."""
+    from unittest.mock import AsyncMock
+
+    from marim_harness.config import model as _m
+    from marim_harness.config.model import MultiModelSource
+
+    monkeypatch.setattr(_m, "_claude_cli_available", lambda: False)
+    monkeypatch.setenv("MARIM_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-verify-1234")
+    multi = MultiModelSource.from_env()
+    stub = AsyncMock(return_value=entries) if error is None else AsyncMock(
+        side_effect=error
+    )
+    monkeypatch.setattr(multi.sources["openrouter"], "list_models", stub)
+    return multi
+
+
+@pytest.mark.anyio
+async def test_mount_verifies_configured_provider(isolated_env, monkeypatch, tmp_path):
+    """A configured provider is verified on mount: badge ends at
+    '✓ connected · N models' (keeping the default marker)."""
+    from marim_harness.workspace import ModelEntry
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    multi = _multi_with_fake_openrouter(
+        monkeypatch,
+        entries=[ModelEntry(id="a/x", name="X"), ModelEntry(id="a/y", name="Y")],
+    )
+    app = _PaneHost(model_source=multi)
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        badge = str(
+            app.query_one(ProvidersPane)
+            .query_one("#prov-status-openrouter", Static)
+            .render()
+        )
+    assert "✓ connected · 2 models" in badge
+    assert "default" in badge
+
+
+@pytest.mark.anyio
+async def test_failed_verification_shows_short_error(
+    isolated_env, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    multi = _multi_with_fake_openrouter(monkeypatch, error=RuntimeError("401 bad key"))
+    app = _PaneHost(model_source=multi)
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        badge = str(
+            app.query_one(ProvidersPane)
+            .query_one("#prov-status-openrouter", Static)
+            .render()
+        )
+    assert "✗ 401 bad key" in badge

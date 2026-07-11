@@ -201,6 +201,12 @@ class ProvidersPane(Vertical):
     def on_mount(self) -> None:
         for spec in PROVIDER_SPECS:
             self._paint_card(spec)
+            # Verify already-configured providers up front so the cards open
+            # showing live truth ('✓ connected · N models'), matching what a
+            # save would show — skipped when there's no MultiModelSource
+            # (embedding/tests) and for claude-cli (nothing to fetch).
+            if spec.write_key is not None and self._configured(spec):
+                self._start_verify(spec.name)
         # call_after_refresh (not a bare assignment): the RadioSet's initial
         # Changed message may still be queued when on_mount runs; arming
         # commits only after the first refresh guarantees mount noise is over.
@@ -293,7 +299,7 @@ class ProvidersPane(Vertical):
         if inp.password:
             inp.value = ""  # never leave the secret sitting in the widget
         self._status(f"✓ saved {env_key}")
-        self._after_change(spec)
+        self._after_change(spec, verify=True)
 
     def _save(self, values: dict[str, str], *, drop: tuple[str, ...] = ()) -> bool:
         try:
@@ -303,9 +309,11 @@ class ProvidersPane(Vertical):
             return False
         return True
 
-    def _after_change(self, spec: ProviderSpec) -> None:
+    def _after_change(self, spec: ProviderSpec, *, verify: bool = False) -> None:
         self._refresh_sources()
         self._paint_card(spec)
+        if verify:
+            self._start_verify(spec.name)
 
     def _refresh_sources(self) -> None:
         if isinstance(self._model_source, MultiModelSource):
@@ -315,3 +323,27 @@ class ProvidersPane(Vertical):
         if isinstance(self._model_source, MultiModelSource):
             return self._model_source.sources.get(name)
         return None
+
+    # -- verification ------------------------------------------------------
+
+    def _start_verify(self, name: str) -> None:
+        """Fire-and-forget catalog fetch for one provider. exclusive per-group:
+        a re-save while a fetch is in flight cancels the stale one so badges
+        can't arrive out of order."""
+        if self._provider_source(name) is None:
+            return
+        self.run_worker(self._verify(name), group=f"verify-{name}", exclusive=True)
+
+    async def _verify(self, name: str) -> None:
+        source = self._provider_source(name)
+        if source is None:
+            return
+        badge = self.query_one(f"#prov-status-{name}", Static)
+        default = " · default" if name == current_default_provider() else ""
+        badge.update(f"verifying…{default}")
+        try:
+            models = await source.list_models()
+        except Exception as exc:  # noqa: BLE001 - any fetch failure is a verdict
+            badge.update(f"✗ {short_error(exc)}{default}")
+            return
+        badge.update(f"✓ connected · {len(models)} models{default}")
