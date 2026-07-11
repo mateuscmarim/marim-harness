@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from marim_harness.subagents.cli_backend import ClaudeCliRunner, build_cli_argv
+from marim_harness.subagents.cli_backend import ClaudeCliRunner, CliRunError, build_cli_argv
 
 
 def test_build_cli_argv_resume_and_no_system():
@@ -103,3 +103,54 @@ async def test_resume_session_id_threads_into_argv(tmp_path):
     argv = json.loads(argv_file.read_text())
     assert "--resume" in argv and argv[argv.index("--resume") + 1] == "sess-abc"
     assert "--append-system-prompt" not in argv  # session already has its prompt
+
+
+_STREAM_WITH_NOISE = '''#!{python}
+import sys
+sys.stdout.write("not json at all\\n")
+sys.stdout.write("{{\\n")  # a line that looks JSON-ish but fails to parse
+import json
+sys.stdout.write(json.dumps({{"type": "assistant", "message": {{"content": [
+    {{"type": "text", "text": "hi"}}]}}}}) + "\\n")
+sys.stdout.write(json.dumps({{"type": "result", "subtype": "success",
+    "result": "done despite noise", "num_turns": 1, "usage": {{}}}}) + "\\n")
+'''
+
+
+@pytest.mark.anyio
+async def test_run_skips_non_json_lines(tmp_path):
+    # Characterization test (pinning current behavior before extracting
+    # _process_line): a line that fails json.loads is silently skipped —
+    # it must not crash the run or appear in the transcript/result.
+    runner = ClaudeCliRunner(None, None)
+    result = await runner.run(
+        binary=_script(tmp_path, _STREAM_WITH_NOISE), prompt="task", system_prompt="sys",
+        cwd=str(tmp_path), allow_gated=False, allowed_tools=[], model=None,
+        stream_id="sg-cli",
+    )
+    assert result.output == "done despite noise"
+
+
+_STREAM_NO_RESULT = '''#!{python}
+import json, sys
+sys.stdout.write(json.dumps({{"type": "assistant", "message": {{"content": [
+    {{"type": "text", "text": "no result ever comes"}}]}}}}) + "\\n")
+sys.stderr.write("some diagnostic noise\\n")
+'''
+
+
+@pytest.mark.anyio
+async def test_run_raises_when_stream_ends_without_result(tmp_path):
+    # Characterization test (pinning current behavior before extracting
+    # _finalize): a process that exits cleanly (EOF, not a timeout) without
+    # ever emitting a "result" event raises CliRunError, with the failure
+    # detail sourced from stderr.
+    runner = ClaudeCliRunner(None, None)
+    with pytest.raises(CliRunError) as exc:
+        await runner.run(
+            binary=_script(tmp_path, _STREAM_NO_RESULT), prompt="task", system_prompt="sys",
+            cwd=str(tmp_path), allow_gated=False, allowed_tools=[], model=None,
+            stream_id="sg-cli",
+        )
+    assert "no result" in str(exc.value)
+    assert "some diagnostic noise" in str(exc.value)

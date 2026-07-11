@@ -155,6 +155,17 @@ async def test_resume_refuses_v1_finished_and_double_resume(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_resume_refuses_with_no_session_store(tmp_path):
+    # Characterization test (pinning current behavior before extracting
+    # _resume_preconditions): a harness with no session store at all (the
+    # `store=None` default) can't have a sidecar to resume from — this must
+    # be refused before any sidecar lookup is attempted.
+    harness = _make_harness(_resume_model(), _make_deps(tmp_path))
+    job_id, msg = await harness.subagents.resume_spawn("sg-nostore")
+    assert job_id is None and "no session store" in msg.lower()
+
+
+@pytest.mark.anyio
 async def test_resume_double_press_registers_exactly_one_job(tmp_path):
     """Two rapid `r` presses race: both clear the jobs-scan guard (neither has
     registered yet) and both await _prepare_spawn, double-spawning. The synchronous
