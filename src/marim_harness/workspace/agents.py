@@ -16,7 +16,6 @@ YAML, missing description, name/file mismatch, illegal name) is skipped.
 """
 
 import dataclasses
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,33 +23,19 @@ import yaml
 
 from ..config import builtin_root, config_dir
 from ..tools.names import GATED_TOOLS, NET_TOOLS, READ_TOOLS, SUBAGENT_TOOLS
+from ..trust import project_trusted as _project_trusted
 from ._discovery import cached_discover
 from ._frontmatter import FRONTMATTER_RE
 from .identifiers import valid_name
 
-# Truthy spellings for MARIM_TRUST_PROJECT_HOOKS, mirroring config.model._TRUTHY.
-_TRUTHY = {"1", "true", "on", "yes"}
+# Whether project-local ``.marim/agents`` may load. A custom agent def chooses
+# a sub-agent's system prompt, its tool grants (up to ``bash`` in auto mode),
+# and its backend/model — so a *cloned untrusted repo* dropping one in could
+# steer or arm a spawn before any consent, the same threat the hooks/MCP
+# subsystems gate. The built-ins (explore/general) are unaffected: they live
+# in ``_builtins()``, not on disk. See ``marim_harness.trust`` for the shared
+# explicit-wins/env-fallback/fail-untrusted predicate this aliases.
 
-
-def _project_trusted(trust_project: bool | None) -> bool:
-    """Whether project-local ``.marim/agents`` may load. A custom agent def
-    chooses a sub-agent's system prompt, its tool grants (up to ``bash`` in auto
-    mode), and its backend/model — so a *cloned untrusted repo* dropping one in
-    could steer or arm a spawn before any consent, the same threat the hooks/MCP
-    subsystems gate. The built-ins (explore/general) are unaffected: they live in
-    ``_builtins()``, not on disk.
-
-    An explicit caller decision (threaded from ``cfg.trust_project_hooks``) wins.
-    Absent one, we fall back to the *same signal* those subsystems use — the
-    ``MARIM_TRUST_PROJECT_HOOKS`` env var — read here rather than threaded so the
-    gate holds for the un-wired call sites (instructions/runner) without a
-    functional regression for trusted repos. Safe by default: a project's own
-    ``.env`` is forbidden from setting that key (config/env._PROJECT_ENV_BLOCKLIST),
-    so a cloned repo cannot self-trust — the value comes only from the real shell
-    env or the user's global config."""
-    if trust_project is not None:
-        return trust_project
-    return os.getenv("MARIM_TRUST_PROJECT_HOOKS", "").strip().lower() in _TRUTHY
 
 # What the built-in ``explore`` role may reach: local reads plus network egress
 # (web lookups are genuinely useful mid-investigation), but nothing that mutates.
