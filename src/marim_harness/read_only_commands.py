@@ -10,6 +10,7 @@ raw command string, not a security boundary: a determined caller can evade it
 to contain a hostile command. For real isolation, sandbox the host."""
 
 import re
+import shlex
 
 # Shell metacharacters that enable chaining, command substitution, or writing.
 # Any of these and we refuse to call the command read-only: cheaply proving every
@@ -33,6 +34,23 @@ _FIND_MUTATING = frozenset(
     {"-delete", "-exec", "-execdir", "-ok", "-okdir",
      "-fprint", "-fprint0", "-fls", "-fprintf"}
 )
+
+# fd flags that execute a program per match (`-x`/`--exec`, `-X`/`--exec-batch`),
+# same class as find's `-exec`: no shell metachars for _UNSAFE to catch, so
+# screen the tokens explicitly, including the `--exec=cmd` / `--exec-batch=cmd`
+# joined forms.
+_FD_MUTATING = frozenset({"-x", "--exec", "-X", "--exec-batch"})
+_FD_MUTATING_PREFIXES = ("--exec=", "--exec-batch=")
+
+# rg flags that run an arbitrary preprocessor/child command per file (`--pre`,
+# `--pre-glob` invoke a preprocessor; `--hostname-bin`, added in ripgrep 14,
+# invokes an arbitrary executable to supply a fake hostname) — same hole as
+# fd's -x/--exec. rg has no short form for any of these. (`-z`/`--search-zip`
+# is deliberately left allowed: it only shells out to a small fixed set of
+# well-known decompressors by extension, not an arbitrary caller-supplied
+# command.)
+_RG_MUTATING_PREFIXES = ("--pre=", "--pre-glob=", "--hostname-bin=")
+_RG_MUTATING = frozenset({"--pre", "--pre-glob", "--hostname-bin"})
 
 # ``git`` is read-only only for these subcommands. branch/tag/remote are dual
 # use — they list by default but mutate with the right arguments — so
@@ -78,6 +96,27 @@ def _git_is_read_only(args: list[str]) -> bool:
     return True
 
 
+def _fd_is_read_only(args: list[str]) -> bool:
+    """True when ``fd <args...>`` has no exec flag. fd allows clustering short
+    options (e.g. ``-Hx`` means ``-H -x``), so exact-token matching alone would
+    let a clustered exec flag slip through. Conservative by design: any
+    single-dash token containing ``x`` or ``X`` is treated as mutating, not
+    just the bare ``-x``/``-X``."""
+    for tok in args:
+        if tok in _FD_MUTATING or tok.startswith(_FD_MUTATING_PREFIXES):
+            return False
+        if tok.startswith("-") and not tok.startswith("--") and ("x" in tok or "X" in tok):
+            return False
+    return True
+
+
+def _rg_is_read_only(args: list[str]) -> bool:
+    """True when ``rg <args...>`` has no preprocessor/child-executable flag.
+    rg has no short form for ``--pre``/``--pre-glob``/``--hostname-bin``, so
+    exact/prefix token matching suffices."""
+    return not any(tok in _RG_MUTATING or tok.startswith(_RG_MUTATING_PREFIXES) for tok in args)
+
+
 def is_read_only(command: str) -> bool:
     """True when ``command`` is a single read-only command with no shell
     metacharacters. Conservative by design (see module docstring): chaining,
@@ -86,10 +125,29 @@ def is_read_only(command: str) -> bool:
     cmd = (command or "").strip()
     if not cmd or _UNSAFE.search(cmd):
         return False
-    parts = cmd.split()
+    # _UNSAFE must run on the raw string first: shlex would consume the
+    # backslashes/quoting around a metacharacter (e.g. `\;`, `'|'`) before the
+    # regex ever sees it. Only after that gate do we unquote, because the bash
+    # tool executes via a real shell, which strips quotes before exec — a
+    # classifier that tokenizes with plain ``.split()`` sees ``'-x'`` as one
+    # opaque token and misses that the shell hands the program a bare ``-x``.
+    # Every per-flag screen below (fd's -x, rg's --pre, git branch's flags)
+    # would otherwise be bypassable just by quoting the flag.
+    try:
+        parts = shlex.split(cmd)
+    except ValueError:
+        # Unbalanced quotes etc. — the shell would also choke on this, but we
+        # can't prove what it resolves to, so deny rather than guess.
+        return False
+    if not parts:
+        return False
     program = parts[0]
     if program == "git":
         return _git_is_read_only(parts[1:])
     if program == "find":
         return not any(tok in _FIND_MUTATING for tok in parts[1:])
+    if program == "fd":
+        return _fd_is_read_only(parts[1:])
+    if program == "rg":
+        return _rg_is_read_only(parts[1:])
     return program in _ALLOWED_PROGRAMS
