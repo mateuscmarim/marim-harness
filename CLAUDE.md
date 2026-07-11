@@ -173,9 +173,13 @@ to avoid import cycles.
   named helpers (or a small state value-object where locals mutate across the region)
   — do not add a blanket `# noqa: C901`. Note: this bounds *branch count*, not length;
   a long, straight-line, well-commented function is fine.
-- Pure helpers (fs ops, command policy, snapshots) are kept side-effect-free and
-  unit-tested directly; the I/O wiring lives in the thin tool/interface layer. Follow
-  that split when adding behavior.
+- Keep pure decision/parse helpers (command policy, snapshot diffing, arg coercion,
+  path-guard resolution, and the extracted module-level helpers inside the effectful
+  modules) side-effect-free and unit-tested directly. The effectful I/O itself lives in
+  `tools/impl/` (`fs.py` writes, `shell.py` spawns, `fetch.py` opens sockets) — that is
+  the real I/O *core*, not a pure layer; it is exercised directly against a tmp
+  workspace. Above it, the tool layer (`fs_tools.py`, `edit_tools.py`, `net_tools.py`)
+  is thin `ctx.deps`-unwrapping wiring. Follow that three-way split when adding behavior.
 - The codebase favors long, explanatory comments on *why* a non-obvious invariant
   holds (especially around resumability and the deps/services cycle). Preserve them
   when editing nearby code.

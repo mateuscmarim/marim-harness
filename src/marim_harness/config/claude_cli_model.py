@@ -345,8 +345,22 @@ def _merge_session_id(session_id: str | None, obj: dict) -> str | None:
     return session_id or obj.get("session_id")
 
 
+def _result_error_subtype(obj: dict) -> str | None:
+    """The failure label for a ``result`` event that errored, else None.
+
+    A ``result`` is a failure when it flags ``is_error`` or carries a non-success
+    ``subtype`` (e.g. ``error_max_turns``, ``error_during_execution``). The CLI's
+    normal terminal result is ``subtype: "success"`` with ``is_error`` absent/false."""
+    if obj.get("is_error"):
+        return str(obj.get("subtype") or "is_error")
+    subtype = obj.get("subtype")
+    if isinstance(subtype, str) and subtype and subtype != "success":
+        return subtype
+    return None
+
+
 def _result_done_chunk(
-    results: list[dict], obj: dict, session_id: str | None
+    results: list[dict], obj: dict, session_id: str | None, *, produced_text: bool
 ) -> tuple[str | None, DoneChunk]:
     """Fold one ``result`` stream-json object into ``results`` and build the
     ``DoneChunk`` for it (usage folded across every result seen so far via
@@ -354,16 +368,30 @@ def _result_done_chunk(
 
     Do NOT return early from the caller after this: an async sub-agent's
     completion re-invokes the main agent, so more turns (and another result)
-    may follow. Consumers keep the LAST ``DoneChunk``."""
+    may follow. Consumers keep the LAST ``DoneChunk``.
+
+    An *errored* result (``is_error`` / an ``error_*`` subtype) must not
+    masquerade as a clean turn — that was the bug. The deliberate policy:
+      * always log the failure subtype so it is never silently swallowed;
+      * KEEP any assistant prose already streamed this turn (partial output beats
+        none) by leaving ``complete=True`` — the error rides along in
+        ``error_detail`` for logging/annotation;
+      * with NO usable text (``produced_text`` False) the turn is a bare failure:
+        ``complete=False`` makes ``request()``/``_finalize_done`` raise a
+        ``CliModelError`` instead of returning an empty "successful" response."""
     from ..subagents.cli_backend import sum_result_usages
 
     session_id = _merge_session_id(session_id, obj)
     results.append(obj)
     summed, _turns, cost = sum_result_usages(results)
+    error = _result_error_subtype(obj)
+    if error is not None:
+        logger.warning("claude CLI result reported an error: %s", error)
     return session_id, DoneChunk(
         session_id=session_id,
         usage=request_usage_from_cli(summed, cost),
-        complete=True,
+        complete=error is None or produced_text,
+        error_detail=f"CLI result error: {error}" if error is not None else "",
     )
 
 
@@ -397,6 +425,10 @@ async def consume_cli_stream(objs: AsyncIterator[dict]) -> AsyncIterator:
     session_id: str | None = None
     results: list[dict] = []
     error_detail = ""
+    # Whether the turn streamed any assistant prose. An errored result with no
+    # usable text is a bare failure (see _result_done_chunk); with text we keep the
+    # partial output.
+    produced_text = False
     async for obj in objs:
         if _is_subagent_noise(obj):
             # Sub-agent-internal traffic, or its lifecycle noise. With a UI the
@@ -415,12 +447,16 @@ async def consume_cli_stream(objs: AsyncIterator[dict]) -> AsyncIterator:
             session_id = _merge_session_id(session_id, obj)
         elif kind in ("assistant", "user"):
             for chunk in _stream_chunks(kind, obj):
+                if isinstance(chunk, TextChunk):
+                    produced_text = True
                 yield chunk
         elif kind == "result":
             # Do NOT return early: an async sub-agent's completion re-invokes the
             # main agent, so more turns (and another result) may follow.
             # Consumers keep the LAST DoneChunk.
-            session_id, done = _result_done_chunk(results, obj, session_id)
+            session_id, done = _result_done_chunk(
+                results, obj, session_id, produced_text=produced_text
+            )
             yield done
     if not results:
         yield DoneChunk(

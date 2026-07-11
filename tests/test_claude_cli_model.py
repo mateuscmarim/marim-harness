@@ -412,6 +412,64 @@ async def test_consume_marks_incomplete_when_no_result():
 
 
 @pytest.mark.anyio
+async def test_consume_errored_result_without_text_is_incomplete(caplog):
+    # is_error result and NO assistant prose: a bare failure, not a clean turn.
+    objs = [
+        {
+            "type": "result",
+            "subtype": "error_max_turns",
+            "is_error": True,
+            "session_id": "S1",
+            "usage": {"input_tokens": 1, "output_tokens": 0},
+        },
+    ]
+    with caplog.at_level("WARNING"):
+        chunks = await _collect(objs)
+    done = chunks[-1]
+    assert isinstance(done, DoneChunk)
+    assert done.complete is False
+    assert "error_max_turns" in done.error_detail
+    assert "error_max_turns" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_consume_errored_result_with_text_keeps_partial(caplog):
+    # is_error result but prose already streamed: keep the partial output
+    # (complete=True) while still annotating and logging the failure.
+    objs = [
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "partial"}]}},
+        {
+            "type": "result",
+            "subtype": "error_during_execution",
+            "is_error": True,
+            "session_id": "S1",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        },
+    ]
+    with caplog.at_level("WARNING"):
+        chunks = await _collect(objs)
+    texts = [c.delta for c in chunks if isinstance(c, TextChunk)]
+    assert texts == ["partial"]
+    done = chunks[-1]
+    assert done.complete is True
+    assert "error_during_execution" in done.error_detail
+    assert "error_during_execution" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_consume_success_result_has_no_error_detail():
+    # A normal success result stays clean: complete, no error annotation.
+    objs = [
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "ok"}]}},
+        {"type": "result", "subtype": "success", "session_id": "S1",
+         "usage": {"input_tokens": 1, "output_tokens": 1}},
+    ]
+    done = (await _collect(objs))[-1]
+    assert done.complete is True
+    assert done.error_detail == ""
+
+
+@pytest.mark.anyio
 async def test_consume_skips_subagent_child_traffic():
     chunks = await _collect([
         {"type": "assistant", "parent_tool_use_id": "t1",

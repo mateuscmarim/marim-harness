@@ -27,6 +27,15 @@ def _coerce_names(mcp: "list[str] | str | None") -> list[str] | None:
         text = mcp.strip()
         if not text:
             return None
+        # Deliberately NOT lenient._decode_json here: that helper returns the
+        # *original string* on a parse failure, collapsing the very signal this
+        # branch needs. A failed parse must route to comma-splitting below (the
+        # common "mddocs, sentry" form), which the ``None`` sentinel + ``else``
+        # branch encode; _decode_json's returned str would instead be caught by
+        # the ``isinstance(parsed, str)`` branch and wrapped as a single name,
+        # breaking comma-separated grants. The JSON *string* case (`'"mddocs"'`)
+        # is the only overlap, so composing the helper would trade a correct
+        # common case for a marginal one.
         try:
             parsed = json.loads(text)
         except ValueError:

@@ -7,6 +7,7 @@ spawns a language server.
 
 from __future__ import annotations
 
+import os
 import shutil
 from dataclasses import dataclass
 
@@ -57,10 +58,13 @@ _PROBES: dict[str, tuple[tuple[str, ...], str]] = {
 def language_for(path: str) -> str | None:
     """Return the multilspy ``code_language`` for ``path``, or None if the file
     extension isn't one we support."""
-    dot = path.rfind(".")
-    if dot == -1:
+    # Split the *basename* only: a dotted directory (e.g. ``src.v2/Makefile`` or
+    # ``foo.bar/baz``) must not have its parent's dot mistaken for the file's
+    # extension. ``splitext`` returns "" for an extensionless basename.
+    _stem, ext = os.path.splitext(os.path.basename(path))
+    if not ext:
         return None
-    return _EXT_TO_LANG.get(path[dot:].lower())
+    return _EXT_TO_LANG.get(ext.lower())
 
 
 @dataclass(frozen=True)

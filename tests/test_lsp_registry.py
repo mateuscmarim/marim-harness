@@ -21,6 +21,15 @@ def test_language_for_is_case_insensitive():
     assert registry.language_for("FOO.PY") == "python"
 
 
+def test_language_for_ignores_dotted_directory():
+    # A dot in a parent directory must not be mistaken for the file's extension:
+    # only the basename's suffix counts.
+    assert registry.language_for("src.v2/Makefile") is None
+    assert registry.language_for("foo.bar/baz") is None
+    assert registry.language_for("pkg.v2/mod.py") == "python"
+    assert registry.language_for("a.b.c/Comp.tsx") == "typescript"
+
+
 def test_availability_unsupported_language():
     a = registry.availability("cobol")
     assert a.available is False

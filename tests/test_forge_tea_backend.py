@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -187,3 +188,95 @@ async def test_backend_checkout_pr_returns_confirmation(monkeypatch):
     monkeypatch.setattr(tb, "_run_tea", fake_run)
     msg = await tb.TeaBackend(Path(".")).checkout_pr(7, True)
     assert "#7" in msg
+
+
+# --- Finding 1: malformed/unexpected tea JSON becomes ForgeError, never a bare
+# KeyError/ValueError/TypeError/AttributeError escaping past the tool handler.
+
+
+def _patch_run(monkeypatch, raw, *, only_actions=None):
+    async def fake_run(args, cwd, timeout=20.0):
+        if only_actions is not None and args[0] == "actions":
+            return only_actions
+        return raw
+    monkeypatch.setattr(tb, "_run_tea", fake_run)
+
+
+@pytest.mark.anyio
+async def test_backend_list_prs_null_payload_raises_forgeerror(monkeypatch):
+    _patch_run(monkeypatch, "null")  # tea emits null on some versions / empty repo
+    with pytest.raises(ForgeError):
+        await tb.TeaBackend(Path(".")).list_prs("all", 30)
+
+
+@pytest.mark.anyio
+async def test_backend_list_prs_dict_payload_raises_forgeerror(monkeypatch):
+    _patch_run(monkeypatch, '{"index": "1"}')  # object where a list is expected
+    with pytest.raises(ForgeError):
+        await tb.TeaBackend(Path(".")).list_prs("all", 30)
+
+
+@pytest.mark.anyio
+async def test_backend_list_prs_non_dict_element_raises_forgeerror(monkeypatch):
+    _patch_run(monkeypatch, '["not-an-object"]')
+    with pytest.raises(ForgeError):
+        await tb.TeaBackend(Path(".")).list_prs("all", 30)
+
+
+def test_map_pr_missing_index_raises_forgeerror():
+    with pytest.raises(ForgeError) as exc:
+        tb._map_pr({"title": "no index here"})
+    assert "index" in str(exc.value)
+
+
+def test_map_pr_non_numeric_index_raises_forgeerror():
+    with pytest.raises(ForgeError) as exc:
+        tb._map_pr({"index": "not-a-number"})
+    assert "index" in str(exc.value)
+
+
+@pytest.mark.anyio
+async def test_backend_ci_status_null_runs_raises_forgeerror(monkeypatch):
+    # PRs list is fine, but `actions runs` comes back null -> ForgeError, not
+    # a bare TypeError from iterating None.
+    _patch_run(monkeypatch, PR_JSON, only_actions="null")
+    with pytest.raises(ForgeError):
+        await tb.TeaBackend(Path(".")).ci_status("refactor/tools")
+
+
+# --- Finding 2: paging past the newest 50 so an old PR stays findable.
+
+
+def _pr_rows(indices):
+    return [
+        {"index": str(i), "title": f"pr{i}", "state": "open", "author": "a",
+         "head": f"b{i}", "base": "master", "mergeable": "true",
+         "url": f"u{i}", "updated": "t", "ci": "success"}
+        for i in indices
+    ]
+
+
+def _paging_run(rows):
+    """Fake _run_tea honoring --limit: returns the newest ``limit`` rows, as tea
+    would. ``rows`` are newest-first."""
+    async def fake_run(args, cwd, timeout=20.0):
+        limit = int(args[args.index("--limit") + 1])
+        return json.dumps(rows[:limit])
+    return fake_run
+
+
+@pytest.mark.anyio
+async def test_view_pr_finds_old_pr_beyond_first_fifty(monkeypatch):
+    # 60 PRs newest-first (index 60..1); target #5 is old, outside the newest 50.
+    rows = _pr_rows(range(60, 0, -1))
+    monkeypatch.setattr(tb, "_run_tea", _paging_run(rows))
+    pr = await tb.TeaBackend(Path(".")).view_pr(5, None)
+    assert pr is not None and pr.number == 5
+
+
+@pytest.mark.anyio
+async def test_view_pr_returns_none_when_absent_after_paging(monkeypatch):
+    rows = _pr_rows(range(60, 0, -1))
+    monkeypatch.setattr(tb, "_run_tea", _paging_run(rows))
+    pr = await tb.TeaBackend(Path(".")).view_pr(999, None)
+    assert pr is None  # exhausted the list (short page), so genuinely missing

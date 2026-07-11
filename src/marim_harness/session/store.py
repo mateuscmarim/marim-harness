@@ -204,6 +204,11 @@ class SessionStore:
         # trip (we still do a single json.dumps below to write the file).
         messages_json = ModelMessagesTypeAdapter.dump_python(history, mode="json")
         messages_json = externalize_images(messages_json, self.session_id)
+        # Assign "messages" LAST so it serializes at the tail of the object: the
+        # picker fast path (_header_fields) cuts the file at `, "messages":` and
+        # parses only the header before it. Insertion order is preserved by
+        # json.dumps, so keep this the final key — moving it earlier would push
+        # multi-MB of messages in front of the header and defeat the fast path.
         payload["messages"] = messages_json
         # Serialize same-session saves across processes (TUI + headless, or two
         # runs) with a best-effort advisory lock. Without it, two writers racing

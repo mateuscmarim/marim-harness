@@ -515,6 +515,51 @@ def test_clear_empties_checkpoints(tmp_path: Path):
     assert mgr.list() == []
 
 
+def test_clear_deletes_the_pre_restore_and_pre_undo_safety_refs(tmp_path: Path):
+    """``clear()`` promises to drop all checkpoints AND their refs. The pre-rewind
+    /pre-undo safety snapshots are whole-working-tree captures (untracked files
+    included, potentially secrets) — they must be reaped too, not left reachable
+    in ``.git`` until a full session delete()."""
+    s = _session(tmp_path)
+    snap = _FakeSnap()
+    mgr = CheckpointManager(s, snap)
+    mgr.snapshot("t1")
+    s.set_history(["u1", "a1"])
+    mgr.rewind(0)          # captures the _pre_restore safety snapshot
+    mgr.undo_rewind()      # captures the _pre_undo safety snapshot
+    snap.deleted.clear()
+
+    mgr.clear()
+
+    assert any(ref.endswith("sess/_pre_restore") for ref in snap.deleted)
+    assert any(ref.endswith("sess/_pre_undo") for ref in snap.deleted)
+
+
+def test_invalidate_after_compaction_deletes_the_safety_refs(tmp_path: Path):
+    """Compaction-invalidation goes through the same reap path, so the safety
+    snapshots don't survive it either."""
+    s = _session(tmp_path)
+    snap = _FakeSnap()
+    mgr = CheckpointManager(s, snap)
+    mgr.snapshot("t1")
+    s.set_history(["u1", "a1"])
+    mgr.rewind(0)
+    mgr.undo_rewind()
+    snap.deleted.clear()
+
+    mgr.invalidate_after_compaction()
+
+    assert any(ref.endswith("sess/_pre_restore") for ref in snap.deleted)
+    assert any(ref.endswith("sess/_pre_undo") for ref in snap.deleted)
+
+
+def test_manager_has_no_dead_pre_undo_commit_field(tmp_path: Path):
+    """``_pre_undo_commit`` was written by ``undo_rewind`` but never read (no redo
+    path). The dead state is gone; only the ref-capture fail-safe remains."""
+    mgr = CheckpointManager(_session(tmp_path), _FakeSnap())
+    assert not hasattr(mgr, "_pre_undo_commit")
+
+
 def test_limit_prunes_oldest(tmp_path: Path):
     s = _session(tmp_path)
     mgr = CheckpointManager(s, limit=2)

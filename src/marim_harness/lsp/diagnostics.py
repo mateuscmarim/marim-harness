@@ -35,12 +35,17 @@ class DiagnosticsCollector:
             logger.debug("multilspy server has no on_notification; diagnostics disabled")
             return
         try:
-            on_notification("textDocument/publishDiagnostics", self._on_publish)
+            on_notification("textDocument/publishDiagnostics", self.feed)
             self.enabled = True
         except Exception as exc:  # noqa: BLE001 — degrade, never crash a session
             logger.debug("failed to register diagnostics handler: %s", exc)
 
-    def _on_publish(self, *args) -> None:
+    def feed(self, *args) -> None:
+        """Absorb one ``textDocument/publishDiagnostics`` notification, stashing its
+        diagnostics under the file URI. Public so another owner of the notification
+        surface (e.g. the manager's diagnostics-wakeup wrapper) can feed the
+        collector without reaching into a private method — multilspy passes the
+        params positionally, so the dict is located by shape, not arg position."""
         params = next((a for a in args if isinstance(a, dict) and "uri" in a), None)
         if params is None:
             return

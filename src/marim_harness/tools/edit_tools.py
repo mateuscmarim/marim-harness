@@ -7,7 +7,7 @@ from pydantic_ai import RunContext
 from ..runtime.deps import Deps
 from .fs_tools import scratch_roots
 from .impl import fs, shell
-from .lenient import LenientList
+from .lenient import Lenient, LenientList
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ async def write_file(ctx: RunContext[Deps], path: str, content: str) -> str:
     return await _with_diagnostics(ctx, path, result)
 
 
-async def edit_file(ctx: RunContext[Deps], path: str, edits: LenientList[fs.Edit]) -> str:
+async def edit_file(ctx: RunContext[Deps], path: str, edits: LenientList[Lenient[fs.Edit]]) -> str:
     """Apply one or more find/replace edits to a file, in order and
     all-or-nothing. Each edit is {old_string, new_string, replace_all?};
     old_string must match exactly once unless replace_all is set. `path` is
