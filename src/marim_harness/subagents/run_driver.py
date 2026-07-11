@@ -43,7 +43,7 @@ def _fresh_capture():
     already holds a capture context that the main run has bound (flag set).
     Entering the public context there yields the MAIN turn's message list — and
     the sub-agent's run, finding ``used=True``, records its messages into a list
-    nobody holds. A retry in ``_run_to_completion`` would then "resume" the
+    nobody holds. A retry in ``run_to_completion`` would then "resume" the
     sub-agent with the orchestrator's conversation instead of its own. This
     helper reaches for pydantic-ai's private ``_messages_ctx_var`` and
     unconditionally installs a fresh ``_RunMessages`` holder, restoring the

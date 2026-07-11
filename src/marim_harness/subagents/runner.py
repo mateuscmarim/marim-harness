@@ -295,8 +295,9 @@ class SubagentRunner:
         else:
             model_obj = self._build_model(model)
         allow_gated = self.deps.workspace.mode is Mode.auto
-        # Imported lazily for the same reason _resumable_history does: agent.py
-        # imports this module, so a top-level import of the harness would cycle.
+        # Imported lazily for the same reason as run_driver.py's own harness
+        # import: agent.py imports this module, so a top-level import of the
+        # harness would cycle.
         from ..runtime.harness import _drop_nameless_tool_calls
 
         capabilities: list[ProcessHistory[Deps]] = []
