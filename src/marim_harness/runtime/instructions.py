@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import RunContext
 
@@ -214,7 +215,98 @@ def _scratchpad_block(ctx: RunContext[Deps]) -> str:
     )
 
 
-def register_instructions(  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
+# --- module-level instruction closures --------------------------------------
+#
+# These take only ``ctx`` — no free variables from register_instructions — so
+# they live at module scope rather than nested inside it. That isn't just
+# style: ruff's mccabe C901 check folds a nested function's own complexity
+# into its enclosing function's count (verified against the installed ruff:
+# a trivial single-branch closure nested inside a function adds to that
+# function's reported complexity even when reached through a uniform loop
+# rather than an if-chain). Keeping these seven as top-level defs is what
+# lets register_instructions' table-driven loop actually collapse its count
+# instead of just moving the same branches one level deeper. Only the three
+# closures below that must capture ``mcp_manager``/``proactive_memory``
+# (``_mcp_index``, ``_tool_catalog``, ``_memory_policy``) stay nested — their
+# bodies are branch-light enough that the cost is small.
+
+
+def _global_instructions(ctx: RunContext[Deps]) -> str:
+    text = load_global_instructions()
+    if not text:
+        return ""
+    path = global_instructions_path()
+    home = Path.home()
+    shown = f"~/{path.relative_to(home)}" if path.is_relative_to(home) else str(path)
+    return (
+        f"Global instructions from {shown} "
+        f"(apply to every project):\n\n{text}"
+    )
+
+
+def _project_instructions(ctx: RunContext[Deps]) -> str:
+    text = load_project_instructions(ctx.deps.workspace.root)
+    if not text:
+        return ""
+    return f"Project-specific instructions:\n\n{text}"
+
+
+def _scratchpad(ctx: RunContext[Deps]) -> str:
+    return _scratchpad_block(ctx)
+
+
+def _plugin_instructions(ctx: RunContext[Deps]) -> str:
+    # No trust flag is in reach here, so plugin_instruction_texts falls
+    # back to MARIM_TRUST_PROJECT_HOOKS itself (same convention as the
+    # discover_skills/discover_agents closures below): a cloned repo's
+    # committed project-scope plugin can't inject its AGENTS.md until
+    # the project is trusted.
+    texts = plugin_instruction_texts(ctx.deps.workspace.root)
+    if not texts:
+        return ""
+    blocks = [f"## From plugin '{name}'\n\n{text}" for name, text in texts]
+    return (
+        "Instructions contributed by installed plugins (treat like "
+        "project instructions):\n\n" + "\n\n".join(blocks)
+    )
+
+
+def _memory_indexes(ctx: RunContext[Deps]) -> str:
+    return _memory_index_block(ctx)
+
+
+def _skill_index(ctx: RunContext[Deps]) -> str:
+    skills = discover_skills(ctx.deps.workspace.root, dirs=ctx.deps.workspace.skill_dirs)
+    text = skills_index_text(skills)
+    if not text:
+        return ""
+    return (
+        "Available skills below — each is a packaged workflow. When a "
+        "task matches one's description, load its full instructions with "
+        "the activate_skill tool (by name) and follow them.\n\n" + text
+    )
+
+
+def _agent_index(ctx: RunContext[Deps]) -> str:
+    text = agents_index_text(discover_agents(ctx.deps.workspace.root))
+    if not text:
+        return ""
+    # The mode-reach rule is stated statically (not "the current mode is
+    # X") so this block stays byte-stable across mode switches and the
+    # system prompt keeps its cache hits.
+    return (
+        "Sub-agents you can delegate to with the spawn_agent tool (each "
+        "runs in isolation and reports back; spawn several in one turn to "
+        "fan out independent work):\n\n" + text + "\n\n"
+        "Sub-agent reach follows the session mode: outside auto mode, "
+        "workspace-mutating tools (write_file, edit_file, bash) are "
+        "stripped from every spawn — even from types described as full-"
+        "toolset — so sub-agents run read-only there. Don't delegate "
+        "edits to a sub-agent unless the session is in auto mode."
+    )
+
+
+def register_instructions(
     agent: HarnessAgent, mcp_manager: McpManager, proactive_memory: bool,
     *, global_instructions: bool = True, groups: ToolGroups | None = None,
 ) -> None:
@@ -256,106 +348,32 @@ def register_instructions(  # noqa: C901  # complexity-debt: 2026-07-11 — see 
     memory_on = groups is None or groups.memory
     files_write_on = groups is None or groups.files_write
 
-    if global_instructions:
-
-        @agent.instructions
-        def _global_instructions(ctx: RunContext[Deps]) -> str:
-            text = load_global_instructions()
-            if not text:
-                return ""
-            path = global_instructions_path()
-            home = Path.home()
-            shown = f"~/{path.relative_to(home)}" if path.is_relative_to(home) else str(path)
-            return (
-                f"Global instructions from {shown} "
-                f"(apply to every project):\n\n{text}"
-            )
-
-    @agent.instructions
-    def _project_instructions(ctx: RunContext[Deps]) -> str:
-        text = load_project_instructions(ctx.deps.workspace.root)
-        if not text:
-            return ""
-        return f"Project-specific instructions:\n\n{text}"
-
-    if files_write_on:
-
-        @agent.instructions
-        def _scratchpad(ctx: RunContext[Deps]) -> str:
-            return _scratchpad_block(ctx)
-
-    if global_instructions:
-
-        @agent.instructions
-        def _plugin_instructions(ctx: RunContext[Deps]) -> str:
-            # No trust flag is in reach here, so plugin_instruction_texts falls
-            # back to MARIM_TRUST_PROJECT_HOOKS itself (same convention as the
-            # discover_skills/discover_agents closures below): a cloned repo's
-            # committed project-scope plugin can't inject its AGENTS.md until
-            # the project is trusted.
-            texts = plugin_instruction_texts(ctx.deps.workspace.root)
-            if not texts:
-                return ""
-            blocks = [f"## From plugin '{name}'\n\n{text}" for name, text in texts]
-            return (
-                "Instructions contributed by installed plugins (treat like "
-                "project instructions):\n\n" + "\n\n".join(blocks)
-            )
-
-    if memory_on:
-
-        @agent.instructions
-        def _memory_indexes(ctx: RunContext[Deps]) -> str:
-            return _memory_index_block(ctx)
-
-    if skills_on:
-
-        @agent.instructions
-        def _skill_index(ctx: RunContext[Deps]) -> str:
-            skills = discover_skills(ctx.deps.workspace.root, dirs=ctx.deps.workspace.skill_dirs)
-            text = skills_index_text(skills)
-            if not text:
-                return ""
-            return (
-                "Available skills below — each is a packaged workflow. When a "
-                "task matches one's description, load its full instructions with "
-                "the activate_skill tool (by name) and follow them.\n\n" + text
-            )
-
-    if spawn_on:
-
-        @agent.instructions
-        def _agent_index(ctx: RunContext[Deps]) -> str:
-            text = agents_index_text(discover_agents(ctx.deps.workspace.root))
-            if not text:
-                return ""
-            # The mode-reach rule is stated statically (not "the current mode is
-            # X") so this block stays byte-stable across mode switches and the
-            # system prompt keeps its cache hits.
-            return (
-                "Sub-agents you can delegate to with the spawn_agent tool (each "
-                "runs in isolation and reports back; spawn several in one turn to "
-                "fan out independent work):\n\n" + text + "\n\n"
-                "Sub-agent reach follows the session mode: outside auto mode, "
-                "workspace-mutating tools (write_file, edit_file, bash) are "
-                "stripped from every spawn — even from types described as full-"
-                "toolset — so sub-agents run read-only there. Don't delegate "
-                "edits to a sub-agent unless the session is in auto mode."
-            )
-
-    @agent.instructions
     def _mcp_index(ctx: RunContext[Deps]) -> str:
         return mcp_manager.mcp_index_text()
 
-    @agent.instructions
     async def _tool_catalog(ctx: RunContext[Deps]) -> str:
         ws = ctx.deps.workspace
         return await tool_catalog_text(
             mcp_manager, ws.tool_search, ws.tool_search_threshold
         )
 
-    @agent.instructions
     def _memory_policy(ctx: RunContext[Deps]) -> str:
         if proactive_memory:
             return _PROACTIVE_MEMORY_POLICY
         return _ON_REQUEST_MEMORY_POLICY
+
+    gated: list[tuple[bool, Callable[[RunContext[Deps]], Any]]] = [
+        (global_instructions, _global_instructions),
+        (True, _project_instructions),
+        (files_write_on, _scratchpad),
+        (global_instructions, _plugin_instructions),
+        (memory_on, _memory_indexes),
+        (skills_on, _skill_index),
+        (spawn_on, _agent_index),
+        (True, _mcp_index),
+        (True, _tool_catalog),
+        (True, _memory_policy),
+    ]
+    for enabled, fn in gated:
+        if enabled:
+            agent.instructions(fn)
