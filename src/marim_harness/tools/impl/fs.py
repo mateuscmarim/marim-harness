@@ -679,5 +679,18 @@ def grep(
     body = "\n".join(col.out)
     if col.limited:
         body += f"\n(stopped at head_limit={head_limit})"
-    key = f"{pattern}\0{path or ''}\0{output_mode}\0{glob or ''}\0{file_type or ''}"
+    # Every parameter that can change `body` for an otherwise-identical
+    # pattern/path/output_mode/glob/file_type must be folded in here too — the
+    # key derives the offload filename (see offload._write_handle), so two greps
+    # that differ only in, say, case_insensitive or head_limit must not collapse
+    # onto the same sha-derived file: one would silently overwrite the other's
+    # content, and a `read_file` of a stale handle path could return the wrong
+    # grep's result. head_limit uses repr() (not str()) so ``None`` (unlimited)
+    # can never collide with a numeric head_limit that happened to format the
+    # same; before/after use the clamped values since those, not the raw
+    # arguments, are what actually shaped `body`.
+    key = (
+        f"{pattern}\0{path or ''}\0{output_mode}\0{glob or ''}\0{file_type or ''}\0"
+        f"{head_limit!r}\0{int(case_insensitive)}\0{before}\0{after}\0{int(multiline)}"
+    )
     return offload_if_large(body, kind="grep", key=key, workspace_root=root, capped=col.capped)

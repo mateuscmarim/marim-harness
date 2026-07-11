@@ -252,8 +252,27 @@ class SessionController:
                 elapsed = (
                     (time.monotonic() - self._segment_start) if self._segment_start else 0.0
                 )
+                # Snapshot the history list (not deep-copy the messages —
+                # just freeze the list's own length) right before it's handed
+                # to the serializer. persist() can run as an orphaned
+                # asyncio.to_thread worker: `_flush_resumable`
+                # (runtime/controller.py) abandons it after a short deadline
+                # on Ctrl-C without stopping it, and it keeps running
+                # store.save's dump_python(history) afterwards. `_persist_lock`
+                # only serializes persist-vs-persist, not persist-vs-mutation
+                # of the SAME `_VersionedHistory` object — if a later turn
+                # appends to `self.history` while the orphan is still
+                # iterating it, dump_python can raise "list changed size
+                # during iteration" or write a torn snapshot. `list(...)`
+                # gives the orphan its own fixed-length copy that later
+                # appends can't touch, regardless of what `self._history`
+                # points to afterward. The ModelMessage objects inside are
+                # still shared, not deep-copied — that's fine, because turn
+                # code only ever appends new messages, never mutates ones
+                # already in the list.
+                history_snapshot = list(self.history)
                 self.store.save(
-                    self.history, self.usage, self.deps.tasks.to_payload(),
+                    history_snapshot, self.usage, self.deps.tasks.to_payload(),
                     duration_seconds=self.duration_seconds + elapsed,
                     jobs=self.deps.jobs.export_settled(),
                 )

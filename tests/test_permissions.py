@@ -90,6 +90,19 @@ async def test_plan_mode_denies_mutating_bash():
 
 
 @pytest.mark.anyio
+async def test_plan_mode_denies_fd_exec():
+    """fd -x runs an arbitrary command per match with no shell metacharacters
+    for _UNSAFE to catch — must not be waved through as read-only research."""
+    from pydantic_ai import ToolDenied
+
+    from marim_harness.runtime.permissions import resolve_approvals
+
+    reqs = FakeRequests(approvals=[FakeCall("c1", "bash", {"command": "fd -x rm"})])
+    results = await resolve_approvals(reqs, Mode.plan, None)
+    assert isinstance(results.approvals["c1"], ToolDenied)
+
+
+@pytest.mark.anyio
 async def test_plan_mode_still_denies_edits():
     from pydantic_ai import ToolDenied
 
