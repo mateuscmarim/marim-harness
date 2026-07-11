@@ -99,3 +99,60 @@ async def test_on_workflow_spawn_fires_before_each_child(tmp_path):
     ids = sorted(a[0] for a in announced)
     assert ids == ["tcX::wf1", "tcX::wf2"]
     assert all(a[3] == "tcX" for a in announced)
+
+
+FINDINGS = {
+    "type": "object",
+    "properties": {"findings": {"type": "array", "items": {"type": "string"}}},
+    "required": ["findings"],
+}
+
+SCHEMA_SCRIPT = (
+    'r = await agent("review", type="explore", schema=' + repr(FINDINGS) + ")\n"
+    'r["findings"]'
+)
+
+
+@pytest.mark.anyio
+async def test_schema_valid_report_returns_a_dict_into_the_script(tmp_path):
+    async def spawn(type, task, *rest):
+        assert "Output contract" in task
+        return '{"findings": ["bug in x"]}'
+
+    eng, _ = _engine(tmp_path, spawn)
+    out = await eng.run(SCHEMA_SCRIPT, None, "tc1")
+    assert "bug in x" in out
+
+
+@pytest.mark.anyio
+async def test_schema_failure_respawns_once_with_the_validation_error(tmp_path):
+    calls: list[str] = []
+
+    async def spawn(type, task, *rest):
+        calls.append(task)
+        if len(calls) == 1:
+            return "not json at all"
+        return '{"findings": []}'
+
+    eng, _ = _engine(tmp_path, spawn)
+    out = await eng.run(SCHEMA_SCRIPT, None, "tc1")
+    assert len(calls) == 2
+    assert "failed validation" in calls[1]
+    assert out == "[]"
+
+
+@pytest.mark.anyio
+async def test_schema_failure_after_retry_raises_into_the_script(tmp_path):
+    async def spawn(type, task, *rest):
+        return "still not json"
+
+    eng, _ = _engine(tmp_path, spawn)
+    script = (
+        "try:\n"
+        '    r = await agent("review", schema=' + repr(FINDINGS) + ")\n"
+        "except Exception as e:\n"
+        '    r = "caught: " + str(e)\n'
+        "r"
+    )
+    out = await eng.run(script, None, "tc1")
+    assert "caught:" in out and "schema validation" in out
