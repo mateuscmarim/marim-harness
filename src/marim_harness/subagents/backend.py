@@ -10,8 +10,14 @@ close) consumes it without caring which backend ran.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any, Protocol
+
+from pydantic_ai.usage import RunUsage
+
+if TYPE_CHECKING:
+    from .isolation import SpawnWorktree
 
 # The resume prompt every interrupted spawn continues from — shared by the
 # native resume path (runner.resume_spawn) and the CLI resume path
@@ -33,8 +39,9 @@ class SpawnRun:
     - ``transcript`` — the full message list to persist to the spawn's sidecar
       (native: the run's ``all_messages()``; CLI: the pre-interrupt prefix +
       the process's emitted transcript).
-    - ``usage`` — spend to fold into the session (a ``RunUsage`` for native, a
-      ``CliResult.usage`` for CLI; both support ``session.usage += x``).
+    - ``usage`` — spend to fold into the session: a ``RunUsage`` either way,
+      since ``cli_backend.synth_usage`` builds one from the CLI process's
+      reported usage block too, so ``session.usage += x`` always applies.
     - ``final_meta`` — the terminal sidecar meta to stamp (``None`` when the
       spawn had no stream id, i.e. nothing was persisted).
     - ``child_transcripts`` — CLI-only: the demuxed Claude-side Agent/Task
@@ -44,6 +51,19 @@ class SpawnRun:
 
     output: str
     transcript: list[Any]
-    usage: Any
+    usage: RunUsage
     final_meta: dict | None = None
     child_transcripts: dict[str, list[Any]] = field(default_factory=dict)
+
+
+class SpawnLifecycle(Protocol):
+    """The exact call shape of ``SubagentRunner._run_spawn_lifecycle``, bound.
+    A Protocol (rather than a bare ``Callable[...]``) so the runner<->cli_spawn
+    seam keeps arity/kwarg checking that ``Callable[...]`` would erase."""
+
+    def __call__(
+        self, run_fn: Callable[[], Awaitable[SpawnRun]], *, iso: SpawnWorktree | None,
+        resumed: bool, background: bool, name: str, stop_task: str, note: str,
+        max_output_chars: int | None, stream_id: str,
+        timing: tuple[float, float, list[float]] | None = None,
+    ) -> Awaitable[str]: ...

@@ -8,14 +8,15 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from ..hooks.dispatch import TurnHooks
 from ..runtime.deps import Deps
 from ..runtime.permissions import Mode
 from ..workspace import effective_tools
-from .backend import CONTINUATION_PROMPT, SpawnRun
+from .backend import CONTINUATION_PROMPT, SpawnLifecycle, SpawnRun
 from .isolation import SpawnWorktree
 from .persistence import SpawnTranscripts, count_tool_calls
 
@@ -32,7 +33,7 @@ class CliSpawnOrchestrator:
 
     def __init__(self, deps: Deps, hooks: TurnHooks,
                  transcripts: SpawnTranscripts,
-                 lifecycle: Callable[..., Awaitable[str]],
+                 lifecycle: SpawnLifecycle,
                  resolve_agent: Callable[[str], AgentDef | None]) -> None:
         self.deps = deps
         self.hooks = hooks
@@ -41,11 +42,11 @@ class CliSpawnOrchestrator:
         self._resolve_agent = resolve_agent
 
     async def execute(
-        self, defn, task: str, work_root, iso,
+        self, defn: AgentDef, task: str, work_root: Path | None, iso: SpawnWorktree | None,
         mcp_names: list[str] | None, max_output_chars: int | None,
         model: str | None, stream_id: str, *, background: bool,
         resume_session_id: str | None = None, original_task: str | None = None,
-        depth: int = 1, transcript_prefix: list | None = None,
+        depth: int = 1, transcript_prefix: list[Any] | None = None,
     ) -> str:
         """Run a ``backend: claude-cli`` agent inside the same lifecycle the native
         path uses: hooks bracketing, output cap/spill, worktree close, background
@@ -157,8 +158,9 @@ class CliSpawnOrchestrator:
             "sub-agents; configure them in the CLI's own settings]\n\n"
         )
 
-    async def run_cli(self, defn, task: str, work_root, model: str | None,
-                       stream_id: str, checkpoint=None,
+    async def run_cli(self, defn: AgentDef, task: str, work_root: Path | None,
+                       model: str | None, stream_id: str,
+                       checkpoint: Callable[[list, str | None], None] | None = None,
                        resume_session_id: str | None = None) -> CliResult:
         """Resolve binary, tool reach, model, and cwd for a CLI spawn, then run it.
         Raises CliUnavailable when no `claude` binary is found so the caller's

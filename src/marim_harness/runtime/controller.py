@@ -827,11 +827,16 @@ class TurnController:
                     retry = await self._handle_run_failure(
                         exc, captured, resumable, deferred_results, round_usage, retried
                     )
-                    if retry is _RunRetry.COMPACTED:
-                        # The compacted-and-persisted history is the new
-                        # rollback baseline for the retry (maybe_compact
-                        # persisted it).
-                        resumable = list(self.session.history)
+                    match retry:
+                        case _RunRetry.COMPACTED:
+                            # The compacted-and-persisted history is the new
+                            # rollback baseline for the retry (maybe_compact
+                            # persisted it).
+                            resumable = list(self.session.history)
+                        case _RunRetry.CONTENTION:
+                            # Backoff already slept in _handle_run_failure;
+                            # retry in place with no state change here.
+                            pass
                     continue
             # This round's streaming ends the moment run() returns, so the
             # captured ctx is now stale. Null it before the approval modal /

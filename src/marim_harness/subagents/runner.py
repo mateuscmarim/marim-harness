@@ -16,9 +16,9 @@ import contextlib
 import logging
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import ProcessHistory
@@ -428,7 +428,7 @@ class SubagentRunner:
         return f"Sub-agent {name!r} failed: {exc.__class__.__name__}: {exc}"
 
     async def _run_spawn_lifecycle(
-        self, run_fn: Callable[[], Any], *, iso: SpawnWorktree | None,
+        self, run_fn: Callable[[], Awaitable[SpawnRun]], *, iso: SpawnWorktree | None,
         resumed: bool, background: bool, name: str, stop_task: str, note: str,
         max_output_chars: int | None, stream_id: str,
         timing: tuple[float, float, list[float]] | None = None,
