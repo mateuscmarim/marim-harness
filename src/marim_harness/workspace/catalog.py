@@ -109,27 +109,36 @@ def parse_google_models(payload: dict) -> list[ModelEntry]:
 
 
 async def fetch_google_models(
-    api_key: str | None = None, timeout: float = 10.0
+    api_key: str | None = None, timeout: float = 10.0, *, strict: bool = False
 ) -> list[ModelEntry]:
-    """Fetch the Gemini model catalog. Returns ``[]`` on any failure."""
+    """Fetch the Gemini model catalog. Returns ``[]`` on any failure, unless
+    ``strict=True`` (used by verification, which needs the real error instead
+    of a silent empty catalog), in which case the exception is re-raised."""
     import httpx
 
-    params = {"key": api_key} if api_key else {}
+    # Sent as a header, never a query param: httpx's exception str() embeds the
+    # full request URL including the query string, so a query-string key would
+    # leak into the ✗ badge text and the warning log line below on every failure.
+    headers = {"x-goog-api-key": api_key} if api_key else {}
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.get(_GOOGLE_MODELS_URL, params=params)
+            response = await client.get(_GOOGLE_MODELS_URL, headers=headers)
             response.raise_for_status()
             return parse_google_models(response.json())
     except Exception as exc:
+        if strict:
+            raise
         logger.warning("failed to fetch Google model catalog: %s", exc)
         return []
 
 
 async def fetch_openrouter_models(
-    api_key: str | None = None, timeout: float = 10.0
+    api_key: str | None = None, timeout: float = 10.0, *, strict: bool = False
 ) -> list[ModelEntry]:
     """Fetch the OpenRouter catalog. Returns ``[]`` on any failure so callers can
-    degrade to free-text entry. httpx is imported lazily to keep import light."""
+    degrade to free-text entry, unless ``strict=True`` (verification needs the
+    real error), in which case the exception is re-raised. httpx is imported
+    lazily to keep import light."""
     import httpx
 
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
@@ -139,18 +148,23 @@ async def fetch_openrouter_models(
             response.raise_for_status()
             return parse_models(response.json())
     except Exception as exc:
+        if strict:
+            raise
         logger.warning("failed to fetch OpenRouter model catalog: %s", exc)
         return []
 
 
 async def fetch_local_models(
-    base_url: str | None, api_key: str | None = None, timeout: float = 10.0
+    base_url: str | None, api_key: str | None = None, timeout: float = 10.0,
+    *, strict: bool = False,
 ) -> list[ModelEntry]:
     """Fetch the catalog from a local OpenAI-compatible server (LM Studio, Ollama,
     …) by GETting ``{base_url}/models``. The response is the standard OpenAI
     ``{"data": [{"id": ...}]}`` shape, so ``parse_models`` handles it. Returns
     ``[]`` on any failure (or no base_url) so the picker degrades to free-text
-    entry. httpx is imported lazily to keep the import chain light."""
+    entry, unless ``strict=True`` (verification needs the real error), in which
+    case the exception is re-raised. httpx is imported lazily to keep the
+    import chain light."""
     if not base_url:
         return []
     import httpx
@@ -163,6 +177,8 @@ async def fetch_local_models(
             response.raise_for_status()
             return parse_models(response.json())
     except Exception as exc:
+        if strict:
+            raise
         logger.warning("failed to fetch local model catalog from %s: %s", url, exc)
         return []
 

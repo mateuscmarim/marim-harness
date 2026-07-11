@@ -239,7 +239,7 @@ async def test_model_source_list_models_fetches_local_catalog(monkeypatch):
                                   api_key="lmstudio"))
     entries = await src.list_models()
     assert [e.id for e in entries] == ["qwen2.5-coder"]
-    fake.assert_awaited_once_with("http://localhost:1234/v1", "lmstudio")
+    fake.assert_awaited_once_with("http://localhost:1234/v1", "lmstudio", strict=False)
 
 
 @pytest.mark.anyio
@@ -847,3 +847,49 @@ def test_scratchpad_env_off(monkeypatch):
     from marim_harness.config import load_config
 
     assert load_config().scratchpad_enabled is False
+
+
+def _clear_provider_env(monkeypatch):
+    for k in ("MARIM_PROVIDER", "OPENROUTER_API_KEY", "GOOGLE_API_KEY",
+              "GEMINI_API_KEY", "MARIM_BASE_URL", "MARIM_API_KEY", "MARIM_MODEL"):
+        monkeypatch.delenv(k, raising=False)
+
+
+def test_multi_source_refresh_picks_up_and_drops_providers(monkeypatch):
+    """refresh_from_env mutates sources IN PLACE: a provider appears once its
+    creds land in the env, and drops out once they're removed — while the
+    default provider is always kept (startup must have a home)."""
+    from marim_harness.config import model as _m
+    from marim_harness.config.model import MultiModelSource
+
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setattr(_m, "_claude_cli_available", lambda: False)
+    monkeypatch.setenv("MARIM_PROVIDER", "openrouter")
+    multi = MultiModelSource.from_env()
+    held_sources = multi.sources  # the dict object closures/tests may hold
+    assert set(multi.sources) == {"openrouter"}
+
+    monkeypatch.setenv("GOOGLE_API_KEY", "g-key")
+    multi.refresh_from_env()
+    assert set(multi.sources) == {"openrouter", "google"}
+    assert multi.sources is held_sources  # same dict object — mutated, not replaced
+
+    monkeypatch.delenv("GOOGLE_API_KEY")
+    multi.refresh_from_env()
+    assert set(multi.sources) == {"openrouter"}  # dropped; default kept
+
+
+def test_multi_source_refresh_switches_default(monkeypatch):
+    from marim_harness.config import model as _m
+    from marim_harness.config.model import MultiModelSource
+
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setattr(_m, "_claude_cli_available", lambda: False)
+    monkeypatch.setenv("MARIM_PROVIDER", "openrouter")
+    multi = MultiModelSource.from_env()
+    assert multi.default == "openrouter"
+
+    monkeypatch.setenv("MARIM_PROVIDER", "google")
+    multi.refresh_from_env()
+    assert multi.default == "google"
+    assert "google" in multi.sources

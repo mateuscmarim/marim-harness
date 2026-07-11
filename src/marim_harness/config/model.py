@@ -407,14 +407,19 @@ class ModelSource:
         """Construct a Pydantic AI model for ``model_id`` on this provider."""
         return build_model(replace(self.cfg, model=model_id))
 
-    async def list_models(self) -> list[ModelEntry]:
-        """Available models for the picker. Returns [] on unsupported providers."""
+    async def list_models(self, *, strict: bool = False) -> list[ModelEntry]:
+        """Available models for the picker. Returns [] on unsupported providers.
+
+        ``strict=True`` propagates to the fetchers so a real failure (bad key,
+        dead server) raises instead of degrading to ``[]`` — used by provider
+        verification, which needs to tell "connected, 0 models" apart from
+        "failed to connect"."""
         if self.cfg.provider == "openrouter":
-            return await fetch_openrouter_models(self.cfg.api_key)
+            return await fetch_openrouter_models(self.cfg.api_key, strict=strict)
         if self.cfg.provider == "google":
-            return await fetch_google_models(self.cfg.api_key)
+            return await fetch_google_models(self.cfg.api_key, strict=strict)
         if self.cfg.provider == "local":
-            return await fetch_local_models(self.cfg.base_url, self.cfg.api_key)
+            return await fetch_local_models(self.cfg.base_url, self.cfg.api_key, strict=strict)
         if self.cfg.provider == "claude-cli":
             return [
                 ModelEntry(id="sonnet", name="sonnet", provider="claude-cli"),
@@ -438,6 +443,21 @@ class MultiModelSource:
     def from_env(cls) -> "MultiModelSource":
         configs, default = detect_active_providers()
         return cls({p: ModelSource(c) for p, c in configs.items()}, default)
+
+    def refresh_from_env(self) -> None:
+        """Re-detect providers from the current environment, IN PLACE.
+
+        ``build_collaborators`` captures this object in closures at Harness
+        construction (``lambda mid, _src=cfg.model_source: _src.build(mid)``),
+        so mutating — never replacing — ``sources``/``default`` is what makes
+        a settings-screen credential change visible to the model picker,
+        ``set_model``, and sub-agent model building without any rewiring.
+        ``save_env_settings`` mirrors saves into ``os.environ`` first, so
+        ``detect_active_providers`` here sees the new credentials."""
+        configs, default = detect_active_providers()
+        self.sources.clear()
+        self.sources.update({p: ModelSource(c) for p, c in configs.items()})
+        self.default = default
 
     @property
     def is_local(self) -> bool:

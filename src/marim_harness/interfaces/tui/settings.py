@@ -1,6 +1,7 @@
-"""The full-bleed settings screen: topic pages on a left rail (Session, Theme,
-MCP servers, Context & Memory, Tools, Notifications, Advanced). Live settings
-(mode, model, theme, MCP) apply immediately; env-backed settings auto-save per field.
+"""The full-bleed settings screen: topic pages on a left rail (Session,
+Providers, Theme, MCP servers, Context & Memory, Tools, Notifications,
+Advanced). Live settings (mode, model, theme, MCP, provider credentials)
+apply immediately; env-backed settings auto-save per field.
 
 Live widgets apply immediately by calling the same harness mutations the slash
 commands use. The env block (LSP, LSP tools, job-tool mode, context budget,
@@ -33,7 +34,9 @@ from textual.widgets import (
 
 from ...config import ModelConfig, global_config_path, save_env_settings
 from ...runtime.permissions import Mode
+from ...subagents.cli_backend import resolve_cli_binary
 from .model_picker import ModelPickerModal
+from .providers import ProvidersPane, current_default_provider
 from .themes import MARIM_THEMES, THEME_NAMES
 
 if TYPE_CHECKING:
@@ -45,6 +48,7 @@ _TOOL_SEARCH_MODES = ("off", "auto", "on")
 # The full-bleed settings screen's rail sections, in order: (key, label).
 _SECTIONS = (
     ("session", "Session"),
+    ("providers", "Providers"),
     ("theme", "Theme"),
     ("mcp", "MCP servers"),
     ("context", "Context & Memory"),
@@ -52,7 +56,7 @@ _SECTIONS = (
     ("notifications", "Notifications"),
     ("advanced", "Advanced"),
 )
-_SETTINGS_HINTS = "↑↓ section · enter edit · changes save automatically · esc close"
+_SETTINGS_HINTS = "↑↓ section · click edit · changes save automatically · esc close"
 
 # Each theme's accent hex, for the colored dot in the Theme section + the rail badge.
 _ACCENTS = {t.name: str(t.primary) for t in MARIM_THEMES}
@@ -200,6 +204,13 @@ class SettingsScreen(Screen[None]):
             with VerticalScroll(id="settings-content"):
                 with Vertical(id="section-session"):
                     yield from self._session_widgets()
+                yield ProvidersPane(
+                    model_source=self.harness.model_source,
+                    status=self._status,
+                    set_badge=self._set_providers_badge,
+                    cli_detected=resolve_cli_binary() is not None,
+                    id="section-providers",
+                )
                 with Vertical(id="section-theme"):
                     yield from self._theme_widgets()
                 with Vertical(id="section-mcp"):
@@ -220,6 +231,8 @@ class SettingsScreen(Screen[None]):
         """The current value shown to the right of a rail row (mode / theme / count)."""
         if key == "session":
             return self.harness.deps.workspace.mode.value
+        if key == "providers":
+            return current_default_provider()
         if key == "theme":
             return _short_theme(self.current_theme)
         if key == "mcp":
@@ -546,6 +559,9 @@ class SettingsScreen(Screen[None]):
 
     def _status(self, msg: str) -> None:
         self.query_one("#settings-status", Static).update(msg)
+
+    def _set_providers_badge(self, provider: str) -> None:
+        self.query_one("#badge-providers", Static).update(provider)
 
     def _commit_env(self, env_key: str, value: str) -> None:
         """Persist a single env var to the global .env (retiring any deprecated
