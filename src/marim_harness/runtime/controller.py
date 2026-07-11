@@ -711,6 +711,74 @@ class TurnController:
             ) from exc
         raise exc
 
+    async def _resolve_approval_round(
+        self, requests: DeferredToolRequests, resumable: list[ModelMessage]
+    ) -> DeferredToolResults:
+        """One approval round: notify (ask mode), resolve against the current
+        Mode, and on any failure roll back to the last cleanly persisted
+        baseline before re-raising — the in-memory history at this point ends
+        with unanswered tool calls and must never be what a resumed session
+        sees. See _run_with_approval for why the dirty history is never
+        persisted during the round."""
+        if self.deps.workspace.mode is Mode.ask and requests.approvals:
+            names = ", ".join(
+                getattr(c, "tool_name", None) or "(unknown)"
+                for c in requests.approvals
+            )
+            # Belt-and-suspenders: the hook engine is already best-effort
+            # (runner.dispatch never raises), but a payload-assembly bug or
+            # a future non-observe-only hook must never abort the turn and
+            # lose the model's in-flight work. Degrade to a logged warning.
+            try:
+                await self.hooks.notification(
+                    "approval_needed", "Approval needed", names
+                )
+            except Exception:  # noqa: BLE001 — a notification must never crash a turn
+                logger.warning("approval-needed notification hook failed", exc_info=True)
+        try:
+            deferred_results = await resolve_approvals(
+                requests, self.deps.workspace.mode, self.deps.ui.request_approval
+            )
+        except BaseException:
+            self.session.history = resumable
+            # Offload the rollback write off the event loop (like the
+            # failure path above). Safe even when the exception in flight
+            # is a cancel: `resumable` is the last *cleanly persisted*
+            # baseline, so if a second cancel interrupts this thread the
+            # on-disk file is already this exact state — nothing is lost.
+            # The bare `raise` re-raises the still-active exception across
+            # the await, so the original error/cancel propagates intact.
+            # The write itself is best-effort: a disk error here must not
+            # replace the in-flight exception (an OSError surfacing
+            # instead of a Ctrl-C cancel would make shutdown look like a
+            # crash). Only Exception is swallowed — a cancellation of the
+            # rollback write still propagates.
+            try:
+                await asyncio.to_thread(self.session.persist)
+            except Exception:
+                logger.warning(
+                    "approval rollback persist failed", exc_info=True
+                )
+            raise
+        return deferred_results
+
+    async def _finish_turn(self, output: str) -> str:
+        """The post-persist turn tail: Stop hook (must never crash a completed
+        turn) and the non-blocking autoname schedule. Returns the final text."""
+        # The turn has already succeeded and persisted; a failing Stop hook
+        # must not turn that into a turn-level exception. Degrade like the
+        # approval notification above.
+        try:
+            await self.hooks.stop()
+        except Exception:  # noqa: BLE001 — a Stop hook must never crash a completed turn
+            logger.warning("stop hook failed", exc_info=True)
+        # Autoname is *scheduled*, not awaited: it's a full titler LLM
+        # round-trip producing cosmetic metadata, so the turn (and the TUI's
+        # busy state / queued-prompt drain behind it) must not block on it.
+        # Headless settles the task before teardown via wait_autoname.
+        self.session.schedule_autoname()
+        return output
+
     async def _run_with_approval(
         self,
         user_prompt: str | list[str | BinaryContent] | None,
@@ -798,46 +866,9 @@ class TurnController:
                 # failure during approval would otherwise leave the session
                 # ending in a dangling tool_use — unresumable. Roll back to the
                 # last clean state if the approval round is interrupted.
-                if self.deps.workspace.mode is Mode.ask and result.output.approvals:
-                    names = ", ".join(
-                        getattr(c, "tool_name", None) or "(unknown)"
-                        for c in result.output.approvals
-                    )
-                    # Belt-and-suspenders: the hook engine is already best-effort
-                    # (runner.dispatch never raises), but a payload-assembly bug or
-                    # a future non-observe-only hook must never abort the turn and
-                    # lose the model's in-flight work. Degrade to a logged warning.
-                    try:
-                        await self.hooks.notification(
-                            "approval_needed", "Approval needed", names
-                        )
-                    except Exception:  # noqa: BLE001 — a notification must never crash a turn
-                        logger.warning("approval-needed notification hook failed", exc_info=True)
-                try:
-                    deferred_results = await resolve_approvals(
-                        result.output, self.deps.workspace.mode, self.deps.ui.request_approval
-                    )
-                except BaseException:
-                    self.session.history = resumable
-                    # Offload the rollback write off the event loop (like the
-                    # failure path above). Safe even when the exception in flight
-                    # is a cancel: `resumable` is the last *cleanly persisted*
-                    # baseline, so if a second cancel interrupts this thread the
-                    # on-disk file is already this exact state — nothing is lost.
-                    # The bare `raise` re-raises the still-active exception across
-                    # the await, so the original error/cancel propagates intact.
-                    # The write itself is best-effort: a disk error here must not
-                    # replace the in-flight exception (an OSError surfacing
-                    # instead of a Ctrl-C cancel would make shutdown look like a
-                    # crash). Only Exception is swallowed — a cancellation of the
-                    # rollback write still propagates.
-                    try:
-                        await asyncio.to_thread(self.session.persist)
-                    except Exception:
-                        logger.warning(
-                            "approval rollback persist failed", exc_info=True
-                        )
-                    raise
+                deferred_results = await self._resolve_approval_round(
+                    result.output, resumable
+                )
                 user_prompt = None  # continuation is driven by deferred_results
                 continue
             # Offload the success-path write so a multi-MB serialize+fsync doesn't
@@ -855,20 +886,7 @@ class TurnController:
             # for long: the mid-turn growth is folded in immediately rather
             # than waiting for the next turn's start-of-turn check.
             await self._maybe_compact()
-            output = result.output
-            # The turn has already succeeded and persisted; a failing Stop hook
-            # must not turn that into a turn-level exception. Degrade like the
-            # approval notification above.
-            try:
-                await self.hooks.stop()
-            except Exception:  # noqa: BLE001 — a Stop hook must never crash a completed turn
-                logger.warning("stop hook failed", exc_info=True)
-            # Autoname is *scheduled*, not awaited: it's a full titler LLM
-            # round-trip producing cosmetic metadata, so the turn (and the TUI's
-            # busy state / queued-prompt drain behind it) must not block on it.
-            # Headless settles the task before teardown via wait_autoname.
-            self.session.schedule_autoname()
-            return output
+            return await self._finish_turn(result.output)
 
     async def run_turn(
         self,
