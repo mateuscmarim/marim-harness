@@ -121,6 +121,19 @@ async def test_every_page_mounts_its_fields():
         assert s.query_one("#section-tools #toolsearch-set") is not None
         # Notifications owns the events input.
         assert s.query_one("#section-notifications #notif-events-input") is not None
+        # Providers: the pane mounts as its own section with all four cards.
+        assert s.query_one("#section-providers #prov-card-openrouter") is not None
+        assert s.query_one("#section-providers #prov-default-set") is not None
+
+
+@pytest.mark.anyio
+async def test_providers_rail_badge_shows_default(isolated_env, monkeypatch):
+    monkeypatch.setenv("MARIM_PROVIDER", "google")
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        badge = str(app.screen.query_one("#badge-providers").render())
+    assert badge == "google"
 
 
 @pytest.mark.anyio
@@ -168,7 +181,7 @@ async def test_mcp_toggle_disables_server():
     app = _Host(h, _env_cfg())
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        await pilot.press("down", "down")  # Session -> Theme -> MCP
+        await pilot.press("down", "down", "down")  # Session -> Providers -> Theme -> MCP
         await pilot.pause()
         await pilot.click("#mcp-toggle-0")  # turn the [x] toggle off
         await pilot.pause()
@@ -390,6 +403,6 @@ async def test_down_arrow_switches_section():
         await pilot.press("down")
         await pilot.pause()
         screen = app.screen
-        assert screen.active_section == "theme"
-        assert screen.query_one("#section-theme").display is True
+        assert screen.active_section == "providers"
+        assert screen.query_one("#section-providers").display is True
         assert screen.query_one("#section-session").display is False
