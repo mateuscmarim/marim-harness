@@ -32,6 +32,21 @@ from marim_harness.read_only_commands import is_read_only
         "fd -e py pattern",
         "rg -n pattern src",
         "rg --heading x",
+        # tree only formats what it prints unless -o/--output is given.
+        "tree",
+        "tree -a -d",
+        # file reads the named files; -m supplies a magic file to read with.
+        "file foo.txt",
+        "file -i foo",
+        "file -m custom.magic foo",
+        # date/hostname with no args (or read-only flags) only print.
+        "date",
+        "date -u",
+        "date +%Y-%m-%d",
+        "date -d 2020-01-01",
+        "hostname",
+        "hostname -f",
+        "hostname -I",
         # Quoting a benign value/pattern must not flip a command to denied —
         # shlex unquotes these to ordinary arguments with no special meaning.
         "grep 'some pattern' file",
@@ -112,6 +127,26 @@ def test_read_only_commands_allowed(command):
         # Unbalanced quoting: shlex.split raises ValueError, and we can't
         # prove what the real shell would do with it, so deny.
         "fd 'unclosed",
+        # tree -o/--output writes the listing to an arbitrary file — a write
+        # with no shell redirection for _UNSAFE to catch.
+        "tree -o /etc/passwd",
+        "tree --output x",
+        "tree --output=x",
+        # file -C/--compile writes a compiled magic database (foo.mgc); file
+        # uses getopt clustering, so a clustered -C (`-bC`) must be caught too.
+        "file -C -m foo",
+        "file --compile",
+        "file -bC foo",
+        # date -s/--set (or a bare positional) sets the system clock — a
+        # mutation even though it needs root.
+        "date -s 2020-01-01",
+        'date -s "2020-01-01"',
+        "date --set=2020-01-01",
+        "date 010112002020",
+        # hostname <name> (or -b/-F) sets the host name — a mutation.
+        "hostname evil",
+        "hostname -b evil",
+        "hostname -F /etc/hostname",
     ],
 )
 def test_mutating_or_unknown_commands_denied(command):

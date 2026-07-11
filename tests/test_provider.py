@@ -708,6 +708,12 @@ def test_array_arg_accepts_json_stringified_list(tool_name, param, extra, string
 @pytest.mark.parametrize(
     ("tool_name", "param", "extra", "elements"),
     [
+        (
+            "edit_file",
+            "edits",
+            {"path": "x.py"},
+            ['{"old_string": "a", "new_string": "b"}'],
+        ),
         ("update_tasks", "todos", {}, ['{"text": "do it", "status": "pending"}']),
         (
             "ask_user",

@@ -142,6 +142,41 @@ def test_read_file_reaches_global_skill_bundled_file(tmp_path: Path, monkeypatch
     assert "implementer instructions here" in captured["ret"]
 
 
+def test_activate_skill_offloads_large_body(tmp_path: Path):
+    """A giant SKILL.md body must be offloaded to a file (handle + preview), not
+    inlined whole — same context-flood guard read_file/grep/bash use. The skill
+    directory pointer stays visible so the agent can still navigate."""
+    body = "filler line of skill text\n" * 3000 + "UNIQUE_TAIL_MARKER_ACTIVATE"
+    _make_skill(tmp_path / ".marim" / "skills", "huge", body=body)
+    agent = _agent()
+    model, captured = _call_tool("activate_skill", {"name": "huge"})
+    with agent.override(model=model):
+        agent.run_sync("go", deps=_make_deps(tmp_path, mode=Mode.ask))
+    ret = captured["ret"]
+    assert "saved to" in ret and "read_file" in ret
+    assert "UNIQUE_TAIL_MARKER_ACTIVATE" not in ret  # tail lives in the file, not context
+    assert "Skill directory:" in ret  # navigation pointer preserved
+
+
+def test_read_skill_file_offloads_large_bundled_file(tmp_path: Path):
+    """A large bundled skill file must be offloaded like read_file's output, not
+    dumped whole into the turn."""
+    big = "reference detail line\n" * 3000 + "UNIQUE_TAIL_MARKER_BUNDLED"
+    _make_skill(
+        tmp_path / ".marim" / "skills", "bigref",
+        files={"references/BIG.md": big},
+    )
+    agent = _agent()
+    model, captured = _call_tool(
+        "read_skill_file", {"name": "bigref", "path": "references/BIG.md"}
+    )
+    with agent.override(model=model):
+        agent.run_sync("go", deps=_make_deps(tmp_path, mode=Mode.ask))
+    ret = captured["ret"]
+    assert "saved to" in ret and "read_file" in ret
+    assert "UNIQUE_TAIL_MARKER_BUNDLED" not in ret
+
+
 def test_skill_tools_are_not_approval_gated(tmp_path: Path):
     """activate_skill / read_skill_file only read marim/claude skill dirs, so they
     must run without an approval round (the run completes and echoes the body)."""

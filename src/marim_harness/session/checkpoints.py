@@ -114,10 +114,6 @@ class CheckpointManager:
         # tree — has no shadow commit, so without this stash a rewind's truncation
         # would be irreversible.
         self._pre_rewind_history: list | None = None
-        # Commit of the safety snapshot captured just before the last undo's file
-        # restore, so a redo/recovery has a baseline for the post-rewind work that
-        # undo would otherwise overwrite.
-        self._pre_undo_commit: str | None = None
         # Checkpoints a rewind dropped (index > the rewind target). Kept — with their
         # git refs alive — until the undo window closes, so undo_rewind can restore
         # them. Without this, rewinding to #3 then undoing brought the conversation
@@ -355,7 +351,6 @@ class CheckpointManager:
             pre_undo = self.snapshotter.capture(
                 self._pre_undo_ref(), "pre-undo safety snapshot"
             )
-            self._pre_undo_commit = pre_undo
             if pre_undo is not None:
                 if self.snapshotter.restore(self._pre_restore_commit):
                     undone = True
@@ -382,11 +377,22 @@ class CheckpointManager:
     def _delete_all_refs(self) -> None:
         """Delete every checkpoint's git ref and clear the list. Also closes any open
         undo window, since its stashed dropped checkpoints (not in ``_checkpoints``)
-        would otherwise leak their refs."""
+        would otherwise leak their refs — and reaps the per-session ``_pre_restore``
+        /``_pre_undo`` safety snapshots. Those are whole-working-tree captures
+        (untracked files, potentially secrets); ``_discard_undo_stash`` only clears
+        the in-memory commit handle, so without deleting the refs here a ``clear()``
+        /compaction-invalidate would leave the snapshots reachable in ``.git`` until
+        a full session ``delete()``. delete() is best-effort — a no-op on an absent
+        ref (a session that never rewound), so the unconditional deletes are safe.
+        Uses the CURRENT session id, like ``_discard_undo_stash``; safe because the
+        two callers (clear / invalidate_after_compaction) never run across a
+        session switch."""
         self._discard_undo_stash()
         for cp in self._checkpoints:
             if cp.commit is not None:
                 self.snapshotter.delete(self._ref(cp.index))
+        self.snapshotter.delete(self._pre_restore_ref())
+        self.snapshotter.delete(self._pre_undo_ref())
         self._checkpoints = []
 
     def invalidate_after_compaction(self) -> None:

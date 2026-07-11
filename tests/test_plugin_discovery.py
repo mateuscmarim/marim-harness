@@ -101,6 +101,35 @@ def test_hooks_and_mcp_require_trust(tmp_path, monkeypatch):
     assert "untrusted_web" in specs and specs["untrusted_web"]["url"] == "https://u"
 
 
+def test_plugin_mcp_skips_invalid_server_name(tmp_path, monkeypatch, caplog):
+    """A server key that isn't a well-formed tool-prefix component (spaces,
+    slashes, ${...}) is skipped with a warning, never emitted as a malformed
+    prefix, while a valid sibling key still comes through."""
+    ws = _ws(tmp_path, monkeypatch)
+    gdir = tmp_path / "cfg" / "marim" / "plugins"
+    servers = {
+        "bad name": {"url": "https://x"},
+        "has/slash": {"url": "https://y"},
+        "${INJECT}": {"url": "https://z"},
+        "good_one": {"url": "https://ok"},
+    }
+    _make_plugin(
+        gdir, "px", manifest={},
+        files={"mcp.json": json.dumps({"mcpServers": servers})},
+    )
+    _install(gdir, "px", enabled=True, trusted=True)
+
+    with caplog.at_level("WARNING"):
+        specs = plugin_mcp_specs(ws)
+    # Only the well-formed key survives, namespaced under the plugin.
+    assert set(specs) == {"px_good_one"}
+    assert specs["px_good_one"]["url"] == "https://ok"
+    # No malformed prefix ever leaked into the merged map.
+    assert not any(" " in k or "/" in k or "$" in k for k in specs)
+    # The skip is logged, not silent.
+    assert "invalid name" in caplog.text
+
+
 _EXEC_FILES = {
     "hooks/hooks.json": json.dumps(
         {"hooks": {"Stop": [{"type": "command", "command": "${MARIM_PLUGIN_ROOT}/x.sh"}]}}

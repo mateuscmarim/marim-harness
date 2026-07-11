@@ -230,7 +230,7 @@ class LspManager:
         async def _handler(params, *_rest) -> None:
             # Keep the collector's per-URI cache current first; diagnostics() reads
             # it via collector.latest() once woken.
-            collector._on_publish(params)
+            collector.feed(params)
             uri = params.get("uri") if isinstance(params, dict) else None
             if uri is not None:
                 for event in self._publish_waiters.get(uri, ()):

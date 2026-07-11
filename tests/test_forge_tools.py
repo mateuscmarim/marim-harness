@@ -139,6 +139,42 @@ async def test_tool_surfaces_forge_error(monkeypatch, tmp_path):
     assert "network down" in out
 
 
+@pytest.mark.anyio
+async def test_list_prs_tool_surfaces_malformed_tea_json(monkeypatch, tmp_path):
+    # Finding 1 end-to-end: a real TeaBackend fed malformed tea JSON must return
+    # a clean actionable string via the tool, never raise a bare exception.
+    from marim_harness.forge import tea_backend as tb
+
+    async def fake_run(args, cwd, timeout=20.0):
+        return "null"  # would iterate None -> TypeError without the shape guard
+
+    monkeypatch.setattr(tb, "_run_tea", fake_run)
+    ts = ft.build_forge_toolset(tb.TeaBackend(tmp_path))
+    out = await _tool(ts, "list_prs")(_Ctx(tmp_path), "open", 30)
+    assert "Forge error" in out
+
+
+@pytest.mark.anyio
+async def test_create_pr_dup_check_pages_past_first_fifty(monkeypatch, tmp_path):
+    # Finding 2: an existing open PR for the branch sits beyond the newest 50, so
+    # the duplicate check must page to find it instead of opening a duplicate.
+    monkeypatch.setattr(ft, "current_branch", _aret("feature/old"))
+    monkeypatch.setattr(ft, "branch_pushed", _aret(True))
+    prs = [
+        PullRequest(
+            number=i, title=f"p{i}", state="open",
+            head=("feature/old" if i == 5 else f"b{i}"), base="master",
+            mergeable=True, url=f"u{i}", ci="success",
+        )
+        for i in range(60, 0, -1)  # newest-first; the branch's PR is old (#5)
+    ]
+    backend = StubBackend(prs=prs, created=None)
+    ts = ft.build_forge_toolset(backend)
+    out = await _tool(ts, "create_pr")(_Ctx(tmp_path), "T", "B", None, False)
+    assert "already exists" in out and "#5" in out
+    assert backend.created_args is None  # no duplicate was created
+
+
 def test_forge_toolsets_gate(monkeypatch, tmp_path):
     monkeypatch.setattr(ft, "select_backend", lambda enabled, root: None)
     assert ft.forge_toolsets(False, tmp_path) == []

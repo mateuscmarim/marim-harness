@@ -57,13 +57,18 @@ def base_payload(
 def _matches(matcher, event: str, tool_name: str) -> bool:
     """``matcher`` (a regex on the tool name) gates only the tool events; for all
     other events it is ignored. Absent/empty/``*`` matches everything. Non-string
-    matchers are treated as non-matching."""
+    matchers are treated as non-matching.
+
+    The match is anchored (``re.fullmatch``) to mirror Claude Code's contract: the
+    matcher must match the *whole* tool name. An unanchored ``re.search`` over-matches
+    — ``"Edit"`` would fire for ``"MultiEdit"`` — which is not the documented
+    semantics this module claims to reproduce."""
     if event not in (PRE_TOOL_USE, POST_TOOL_USE):
         return True
     if not matcher or matcher == "*":
         return True
     try:
-        return re.search(matcher, tool_name) is not None
+        return re.fullmatch(matcher, tool_name) is not None
     except (re.error, TypeError):
         return False
 

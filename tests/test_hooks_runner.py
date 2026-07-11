@@ -96,6 +96,48 @@ async def test_matcher_filters_by_tool_name(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_matcher_is_anchored_not_substring(tmp_path):
+    """Claude Code matcher semantics are a full/anchored regex match, not a
+    substring search: 'Edit' must fire for 'Edit' but NOT for 'MultiEdit'."""
+    out = tmp_path / "ran.txt"
+    cmd = _script(tmp_path, "h.sh", f"echo ran >> {out}\n")
+    runner = HookRunner({events.PRE_TOOL_USE: [_entry(cmd, matcher="Edit")]})
+    # Over-match guard: a substring search would fire 'Edit' for 'MultiEdit'.
+    await runner.dispatch(events.PRE_TOOL_USE, _payload(events.PRE_TOOL_USE, tool_name="MultiEdit"))
+    assert not out.exists()  # 'Edit' must NOT match 'MultiEdit'
+    # Exact match still fires.
+    await runner.dispatch(events.PRE_TOOL_USE, _payload(events.PRE_TOOL_USE, tool_name="Edit"))
+    assert out.read_text().strip() == "ran"
+
+
+@pytest.mark.anyio
+async def test_wildcard_and_empty_matcher_still_match_everything(tmp_path):
+    """The 'all' sentinels ('*', empty, absent) must keep matching any tool
+    name even under anchored matching."""
+    for i, matcher in enumerate(("*", "", None)):
+        out = tmp_path / f"ran{i}.txt"
+        cmd = _script(tmp_path, f"h{i}.sh", f"echo ran >> {out}\n")
+        runner = HookRunner({events.PRE_TOOL_USE: [_entry(cmd, matcher=matcher)]})
+        await runner.dispatch(
+            events.PRE_TOOL_USE, _payload(events.PRE_TOOL_USE, tool_name="MultiEdit")
+        )
+        assert out.read_text().strip() == "ran", f"matcher {matcher!r} should match all"
+
+
+@pytest.mark.anyio
+async def test_matcher_regex_alternation_is_anchored(tmp_path):
+    """A regex matcher still works, but as a full match: '(Edit|Write)' matches
+    'Edit'/'Write' exactly and not 'MultiEdit'."""
+    out = tmp_path / "ran.txt"
+    cmd = _script(tmp_path, "h.sh", f"echo {{}} >> {out}\n")
+    runner = HookRunner({events.PRE_TOOL_USE: [_entry(cmd, matcher="Edit|Write")]})
+    await runner.dispatch(events.PRE_TOOL_USE, _payload(events.PRE_TOOL_USE, tool_name="MultiEdit"))
+    assert not out.exists()  # anchored alternation must not substring-match
+    await runner.dispatch(events.PRE_TOOL_USE, _payload(events.PRE_TOOL_USE, tool_name="Write"))
+    assert out.exists()
+
+
+@pytest.mark.anyio
 async def test_nonzero_exit_yields_no_context(tmp_path):
     cmd = _script(tmp_path, "h.sh", "echo NOPE\nexit 1\n")
     runner = HookRunner({events.SESSION_START: [_entry(cmd)]})

@@ -33,6 +33,25 @@ from .store import SessionInfo, SessionManager, SessionStore
 logger = logging.getLogger(__name__)
 
 
+def aux_model_for(model: Model, *, cwd: str) -> Model:
+    """The model the aux agents (summarizer/titler) should run on.
+
+    A ``ClaudeCliModel`` carries the live ``session_id``, so an aux agent sharing
+    it would resume — and reply into — the user's real Claude session (dropping
+    its own instructions). Such a model is swapped for a stateless, read-only
+    ``ephemeral_clone`` that never resumes or stores a session; every other
+    provider reuses the one model unchanged.
+
+    This is the SINGLE source of that decision: both bootstrap (initial build)
+    and ``update_model`` (runtime ``/model`` switch) route the model through here,
+    so the clone can never be dropped on one path but kept on the other."""
+    from ..config.claude_cli_model import ClaudeCliModel
+
+    if isinstance(model, ClaudeCliModel):
+        return model.ephemeral_clone(cwd=cwd)
+    return model
+
+
 class _VersionedHistory(list):
     """A ``list`` that bumps its owner controller's ``history_version`` on every
     in-place mutation.
@@ -298,11 +317,17 @@ class SessionController:
 
     def update_model(self, model: Model) -> None:
         """Rebuild aux agents (summarizer/titler) for a new model. Only
-        replaces those that were originally configured — a None stays None."""
+        replaces those that were originally configured — a None stays None.
+
+        The aux agents are built on ``aux_model_for(model)``, never the raw
+        model: switching TO a claude-cli model must NOT hand the session-carrying
+        instance to the summarizer/titler (see ``aux_model_for``), the same guard
+        bootstrap applies at initial build."""
+        aux = aux_model_for(model, cwd=str(self.deps.workspace.root))
         if self.summarizer is not None:
-            self.summarizer = make_summarizer(model)
+            self.summarizer = make_summarizer(aux)
         if self.titler is not None:
-            self.titler = make_titler(model)
+            self.titler = make_titler(aux)
 
     def _load_active_store(self, store: SessionStore) -> int:
         """Load history/usage/tasks/duration from ``store`` into this controller,

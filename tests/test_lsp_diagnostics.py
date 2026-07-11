@@ -41,11 +41,22 @@ def test_collector_handler_tolerates_extra_leading_arg():
     srv = _FakeServer()
     c = DiagnosticsCollector()
     c.attach(srv)
-    # Simulate a handler(server, params) call shape.
-    c._on_publish(
+    # Simulate a handler(server, params) call shape via the public feed method.
+    c.feed(
         object(), {"uri": "file:///y.py", "diagnostics": [{"severity": 2, "message": "warn"}]}
     )
     assert c.latest("file:///y.py") == [{"severity": 2, "message": "warn"}]
+
+
+def test_feed_is_public_and_updates_latest():
+    # The manager's diagnostics-wakeup wrapper feeds the collector through this
+    # public seam instead of reaching into a private method.
+    c = DiagnosticsCollector()
+    c.feed({"uri": "file:///z.py", "diagnostics": [{"severity": 1, "message": "err"}]})
+    assert c.latest("file:///z.py") == [{"severity": 1, "message": "err"}]
+    # A params object without a uri is ignored, not a crash.
+    c.feed({"no": "uri"})
+    assert c.latest("file:///z.py") == [{"severity": 1, "message": "err"}]
 
 
 def test_format_no_diagnostics():

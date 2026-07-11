@@ -10,6 +10,7 @@ global plugins of the same name."""
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -352,18 +353,46 @@ def plugin_hook_entries(workspace_root, *, trust_project: bool = False) -> dict:
     return merged
 
 
+# A well-formed MCP server key: letters, digits, underscores, hyphens — the
+# characters that compose safely into the ``<plugin>_<server>`` tool prefix. The
+# plugin's own name is already validated kebab-case, but ``server_name`` is an
+# arbitrary key from the plugin's untrusted ``mcpServers`` JSON. valid_name (the
+# skill/agent/plugin rule) is too strict here — real MCP server names use
+# underscores and mixed case (e.g. ``claude_ai_Gmail``) — but spaces, slashes,
+# dots, and ``${...}`` must never leak into a tool prefix, so gate on this set.
+_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _valid_server_name(name) -> bool:
+    """True for a server key that composes into a well-formed tool prefix.
+    Guards against a non-str key (untrusted JSON) before the regex."""
+    return isinstance(name, str) and _SERVER_NAME_RE.match(name) is not None
+
+
 def plugin_mcp_specs(workspace_root, *, trust_project: bool = False) -> dict:
     """Merged ``{namespaced_name: spec}`` from enabled+trusted plugins. Server
     names are namespaced ``<plugin>_<server>`` so two plugins never collide on
     a tool prefix. ``${MARIM_PLUGIN_ROOT}`` is substituted in each spec.
     Project-scope plugins contribute only when ``trust_project`` is set, same
-    as plugin_hook_entries — MCP servers launch code on connect."""
+    as plugin_hook_entries — MCP servers launch code on connect.
+
+    A server whose key is not a well-formed prefix component (``_valid_server_name``)
+    is skipped with a warning rather than emitted as a malformed tool prefix — the
+    plugin name is validated but the ``mcpServers`` key is arbitrary JSON."""
     merged: dict = {}
     for p in _enabled_trusted(workspace_root, trust_project=trust_project):
         servers = _resolve_mcp_servers(p.manifest.mcp_source())
         if servers is None:
             continue
         for server_name, spec in servers.items():
+            if not _valid_server_name(server_name):
+                logger.warning(
+                    "plugin %r: skipping MCP server with invalid name %r "
+                    "(must be letters/digits/underscores/hyphens)",
+                    p.name,
+                    server_name,
+                )
+                continue
             merged[f"{p.name}_{server_name}"] = substitute_root(spec, p.root)
     return merged
 

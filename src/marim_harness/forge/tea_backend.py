@@ -13,6 +13,7 @@ import contextlib
 import json
 import os
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -51,8 +52,19 @@ def _runs_args() -> list[str]:
 
 
 def _map_pr(obj: dict[str, Any]) -> PullRequest:
+    # tea's PR number arrives as a string ``index``. A missing key (KeyError),
+    # a non-numeric value (ValueError), or a non-str/int (TypeError) must become
+    # a ForgeError here — otherwise the bare exception sails past the tool
+    # layer's ForgeError-only handler and violates the "never raise into a tool"
+    # contract.
+    try:
+        number = int(obj["index"])
+    except (KeyError, ValueError, TypeError) as exc:
+        raise ForgeError(
+            f"tea PR row has a missing or non-numeric 'index': {obj.get('index')!r}"
+        ) from exc
     return PullRequest(
-        number=int(obj["index"]),
+        number=number,
         title=obj.get("title", ""),
         state=obj.get("state", ""),
         author=obj.get("author", ""),
@@ -81,6 +93,26 @@ def _loads(raw: str) -> Any:
     except json.JSONDecodeError as exc:
         first = raw.strip().splitlines()[0] if raw.strip() else "<empty>"
         raise ForgeError(f"could not parse tea output: {first!r}") from exc
+
+
+def _loads_dict_list(raw: str, what: str) -> list[dict[str, Any]]:
+    """Parse tea JSON that is expected to be a list of objects, folding shape
+    surprises into ForgeError so nothing bare escapes the tool layer. tea can
+    emit ``null`` (some versions / an empty repo), a bare object, or rows that
+    aren't objects; each of those would otherwise raise a TypeError /
+    AttributeError downstream (iterating ``None``, ``obj.get`` on a string) and
+    slip past the ForgeError-only tool handler."""
+    payload = _loads(raw)
+    if not isinstance(payload, list):
+        raise ForgeError(
+            f"expected a JSON list of {what} from tea, got {type(payload).__name__}"
+        )
+    for elem in payload:
+        if not isinstance(elem, dict):
+            raise ForgeError(
+                f"expected {what} objects from tea, got a {type(elem).__name__}"
+            )
+    return payload
 
 
 async def _run_tea(args: list[str], cwd: Path, timeout: float = 20.0) -> str:
@@ -117,6 +149,12 @@ def tea_available() -> bool:
     return (Path(base) / "tea" / "config.yml").is_file()
 
 
+# Starting page size for the paging scan below. tea exposes no stable
+# page-offset flag, so we grow ``--limit`` and re-query rather than scan a fixed
+# newest-N window (which would report a real, older PR as missing).
+_PAGE_SIZE = 50
+
+
 class TeaBackend:
     """ForgeBackend backed by the tea CLI, rooted at a workspace directory."""
 
@@ -125,26 +163,45 @@ class TeaBackend:
 
     async def list_prs(self, state: str, limit: int) -> list[PullRequest]:
         raw = await _run_tea(_list_prs_args(state, limit), self._root)
-        return [_map_pr(o) for o in _loads(raw)]
+        return [_map_pr(o) for o in _loads_dict_list(raw, "pull requests")]
+
+    async def _find_pr(
+        self, state: str, match: Callable[[PullRequest], bool]
+    ) -> PullRequest | None:
+        """First PR satisfying ``match``, paging past the newest page. tea's
+        field-rich ``pr list`` is the only endpoint carrying ``ci``/``mergeable``
+        (``tea pr <n>`` has a ci-less shape and is deliberately avoided — see the
+        module header), so we grow the limit and re-query until the target is
+        found or a short page proves the list exhausted. This keeps an old PR
+        (e.g. #5 in a repo with hundreds) findable instead of falsely 'missing'."""
+        limit = _PAGE_SIZE
+        while True:
+            prs = await self.list_prs(state, limit)
+            found = next((p for p in prs if match(p)), None)
+            if found is not None:
+                return found
+            if len(prs) < limit:
+                return None  # a short page means we saw every PR; genuinely absent
+            limit *= 2
 
     async def view_pr(
         self, number: int | None, branch: str | None
     ) -> PullRequest | None:
-        for pr in await self.list_prs("all", 50):
-            if number is not None and pr.number == number:
-                return pr
-            if number is None and branch and pr.head == branch:
-                return pr
-        return None
+        def match(pr: PullRequest) -> bool:
+            if number is not None:
+                return pr.number == number
+            return branch is not None and pr.head == branch
+
+        return await self._find_pr("all", match)
 
     async def ci_status(self, branch: str) -> CiStatus:
-        pr = next(
-            (p for p in await self.list_prs("all", 50) if p.head == branch), None
-        )
+        pr = await self._find_pr("all", lambda p: p.head == branch)
         overall = pr.ci if pr else "unknown"
         raw = await _run_tea(_runs_args(), self._root)
         runs = tuple(
-            _map_run(o) for o in _loads(raw) if o.get("branch") == branch
+            _map_run(o)
+            for o in _loads_dict_list(raw, "action runs")
+            if o.get("branch") == branch
         )
         return CiStatus(overall=overall, runs=runs)
 

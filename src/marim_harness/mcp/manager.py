@@ -79,6 +79,20 @@ class McpManager:
             if self.server_name(s) not in self.disabled
         ]
 
+    async def _safe_list_tools(self, server) -> list | None:
+        """One server's raw tool list, best-effort. ``None`` when the server has
+        no ``list_tools`` or its call raises (a half-connected server must never
+        sink the rest); an empty list is a real "no tools" answer. The single
+        source of the tool-listing try/except shared by the count and map paths."""
+        lister = getattr(server, "list_tools", None)
+        if lister is None:
+            return None
+        try:
+            return list(await lister())
+        except Exception:  # noqa: BLE001 - one server's failure must not sink the rest
+            logger.debug("tool listing failed for %s", self.server_name(server), exc_info=True)
+            return None
+
     async def _tools_per_server(self) -> dict[str, list]:
         """Best-effort map of ``server_name -> its raw tool list`` across
         non-disabled live servers. A server with no ``list_tools`` or one that
@@ -86,13 +100,9 @@ class McpManager:
         ``live_tool_count`` and ``live_tools_by_server``."""
         out: dict[str, list] = {}
         for s in self.live_toolsets():
-            lister = getattr(s, "list_tools", None)
-            if lister is None:
-                continue
-            try:
-                out[self.server_name(s)] = list(await lister())
-            except Exception:  # noqa: BLE001 - one server's failure must not sink the rest
-                logger.debug("tool listing failed for %s", self.server_name(s), exc_info=True)
+            tools = await self._safe_list_tools(s)
+            if tools is not None:
+                out[self.server_name(s)] = tools
         return out
 
     async def live_tool_count(self) -> int:
@@ -161,16 +171,13 @@ class McpManager:
     async def _tool_count(self, servers: list) -> int:
         """Best-effort total tool count across ``servers`` (each best-effort: a
         server with no ``list_tools`` or one that raises contributes nothing,
-        so a half-connected server never sinks the count)."""
+        so a half-connected server never sinks the count). Shares the listing
+        try/except with ``_tools_per_server`` via ``_safe_list_tools``."""
         total = 0
         for s in servers:
-            lister = getattr(s, "list_tools", None)
-            if lister is None:
-                continue
-            try:
-                total += len(list(await lister()))
-            except Exception:  # noqa: BLE001 - one server's failure must not sink the rest
-                logger.debug("tool listing failed for %s", self.server_name(s), exc_info=True)
+            tools = await self._safe_list_tools(s)
+            if tools is not None:
+                total += len(tools)
         return total
 
     async def granted_toolsets(
@@ -226,6 +233,13 @@ class McpManager:
         # live_toolsets() ends up with duplicates → duplicate tool names handed to
         # agent.run. Match enable_server's already-live check so a retry only
         # connects what's still missing.
+        # Known edge (left as-is to protect the cancel/retry invariants above): if
+        # a cancel interrupts the gather below AFTER a _connect_one appended its
+        # server to _live_servers but BEFORE the result-recording loop ran, that
+        # server is live yet absent from mcp_status, and this guard then skips it on
+        # retry so it stays unrecorded. It is fully connected and usable — only the
+        # status readout under-counts it — so the fix isn't worth risking the
+        # duplicate-avoidance / retry contract the guard exists to uphold.
         live_names = {self.server_name(s) for s in self._live_servers}
         servers = [
             s

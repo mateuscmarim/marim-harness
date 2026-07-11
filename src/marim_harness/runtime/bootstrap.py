@@ -14,6 +14,7 @@ from ..hooks import HookRunner, load_hooks_config
 from ..mcp import build_mcp_servers, disabled_server_names, load_mcp_config
 from ..notifications import Notifier
 from ..session import SessionManager
+from ..session.ctrl import aux_model_for
 from .deps import Deps, UIHooks, WorkspaceConfig
 from .harness import Harness
 from .permissions import Mode
@@ -105,14 +106,10 @@ def build_harness(
     # that instance carries the live session_id, so they would resume — and reply
     # into — the user's real Claude session (and drop their own instructions). Give
     # them a stateless, read-only ephemeral clone instead. Other providers reuse the
-    # one model as before.
-    from ..config.claude_cli_model import ClaudeCliModel
-
-    aux_model = (
-        model.ephemeral_clone(cwd=str(workspace))
-        if isinstance(model, ClaudeCliModel)
-        else model
-    )
+    # one model as before. aux_model_for is the SAME helper update_model uses on a
+    # runtime /model switch, so the clone can't be dropped on one path but not the
+    # other.
+    aux_model = aux_model_for(model, cwd=str(workspace))
 
     from .builder import HarnessBuilder
 
