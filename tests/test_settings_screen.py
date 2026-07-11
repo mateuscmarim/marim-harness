@@ -513,3 +513,30 @@ async def test_settings_open_does_not_verify_until_providers_shown(
         await pilot.pause()
         await app.workers.wait_for_complete()
         assert stub.await_count == 1
+
+
+@pytest.mark.anyio
+async def test_escape_discards_half_typed_secret(isolated_env, monkeypatch, tmp_path):
+    """Escape reads as cancel: leaving edit mode must not blur-commit a
+    half-typed API key. Non-secret fields keep the screen's save-on-blur
+    model — only password inputs are discarded."""
+    from textual.widgets import Input
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("down")  # rail -> Providers
+        await pilot.press("enter")  # focus the openrouter key input
+        await pilot.pause()
+        s = app.screen
+        inp = s.query_one("#prov-key-openrouter", Input)
+        assert s.focused is inp
+        inp.value = "sk-half-typed"
+        await pilot.press("escape")  # back to rail — discard, don't save
+        await pilot.pause()
+        assert s.focused is None
+        assert inp.value == ""
+        assert os.environ.get("OPENROUTER_API_KEY") is None
+    assert not (tmp_path / "marim" / ".env").exists()

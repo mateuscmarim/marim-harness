@@ -646,6 +646,13 @@ class SettingsScreen(Screen[None]):
         # Two-stage escape mirroring enter: leave edit mode (back to the
         # rail) first, close the screen only when already at the rail.
         if self.focused is not None:
+            # Escape reads as *cancel*, but the unfocus below fires Blurred
+            # and password fields commit on blur — which would persist a
+            # half-typed API key to the global .env. Discard the secret
+            # first (an empty commit is a no-op); non-secret fields keep
+            # the screen's save-on-blur model, same as clicking away.
+            if isinstance(self.focused, Input) and self.focused.password:
+                self.focused.value = ""
             self.set_focus(None)
             return
         self.dismiss(None)

@@ -381,6 +381,10 @@ class ProvidersPane(Vertical):
         badge = self.query_one(f"#prov-status-{name}", Static)
         default = " · default" if name == current_default_provider() else ""
         badge.update(f"verifying…{default}")
+        # Cache the in-flight state too: a repaint mid-fetch (the default
+        # radio moving, another card's save) must show "verifying…", not
+        # resurrect the previous key's verdict as if it were current.
+        self._verify_results[name] = "verifying…"
         try:
             # strict=True: verification must see the real failure, not the
             # fetchers' default degrade-to-[] (that default exists so the
@@ -413,8 +417,11 @@ class ProvidersPane(Vertical):
         spec = _SPECS[name]
         if not spec.drop_keys or not self._save({}, drop=spec.drop_keys):
             return
-        # A stale ✓ verdict belongs to the removed credentials; drop it before
-        # the repaint below so the card falls back to "not configured".
+        # A stale ✓ verdict belongs to the removed credentials: drop the
+        # cached one AND cancel any verify still in flight — a surviving
+        # worker would otherwise land its verdict on the now-unconfigured
+        # card and re-populate the cache this pop just cleared.
+        self.workers.cancel_group(self, f"verify-{name}")
         self._verify_results.pop(name, None)
         if spec.base_url_key is not None:
             self.query_one(f"#prov-url-{name}", Input).value = ""

@@ -585,3 +585,79 @@ async def test_remove_button_is_compact(isolated_env, monkeypatch, tmp_path):
         await pilot.pause()
         pane = app.query_one(ProvidersPane)
         assert pane.query_one("#prov-remove-openrouter", Button).compact is True
+
+
+@pytest.mark.anyio
+async def test_remove_cancels_inflight_verify(isolated_env, monkeypatch, tmp_path):
+    """Removing a provider while its verify is still in flight must not let
+    the late verdict repaint '✓ connected' onto the unconfigured card or
+    re-populate the verdict cache the removal just dropped."""
+    import asyncio
+
+    from marim_harness.workspace import ModelEntry
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    multi = _multi_with_fake_openrouter(monkeypatch, entries=[])
+    gate = asyncio.Event()
+
+    async def slow_list_models(*args, **kwargs):
+        await gate.wait()
+        return [ModelEntry(id="a/x", name="X")]
+
+    monkeypatch.setattr(multi.sources["openrouter"], "list_models", slow_list_models)
+    app = _PaneHost(model_source=multi)
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()  # on_show sweep started the verify; it is gated
+        pane = app.query_one(ProvidersPane)
+        pane._remove("openrouter")
+        await pilot.pause()
+        gate.set()  # a surviving worker would now land its stale verdict
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        badge = str(pane.query_one("#prov-status-openrouter", Static).render())
+        assert "connected" not in badge
+        assert "not configured" in badge
+        assert "openrouter" not in pane._verify_results
+
+
+@pytest.mark.anyio
+async def test_repaint_during_reverify_keeps_verifying_badge(
+    isolated_env, monkeypatch, tmp_path
+):
+    """A repaint while a re-verify is in flight must show 'verifying…', not
+    resurrect the previous key's cached verdict as if it were current."""
+    import asyncio
+
+    from marim_harness.interfaces.tui.providers import _SPECS
+    from marim_harness.workspace import ModelEntry
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    multi = _multi_with_fake_openrouter(
+        monkeypatch, entries=[ModelEntry(id="a/x", name="X")]
+    )
+    app = _PaneHost(model_source=multi)
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()  # first verdict landed and is cached
+        pane = app.query_one(ProvidersPane)
+        gate = asyncio.Event()
+
+        async def slow_list_models(*args, **kwargs):
+            await gate.wait()
+            return []
+
+        monkeypatch.setattr(
+            multi.sources["openrouter"], "list_models", slow_list_models
+        )
+        pane._start_verify("openrouter")  # what a re-save triggers
+        await pilot.pause()
+        pane._paint_card(_SPECS["openrouter"])  # e.g. the default radio moved
+        badge = str(pane.query_one("#prov-status-openrouter", Static).render())
+        assert "verifying" in badge
+        assert "connected" not in badge
+        gate.set()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        badge = str(pane.query_one("#prov-status-openrouter", Static).render())
+        assert "✓ connected · 0 models" in badge
