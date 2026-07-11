@@ -43,6 +43,10 @@ tui = ["textual>=0.80"]
 # The `marim serve` HTTP daemon (REST + SSE). Bare installs print an install
 # hint when starlette/uvicorn are absent.
 serve = ["starlette>=0.40", "uvicorn>=0.30"]
+# Dynamic workflows: model-authored orchestration scripts sandboxed in
+# pydantic-monty. Bare installs leave the run_workflow tool returning an
+# install hint (services.run_workflow stays None).
+workflows = ["pydantic-monty>=0.0.18,<0.1", "jsonschema>=4"]
 
 [project.urls]
 Repository = "https://git.marim.dev/mateuscmarim/marim-harness"
@@ -69,6 +73,11 @@ dev = [
     # developing/CI working.
     "starlette>=0.40",
     "uvicorn>=0.30",
+    # Dynamic workflows: model-authored orchestration scripts sandboxed in
+    # pydantic-monty. Bare installs leave the run_workflow tool returning an
+    # install hint (services.run_workflow stays None).
+    "pydantic-monty>=0.0.18,<0.1",
+    "jsonschema>=4",
 ]
 
 [build-system]
