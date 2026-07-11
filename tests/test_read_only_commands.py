@@ -91,6 +91,7 @@ def test_read_only_commands_allowed(command):
         "fd -X trash",
         "fd --exec-batch rm",
         "fd --exec=rm",
+        "fd --exec-batch=trash pattern",
         # Clustered short flags: fd allows `-Hx` as `-H -x`.
         "fd -Hx rm",
         # rg --pre/--pre-glob run an arbitrary preprocessor command per file.

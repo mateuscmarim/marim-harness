@@ -495,6 +495,20 @@ def test_grep_context_lines_get_distinct_offload_key(tmp_path, monkeypatch):
     assert _offload_handle_path(out_a) != _offload_handle_path(out_b)
 
 
+def test_grep_after_context_alone_gets_distinct_offload_key(tmp_path, monkeypatch):
+    """Varying ONLY after_context (before_context held fixed) must still produce
+    a distinct offload handle path — the context-lines test above varies both
+    together, which wouldn't catch a key that folded in before_context but
+    dropped after_context."""
+    from marim_harness.tools.impl import offload
+
+    monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 5)
+    (tmp_path / "big.txt").write_text("\n".join(f"line {i}" for i in range(100)))
+    out_a = fs.grep(tmp_path, "line", after_context=0)
+    out_b = fs.grep(tmp_path, "line", after_context=1)
+    assert _offload_handle_path(out_a) != _offload_handle_path(out_b)
+
+
 def test_grep_multiline_gets_distinct_offload_key(tmp_path, monkeypatch):
     """multiline must be part of the offload key too."""
     from marim_harness.tools.impl import offload

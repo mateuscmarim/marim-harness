@@ -134,6 +134,45 @@ async def test_python_diagnostics_invoke_resolved_binaries(tmp_path, monkeypatch
 
 
 @pytest.mark.anyio
+async def test_python_diagnostics_pyright_prefixes_dash_leading_path(tmp_path, monkeypatch):
+    """pyright has no "--" end-of-options separator (verified empirically: it
+    treats "--" as a literal path argument, not a separator), unlike ruff which
+    is invoked with one. A path starting with "-" would otherwise parse as an
+    unknown pyright option, so it must be prefixed with "./" before the pyright
+    call — the ruff call is unaffected."""
+    monkeypatch.setattr(
+        checks.shutil, "which", lambda b: None if b == "basedpyright" else f"/usr/bin/{b}"
+    )
+    cmds: list = []
+
+    async def fake_run(cmd, cwd, timeout):
+        cmds.append(cmd)
+        return "[]" if "ruff" in cmd[0] else "{}"
+
+    monkeypatch.setattr(checks, "_run", fake_run)
+    await checks.python_diagnostics(tmp_path, "-weird.py", deep=True)
+    assert cmds[0] == ["/usr/bin/ruff", "check", "--output-format=json", "--", "-weird.py"]
+    assert cmds[1] == ["/usr/bin/pyright", "--outputjson", "./-weird.py"]
+
+
+@pytest.mark.anyio
+async def test_python_diagnostics_pyright_leaves_normal_path_untouched(tmp_path, monkeypatch):
+    """A path with no leading dash is passed to pyright unmodified."""
+    monkeypatch.setattr(
+        checks.shutil, "which", lambda b: None if b == "basedpyright" else f"/usr/bin/{b}"
+    )
+    cmds: list = []
+
+    async def fake_run(cmd, cwd, timeout):
+        cmds.append(cmd)
+        return "[]" if "ruff" in cmd[0] else "{}"
+
+    monkeypatch.setattr(checks, "_run", fake_run)
+    await checks.python_diagnostics(tmp_path, "pkg/m.py", deep=True)
+    assert cmds[1] == ["/usr/bin/pyright", "--outputjson", "pkg/m.py"]
+
+
+@pytest.mark.anyio
 async def test_python_diagnostics_real_ruff(tmp_path):
     """End-to-end against the real ruff binary (a hard dependency): an undefined
     name is reported. This is the actual win over jedi's syntax-only diagnostics."""
