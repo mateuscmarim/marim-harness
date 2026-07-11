@@ -227,3 +227,103 @@ async def test_wall_clock_timeout_cancels_children(tmp_path):
     out = await eng.run('await agent("x")\n"done"', None, "tc1")
     assert "timed out" in out
     assert cancelled.is_set()
+
+
+@pytest.mark.anyio
+async def test_cancelling_the_run_aborts_children_and_reraises(tmp_path):
+    started = asyncio.Event()
+    child_cancelled = asyncio.Event()
+
+    async def slow_spawn(*a):
+        started.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            child_cancelled.set()
+            raise
+        return "never"
+
+    eng, _ = _engine(tmp_path, slow_spawn)
+    script = (
+        "import asyncio\n"
+        'await asyncio.gather(agent("a"), agent("b"))\n'
+        '"done"'
+    )
+    run = asyncio.ensure_future(eng.run(script, None, "tc1"))
+    await started.wait()
+    run.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await run
+    # The drain must have completed: children saw the cancel, and the whole
+    # thing neither hung nor crashed the interpreter (the Monty GIL bug).
+    assert child_cancelled.is_set()
+
+
+@pytest.mark.anyio
+async def test_post_abort_agent_calls_refuse_immediately(tmp_path):
+    # A script that catches WorkflowCancelled and tries to keep spawning must
+    # be refused by every subsequent agent() call.
+    calls = 0
+    release = asyncio.Event()
+
+    async def spawn(type, task, *rest):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            await release.wait()  # parked until cancelled
+        return "r"
+
+    eng, _ = _engine(tmp_path, spawn)
+    script = (
+        "out = []\n"
+        "try:\n"
+        '    out.append(await agent("first"))\n'
+        "except Exception:\n"
+        "    try:\n"
+        '        out.append(await agent("second"))\n'
+        "    except Exception as e:\n"
+        '        out.append("refused: " + str(e))\n'
+        "out"
+    )
+    run = asyncio.ensure_future(eng.run(script, None, "tc1"))
+    await asyncio.sleep(0.1)
+    run.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await run
+    # Only the first spawn ever launched; the second was refused pre-spawn.
+    assert calls == 1
+
+
+@pytest.mark.anyio
+async def test_abort_during_spawn_announce_refuses_the_child(tmp_path):
+    # Regression for the _spawn_child race: the abort pre-check happens
+    # before `await announce(...)`, and the child task is only created and
+    # registered in state.children after that await returns. If
+    # _abort_and_drain runs while announce is in flight, it cancels only
+    # already-registered children -- a child spawned right after slips
+    # through uncancelled and unmonitored. state.abort must be re-checked
+    # after announce returns, before the child task is ever created.
+    spawn_calls = 0
+    announce_started = asyncio.Event()
+    release_announce = asyncio.Event()
+
+    async def spawn(*a):
+        nonlocal spawn_calls
+        spawn_calls += 1
+        return "r"
+
+    async def on_spawn(stream_id, type_, task, parent):
+        announce_started.set()
+        await release_announce.wait()
+
+    eng, deps = _engine(tmp_path, spawn)
+    deps.ui.on_workflow_spawn = on_spawn
+    script = 'await agent("x")\n"done"'
+    run = asyncio.ensure_future(eng.run(script, None, "tc1"))
+    await announce_started.wait()
+    run.cancel()
+    await asyncio.sleep(0.05)  # let the cancellation reach _abort_and_drain
+    release_announce.set()
+    with pytest.raises(asyncio.CancelledError):
+        await run
+    assert spawn_calls == 0

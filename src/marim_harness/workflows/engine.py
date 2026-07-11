@@ -143,6 +143,14 @@ class WorkflowEngine:
         announce = getattr(self.deps.ui, "on_workflow_spawn", None)
         if announce is not None and stream_id:
             await announce(stream_id, type, task, state.tool_call_id)
+        # Re-check after the await: an abort landing while announce() was in
+        # flight must not let the child slip through. The child task is
+        # created and registered in state.children only below, so
+        # _abort_and_drain (which cancels only already-registered children)
+        # would otherwise miss it entirely -- an uncancelled, unmonitored
+        # spawn past workflow abandonment.
+        if state.abort.is_set():
+            raise WorkflowCancelled("workflow aborted")
         child = asyncio.ensure_future(self._spawn(
             type, task, stream_id, None, max_output_chars, model, isolation,
             self.deps.subagent_depth,
@@ -173,11 +181,15 @@ class WorkflowEngine:
         state.abort.set()
         for child in list(state.children):
             child.cancel()
-        with contextlib.suppress(Exception, asyncio.TimeoutError):
+        with contextlib.suppress(Exception):
             await asyncio.wait_for(asyncio.shield(vm), _DRAIN_SECS)
         if not vm.done():
             logger.warning("workflow VM did not drain within %.1fs; abandoned",
                            _DRAIN_SECS)
+            # Never cancel or await an abandoned VM (see module docstring) --
+            # but do retrieve its eventual exception so asyncio doesn't log
+            # "Task exception was never retrieved" once it finally finishes.
+            vm.add_done_callback(lambda f: f.cancelled() or f.exception())
 
     def _shape(self, value: object, tool_call_id: str) -> str:
         rel = f".marim/workflow-output/{tool_call_id or 'workflow'}.json"
