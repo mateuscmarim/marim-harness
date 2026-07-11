@@ -347,3 +347,25 @@ class ProvidersPane(Vertical):
             badge.update(f"✗ {short_error(exc)}{default}")
             return
         badge.update(f"✓ connected · {len(models)} models{default}")
+
+    # -- removal -----------------------------------------------------------
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        bid = event.button.id or ""
+        if bid.startswith("prov-remove-"):
+            self._remove(bid.removeprefix("prov-remove-"))
+
+    def _remove(self, name: str) -> None:
+        """Drop a provider's stored credentials — .env line(s) and os.environ
+        in one save_env_settings call. No confirmation modal: a deliberate
+        button click in a personal tool, confirmed on the footer. The running
+        session's model keeps working (the harness holds the built instance);
+        the next switch or session routes to the default provider."""
+        spec = _SPECS[name]
+        if not spec.drop_keys or not self._save({}, drop=spec.drop_keys):
+            return
+        if spec.base_url_key is not None:
+            self.query_one(f"#prov-url-{name}", Input).value = ""
+        self._status(f"✓ removed {name} credentials")
+        self._after_change(spec)

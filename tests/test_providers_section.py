@@ -5,7 +5,7 @@ import os
 
 import pytest
 from textual.app import App
-from textual.widgets import Input, Static
+from textual.widgets import Button, Input, Static
 
 from marim_harness.interfaces.tui.providers import (
     PROVIDER_SPECS,
@@ -307,3 +307,90 @@ async def test_failed_verification_shows_short_error(
             .render()
         )
     assert "✗ 401 bad key" in badge
+
+
+@pytest.mark.anyio
+async def test_remove_button_hidden_until_configured(
+    isolated_env, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    app = _PaneHost()
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        pane = app.query_one(ProvidersPane)
+        assert pane.query_one("#prov-remove-openrouter", Button).display is False
+        inp = pane.query_one("#prov-key-openrouter", Input)
+        inp.value = "sk-or-test-1234abcd"
+        pane._commit("prov-key-openrouter")
+        await pilot.pause()
+        assert pane.query_one("#prov-remove-openrouter", Button).display is True
+
+
+@pytest.mark.anyio
+async def test_remove_google_drops_both_env_names(isolated_env, monkeypatch, tmp_path):
+    """Either env name keeps google configured, so removal must drop BOTH —
+    from the .env file and os.environ in the same call."""
+    from marim_harness.config import save_env_settings
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    save_env_settings(
+        {"GOOGLE_API_KEY": "g-1", "GEMINI_API_KEY": "g-2"}
+    )  # both stored, like a hand-edited .env
+    app = _PaneHost()
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        pane = app.query_one(ProvidersPane)
+        await pilot.pause()
+        pane._remove("google")
+        await pilot.pause()
+        assert os.environ.get("GOOGLE_API_KEY") is None
+        assert os.environ.get("GEMINI_API_KEY") is None
+        env_text = (tmp_path / "marim" / ".env").read_text()
+        assert "GOOGLE_API_KEY" not in env_text
+        assert "GEMINI_API_KEY" not in env_text
+        # Card flipped back to unconfigured.
+        assert "not configured" in str(
+            pane.query_one("#prov-status-google", Static).render()
+        )
+        assert pane.query_one("#prov-remove-google", Button).display is False
+        assert pane.query_one("#prov-key-google", Input).placeholder == "not set"
+        assert any("removed google" in s for s in app.statuses)
+
+
+@pytest.mark.anyio
+async def test_remove_local_drops_url_and_key_and_clears_input(
+    isolated_env, monkeypatch, tmp_path
+):
+    from marim_harness.config import save_env_settings
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    save_env_settings(
+        {"MARIM_BASE_URL": "http://localhost:1234/v1", "MARIM_API_KEY": "local"}
+    )
+    app = _PaneHost()
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        pane = app.query_one(ProvidersPane)
+        assert pane.query_one("#prov-url-local", Input).value != ""
+        pane._remove("local")
+        await pilot.pause()
+        assert os.environ.get("MARIM_BASE_URL") is None
+        assert os.environ.get("MARIM_API_KEY") is None
+        assert pane.query_one("#prov-url-local", Input).value == ""
+
+
+@pytest.mark.anyio
+async def test_remove_via_real_button_click(isolated_env, monkeypatch, tmp_path):
+    """End-to-end through the real Textual event: clicking the remove button
+    fires Button.Pressed -> on_button_pressed, not a direct _remove call."""
+    from marim_harness.config import save_env_settings
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    save_env_settings({"OPENROUTER_API_KEY": "sk-or-test-1234abcd"})
+    app = _PaneHost()
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        await pilot.click("#prov-remove-openrouter")
+        await pilot.pause()
+    assert os.environ.get("OPENROUTER_API_KEY") is None
