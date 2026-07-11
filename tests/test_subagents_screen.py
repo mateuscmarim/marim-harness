@@ -594,7 +594,7 @@ def test_repaint_list_survives_uncomposed_view():
     stub view whose ``list`` always raises."""
     from textual.css.query import NoMatches
 
-    from marim_harness.interfaces.tui.subagents.screen import SubAgentsViewer
+    from marim_harness.interfaces.tui.subagents.screen import SubAgentsScreen
 
     class _StubView:
         def repaint(self, *args, **kwargs):
@@ -613,7 +613,7 @@ def test_repaint_list_survives_uncomposed_view():
         def query_one(self, _selector):
             return _StubView()
 
-    viewer = SubAgentsViewer(_StubApp())
+    viewer = SubAgentsScreen(_StubApp())
     viewer.open = True
     # Must return without raising even though the view's list isn't composed.
     assert viewer._repaint_list() is None
@@ -721,7 +721,7 @@ async def test_transcript_loader_worker_survives_exclusive_turn_worker(tmp_path,
     hazard the shell-passthrough worker documents in app.py."""
     import asyncio
 
-    from marim_harness.interfaces.tui.subagents.screen import SubAgentsViewer
+    from marim_harness.interfaces.tui.subagents.screen import SubAgentsScreen
 
     started = asyncio.Event()
     release = asyncio.Event()
@@ -735,7 +735,7 @@ async def test_transcript_loader_worker_survives_exclusive_turn_worker(tmp_path,
             cancelled.append(stream_id)
             raise
 
-    monkeypatch.setattr(SubAgentsViewer, "_load_transcript", fake_load)
+    monkeypatch.setattr(SubAgentsScreen, "_load_transcript", fake_load)
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:
@@ -774,14 +774,14 @@ async def test_cursor_move_lazy_loads_resumed_transcript(tmp_path, monkeypatch):
     other path through the lazy loader) never fires — the RowHighlighted
     handler itself must arm the loader, or every pane except the one selected
     at open stays blank forever."""
-    from marim_harness.interfaces.tui.subagents.screen import SubAgentsViewer
+    from marim_harness.interfaces.tui.subagents.screen import SubAgentsScreen
 
     loaded: list[str] = []
 
     async def fake_load(self, pane, stream_id):
         loaded.append(stream_id)
 
-    monkeypatch.setattr(SubAgentsViewer, "_load_transcript", fake_load)
+    monkeypatch.setattr(SubAgentsScreen, "_load_transcript", fake_load)
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:

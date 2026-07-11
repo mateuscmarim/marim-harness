@@ -22,7 +22,7 @@ from .stats import tree_order
 from .view import SubAgentsView
 
 
-class SubAgentsViewer:
+class SubAgentsScreen:
     """Drives the ctrl+x sub-agents screen on behalf of ``HarnessApp``."""
 
     def __init__(self, app) -> None:

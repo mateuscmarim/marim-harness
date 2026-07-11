@@ -16,7 +16,7 @@ from ...usage import resolve_cost
 from ..history import PromptHistory
 from ..prefs import load_theme, save_theme
 from .commands import dispatch
-from .interactions import ApprovalPanel, AskUserPanel, InteractionPanel, run_panel
+from .interactions import ApprovalPanel, AskUserPanel, InteractionPanel, PlanCard, run_panel
 from .model_picker import ModelPickerModal
 from .notify import FinishedJobNotifier
 from .queue import TurnQueue
@@ -37,7 +37,7 @@ from .status import (
     osc_title,
 )
 from .stream_render import StreamRenderer
-from .subagents import SubAgentsView, SubAgentsViewer
+from .subagents import SubAgentsScreen, SubAgentsView
 from .themes import MARIM_THEMES
 from .wake import WakeController
 from .widgets import (
@@ -156,7 +156,7 @@ class HarnessApp(App):
         self._autocomplete: CommandAutocomplete | None = None
         # Full-bleed sub-agents screen (ctrl+x): its open/navigate/close lifecycle
         # and the per-frame repaint coalescing live in this collaborator.
-        self.subagents = SubAgentsViewer(self)
+        self.subagents = SubAgentsScreen(self)
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -441,7 +441,7 @@ class HarnessApp(App):
         diffs), or restore the default view on a second press."""
         self.stream.toggle_reveal_all()
 
-    # --- Sub-agents screen (ctrl+x) — driven by the SubAgentsViewer collaborator ---
+    # --- Sub-agents screen (ctrl+x) — driven by the SubAgentsScreen collaborator ---
 
     def action_toggle_subagents(self) -> None:
         self.subagents.toggle()
@@ -871,8 +871,6 @@ class HarnessApp(App):
         removes the card via run_panel's finally. The plan's summary/steps already live
         on deps.plan (set by present_plan), so the pinned title and Ctrl+P overlay stay
         in sync regardless of the choice made here."""
-        from .interactions import PlanCard
-
         self._notify("Plan ready", summary, "ask_user")
         self._render_tasks()  # refresh the TaskPanel title now that deps.plan is set
         return await run_panel(self, PlanCard(summary, steps, choices))

@@ -4,7 +4,7 @@ transcript pane, pure stats."""
 from .card import SubAgentWidget
 from .list import SubAgentList
 from .pane import SubAgentDetailHost, SubAgentPane
-from .screen import SubAgentsViewer
+from .screen import SubAgentsScreen
 from .view import SubAgentSummary, SubAgentsView
 
 __all__ = [
@@ -14,5 +14,5 @@ __all__ = [
     "SubAgentDetailHost",
     "SubAgentSummary",
     "SubAgentsView",
-    "SubAgentsViewer",
+    "SubAgentsScreen",
 ]
