@@ -79,7 +79,7 @@ def parse_budget_overrides(raw: str) -> list[tuple[str, int | None]]:
     return overrides
 
 
-# The provider names a colon prefix can qualify. Mirrors _KNOWN_PROVIDERS in
+# The provider names a colon prefix can qualify. Mirrors KNOWN_PROVIDERS in
 # config/model.py (not imported: that module pulls in catalog/notification
 # machinery and this one must stay light).
 _PROVIDER_PREFIXES = frozenset({"openrouter", "local", "google", "claude-cli"})

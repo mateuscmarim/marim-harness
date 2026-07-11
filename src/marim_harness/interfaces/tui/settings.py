@@ -56,7 +56,7 @@ _SECTIONS = (
     ("notifications", "Notifications"),
     ("advanced", "Advanced"),
 )
-_SETTINGS_HINTS = "↑↓ section · click edit · changes save automatically · esc close"
+_SETTINGS_HINTS = "↑↓ section · enter edit · esc back/close · changes save automatically"
 
 # Each theme's accent hex, for the colored dot in the Theme section + the rail badge.
 _ACCENTS = {t.name: str(t.primary) for t in MARIM_THEMES}
@@ -170,7 +170,14 @@ class SettingsScreen(Screen[None]):
         Binding("escape", "cancel", "Close", show=False),
         Binding("down", "next_section", "Next section", show=False),
         Binding("up", "prev_section", "Prev section", show=False),
+        Binding("enter", "edit_section", "Edit section", show=False),
     ]
+
+    # Rail-first keyboard model: the screen opens with NOTHING focused (the
+    # empty string suppresses App.AUTO_FOCUS="*", which would silently focus
+    # the first Input and swallow the ↑↓ rail navigation). enter hands focus
+    # to the active section's first field; escape hands it back to the rail.
+    AUTO_FOCUS = ""
 
     active_section: reactive[str] = reactive("session")
 
@@ -254,7 +261,10 @@ class SettingsScreen(Screen[None]):
                 )
         with Horizontal(classes="srow"):
             yield Static(f"Model: {self.harness.model_label}", id="model-label")
-            yield Button("change", id="model-change", variant="primary")
+            # compact: without it Button's default tall borders survive the
+            # `.srow Button { border: none }` override and paint a ▔ strip at
+            # height 1 instead of the label.
+            yield Button("change", id="model-change", variant="primary", compact=True)
         yield BoxCheckbox(
             "Autonomous wake (react to finished jobs)",
             value=getattr(self.app, "autonomous_wake", self.harness.autonomous_wake),
@@ -434,10 +444,29 @@ class SettingsScreen(Screen[None]):
         self.active_section = keys[max(0, min(i + delta, len(keys) - 1))]
 
     def action_next_section(self) -> None:
+        # ↑↓ navigate the rail only while nothing is focused; a focused field
+        # is "edit mode" and stray arrows must not yank the section away
+        # mid-edit (widgets that use arrows themselves, like RadioSet, consume
+        # them before this binding fires — this guards the ones that don't).
+        if self.focused is not None:
+            return
         self._move_section(1)
 
     def action_prev_section(self) -> None:
+        if self.focused is not None:
+            return
         self._move_section(-1)
+
+    def action_edit_section(self) -> None:
+        """enter: move focus from the rail into the active section's first
+        focusable field. Buttons are skipped — enter lands on a field to edit,
+        not on a button the *same keypress* would immediately press (the
+        remove button sits first in a provider card's DOM order)."""
+        section = self.query_one(f"#section-{self.active_section}")
+        for widget in section.query("*"):
+            if widget.focusable and not isinstance(widget, Button):
+                widget.focus()
+                return
 
     def on_click(self, event: events.Click) -> None:
         """Click a rail row to switch section, or a theme row to apply that theme."""
@@ -614,4 +643,16 @@ class SettingsScreen(Screen[None]):
         )
 
     def action_cancel(self) -> None:
+        # Two-stage escape mirroring enter: leave edit mode (back to the
+        # rail) first, close the screen only when already at the rail.
+        if self.focused is not None:
+            # Escape reads as *cancel*, but the unfocus below fires Blurred
+            # and password fields commit on blur — which would persist a
+            # half-typed API key to the global .env. Discard the secret
+            # first (an empty commit is a no-op); non-secret fields keep
+            # the screen's save-on-blur model, same as clicking away.
+            if isinstance(self.focused, Input) and self.focused.password:
+                self.focused.value = ""
+            self.set_focus(None)
+            return
         self.dismiss(None)

@@ -730,7 +730,7 @@ from marim_harness.config import model as model_mod  # noqa: E402
 
 
 def test_claude_cli_is_a_known_provider():
-    assert "claude-cli" in model_mod._KNOWN_PROVIDERS
+    assert "claude-cli" in model_mod.KNOWN_PROVIDERS
 
 
 def test_provider_config_claude_cli(monkeypatch):

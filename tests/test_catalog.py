@@ -275,3 +275,94 @@ def test_parse_lmstudio_models_reports_only_the_served_window():
 def test_parse_lmstudio_models_tolerates_garbage():
     assert parse_lmstudio_models({}) == {}
     assert parse_lmstudio_models({"data": "nope"}) == {}
+
+
+# -- openrouter strict key validation ----------------------------------------
+#
+# OpenRouter's /models endpoint is PUBLIC — a catalog fetch succeeds with a
+# garbage (or absent) key, so it can't validate a credential. In strict mode
+# the fetcher first hits /key, which requires auth and 401s on a bad key,
+# giving verification a real verdict. The non-strict picker path never pays
+# that extra request. These run against a real local HTTP server (a thread on
+# an OS-assigned port), not a mocked client.
+
+
+class _OpenRouterStub:
+    """A tiny stand-in for openrouter.ai: public /models, authenticated /key."""
+
+    def __init__(self):
+        import http.server
+        import threading
+
+        stub = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                stub.paths.append(self.path)
+                if self.path == "/models":
+                    body = b'{"data": []}'
+                    self.send_response(200)
+                elif self.headers.get("Authorization") == "Bearer good-key":
+                    body = b'{"data": {}}'
+                    self.send_response(200)
+                else:
+                    body = b'{"error": "unauthorized"}'
+                    self.send_response(401)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass  # keep pytest output clean
+
+        self.paths: list[str] = []
+        self._server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        self.base = f"http://127.0.0.1:{self._server.server_port}"
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+
+    def shutdown(self):
+        self._server.shutdown()
+        self._server.server_close()
+
+
+@pytest.fixture
+def openrouter_stub(monkeypatch):
+    stub = _OpenRouterStub()
+    monkeypatch.setattr(catalog, "_OPENROUTER_MODELS_URL", stub.base + "/models")
+    monkeypatch.setattr(catalog, "_OPENROUTER_KEY_URL", stub.base + "/key")
+    yield stub
+    stub.shutdown()
+
+
+@pytest.mark.anyio
+async def test_openrouter_strict_rejects_bad_key_despite_public_catalog(
+    openrouter_stub,
+):
+    """The whole point: /models alone would 200 here, but strict mode must
+    still fail on the 401 from the authenticated /key probe."""
+    import httpx
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await fetch_openrouter_models("garbage", strict=True)
+
+
+@pytest.mark.anyio
+async def test_openrouter_strict_good_key_passes_probe_and_fetches(openrouter_stub):
+    assert await fetch_openrouter_models("good-key", strict=True) == []
+    assert "/key" in openrouter_stub.paths
+    assert "/models" in openrouter_stub.paths
+
+
+@pytest.mark.anyio
+async def test_openrouter_non_strict_never_probes_key(openrouter_stub):
+    """The picker path stays single-request: no /key probe, bad key included."""
+    assert await fetch_openrouter_models("garbage") == []
+    assert "/key" not in openrouter_stub.paths
+
+
+@pytest.mark.anyio
+async def test_openrouter_strict_without_key_skips_probe(openrouter_stub):
+    """No credential to validate: strict still fetches the public catalog."""
+    assert await fetch_openrouter_models(None, strict=True) == []
+    assert "/key" not in openrouter_stub.paths
