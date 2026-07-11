@@ -319,6 +319,21 @@ class ProvidersPane(Vertical):
         if isinstance(self._model_source, MultiModelSource):
             self._model_source.refresh_from_env()
 
+    # -- default provider --------------------------------------------------
+
+    def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
+        event.stop()
+        if not self._ready or event.pressed is None:
+            return
+        name = (event.pressed.id or "").removeprefix("prov-default-")
+        if name not in _SPECS or not self._save({"MARIM_PROVIDER": name}):
+            return
+        self._refresh_sources()
+        self._set_badge(name)
+        for spec in PROVIDER_SPECS:
+            self._paint_card(spec)  # move the '· default' marker between cards
+        self._status(f"✓ saved MARIM_PROVIDER · new sessions start on {name}")
+
     def _provider_source(self, name: str) -> ModelSource | None:
         if isinstance(self._model_source, MultiModelSource):
             return self._model_source.sources.get(name)

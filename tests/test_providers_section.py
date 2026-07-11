@@ -394,3 +394,42 @@ async def test_remove_via_real_button_click(isolated_env, monkeypatch, tmp_path)
         await pilot.click("#prov-remove-openrouter")
         await pilot.pause()
     assert os.environ.get("OPENROUTER_API_KEY") is None
+
+
+@pytest.mark.anyio
+async def test_default_radio_reflects_env(isolated_env, monkeypatch, tmp_path):
+    from textual.widgets import RadioButton
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("MARIM_PROVIDER", "google")
+    app = _PaneHost()
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        pane = app.query_one(ProvidersPane)
+        assert pane.query_one("#prov-default-google", RadioButton).value is True
+    # Reflecting the preset must not have written anything.
+    assert not (tmp_path / "marim" / ".env").exists()
+
+
+@pytest.mark.anyio
+async def test_default_radio_persists_and_updates_badge(
+    isolated_env, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("MARIM_PROVIDER", "openrouter")
+    app = _PaneHost()
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        pane = app.query_one(ProvidersPane)
+        await pilot.click("#prov-default-local")
+        await pilot.pause()
+        assert os.environ.get("MARIM_PROVIDER") == "local"
+        assert "MARIM_PROVIDER=local" in (tmp_path / "marim" / ".env").read_text()
+        assert app.badges and app.badges[-1] == "local"
+        # The '· default' marker moved between the cards.
+        assert "default" in str(
+            pane.query_one("#prov-status-local", Static).render()
+        )
+        assert "default" not in str(
+            pane.query_one("#prov-status-openrouter", Static).render()
+        )
