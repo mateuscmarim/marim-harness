@@ -328,12 +328,22 @@ class SubagentRunner:
 
         get_scratchpad = self.deps.services.get_scratchpad
         scratch = get_scratchpad() if get_scratchpad is not None else None
+        # Computed once and reused for both the tool registration and the
+        # prompt line below: register_subagent strips write_file/edit_file
+        # from read-only agent types and from every spawn outside auto mode
+        # (effective_tools), so the scratchpad line must match that same set —
+        # advertising a write the spawn doesn't have makes the model call it
+        # and hard-fail (same rationale as the files_write gate on the main
+        # agent's _scratchpad instructions block, commit d0d038c).
+        tools = effective_tools(defn, allow_gated=allow_gated)
+        scratchpad_writable = "write_file" in tools
 
         sub = Agent(
             model_obj,
             deps_type=Deps,
             instructions=subagent_instructions(
-                defn, instr_root, max_output_chars, scratchpad=scratch
+                defn, instr_root, max_output_chars,
+                scratchpad=scratch, scratchpad_writable=scratchpad_writable,
             ),
             # Match the main agent's tool-retry budget (agent.py builds it with
             # retries=2). pydantic-ai defaults to 1, which gives the model a single
@@ -349,7 +359,7 @@ class SubagentRunner:
             model_settings=self._model_settings,
             capabilities=capabilities,
         )
-        self.provider.register_subagent(sub, effective_tools(defn, allow_gated=allow_gated))
+        self.provider.register_subagent(sub, tools)
         # Nested spawning: only register spawn_agent if the child would be
         # able to spawn (depth+1 < max_depth). At the leaf depth, the tool
         # is absent — the grandchild simply cannot recurse. The ceiling itself

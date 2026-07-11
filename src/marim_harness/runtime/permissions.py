@@ -111,7 +111,8 @@ async def resolve_approvals(
         elif mode is Mode.plan:
             results.approvals[call.tool_call_id] = _plan_decision(call)
         elif (
-            scratchpad is not None
+            mode is Mode.ask
+            and scratchpad is not None
             and workspace_root is not None
             and _is_scratchpad_write(call, workspace_root, scratchpad)
         ):
@@ -119,7 +120,10 @@ async def resolve_approvals(
             # exists precisely so intermediate work doesn't prompt (the
             # instructions block advertises exactly that). bash never
             # qualifies: a command's filesystem reach can't be cheaply
-            # proven to stay inside the scratchpad.
+            # proven to stay inside the scratchpad. The `mode is Mode.ask`
+            # conjunct is redundant today (auto/plan are already handled above,
+            # so only ask reaches this branch) but pins the bypass explicitly —
+            # a future Mode member added here must not silently inherit it.
             results.approvals[call.tool_call_id] = True
         elif request_approval is None:
             results.approvals[call.tool_call_id] = ToolDenied(

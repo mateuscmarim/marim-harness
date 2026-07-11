@@ -19,6 +19,7 @@
 - Tool docstrings are model-facing product copy — write them accordingly.
 - The spec's degradation invariant: any failure to provide the scratchpad (disabled, no session, squatting check, OSError) must degrade to exactly today's behavior — getter returns `None`, no prompt block, no extra root, normal gating.
 - One deliberate deviation from the spec: instead of adding `extra_roots` to `resolve_in_workspace` itself, follow the codebase's established pattern (`_safe_read` in `tools/impl/fs.py:77`) and add a `_safe_write` helper that loops extra roots. Same semantics, no signature change to the shared guard.
+- A second deviation, user-approved post-review: the main agent's `_scratchpad` instructions block (`runtime/instructions.py`) is gated on `groups.files_write`, not registered unconditionally, and the sub-agent scratchpad line (`workspace/agents.py::subagent_instructions`) is gated on the spawn's actual effective write capability (`"write_file" in effective_tools(...)`, computed once in `SubagentRunner.build` and reused for both tool registration and the prompt), switching to read-only wording when absent. This supersedes Task 5's plain "register the scratchpad line whenever a scratchpad is set" wording — a prompt line advertising a tool the spawn doesn't have makes the model call it and hard-fail (same rationale as the `files_write` gate itself, commit d0d038c).
 
 ---
 

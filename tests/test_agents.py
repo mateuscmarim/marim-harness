@@ -366,3 +366,32 @@ def test_subagent_instructions_omit_scratchpad_when_none():
     defn = AgentDef("explore", "d", "Investigate.", READ_TOOLS, "built-in")
     text = subagent_instructions(defn, Path("/work/space"))
     assert "scratchpad" not in text.lower()
+
+
+def test_subagent_instructions_scratchpad_writable_keeps_use_it_wording():
+    defn = AgentDef("explore", "d", "Investigate.", READ_TOOLS, "built-in")
+    scratch = Path("/tmp/marim-1/proj-abc/sess/scratchpad")
+    text = subagent_instructions(
+        defn, Path("/work/space"), scratchpad=scratch, scratchpad_writable=True
+    )
+    assert str(scratch) in text
+    assert "Use it" in text
+
+
+def test_subagent_instructions_scratchpad_read_only_drops_write_wording():
+    defn = AgentDef("explore", "d", "Investigate.", READ_TOOLS, "built-in")
+    scratch = Path("/tmp/marim-1/proj-abc/sess/scratchpad")
+    text = subagent_instructions(
+        defn, Path("/work/space"), scratchpad=scratch, scratchpad_writable=False
+    )
+    assert str(scratch) in text
+    assert "Use it" not in text
+    assert "cannot write" in text.lower()
+
+
+def test_subagent_instructions_omit_scratchpad_when_none_regardless_of_writable():
+    defn = AgentDef("explore", "d", "Investigate.", READ_TOOLS, "built-in")
+    text = subagent_instructions(
+        defn, Path("/work/space"), scratchpad=None, scratchpad_writable=False
+    )
+    assert "scratchpad" not in text.lower()
