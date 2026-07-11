@@ -105,9 +105,9 @@ class SpawnRunDriver:
         await self._retry.backoff(attempt)
 
     async def run_to_completion(self, sub: SubAgent, task: str, run_deps: Deps,
-                                 granted: list[Any], handler: EventStreamHandler[Deps] | None,
-                                 stream_id: str | None = None,
-                                 history: list | None = None) -> AgentRunResult[str]:
+                                granted: list[Any], handler: EventStreamHandler[Deps] | None,
+                                stream_id: str | None = None,
+                                history: list | None = None) -> AgentRunResult[str]:
         """Run a built sub-agent to its final result, retrying *transient* model
         errors (gateway/server hiccups, timeouts, rate limits) with backoff. A
         permanent error, or exhausting the retry budget, re-raises for the caller's

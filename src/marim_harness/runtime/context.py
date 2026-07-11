@@ -1,7 +1,7 @@
 """Pure helpers behind ``Harness.run_turn``'s per-turn context injection.
 
-Two side-effect-free concerns live here, kept out of ``agent.py`` so the turn
-loop module stays focused on orchestration:
+Two side-effect-free concerns live here, kept out of ``controller.py`` so the
+turn loop module stays focused on orchestration:
 
 * the ``<turn-context>`` envelope that wraps anything prepended to a turn's
   prompt (task checklist, finished-job digest, error note, hook output), so a
@@ -9,7 +9,7 @@ loop module stays focused on orchestration:
 * ``actionable_error_note`` — the terse, sanitized note about a failed turn that
   is handed back to the *model* only when adjusting the next turn could help.
 
-These are re-exported from ``agent.py`` for the public import surface and the
+These are re-exported from ``harness.py`` for the public import surface and the
 existing call sites/tests that import them from there."""
 
 from __future__ import annotations

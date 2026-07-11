@@ -158,7 +158,7 @@ class SubagentRunner:
         # keeping this class the spawn-lifecycle coordinator. known_window is
         # passed as a callable because it reads the *current* session model.
         self._driver = SpawnRunDriver(deps, session, self._retry,
-                                       self._known_window)
+                                      self._known_window)
         # Stream ids of spawns whose resume is in flight but not yet registered as
         # a job. resume_spawn awaits (limits resolve, subagent_start hook, MCP
         # grants) between its guards and jobs.register, so two rapid `r` presses
