@@ -11,6 +11,7 @@ import json
 import logging
 from collections.abc import AsyncIterable, Callable, Sequence
 from dataclasses import dataclass, replace
+from enum import Enum, auto
 from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import DeferredToolRequests, capture_run_messages
@@ -245,6 +246,16 @@ def _repair_unanswered_tool_calls(history: list[ModelMessage]) -> list[ModelMess
         answered.update(part.tool_call_id for part in missing)
         changed = True
     return repaired if changed else history
+
+
+class _RunRetry(Enum):
+    """How a failed ``agent.run`` round may be retried. Members double as the
+    one-shot latch keys in the ``retried`` set ``_run_with_approval`` threads
+    through ``_handle_run_failure`` — each kind gets exactly one shot per turn
+    (a contention retry doesn't consume the compaction retry, and vice versa)."""
+
+    CONTENTION = auto()  # pool contention: retry in place after a backoff
+    COMPACTED = auto()   # genuine overflow: history force-compacted; retry
 
 
 class TurnController:
@@ -580,6 +591,126 @@ class TurnController:
 
         return _wrapped
 
+    async def _handle_run_failure(
+        self,
+        exc: BaseException,
+        captured: list[ModelMessage],
+        resumable: list[ModelMessage],
+        deferred_results: DeferredToolResults | None,
+        round_usage: RunUsage,
+        retried: set[_RunRetry],
+    ) -> _RunRetry:
+        """Resolve one failed ``agent.run`` round: bank its spend, reclaim
+        undelivered steers, then either hand back a one-shot retry directive
+        (contention → backoff already slept; overflow → history already
+        force-compacted and persisted) or flush a resumable history, stash the
+        error note, spill the provider payload, and re-raise. ``retried`` is the
+        cross-round latch set: a directive is only returned if its kind isn't
+        already in it, and the returned kind is added here so the caller can't
+        forget to latch it."""
+        # Bank whatever the failed run already spent. The provider
+        # billed those tokens regardless of the abort, so dropping
+        # them would make the session's running total undercount. A
+        # pure in-memory add — safe even on the cancel teardown path
+        # (it can't block the re-raise / Ctrl-C). Counts the failed
+        # attempt on the overflow-retry path too: those tokens were
+        # spent before the compaction-and-retry below.
+        self.session.usage += round_usage
+        # A steer flushed into this round may never have reached a
+        # request boundary; put it back in the buffer (for the
+        # overflow retry below, or the TUI's turn-end pickup) before
+        # deciding how this failure resolves.
+        self._reclaim_undelivered_steers()
+        # Context-overflow recovery: the request exceeded the real
+        # window despite our estimate. Force a compaction and retry the
+        # run once. Only when the compaction actually shrank the history
+        # (else a retry would just fail identically). The compacted
+        # history is persisted by maybe_compact, so it also becomes the
+        # rollback baseline for the retry. Two guards beyond the retry
+        # flag: (1) never on a continuation round (deferred_results
+        # set) — the in-memory history then deliberately ends with the
+        # round's unanswered tool calls, and compacting would persist
+        # exactly the dirty state the approval loop promises never
+        # touches disk; the normal failure path below repairs and
+        # persists a resumable history instead. (2) go through
+        # _maybe_compact, not session.maybe_compact, so the stale
+        # checkpoints are invalidated — their absolute indices point
+        # into the pre-compaction history and a later /rewind through
+        # one would slice at a wrong boundary.
+        # A provider "context exceeded" can also mean POOL CONTENTION,
+        # not an oversized request: local servers (LM Studio/llama.cpp
+        # with a unified KV cache) share one window across n_parallel
+        # slots, and concurrent requests — parallel sub-agents — can
+        # exhaust the pool and fail EVERY in-flight request, however
+        # small. Compacting can't help (the request already fits) and
+        # the "window too small" diagnostic would mislead. When the
+        # failing request's best-known size (the provider-measured
+        # last count or the chars/4 estimate, whichever is larger) is
+        # far below the KNOWN served window, classify as contention
+        # and retry once in place after a short backoff — sub-agents
+        # finishing is what frees the pool. Unknown window ⇒ never
+        # contention, so the classic first-turn overflow keeps the
+        # old behavior. Safe on continuation rounds too: unlike the
+        # compaction below, the retry doesn't touch the history.
+        overflow = is_context_overflow_error(exc)
+        contention = overflow and overflow_is_contention(
+            max(
+                self.session.last_input_tokens or 0,
+                estimate_tokens(list(captured) or list(self.session.history)),
+            ),
+            self.session.known_window,
+        )
+        if contention and _RunRetry.CONTENTION not in retried:
+            retried.add(_RunRetry.CONTENTION)
+            await self._contention_backoff()
+            return _RunRetry.CONTENTION
+        if (
+            _RunRetry.COMPACTED not in retried
+            and not contention
+            and deferred_results is None
+            and overflow
+            and await self._maybe_compact(force=True)
+        ):
+            retried.add(_RunRetry.COMPACTED)
+            return _RunRetry.COMPACTED
+        # Persist what survives the failure so the user's prompt and
+        # any completed work aren't lost, repairing any tool call the
+        # abort left unanswered (the captured messages may stop right
+        # after one) so the session stays resumable. Fall back to the
+        # last clean history if the run produced nothing. The flush
+        # runs with a tight deadline so a slow disk (or Ctrl-C during
+        # a hung write) doesn't block the re-raise — the session is
+        # best-effort by design.
+        await self._flush_resumable(captured, resumable)
+        # Stash an actionable note (None for infra/render/cancel) to
+        # prepend to the next turn's prompt.
+        self._pending_error_note = _actionable_error_note(exc)
+        # Spill the full provider payload to disk so the real upstream
+        # error survives the terse on-screen view. Best-effort and
+        # deadline-bounded (like the flush above) so a slow disk on
+        # the teardown path can't block the re-raise / Ctrl-C. A
+        # cancellation here propagates rather than being swallowed.
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    dump_provider_error, self.deps.workspace.root, exc
+                ),
+                timeout=0.25,
+            )
+        except Exception:
+            logger.debug("failed to dump provider error", exc_info=True)
+        # Reaching here with an overflow error means recovery failed
+        # (nothing droppable — the classic first-turn case — or the
+        # one retry above already overflowed again, or it was a dirty
+        # continuation round). Swap the terse provider text for an
+        # actionable diagnostic matching the classification; the
+        # original is chained and already spilled to disk above.
+        if overflow:
+            raise ContextWindowExceededError(
+                CONTEXT_CONTENTION_HELP if contention else CONTEXT_OVERFLOW_HELP
+            ) from exc
+        raise exc
+
     async def _run_with_approval(
         self,
         user_prompt: str | list[str | BinaryContent] | None,
@@ -591,15 +722,10 @@ class TurnController:
         """Drive the agent.run loop, handling DeferredToolRequests approval rounds,
         persisting on success, and rolling back to ``resumable`` on interrupt.
         Returns the final text output."""
-        # The token estimate gating compaction is a coarse char/4 heuristic, so it
-        # can undershoot the real window and let a too-large request reach the
-        # provider. If the provider rejects it for length, force a compaction and
-        # retry the run once (this flag latches so we never loop on it).
-        overflow_retried = False
-        # Separate latch for the contention path below: a pool-contention retry
-        # doesn't touch the history, so it neither consumes nor is consumed by
-        # the compaction retry — each gets its own single shot.
-        contention_retried = False
+        # One-shot retry latches, one per _RunRetry kind — see _RunRetry and
+        # _handle_run_failure for why each recovery path gets exactly one shot
+        # and why they don't consume each other.
+        retried: set[_RunRetry] = set()
         while True:
             # capture_run_messages exposes the messages exchanged even when the
             # run aborts (a render error in the event handler, an API failure,
@@ -630,109 +756,15 @@ class TurnController:
                         usage=round_usage,
                     )
                 except BaseException as exc:
-                    # Bank whatever the failed run already spent. The provider
-                    # billed those tokens regardless of the abort, so dropping
-                    # them would make the session's running total undercount. A
-                    # pure in-memory add — safe even on the cancel teardown path
-                    # (it can't block the re-raise / Ctrl-C). Counts the failed
-                    # attempt on the overflow-retry path too: those tokens were
-                    # spent before the compaction-and-retry below.
-                    self.session.usage += round_usage
-                    # A steer flushed into this round may never have reached a
-                    # request boundary; put it back in the buffer (for the
-                    # overflow retry below, or the TUI's turn-end pickup) before
-                    # deciding how this failure resolves.
-                    self._reclaim_undelivered_steers()
-                    # Context-overflow recovery: the request exceeded the real
-                    # window despite our estimate. Force a compaction and retry the
-                    # run once. Only when the compaction actually shrank the history
-                    # (else a retry would just fail identically). The compacted
-                    # history is persisted by maybe_compact, so it also becomes the
-                    # rollback baseline for the retry. Two guards beyond the retry
-                    # flag: (1) never on a continuation round (deferred_results
-                    # set) — the in-memory history then deliberately ends with the
-                    # round's unanswered tool calls, and compacting would persist
-                    # exactly the dirty state the approval loop promises never
-                    # touches disk; the normal failure path below repairs and
-                    # persists a resumable history instead. (2) go through
-                    # _maybe_compact, not session.maybe_compact, so the stale
-                    # checkpoints are invalidated — their absolute indices point
-                    # into the pre-compaction history and a later /rewind through
-                    # one would slice at a wrong boundary.
-                    # A provider "context exceeded" can also mean POOL CONTENTION,
-                    # not an oversized request: local servers (LM Studio/llama.cpp
-                    # with a unified KV cache) share one window across n_parallel
-                    # slots, and concurrent requests — parallel sub-agents — can
-                    # exhaust the pool and fail EVERY in-flight request, however
-                    # small. Compacting can't help (the request already fits) and
-                    # the "window too small" diagnostic would mislead. When the
-                    # failing request's best-known size (the provider-measured
-                    # last count or the chars/4 estimate, whichever is larger) is
-                    # far below the KNOWN served window, classify as contention
-                    # and retry once in place after a short backoff — sub-agents
-                    # finishing is what frees the pool. Unknown window ⇒ never
-                    # contention, so the classic first-turn overflow keeps the
-                    # old behavior. Safe on continuation rounds too: unlike the
-                    # compaction below, the retry doesn't touch the history.
-                    overflow = is_context_overflow_error(exc)
-                    contention = overflow and overflow_is_contention(
-                        max(
-                            self.session.last_input_tokens or 0,
-                            estimate_tokens(list(captured) or list(self.session.history)),
-                        ),
-                        self.session.known_window,
+                    retry = await self._handle_run_failure(
+                        exc, captured, resumable, deferred_results, round_usage, retried
                     )
-                    if contention and not contention_retried:
-                        contention_retried = True
-                        await self._contention_backoff()
-                        continue
-                    if (
-                        not overflow_retried
-                        and not contention
-                        and deferred_results is None
-                        and overflow
-                        and await self._maybe_compact(force=True)
-                    ):
-                        overflow_retried = True
+                    if retry is _RunRetry.COMPACTED:
+                        # The compacted-and-persisted history is the new
+                        # rollback baseline for the retry (maybe_compact
+                        # persisted it).
                         resumable = list(self.session.history)
-                        continue
-                    # Persist what survives the failure so the user's prompt and
-                    # any completed work aren't lost, repairing any tool call the
-                    # abort left unanswered (the captured messages may stop right
-                    # after one) so the session stays resumable. Fall back to the
-                    # last clean history if the run produced nothing. The flush
-                    # runs with a tight deadline so a slow disk (or Ctrl-C during
-                    # a hung write) doesn't block the re-raise — the session is
-                    # best-effort by design.
-                    await self._flush_resumable(captured, resumable)
-                    # Stash an actionable note (None for infra/render/cancel) to
-                    # prepend to the next turn's prompt.
-                    self._pending_error_note = _actionable_error_note(exc)
-                    # Spill the full provider payload to disk so the real upstream
-                    # error survives the terse on-screen view. Best-effort and
-                    # deadline-bounded (like the flush above) so a slow disk on
-                    # the teardown path can't block the re-raise / Ctrl-C. A
-                    # cancellation here propagates rather than being swallowed.
-                    try:
-                        await asyncio.wait_for(
-                            asyncio.to_thread(
-                                dump_provider_error, self.deps.workspace.root, exc
-                            ),
-                            timeout=0.25,
-                        )
-                    except Exception:
-                        logger.debug("failed to dump provider error", exc_info=True)
-                    # Reaching here with an overflow error means recovery failed
-                    # (nothing droppable — the classic first-turn case — or the
-                    # one retry above already overflowed again, or it was a dirty
-                    # continuation round). Swap the terse provider text for an
-                    # actionable diagnostic matching the classification; the
-                    # original is chained and already spilled to disk above.
-                    if overflow:
-                        raise ContextWindowExceededError(
-                            CONTEXT_CONTENTION_HELP if contention else CONTEXT_OVERFLOW_HELP
-                        ) from exc
-                    raise
+                    continue
             # This round's streaming ends the moment run() returns, so the
             # captured ctx is now stale. Null it before the approval modal /
             # next-round gap so a steer arriving in that window buffers and is
