@@ -231,3 +231,50 @@ def test_abandoned_slow_persist_cannot_clobber_newer_write(tmp_path):
     ctrl.persist()
     history, *_ = store.load()
     assert len(history) == 2, "stale abandoned write clobbered the newer persist"
+
+
+def test_persist_hands_store_a_snapshot_not_the_live_history(tmp_path):
+    """persist() must pass store.save a snapshot copy of the history list, not
+    the live ``_VersionedHistory`` object. An abandoned persist worker (see
+    ``_flush_resumable`` in runtime/controller.py) keeps running store.save's
+    dump_python(history) after the Ctrl-C flush deadline expires; `_persist_lock`
+    only serializes persist-vs-persist, not persist-vs-mutation of that SAME
+    list object, so a subsequent turn's `history.append(...)` while the orphan
+    is still iterating it can raise "list changed size during iteration" or
+    write a torn snapshot. Simulate the interleaving directly at the seam:
+    mutate ``ctrl.history`` from inside store.save (as a racing turn would)
+    and assert the object save() received is a distinct copy, unaffected by
+    the mutation."""
+    workspace = tmp_path
+    manager = SessionManager(workspace)
+    store = manager.create("s8")
+    deps = _make_deps(workspace, mode=Mode.ask)
+    ctrl = SessionController(store, manager, deps, 100_000, 20)
+
+    def _msg(text):
+        return ModelRequest(parts=[UserPromptPart(content=text)])
+
+    ctrl.set_history([_msg("first")])
+
+    received = {}
+    original_save = store.save
+
+    def racing_save(history, *args, **kwargs):
+        received["is_live_object"] = history is ctrl.history
+        received["len_at_call"] = len(history)
+        # A subsequent turn appending to the live history while this "save"
+        # is mid-serialization — exactly what the orphaned worker races with.
+        ctrl.history.append(_msg("appended-during-save"))
+        received["len_after_concurrent_append"] = len(history)
+        return original_save(history, *args, **kwargs)
+
+    store.save = racing_save
+    ctrl.persist()
+
+    assert received["is_live_object"] is False, (
+        "persist must hand store.save a snapshot copy, not the live history list"
+    )
+    assert received["len_at_call"] == 1
+    assert received["len_after_concurrent_append"] == 1, (
+        "the snapshot changed size when the live history was mutated concurrently"
+    )
