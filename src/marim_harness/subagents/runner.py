@@ -781,7 +781,28 @@ class SubagentRunner:
             background=True, stream_id=stream_id, caller_depth=caller_depth,
         )
 
-    async def resume_spawn(self, stream_id: str) -> tuple[str | None, str]:  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
+    def _resume_preconditions(self, stream_id: str) -> tuple[dict | None, str | None]:
+        """Guard-fold for `resume_spawn`: is there a session store at all, does
+        this spawn have a resumable (v2-envelope) sidecar, is that sidecar's
+        status actually resumable, and is no other job already resuming it.
+        Returns ``(meta, None)`` when every guard passes, else ``(None,
+        refusal)`` with a user-renderable refusal string — the same messages
+        `resume_spawn` returned inline before this was split out."""
+        if not self._transcripts.has_store:
+            return None, "No session store — can't resume."
+        meta = self._transcripts.read_meta(stream_id)
+        if meta is None:
+            return None, ("No resumable transcript for this spawn (missing or "
+                          "pre-envelope sidecar).")
+        status = meta.get("status")
+        if status not in ("running", "interrupted"):
+            return None, f"Spawn already {status} — nothing to resume."
+        for job in self.deps.jobs.list():
+            if job.stream_id == stream_id and job.status == "running":
+                return None, f"Already resuming as {job.id}."
+        return meta, None
+
+    async def resume_spawn(self, stream_id: str) -> tuple[str | None, str]:
         """Continue an interrupted spawn from its persisted sidecar as a
         background job. Returns ``(job_id, message)`` on success or
         ``(None, reason)`` on refusal — the reason is always user-renderable.
@@ -802,18 +823,10 @@ class SubagentRunner:
             return None, "Already resuming this spawn — hold on."
         self._resuming.add(stream_id)
         try:
-            if not self._transcripts.has_store:
-                return None, "No session store — can't resume."
-            meta = self._transcripts.read_meta(stream_id)
-            if meta is None:
-                return None, ("No resumable transcript for this spawn (missing or "
-                              "pre-envelope sidecar).")
-            status = meta.get("status")
-            if status not in ("running", "interrupted"):
-                return None, f"Spawn already {status} — nothing to resume."
-            for job in self.deps.jobs.list():
-                if job.stream_id == stream_id and job.status == "running":
-                    return None, f"Already resuming as {job.id}."
+            meta, refusal = self._resume_preconditions(stream_id)
+            if refusal is not None:
+                return None, refusal
+            assert meta is not None
             # A claude-cli spawn resumes through the CLI's own session machinery,
             # not the native transcript-repair path: the CLI owns its history and
             # marim's sidecar is a display copy, so reading/repairing it here

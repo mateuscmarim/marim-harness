@@ -43,7 +43,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.usage import RunUsage
 
 if TYPE_CHECKING:
-    from .cli_demux import RoutedEvent
+    from .cli_demux import CliSubagentDemux, RoutedEvent
 
 logger = logging.getLogger(__name__)
 
@@ -449,6 +449,50 @@ async def _iter_ndjson_lines(stream, chunk_size: int = _READ_CHUNK):
         yield buffer.decode("utf-8", "replace")
 
 
+@dataclass
+class _RunState:
+    """The `run` read-loop's mutated locals, pulled into one object so they can
+    be threaded through `_process_line`/`_finalize` without an in/out tuple per
+    call. `output` is the last-seen result event's text (a run can emit several
+    — see the result-handling comment in `_process_line`); `results` accumulates
+    every result event for `_finalize`'s usage fold; `model_sent` latches once
+    the CLI's reported model has been surfaced to the UI; `session_id` is the
+    resume key captured from the stream; `last_ckpt_len` is the transcript
+    length as of the last checkpoint, so growth-only checkpointing can compare
+    against it."""
+
+    output: str = ""
+    results: list[dict] = field(default_factory=list)
+    model_sent: bool = False
+    session_id: str | None = None
+    last_ckpt_len: int = 0
+
+
+async def _read_next_line(
+    line_iter, deadline: float, proc, timeout_msg: str
+) -> str | None:
+    """Read one NDJSON line off `line_iter`, bounded by the shared wall-clock
+    `deadline` rather than a per-read idle gap: a chatty spawn keeps resetting a
+    per-read window and could run unbounded, so each read is shrunk to the time
+    remaining. On expiry (or a `wait_for` timeout racing it) the process group is
+    SIGKILLed and CliRunError is raised — a hung `claude -p` (network hang, an
+    interactive prompt on the inherited stdin) must not pin its concurrency slot
+    forever. Returns None on a clean EOF (StopAsyncIteration) so the caller's
+    loop can fall through to `_finalize`."""
+    loop = asyncio.get_event_loop()
+    remaining = deadline - loop.time()
+    if remaining <= 0:
+        _kill_process_group(proc)
+        raise CliRunError(timeout_msg)
+    try:
+        return await asyncio.wait_for(line_iter.__anext__(), timeout=remaining)
+    except StopAsyncIteration:
+        return None
+    except (TimeoutError, asyncio.TimeoutError):
+        _kill_process_group(proc)
+        raise CliRunError(timeout_msg) from None
+
+
 class ClaudeCliRunner:
     """Spawns the Claude Code CLI for one sub-agent task and forwards its activity.
 
@@ -468,7 +512,7 @@ class ClaudeCliRunner:
         # otherwise shows the harness's own model as a fallback. None when no UI.
         self._on_model = on_model      # Deps.on_subagent_model | None
 
-    async def run(  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
+    async def run(
         self, *, binary: str, prompt: str, system_prompt: str, cwd: str,
         allow_gated: bool, allowed_tools, model: str | None, stream_id: str,
         checkpoint: Callable[[list, str | None], None] | None = None,
@@ -502,11 +546,7 @@ class ClaudeCliRunner:
 
             translator = CliStreamTranslator()
             demux = CliSubagentDemux()
-            output = ""
-            results: list[dict] = []
-            model_sent = False
-            session_id: str | None = None
-            last_ckpt_len = 0
+            state = _RunState()
             assert proc.stdout is not None
             # Bound the whole read loop by a single wall-clock deadline rather than a
             # per-read idle gap: a chatty spawn keeps resetting a per-read window and
@@ -520,90 +560,25 @@ class ClaudeCliRunner:
             deadline = loop.time() + timeout
             timeout_msg = f"claude timed out after {timeout:.0f}s with no result (killed)"
             while True:
-                remaining = deadline - loop.time()
-                if remaining <= 0:
-                    _kill_process_group(proc)
-                    raise CliRunError(timeout_msg)
-                try:
-                    raw = await asyncio.wait_for(line_iter.__anext__(), timeout=remaining)
-                except StopAsyncIteration:
+                raw = await _read_next_line(line_iter, deadline, proc, timeout_msg)
+                if raw is None:
                     break
-                except (TimeoutError, asyncio.TimeoutError):
-                    _kill_process_group(proc)
-                    raise CliRunError(timeout_msg) from None
-                # Checkpoint the transcript accumulated so far whenever it has
-                # grown. Placed at the top of the iteration (not the bottom) so a
-                # single call site covers every path the loop body takes — the
-                # translate branch, the demux record_call/record_return path, and
-                # all the `continue`s. The cost is a one-line lag: a kill mid-
-                # stream loses at most the final line's content, and a clean run's
-                # completion-time write supersedes the last checkpoint anyway.
-                if checkpoint is not None:
-                    snapshot = translator.transcript()
-                    if len(snapshot) != last_ckpt_len:
-                        last_ckpt_len = len(snapshot)
-                        checkpoint(snapshot, session_id)
-                line = raw.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue  # non-JSON noise on stdout — skip
-                if session_id is None:
-                    sid = obj.get("session_id")
-                    if isinstance(sid, str) and sid:
-                        session_id = sid
-                # Claude-side sub-agent traffic (Agent/Task spawns, their child
-                # streams, task lifecycle events) is demuxed into per-card
-                # streams; whatever remains is this spawn's own main stream.
-                routed, remainder = demux.route(obj)
-                for r in routed:
-                    await self._deliver(r, translator, stream_id)
-                if remainder is None:
-                    continue
-                obj = remainder
-                if not model_sent:
-                    # The system/init event carries the session model at top level;
-                    # assistant messages carry it under message.model. Surface the
-                    # first one seen so the card shows the CLI's real model. Guard
-                    # message against a non-dict (malformed/future stream shape).
-                    msg = obj.get("message")
-                    found = obj.get("model") or (
-                        msg.get("model") if isinstance(msg, dict) else None
-                    )
-                    if found:
-                        model_sent = True
-                        if self._on_model is not None and stream_id:
-                            await self._on_model(stream_id, str(found))
-                if obj.get("type") == "result":
-                    # One -p process can emit several results (an async
-                    # sub-agent's completion notification re-invokes the main
-                    # agent). The LAST result's text is the final report;
-                    # usage folds across all of them (sum_result_usages).
-                    results.append(obj)
-                    output = obj.get("result", "") or ""
-                    continue
-                for event in translator.translate(obj):
-                    if self._on_event is not None and stream_id:
-                        await self._on_event(stream_id, event, None)
+                outcome = await self._process_line(
+                    raw, state, translator=translator, demux=demux,
+                    checkpoint=checkpoint, stream_id=stream_id,
+                )
+                if outcome == "break":
+                    break
+            # Final checkpoint after the loop exits, so a clean-EOF run's last
+            # line is reflected even though the growth-checkpoint above only
+            # fires from inside the loop.
             if checkpoint is not None:
                 snapshot = translator.transcript()
-                if len(snapshot) != last_ckpt_len:
-                    checkpoint(snapshot, session_id)
+                if len(snapshot) != state.last_ckpt_len:
+                    checkpoint(snapshot, state.session_id)
             stderr_bytes = await stderr_task if stderr_task is not None else b""
             stderr_task = None  # consumed — don't cancel it in finally
-            code = await proc.wait()
-            if not results:
-                detail = stderr_bytes.decode("utf-8", "replace").strip() or f"exit code {code}"
-                raise CliRunError(f"claude produced no result ({detail})")
-            return CliResult(
-                output=output,
-                usage=synth_usage(*sum_result_usages(results)),
-                transcript=translator.transcript(),
-                child_transcripts=demux.child_transcripts(),
-                session_id=session_id,
-            )
+            return await self._finalize(state, stderr_bytes, proc, translator, demux)
         finally:
             # On an exceptional/cancelled exit, reap the child so an auto-mode CLI
             # can't keep editing files after the spawn was abandoned, and never leave
@@ -617,6 +592,105 @@ class ClaudeCliRunner:
                 _kill_process_group(proc)
                 with contextlib.suppress(BaseException):
                     await proc.wait()
+
+    async def _process_line(
+        self, raw: str, state: _RunState, *,
+        translator: CliStreamTranslator, demux: CliSubagentDemux,
+        checkpoint: Callable[[list, str | None], None] | None, stream_id: str,
+    ) -> str | None:
+        """Handle one NDJSON line from the CLI's stdout, mutating `state` in
+        place. Returns ``"break"`` when the caller's read loop should stop
+        (no line currently triggers that — kept for symmetry with
+        `_read_next_line`'s EOF signal), else None to read the next line."""
+        # Checkpoint the transcript accumulated so far whenever it has
+        # grown. Placed at the top of the iteration (not the bottom) so a
+        # single call site covers every path the loop body takes — the
+        # translate branch, the demux record_call/record_return path, and
+        # all the early-return paths below. The cost is a one-line lag: a
+        # kill mid-stream loses at most the final line's content, and a
+        # clean run's completion-time write supersedes the last checkpoint
+        # anyway.
+        if checkpoint is not None:
+            snapshot = translator.transcript()
+            if len(snapshot) != state.last_ckpt_len:
+                state.last_ckpt_len = len(snapshot)
+                checkpoint(snapshot, state.session_id)
+        line = raw.strip()
+        if not line:
+            return None
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            return None  # non-JSON noise on stdout — skip
+        if state.session_id is None:
+            sid = obj.get("session_id")
+            if isinstance(sid, str) and sid:
+                state.session_id = sid
+        # Claude-side sub-agent traffic (Agent/Task spawns, their child
+        # streams, task lifecycle events) is demuxed into per-card
+        # streams; whatever remains is this spawn's own main stream.
+        routed, remainder = demux.route(obj)
+        for r in routed:
+            await self._deliver(r, translator, stream_id)
+        if remainder is None:
+            return None
+        await self._dispatch_remainder(remainder, state, translator, stream_id)
+        return None
+
+    async def _dispatch_remainder(
+        self, obj: dict, state: _RunState,
+        translator: CliStreamTranslator, stream_id: str,
+    ) -> None:
+        """Handle the portion of one line's event left after demux routing:
+        first-seen model detection, then result-vs-translate dispatch. Split
+        out of `_process_line` so each half stays under the complexity
+        ceiling; mutates `state` in place."""
+        if not state.model_sent:
+            # The system/init event carries the session model at top level;
+            # assistant messages carry it under message.model. Surface the
+            # first one seen so the card shows the CLI's real model. Guard
+            # message against a non-dict (malformed/future stream shape).
+            msg = obj.get("message")
+            found = obj.get("model") or (
+                msg.get("model") if isinstance(msg, dict) else None
+            )
+            if found:
+                state.model_sent = True
+                if self._on_model is not None and stream_id:
+                    await self._on_model(stream_id, str(found))
+        if obj.get("type") == "result":
+            # One -p process can emit several results (an async
+            # sub-agent's completion notification re-invokes the main
+            # agent). The LAST result's text is the final report;
+            # usage folds across all of them (sum_result_usages).
+            state.results.append(obj)
+            state.output = obj.get("result", "") or ""
+            return
+        for event in translator.translate(obj):
+            if self._on_event is not None and stream_id:
+                await self._on_event(stream_id, event, None)
+
+    async def _finalize(
+        self, state: _RunState, stderr_bytes: bytes, proc,
+        translator: CliStreamTranslator, demux: CliSubagentDemux,
+    ) -> CliResult:
+        """The post-loop drain: wait for the process's exit code, raise
+        CliRunError when the stream never produced a result event, else build
+        the finished CliResult. Called from `run` only after the
+        `stderr_task = None` "consumed" handshake has already run in that
+        frame — see the comment there — so this never touches `stderr_task`
+        itself."""
+        code = await proc.wait()
+        if not state.results:
+            detail = stderr_bytes.decode("utf-8", "replace").strip() or f"exit code {code}"
+            raise CliRunError(f"claude produced no result ({detail})")
+        return CliResult(
+            output=state.output,
+            usage=synth_usage(*sum_result_usages(state.results)),
+            transcript=translator.transcript(),
+            child_transcripts=demux.child_transcripts(),
+            session_id=state.session_id,
+        )
 
     async def _deliver(
         self, routed: RoutedEvent, translator: CliStreamTranslator, stream_id: str
