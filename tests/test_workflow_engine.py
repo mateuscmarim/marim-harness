@@ -156,3 +156,74 @@ async def test_schema_failure_after_retry_raises_into_the_script(tmp_path):
     )
     out = await eng.run(script, None, "tc1")
     assert "caught:" in out and "schema validation" in out
+
+
+@pytest.mark.anyio
+async def test_syntax_error_returns_a_fixable_tool_message(tmp_path):
+    eng, _ = _engine(tmp_path, _echo_spawn)
+    out = await eng.run("def broken(:\n    pass", None, "tc1")
+    assert "failed to parse" in out
+
+
+@pytest.mark.anyio
+async def test_uncaught_script_exception_names_the_line(tmp_path):
+    eng, _ = _engine(tmp_path, _echo_spawn)
+    out = await eng.run('x = 1\nraise ValueError("boom")\nx', None, "tc1")
+    assert "Workflow script raised" in out and "boom" in out
+
+
+@pytest.mark.anyio
+async def test_agent_failure_is_catchable_in_script(tmp_path):
+    async def spawn(*a):
+        raise RuntimeError("spawn exploded")
+
+    eng, _ = _engine(tmp_path, spawn)
+    script = (
+        "try:\n"
+        '    r = await agent("x")\n'
+        "except Exception as e:\n"
+        '    r = "recovered: " + str(e)\n'
+        "r"
+    )
+    out = await eng.run(script, None, "tc1")
+    assert "recovered:" in out and "spawn exploded" in out
+
+
+@pytest.mark.anyio
+async def test_sandbox_denies_filesystem_and_imports(tmp_path):
+    eng, _ = _engine(tmp_path, _echo_spawn)
+    out = await eng.run('open("/etc/passwd").read()', None, "tc1")
+    # Monty denies `open` (no OS access is configured on run_async); whether
+    # it fails at parse or at run, it must surface as a tool-visible error,
+    # never as file contents.
+    assert "root:" not in out
+    assert "raised" in out or "failed to parse" in out
+    out2 = await eng.run("import socket\nsocket", None, "tc1")
+    assert "raised" in out2 or "failed to parse" in out2
+
+
+@pytest.mark.anyio
+async def test_infinite_loop_is_killed_by_vm_limits(tmp_path, monkeypatch):
+    import marim_harness.workflows.engine as engine_mod
+    monkeypatch.setattr(engine_mod, "_VM_LIMITS", {"max_duration_secs": 0.5})
+    eng, _ = _engine(tmp_path, _echo_spawn)
+    out = await eng.run("while True:\n    pass", None, "tc1")
+    assert "Workflow script raised" in out
+
+
+@pytest.mark.anyio
+async def test_wall_clock_timeout_cancels_children(tmp_path):
+    cancelled = asyncio.Event()
+
+    async def slow_spawn(*a):
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        return "never"
+
+    eng, _ = _engine(tmp_path, slow_spawn, timeout_secs=0.3)
+    out = await eng.run('await agent("x")\n"done"', None, "tc1")
+    assert "timed out" in out
+    assert cancelled.is_set()
