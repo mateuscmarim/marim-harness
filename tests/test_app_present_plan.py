@@ -8,7 +8,7 @@ from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 from marim_harness.interfaces.tui.app import HarnessApp
-from marim_harness.interfaces.tui.plan_card import PlanCard
+from marim_harness.interfaces.tui.interactions.plan_card import PlanCard
 from marim_harness.runtime.permissions import Mode
 from tests.conftest import _make_deps, _make_harness
 

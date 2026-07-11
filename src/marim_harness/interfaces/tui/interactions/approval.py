@@ -3,7 +3,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import Button, Static
 
-from .interaction_panel import InteractionPanel
+from .base import InteractionPanel
 
 # Diff highlighting styles for the approval preview.
 REMOVED_STYLE = "red"

@@ -1,4 +1,4 @@
-# src/marim_harness/interfaces/tui/plan_card.py
+# src/marim_harness/interfaces/tui/interactions/plan_card.py
 """The inline Plan card behind ``present_plan``: shows the plan's summary and
 numbered steps, then the execution choices, and resolves with a PlanDecision
 (the chosen execution-choice label, or "Keep planning" with optional revise-feedback).
@@ -13,9 +13,9 @@ from textual.markup import escape
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 
-from ...ask_user import Choice
-from ...runtime.deps import PlanDecision
-from .interaction_panel import InteractionPanel
+from ....ask_user import Choice
+from ....runtime.deps import PlanDecision
+from .base import InteractionPanel
 
 # Returned on Escape / dismissal — must match the "keep planning" label in
 # tools/planning_tools._PLAN_CHOICES so present_plan maps it to "stay in plan mode".

@@ -13,12 +13,6 @@ from textual.containers import Vertical
 from textual.content import Content
 from textual.widgets import Collapsible, Static
 
-from .ask_user_render import (
-    ask_user_body,
-    ask_user_title_tail,
-    overall_state,
-    parse_ask_user,
-)
 from .diff import _DIFF_CAP, _reverse_edits, render_edit_diff, render_file_diff
 from .format import _SPINNER, _SPINNER_TICK_INTERVAL, format_duration
 from .highlight import _LEXERS, _highlight_lines, strip_line_numbers
@@ -160,6 +154,17 @@ class ToolCallWidget(Collapsible):
         """The ask_user title: a state-driven glyph + 'Ask User · {Q→A | count |
         awaiting | cancelled}'. Cancelled overrides the success glyph with ✕, since
         a dismissed prompt returns a (successful) note string, not an error."""
+        # Local import: ``interactions.ask_user_render`` reaches back into
+        # ``widgets.tool_summary``, so a module-level import here would make
+        # importing ask_user_render (on its own, e.g. in its unit test) recurse
+        # into this module before its own names are defined. By call time both
+        # modules are fully initialized.
+        from ..interactions.ask_user_render import (
+            ask_user_title_tail,
+            overall_state,
+            parse_ask_user,
+        )
+
         state = overall_state(self.result_text, self.status)
         if state == "pending":
             glyph, gstyle = self._glyph()  # animated spinner
@@ -377,6 +382,9 @@ class ToolCallWidget(Collapsible):
         if self._breadcrumb:
             return ""
         if self.tool_name == "ask_user":
+            # Local import: see the matching comment in _ask_user_summary.
+            from ..interactions.ask_user_render import ask_user_body, parse_ask_user
+
             return ask_user_body(parse_ask_user(self.args, self.result_text, self.status))
         primary = self._primary_renderable(highlight=highlight)
         if primary is not None:

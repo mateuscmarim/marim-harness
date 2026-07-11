@@ -3197,7 +3197,7 @@ async def test_ask_user_escape_cancels_only_the_question(tmp_path: Path):
     real HarnessApp binding table; the stub-harness tests in
     test_ask_user_panel.py don't have the app's escape binding at all."""
     from marim_harness.ask_user import Choice, Question
-    from marim_harness.interfaces.tui.ask_user import AskUserPanel
+    from marim_harness.interfaces.tui.interactions.ask_user import AskUserPanel
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:

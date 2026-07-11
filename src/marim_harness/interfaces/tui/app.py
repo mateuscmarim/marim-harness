@@ -15,10 +15,8 @@ from ...runtime.harness import Harness
 from ...usage import resolve_cost
 from ..history import PromptHistory
 from ..prefs import load_theme, save_theme
-from .approval import ApprovalPanel
-from .ask_user import AskUserPanel
 from .commands import dispatch
-from .interaction_panel import InteractionPanel, run_panel
+from .interactions import ApprovalPanel, AskUserPanel, InteractionPanel, run_panel
 from .model_picker import ModelPickerModal
 from .notify import FinishedJobNotifier
 from .queue import TurnQueue
@@ -873,7 +871,7 @@ class HarnessApp(App):
         removes the card via run_panel's finally. The plan's summary/steps already live
         on deps.plan (set by present_plan), so the pinned title and Ctrl+P overlay stay
         in sync regardless of the choice made here."""
-        from .plan_card import PlanCard
+        from .interactions import PlanCard
 
         self._notify("Plan ready", summary, "ask_user")
         self._render_tasks()  # refresh the TaskPanel title now that deps.plan is set

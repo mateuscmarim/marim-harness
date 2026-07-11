@@ -8,8 +8,8 @@ from textual.containers import VerticalScroll
 from textual.widgets import Input, Static
 
 from marim_harness.ask_user import Choice
-from marim_harness.interfaces.tui.interaction_panel import run_panel
-from marim_harness.interfaces.tui.plan_card import PlanCard
+from marim_harness.interfaces.tui.interactions.base import run_panel
+from marim_harness.interfaces.tui.interactions.plan_card import PlanCard
 from marim_harness.runtime.deps import PlanDecision
 
 pytestmark = pytest.mark.anyio

@@ -5,8 +5,8 @@ from textual.containers import VerticalScroll
 from textual.widgets import Button, SelectionList, Static
 
 from marim_harness.ask_user import Choice, Question
-from marim_harness.interfaces.tui.ask_user import AskUserPanel
-from marim_harness.interfaces.tui.interaction_panel import run_panel
+from marim_harness.interfaces.tui.interactions.ask_user import AskUserPanel
+from marim_harness.interfaces.tui.interactions.base import run_panel
 
 
 class _Harness(App):

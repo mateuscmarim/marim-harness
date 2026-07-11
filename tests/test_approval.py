@@ -3,13 +3,13 @@ from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.widgets import Static
 
-from marim_harness.interfaces.tui.approval import (
+from marim_harness.interfaces.tui.interactions.approval import (
     ADDED_STYLE,
     REMOVED_STYLE,
     ApprovalPanel,
     format_detail,
 )
-from marim_harness.interfaces.tui.interaction_panel import run_panel
+from marim_harness.interfaces.tui.interactions.base import run_panel
 
 
 def _styled_text(detail, needle: str) -> set[str]:
