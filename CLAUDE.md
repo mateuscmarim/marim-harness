@@ -145,10 +145,12 @@ to avoid import cycles.
 - `workspace/` — fs primitives, memory (`remember`/`recall`), skills, sub-agent specs,
   git worktrees, snapshots. (The root-level `compaction.py` builds the
   summarizer/titler aux agents and the token-budget compaction helpers.)
-- `subagents/` — `runner.py` (`SubagentRunner`: spawns and drives isolated
-  sub-agents), `masking.py` (per-spawn context masking of stale tool
-  observations), and `cli_backend.py` (the optional `claude -p` CLI backend it
-  delegates to). Re-exported as `marim_harness.subagents.SubagentRunner`.
+- `subagents/` — `runner.py` (`SubagentRunner`: spawn-lifecycle coordinator),
+  `run_driver.py` (model-loop retry/overflow/contention recovery),
+  `cli_spawn.py` (`claude -p` execute/resume orchestration), `masking.py`
+  (per-spawn context masking of stale tool observations), and `cli_backend.py`
+  (the optional `claude -p` CLI backend it delegates to). Re-exported as
+  `marim_harness.subagents.SubagentRunner`.
 - `interfaces/tui/` — Textual app, widgets, `styles.tcss`, approval/ask-user modals,
   streaming render. `interfaces/cli/` — router + per-command modules (lazily imported
   so `config`/`models` don't pay for `pydantic_ai`).

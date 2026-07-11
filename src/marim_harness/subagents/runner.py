@@ -14,37 +14,28 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import os
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.settings import ModelSettings
-from pydantic_ai.usage import RunUsage, UsageLimits
 
 if TYPE_CHECKING:
     from pydantic_ai.agent import EventStreamHandler
     from pydantic_ai.models import Model
-    from pydantic_ai.run import AgentRunResult
 
     from ..mcp.manager import McpManager
     from ..session.ctrl import SessionController
     from ..tools.provider import ToolProvider
     from ..workspace.agents import AgentDef
-    from .cli_backend import CliResult
 
-from ..compaction import estimate_tokens, last_request_input_tokens, mask_stale_observations
 from ..hooks.dispatch import TurnHooks
 from ..runtime.deps import Deps, SubAgent
-from ..runtime.errors import (
-    is_context_overflow_error,
-    is_transient_model_error,
-    overflow_is_contention,
-)
+from ..runtime.errors import is_context_overflow_error
 from ..runtime.permissions import Mode
 from ..tasks import TaskList
 from ..tools.impl import fs
@@ -55,10 +46,12 @@ from ..workspace import (
     find_agent,
     subagent_instructions,
 )
-from .backend import SpawnRun
+from .backend import CONTINUATION_PROMPT, SpawnRun
+from .cli_spawn import CliSpawnOrchestrator
 from .isolation import SpawnWorktree
-from .persistence import SpawnTranscripts, count_tool_calls
+from .persistence import SpawnTranscripts
 from .policies import MaskingPolicy, RetryPolicy
+from .run_driver import SpawnRunDriver, _resumable_history
 
 logger = logging.getLogger(__name__)
 
@@ -73,58 +66,6 @@ def _iso_branch(stream_id: str, seq: int) -> str:
     don't collide) and falls back to a sequence number when there's no id."""
     base = _ISO_SLUG.sub("-", (stream_id or "").lower()).strip("-")
     return f"subagent/{base or f'anon-{seq}'}"
-
-
-@contextlib.contextmanager
-def _fresh_capture():
-    """A message-capture context that is ALWAYS fresh — unlike pydantic-ai's
-    public ``capture_run_messages``, which this deliberately bypasses.
-
-    Why the private API: ``capture_run_messages`` REUSES an existing contextvar
-    state instead of nesting, and an ``agent.run`` binds to the captured list
-    only while the state's ``used`` flag is still False. A foreground spawn runs
-    INSIDE the main turn's tool execution, where ``TurnController._run_agent_loop``
-    already holds a capture context that the main run has bound (flag set).
-    Entering the public context there yields the MAIN turn's message list — and
-    the sub-agent's run, finding ``used=True``, records its messages into a list
-    nobody holds. A retry in ``_run_to_completion`` would then "resume" the
-    sub-agent with the orchestrator's conversation instead of its own. This
-    helper reaches for pydantic-ai's private ``_messages_ctx_var`` and
-    unconditionally installs a fresh ``_RunMessages`` holder, restoring the
-    outer state in ``finally`` so the main turn's capture is untouched.
-
-    The private-name coupling is a considered trade: pydantic-ai offers no
-    nested/fresh mode for ``capture_run_messages`` (its docs promise only "the
-    first run within the context"), and the alternative — not capturing at all —
-    would forfeit sub-agent resumability. ``tests/test_subagent_retry.py`` pins
-    both the private names and the outer-capture topology, so a dependency bump
-    that changes either fails loudly there instead of silently corrupting
-    sub-agent resumes with the main conversation.
-    """
-    from pydantic_ai import _agent_graph
-
-    messages: list = []
-    token = _agent_graph._messages_ctx_var.set(_agent_graph._RunMessages(messages))
-    try:
-        yield messages
-    finally:
-        _agent_graph._messages_ctx_var.reset(token)
-
-
-def _resumable_history(messages: list) -> list | None:
-    """Turn the conversation captured from a failed sub-agent attempt into a
-    history safe to resume from, or ``None`` when there's nothing to carry (the
-    request failed before any message was recorded — resume by re-sending the
-    task). Reuses the main turn's two repairs so a sub-agent resume obeys the same
-    provider invariant: drop a half-streamed nameless tool call, then synthesize a
-    return for any tool call left unanswered when the attempt died. Imported lazily
-    because ``agent`` imports this module — a top-level import would cycle."""
-    if not messages:
-        return None
-    from ..runtime.harness import _drop_nameless_tool_calls, _repair_unanswered_tool_calls
-
-    repaired = _repair_unanswered_tool_calls(_drop_nameless_tool_calls(messages))
-    return repaired or None
 
 
 @dataclass(frozen=True)
@@ -193,6 +134,13 @@ class SubagentRunner:
         # Session-bound persistence for a spawn's sidecar transcript + terminal
         # meta. Reads the store off `session` per call, so it follows a /switch.
         self._transcripts = SpawnTranscripts(session, transcript_cap)
+        # The claude-cli spawn path: external-process execute/resume live there;
+        # it rejoins this runner's _run_spawn_lifecycle (passed bound) so the
+        # run+failure+finalize invariants stay written once.
+        self._cli = CliSpawnOrchestrator(
+            deps=deps, hooks=hooks, transcripts=self._transcripts,
+            lifecycle=self._run_spawn_lifecycle, resolve_agent=self._resolve_agent,
+        )
         # Hard depth ceiling. Spawns that would produce a sub-agent at
         # depth >= max_depth are refused. Default 3: main → sub → grandchild.
         self._max_depth = max_depth
@@ -203,9 +151,14 @@ class SubagentRunner:
         # owns the resolver + knobs and the per-spawn trigger resolution (see
         # _mask_trigger_for): a per-spawn model override resolves its own window
         # and budget rather than inheriting the session model's. The reactive
-        # overflow backstop in _run_to_completion still covers any late trigger a
-        # resolution miss leaves behind.
+        # overflow backstop in SpawnRunDriver.run_to_completion still covers any
+        # late trigger a resolution miss leaves behind.
         self._masking = masking or MaskingPolicy()
+        # The model-loop driver: retry/overflow/contention recovery lives there,
+        # keeping this class the spawn-lifecycle coordinator. known_window is
+        # passed as a callable because it reads the *current* session model.
+        self._driver = SpawnRunDriver(deps, session, self._retry,
+                                       self._known_window)
         # Stream ids of spawns whose resume is in flight but not yet registered as
         # a job. resume_spawn awaits (limits resolve, subagent_start hook, MCP
         # grants) between its guards and jobs.register, so two rapid `r` presses
@@ -290,8 +243,8 @@ class SubagentRunner:
 
     def _known_window(self) -> int | None:
         """The KNOWN served context window for the session model, or None. Feeds
-        the overflow-contention classifier in ``_run_to_completion``; None (no
-        limits wired, or nothing discovered) conservatively disables it. Uses
+        the overflow-contention classifier in ``SpawnRunDriver.run_to_completion``;
+        None (no limits wired, or nothing discovered) conservatively disables it. Uses
         the session model like ``_mask_trigger_for``'s fallback — a per-spawn
         model override isn't visible here, but a wrong-model window only skews
         a heuristic margin, never correctness."""
@@ -342,8 +295,9 @@ class SubagentRunner:
         else:
             model_obj = self._build_model(model)
         allow_gated = self.deps.workspace.mode is Mode.auto
-        # Imported lazily for the same reason _resumable_history does: agent.py
-        # imports this module, so a top-level import of the harness would cycle.
+        # Imported lazily for the same reason as run_driver.py's own harness
+        # import: agent.py imports this module, so a top-level import of the
+        # harness would cycle.
         from ..runtime.harness import _drop_nameless_tool_calls
 
         capabilities: list[ProcessHistory[Deps]] = []
@@ -474,7 +428,7 @@ class SubagentRunner:
         return f"Sub-agent {name!r} failed: {exc.__class__.__name__}: {exc}"
 
     async def _run_spawn_lifecycle(
-        self, run_fn: Callable[[], Any], *, iso: SpawnWorktree | None,
+        self, run_fn: Callable[[], Awaitable[SpawnRun]], *, iso: SpawnWorktree | None,
         resumed: bool, background: bool, name: str, stop_task: str, note: str,
         max_output_chars: int | None, stream_id: str,
         timing: tuple[float, float, list[float]] | None = None,
@@ -527,12 +481,6 @@ class SubagentRunner:
             timing=timing,
         )
 
-    async def _retry_backoff(self, attempt: int) -> None:
-        """Sleep before the ``attempt``-th retry via the RetryPolicy's backoff.
-        Kept as a thin runner method (not an inline ``self._retry.backoff`` call)
-        so a test can stub it to skip the real sleep — see test_subagent_retry."""
-        await self._retry.backoff(attempt)
-
     def _slot(self):
         """Acquire-context bounding concurrent spawn runs to ``_concurrency``; a
         no-op ``nullcontext`` when unbounded. The semaphore is created on first use
@@ -543,174 +491,6 @@ class SubagentRunner:
         if self._sem is None:
             self._sem = asyncio.Semaphore(self._concurrency)
         return self._sem
-
-    async def _run_to_completion(self, sub: SubAgent, task: str, run_deps: Deps,
-                                 granted: list[Any], handler: EventStreamHandler[Deps] | None,
-                                 stream_id: str | None = None,
-                                 history: list | None = None) -> AgentRunResult[str]:
-        """Run a built sub-agent to its final result, retrying *transient* model
-        errors (gateway/server hiccups, timeouts, rate limits) with backoff. A
-        permanent error, or exhausting the retry budget, re-raises for the caller's
-        contain/propagate path.
-
-        A retry *resumes* the run rather than restarting it: the conversation the
-        failed attempt produced (captured even though it raised) is carried forward
-        as ``message_history``, so a transient blip on step 20 of a multi-step spawn
-        doesn't throw away — and re-pay for — the first 19 steps. The captured
-        history is sanitized and repaired the same way the main turn does before a
-        resumed request (drop a half-streamed nameless tool call, synthesize a
-        return for any unanswered call), or every provider rejects it. A mutating
-        isolated spawn keeps whatever files the failed attempt already wrote, which
-        is fine — its worktree is a throwaway branch.
-
-        A foreground spawn (``stream_id`` set) gets an out-of-band UI notice on each
-        retry so the user sees the card recover rather than silently stall.
-
-        A context-overflow rejection (a permanent 4xx the transient path would
-        surface) gets one recovery attempt of its own: the captured conversation
-        is resumed with stale tool observations masked (see ``_shed_context``);
-        a repeat overflow, or one with nothing left to shed, surfaces normally.
-
-        ``history``, when given, is a persisted transcript to resume from (an
-        interrupted spawn continuing after a restart) — the first attempt sends
-        both ``task`` (the continuation prompt) as the run's input AND
-        ``message_history=history``, so pydantic-ai appends the prompt on top of
-        the prior conversation. A later transient-retry resume within the same
-        call takes over from ``resume_history`` instead, exactly as before."""
-        attempt = 0
-        overflow_shed = False
-        resume_history: list | None = None
-        # One usage accumulator across ALL attempts, mirroring the controller's
-        # per-round banking (see _run_with_approval): pydantic-ai mutates it in
-        # place as each model step completes, so an attempt that dies mid-run
-        # still leaves its spend here. On success the returned ``result.usage``
-        # IS this object (agent.run threads ``usage or RunUsage()`` straight
-        # into run state), so the callers' ``session.usage += result.usage``
-        # already covers the failed attempts; the re-raise path below banks it
-        # explicitly since no result reaches the caller there.
-        run_usage = RunUsage()
-        while True:
-            captured: list = []
-            try:
-                # NOT the public capture_run_messages: a foreground spawn runs
-                # inside the main turn's capture context, which the public API
-                # would silently reuse — see _fresh_capture's docstring.
-                with _fresh_capture() as captured:
-                    return await sub.run(
-                        task if resume_history is None else None,
-                        message_history=(resume_history if resume_history is not None
-                                         else history),
-                        deps=run_deps, toolsets=granted,
-                        event_stream_handler=handler,
-                        usage=run_usage,
-                        usage_limits=UsageLimits(request_limit=self._retry.request_limit),
-                    )
-            except Exception as exc:  # noqa: BLE001
-                # An overflow whose request is far below the KNOWN served window
-                # is pool CONTENTION, not an oversized conversation: local
-                # servers (LM Studio/llama.cpp unified KV cache) share one
-                # window across n_parallel slots, and a parallel spawn fan-out
-                # can exhaust the pool and fail every in-flight request at
-                # once. Masking observations can't free pool space held by the
-                # OTHER requests — so skip the shed and ride the transient
-                # retry path below instead: back off, let siblings finish, and
-                # resume the captured conversation intact. An empty capture (a
-                # first-request failure) sizes to 0 ⇒ never contention, and an
-                # unknown window keeps the old behavior everywhere.
-                overflow = is_context_overflow_error(exc)
-                contention = overflow and overflow_is_contention(
-                    max(
-                        last_request_input_tokens(list(captured)) or 0,
-                        estimate_tokens(list(captured)),
-                    ),
-                    self._known_window(),
-                )
-                # Context overflow is a permanent 4xx, so the transient path below
-                # would re-raise it — but unlike a genuine bad request it IS
-                # recoverable: shed the bulky old observations from the captured
-                # conversation and resume once. Unlike the proactive masker (which
-                # rewrites only the outgoing request), the shed is folded into the
-                # resume history itself, so the freed tokens stay freed. One shot
-                # only: a second overflow means masking already gave all it had.
-                if not overflow_shed and overflow and not contention:
-                    shed = self._shed_context(list(captured))
-                    if shed is not None:
-                        overflow_shed = True
-                        resume_history = shed
-                        logger.info(
-                            "sub-agent overflowed its context; masked stale "
-                            "observations and resuming"
-                        )
-                        await self._notice_overflow(stream_id)
-                        continue
-                if attempt >= self._retry.attempts or not (
-                    contention or is_transient_model_error(exc)
-                ):
-                    # Surfacing the failure loses the result object but must not
-                    # lose the spend: the provider billed the failed attempts'
-                    # tokens regardless, so bank the accumulator before the
-                    # re-raise. (The success path needs no counterpart — the
-                    # callers fold result.usage, which IS this accumulator.)
-                    self.session.usage += run_usage
-                    raise
-                attempt += 1
-                resume_history = _resumable_history(list(captured))
-                logger.info(
-                    "sub-agent hit a transient error (%s); resuming, retry %d/%d "
-                    "after backoff", exc.__class__.__name__, attempt,
-                    self._retry.attempts,
-                )
-                await self._notice_retry(stream_id, exc, attempt)
-                await self._retry_backoff(attempt)
-
-    async def _notice_retry(self, stream_id: str | None, exc: Exception,
-                            attempt: int) -> None:
-        """Surface a transient-error retry on a foreground spawn's card. A no-op for
-        a background spawn (no card) or when no UI is listening."""
-        cb = self.deps.ui.on_subagent_notice
-        if cb is None or not stream_id:
-            return
-        await cb(
-            stream_id,
-            f"transient error ({exc.__class__.__name__}) — "
-            f"retrying {attempt}/{self._retry.attempts}…",
-        )
-
-    # Shed settings for the overflow backstop: spare only the newest observation
-    # (the model may still be acting on it) and mask anything else remotely bulky.
-    # Deliberately more aggressive than the proactive masker — by the time we're
-    # here the provider has already rejected the request for size.
-    _SHED_KEEP_RECENT = 1
-    _SHED_MIN_CHARS = 64
-
-    def _shed_context(self, messages: list) -> list | None:
-        """The overflow-recovery lever: repair the captured conversation the same
-        way a transient resume does, then aggressively mask stale observations.
-        Returns the shrunk history to resume from, or None when masking freed
-        nothing — the overflow is then unrecoverable here and must surface."""
-        repaired = _resumable_history(messages)
-        if not repaired:
-            return None
-        # Known imprecision, accepted: mask_stale_observations counts "recent"
-        # newest-first across parts, so a parallel tool round wider than
-        # keep_recent(=1) can mask sibling returns the model hasn't acted on
-        # yet — and after the repair above, the spared "newest" return can be a
-        # repair-synthesized stub rather than real output. Acceptable here: the
-        # placeholder text invites the model to re-run the tool, and by this
-        # point the provider has already rejected the request outright, so a
-        # lossy-but-live resume beats a dead spawn.
-        masked, count = mask_stale_observations(
-            repaired, self._SHED_KEEP_RECENT, min_chars=self._SHED_MIN_CHARS
-        )
-        return masked if count else None
-
-    async def _notice_overflow(self, stream_id: str | None) -> None:
-        """Surface an overflow recovery on a foreground spawn's card. A no-op for
-        a background spawn (no card) or when no UI is listening."""
-        cb = self.deps.ui.on_subagent_notice
-        if cb is None or not stream_id:
-            return
-        await cb(stream_id, "context overflow — masked stale tool output, resuming…")
 
     async def _execute_spawn(
         self, type: str, task: str, mcp_names: list[str] | None,
@@ -744,7 +524,7 @@ class SubagentRunner:
         work_root = iso.path if iso else None
         # CLI-backed agents run an external `claude` process instead of the
         # in-process Pydantic AI loop, so they skip the native build+MCP prepare.
-        # Branch here to _execute_cli_spawn, which builds its own meta/checkpoint
+        # Branch here to self._cli.execute, which builds its own meta/checkpoint
         # and then rejoins the SAME _run_spawn_lifecycle the native tails use — the
         # run+failure+finalize wrapper is written once, not duplicated per backend.
         # Resolve the agent definition ONCE here (a filesystem discovery walk) and
@@ -753,7 +533,7 @@ class SubagentRunner:
         defn = self._resolve_agent(type)
         depth = caller_depth + 1
         if defn is not None and defn.backend == "claude-cli":
-            return await self._execute_cli_spawn(
+            return await self._cli.execute(
                 defn, task, work_root, iso, mcp_names, max_output_chars,
                 model, stream_id, background=background, depth=depth,
             )
@@ -887,7 +667,7 @@ class SubagentRunner:
         stop_task = prep.meta["task"] if prep.meta else task
 
         async def _run() -> SpawnRun:
-            result = await self._run_to_completion(
+            result = await self._driver.run_to_completion(
                 prep.sub, task, run_deps, prep.granted, prep.handler, stream_id,
                 history=history,
             )
@@ -909,163 +689,6 @@ class SubagentRunner:
             max_output_chars=max_output_chars, stream_id=stream_id,
             timing=(prep.t0, prep.t_built, prep.first_event_at),
         )
-
-    async def _execute_cli_spawn(
-        self, defn, task: str, work_root, iso,
-        mcp_names: list[str] | None, max_output_chars: int | None,
-        model: str | None, stream_id: str, *, background: bool,
-        resume_session_id: str | None = None, original_task: str | None = None,
-        depth: int = 1, transcript_prefix: list | None = None,
-    ) -> str:
-        """Run a ``backend: claude-cli`` agent inside the same lifecycle the native
-        path uses: hooks bracketing, output cap/spill, worktree close, background
-        persist. Harness MCP grants are NOT forwarded to the CLI (it uses its own
-        MCP config); a non-empty ``mcp_names`` is noted, not honored.
-
-        Mirrors _execute_spawn's foreground/background contract: foreground
-        contains a failure as an error string (so a sibling fan-out spawn isn't
-        taken down); background re-raises to the job registry. Usage is folded into
-        the session, and a background spawn persists immediately since no run_turn
-        will fold its spend."""
-        hook_task = original_task or task
-        # Wall-clock start for the terminal meta's duration stat. The native path
-        # reads prep.t0 (stamped in _execute_spawn); the CLI early-return branches
-        # before prep exists, so stamp its own here. A resumed leg times only
-        # itself — same rule as native.
-        t0 = time.perf_counter()
-        meta: dict | None = None
-        checkpoint: Callable[[list, str | None], None] | None = None
-        if stream_id:
-            # Same template the native path builds in _prepare_spawn, plus the two
-            # CLI-only keys: `backend` routes resume_spawn to the CLI branch, and
-            # `cli_session_id` (filled by the first checkpoint once the init event
-            # arrives) is the `claude -p --resume` key. Mutating the shared
-            # template between checkpoints is safe — TranscriptStore.write
-            # snapshots the dict before stamping.
-            meta = {
-                "stream_id": stream_id, "type": defn.name, "task": hook_task,
-                "model": model, "mcp": None, "depth": depth,
-                "max_output_chars": max_output_chars,
-                "isolation": iso.branch if iso else None,
-                "status": "running",
-                "backend": "claude-cli",
-                "cli_session_id": resume_session_id,
-            }
-
-            def _checkpoint(messages: list, session_id: str | None,
-                           _meta=meta) -> None:
-                if session_id:
-                    _meta["cli_session_id"] = session_id
-                # The resumed process's stream carries only the CONTINUATION —
-                # `claude -p --resume` does not re-emit the prior history. Without
-                # the prefix, this checkpoint would overwrite the sidecar with
-                # tail-only content, destroying the interrupted segment (incl. the
-                # demuxed-children entries) the pane replays (spec §4). On a fresh
-                # spawn transcript_prefix is None, so this is a plain passthrough.
-                # cap_transcript (inside TranscriptStore.write) bounds the combined
-                # payload.
-                self._transcripts.save(stream_id, (transcript_prefix or []) + messages,
-                                       meta=_meta, cap_reasoning=True)
-
-            checkpoint = _checkpoint
-
-        await self.hooks.subagent_start(defn.name, hook_task)
-        # A resumed CLI spawn (resume_session_id set) keeps its branch on failure —
-        # native-resume parity; a fresh spawn's branch is throwaway.
-        resumed = resume_session_id is not None
-        async def _run() -> SpawnRun:
-            result = await self._run_cli(
-                defn, task, work_root, model, stream_id,
-                checkpoint=checkpoint, resume_session_id=resume_session_id,
-            )
-            # Same prefix rule as the checkpoint above: the final write is also
-            # tail-only for a resumed run, so prepend the pre-interrupt segment.
-            full_transcript = (transcript_prefix or []) + result.transcript
-            final_meta = None
-            if meta is not None:
-                final_meta = {
-                    **meta,
-                    "status": "finished",
-                    "cli_session_id": result.session_id or meta["cli_session_id"],
-                    "usage": {"input": result.usage.input_tokens,
-                              "output": result.usage.output_tokens},
-                    "tool_count": count_tool_calls(full_transcript),
-                    "duration": time.perf_counter() - t0,
-                }
-            # child_transcripts carries the demuxed Claude-side Agent/Task
-            # sub-agents for _finalize_spawn to persist under their own stream ids.
-            return SpawnRun(
-                output=result.output,
-                transcript=full_transcript,
-                usage=result.usage,
-                final_meta=final_meta,
-                child_transcripts=result.child_transcripts,
-            )
-
-        # The CLI path now rides the SAME lifecycle as native — the deliberate
-        # duplication (and its `if background` fork) is gone. timing=None (a CLI
-        # spawn keeps no time-to-first-token); note is the not-forwarded-MCP note.
-        # A cancelled CLI spawn now close()s its worktree like native (committing
-        # in-progress work, keeping the branch) instead of discard()ing it — fixing
-        # the resume-after-cancel divergence.
-        return await self._run_spawn_lifecycle(
-            _run, iso=iso, resumed=resumed, background=background, name=defn.name,
-            stop_task=hook_task, note=self._cli_mcp_note(mcp_names),
-            max_output_chars=max_output_chars, stream_id=stream_id, timing=None,
-        )
-
-    @staticmethod
-    def _cli_mcp_note(mcp_names: list[str] | None) -> str:
-        """A one-line note when the orchestrator named MCP servers for a CLI spawn:
-        they aren't forwarded (the CLI uses its own MCP config), so say so rather
-        than silently dropping them."""
-        if not mcp_names:
-            return ""
-        names = ", ".join(mcp_names)
-        return (
-            f"[note: MCP servers ({names}) are not forwarded to claude-cli "
-            "sub-agents; configure them in the CLI's own settings]\n\n"
-        )
-
-    async def _run_cli(self, defn, task: str, work_root, model: str | None,
-                       stream_id: str, checkpoint=None,
-                       resume_session_id: str | None = None) -> CliResult:
-        """Resolve binary, tool reach, model, and cwd for a CLI spawn, then run it.
-        Raises CliUnavailable when no `claude` binary is found so the caller's
-        contained-error path reports it. Reach mirrors the native gate — gated
-        tools only in auto mode. Model precedence: per-spawn override, then the
-        agent's frontmatter model, then $MARIM_CLAUDE_CLI_MODEL, then the CLI's
-        own default."""
-        from .cli_backend import (
-            CLI_MODEL_ENV,
-            ClaudeCliRunner,
-            CliUnavailable,
-            resolve_cli_binary,
-        )
-
-        binary = resolve_cli_binary()
-        if binary is None:
-            raise CliUnavailable(
-                "no `claude` binary found (set MARIM_CLAUDE_CLI_BIN or install "
-                "Claude Code)"
-            )
-        allow_gated = self.deps.workspace.mode is Mode.auto
-        tools = effective_tools(defn, allow_gated=allow_gated)
-        cwd = str(work_root or self.deps.workspace.root)
-        model_name = model or defn.model or os.environ.get(CLI_MODEL_ENV)
-        cbs = self.deps.ui
-        runner = ClaudeCliRunner(
-            cbs.on_subagent_event, cbs.on_subagent_notice, cbs.on_subagent_model
-        )
-        result = await runner.run(
-            binary=binary, prompt=task, system_prompt=defn.prompt, cwd=cwd,
-            allow_gated=allow_gated, allowed_tools=tools, model=model_name,
-            stream_id=stream_id, checkpoint=checkpoint,
-            resume_session_id=resume_session_id,
-        )
-        if stream_id and cbs.on_subagent_usage is not None:
-            await cbs.on_subagent_usage(stream_id, result.usage)
-        return result
 
     def _log_spawn_timing(
         self, type: str, t0: float, t_built: float,
@@ -1145,12 +768,6 @@ class SubagentRunner:
             background=True, stream_id=stream_id, caller_depth=caller_depth,
         )
 
-    _CONTINUATION_PROMPT = (
-        "You were interrupted before finishing. The conversation above is your "
-        "own earlier progress on this task — continue from where it leaves off "
-        "and finish the task, then report as usual."
-    )
-
     async def resume_spawn(self, stream_id: str) -> tuple[str | None, str]:
         """Continue an interrupted spawn from its persisted sidecar as a
         background job. Returns ``(job_id, message)`` on success or
@@ -1189,7 +806,7 @@ class SubagentRunner:
             # marim's sidecar is a display copy, so reading/repairing it here
             # would be wasted work at best and engine-swapping at worst.
             if meta.get("backend") == "claude-cli":
-                return await self._resume_cli_spawn(stream_id, meta)
+                return await self._cli.resume(stream_id, meta)
             messages = self._transcripts.read(stream_id)
             history = _resumable_history(messages or [])
             if history is None:
@@ -1218,7 +835,7 @@ class SubagentRunner:
             job_id = self.deps.jobs.register(
                 "agent", label,
                 self._execute_native_spawn(
-                    type_, self._CONTINUATION_PROMPT, stream_id,
+                    type_, CONTINUATION_PROMPT, stream_id,
                     meta.get("max_output_chars"), prep,
                     background=True, history=history,
                 ),
@@ -1227,55 +844,3 @@ class SubagentRunner:
             return job_id, f"Resumed as {job_id}."
         finally:
             self._resuming.discard(stream_id)
-
-    async def _resume_cli_spawn(self, stream_id: str,
-                                meta: dict) -> tuple[str | None, str]:
-        """Resume an interrupted claude-cli spawn by relaunching the CLI with
-        ``--resume`` on its recorded session id, as a background job. The caller
-        (resume_spawn) already holds the ``_resuming`` guard and has verified the
-        sidecar status and the absence of a live job. There is deliberately no
-        pre-flight check that the CLI session file still exists — its on-disk
-        scheme is CLI-internal, so a stale session surfaces as the CLI's own
-        error on the failed job instead of a brittle path probe here."""
-        session_id = meta.get("cli_session_id")
-        if not session_id:
-            return None, ("The CLI session id was never recorded (the spawn died "
-                          "before its session started) — nothing to resume; "
-                          "spawn it again instead.")
-        type_ = str(meta.get("type") or "")
-        task = str(meta.get("task") or "")
-        defn = self._resolve_agent(type_)
-        if defn is None:
-            return None, f"No sub-agent type {type_!r} anymore — can't resume."
-        if defn.backend != "claude-cli":
-            return None, (f"Sub-agent type {type_!r} is no longer claude-cli "
-                          "backed — can't resume its CLI session.")
-        iso = None
-        branch = meta.get("isolation")
-        if branch:
-            iso, err = SpawnWorktree.reopen(self.deps.workspace.root, branch)
-            if err is not None:
-                return None, err
-        # Read the previously persisted transcript before relaunching. The resumed
-        # CLI process's stream carries only the continuation (`claude -p --resume`
-        # does not re-emit prior history), so the resume's checkpoints and final
-        # write must PREPEND this prefix or they'd overwrite the sidecar with
-        # tail-only content, destroying the pre-interrupt segment (incl. the
-        # demuxed children) the pane replays (spec §4). Best-effort: an unreadable
-        # transcript yields [], so the resume proceeds tail-only rather than
-        # refusing — resumability trumps a perfect replay.
-        prior = self._transcripts.read(stream_id) or []
-        label = f"{type_}: resumed — {task}"
-        job_id = self.deps.jobs.register(
-            "agent", label,
-            self._execute_cli_spawn(
-                defn, self._CONTINUATION_PROMPT,
-                iso.path if iso else None, iso,
-                None, meta.get("max_output_chars"), meta.get("model"), stream_id,
-                background=True, resume_session_id=session_id,
-                original_task=task, depth=int(meta.get("depth") or 1),
-                transcript_prefix=prior,
-            ),
-            stream_id=stream_id,
-        )
-        return job_id, f"Resumed as {job_id}."

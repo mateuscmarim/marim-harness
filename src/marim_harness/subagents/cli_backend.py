@@ -456,7 +456,7 @@ class ClaudeCliRunner:
     the UI (when a foreground ``stream_id`` and an ``on_event`` sink are present),
     and captures the terminal ``result`` event's text + usage. Raises CliRunError
     if the process ends without a result. The harness wraps this with hooks,
-    output cap, and worktree handling — see SubagentRunner._execute_cli_spawn.
+    output cap, and worktree handling — see CliSpawnOrchestrator.execute.
     """
 
     def __init__(self, on_event, on_notice, on_model=None) -> None:

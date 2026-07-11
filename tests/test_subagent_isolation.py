@@ -388,7 +388,7 @@ async def test_isolated_cli_spawn_cancel_preserves_in_progress_work(repo: Path):
         fs.write_file(work_root, "partial.txt", "half\n")
         raise asyncio.CancelledError
 
-    h.subagents._run_cli = _cancel_cli
+    h.subagents._cli.run_cli = _cancel_cli
 
     with pytest.raises(asyncio.CancelledError):
         await h.subagents.run_background(

@@ -22,6 +22,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.function import FunctionModel
 
 from marim_harness.session import SessionStore, TranscriptStore
+from marim_harness.subagents.backend import CONTINUATION_PROMPT
 from tests.conftest import _make_deps, _make_harness
 
 
@@ -228,7 +229,7 @@ async def test_checkpoint_clips_oversized_reasoning(tmp_path):
 @pytest.mark.anyio
 async def test_resume_stop_hook_gets_original_task_not_continuation_prompt(tmp_path):
     """The subagent_stop hook must see the SAME task the start hook got — the
-    original task — not the internal _CONTINUATION_PROMPT the resumed run is fed."""
+    original task — not the internal CONTINUATION_PROMPT the resumed run is fed."""
     store = _session_store(tmp_path)
     harness = _make_harness(_resume_model(), _make_deps(tmp_path), store=store)
     ts = TranscriptStore(store.path, store.session_id)
@@ -247,7 +248,7 @@ async def test_resume_stop_hook_gets_original_task_not_continuation_prompt(tmp_p
     assert job_id is not None, message
     await harness.deps.jobs.wait(job_id)
     assert seen["task"] == "original task"
-    assert seen["task"] != harness.subagents._CONTINUATION_PROMPT
+    assert seen["task"] != CONTINUATION_PROMPT
 
 
 @pytest.mark.anyio

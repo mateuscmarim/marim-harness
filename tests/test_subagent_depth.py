@@ -207,19 +207,19 @@ async def test_nested_spawn_integration(tmp_path: Path):
 
 
 def _depth_spy(runner):
-    """Replace ``runner._run_to_completion`` with a spy that records the
+    """Replace ``runner._driver.run_to_completion`` with a spy that records the
     ``subagent_depth`` of every sub-agent actually run, then delegates to the
     real implementation. Returns the list the spy appends to. Drives the *real*
     run() → _execute_spawn → _prepare_spawn → _execute_*_spawn path (not just
     build()), so it catches a depth mis-wire that only shows up at runtime."""
     depths: list[int] = []
-    orig = runner._run_to_completion
+    orig = runner._driver.run_to_completion
 
     async def spy(sub, task, run_deps, granted, handler, stream_id=None, history=None):
         depths.append(run_deps.subagent_depth)
         return await orig(sub, task, run_deps, granted, handler, stream_id, history=history)
 
-    runner._run_to_completion = spy
+    runner._driver.run_to_completion = spy
     return depths
 
 
@@ -294,13 +294,13 @@ async def test_child_deps_carry_runner_ceiling(tmp_path: Path):
     h = _make_harness(FunctionModel(fn), deps)
     h.subagents._max_depth = 5
     ceilings: list[int] = []
-    orig = h.subagents._run_to_completion
+    orig = h.subagents._driver.run_to_completion
 
     async def spy(sub, task, run_deps, granted, handler, stream_id=None, history=None):
         ceilings.append(run_deps.subagent_max_depth)
         return await orig(sub, task, run_deps, granted, handler, stream_id, history=history)
 
-    h.subagents._run_to_completion = spy
+    h.subagents._driver.run_to_completion = spy
 
     await h.subagents.run("explore", "do it", "sid", caller_depth=0)
 
