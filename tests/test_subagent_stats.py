@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from marim_harness.interfaces.tui.widgets.subagent_stats import (
+from marim_harness.interfaces.tui.subagents.stats import (
     _row_prefix,
     aggregate,
     row_cells,

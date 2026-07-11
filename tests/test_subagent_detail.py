@@ -2,7 +2,7 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Static
 
-from marim_harness.interfaces.tui.widgets.subagent_detail import (
+from marim_harness.interfaces.tui.subagents.pane import (
     SubAgentDetailHost,
     SubAgentPane,
     _short_model,

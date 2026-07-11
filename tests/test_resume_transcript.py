@@ -4,9 +4,7 @@ from __future__ import annotations
 import pytest
 from textual.app import App, ComposeResult
 
-from marim_harness.interfaces.tui.widgets.subagent_detail import (
-    SubAgentDetailHost,
-)
+from marim_harness.interfaces.tui.subagents import SubAgentDetailHost
 
 
 class _Host(App):

@@ -1,7 +1,7 @@
 """TUI log/input widgets.
 
 Split into focused modules — diff rendering, syntax highlighting, formatting,
-tool/sub-agent/message/panel widgets, and the prompt input — but re-exported here
+tool/message/panel widgets, and the prompt input — but re-exported here
 so callers keep importing ``from .widgets import X`` unchanged.
 """
 
@@ -26,10 +26,6 @@ from .messages import (
 )
 from .panels import JobPanel, QueuePanel, TaskPanel
 from .prompt import PromptInput
-from .subagent import SubAgentWidget
-from .subagent_detail import SubAgentDetailHost, SubAgentPane
-from .subagent_viewer import SubAgentList
-from .subagents_view import SubAgentSummary, SubAgentsView
 from .tools import ToolCallWidget, ToolGroupWidget
 
 __all__ = [
@@ -50,13 +46,6 @@ __all__ = [
     # tool widgets
     "ToolCallWidget",
     "ToolGroupWidget",
-    # sub-agent
-    "SubAgentWidget",
-    "SubAgentList",
-    "SubAgentPane",
-    "SubAgentDetailHost",
-    "SubAgentSummary",
-    "SubAgentsView",
     # log messages
     "AssistantMessage",
     "ErrorMessage",

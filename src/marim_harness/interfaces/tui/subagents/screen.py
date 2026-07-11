@@ -17,8 +17,9 @@ the screen is open, and opening mid-run shows an already-current transcript.
 from textual.containers import VerticalScroll
 from textual.css.query import NoMatches
 
-from .widgets import NoticeMessage, PromptInput, SubAgentsView
-from .widgets.subagent_stats import tree_order
+from ..widgets import NoticeMessage, PromptInput
+from .stats import tree_order
+from .view import SubAgentsView
 
 
 class SubAgentsViewer:
@@ -181,7 +182,7 @@ class SubAgentsViewer:
         store = self.app.harness.session.store
         if store is None:
             return
-        from ...session import TranscriptStore
+        from ....session import TranscriptStore
         msgs = TranscriptStore(store.path, store.session_id).read(stream_id)
         if msgs is not None:
             await self.app.session.replay_messages_into(pane, msgs, parent_id=stream_id)

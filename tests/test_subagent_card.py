@@ -1,5 +1,5 @@
-import marim_harness.interfaces.tui.widgets.subagent as subagent_mod
-from marim_harness.interfaces.tui.widgets.subagent import SubAgentWidget
+import marim_harness.interfaces.tui.subagents.card as subagent_mod
+from marim_harness.interfaces.tui.subagents.card import SubAgentWidget
 
 
 def test_display_title_is_derived_once_and_cached(monkeypatch):

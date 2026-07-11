@@ -39,7 +39,7 @@ from .status import (
     osc_title,
 )
 from .stream_render import StreamRenderer
-from .subagents_viewer import SubAgentsViewer
+from .subagents import SubAgentsView, SubAgentsViewer
 from .themes import MARIM_THEMES
 from .wake import WakeController
 from .widgets import (
@@ -50,7 +50,6 @@ from .widgets import (
     NoticeMessage,
     PromptInput,
     QueuePanel,
-    SubAgentsView,
     SummaryWidget,
     TaskPanel,
     TurnMeta,

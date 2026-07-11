@@ -5,7 +5,7 @@ chooses which transcript the detail host shows."""
 
 from textual.widgets import DataTable
 
-from .subagent_stats import _row_prefix, row_cells, tree_order
+from .stats import _row_prefix, row_cells, tree_order
 
 # (label, width) per column. Fixed widths keep the stat columns (tools/tokens/
 # cost/dur) visible and aligned: DataTable truncates the long "{type} — title"

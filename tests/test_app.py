@@ -69,7 +69,8 @@ async def test_resumed_spawn_agent_renders_as_subagent_card(tmp_path: Path):
         ToolReturnPart,
     )
 
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget, ToolCallWidget
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
+    from marim_harness.interfaces.tui.widgets import ToolCallWidget
 
     app = _app(tmp_path)
     app.harness.session.history = [
@@ -101,7 +102,7 @@ async def test_resumed_spawn_card_label_prefers_description(tmp_path: Path):
     the label instead of the full task."""
     from pydantic_ai.messages import ModelResponse, ToolCallPart
 
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
 
     app = _app(tmp_path)
     app.harness.session.history = [
@@ -1138,7 +1139,8 @@ async def test_wait_for_job_row_names_the_subagent(tmp_path: Path):
 
     from pydantic_ai.messages import FunctionToolCallEvent, ToolCallPart
 
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget, ToolCallWidget
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
+    from marim_harness.interfaces.tui.widgets import ToolCallWidget
     from marim_harness.interfaces.tui.widgets.tool_summary import summarize
 
     app = _app(tmp_path)
@@ -1256,7 +1258,7 @@ async def test_detached_card_stays_pending_then_fills_on_settle(tmp_path: Path):
         ToolReturnPart,
     )
 
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
     from marim_harness.tools.spawn_tools import _detach_handoff
 
     app = _app(tmp_path)
@@ -1311,7 +1313,7 @@ async def test_detached_card_fills_failed_when_job_fails(tmp_path: Path):
         ToolReturnPart,
     )
 
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
     from marim_harness.tools.spawn_tools import _detach_handoff
 
     app = _app(tmp_path)
@@ -1360,7 +1362,7 @@ async def test_explicit_background_spawn_renders_card_and_fills(tmp_path: Path):
         ToolReturnPart,
     )
 
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
 
     app = _app(tmp_path)
     reg = app.harness.deps.jobs
@@ -1408,7 +1410,7 @@ async def test_failed_spawn_renders_card_as_failed(tmp_path: Path):
     must still render failed (✕), not a misleading ✓."""
     from pydantic_ai.messages import FunctionToolResultEvent, ToolReturnPart
 
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
 
     async def gen():
         yield _spawn_call("s1", "look around")
@@ -1441,7 +1443,7 @@ async def test_successful_spawn_renders_card_done(tmp_path: Path):
     """A spawn whose report happens to start like prose still renders done (✓)."""
     from pydantic_ai.messages import FunctionToolResultEvent, ToolReturnPart
 
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
 
     async def gen():
         yield _spawn_call("s1", "look around")
@@ -1679,7 +1681,7 @@ async def test_spawn_agent_mounts_subagent_widget(tmp_path: Path):
         ToolReturnPart,
     )
 
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
 
     call = FunctionToolCallEvent(
         part=ToolCallPart(
@@ -1729,9 +1731,9 @@ async def test_subagent_event_routes_stream_into_widget(tmp_path: Path):
         ToolReturnPart,
     )
 
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
     from marim_harness.interfaces.tui.widgets import (
         AssistantMessage,
-        SubAgentWidget,
         ToolCallWidget,
     )
 
@@ -1817,7 +1819,7 @@ async def test_subagent_event_usage_populates_total_and_body_split(tmp_path: Pat
     from pydantic_ai.usage import RunUsage
     from textual.widgets import Static
 
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
 
     spawn = FunctionToolCallEvent(
         part=ToolCallPart(
@@ -2334,7 +2336,7 @@ async def test_background_spawn_renders_a_card_held_pending(tmp_path: Path):
         ToolReturnPart,
     )
 
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
 
     call = FunctionToolCallEvent(
         part=ToolCallPart(
@@ -2400,7 +2402,7 @@ def _spawn_call(tool_call_id: str, task: str):
 async def test_single_subagent_registers_card(tmp_path: Path):
     """A lone spawn mounts a compact card whose transcript lives in a detail-host
     pane (not inline) and is registered in the screen's navigation list."""
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
 
     async def gen():
         yield _spawn_call("s1", "only one")
@@ -2423,7 +2425,7 @@ async def test_single_subagent_registers_card(tmp_path: Path):
 async def test_parallel_subagents_register_in_spawn_order(tmp_path: Path):
     """A fan-out registers every card in the screen's ordered navigation list, each
     rendered as a compact card whose transcript lives in its own detail-host pane."""
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
 
     async def gen():
         yield _spawn_call("s1", "first")
@@ -2447,7 +2449,7 @@ async def test_subagent_viewer_opens_navigates_and_closes(tmp_path: Path):
     """ctrl+x opens the full-bleed screen on the most recent spawn; moving the list
     cursor selects another agent's transcript (via the detail host); closing hides
     the screen and restores the log."""
-    from marim_harness.interfaces.tui.widgets import SubAgentsView
+    from marim_harness.interfaces.tui.subagents import SubAgentsView
 
     async def gen():
         yield _spawn_call("s1", "first")
@@ -2572,8 +2574,8 @@ async def test_lone_nested_tool_call_is_not_wrapped_in_a_group(tmp_path: Path):
     redundant group wrapper, which is what inflated the sub-agent's height."""
     from pydantic_ai.messages import FunctionToolCallEvent, ToolCallPart
 
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
     from marim_harness.interfaces.tui.widgets import (
-        SubAgentWidget,
         ToolCallWidget,
         ToolGroupWidget,
     )
@@ -3221,7 +3223,7 @@ async def test_ask_user_panel_closes_open_subagents_viewer(tmp_path: Path):
     viewer's Esc ("back") would land on it instead of the panel — silently
     cancelling the question. run_panel closes the viewer first."""
     from marim_harness.ask_user import Choice, Question
-    from marim_harness.interfaces.tui.widgets import SubAgentsView
+    from marim_harness.interfaces.tui.subagents import SubAgentsView
 
     async def gen():
         yield _spawn_call("s1", "first")

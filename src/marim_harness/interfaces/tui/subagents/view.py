@@ -13,9 +13,9 @@ from textual.content import Content
 from textual.css.query import NoMatches
 from textual.widgets import Static
 
-from .subagent_detail import SubAgentDetailHost
-from .subagent_stats import SummaryStats, aggregate
-from .subagent_viewer import SubAgentList
+from .list import SubAgentList
+from .pane import SubAgentDetailHost
+from .stats import SummaryStats, aggregate
 
 _HINTS = "Esc back · ↑↓ select · Tab switch pane · t task · r resume"
 
