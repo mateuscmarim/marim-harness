@@ -439,6 +439,21 @@ class MultiModelSource:
         configs, default = detect_active_providers()
         return cls({p: ModelSource(c) for p, c in configs.items()}, default)
 
+    def refresh_from_env(self) -> None:
+        """Re-detect providers from the current environment, IN PLACE.
+
+        ``build_collaborators`` captures this object in closures at Harness
+        construction (``lambda mid, _src=cfg.model_source: _src.build(mid)``),
+        so mutating — never replacing — ``sources``/``default`` is what makes
+        a settings-screen credential change visible to the model picker,
+        ``set_model``, and sub-agent model building without any rewiring.
+        ``save_env_settings`` mirrors saves into ``os.environ`` first, so
+        ``detect_active_providers`` here sees the new credentials."""
+        configs, default = detect_active_providers()
+        self.sources.clear()
+        self.sources.update({p: ModelSource(c) for p, c in configs.items()})
+        self.default = default
+
     @property
     def is_local(self) -> bool:
         # The picker reads is_local only to decide whether to keep free-text entry
