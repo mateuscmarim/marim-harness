@@ -248,7 +248,42 @@ def _qualified(provider: str, windows: dict[str, int]) -> dict[str, int]:
     return out
 
 
-def build_context_limits(  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
+# A catalog-listing fetch (fetch_openrouter_models/fetch_google_models),
+# called with just the api_key.
+_KeyedCatalogFetch = Callable[[str | None], Awaitable[list]]
+
+# A local-probe fetch (fetch_lmstudio_windows), called with base_url + api_key.
+_LocalWindowFetch = Callable[[str | None, str | None], Awaitable[dict[str, int]]]
+
+
+def _catalog_fetcher(provider: str, fetch: _KeyedCatalogFetch, api_key: str | None) -> WindowFetch:
+    """A catalog-backed :data:`WindowFetch` for one active provider (``fetch``
+    is ``fetch_openrouter_models``/``fetch_google_models``, called with
+    ``api_key``). Hoisted to module scope (was nested in
+    ``build_context_limits``) to keep that factory's McCabe count low; it
+    captures only its explicit arguments, so the relocation is pure."""
+    async def _windows() -> dict[str, int]:
+        windows: dict[str, int] = {}
+        for entry in await fetch(api_key):
+            window = getattr(entry, "context_window", None)
+            if isinstance(window, int) and window > 0:
+                windows[entry.id] = window
+        return _qualified(provider, windows)
+    return _windows
+
+
+def _local_fetcher(
+    provider: str, fetch_local: _LocalWindowFetch, base_url: str | None, api_key: str | None
+) -> WindowFetch:
+    """A local-probe-backed :data:`WindowFetch` (LM Studio) for one active
+    provider. Hoisted to module scope alongside :func:`_catalog_fetcher` for
+    the same C901 reason; captures only its explicit arguments."""
+    async def _windows() -> dict[str, int]:
+        return _qualified(provider, await fetch_local(base_url, api_key))
+    return _windows
+
+
+def build_context_limits(
     configs: Mapping[str, ModelConfig],
     *,
     window_override: int | None,
@@ -268,21 +303,6 @@ def build_context_limits(  # noqa: C901  # complexity-debt: 2026-07-11 — see d
         fetch_openrouter_models,
     )
 
-    def _catalog_fetcher(provider: str, fetch, api_key: str | None) -> WindowFetch:
-        async def _windows() -> dict[str, int]:
-            windows: dict[str, int] = {}
-            for entry in await fetch(api_key):
-                window = getattr(entry, "context_window", None)
-                if isinstance(window, int) and window > 0:
-                    windows[entry.id] = window
-            return _qualified(provider, windows)
-        return _windows
-
-    def _local_fetcher(provider: str, base_url: str | None, api_key: str | None) -> WindowFetch:
-        async def _windows() -> dict[str, int]:
-            return _qualified(provider, await fetch_lmstudio_windows(base_url, api_key))
-        return _windows
-
     fetchers: list[WindowFetch] = []
     for provider, cfg in configs.items():
         if provider == "openrouter":
@@ -290,7 +310,9 @@ def build_context_limits(  # noqa: C901  # complexity-debt: 2026-07-11 — see d
         elif provider == "google":
             fetchers.append(_catalog_fetcher(provider, fetch_google_models, cfg.api_key))
         elif provider == "local":
-            fetchers.append(_local_fetcher(provider, cfg.base_url, cfg.api_key))
+            fetchers.append(
+                _local_fetcher(provider, fetch_lmstudio_windows, cfg.base_url, cfg.api_key)
+            )
         # claude-cli / unknown: no discovery — threshold rides on budget/override.
     return ContextLimits(
         budget=budget,
