@@ -74,39 +74,41 @@ def _require_read_before_write(ledger: ReadLedger | None, p: Path, path: str) ->
         )
 
 
+def _resolve_with_extra_roots(
+    root: Path, path: str, extra_roots: tuple[Path, ...]
+) -> Path:
+    """Resolve ``path`` inside ``root``, or failing that inside one of
+    ``extra_roots``. The root-first ordering is load-bearing: a relative path
+    always resolves against — and lands in — the workspace; only a path the
+    workspace guard rejects (an absolute path outside it) may fall through to
+    an extra root, so an extra root can never capture a relative workspace
+    path. Shared by ``_safe_read``/``_safe_write``, which exist as named
+    wrappers because *which* roots widen reads vs writes is a policy decision
+    their call sites should state by name."""
+    try:
+        return resolve_in_workspace(root, path)
+    except WorkspaceError as exc:
+        for extra in extra_roots:
+            try:
+                return resolve_in_workspace(extra, path)
+            except WorkspaceError:
+                continue
+        raise ModelRetry(str(exc)) from exc
+
+
 def _safe_read(root: Path, path: str, extra_read_roots: tuple[Path, ...]) -> Path:
     """Resolve ``path`` for reading, permitting it if it stays inside ``root`` or
     inside any of ``extra_read_roots``. The extra roots are read-only escape hatches
     (e.g. skill directories that live outside the workspace) — they widen reads only,
     never writes, and only to files genuinely inside one of them."""
-    try:
-        return resolve_in_workspace(root, path)
-    except WorkspaceError as exc:
-        for extra in extra_read_roots:
-            try:
-                return resolve_in_workspace(extra, path)
-            except WorkspaceError:
-                continue
-        raise ModelRetry(str(exc)) from exc
+    return _resolve_with_extra_roots(root, path, extra_read_roots)
 
 
 def _safe_write(root: Path, path: str, extra_write_roots: tuple[Path, ...]) -> Path:
     """Resolve ``path`` for writing: inside ``root``, or inside one of
-    ``extra_write_roots`` (the session scratchpad). Mirrors ``_safe_read``'s
-    root-first ordering, which is load-bearing: a relative path always
-    resolves against — and lands in — the workspace; only a path the
-    workspace guard rejects (an absolute path outside it) may fall through
-    to an extra root. An extra root can therefore never capture a relative
-    workspace write."""
-    try:
-        return resolve_in_workspace(root, path)
-    except WorkspaceError as exc:
-        for extra in extra_write_roots:
-            try:
-                return resolve_in_workspace(extra, path)
-            except WorkspaceError:
-                continue
-        raise ModelRetry(str(exc)) from exc
+    ``extra_write_roots`` (the session scratchpad) — see
+    ``_resolve_with_extra_roots`` for why the root-first ordering matters."""
+    return _resolve_with_extra_roots(root, path, extra_write_roots)
 
 
 def read_file(
