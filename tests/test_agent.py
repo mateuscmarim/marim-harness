@@ -466,3 +466,36 @@ def test_bind_ui_wires_all_callbacks(tmp_path):
     assert h.session.on_compact is on_compact
     assert h.session.on_compact_start is on_compact_start
     assert h.session.on_rename is on_rename
+
+
+def test_scratchpad_flag_gates_services_getter(tmp_path: Path, monkeypatch):
+    """scratchpad_enabled=False must leave services.get_scratchpad None — the
+    single point every consumer (prompt block, tool guard roots, approval
+    bypass) degrades on. Enabled (the default) wires a live getter that yields
+    the active session's dir."""
+    from pydantic_ai.models.test import TestModel
+
+    from marim_harness.runtime.harness import HarnessConfig
+    from marim_harness.session import SessionManager
+
+    monkeypatch.setattr(
+        "marim_harness.workspace.scratchpad.scratchpad_base",
+        lambda: tmp_path / "scratch-base",
+    )
+    store = SessionManager(tmp_path, base_dir=tmp_path / "sessions").create()
+
+    off = Harness(
+        TestModel(), BuiltinToolProvider(), _make_deps(tmp_path, mode=Mode.ask), "i",
+        config=HarnessConfig(scratchpad_enabled=False, store=store),
+    )
+    assert off.deps.services.get_scratchpad is None
+
+    on = Harness(
+        TestModel(), BuiltinToolProvider(), _make_deps(tmp_path, mode=Mode.ask), "i",
+        config=HarnessConfig(store=store),
+    )
+    getter = on.deps.services.get_scratchpad
+    assert getter is not None
+    path = getter()
+    assert path is not None and path.name == "scratchpad"
+    assert store.session_id == path.parent.name
