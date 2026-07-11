@@ -248,7 +248,19 @@ async def run_bash(
         if body and not body.endswith("\n"):
             body += "\n"
         body += f"(timed out after {timeout}s)"
-    return offload_if_large(body, kind="bash", key=command,
+    # timeout shapes `body` too (the trailing "(timed out after {timeout}s)"
+    # marker), and stdin_data shapes it just as much — a command like `cat` echoes
+    # its stdin straight into the body. Fold every output-affecting parameter into
+    # the key so two otherwise-identical commands that differ only in timeout or
+    # stdin_data don't collapse onto the same sha-derived offload file (see fs.py's
+    # grep key for the same reasoning). ``!r`` (not the raw bytes) distinguishes
+    # None from b"" — both would otherwise render as the same empty segment.
+    key = f"{command}\0{timeout}\0{stdin_data!r}"
+    # Note: `root` is not folded in — it's not a shaping parameter, it's the
+    # offload *namespace*: offload_if_large writes under `workspace_root/.marim/
+    # output/`, so two different roots already land in physically different
+    # directories and can't collide regardless of what's in `key`.
+    return offload_if_large(body, kind="bash", key=key,
                             workspace_root=root, capped=dropped > 0)
 
 

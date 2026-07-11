@@ -159,9 +159,9 @@ class CliSpawnOrchestrator:
         )
 
     async def run_cli(self, defn: AgentDef, task: str, work_root: Path | None,
-                       model: str | None, stream_id: str,
-                       checkpoint: Callable[[list, str | None], None] | None = None,
-                       resume_session_id: str | None = None) -> CliResult:
+                      model: str | None, stream_id: str,
+                      checkpoint: Callable[[list, str | None], None] | None = None,
+                      resume_session_id: str | None = None) -> CliResult:
         """Resolve binary, tool reach, model, and cwd for a CLI spawn, then run it.
         Raises CliUnavailable when no `claude` binary is found so the caller's
         contained-error path reports it. Reach mirrors the native gate — gated

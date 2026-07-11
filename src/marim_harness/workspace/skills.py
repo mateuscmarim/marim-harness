@@ -15,7 +15,6 @@ never fatal.
 """
 
 import logging
-import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,6 +22,7 @@ from pathlib import Path
 import yaml
 
 from ..config import builtin_root, config_dir
+from ..trust import project_trusted as _project_trusted
 from ._discovery import cached_discover
 from ._frontmatter import FRONTMATTER_RE
 from .fs import WorkspaceError, resolve_in_workspace
@@ -32,27 +32,12 @@ logger = logging.getLogger(__name__)
 
 _SKILL_FILE = "SKILL.md"
 
-# Truthy spellings for MARIM_TRUST_PROJECT_HOOKS, mirroring config.model._TRUTHY.
-_TRUTHY = {"1", "true", "on", "yes"}
-
-
-def _project_trusted(trust_project: bool | None) -> bool:
-    """Whether project-local ``.marim/skills`` may load. Project-local skill
-    descriptions are injected into the system prompt every turn and their bodies
-    on activation, so a *cloned untrusted repo* could prompt-inject the main
-    agent before any consent — the same threat the hooks/MCP subsystems gate.
-
-    An explicit caller decision (threaded from ``cfg.trust_project_hooks``) wins.
-    Absent one, we fall back to the *same signal* those subsystems use — the
-    ``MARIM_TRUST_PROJECT_HOOKS`` env var — read here rather than threaded so the
-    gate holds for the several un-wired call sites (instructions/provider/tui)
-    without a functional regression for trusted repos. This is safe by default:
-    a project's own ``.env`` is forbidden from setting that key (see
-    config/env._PROJECT_ENV_BLOCKLIST), so a cloned repo cannot self-trust —
-    the value comes only from the real shell env or the user's global config."""
-    if trust_project is not None:
-        return trust_project
-    return os.getenv("MARIM_TRUST_PROJECT_HOOKS", "").strip().lower() in _TRUTHY
+# Whether project-local ``.marim/skills`` may load. Project-local skill
+# descriptions are injected into the system prompt every turn and their bodies
+# on activation, so a *cloned untrusted repo* could prompt-inject the main
+# agent before any consent — the same threat the hooks/MCP subsystems gate.
+# See ``marim_harness.trust`` for the shared explicit-wins/env-fallback/
+# fail-untrusted predicate this aliases.
 
 
 @dataclass(frozen=True)

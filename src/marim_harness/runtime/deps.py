@@ -2,7 +2,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from dataclasses import replace as dataclass_replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from pydantic_ai import Agent, DeferredToolRequests
 from pydantic_ai.tools import DeferredToolApprovalResult
@@ -90,27 +90,28 @@ CliActivityCb = Callable[[list], Awaitable[None]]
 class HarnessServices:
     """Collaborator handles wired by the Harness after construction.
 
-    These four form a reference cycle with ``Deps``: ``TurnHooks`` and the
-    sub-agent runners hold the ``deps`` object, while tools reach them back
+    This container forms a reference cycle with ``Deps``: ``TurnHooks`` and
+    the sub-agent runners hold the ``deps`` object, while tools reach them back
     through ``ctx.deps.services``. The cycle makes one late binding
     unavoidable — the Harness builds these, then assigns the populated
-    container onto ``deps.services`` in a single step (see ``agent.py``).
+    container onto ``deps.services`` in a single step (see ``build_services``
+    in ``harness.py``).
     Every field is optional: headless runs and tests leave them ``None`` and
     each tool guards with an ``is None`` check.
     """
 
     # Session-scoped LSP server pool. None when LSP is disabled.
-    lsp: Optional["LspManager"] = None
+    lsp: "LspManager | None" = None
     # Session-bound hook dispatcher, so tools (ask_user, update_tasks) can fire
     # lifecycle hooks with a full payload. None when no hooks are configured.
-    turn_hooks: Optional["TurnHooks"] = None
+    turn_hooks: "TurnHooks | None" = None
     # Lets the spawn_agent tool launch a sub-agent and stream its events.
     run_subagent: SubAgentRunner | None = None
     # Lets spawn_agent(background=True) run a sub-agent as a detached job.
     run_background_agent: BackgroundAgentRunner | None = None
     # Lets the sub-agents screen resume an interrupted spawn from its persisted
     # transcript as a background job (spec 2026-07-03-subagent-resume, §4).
-    resume_subagent: Optional["ResumeSubagent"] = None
+    resume_subagent: "ResumeSubagent | None" = None
     # Returns the active session's id live (it changes on session switch), or None
     # when no session is active. Lets a tool stamp session-scoped artifacts (e.g.
     # plan files) without reaching into the session controller. None in headless /

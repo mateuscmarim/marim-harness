@@ -293,6 +293,21 @@ async def test_run_bash_offloads_large_output(tmp_path, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_run_bash_offload_key_includes_timeout(tmp_path, monkeypatch):
+    """timeout shapes the body (the "(timed out after {timeout}s)" suffix), so two
+    otherwise-identical commands differing only in timeout must not collapse onto
+    the same sha-derived offload file (see fs.py's grep key for the same
+    reasoning)."""
+    from marim_harness.tools.impl import offload
+    monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 100)
+    command = "for i in $(seq 1 500); do echo line $i; done"
+    await shell.run_bash(tmp_path, command, timeout=30)
+    await shell.run_bash(tmp_path, command, timeout=45)
+    saved = list((tmp_path / ".marim" / "output").glob("bash-*.txt"))
+    assert len(saved) == 2
+
+
+@pytest.mark.anyio
 async def test_run_bash_small_output_inline(tmp_path):
     out = await shell.run_bash(tmp_path, "echo hi")
     assert out == "exit 0\nhi\n"
@@ -387,3 +402,20 @@ async def test_run_bash_without_stdin_data_is_unchanged(tmp_path: Path):
     out = await shell.run_bash(tmp_path, "echo no-stdin")
     assert out.startswith("exit 0")
     assert "no-stdin" in out
+
+
+@pytest.mark.anyio
+async def test_run_bash_offload_key_includes_stdin_data(tmp_path, monkeypatch):
+    """stdin_data shapes the body just as much as timeout does (``cat`` echoes it
+    straight back), so two runs of the same command+timeout differing only in
+    stdin_data must not collapse onto the same sha-derived offload file — including
+    the None-vs-b"" edge case, which must not stringify identically."""
+    from marim_harness.tools.impl import offload
+    monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 100)
+    padding = "x" * 200  # pad past the lowered inline limit so both runs offload
+    await shell.run_bash(tmp_path, "cat", timeout=30, stdin_data=f"AAAA{padding}".encode())
+    await shell.run_bash(tmp_path, "cat", timeout=30, stdin_data=f"BBBB{padding}".encode())
+    await shell.run_bash(tmp_path, f"echo {padding}", timeout=30, stdin_data=None)
+    await shell.run_bash(tmp_path, f"echo {padding}", timeout=30, stdin_data=b"")
+    saved = list((tmp_path / ".marim" / "output").glob("bash-*.txt"))
+    assert len(saved) == 4

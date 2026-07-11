@@ -24,7 +24,7 @@ from textual.containers import VerticalScroll
 from textual.widget import Widget
 
 from ...usage import resolve_cost
-from .subagents import SubAgentDetailHost, SubAgentPane, SubAgentWidget  # noqa: F401
+from .subagents import SubAgentDetailHost, SubAgentPane, SubAgentWidget
 from .widgets import (
     AssistantMessage,
     ThinkingWidget,

@@ -18,12 +18,15 @@ import shlex
 _UNSAFE = re.compile(r"[;&|<>`\n]|\$\(")
 
 # Single programs that only read. ``echo``/``printf`` are read-only on their own
-# (a write needs a redirection, which ``_UNSAFE`` already rejects).
+# (a write needs a redirection, which ``_UNSAFE`` already rejects). ``fd`` and
+# ``rg`` are deliberately absent — their arg-screening branches in
+# ``is_read_only`` (below) return before this roster is ever consulted, so
+# they fully own those two programs' classification.
 _ALLOWED_PROGRAMS = frozenset(
     {
         "ls", "cat", "head", "tail", "wc", "file", "stat", "tree", "pwd",
-        "date", "whoami", "hostname", "uname", "which", "type", "rg", "grep",
-        "find", "fd", "ack", "echo", "printf",
+        "date", "whoami", "hostname", "uname", "which", "type", "grep",
+        "find", "ack", "echo", "printf",
     }
 )
 
@@ -147,7 +150,9 @@ def is_read_only(command: str) -> bool:
     if program == "find":
         return not any(tok in _FIND_MUTATING for tok in parts[1:])
     if program == "fd":
+        # Replaces roster membership: this branch alone decides fd's fate.
         return _fd_is_read_only(parts[1:])
     if program == "rg":
+        # Replaces roster membership: this branch alone decides rg's fate.
         return _rg_is_read_only(parts[1:])
     return program in _ALLOWED_PROGRAMS

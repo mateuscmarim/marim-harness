@@ -165,7 +165,13 @@ async def python_diagnostics(root: Path, path: str, *, deep: bool) -> list[Diag]
     if deep:
         pyright = _pyright_bin()
         if pyright is not None:
-            out = await _run([pyright, "--outputjson", path], root, _PYRIGHT_TIMEOUT)
+            # Unlike ruff, pyright has no "--" end-of-options separator (verified
+            # empirically: `pyright --outputjson -- foo.py` treats "--" itself as
+            # the path argument and reports it missing) — so a path starting with
+            # "-" would otherwise parse as an unknown option. Prefix "./" to
+            # neutralize the leading dash instead.
+            pyright_path = f"./{path}" if path.startswith("-") else path
+            out = await _run([pyright, "--outputjson", pyright_path], root, _PYRIGHT_TIMEOUT)
             if out is not None:
                 diags.extend(_parse_pyright(out))
     diags.sort(key=lambda d: (d.line, d.col, d.source))

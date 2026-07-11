@@ -25,6 +25,22 @@ _EXIT_RE = re.compile(r"(?m)^exit (-?\d+)")
 _FAIL_FG = "#d9544f"
 
 
+def _ask_user_render():
+    """Lazy access to the ``ask_user`` render helpers (title tail / body /
+    state parsing), imported on first use by both ``_ask_user_summary`` and
+    ``_render_body``.
+
+    Local import: ``interactions.ask_user_render`` reaches back into
+    ``widgets.tool_summary``, so a module-level import here would make
+    importing ask_user_render (on its own, e.g. in its unit test) recurse
+    into this module before its own names are defined. By call time both
+    modules are fully initialized.
+    """
+    from ..interactions import ask_user_render as module
+
+    return module
+
+
 class ToolCallWidget(Collapsible):
     """A single tool call: the (clickable) title shows a summary line; expanding
     reveals the arguments and the result."""
@@ -154,26 +170,16 @@ class ToolCallWidget(Collapsible):
         """The ask_user title: a state-driven glyph + 'Ask User · {Q→A | count |
         awaiting | cancelled}'. Cancelled overrides the success glyph with ✕, since
         a dismissed prompt returns a (successful) note string, not an error."""
-        # Local import: ``interactions.ask_user_render`` reaches back into
-        # ``widgets.tool_summary``, so a module-level import here would make
-        # importing ask_user_render (on its own, e.g. in its unit test) recurse
-        # into this module before its own names are defined. By call time both
-        # modules are fully initialized.
-        from ..interactions.ask_user_render import (
-            ask_user_title_tail,
-            overall_state,
-            parse_ask_user,
-        )
-
-        state = overall_state(self.result_text, self.status)
+        ar = _ask_user_render()
+        state = ar.overall_state(self.result_text, self.status)
         if state == "pending":
             glyph, gstyle = self._glyph()  # animated spinner
         elif state == "cancelled":
             glyph, gstyle = "✕", ""
         else:
             glyph, gstyle = "✓", ""
-        qas = parse_ask_user(self.args, self.result_text, self.status)
-        tail = ask_user_title_tail(qas, state)
+        qas = ar.parse_ask_user(self.args, self.result_text, self.status)
+        tail = ar.ask_user_title_tail(qas, state)
         head = f"{humanize_tool('ask_user')} · {tail}"
         # head is our own composed text but bypass markup parsing for consistency
         # with the other Collapsible titles (untrusted question/answer text).
@@ -382,10 +388,8 @@ class ToolCallWidget(Collapsible):
         if self._breadcrumb:
             return ""
         if self.tool_name == "ask_user":
-            # Local import: see the matching comment in _ask_user_summary.
-            from ..interactions.ask_user_render import ask_user_body, parse_ask_user
-
-            return ask_user_body(parse_ask_user(self.args, self.result_text, self.status))
+            ar = _ask_user_render()
+            return ar.ask_user_body(ar.parse_ask_user(self.args, self.result_text, self.status))
         primary = self._primary_renderable(highlight=highlight)
         if primary is not None:
             if not self.result_text:
