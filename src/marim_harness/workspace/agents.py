@@ -310,7 +310,8 @@ def effective_tools(defn: AgentDef, *, allow_gated: bool) -> frozenset[str]:
 
 
 def subagent_instructions(
-    defn: AgentDef, workspace_root, max_output_chars: int | None = None
+    defn: AgentDef, workspace_root, max_output_chars: int | None = None,
+    scratchpad: "Path | None" = None,
 ) -> str:
     """The system prompt for a spawned sub-agent: its role plus where it works,
     and — when the spawner set one — a soft output budget it should distill
@@ -322,6 +323,14 @@ def subagent_instructions(
     )
     if max_output_chars is not None:
         base += _output_budget_instruction(max_output_chars)
+    if scratchpad is not None:
+        # Shared with the spawning agent (one scratchpad per session), so a
+        # sub-agent can hand files back to its parent by writing there.
+        base += (
+            f"\n\nScratchpad directory for temporary files, shared with the "
+            f"agent that spawned you: {scratchpad}. Use it, by absolute path, "
+            "for intermediate artifacts instead of the workspace."
+        )
     return base
 
 

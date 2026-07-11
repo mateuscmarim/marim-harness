@@ -4,9 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from marim_harness.runtime.deps import Deps, WorkspaceConfig
+from marim_harness.runtime.deps import Deps, HarnessServices, WorkspaceConfig
 from marim_harness.runtime.instructions import (
     _memory_index_block,
+    _scratchpad_block,
     global_instructions_path,
     load_global_instructions,
     load_project_instructions,
@@ -255,3 +256,24 @@ def test_memory_index_block_memory_root_none_matches_default_scopes(
     block = _memory_index_block(_ctx(ws))
     assert "global entry" in block
     assert "project entry" in block
+
+
+def _scratch_ctx(getter):
+    deps = Deps(workspace=WorkspaceConfig(root=Path("/w")))
+    deps.services = HarnessServices(get_scratchpad=getter)
+    return SimpleNamespace(deps=deps)
+
+
+def test_scratchpad_block_renders_path():
+    path = Path("/tmp/marim-1/proj-abc/sess/scratchpad")
+    text = _scratchpad_block(_scratch_ctx(lambda: path))
+    assert str(path) in text
+    assert "approval" in text  # advertises the ask-mode bypass
+
+
+def test_scratchpad_block_absent_without_getter():
+    assert _scratchpad_block(_scratch_ctx(None)) == ""
+
+
+def test_scratchpad_block_absent_when_getter_returns_none():
+    assert _scratchpad_block(_scratch_ctx(lambda: None)) == ""

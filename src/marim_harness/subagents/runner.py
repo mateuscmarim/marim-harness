@@ -326,11 +326,14 @@ class SubagentRunner:
         if masker is not None:
             capabilities.append(ProcessHistory(masker.mask))
 
+        get_scratchpad = self.deps.services.get_scratchpad
+        scratch = get_scratchpad() if get_scratchpad is not None else None
+
         sub = Agent(
             model_obj,
             deps_type=Deps,
             instructions=subagent_instructions(
-                defn, instr_root, max_output_chars
+                defn, instr_root, max_output_chars, scratchpad=scratch
             ),
             # Match the main agent's tool-retry budget (agent.py builds it with
             # retries=2). pydantic-ai defaults to 1, which gives the model a single
