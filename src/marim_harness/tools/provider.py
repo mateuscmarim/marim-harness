@@ -113,6 +113,51 @@ class ToolProvider(Protocol):
         ...
 
 
+def _register_read_tools(agent: HarnessAgent, g: ToolGroups) -> None:
+    """The ungated read/query groups: local fs reads, memory, and skills.
+    Registered individually rather than via a loop: each tool has a distinct
+    signature, and a loop variable unions them into a type the .tool()
+    overloads can't resolve."""
+    if g.files_read:
+        agent.tool(fs_tools.read_file)
+        agent.tool(fs_tools.glob)
+        agent.tool(fs_tools.tree)
+        agent.tool(fs_tools.grep)
+    if g.memory:
+        agent.tool(memory_tools.remember)
+        agent.tool(memory_tools.recall)
+    if g.skills:
+        agent.tool(skill_tools.activate_skill)
+        agent.tool(skill_tools.read_skill_file)
+
+
+def _register_action_tools(agent: HarnessAgent, g: ToolGroups) -> None:
+    """The task/spawn tools plus the groups gated for approval (net, write,
+    bash). Registered individually — see ``_register_read_tools`` for why."""
+    # Outbound network tools are gated (like write/edit/bash), not ungated
+    # like the local reads above: they are an exfiltration boundary (see
+    # names.NET_TOOLS). Gating routes them through resolve_approvals, so auto
+    # mode still runs them un-prompted (frictionless), ask mode prompts per
+    # call, and — the point — plan mode denies them instead of silently
+    # allowing an un-approved fetch that could carry a secret off the host.
+    if g.net:
+        agent.tool(requires_approval=True)(net_tools.web_search)
+        agent.tool(requires_approval=True)(net_tools.fetch_url)
+    if g.tasks:
+        agent.tool(planning_tools.update_tasks)
+        agent.tool(planning_tools.ask_user)
+        agent.tool(planning_tools.present_plan)
+    # The nesting ceiling isn't bound here: it rides on Deps
+    # (subagent_max_depth), where the model can't touch it.
+    if g.spawn:
+        agent.tool(spawn_tools.spawn_agent)
+    if g.files_write:
+        agent.tool(requires_approval=True)(edit_tools.write_file)
+        agent.tool(requires_approval=True)(edit_tools.edit_file)
+    if g.bash:
+        agent.tool(requires_approval=True)(edit_tools.bash)
+
+
 class BuiltinToolProvider:
     """Hand-written fs + shell tools backed by the pure functions in this package."""
 
@@ -134,55 +179,28 @@ class BuiltinToolProvider:
         self._register_lsp_tools = register_lsp_tools
         self._combined_job_tool = combined_job_tool
 
-    def register(self, agent: HarnessAgent) -> None:  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
+    def register(self, agent: HarnessAgent) -> None:
         """Register the enabled main-agent tool groups: read tools, the memory /
         skill / task / spawn tools, and the workspace-mutating tools behind
         approval. Group selection comes from ``ToolGroups`` (all-on by default)."""
         g = self._groups
-        # Registered individually rather than via a loop: each tool has a distinct
-        # signature, and a loop variable unions them into a type the .tool()
-        # overloads can't resolve.
-        if g.files_read:
-            agent.tool(fs_tools.read_file)
-            agent.tool(fs_tools.glob)
-            agent.tool(fs_tools.tree)
-            agent.tool(fs_tools.grep)
-        # Outbound network tools are gated (like write/edit/bash), not ungated
-        # like the local reads above: they are an exfiltration boundary (see
-        # names.NET_TOOLS). Gating routes them through resolve_approvals, so auto
-        # mode still runs them un-prompted (frictionless), ask mode prompts per
-        # call, and — the point — plan mode denies them instead of silently
-        # allowing an un-approved fetch that could carry a secret off the host.
-        if g.net:
-            agent.tool(requires_approval=True)(net_tools.web_search)
-            agent.tool(requires_approval=True)(net_tools.fetch_url)
-        if g.memory:
-            agent.tool(memory_tools.remember)
-            agent.tool(memory_tools.recall)
-        if g.skills:
-            agent.tool(skill_tools.activate_skill)
-            agent.tool(skill_tools.read_skill_file)
-        if g.tasks:
-            agent.tool(planning_tools.update_tasks)
-            agent.tool(planning_tools.ask_user)
-            agent.tool(planning_tools.present_plan)
-        # The nesting ceiling isn't bound here: it rides on Deps
-        # (subagent_max_depth), where the model can't touch it.
-        if g.spawn:
-            agent.tool(spawn_tools.spawn_agent)
-        if g.jobs:
-            if self._combined_job_tool:
-                agent.tool(job_tools.job)
-            else:
-                agent.tool(job_tools.jobs)
-                agent.tool(job_tools.job_output)
-                agent.tool(job_tools.wait_for_job)
-                agent.tool(job_tools.cancel_job)
-        if g.files_write:
-            agent.tool(requires_approval=True)(edit_tools.write_file)
-            agent.tool(requires_approval=True)(edit_tools.edit_file)
-        if g.bash:
-            agent.tool(requires_approval=True)(edit_tools.bash)
+        _register_read_tools(agent, g)
+        _register_action_tools(agent, g)
+        self._register_jobs(agent)
+
+    def _register_jobs(self, agent: HarnessAgent) -> None:
+        """The ``g.jobs`` combined-vs-split fork: the four discrete job tools,
+        or (prototype) a single ``job(action, …)`` tool, per
+        ``self._combined_job_tool``. Job tools are main-agent only."""
+        if not self._groups.jobs:
+            return
+        if self._combined_job_tool:
+            agent.tool(job_tools.job)
+        else:
+            agent.tool(job_tools.jobs)
+            agent.tool(job_tools.job_output)
+            agent.tool(job_tools.wait_for_job)
+            agent.tool(job_tools.cancel_job)
 
     def lsp_toolset(self) -> "FunctionToolset[Deps] | None":
         """The LSP navigation tools as a deferrable toolset for the *main* agent,

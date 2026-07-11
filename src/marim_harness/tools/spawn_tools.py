@@ -91,7 +91,121 @@ def _detach_handoff(job_id: str) -> str:
     )
 
 
-async def spawn_agent(  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
+def _reject_spawn(
+    ctx: "RunContext[Deps]",
+    *,
+    background: bool | None,
+    auto_detached: bool,
+    after_ids: list[str] | None,
+) -> str | None:
+    """Guard-fold for spawn_agent: the depth ceiling, the top-level-only
+    background restriction, and the after= validations. Returns a refusal
+    string to hand back to the model, or None to let the spawn proceed."""
+    # Depth enforcement: refuse spawns that would exceed the depth ceiling. The
+    # ceiling rides on Deps (SubagentRunner stamps its configured value into a
+    # child's deps) rather than being a tool parameter — a parameter would sit
+    # in the advertised schema, where the model could override it and raise its
+    # own ceiling.
+    effective_max = ctx.deps.subagent_max_depth
+    if ctx.deps.subagent_depth + 1 >= effective_max:
+        return (
+            f"Cannot spawn sub-agent: already at depth "
+            f"{ctx.deps.subagent_depth}, max depth is {effective_max}."
+        )
+    # Background spawning is main-agent-only: a sub-agent's turn ends before its
+    # background child finishes, so the child's report would always be orphaned
+    # (owned by the job registry, never seen by the spawner). Sub-agents should
+    # fan out foreground children instead — results return to the caller.
+    if background and ctx.deps.subagent_depth > 0:
+        return (
+            "Background spawning is only available to the top-level agent. "
+            "Spawn this child in the foreground, or have the main agent "
+            "spawn it as a background job with background=True."
+        )
+    if after_ids is not None:
+        unknown = [jid for jid in after_ids if ctx.deps.jobs.get(jid) is None]
+        if unknown:
+            return (
+                f"Cannot spawn with after={unknown}: no such job(s). "
+                "after only accepts ids of already-started background jobs "
+                "(see the jobs panel or the digest for valid ids)."
+            )
+        if not (background or auto_detached):
+            return (
+                "after= requires a detached spawn. Pass background=True (top-level "
+                "agent only), or drop after and wait_for_job the prerequisite "
+                "before a foreground spawn."
+            )
+    return None
+
+
+async def _spawn_background(
+    ctx: "RunContext[Deps]",
+    *,
+    type: str,
+    task: str,
+    description: str | None,
+    mcp_names: list[str] | None,
+    after_ids: list[str] | None,
+    max_output_chars: int | None,
+    auto_detached: bool,
+    model: str | None,
+    isolation: str | None,
+) -> str:
+    """The background/auto-detached spawn path: registers a job — chained after
+    `after_ids`'s prerequisites when given, else started immediately — and
+    returns the handoff the model sees (a detach note when auto-detached, else
+    a plain job-started line)."""
+    if ctx.deps.services.run_background_agent is None:
+        return "Background sub-agents are not available in this context."
+    # For auto-detached spawns, default to _DETACH_OUTPUT_BUDGET when the
+    # model did not pass an explicit cap — keeps the synthesis prompt bounded
+    # across a wide fan-out while the full report is preserved in the spill file.
+    if auto_detached and max_output_chars is None:
+        budget = _DETACH_OUTPUT_BUDGET
+    else:
+        budget = max_output_chars
+    # Prefer the short `description` for the job label (the jobs panel and the
+    # wait row read it) — the composed `task` is a full multi-section prompt.
+    label = f"{type}: {description or task}"
+    if after_ids:
+        state = {"waiting": True}
+        waiting_note = f"(waiting on {', '.join(after_ids)})"
+        # Type guard: we've already checked run_background_agent is not None
+        # in the guard above, so this is safe.
+        run_bg = ctx.deps.services.run_background_agent
+        assert run_bg is not None
+
+        def _waiting_output() -> str:
+            return waiting_note if state["waiting"] else "(still running)"
+
+        def _start_inner(full_task: str) -> "Awaitable[str]":
+            return run_bg(
+                type, full_task, mcp_names, budget, model, isolation,
+                ctx.tool_call_id or "", ctx.deps.subagent_depth,
+            )
+
+        job_id = ctx.deps.jobs.register(
+            "agent", label,
+            _run_after(ctx.deps.jobs, after_ids, task, _start_inner, state),
+            output_fn=_waiting_output,
+            stream_id=ctx.tool_call_id or None,
+        )
+    else:
+        job_id = ctx.deps.jobs.register(
+            "agent", label,
+            ctx.deps.services.run_background_agent(
+                type, task, mcp_names, budget, model, isolation,
+                ctx.tool_call_id or "", ctx.deps.subagent_depth,
+            ),
+            stream_id=ctx.tool_call_id or None,
+        )
+    if auto_detached:
+        return _detach_handoff(job_id)
+    return f"Started {job_id} (agent) — {label[:60]}"
+
+
+async def spawn_agent(
     ctx: RunContext[Deps],
     type: str,
     task: str,
@@ -189,103 +303,38 @@ async def spawn_agent(  # noqa: C901  # complexity-debt: 2026-07-11 — see docs
         # prerequisite id twice (e.g. after=[a, a]) would otherwise inject
         # that prerequisite's report twice into the dependent's task.
         after_ids = list(dict.fromkeys(after_ids))
-    # Depth enforcement: refuse spawns that would exceed the depth ceiling. The
-    # ceiling rides on Deps (SubagentRunner stamps its configured value into a
-    # child's deps) rather than being a tool parameter — a parameter would sit
-    # in the advertised schema, where the model could override it and raise its
-    # own ceiling.
-    effective_max = ctx.deps.subagent_max_depth
-    if ctx.deps.subagent_depth + 1 >= effective_max:
-        return (
-            f"Cannot spawn sub-agent: already at depth "
-            f"{ctx.deps.subagent_depth}, max depth is {effective_max}."
-        )
-    # Background spawning is main-agent-only: a sub-agent's turn ends before its
-    # background child finishes, so the child's report would always be orphaned
-    # (owned by the job registry, never seen by the spawner). Sub-agents should
-    # fan out foreground children instead — results return to the caller.
-    if background and ctx.deps.subagent_depth > 0:
-        return (
-            "Background spawning is only available to the top-level agent. "
-            "Spawn this child in the foreground, or have the main agent "
-            "spawn it as a background job with background=True."
-        )
-    task = compose_subagent_task(
-        task, returns=returns, constraints=constraints, context=context
-    )
     # Auto-detach (detached fan-out) is top-level-only, for the same reason the
-    # explicit-background guard above is: a sub-agent's turn ends before a
-    # detached child finishes, so the child's report — owned by the job registry —
-    # would never reach the spawner. A depth>0 spawn with `background` unset runs
-    # inline instead.
+    # explicit-background guard in _reject_spawn is: a sub-agent's turn ends
+    # before a detached child finishes, so the child's report — owned by the
+    # job registry — would never reach the spawner. A depth>0 spawn with
+    # `background` unset runs inline instead. Computed before the guards
+    # because they (and the background helper) both need it.
     auto_detached = (
         background is None
         and ctx.deps.subagent_depth == 0
         and ctx.deps.ui.detach_fanout
         and ctx.deps.ui.interactive
     )
-    if after_ids is not None:
-        unknown = [jid for jid in after_ids if ctx.deps.jobs.get(jid) is None]
-        if unknown:
-            return (
-                f"Cannot spawn with after={unknown}: no such job(s). "
-                "after only accepts ids of already-started background jobs "
-                "(see the jobs panel or the digest for valid ids)."
-            )
-        if not (background or auto_detached):
-            return (
-                "after= requires a detached spawn. Pass background=True (top-level "
-                "agent only), or drop after and wait_for_job the prerequisite "
-                "before a foreground spawn."
-            )
+    if r := _reject_spawn(
+        ctx, background=background, auto_detached=auto_detached, after_ids=after_ids
+    ):
+        return r
+    task = compose_subagent_task(
+        task, returns=returns, constraints=constraints, context=context
+    )
     if background or auto_detached:
-        if ctx.deps.services.run_background_agent is None:
-            return "Background sub-agents are not available in this context."
-        # For auto-detached spawns, default to _DETACH_OUTPUT_BUDGET when the
-        # model did not pass an explicit cap — keeps the synthesis prompt bounded
-        # across a wide fan-out while the full report is preserved in the spill file.
-        if auto_detached and max_output_chars is None:
-            budget = _DETACH_OUTPUT_BUDGET
-        else:
-            budget = max_output_chars
-        # Prefer the short `description` for the job label (the jobs panel and the
-        # wait row read it) — the composed `task` is a full multi-section prompt.
-        label = f"{type}: {description or task}"
-        if after_ids:
-            state = {"waiting": True}
-            waiting_note = f"(waiting on {', '.join(after_ids)})"
-            # Type guard: we've already checked run_background_agent is not None
-            # in the guard above, so this is safe.
-            run_bg = ctx.deps.services.run_background_agent
-            assert run_bg is not None
-
-            def _waiting_output() -> str:
-                return waiting_note if state["waiting"] else "(still running)"
-
-            def _start_inner(full_task: str) -> "Awaitable[str]":
-                return run_bg(
-                    type, full_task, mcp_names, budget, model, isolation,
-                    ctx.tool_call_id or "", ctx.deps.subagent_depth,
-                )
-
-            job_id = ctx.deps.jobs.register(
-                "agent", label,
-                _run_after(ctx.deps.jobs, after_ids, task, _start_inner, state),
-                output_fn=_waiting_output,
-                stream_id=ctx.tool_call_id or None,
-            )
-        else:
-            job_id = ctx.deps.jobs.register(
-                "agent", label,
-                ctx.deps.services.run_background_agent(
-                    type, task, mcp_names, budget, model, isolation,
-                    ctx.tool_call_id or "", ctx.deps.subagent_depth,
-                ),
-                stream_id=ctx.tool_call_id or None,
-            )
-        if auto_detached:
-            return _detach_handoff(job_id)
-        return f"Started {job_id} (agent) — {label[:60]}"
+        return await _spawn_background(
+            ctx,
+            type=type,
+            task=task,
+            description=description,
+            mcp_names=mcp_names,
+            after_ids=after_ids,
+            max_output_chars=max_output_chars,
+            auto_detached=auto_detached,
+            model=model,
+            isolation=isolation,
+        )
     if ctx.deps.services.run_subagent is None:
         return "Sub-agents are not available in this context."
     # Pass the *caller's* depth so the runner builds the child at caller_depth + 1.
