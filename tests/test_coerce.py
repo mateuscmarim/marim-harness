@@ -1,4 +1,4 @@
-from marim_harness.tools.impl.coerce import coerce_by_schema
+from marim_harness.tools.impl.coerce import _resolve, coerce_by_schema
 
 _OBJ = {"type": "object", "properties": {"n": {"type": "integer"}}}
 
@@ -85,6 +85,52 @@ def test_anyof_with_string_branch_leaves_value_untouched():
 def test_list_form_union_with_string_leaves_value_untouched():
     schema = {"type": "object", "properties": {"id": {"type": ["integer", "string"]}}}
     assert coerce_by_schema({"id": "123"}, schema) == {"id": "123"}
+
+
+def test_resolve_missing_ref_target_returns_schema_unchanged():
+    """A ``$ref`` pointing at a name absent from ``defs`` must not raise —
+    ``_resolve`` gives back the unresolved schema so the caller treats it as an
+    untyped node (passthrough) rather than crashing."""
+    schema = {"$ref": "#/$defs/Missing"}
+    assert _resolve(schema, {}) == schema
+
+
+def test_resolve_cyclic_ref_stops_instead_of_looping():
+    """A ``$ref`` chain that cycles back on itself must terminate via the
+    ``seen`` guard rather than recursing forever."""
+    defs = {"A": {"$ref": "#/$defs/A"}}
+    schema = {"$ref": "#/$defs/A"}
+    # Must return promptly (no infinite loop) with the last-seen node.
+    assert _resolve(schema, defs) == {"$ref": "#/$defs/A"}
+
+
+def test_anyof_all_null_branches_leaves_value_unchanged():
+    """An ``anyOf`` with only a null branch (no real type to coerce against)
+    must leave the value untouched rather than raising or picking an arbitrary
+    branch."""
+    schema = {
+        "type": "object",
+        "properties": {"x": {"anyOf": [{"type": "null"}]}},
+    }
+    assert coerce_by_schema({"x": '{"a": 1}'}, schema) == {"x": '{"a": 1}'}
+
+
+def test_dict_recurse_uses_additional_properties_for_unlisted_key():
+    """A key absent from ``properties`` but covered by ``additionalProperties``
+    must still be coerced against that schema."""
+    schema = {
+        "type": "object",
+        "additionalProperties": {"type": "array", "items": _OBJ},
+    }
+    out = coerce_by_schema({"extra": '[{"n": 1}]'}, schema)
+    assert out == {"extra": [{"n": 1}]}
+
+
+def test_list_recurse_without_items_schema_passes_through():
+    """An array schema with no ``items`` key has nothing to coerce against —
+    the list value must pass through unchanged."""
+    schema = {"type": "array"}
+    assert coerce_by_schema([1, "two", {"three": 3}], schema) == [1, "two", {"three": 3}]
 
 
 def test_oneof_nullable_object_still_decodes():

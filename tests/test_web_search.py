@@ -284,6 +284,70 @@ async def test_web_search_http_error_includes_body():
 
 
 @pytest.mark.anyio
+async def test_web_search_http_error_body_truncated():
+    """A long error body must be capped (500 chars) and ellipsized, mirroring
+    fetch.py's HTTP-error handling — never dump the whole body inline."""
+    mock_resp = AsyncMock()
+    mock_resp.status_code = 500
+    mock_resp.text = "x" * 5000
+    exc = httpx.HTTPStatusError("Server Error", request=AsyncMock(), response=mock_resp)
+
+    def _raise():
+        raise exc
+
+    mock_resp.raise_for_status = _raise
+
+    with patch("marim_harness.tools.impl.web.httpx.AsyncClient") as mock_cls:
+        client = AsyncMock()
+        client.get = AsyncMock(return_value=mock_resp)
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        mock_cls.return_value = client
+
+        result = await web_search("boom")
+
+    assert "…" in result
+    assert result.count("x") <= 500
+
+
+@pytest.mark.anyio
+async def test_web_search_connection_error():
+    """A transport-level failure (DNS, connection refused, …) must return a
+    friendly error string, not propagate the httpx.RequestError."""
+    with patch("marim_harness.tools.impl.web.httpx.AsyncClient") as mock_cls:
+        client = AsyncMock()
+        client.get = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        mock_cls.return_value = client
+
+        result = await web_search("q")
+
+    assert "Search failed:" in result
+    assert "Connection refused" in result
+
+
+@pytest.mark.anyio
+async def test_web_search_results_field_wrong_shape():
+    """A dict envelope whose ``results`` value isn't a list (a malformed or
+    unexpected SearXNG response) must not raise — treated as no results."""
+    mock_resp = AsyncMock()
+    mock_resp.raise_for_status = lambda: None
+    mock_resp.json = lambda: {"results": "not-a-list"}
+
+    with patch("marim_harness.tools.impl.web.httpx.AsyncClient") as mock_cls:
+        client = AsyncMock()
+        client.get = AsyncMock(return_value=mock_resp)
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        mock_cls.return_value = client
+
+        result = await web_search("q")
+
+    assert result == "No results found."
+
+
+@pytest.mark.anyio
 async def test_web_search_max_results_capped_at_50():
     """max_results above 50 should be clamped to 50."""
     with patch("marim_harness.tools.impl.web.httpx.AsyncClient") as mock_cls:

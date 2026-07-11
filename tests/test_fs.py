@@ -659,6 +659,32 @@ def test_grep_multiline_spans_lines(tmp_path: Path):
     assert "a.txt:2:foo" in out
 
 
+def test_grep_skips_broken_symlink(tmp_path: Path):
+    """A symlink that resolves inside the workspace but whose target doesn't
+    exist must be skipped via the ``not f.is_file()`` guard (rather than the
+    earlier ``resolve_in_workspace`` escape check, which doesn't care whether
+    the target exists) — exercises the candidate-file iterator's not-a-file
+    branch, distinct from the out-of-workspace-symlink branch covered above."""
+    (tmp_path / "real.txt").write_text("needle here\n")
+    (tmp_path / "broken_link").symlink_to(tmp_path / "does_not_exist.txt")
+    out = fs.grep(tmp_path, "needle")
+    assert "real.txt:1:needle here" in out
+    assert "broken_link" not in out
+
+
+def test_grep_context_separator_between_nonadjacent_groups(tmp_path: Path):
+    """Two matches far enough apart that their context windows don't merge must
+    produce two separate groups joined by a ``--`` separator, like ripgrep."""
+    lines = ["x"] * 20
+    lines[0] = "MATCH_A"
+    lines[19] = "MATCH_B"
+    (tmp_path / "a.txt").write_text("\n".join(lines) + "\n")
+    out = fs.grep(tmp_path, "MATCH", before_context=1, after_context=1)
+    assert "a.txt:1:MATCH_A" in out
+    assert "a.txt:20:MATCH_B" in out
+    assert "\n--\n" in out  # the separator between the two non-adjacent groups
+
+
 def test_grep_multiline_honors_context(tmp_path: Path):
     """Context (-A/-B/-C) must apply in multiline mode too, not be silently
     dropped: a multiline match marks the lines it spans, so context wraps them."""

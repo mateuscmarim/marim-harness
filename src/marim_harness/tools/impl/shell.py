@@ -125,7 +125,66 @@ class _BoundedOutput:
         return empty.join(self._head), empty.join(self._tail)
 
 
-async def run_bash(  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
+async def _feed_stdin(proc: "asyncio.subprocess.Process", stdin_data: bytes | None) -> None:
+    """Write ``stdin_data`` to ``proc``'s stdin in one shot, then close the pipe
+    so a reader sees the bytes then EOF. A ``None`` proc.stdin (no pipe was
+    wired, or ``stdin_data`` is ``None``) is a no-op. One small write (a sudo
+    password, a heredoc-ish snippet). Suppress pipe errors: a command that exits
+    without reading stdin (or dies at spawn) must not crash the runner — its own
+    exit code / output is the signal the caller cares about."""
+    if stdin_data is None or proc.stdin is None:
+        return
+    with contextlib.suppress(BrokenPipeError, ConnectionResetError, OSError):
+        proc.stdin.write(stdin_data)
+        await proc.stdin.drain()
+    with contextlib.suppress(BrokenPipeError, ConnectionResetError, OSError):
+        proc.stdin.close()
+
+
+async def _read_until(
+    stream, deadline: float, acc: "_BoundedOutput", *,
+    per_read_cap: float | None = None, catch_oserror: bool = False,
+) -> bool:
+    """Read from ``stream`` into ``acc`` until EOF or ``deadline`` (an
+    ``event_loop.time()`` value) is reached. Returns whether the deadline was
+    hit (``timed_out``). Each read's timeout is the time remaining, capped to
+    ``per_read_cap`` when given — the main read loop passes ``None`` (bounded
+    only by the overall deadline); the post-kill drain loop passes ``1`` so a
+    process still flushing output can't reset an unbounded per-read window
+    (see the wall-clock-budget note at the drain call site). When
+    ``catch_oserror`` is set (the drain call), an ``OSError`` from the read
+    ends the loop the same as a timeout rather than propagating — the main
+    read loop leaves ``OSError`` uncaught, unchanged from its original
+    behavior."""
+    loop = asyncio.get_event_loop()
+    try:
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return True
+            read_timeout = min(per_read_cap, remaining) if per_read_cap is not None else remaining
+            chunk = await asyncio.wait_for(stream.read(_READ_CHUNK), timeout=read_timeout)
+            if not chunk:
+                return False  # EOF — process exited
+            acc.add(chunk)
+    except asyncio.TimeoutError:
+        return True
+    except OSError:
+        if catch_oserror:
+            return False
+        raise
+
+
+def _kill_group(proc: "asyncio.subprocess.Process") -> None:
+    """Kill the whole process group (best-effort) so children die too."""
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+
+
+async def run_bash(
     root: Path,
     command: str,
     timeout: int = _DEFAULT_TIMEOUT,
@@ -148,16 +207,7 @@ async def run_bash(  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/su
         stderr=asyncio.subprocess.STDOUT,
         start_new_session=True,
     )
-    if stdin_data is not None and proc.stdin is not None:
-        # One small write (a sudo password, a heredoc-ish snippet), then close so
-        # the child sees EOF. Suppress pipe errors: a command that exits without
-        # reading stdin (or dies at spawn) must not crash the runner — its own
-        # exit code / output is the signal the caller cares about.
-        with contextlib.suppress(BrokenPipeError, ConnectionResetError, OSError):
-            proc.stdin.write(stdin_data)
-            await proc.stdin.drain()
-        with contextlib.suppress(BrokenPipeError, ConnectionResetError, OSError):
-            proc.stdin.close()
+    await _feed_stdin(proc, stdin_data)
     # Read stdout line-by-line instead of using proc.communicate() so we can
     # retain whatever was read before a timeout kills the process.  communicate()
     # closes its internal reader on cancellation, discarding buffered output.
@@ -165,7 +215,6 @@ async def run_bash(  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/su
     # hundreds of MB before the final cap applies. The accumulator keeps a bounded
     # head + sliding tail; we keep draining the pipe to EOF either way (see below).
     chunks = _BoundedOutput(MAX_OUTPUT_CHARS)
-    timed_out = False
     if proc.stdout is not None:
         # ``timeout`` is a TOTAL wall-clock ceiling, not a per-read idle gap. A
         # chatty command (e.g. ``pytest -v``) emits output continuously, so a
@@ -175,30 +224,14 @@ async def run_bash(  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/su
         # is bounded regardless of how talkative the command is.
         loop = asyncio.get_event_loop()
         deadline = loop.time() + timeout
-        try:
-            while True:
-                remaining = deadline - loop.time()
-                if remaining <= 0:
-                    timed_out = True
-                    break
-                chunk = await asyncio.wait_for(proc.stdout.read(_READ_CHUNK),
-                                               timeout=remaining)
-                if not chunk:
-                    break  # EOF — process exited
-                chunks.add(chunk)
-        except asyncio.TimeoutError:
-            timed_out = True
+        timed_out = await _read_until(proc.stdout, deadline, chunks)
     else:
         # No pipe (shouldn't happen with stdout=PIPE, but guard gracefully).
         await asyncio.sleep(timeout)
         timed_out = True
     if timed_out:
         # Kill the whole process group (best-effort) so children die too.
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
+        _kill_group(proc)
         # Drain anything the dying process flushed to the pipe before the kill
         # propagated.  A short deadline keeps the timeout path fast.  The
         # per-read timeout alone isn't a real ceiling: a process spewing output
@@ -207,18 +240,9 @@ async def run_bash(  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/su
         # wall-clock budget so the timeout path stays snappy regardless of volume.
         if proc.stdout is not None:
             drain_deadline = asyncio.get_event_loop().time() + _DRAIN_BUDGET
-            try:
-                while True:
-                    remaining = drain_deadline - asyncio.get_event_loop().time()
-                    if remaining <= 0:
-                        break
-                    chunk = await asyncio.wait_for(proc.stdout.read(_READ_CHUNK),
-                                                   timeout=min(1, remaining))
-                    if not chunk:
-                        break
-                    chunks.add(chunk)
-            except (asyncio.TimeoutError, OSError):
-                pass
+            await _read_until(
+                proc.stdout, drain_deadline, chunks, per_read_cap=1, catch_oserror=True
+            )
     # Reap the process. After EOF (clean exit) or the SIGKILL above this returns
     # at once — but a process wedged in uninterruptible I/O (D-state: dead NFS, a
     # stuck disk) can ignore even SIGKILL indefinitely. Bound the reap so the tool

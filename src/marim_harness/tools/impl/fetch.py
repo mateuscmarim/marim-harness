@@ -255,7 +255,103 @@ def _offload(body: str, url: str, workspace_root: Path) -> str:
     )
 
 
-async def fetch_url(  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
+def _validate_target(url: str) -> tuple[str | None, str | None]:
+    """Normalize *url*, then validate its host resolves to a public address.
+    Returns ``(normalized_url, None)`` on success or ``(None, error_message)``
+    on any rejection (bad scheme, no host, or an SSRF-blocked address)."""
+    try:
+        url = _normalise_url(url)
+    except ValueError as exc:
+        return None, str(exc)
+
+    host = urlparse(url).hostname
+    if not host:
+        return None, "Fetch failed: URL has no host"
+    try:
+        # Early, friendly check for the common case. The real enforcement is in
+        # the pinned client below, which re-validates atomically per connection
+        # (initial + every redirect hop), so this can't be bypassed by rebinding.
+        _validated_ips(host)
+    except ValueError as exc:
+        return None, str(exc)
+    return url, None
+
+
+async def _stream_body(
+    url: str, timeout: int
+) -> tuple[bytes, str, str | None, bool] | str:
+    """Fetch *url*'s body, stopping at the read cap. Returns ``(raw, content_type,
+    encoding, truncated)`` on success, or an error string on any failure (a
+    declared-oversize body, an HTTP error status, or a transport error) — the
+    caller branches on ``isinstance(result, str)``."""
+    try:
+        async with _build_client(timeout=timeout) as client, \
+                client.stream("GET", url) as resp:
+            resp.raise_for_status()
+            # --- size guard: refuse declared-huge bodies before reading ---
+            declared = resp.headers.get("content-length")
+            if declared and declared.isdigit() and int(declared) > _MAX_DOWNLOAD:
+                return (
+                    f"Fetch aborted: server reports {int(declared):,} bytes, "
+                    f"over the {_MAX_DOWNLOAD:,}-byte limit. Try a more specific "
+                    f"URL or endpoint."
+                )
+            content_type = resp.headers.get("content-type", "")
+            encoding = resp.encoding
+            # --- stream the body, stopping at the read cap ---
+            chunks: list[bytes] = []
+            total = 0
+            truncated = False
+            async for chunk in resp.aiter_bytes():
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > _MAX_BYTES:
+                    truncated = True
+                    break
+            raw = b"".join(chunks)[:_MAX_BYTES]
+            return raw, content_type, encoding, truncated
+    except httpx.HTTPStatusError as exc:
+        msg = f"Fetch failed: HTTP {exc.response.status_code} — {exc.response.reason_phrase}"
+        # Surface a snippet of the error body: for API endpoints that's where the
+        # actionable detail lives. The body wasn't read (we raised on a streamed
+        # response), so pull it now — best-effort, so a read/decode failure just
+        # leaves the status line.
+        try:
+            await exc.response.aread()
+            detail = exc.response.text.strip()
+        except Exception:  # noqa: BLE001 — best-effort; never mask the HTTP error
+            detail = ""
+        if detail:
+            snippet = detail[:_ERROR_BODY_CHARS]
+            if len(detail) > _ERROR_BODY_CHARS:
+                snippet += "…"
+            msg = f"{msg}\n{snippet}"
+        return msg
+    except httpx.RequestError as exc:
+        return f"Fetch failed: {exc}"
+
+
+async def _render_body(raw: bytes, content_type: str, encoding: str | None) -> str:
+    """Decode *raw* and dispatch to the content-type-appropriate rendering
+    (HTML→Markdown, pretty-printed JSON, or plain text passthrough). Decode and
+    conversion are CPU-bound, so each is offloaded to a worker thread — the
+    httpx streaming that produced *raw* stays async on the loop, but running
+    these inline would block it for the whole turn."""
+    text = await asyncio.to_thread(raw.decode, encoding or "utf-8", "replace")
+    if "html" in content_type or "xhtml" in content_type:
+        return await asyncio.to_thread(_html_to_markdown, text)
+    if "json" in content_type:
+        # Return pretty-printed JSON — the agent can parse it.
+        try:
+            return await asyncio.to_thread(_json_pretty, text)
+        except Exception as exc:
+            logger.debug("JSON pretty-print failed, returning raw text: %s", exc)
+            return text
+    # Plain text, markdown, SVG, etc.
+    return text
+
+
+async def fetch_url(
     url: str,
     *,
     prompt: str | None = None,
@@ -277,87 +373,17 @@ async def fetch_url(  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/s
 
     Returns a Markdown-formatted string, or an error message on failure.
     """
-    try:
-        url = _normalise_url(url)
-    except ValueError as exc:
-        return str(exc)
+    target, error = _validate_target(url)
+    if error is not None or target is None:
+        return error or "Fetch failed: invalid URL"
 
-    host = urlparse(url).hostname
-    if not host:
-        return "Fetch failed: URL has no host"
-    try:
-        # Early, friendly check for the common case. The real enforcement is in
-        # the pinned client below, which re-validates atomically per connection
-        # (initial + every redirect hop), so this can't be bypassed by rebinding.
-        _validated_ips(host)
-    except ValueError as exc:
-        return str(exc)
-
-    truncated = False
-    try:
-        async with _build_client(timeout=timeout) as client, \
-                client.stream("GET", url) as resp:
-            resp.raise_for_status()
-            # --- size guard: refuse declared-huge bodies before reading ---
-            declared = resp.headers.get("content-length")
-            if declared and declared.isdigit() and int(declared) > _MAX_DOWNLOAD:
-                return (
-                    f"Fetch aborted: server reports {int(declared):,} bytes, "
-                    f"over the {_MAX_DOWNLOAD:,}-byte limit. Try a more specific "
-                    f"URL or endpoint."
-                )
-            content_type = resp.headers.get("content-type", "")
-            encoding = resp.encoding
-            # --- stream the body, stopping at the read cap ---
-            chunks: list[bytes] = []
-            total = 0
-            async for chunk in resp.aiter_bytes():
-                chunks.append(chunk)
-                total += len(chunk)
-                if total > _MAX_BYTES:
-                    truncated = True
-                    break
-            raw = b"".join(chunks)[:_MAX_BYTES]
-    except httpx.HTTPStatusError as exc:
-        msg = f"Fetch failed: HTTP {exc.response.status_code} — {exc.response.reason_phrase}"
-        # Surface a snippet of the error body: for API endpoints that's where the
-        # actionable detail lives. The body wasn't read (we raised on a streamed
-        # response), so pull it now — best-effort, so a read/decode failure just
-        # leaves the status line.
-        try:
-            await exc.response.aread()
-            detail = exc.response.text.strip()
-        except Exception:  # noqa: BLE001 — best-effort; never mask the HTTP error
-            detail = ""
-        if detail:
-            snippet = detail[:_ERROR_BODY_CHARS]
-            if len(detail) > _ERROR_BODY_CHARS:
-                snippet += "…"
-            msg = f"{msg}\n{snippet}"
-        return msg
-    except httpx.RequestError as exc:
-        return f"Fetch failed: {exc}"
+    streamed = await _stream_body(target, timeout)
+    if isinstance(streamed, str):
+        return streamed
+    raw, content_type, encoding, truncated = streamed
 
     # --- decode → markdown/json (CPU-bound; offload off the event loop) ---
-    # The httpx streaming above is async and stays on the loop, but the decode and
-    # the HTML→markdown (BeautifulSoup parse + decompose + markdownify) and JSON
-    # (parse + re-serialize) conversions are CPU-heavy for bodies up to ~5 MB.
-    # Running them inline would block the loop for the whole turn; offload via
-    # ``asyncio.to_thread`` so other tool calls keep progressing.
-    text = await asyncio.to_thread(raw.decode, encoding or "utf-8", "replace")
-    body: str
-    if "html" in content_type or "xhtml" in content_type:
-        body = await asyncio.to_thread(_html_to_markdown, text)
-    elif "json" in content_type:
-        # Return pretty-printed JSON — the agent can parse it.
-        try:
-            body = await asyncio.to_thread(_json_pretty, text)
-        except Exception as exc:
-            logger.debug("JSON pretty-print failed, returning raw text: %s", exc)
-            body = text
-    else:
-        # Plain text, markdown, SVG, etc.
-        body = text
+    body = await _render_body(raw, content_type, encoding)
 
     if truncated:
         body += (
@@ -374,6 +400,6 @@ async def fetch_url(  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/s
 
     # --- offload large bodies so they don't flood context ---
     if workspace_root is not None and len(body) > _INLINE_CHAR_LIMIT:
-        return _offload(body, url, workspace_root)
+        return _offload(body, target, workspace_root)
 
     return body

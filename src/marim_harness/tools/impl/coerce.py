@@ -60,37 +60,80 @@ def _resolve(schema: dict, defs: dict) -> dict:
     return schema
 
 
-def coerce_by_schema(value: object, schema: object, defs: dict | None = None) -> object:  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
+def _seed_defs(schema: dict) -> dict:
+    """Collect the top-level ``$defs``/``definitions`` maps from ``schema`` into
+    one dict of ``name -> subschema``, used to resolve local ``$ref``s during
+    recursion."""
+    defs: dict = {}
+    for key in ("$defs", "definitions"):
+        found = schema.get(key)
+        if isinstance(found, dict):
+            defs = {**defs, **found}
+    return defs
+
+
+def _coerce_combinator(
+    value: object, branches: object, defs: dict
+) -> tuple[object, bool]:
+    """Handle one ``anyOf``/``oneOf`` schema node: a nullable/union schema. Use
+    the first non-null branch — for the ubiquitous ``[{...}, {"type": "null"}]``
+    pattern that is the real type. But if any non-null branch is string-typed, a
+    JSON-looking string may be intended literally (e.g. ``anyOf: [{"type":
+    "integer"}, {"type": "string"}]``); decoding it would silently rewrite a
+    valid string, so leave the value alone — mirrors the list-form ``type:
+    [...]`` guard in the caller. Returns ``(result, handled)`` so the caller
+    falls through to normal dispatch when ``branches`` isn't a combinator list
+    (``handled`` is ``False``)."""
+    if not isinstance(branches, list):
+        return value, False
+    nonnull = [b for b in branches if isinstance(b, dict) and "null" not in _schema_types(b)]
+    if any("string" in _schema_types(b) for b in nonnull):
+        return value, True
+    for branch in nonnull:
+        return coerce_by_schema(value, branch, defs), True
+    return value, True
+
+
+def _coerce_mapping(value: dict, schema: dict, defs: dict) -> object:
+    """Recurse into a dict ``value`` using ``schema``'s ``properties``/
+    ``additionalProperties``; passes through unchanged when neither is
+    declared (nothing to coerce against)."""
+    props = schema.get("properties")
+    addl = schema.get("additionalProperties")
+    if not isinstance(props, dict) and not isinstance(addl, dict):
+        return value
+    result = {}
+    for k, v in value.items():
+        sub = props.get(k) if isinstance(props, dict) else None
+        if sub is None and isinstance(addl, dict):
+            sub = addl
+        result[k] = coerce_by_schema(v, sub, defs) if isinstance(sub, dict) else v
+    return result
+
+
+def _coerce_sequence(value: list, schema: dict, defs: dict) -> object:
+    """Recurse into a list ``value`` using ``schema``'s ``items``; passes
+    through unchanged when ``items`` isn't declared."""
+    items = schema.get("items")
+    if isinstance(items, dict):
+        return [coerce_by_schema(v, items, defs) for v in value]
+    return value
+
+
+def coerce_by_schema(value: object, schema: object, defs: dict | None = None) -> object:
     """Return ``value`` with stringified JSON decoded wherever ``schema`` expects a
     non-string type, recursing into decoded structures. Never raises; an unknown,
     absent, or non-dict schema passes the value through unchanged."""
     if not isinstance(schema, dict):
         return value
     if defs is None:
-        defs = {}
-        for key in ("$defs", "definitions"):
-            found = schema.get(key)
-            if isinstance(found, dict):
-                defs = {**defs, **found}
+        defs = _seed_defs(schema)
     schema = _resolve(schema, defs)
 
-    # Combinators: a nullable/union schema. Use the first non-null branch — for the
-    # ubiquitous ``[{...}, {"type": "null"}]`` pattern that is the real type. But if
-    # any non-null branch is string-typed, a JSON-looking string may be intended
-    # literally (e.g. ``anyOf: [{"type": "integer"}, {"type": "string"}]``); decoding
-    # it would silently rewrite a valid string, so leave the value alone — mirrors
-    # the list-form ``type: [...]`` guard below.
     for combinator in ("anyOf", "oneOf"):
-        branches = schema.get(combinator)
-        if isinstance(branches, list):
-            nonnull = [
-                b for b in branches if isinstance(b, dict) and "null" not in _schema_types(b)
-            ]
-            if any("string" in _schema_types(b) for b in nonnull):
-                return value
-            for branch in nonnull:
-                return coerce_by_schema(value, branch, defs)
-            return value
+        result, handled = _coerce_combinator(value, schema.get(combinator), defs)
+        if handled:
+            return result
 
     types = _schema_types(schema)
     if types & _NON_STRING and "string" not in types:
@@ -99,22 +142,9 @@ def coerce_by_schema(value: object, schema: object, defs: dict | None = None) ->
             value = decoded  # fall through and recurse into the decoded structure
 
     if isinstance(value, dict):
-        props = schema.get("properties")
-        addl = schema.get("additionalProperties")
-        if not isinstance(props, dict) and not isinstance(addl, dict):
-            return value
-        result = {}
-        for k, v in value.items():
-            sub = props.get(k) if isinstance(props, dict) else None
-            if sub is None and isinstance(addl, dict):
-                sub = addl
-            result[k] = coerce_by_schema(v, sub, defs) if isinstance(sub, dict) else v
-        return result
+        return _coerce_mapping(value, schema, defs)
 
     if isinstance(value, list):
-        items = schema.get("items")
-        if isinstance(items, dict):
-            return [coerce_by_schema(v, items, defs) for v in value]
-        return value
+        return _coerce_sequence(value, schema, defs)
 
     return value

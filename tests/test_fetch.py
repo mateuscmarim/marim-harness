@@ -124,6 +124,19 @@ async def test_fetch_json_pretty_printed():
 
 
 @pytest.mark.anyio
+async def test_fetch_invalid_json_falls_back_to_raw_text():
+    """A response declaring application/json but shipping a malformed body must
+    not crash the tool — _json_pretty raises, and fetch_url falls back to the
+    raw decoded text rather than propagating the JSON decode error."""
+    resp = _mock_response(text="not valid json {{{", content_type="application/json")
+
+    with _patch_client(resp):
+        result = await fetch_url("https://example.com/bad.json")
+
+    assert result == "not valid json {{{"
+
+
+@pytest.mark.anyio
 async def test_fetch_json_with_charset():
     import json
 
@@ -263,6 +276,30 @@ async def test_fetch_connection_error():
 
     assert "Fetch failed:" in result
     assert "Connection refused" in result
+
+
+@pytest.mark.anyio
+async def test_fetch_rejects_url_with_no_host():
+    """A scheme with an empty authority (``https:///path``) parses to a URL with
+    no hostname — must be rejected with a clear message, not crash downstream
+    on a ``None`` host."""
+    result = await fetch_url("https:///path")
+    assert result == "Fetch failed: URL has no host"
+
+
+@pytest.mark.anyio
+async def test_fetch_http_error_body_read_failure_falls_back_to_status_only():
+    """If reading the error response body itself raises (network hiccup mid-read,
+    a broken transport), the best-effort read must not mask the real HTTP error —
+    the status line still comes back, just without a body snippet."""
+    resp = _mock_response(status_code=503, reason_phrase="Service Unavailable",
+                          raise_for_status_error=True)
+    resp.aread = AsyncMock(side_effect=RuntimeError("boom"))
+
+    with _patch_client(resp):
+        result = await fetch_url("https://example.com/flaky")
+
+    assert result == "Fetch failed: HTTP 503 — Service Unavailable"
 
 
 @pytest.mark.anyio
