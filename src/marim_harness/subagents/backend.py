@@ -13,6 +13,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+# The resume prompt every interrupted spawn continues from — shared by the
+# native resume path (runner.resume_spawn) and the CLI resume path
+# (cli_spawn.CliSpawnOrchestrator.resume); it lives on this leaf module so
+# neither importer needs the other.
+CONTINUATION_PROMPT = (
+    "You were interrupted before finishing. The conversation above is your "
+    "own earlier progress on this task — continue from where it leaves off "
+    "and finish the task, then report as usual."
+)
+
 
 @dataclass
 class SpawnRun:
