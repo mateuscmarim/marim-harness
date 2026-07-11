@@ -8,7 +8,7 @@ from ..workspace.skills import discover_skills
 from .impl import fs
 
 
-def _scratch_roots(ctx: RunContext[Deps]) -> tuple[Path, ...]:
+def scratch_roots(ctx: RunContext[Deps]) -> tuple[Path, ...]:
     """The session scratchpad as an extra guard root, or () when unavailable.
     The live getter is called per tool call (not captured at registration) so
     the path tracks session switches; any failure inside it already degraded
@@ -41,7 +41,7 @@ def read_file(
     skill_roots = tuple(s.root for s in skills)
     return fs.read_file(
         ctx.deps.workspace.root, path, offset=offset, limit=limit,
-        extra_read_roots=skill_roots + _scratch_roots(ctx), ledger=ctx.deps.reads,
+        extra_read_roots=skill_roots + scratch_roots(ctx), ledger=ctx.deps.reads,
     )
 
 

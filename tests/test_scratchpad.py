@@ -72,14 +72,14 @@ def _ctx(ws: Path, scratch: Path | None) -> SimpleNamespace:
     return SimpleNamespace(deps=deps)
 
 
-def test_scratch_roots_empty_without_getter(tmp_path):
-    assert fs_tools._scratch_roots(_ctx(tmp_path, None)) == ()
+def testscratch_roots_empty_without_getter(tmp_path):
+    assert fs_tools.scratch_roots(_ctx(tmp_path, None)) == ()
 
 
-def test_scratch_roots_empty_when_getter_returns_none(tmp_path):
+def testscratch_roots_empty_when_getter_returns_none(tmp_path):
     ctx = _ctx(tmp_path, None)
     ctx.deps.services = HarnessServices(get_scratchpad=lambda: None)
-    assert fs_tools._scratch_roots(ctx) == ()
+    assert fs_tools.scratch_roots(ctx) == ()
 
 
 @pytest.mark.anyio

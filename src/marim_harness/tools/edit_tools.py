@@ -5,7 +5,7 @@ import re
 from pydantic_ai import RunContext
 
 from ..runtime.deps import Deps
-from .fs_tools import _scratch_roots
+from .fs_tools import scratch_roots
 from .impl import fs, shell
 from .lenient import LenientList
 
@@ -69,7 +69,7 @@ async def write_file(ctx: RunContext[Deps], path: str, content: str) -> str:
     # fsync, so run it in a worker thread to keep the loop free for other tool calls.
     result = await asyncio.to_thread(
         fs.write_file, ctx.deps.workspace.root, path, content, ctx.deps.reads,
-        _scratch_roots(ctx),
+        scratch_roots(ctx),
     )
     return await _with_diagnostics(ctx, path, result)
 
@@ -85,7 +85,7 @@ async def edit_file(ctx: RunContext[Deps], path: str, edits: LenientList[fs.Edit
     # read + atomic write + fsyncs directly on the event loop.
     result = await asyncio.to_thread(
         fs.edit_file, ctx.deps.workspace.root, path, edits, ctx.deps.reads,
-        _scratch_roots(ctx),
+        scratch_roots(ctx),
     )
     return await _with_diagnostics(ctx, path, result)
 
