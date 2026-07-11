@@ -29,6 +29,7 @@ from .memory import (
     read_memory,
     save_memory,
 )
+from .scratchpad import ensure_scratchpad, scratchpad_base, scratchpad_root
 from .skills import (
     Skill,
     discover_skills,
@@ -70,6 +71,10 @@ __all__ = [
     "project_scope",
     "read_memory",
     "save_memory",
+    # scratchpad
+    "ensure_scratchpad",
+    "scratchpad_base",
+    "scratchpad_root",
     # skills
     "Skill",
     "discover_skills",

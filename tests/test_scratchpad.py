@@ -119,3 +119,24 @@ def test_read_tool_reaches_scratchpad(tmp_path):
     (scratch / "data.txt").write_text("payload")
     out = fs_tools.read_file(_ctx(ws, scratch), str(scratch / "data.txt"))
     assert "payload" in out
+
+
+def test_scratchpad_fns_reexported_from_workspace_package():
+    """The workspace package re-exports every submodule's public API;
+    scratchpad joins that convention."""
+    from marim_harness import workspace
+
+    assert workspace.ensure_scratchpad is ensure_scratchpad
+    assert workspace.scratchpad_base is scratchpad_base
+    assert workspace.scratchpad_root is scratchpad_root
+
+
+def test_ensure_tightens_loose_preexisting_base(tmp_path):
+    """A pre-existing base with group/other access (created by an older
+    version, or a fumbled manual mkdir) is chmodded back to 0700 rather than
+    trusted as-is — ownership is already verified, so tightening is safe."""
+    base = tmp_path / "b"
+    base.mkdir(mode=0o755)
+    p = ensure_scratchpad(Path("/w/proj"), "s1", base=base)
+    assert p is not None
+    assert (base.stat().st_mode & 0o777) == 0o700

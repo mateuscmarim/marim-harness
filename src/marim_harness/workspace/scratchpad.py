@@ -69,6 +69,12 @@ def ensure_scratchpad(
             raise OSError(f"{b} exists but is not a real directory")
         if hasattr(os, "getuid") and st.st_uid != os.getuid():
             raise OSError(f"{b} is owned by uid {st.st_uid}, not {os.getuid()}")
+        # mkdir's mode only applies to a dir it CREATES: a pre-existing base
+        # (older version, fumbled manual mkdir) keeps whatever mode it had.
+        # Ownership is verified above, so tightening group/other access back
+        # to 0700 is safe — and cheaper than refusing over our own dir.
+        if st.st_mode & 0o077:
+            b.chmod(0o700)
         root = scratchpad_root(workspace_root, session_id, base=b)
         root.mkdir(parents=True, exist_ok=True)
         return root
