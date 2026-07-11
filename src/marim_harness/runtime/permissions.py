@@ -1,12 +1,14 @@
 import json
 from collections.abc import Awaitable, Callable
 from enum import Enum
+from pathlib import Path
 
 from pydantic_ai import DeferredToolRequests, DeferredToolResults, ToolDenied
 from pydantic_ai.tools import DeferredToolApprovalResult
 
 from ..read_only_commands import is_read_only
 from ..tools.names import NET_TOOLS
+from ..workspace.fs import WorkspaceError, resolve_in_workspace
 
 
 class Mode(str, Enum):
@@ -19,18 +21,46 @@ class Mode(str, Enum):
         return order[(order.index(self) + 1) % len(order)]
 
 
-def _bash_command(call: object) -> str:
-    """Best-effort extract the ``command`` arg from an approval call. Tool args
-    arrive as a dict or, from some providers, a JSON string."""
+def _call_args(call: object) -> dict:
+    """Best-effort tool args from an approval call, as a dict. Args arrive as
+    a dict or, from some providers, a JSON string."""
     args = getattr(call, "args", None)
     if isinstance(args, str):
         try:
             args = json.loads(args)
         except (ValueError, TypeError):
-            return ""
-    if isinstance(args, dict):
-        return str(args.get("command", ""))
-    return ""
+            return {}
+    return args if isinstance(args, dict) else {}
+
+
+def _bash_command(call: object) -> str:
+    """Best-effort extract the ``command`` arg from an approval call."""
+    return str(_call_args(call).get("command", ""))
+
+
+def _is_scratchpad_write(call: object, root: Path, scratchpad: Path) -> bool:
+    """True when this approval call is a write_file/edit_file whose target
+    resolves inside the scratchpad. Mirrors the tool layer's own resolution
+    order (_safe_write in tools/impl/fs.py): the workspace root is tried
+    first, so a relative path — which always lands in the workspace — can
+    never be mistaken for a scratchpad write; only a path the workspace
+    guard rejects may qualify. Resolution chases symlinks and ``..``, so the
+    check is on the real target, not a string prefix."""
+    if getattr(call, "tool_name", None) not in ("write_file", "edit_file"):
+        return False
+    path = str(_call_args(call).get("path", ""))
+    if not path:
+        return False
+    try:
+        resolve_in_workspace(root, path)
+        return False  # a workspace write: normal gating applies
+    except WorkspaceError:
+        pass
+    try:
+        resolve_in_workspace(scratchpad, path)
+    except WorkspaceError:
+        return False
+    return True
 
 
 def _plan_decision(call: object) -> "bool | ToolDenied":
@@ -61,12 +91,16 @@ async def resolve_approvals(
     requests: DeferredToolRequests,
     mode: Mode,
     request_approval: Callable[[object], Awaitable[DeferredToolApprovalResult | bool]] | None,
+    *,
+    workspace_root: Path | None = None,
+    scratchpad: Path | None = None,
 ) -> DeferredToolResults:
     """Turn pending tool-approval requests into results based on the current mode.
 
     auto -> approve all. plan -> deny mutations; read-only bash is approved
-    (see _plan_decision). ask -> delegate to callback,
-    which returns True (approve) or a ToolDenied (reject). In ask mode with no
+    (see _plan_decision). ask -> auto-approve write_file/edit_file targeting
+    the scratchpad (when one is wired), otherwise delegate to callback, which
+    returns True (approve) or a ToolDenied (reject). In ask mode with no
     callback wired (e.g. a non-interactive run), deny rather than crash — nothing
     can grant approval, so the safe answer is to refuse.
     """
@@ -76,6 +110,17 @@ async def resolve_approvals(
             results.approvals[call.tool_call_id] = True
         elif mode is Mode.plan:
             results.approvals[call.tool_call_id] = _plan_decision(call)
+        elif (
+            scratchpad is not None
+            and workspace_root is not None
+            and _is_scratchpad_write(call, workspace_root, scratchpad)
+        ):
+            # Scratchpad writes are pre-blessed in ask mode — the directory
+            # exists precisely so intermediate work doesn't prompt (the
+            # instructions block advertises exactly that). bash never
+            # qualifies: a command's filesystem reach can't be cheaply
+            # proven to stay inside the scratchpad.
+            results.approvals[call.tool_call_id] = True
         elif request_approval is None:
             results.approvals[call.tool_call_id] = ToolDenied(
                 "no approver available; denied"

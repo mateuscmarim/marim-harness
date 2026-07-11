@@ -736,8 +736,11 @@ class TurnController:
             except Exception:  # noqa: BLE001 — a notification must never crash a turn
                 logger.warning("approval-needed notification hook failed", exc_info=True)
         try:
+            get_scratchpad = self.deps.services.get_scratchpad
             deferred_results = await resolve_approvals(
-                requests, self.deps.workspace.mode, self.deps.ui.request_approval
+                requests, self.deps.workspace.mode, self.deps.ui.request_approval,
+                workspace_root=self.deps.workspace.root,
+                scratchpad=get_scratchpad() if get_scratchpad is not None else None,
             )
         except BaseException:
             self.session.history = resumable
