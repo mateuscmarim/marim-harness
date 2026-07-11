@@ -29,7 +29,7 @@ class SessionView:
     def __init__(self, app) -> None:
         self.app = app
 
-    async def _replay_parts(
+    async def _replay_parts(  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
         self,
         part,
         container,
@@ -142,7 +142,7 @@ class SessionView:
                 widget.finish(content, status=status)
         return group, solo
 
-    async def replay_history(self, log: VerticalScroll) -> None:
+    async def replay_history(self, log: VerticalScroll) -> None:  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
         """Re-render a restored conversation into the log so a resumed session
         looks like where you left off."""
         from pydantic_ai.messages import (
@@ -258,7 +258,7 @@ class SessionView:
 
     _REPAIR_STUB_MARKER = "interrupted before completion"
 
-    async def finish_replayed_cards(self) -> None:
+    async def finish_replayed_cards(self) -> None:  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
         """Settle every replayed card's final state from the persisted record:
         the jobs history supplies a background spawn's status/report (its
         ToolReturnPart is only a job-id handoff), and the sidecar meta scan flags

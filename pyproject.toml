@@ -97,7 +97,11 @@ src = ["src"]
 [tool.ruff.lint]
 # E/F/I: pycodestyle, pyflakes, import sorting. UP: pyupgrade (modernize for the
 # 3.10 floor). B: flake8-bugbear (real bug patterns). SIM: flake8-simplify.
-select = ["E", "F", "I", "UP", "B", "SIM"]
+# C901: mccabe cyclomatic complexity — capped at 10 to keep functions branch-shallow.
+select = ["E", "F", "I", "UP", "B", "SIM", "C901"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
 
 [tool.pyright]
 include = ["src"]

@@ -781,7 +781,7 @@ class SubagentRunner:
             background=True, stream_id=stream_id, caller_depth=caller_depth,
         )
 
-    async def resume_spawn(self, stream_id: str) -> tuple[str | None, str]:
+    async def resume_spawn(self, stream_id: str) -> tuple[str | None, str]:  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
         """Continue an interrupted spawn from its persisted sidecar as a
         background job. Returns ``(job_id, message)`` on success or
         ``(None, reason)`` on refusal — the reason is always user-renderable.

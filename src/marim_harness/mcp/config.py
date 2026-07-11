@@ -267,7 +267,7 @@ class _McpApprovalCall:
         return self._args
 
 
-def make_approval_hook(label: str, trusted: bool, *, schema_holder: dict | None = None):
+def make_approval_hook(label: str, trusted: bool, *, schema_holder: dict | None = None):  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
     """Build a ``process_tool_call`` hook that gates an MCP server's tool calls by
     the live session mode: ``auto`` runs them, ``plan`` denies them (read-only),
     and ``ask`` runs a *trusted* server's calls but prompts for an *untrusted*

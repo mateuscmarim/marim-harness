@@ -214,7 +214,7 @@ def _scratchpad_block(ctx: RunContext[Deps]) -> str:
     )
 
 
-def register_instructions(
+def register_instructions(  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
     agent: HarnessAgent, mcp_manager: McpManager, proactive_memory: bool,
     *, global_instructions: bool = True, groups: ToolGroups | None = None,
 ) -> None:

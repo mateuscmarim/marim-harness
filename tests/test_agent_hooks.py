@@ -39,7 +39,7 @@ def _hook_script(tmp_path: Path, name: str, body: str) -> str:
     return str(p)
 
 
-def _prompt_capturing_model(sink: list) -> FunctionModel:
+def _prompt_capturing_model(sink: list) -> FunctionModel:  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
     """Records the LAST user-prompt text it sees per call (the current turn's
     new prompt, not history), then replies 'ok'. pydantic-ai's FunctionModel
     receives the full conversation history each call, so we capture only the

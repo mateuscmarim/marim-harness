@@ -337,7 +337,7 @@ async def _cmd_usage(app: HarnessApp, arg: str) -> None:
     await app.post_system("\n".join(lines))
 
 
-async def _cmd_worktree(app: HarnessApp, arg: str) -> None:
+async def _cmd_worktree(app: HarnessApp, arg: str) -> None:  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
     from ...workspace.worktree import (
         WorktreeError,
         create_or_reuse_worktree,

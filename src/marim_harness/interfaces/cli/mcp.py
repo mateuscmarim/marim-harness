@@ -35,7 +35,7 @@ def _parse_pairs(items: list[str], sep: str, what: str) -> dict[str, str]:
     return out
 
 
-def _build_spec(*, transport: str, rest: list[str], headers: list[str],
+def _build_spec(*, transport: str, rest: list[str], headers: list[str],  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
                 envs: list[str], trust: bool) -> dict:
     """Build a server spec dict from parsed CLI pieces. ``rest`` is the positional
     remainder after the name: ``[command, *args]`` for stdio, ``[url]`` for remote.

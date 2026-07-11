@@ -20,7 +20,7 @@ from ..forge.select import select_backend
 from ..runtime.deps import Deps
 
 
-def build_forge_toolset(backend: ForgeBackend) -> FunctionToolset[Deps]:
+def build_forge_toolset(backend: ForgeBackend) -> FunctionToolset[Deps]:  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
     ts: FunctionToolset[Deps] = FunctionToolset()
 
     async def list_prs(ctx: RunContext[Deps], state: str = "open", limit: int = 30) -> str:

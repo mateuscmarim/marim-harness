@@ -934,7 +934,7 @@ class StreamRenderer:
                         group.note_child_finished(failed=widget.status == "failed")
         sink.on_result(event)
 
-    async def dispatch_stream_event(self, event, sink: "_StreamSink") -> None:
+    async def dispatch_stream_event(self, event, sink: "_StreamSink") -> None:  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
         """Route one streamed event to the right widget via ``sink``, which knows
         where to mount and how to read/write this stream's run-state. The top-level
         and sub-agent handlers differ only in that sink (and their own pre/post

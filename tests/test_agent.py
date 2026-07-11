@@ -415,7 +415,7 @@ def test_build_collaborators_respects_lsp_disabled(tmp_path):
     assert deps.services.lsp is None
 
 
-def test_bind_ui_wires_all_callbacks(tmp_path):
+def test_bind_ui_wires_all_callbacks(tmp_path):  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
     h = _minimal_harness(tmp_path)
 
     async def request_approval(_):

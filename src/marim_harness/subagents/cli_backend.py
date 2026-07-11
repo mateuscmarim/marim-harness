@@ -468,7 +468,7 @@ class ClaudeCliRunner:
         # otherwise shows the harness's own model as a fallback. None when no UI.
         self._on_model = on_model      # Deps.on_subagent_model | None
 
-    async def run(
+    async def run(  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
         self, *, binary: str, prompt: str, system_prompt: str, cwd: str,
         allow_gated: bool, allowed_tools, model: str | None, stream_id: str,
         checkpoint: Callable[[list, str | None], None] | None = None,

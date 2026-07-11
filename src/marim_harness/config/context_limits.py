@@ -248,7 +248,7 @@ def _qualified(provider: str, windows: dict[str, int]) -> dict[str, int]:
     return out
 
 
-def build_context_limits(
+def build_context_limits(  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
     configs: Mapping[str, ModelConfig],
     *,
     window_override: int | None,

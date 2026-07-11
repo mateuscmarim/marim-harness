@@ -28,7 +28,7 @@ def _resolve_base_url(base_url: str | None) -> str:
     return base_url or os.environ.get("MARIM_SEARXNG_URL") or _DEFAULT_BASE_URL
 
 
-async def web_search(
+async def web_search(  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
     query: str,
     *,
     base_url: str | None = None,

@@ -194,7 +194,7 @@ def _cmd_validate(args, *, out, err) -> int:
     return 0
 
 
-def main(
+def main(  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
     argv: list[str],
     *,
     out=sys.stdout,

@@ -91,7 +91,7 @@ def _detach_handoff(job_id: str) -> str:
     )
 
 
-async def spawn_agent(
+async def spawn_agent(  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
     ctx: RunContext[Deps],
     type: str,
     task: str,

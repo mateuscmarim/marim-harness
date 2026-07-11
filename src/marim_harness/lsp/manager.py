@@ -391,7 +391,7 @@ class LspManager:
         (best-effort)."""
         await self._ensure_started(language)  # ignore returned error — best-effort
 
-    async def diagnostics(self, path: str, *, settle: float = 1.5, deep: bool = False) -> str:
+    async def diagnostics(self, path: str, *, settle: float = 1.5, deep: bool = False) -> str:  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
         # Python's resident server (jedi) only reports syntax errors, so route it
         # to real external checkers instead — ruff always, plus pyright on a deep
         # check (see lsp.checks). These are stateless subprocesses: no server

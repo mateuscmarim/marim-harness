@@ -255,7 +255,7 @@ def _offload(body: str, url: str, workspace_root: Path) -> str:
     )
 
 
-async def fetch_url(
+async def fetch_url(  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
     url: str,
     *,
     prompt: str | None = None,

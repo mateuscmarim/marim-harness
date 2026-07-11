@@ -111,7 +111,7 @@ def _safe_write(root: Path, path: str, extra_write_roots: tuple[Path, ...]) -> P
     return _resolve_with_extra_roots(root, path, extra_write_roots)
 
 
-def read_file(
+def read_file(  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
     root: Path,
     path: str,
     offset: int = 1,
@@ -584,7 +584,7 @@ class _OutputCollector:
             self.limited = self.stop = True
 
 
-def grep(
+def grep(  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
     root: Path,
     pattern: str,
     path: str | None = None,

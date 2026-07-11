@@ -134,7 +134,7 @@ class BuiltinToolProvider:
         self._register_lsp_tools = register_lsp_tools
         self._combined_job_tool = combined_job_tool
 
-    def register(self, agent: HarnessAgent) -> None:
+    def register(self, agent: HarnessAgent) -> None:  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
         """Register the enabled main-agent tool groups: read tools, the memory /
         skill / task / spawn tools, and the workspace-mutating tools behind
         approval. Group selection comes from ``ToolGroups`` (all-on by default)."""

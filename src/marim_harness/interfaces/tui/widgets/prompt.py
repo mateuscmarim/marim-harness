@@ -87,7 +87,7 @@ class PromptInput(TextArea):
         # so on_text_area_changed skips slash-menu activation for it — see _show.
         self._suppress_slash: bool = False
 
-    async def _on_key(self, event: events.Key) -> None:
+    async def _on_key(self, event: events.Key) -> None:  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
         if event.key == "escape" and self._slash_active:
             self._slash_active = False
             self.post_message(self.SlashDismissed())
@@ -281,7 +281,7 @@ class PromptInput(TextArea):
         head = self.text[:offset]
         return (head.count("\n"), offset - (head.rfind("\n") + 1))
 
-    def _delete_markers(self, key: str) -> bool:
+    def _delete_markers(self, key: str) -> bool:  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
         """Keep ``[Image #N]`` and ``[Pasted text #N …]`` markers atomic: if a
         backspace/delete touches any part of a marker (including its
         brackets), remove the whole marker and drop the matching

@@ -124,7 +124,7 @@ class HookRunner:
     def __init__(self, config: dict) -> None:
         self._config = config or {}
 
-    async def dispatch(self, event: str, payload: dict) -> str | None:
+    async def dispatch(self, event: str, payload: dict) -> str | None:  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
         """Run every hook configured for ``event`` whose matcher passes. Returns
         injected context for injection events, else ``None``. Never raises."""
         entries = self._config.get(event)

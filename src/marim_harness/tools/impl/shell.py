@@ -125,7 +125,7 @@ class _BoundedOutput:
         return empty.join(self._head), empty.join(self._tail)
 
 
-async def run_bash(
+async def run_bash(  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
     root: Path,
     command: str,
     timeout: int = _DEFAULT_TIMEOUT,

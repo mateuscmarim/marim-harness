@@ -60,7 +60,7 @@ def _resolve(schema: dict, defs: dict) -> dict:
     return schema
 
 
-def coerce_by_schema(value: object, schema: object, defs: dict | None = None) -> object:
+def coerce_by_schema(value: object, schema: object, defs: dict | None = None) -> object:  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
     """Return ``value`` with stringified JSON decoded wherever ``schema`` expects a
     non-string type, recursing into decoded structures. Never raises; an unknown,
     absent, or non-dict schema passes the value through unchanged."""

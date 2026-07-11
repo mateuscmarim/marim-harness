@@ -93,7 +93,7 @@ def _with_cost(response, mapped: RequestUsage) -> RequestUsage:
     return mapped
 
 
-def build_openrouter_model(model_id: str, api_key: str | None):
+def build_openrouter_model(model_id: str, api_key: str | None):  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
     """An OpenRouter chat model with prompt caching enabled that records the
     provider's billed cost.
 

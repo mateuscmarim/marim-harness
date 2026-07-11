@@ -115,7 +115,7 @@ def _render_tool_args(args) -> str:
         return str(args)
 
 
-def flatten_history(messages: list[ModelMessage]) -> str:
+def flatten_history(messages: list[ModelMessage]) -> str:  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
     """The whole conversation rendered to one prompt, for a cold first turn (no
     Claude session to resume).
 
@@ -270,7 +270,7 @@ def _flatten_result_content(content) -> str:
     return "" if content is None else str(content)
 
 
-async def consume_cli_stream(objs: AsyncIterator[dict]) -> AsyncIterator:
+async def consume_cli_stream(objs: AsyncIterator[dict]) -> AsyncIterator:  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
     """Turn parsed stream-json objects into structured chunks then one or more
     ``DoneChunk``s.
 
@@ -680,7 +680,7 @@ class ClaudeCliStreamedResponse(StreamedResponse):
             if remainder is not None:
                 yield remainder
 
-    async def _get_event_iterator(self):
+    async def _get_event_iterator(self):  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
         if self._objs is None:
             return
         # Two rendering modes. With a UI side-channel (_on_activity set), Claude's

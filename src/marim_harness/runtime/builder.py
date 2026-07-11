@@ -199,7 +199,7 @@ class HarnessBuilder:
 
     # -- build --------------------------------------------------------------
 
-    def build(self) -> Harness:
+    def build(self) -> Harness:  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
         # Imports deferred so `import marim_harness` (lazy __getattr__) stays
         # cheap until a builder is actually built.
         from pydantic_ai.models import infer_model
