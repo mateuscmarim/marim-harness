@@ -118,6 +118,33 @@ async def _run_one(command: str, payload: dict, timeout) -> str | None:
     return stdout.decode(errors="replace").strip() or None
 
 
+async def _run_entry(entry: object, event: str, payload: dict, tool_name: str) -> list[str]:
+    """Run one config entry's command hooks whose matcher passes; return any
+    injected contexts (empty for non-injecting events or no output)."""
+    if not isinstance(entry, dict):
+        return []
+    if not _matches(entry.get("matcher"), event, tool_name):
+        return []
+    contexts: list[str] = []
+    for spec in entry.get("hooks", []) or []:
+        if not isinstance(spec, dict) or spec.get("type") != "command":
+            continue
+        command = spec.get("command")
+        if not command:
+            continue
+        timeout = spec.get("timeout", _DEFAULT_TIMEOUT)
+        try:
+            out = await _run_one(str(command), payload, timeout)
+        except Exception as exc:
+            logger.warning("hook %r failed: %s", command, exc)
+            out = None  # belt-and-suspenders: a hook never breaks a turn
+        if out and event in INJECTING_EVENTS:
+            ctx = _extract_context(out)
+            if ctx:
+                contexts.append(ctx)
+    return contexts
+
+
 class HookRunner:
     """Holds the merged hook config and dispatches events to it."""
 
@@ -133,24 +160,5 @@ class HookRunner:
         tool_name = str(payload.get("tool_name", ""))
         contexts: list[str] = []
         for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            if not _matches(entry.get("matcher"), event, tool_name):
-                continue
-            for spec in entry.get("hooks", []) or []:
-                if not isinstance(spec, dict) or spec.get("type") != "command":
-                    continue
-                command = spec.get("command")
-                if not command:
-                    continue
-                timeout = spec.get("timeout", _DEFAULT_TIMEOUT)
-                try:
-                    out = await _run_one(str(command), payload, timeout)
-                except Exception as exc:
-                    logger.warning("hook %r failed: %s", command, exc)
-                    out = None  # belt-and-suspenders: a hook never breaks a turn
-                if out and event in INJECTING_EVENTS:
-                    ctx = _extract_context(out)
-                    if ctx:
-                        contexts.append(ctx)
+            contexts.extend(await _run_entry(entry, event, payload, tool_name))
         return "\n".join(contexts) if contexts else None

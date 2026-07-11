@@ -93,18 +93,16 @@ def _with_cost(response, mapped: RequestUsage) -> RequestUsage:
     return mapped
 
 
-def build_openrouter_model(model_id: str, api_key: str | None):
-    """An OpenRouter chat model with prompt caching enabled that records the
-    provider's billed cost.
+def _make_cost_classes():
+    """Build the ``_CostStreamedResponse``/``_CostOpenRouterModel`` subclasses.
 
-    Built on pydantic-ai's official ``OpenRouterModel`` so cache-token mapping
-    and OpenRouter usage parsing come natively; the only thing it adds is
-    re-injecting the billed ``usage.cost`` (a float the base usage mapper drops)
-    into ``RunUsage.details`` as integer micro-USD, where ``usage.py`` reads it,
-    plus MiniMax thinking-tag handling.
-
-    Imported lazily (it pulls in provider packages) so config-only code paths
-    stay dependency-free."""
+    Hoisted out of ``build_openrouter_model`` (rather than left as nested
+    classes) purely to keep that factory's McCabe count low — nested
+    class bodies fold their branches into the enclosing function for ruff's
+    C901 count. The classes still need pydantic-ai's OpenRouter types, which
+    are imported lazily by the caller, so they're built inside this factory
+    (called once, at import-adjacent construction time) rather than declared
+    at module scope directly."""
     import dataclasses
 
     from pydantic_ai.messages import (
@@ -115,11 +113,8 @@ def build_openrouter_model(model_id: str, api_key: str | None):
     )
     from pydantic_ai.models.openrouter import (
         OpenRouterModel,
-        OpenRouterModelSettings,
         OpenRouterStreamedResponse,
     )
-    from pydantic_ai.profiles import merge_profile
-    from pydantic_ai.providers.openrouter import OpenRouterProvider
 
     class _CostStreamedResponse(OpenRouterStreamedResponse):
         # Subclass the OpenRouter streamed response (not the plain OpenAI one)
@@ -174,6 +169,27 @@ def build_openrouter_model(model_id: str, api_key: str | None):
                     with suppress(TypeError):  # layout mismatch on some pydantic-ai build
                         stream.__class__ = _CostStreamedResponse
                 yield stream
+
+    return _CostOpenRouterModel
+
+
+def build_openrouter_model(model_id: str, api_key: str | None):
+    """An OpenRouter chat model with prompt caching enabled that records the
+    provider's billed cost.
+
+    Built on pydantic-ai's official ``OpenRouterModel`` so cache-token mapping
+    and OpenRouter usage parsing come natively; the only thing it adds is
+    re-injecting the billed ``usage.cost`` (a float the base usage mapper drops)
+    into ``RunUsage.details`` as integer micro-USD, where ``usage.py`` reads it,
+    plus MiniMax thinking-tag handling.
+
+    Imported lazily (it pulls in provider packages) so config-only code paths
+    stay dependency-free."""
+    from pydantic_ai.models.openrouter import OpenRouterModelSettings
+    from pydantic_ai.profiles import merge_profile
+    from pydantic_ai.providers.openrouter import OpenRouterProvider
+
+    _CostOpenRouterModel = _make_cost_classes()
 
     provider = OpenRouterProvider(api_key=api_key)
     # MiniMax's native thinking tags aren't the OpenRouter profile default, so

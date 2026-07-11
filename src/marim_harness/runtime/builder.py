@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from pydantic_ai.models import Model
 
     from ..hooks import HookRunner
+    from ..session import SessionManager, SessionStore
     from ..workspace.agents import AgentDef
     from .harness import Harness
 
@@ -197,16 +198,90 @@ class HarnessBuilder:
         self._config_overrides.update(fields)
         return self
 
+    # -- build() validation passes ------------------------------------------
+    #
+    # Each pass below takes the shared `problems` list and appends to it;
+    # none raise directly, so build() can gather every problem in one round
+    # instead of failing on the first (see BuilderError's docstring).
+
+    def _resolve_model(self, problems: list[str]) -> Model | str:
+        """Resolve a string model spec via infer_model, appending a problem
+        on failure. On failure this returns the original unresolved model
+        unchanged — harmless, because build() only uses the return value
+        after confirming `problems` is empty."""
+        from pydantic_ai.models import infer_model
+
+        model = self._model
+        if isinstance(model, str):
+            try:
+                model = infer_model(model)
+            except Exception as exc:  # pydantic-ai raises various types here
+                problems.append(f"model {self._model!r} is not resolvable: {exc}")
+        return model
+
+    def _check_custom_tools(self, loaded_names: frozenset[str], problems: list[str]) -> None:
+        seen_custom: set[str] = set()
+        for fn, _gated in self._custom_tools:
+            name = fn.__name__
+            if name in loaded_names:
+                problems.append(f"custom tool {name!r} collides with a built-in tool")
+            if name in seen_custom:
+                problems.append(f"custom tool {name!r} registered twice")
+            seen_custom.add(name)
+
+    def _check_subagent_grants(self, grantable: frozenset[str], problems: list[str]) -> None:
+        from ..tools.names import LSP_TOOLS, SUBAGENT_TOOLS
+
+        # LSP tool names are only grantable when the LSP toolset is actually
+        # loaded (`with_lsp(tools=True)`) — `grantable` already folds LSP_TOOLS
+        # in exactly under that condition. Do NOT also subtract LSP_TOOLS below:
+        # that used to exempt every LSP tool name unconditionally, so a
+        # sub-agent could be granted e.g. `goto_definition` without LSP tools
+        # ever being enabled. That passed build() cleanly, then
+        # BuiltinToolProvider.register_subagent silently dropped the tool at
+        # spawn time (it checks the same `register_lsp_tools` flag) — the
+        # sub-agent would run missing a tool its own spec promised, with no
+        # error anywhere. Catching the mismatch here instead makes a stale
+        # grant fail fast at build() rather than fail silently at spawn time.
+        for defn in self._subagents:
+            unknown = defn.tools - SUBAGENT_TOOLS
+            if unknown:
+                problems.append(
+                    f"sub-agent {defn.name!r} grants unknown tools: {sorted(unknown)}")
+            missing = (defn.tools & SUBAGENT_TOOLS) - grantable
+            if missing:
+                lsp_missing = missing & LSP_TOOLS
+                hint = (
+                    " (LSP tools are disabled — call with_lsp(tools=True))"
+                    if lsp_missing and not self._lsp_tools else ""
+                )
+                problems.append(
+                    f"sub-agent {defn.name!r} grants tools from disabled groups: "
+                    f"{sorted(missing)}{hint}")
+
+    def _open_sessions(
+        self, problems: list[str]
+    ) -> tuple[SessionManager | None, SessionStore | None]:
+        from ..session import SessionManager
+
+        manager = store = None
+        if self._sessions:
+            try:
+                manager = SessionManager(self._workspace, base_dir=self._sessions_dir)
+                manager.dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                problems.append(f"sessions dir is not usable: {exc}")
+            else:
+                store = manager.create()
+        return manager, store
+
     # -- build --------------------------------------------------------------
 
     def build(self) -> Harness:
         # Imports deferred so `import marim_harness` (lazy __getattr__) stays
         # cheap until a builder is actually built.
-        from pydantic_ai.models import infer_model
-
         from ..compaction import make_summarizer, make_titler
-        from ..session import SessionManager
-        from ..tools.names import FORGE_TOOLS, LSP_TOOLS, SUBAGENT_TOOLS
+        from ..tools.names import FORGE_TOOLS, LSP_TOOLS
         from ..tools.provider import ToolGroups
         from .deps import Deps, WorkspaceConfig
         from .harness import Harness, HarnessConfig
@@ -217,12 +292,7 @@ class HarnessBuilder:
 
         problems: list[str] = []
 
-        model = self._model
-        if isinstance(model, str):
-            try:
-                model = infer_model(model)
-            except Exception as exc:  # pydantic-ai raises various types here
-                problems.append(f"model {self._model!r} is not resolvable: {exc}")
+        model = self._resolve_model(problems)
 
         groups = ToolGroups(**{
             f.name: self._groups.get(f.name, False)
@@ -250,15 +320,7 @@ class HarnessBuilder:
         loaded_names = builtin_names | (LSP_TOOLS if self._lsp_tools else frozenset())
         if self._forge_backend is not None:
             loaded_names |= FORGE_TOOLS
-
-        seen_custom: set[str] = set()
-        for fn, _gated in self._custom_tools:
-            name = fn.__name__
-            if name in loaded_names:
-                problems.append(f"custom tool {name!r} collides with a built-in tool")
-            if name in seen_custom:
-                problems.append(f"custom tool {name!r} registered twice")
-            seen_custom.add(name)
+        self._check_custom_tools(loaded_names, problems)
 
         # with_hooks sets self._hook_runner, but the hook runner only ever
         # reaches Deps via the builder-constructed-Deps branch below
@@ -273,43 +335,10 @@ class HarnessBuilder:
                 "deps.hooks on your Deps instead"
             )
 
-        # LSP tool names are only grantable when the LSP toolset is actually
-        # loaded (`with_lsp(tools=True)`) — `grantable` already folds LSP_TOOLS
-        # in exactly under that condition. Do NOT also subtract LSP_TOOLS below:
-        # that used to exempt every LSP tool name unconditionally, so a
-        # sub-agent could be granted e.g. `goto_definition` without LSP tools
-        # ever being enabled. That passed build() cleanly, then
-        # BuiltinToolProvider.register_subagent silently dropped the tool at
-        # spawn time (it checks the same `register_lsp_tools` flag) — the
-        # sub-agent would run missing a tool its own spec promised, with no
-        # error anywhere. Catching the mismatch here instead makes a stale
-        # grant fail fast at build() rather than fail silently at spawn time.
         grantable = builtin_names | (LSP_TOOLS if self._lsp_tools else frozenset())
-        for defn in self._subagents:
-            unknown = defn.tools - SUBAGENT_TOOLS
-            if unknown:
-                problems.append(
-                    f"sub-agent {defn.name!r} grants unknown tools: {sorted(unknown)}")
-            missing = (defn.tools & SUBAGENT_TOOLS) - grantable
-            if missing:
-                lsp_missing = missing & LSP_TOOLS
-                hint = (
-                    " (LSP tools are disabled — call with_lsp(tools=True))"
-                    if lsp_missing and not self._lsp_tools else ""
-                )
-                problems.append(
-                    f"sub-agent {defn.name!r} grants tools from disabled groups: "
-                    f"{sorted(missing)}{hint}")
+        self._check_subagent_grants(grantable, problems)
 
-        manager = store = None
-        if self._sessions:
-            try:
-                manager = SessionManager(self._workspace, base_dir=self._sessions_dir)
-                manager.dir.mkdir(parents=True, exist_ok=True)
-            except OSError as exc:
-                problems.append(f"sessions dir is not usable: {exc}")
-            else:
-                store = manager.create()
+        manager, store = self._open_sessions(problems)
 
         if problems:
             raise BuilderError(problems)

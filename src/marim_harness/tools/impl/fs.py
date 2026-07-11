@@ -111,6 +111,71 @@ def _safe_write(root: Path, path: str, extra_write_roots: tuple[Path, ...]) -> P
     return _resolve_with_extra_roots(root, path, extra_write_roots)
 
 
+def _read_window(p: Path, start: int, end: int) -> tuple[list[str], int]:
+    """Stream ``p`` rather than ``read_text().splitlines()``: the old path
+    materialized the *entire* file (plus a Python list holding every line), so
+    paging lines 9000-9010 of a 500 MB file dragged all 500 MB into memory. Here
+    only the requested window [start, end) is retained; the rest of the file is
+    iterated but discarded, kept solely to count ``total`` for the "of {total}"
+    footer (no way to know a variable-width file's line count without reading
+    it, and the output contract requires the total). Memory is bounded by the
+    window, not the file size. Universal-newline text mode (the default) folds
+    ``\\r\\n``/``\\r`` into ``\\n`` the same way ``splitlines`` does for the
+    common separators, and we strip the one trailing ``\\n`` per line to match
+    ``splitlines``' terminator-free output; only the exotic separators (``\\v``,
+    ``\\f``, U+2028, …) that ``splitlines`` also breaks on are treated as
+    in-line text here, which never arises for normal-size text files."""
+    window: list[str] = []
+    total = 0
+    with p.open("r", errors="replace") as fh:
+        for i, raw in enumerate(fh):
+            if start <= i < end:
+                window.append(raw[:-1] if raw.endswith("\n") else raw)
+            total = i + 1
+    return window, total
+
+
+def _render_window(window: list[str], start: int) -> tuple[str, bool, int]:
+    """Render ``window`` into numbered ``lineno\\ttext`` rows, clipping any
+    over-long line and stopping once the char budget is spent. Returns
+    ``(body, clipped, last)`` where ``last`` is the 1-based number of the last
+    line included."""
+    rendered: list[str] = []
+    used = 0
+    clipped = False
+    for idx, line in enumerate(window):
+        lineno = start + idx + 1
+        if len(line) > _MAX_LINE_CHARS:
+            extra = len(line) - _MAX_LINE_CHARS
+            line = f"{line[:_MAX_LINE_CHARS]}… (+{extra} more chars on this line)"
+            clipped = True
+        row = f"{lineno}\t{line}"
+        # Stop before the char budget is exceeded, but always emit at least one
+        # row so a read never comes back empty (a single wide line still returns,
+        # clipped to _MAX_LINE_CHARS).
+        if rendered and used + len(row) + 1 > _MAX_READ_CHARS:
+            break
+        rendered.append(row)
+        used += len(row) + 1
+
+    last = start + len(rendered)  # 1-based number of the last line included
+    body = "\n".join(rendered)
+    return body, clipped, last
+
+
+def _footer(offset: int, last: int, total: int, windowed: bool, clipped: bool) -> str:
+    """The ``[…]`` note appended when the window isn't the whole file, or a line
+    was clipped — empty string when neither applies (unchanged output)."""
+    notes: list[str] = []
+    if windowed:
+        notes.append(f"showing lines {offset}-{last} of {total}")
+    if clipped:
+        notes.append(f"long lines clipped to {_MAX_LINE_CHARS} chars")
+    if not notes:
+        return ""
+    return f"\n\n[{'; '.join(notes)}]"
+
+
 def read_file(
     root: Path,
     path: str,
@@ -149,60 +214,15 @@ def read_file(
     span = limit if limit is not None else _DEFAULT_READ_LIMIT
     end = start + span
 
-    # Stream the file rather than ``read_text().splitlines()``: the old path
-    # materialized the *entire* file (plus a Python list holding every line),
-    # so paging lines 9000-9010 of a 500 MB file dragged all 500 MB into memory.
-    # Here only the requested window [start, end) is retained; the rest of the
-    # file is iterated but discarded, kept solely to count ``total`` for the
-    # "of {total}" footer (no way to know a variable-width file's line count
-    # without reading it, and the output contract requires the total). Memory is
-    # bounded by the window, not the file size. Universal-newline text mode (the
-    # default) folds ``\r\n``/``\r`` into ``\n`` the same way ``splitlines`` does
-    # for the common separators, and we strip the one trailing ``\n`` per line to
-    # match ``splitlines``' terminator-free output; only the exotic separators
-    # (``\v``, ``\f``, U+2028, …) that ``splitlines`` also breaks on are treated
-    # as in-line text here, which never arises for normal-size text files.
-    window: list[str] = []
-    total = 0
-    with p.open("r", errors="replace") as fh:
-        for i, raw in enumerate(fh):
-            if start <= i < end:
-                window.append(raw[:-1] if raw.endswith("\n") else raw)
-            total = i + 1
+    window, total = _read_window(p, start, end)
     if total == 0:
         return ""
     if offset > total:
         raise ModelRetry(f"offset {offset} is past end of file ({total} lines).")
 
-    rendered: list[str] = []
-    used = 0
-    clipped = False
-    for idx, line in enumerate(window):
-        lineno = start + idx + 1
-        if len(line) > _MAX_LINE_CHARS:
-            extra = len(line) - _MAX_LINE_CHARS
-            line = f"{line[:_MAX_LINE_CHARS]}… (+{extra} more chars on this line)"
-            clipped = True
-        row = f"{lineno}\t{line}"
-        # Stop before the char budget is exceeded, but always emit at least one
-        # row so a read never comes back empty (a single wide line still returns,
-        # clipped to _MAX_LINE_CHARS).
-        if rendered and used + len(row) + 1 > _MAX_READ_CHARS:
-            break
-        rendered.append(row)
-        used += len(row) + 1
-
-    last = start + len(rendered)  # 1-based number of the last line included
-    body = "\n".join(rendered)
+    body, clipped, last = _render_window(window, start)
     windowed = not (start == 0 and last == total)
-    notes: list[str] = []
-    if windowed:
-        notes.append(f"showing lines {offset}-{last} of {total}")
-    if clipped:
-        notes.append(f"long lines clipped to {_MAX_LINE_CHARS} chars")
-    if not notes:
-        return body  # whole file, nothing clipped — unchanged output
-    return f"{body}\n\n[{'; '.join(notes)}]"
+    return body + _footer(offset, last, total, windowed, clipped)
 
 
 def _atomic_write_preserving_mode(p: Path, content: str) -> None:
@@ -584,6 +604,123 @@ class _OutputCollector:
             self.limited = self.stop = True
 
 
+def _compile_grep_regex(
+    pattern: str, *, case_insensitive: bool, multiline: bool
+) -> re.Pattern[str]:
+    """Compile ``pattern`` with the flags ``grep``'s options imply, raising a
+    model-facing ``ModelRetry`` on a malformed regex rather than an unhandled
+    ``re.error``."""
+    re_flags = 0
+    if case_insensitive:
+        re_flags |= re.IGNORECASE
+    if multiline:
+        re_flags |= re.DOTALL | re.MULTILINE
+    try:
+        return re.compile(pattern, re_flags)
+    except re.error as exc:
+        raise ModelRetry(f"invalid regex {pattern!r}: {exc}") from exc
+
+
+def _iter_candidate_files(
+    root: Path, base: Path, globs: list[str] | None, exts: set[str] | None,
+) -> Iterator[tuple[Path, str]]:
+    """Yield ``(file, relpath)`` pairs under ``base`` that survive every
+    syscall-free/cheap filter before a match attempt is worth paying for."""
+    for f in _walk_files(base):
+        # os.walk won't descend symlinked dirs; a symlinked *file* could still
+        # point outside the workspace, so gate just that rare case.
+        if f.is_symlink():
+            try:
+                resolve_in_workspace(root, str(f.relative_to(root)))
+            except (WorkspaceError, ValueError):
+                continue
+        if not f.is_file():
+            continue
+        rel = f.relative_to(root).as_posix()
+        # Apply the cheap, syscall-free glob/type filters *before* opening the
+        # file: a file excluded by name shouldn't pay for a binary sniff + read.
+        if globs is not None and not _match_glob(rel, f.name, globs):
+            continue
+        if exts is not None and f.suffix not in exts:
+            continue
+        yield f, rel
+
+
+def _match_lines(
+    text: str, rx: re.Pattern[str], multiline: bool
+) -> tuple[list[str], list[int], int]:
+    """Return ``(lines, match_idx, n_matches)``: ``lines`` is ``text`` split for
+    emission, ``match_idx`` the sorted set of matching line numbers, and
+    ``n_matches`` the match count for ``count`` mode. In multiline mode a single
+    match can span lines, so every line it covers is a match line — which lets
+    the same content-emission path apply context (-A/-B/-C) uniformly instead of
+    silently dropping it."""
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()  # a trailing newline isn't an extra empty line
+    if multiline:
+        hits = list(rx.finditer(text))
+        n_matches = len(hits)
+        # Map each match's char offsets to 0-based line numbers. The old code
+        # did ``text.count("\n", 0, pos)`` per match — O(n) per call, O(n·k)
+        # for k matches. Instead precompute the newline offsets once and bisect:
+        # the line index of ``pos`` is the count of newlines strictly before it,
+        # which is exactly ``bisect_left(nl_offsets, pos)`` (O(log n) per match).
+        # ``str.find`` builds the offset list with C-level scans rather than a
+        # per-character Python loop.
+        nl_offsets: list[int] = []
+        j = text.find("\n")
+        while j != -1:
+            nl_offsets.append(j)
+            j = text.find("\n", j + 1)
+        covered: set[int] = set()
+        for m in hits:
+            lo = bisect.bisect_left(nl_offsets, m.start())
+            hi = min(bisect.bisect_left(nl_offsets, m.end()), len(lines) - 1)
+            covered.update(range(lo, hi + 1))
+        match_idx = sorted(covered)
+    else:
+        match_idx = [i for i, ln in enumerate(lines) if rx.search(ln)]
+        n_matches = len(match_idx)
+    return lines, match_idx, n_matches
+
+
+def _emit_matches(
+    col: _OutputCollector,
+    rel: str,
+    output_mode: str,
+    lines: list[str],
+    match_idx: list[int],
+    n_matches: int,
+    before: int,
+    after: int,
+) -> None:
+    """Emit one file's matches into ``col`` per ``output_mode``: a bare relpath
+    (``files_with_matches``), a ``relpath:count`` (``count``), or the
+    ``content`` mode's per-line hits with ``-`` context lines and a ``--``
+    separator between non-adjacent groups, like ripgrep."""
+    if output_mode == "files_with_matches":
+        col.emit(rel)
+    elif output_mode == "count":
+        col.emit(f"{rel}:{n_matches}")
+    else:
+        match_set = set(match_idx)
+        for gi, (lo, hi) in enumerate(
+            _context_ranges(match_idx, before, after, len(lines))
+        ):
+            if (before or after) and gi:
+                col.emit("--")
+                if col.stop:
+                    break
+            for i in range(lo, hi + 1):
+                sep = ":" if i in match_set else "-"
+                col.emit(f"{rel}{sep}{i + 1}{sep}{lines[i]}")
+                if col.stop:
+                    break
+            if col.stop:
+                break
+
+
 def grep(
     root: Path,
     pattern: str,
@@ -610,15 +747,7 @@ def grep(
         raise ModelRetry(
             f"invalid output_mode {output_mode!r}; use one of {', '.join(_GREP_MODES)}."
         )
-    re_flags = 0
-    if case_insensitive:
-        re_flags |= re.IGNORECASE
-    if multiline:
-        re_flags |= re.DOTALL | re.MULTILINE
-    try:
-        rx = re.compile(pattern, re_flags)
-    except re.error as exc:
-        raise ModelRetry(f"invalid regex {pattern!r}: {exc}") from exc
+    rx = _compile_grep_regex(pattern, case_insensitive=case_insensitive, multiline=multiline)
     base = _safe(root, path) if path else root
     globs = _brace_expand(glob) if glob else None
     exts = _type_extensions(file_type) if file_type else None
@@ -626,83 +755,16 @@ def grep(
 
     col = _OutputCollector(head_limit)
 
-    for f in _walk_files(base):
+    for f, rel in _iter_candidate_files(root, base, globs, exts):
         if col.stop:
             break
-        # os.walk won't descend symlinked dirs; a symlinked *file* could still
-        # point outside the workspace, so gate just that rare case.
-        if f.is_symlink():
-            try:
-                resolve_in_workspace(root, str(f.relative_to(root)))
-            except (WorkspaceError, ValueError):
-                continue
-        if not f.is_file():
-            continue
-        rel = f.relative_to(root).as_posix()
-        # Apply the cheap, syscall-free glob/type filters *before* opening the
-        # file: a file excluded by name shouldn't pay for a binary sniff + read.
-        if globs is not None and not _match_glob(rel, f.name, globs):
-            continue
-        if exts is not None and f.suffix not in exts:
-            continue
         text = _read_text_for_grep(f)
         if text is None:
             continue  # unreadable or binary (NUL-byte sniff)
-
-        lines = text.split("\n")
-        if lines and lines[-1] == "":
-            lines.pop()  # a trailing newline isn't an extra empty line
-        # ``match_idx`` is the sorted set of matching line numbers; ``n_matches`` is
-        # the match count for ``count`` mode. In multiline mode a single match can
-        # span lines, so every line it covers is a match line — which lets the same
-        # content-emission path below apply context (-A/-B/-C) uniformly instead of
-        # silently dropping it.
-        if multiline:
-            hits = list(rx.finditer(text))
-            n_matches = len(hits)
-            # Map each match's char offsets to 0-based line numbers. The old code
-            # did ``text.count("\n", 0, pos)`` per match — O(n) per call, O(n·k)
-            # for k matches. Instead precompute the newline offsets once and bisect:
-            # the line index of ``pos`` is the count of newlines strictly before it,
-            # which is exactly ``bisect_left(nl_offsets, pos)`` (O(log n) per match).
-            # ``str.find`` builds the offset list with C-level scans rather than a
-            # per-character Python loop.
-            nl_offsets: list[int] = []
-            j = text.find("\n")
-            while j != -1:
-                nl_offsets.append(j)
-                j = text.find("\n", j + 1)
-            covered: set[int] = set()
-            for m in hits:
-                lo = bisect.bisect_left(nl_offsets, m.start())
-                hi = min(bisect.bisect_left(nl_offsets, m.end()), len(lines) - 1)
-                covered.update(range(lo, hi + 1))
-            match_idx = sorted(covered)
-        else:
-            match_idx = [i for i, ln in enumerate(lines) if rx.search(ln)]
-            n_matches = len(match_idx)
+        lines, match_idx, n_matches = _match_lines(text, rx, multiline)
         if not match_idx:
             continue
-        if output_mode == "files_with_matches":
-            col.emit(rel)
-        elif output_mode == "count":
-            col.emit(f"{rel}:{n_matches}")
-        else:
-            match_set = set(match_idx)
-            for gi, (lo, hi) in enumerate(
-                _context_ranges(match_idx, before, after, len(lines))
-            ):
-                if (before or after) and gi:
-                    col.emit("--")
-                    if col.stop:
-                        break
-                for i in range(lo, hi + 1):
-                    sep = ":" if i in match_set else "-"
-                    col.emit(f"{rel}{sep}{i + 1}{sep}{lines[i]}")
-                    if col.stop:
-                        break
-                if col.stop:
-                    break
+        _emit_matches(col, rel, output_mode, lines, match_idx, n_matches, before, after)
 
     if not col.out:
         return "(no matches)"

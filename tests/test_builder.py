@@ -105,6 +105,21 @@ def test_sessions_opt_in_writes_under_given_dir(tmp_path: Path):
     assert sessions.exists()
 
 
+def test_sessions_dir_unusable_is_builder_error(tmp_path: Path):
+    """Characterization test (pre-Task-14 extraction): the sessions dir's
+    mkdir() is wrapped in try/except OSError in build() and turned into a
+    ``problems`` entry rather than propagating raw. A base_dir that is
+    actually a *file* makes mkdir(parents=True) raise NotADirectoryError
+    (an OSError subclass) when it tries to create the per-workspace subdir
+    underneath it."""
+    not_a_dir = tmp_path / "not-a-dir"
+    not_a_dir.write_text("x")
+    with pytest.raises(BuilderError) as exc:
+        (HarnessBuilder(workspace=tmp_path / "ws", model=TestModel())
+         .with_sessions(dir=not_a_dir).build())
+    assert "sessions dir is not usable" in str(exc.value)
+
+
 def test_memory_and_skills_knobs_land_on_workspace(tmp_path: Path):
     h = (HarnessBuilder(workspace=tmp_path, model=TestModel())
          .with_memory(dir=tmp_path / "mem")

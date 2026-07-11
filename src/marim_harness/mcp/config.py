@@ -267,6 +267,57 @@ class _McpApprovalCall:
         return self._args
 
 
+class _SchemaCoercer:
+    """Lazily loads an MCP server's tool input schemas (once) and decodes any
+    stringified structured argument the schema expects as a structured value.
+    Absent a holder, a fetch error, or an unknown tool, args pass through
+    untouched.
+
+    ``schema_holder`` is a one-key dict the caller populates with
+    ``{"server": <MCPServer>}`` right after the server is built. On first
+    dispatch this reads the server's tool input schemas — cheap, since
+    pydantic-ai has already cached them via its own ``list_tools`` at startup —
+    and decodes any argument a model stringified when the schema expects a
+    structured value (see :func:`coerce_by_schema`)."""
+
+    def __init__(self, schema_holder: dict | None) -> None:
+        self._holder = schema_holder
+        self._cache: dict[str, dict] = {}
+        self._loaded = False
+
+    async def _tool_schema(self, name: str) -> dict | None:
+        if self._holder is None:
+            return None
+        server = self._holder.get("server")
+        if server is None:
+            return None
+        if not self._loaded:
+            try:
+                tools = await server.list_tools()
+            except Exception:  # noqa: BLE001 - best-effort: fall back to uncoerced dispatch
+                return None
+            for tool in tools:
+                nm = getattr(tool, "name", None)
+                sch = getattr(tool, "inputSchema", None)
+                if isinstance(nm, str) and isinstance(sch, dict):
+                    self._cache[nm] = sch
+            self._loaded = True
+        return self._cache.get(name)
+
+    async def coerce_args(self, name: str, args: dict | None) -> dict | None:
+        if not isinstance(args, dict):
+            return args
+        schema = await self._tool_schema(name)
+        if not isinstance(schema, dict):
+            return args
+        # coerce_by_schema is typed to return `object` (it recurses into scalars
+        # too), but fed a dict it always returns a dict — narrow explicitly so the
+        # reassignment below doesn't widen `args`'s type for the callers downstream
+        # (_bound_tool_result / _McpApprovalCall both expect dict | None).
+        coerced = coerce_by_schema(args, schema)
+        return coerced if isinstance(coerced, dict) else args
+
+
 def make_approval_hook(label: str, trusted: bool, *, schema_holder: dict | None = None):
     """Build a ``process_tool_call`` hook that gates an MCP server's tool calls by
     the live session mode: ``auto`` runs them, ``plan`` denies them (read-only),
@@ -279,47 +330,11 @@ def make_approval_hook(label: str, trusted: bool, *, schema_holder: dict | None 
     approval callback are read from ``ctx.deps`` at call time, so runtime mode
     switches take effect immediately.
 
-    ``schema_holder`` (when given) is a one-key dict the caller populates with
-    ``{"server": <MCPServer>}`` right after the server is built. On first dispatch
-    the hook reads the server's tool input schemas — cheap, since pydantic-ai has
-    already cached them via its own ``list_tools`` at startup — and decodes any
-    argument a model stringified when the schema expects a structured value (see
-    :func:`coerce_by_schema`). Absent a holder, a fetch error, or an unknown tool,
-    the args pass through untouched, exactly as before."""
-    schema_cache: dict[str, dict] = {}
-    schema_state = {"loaded": False}
-
-    async def _tool_schema(name: str) -> dict | None:
-        if schema_holder is None:
-            return None
-        server = schema_holder.get("server")
-        if server is None:
-            return None
-        if not schema_state["loaded"]:
-            try:
-                tools = await server.list_tools()
-            except Exception:  # noqa: BLE001 - best-effort: fall back to uncoerced dispatch
-                return None
-            for tool in tools:
-                nm = getattr(tool, "name", None)
-                sch = getattr(tool, "inputSchema", None)
-                if isinstance(nm, str) and isinstance(sch, dict):
-                    schema_cache[nm] = sch
-            schema_state["loaded"] = True
-        return schema_cache.get(name)
-
-    async def _coerce_args(name: str, args: dict | None) -> dict | None:
-        if not isinstance(args, dict):
-            return args
-        schema = await _tool_schema(name)
-        if not isinstance(schema, dict):
-            return args
-        # coerce_by_schema is typed to return `object` (it recurses into scalars
-        # too), but fed a dict it always returns a dict — narrow explicitly so the
-        # reassignment below doesn't widen `args`'s type for the callers downstream
-        # (_bound_tool_result / _McpApprovalCall both expect dict | None).
-        coerced = coerce_by_schema(args, schema)
-        return coerced if isinstance(coerced, dict) else args
+    ``schema_holder`` (when given) is passed straight through to
+    :class:`_SchemaCoercer` — see its docstring for the lazy-load/coerce
+    semantics; absent a holder, a fetch error, or an unknown tool, the args
+    pass through untouched, exactly as before."""
+    coercer = _SchemaCoercer(schema_holder)
 
     async def hook(ctx, call_tool, name, args):
         deps = ctx.deps
@@ -334,7 +349,7 @@ def make_approval_hook(label: str, trusted: bool, *, schema_holder: dict | None 
         # Decode any stringified structured arg before the server (and the approval
         # prompt) ever see it, so a model that serialized a nested value as a string
         # doesn't burn a turn on the server's rejection.
-        args = await _coerce_args(name, args)
+        args = await coercer.coerce_args(name, args)
         if mode is Mode.auto or trusted:
             result = await call_tool(name, args)
             return _bound_tool_result(

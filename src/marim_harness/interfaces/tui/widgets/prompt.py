@@ -87,86 +87,130 @@ class PromptInput(TextArea):
         # so on_text_area_changed skips slash-menu activation for it — see _show.
         self._suppress_slash: bool = False
 
-    async def _on_key(self, event: events.Key) -> None:
-        if event.key == "escape" and self._slash_active:
-            self._slash_active = False
-            self.post_message(self.SlashDismissed())
-            event.prevent_default()
-            event.stop()
-            return
-        if self._slash_active:
-            # Drive the (unfocusable) slash menu from the prompt: Up/Down move its
-            # highlight, Tab completes the highlighted command into the box. Each
-            # helper returns False when the menu is hidden/empty, so the key falls
-            # through to the prompt's own handling (history recall, normal Tab).
-            if event.key == "down" and self._menu_navigate(1):
-                event.prevent_default()
-                event.stop()
-                return
-            if event.key == "up" and self._menu_navigate(-1):
-                event.prevent_default()
-                event.stop()
-                return
-            if event.key == "tab" and self._menu_accept():
-                event.prevent_default()
-                event.stop()
-                return
-        if event.key in ("alt+enter", "ctrl+g"):
-            event.prevent_default()
-            event.stop()
-            atts = [(p.read_bytes(), m) for p, m in self.attachments]
-            self.post_message(self.Steer(self._expand_pastes(self.text), atts))
-            self.attachments = []
-            self.pastes = []
-            # Steer consumes the draft like Submit does. Every steer path (the
-            # busy-turn handler and the buffered-steer requeue in app.py) works
-            # off the expanded Steer.value / harness-buffered text, never the
-            # box itself, so clearing here can't strand content — it just
-            # avoids leaving a dead [Pasted text #N] marker with an emptied
-            # stash for a later Enter to submit literally.
-            self.text = ""
-            self._reset_nav()
-            return
-        if event.key == "enter":
-            event.prevent_default()
-            event.stop()
-            atts = [(p.read_bytes(), m) for p, m in self.attachments]
-            self.post_message(self.Submitted(self._expand_pastes(self.text), atts))
-            self.attachments = []
-            self.pastes = []
-            self._reset_nav()
-            return
-        if event.key in ("shift+enter", "ctrl+j"):
-            event.prevent_default()
-            event.stop()
-            self.insert("\n")
-            return
-        if event.key == "ctrl+x":
-            # Open the sub-agent viewer. Intercepted here because TextArea binds
-            # ctrl+x to "cut", which would otherwise swallow it before the app's
-            # binding runs. Guarded so the widget still works in bare-app tests.
-            event.prevent_default()
-            event.stop()
-            toggle = getattr(self.app, "action_toggle_subagents", None)
-            if toggle is not None:
-                toggle()
-            return
+    def _handle_slash_escape(self, event: events.Key) -> bool:
+        """Escape while the slash menu is open dismisses it and consumes the key."""
+        if not (event.key == "escape" and self._slash_active):
+            return False
+        self._slash_active = False
+        self.post_message(self.SlashDismissed())
+        event.prevent_default()
+        event.stop()
+        return True
+
+    def _handle_slash_menu_key(self, event: events.Key) -> bool:
+        """Drive the (unfocusable) slash menu from the prompt: Up/Down move its
+        highlight, Tab completes the highlighted command into the box. Each
+        helper returns False when the menu is hidden/empty, so the key falls
+        through to the prompt's own handling (history recall, normal Tab)."""
+        if not self._slash_active:
+            return False
+        handled = (
+            (event.key == "down" and self._menu_navigate(1))
+            or (event.key == "up" and self._menu_navigate(-1))
+            or (event.key == "tab" and self._menu_accept())
+        )
+        if not handled:
+            return False
+        event.prevent_default()
+        event.stop()
+        return True
+
+    def _handle_steer_key(self, event: events.Key) -> bool:
+        if event.key not in ("alt+enter", "ctrl+g"):
+            return False
+        event.prevent_default()
+        event.stop()
+        atts = [(p.read_bytes(), m) for p, m in self.attachments]
+        self.post_message(self.Steer(self._expand_pastes(self.text), atts))
+        self.attachments = []
+        self.pastes = []
+        # Steer consumes the draft like Submit does. Every steer path (the
+        # busy-turn handler and the buffered-steer requeue in app.py) works
+        # off the expanded Steer.value / harness-buffered text, never the
+        # box itself, so clearing here can't strand content — it just
+        # avoids leaving a dead [Pasted text #N] marker with an emptied
+        # stash for a later Enter to submit literally.
+        self.text = ""
+        self._reset_nav()
+        return True
+
+    def _handle_submit_key(self, event: events.Key) -> bool:
+        if event.key != "enter":
+            return False
+        event.prevent_default()
+        event.stop()
+        atts = [(p.read_bytes(), m) for p, m in self.attachments]
+        self.post_message(self.Submitted(self._expand_pastes(self.text), atts))
+        self.attachments = []
+        self.pastes = []
+        self._reset_nav()
+        return True
+
+    def _handle_newline_key(self, event: events.Key) -> bool:
+        if event.key not in ("shift+enter", "ctrl+j"):
+            return False
+        event.prevent_default()
+        event.stop()
+        self.insert("\n")
+        return True
+
+    def _handle_subagents_key(self, event: events.Key) -> bool:
+        """Open the sub-agent viewer. Intercepted here because TextArea binds
+        ctrl+x to "cut", which would otherwise swallow it before the app's
+        binding runs. Guarded so the widget still works in bare-app tests."""
+        if event.key != "ctrl+x":
+            return False
+        event.prevent_default()
+        event.stop()
+        toggle = getattr(self.app, "action_toggle_subagents", None)
+        if toggle is not None:
+            toggle()
+        return True
+
+    def _handle_history_key(self, event: events.Key) -> bool:
         if event.key == "up" and self._at_first_line() and self._recall_prev():
             event.prevent_default()
             event.stop()
-            return
+            return True
         if event.key == "down" and self._at_last_line() and self._recall_next():
             event.prevent_default()
             event.stop()
-            return
-        if event.key == "ctrl+v" and self._on_paste_image():
-            event.prevent_default()
-            event.stop()
-            return
-        if event.key in ("backspace", "delete") and self._delete_markers(event.key):
-            event.prevent_default()
-            event.stop()
-            return
+            return True
+        return False
+
+    def _handle_paste_image_key(self, event: events.Key) -> bool:
+        if event.key != "ctrl+v" or not self._on_paste_image():
+            return False
+        event.prevent_default()
+        event.stop()
+        return True
+
+    def _handle_delete_marker_key(self, event: events.Key) -> bool:
+        if event.key not in ("backspace", "delete") or not self._delete_markers(event.key):
+            return False
+        event.prevent_default()
+        event.stop()
+        return True
+
+    async def _on_key(self, event: events.Key) -> None:
+        # A data-driven route table (rather than a long if-chain) keeps this
+        # dispatcher's own branch count flat regardless of how many keys it
+        # handles — each helper owns one key-cluster's condition and side
+        # effects, and reports whether it consumed the event.
+        handlers = (
+            self._handle_slash_escape,
+            self._handle_slash_menu_key,
+            self._handle_steer_key,
+            self._handle_submit_key,
+            self._handle_newline_key,
+            self._handle_subagents_key,
+            self._handle_history_key,
+            self._handle_paste_image_key,
+            self._handle_delete_marker_key,
+        )
+        for handle in handlers:
+            if handle(event):
+                return
         await super()._on_key(event)
 
     def _menu_navigate(self, delta: int) -> bool:
@@ -281,6 +325,64 @@ class PromptInput(TextArea):
         head = self.text[:offset]
         return (head.count("\n"), offset - (head.rfind("\n") + 1))
 
+    def _expand_edit_range(
+        self, key: str, lo: int, hi: int, text_len: int
+    ) -> tuple[int, int] | None:
+        """Expand a zero-width cursor position into the one-character span a
+        backspace/delete would remove; a real selection passes through
+        unchanged (after normalizing ``lo <= hi``). Returns None at a boundary
+        where there's nothing to remove (backspace at start / delete at end)."""
+        if lo > hi:
+            lo, hi = hi, lo
+        if lo == hi:  # no selection — a single-character edit
+            if key == "backspace":
+                if lo == 0:
+                    return None
+                lo -= 1
+            else:  # delete
+                if hi >= text_len:
+                    return None
+                hi += 1
+        return lo, hi
+
+    def _hits_in_range(self, image_spans, paste_spans, lo: int, hi: int):
+        image_hit = [s for s in image_spans if s[0] < hi and s[1] > lo]
+        paste_hit = [s for s in paste_spans if s[0] < hi and s[1] > lo]
+        return image_hit, paste_hit
+
+    def _prune_attachments_and_pastes(self, image_hit, paste_hit) -> tuple[set[int], set[int]]:
+        """Drop the attachment/stash entries a deleted marker referenced, and
+        return the removed numbers so the surviving markers can renumber
+        around the gap."""
+        removed_images = {s[2] for s in image_hit}
+        removed_pastes = {s[2] for s in paste_hit}
+        for n in sorted(removed_images, reverse=True):
+            if 1 <= n <= len(self.attachments):
+                del self.attachments[n - 1]
+        for n in sorted(removed_pastes, reverse=True):
+            if 1 <= n <= len(self.pastes):
+                del self.pastes[n - 1]
+        return removed_images, removed_pastes
+
+    def _renumber_segment(
+        self, segment: str, removed_images: set[int], removed_pastes: set[int]
+    ) -> str:
+        """Renumber surviving ``[Image #N]`` / ``[Pasted text #N …]`` markers in
+        ``segment`` so each kind stays ``#1..#M`` aligned with its list after the
+        entries in ``removed_images``/``removed_pastes`` are dropped (the two
+        kinds number independently)."""
+
+        def _renumber_image(m: "re.Match[str]") -> str:
+            n = int(m.group(1))
+            return f"[Image #{n - sum(r < n for r in removed_images)}]"
+
+        def _renumber_paste(m: "re.Match[str]") -> str:
+            n = int(m.group(1))
+            return f"[Pasted text #{n - sum(r < n for r in removed_pastes)} {m.group(2)}]"
+
+        segment = _IMAGE_MARKER.sub(_renumber_image, segment)
+        return _PASTE_MARKER.sub(_renumber_paste, segment)
+
     def _delete_markers(self, key: str) -> bool:
         """Keep ``[Image #N]`` and ``[Pasted text #N …]`` markers atomic: if a
         backspace/delete touches any part of a marker (including its
@@ -296,49 +398,24 @@ class PromptInput(TextArea):
                        for m in _PASTE_MARKER.finditer(text)]
         if not image_spans and not paste_spans:
             return False
-        lo = self._offset(self.selection.start)
-        hi = self._offset(self.selection.end)
-        if lo > hi:
-            lo, hi = hi, lo
-        if lo == hi:  # no selection — a single-character edit
-            if key == "backspace":
-                if lo == 0:
-                    return False
-                lo -= 1
-            else:  # delete
-                if hi >= len(text):
-                    return False
-                hi += 1
-        image_hit = [s for s in image_spans if s[0] < hi and s[1] > lo]
-        paste_hit = [s for s in paste_spans if s[0] < hi and s[1] > lo]
+        edit_range = self._expand_edit_range(
+            key,
+            self._offset(self.selection.start),
+            self._offset(self.selection.end),
+            len(text),
+        )
+        if edit_range is None:
+            return False
+        lo, hi = edit_range
+        image_hit, paste_hit = self._hits_in_range(image_spans, paste_spans, lo, hi)
         if not image_hit and not paste_hit:
             return False
         every_hit = image_hit + paste_hit
         lo = min(lo, min(s[0] for s in every_hit))
         hi = max(hi, max(s[1] for s in every_hit))
-        removed_images = {s[2] for s in image_hit}
-        removed_pastes = {s[2] for s in paste_hit}
-        for n in sorted(removed_images, reverse=True):
-            if 1 <= n <= len(self.attachments):
-                del self.attachments[n - 1]
-        for n in sorted(removed_pastes, reverse=True):
-            if 1 <= n <= len(self.pastes):
-                del self.pastes[n - 1]
-
-        def _renumber_image(m: "re.Match[str]") -> str:
-            n = int(m.group(1))
-            return f"[Image #{n - sum(r < n for r in removed_images)}]"
-
-        def _renumber_paste(m: "re.Match[str]") -> str:
-            n = int(m.group(1))
-            return f"[Pasted text #{n - sum(r < n for r in removed_pastes)} {m.group(2)}]"
-
-        def _renumber(segment: str) -> str:
-            segment = _IMAGE_MARKER.sub(_renumber_image, segment)
-            return _PASTE_MARKER.sub(_renumber_paste, segment)
-
-        new_prefix = _renumber(text[:lo])
-        new_text = new_prefix + _renumber(text[hi:])
+        removed_images, removed_pastes = self._prune_attachments_and_pastes(image_hit, paste_hit)
+        new_prefix = self._renumber_segment(text[:lo], removed_images, removed_pastes)
+        new_text = new_prefix + self._renumber_segment(text[hi:], removed_images, removed_pastes)
         self.text = new_text
         self.move_cursor(self._location(len(new_prefix)))
         return True

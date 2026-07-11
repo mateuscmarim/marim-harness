@@ -166,8 +166,13 @@ to avoid import cycles.
 
 - Use `uv` for everything (`uv run …`, `uv sync`). Don't invoke `pip` or a bare
   `python`/`pytest`.
-- Ruff line length is 100; lint set is `E,F,I,UP,B,SIM` (import sorting enforced;
-  pyupgrade, bugbear, and flake8-simplify also on).
+- Ruff line length is 100; lint set is `E,F,I,UP,B,SIM,C901` (import sorting
+  enforced; pyupgrade, bugbear, and flake8-simplify also on).
+- Cyclomatic complexity is capped at 10 (`C901`, mccabe). CI rejects any function
+  above it. When a function trips the ceiling, extract cohesive branch-clusters into
+  named helpers (or a small state value-object where locals mutate across the region)
+  — do not add a blanket `# noqa: C901`. Note: this bounds *branch count*, not length;
+  a long, straight-line, well-commented function is fine.
 - Pure helpers (fs ops, command policy, snapshots) are kept side-effect-free and
   unit-tested directly; the I/O wiring lives in the thin tool/interface layer. Follow
   that split when adding behavior.

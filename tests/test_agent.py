@@ -1,4 +1,5 @@
 import asyncio
+import functools
 from pathlib import Path
 
 import pytest
@@ -415,31 +416,35 @@ def test_build_collaborators_respects_lsp_disabled(tmp_path):
     assert deps.services.lsp is None
 
 
+async def _areturn(value, *args, **kwargs):
+    """Async stub that ignores whatever it's called with and returns
+    ``value``. Bound via ``functools.partial`` to build each of
+    ``test_bind_ui_wires_all_callbacks``'s callback stubs without a fresh
+    nested ``async def`` per callback — bind_ui only threads each one through
+    to a specific attribute, so only identity (not behavior) is under test."""
+    return value
+
+
+def _snoop(*args, **kwargs) -> None:
+    """Sync no-op stub for the two non-async bind_ui callbacks
+    (on_tasks_changed / on_jobs_changed) — see ``_areturn``."""
+    return None
+
+
 def test_bind_ui_wires_all_callbacks(tmp_path):
     h = _minimal_harness(tmp_path)
 
-    async def request_approval(_):
-        return True
-    async def ask_user(_):
-        return None
-    async def on_subagent_event(sid, event, usage=None):
-        pass
-    async def on_subagent_model(sid, model):
-        pass
-    async def on_subagent_usage(sid, usage):
-        pass
-    async def on_cli_activity(events):
-        pass
-    def on_tasks_changed():
-        pass
-    def on_jobs_changed():
-        pass
-    async def on_compact(before, after):
-        pass
-    async def on_compact_start(n):
-        pass
-    async def on_rename(old, new):
-        return new
+    request_approval = functools.partial(_areturn, True)
+    ask_user = functools.partial(_areturn, None)
+    on_subagent_event = functools.partial(_areturn, None)
+    on_subagent_model = functools.partial(_areturn, None)
+    on_subagent_usage = functools.partial(_areturn, None)
+    on_cli_activity = functools.partial(_areturn, None)
+    on_tasks_changed = _snoop
+    on_jobs_changed = _snoop
+    on_compact = functools.partial(_areturn, None)
+    on_compact_start = functools.partial(_areturn, None)
+    on_rename = functools.partial(_areturn, "new")
 
     h.bind_ui(
         request_approval=request_approval,

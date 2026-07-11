@@ -35,6 +35,30 @@ from .widgets import format_cost as _format_cost
 from .widgets import format_token_split as _format_token_split
 
 
+def _is_text_start(event) -> bool:
+    return isinstance(event, PartStartEvent) and isinstance(event.part, TextPart)
+
+
+def _is_text_delta(event) -> bool:
+    return isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta)
+
+
+def _is_thinking_start(event) -> bool:
+    return isinstance(event, PartStartEvent) and isinstance(event.part, ThinkingPart)
+
+
+def _is_thinking_delta(event) -> bool:
+    return isinstance(event, PartDeltaEvent) and isinstance(event.delta, ThinkingPartDelta)
+
+
+def _is_tool_call(event) -> bool:
+    return isinstance(event, FunctionToolCallEvent)
+
+
+def _is_tool_result(event) -> bool:
+    return isinstance(event, FunctionToolResultEvent)
+
+
 def status_from_part(part) -> str:
     """Map a tool-result part to a ToolCallWidget status. A ``ToolReturnPart``
     carries an ``outcome`` of 'success'/'failed'/'denied' (pydantic-ai sets
@@ -934,6 +958,30 @@ class StreamRenderer:
                         group.note_child_finished(failed=widget.status == "failed")
         sink.on_result(event)
 
+    def _finalize_stale_blocks(self, event, sink: "_StreamSink") -> None:
+        """Finalize any in-flight thinking/text block that ``event`` implies is
+        now closed, before the event is routed to its handler."""
+        # A reasoning block is complete the moment any event other than its own
+        # thinking-delta arrives — the next part has started, so cap the thought
+        # to its preview now (Ctrl+O still reveals it). A thought that's still
+        # streaming (more ThinkingPartDeltas to come) is left uncapped.
+        if not _is_thinking_delta(event):
+            active_thought = sink.get_thinking()
+            if active_thought is not None:
+                active_thought.finalize()
+                sink.set_thinking(None)
+        # Symmetrically, an assistant text block is complete once any event other
+        # than its own text-delta arrives (a tool call, a thought, or the next text
+        # part). Finalize it then so its incremental markdown is replaced by one clean
+        # reparse, healing any blocks the streaming path doubled. We do NOT clear the
+        # current-assistant pointer (finalize is latched/idempotent, so re-finalizing
+        # on later events is a cheap no-op): callers read current_assistant as the
+        # turn's resting reply, and _on_text_start overwrites it for the next part.
+        if not _is_text_delta(event):
+            active_assistant = sink.get_assistant()
+            if active_assistant is not None:
+                active_assistant.finalize()
+
     async def dispatch_stream_event(self, event, sink: "_StreamSink") -> None:
         """Route one streamed event to the right widget via ``sink``, which knows
         where to mount and how to read/write this stream's run-state. The top-level
@@ -948,41 +996,19 @@ class StreamRenderer:
         # handlers that mount, so the base's ``container: Widget | None`` stays
         # honest without each handler re-checking.
         container: Widget = sink.container
-        # A reasoning block is complete the moment any event other than its own
-        # thinking-delta arrives — the next part has started, so cap the thought
-        # to its preview now (Ctrl+O still reveals it). A thought that's still
-        # streaming (more ThinkingPartDeltas to come) is left uncapped.
-        if not (
-            isinstance(event, PartDeltaEvent)
-            and isinstance(event.delta, ThinkingPartDelta)
-        ):
-            active_thought = sink.get_thinking()
-            if active_thought is not None:
-                active_thought.finalize()
-                sink.set_thinking(None)
-        # Symmetrically, an assistant text block is complete once any event other
-        # than its own text-delta arrives (a tool call, a thought, or the next text
-        # part). Finalize it then so its incremental markdown is replaced by one clean
-        # reparse, healing any blocks the streaming path doubled. We do NOT clear the
-        # current-assistant pointer (finalize is latched/idempotent, so re-finalizing
-        # on later events is a cheap no-op): callers read current_assistant as the
-        # turn's resting reply, and _on_text_start overwrites it for the next part.
-        if not (
-            isinstance(event, PartDeltaEvent)
-            and isinstance(event.delta, TextPartDelta)
-        ):
-            active_assistant = sink.get_assistant()
-            if active_assistant is not None:
-                active_assistant.finalize()
-        if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
-            await self._on_text_start(event, sink, container)
-        elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
-            await self._on_text_delta(event, sink)
-        elif isinstance(event, PartStartEvent) and isinstance(event.part, ThinkingPart):
-            await self._on_thinking_start(event, sink, container)
-        elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, ThinkingPartDelta):
-            await self._on_thinking_delta(event, sink)
-        elif isinstance(event, FunctionToolCallEvent):
-            await self._on_tool_call(event, sink, container)
-        elif isinstance(event, FunctionToolResultEvent):
-            await self._on_tool_result(event, sink)
+        self._finalize_stale_blocks(event, sink)
+        # A data-driven route table (rather than an isinstance elif chain) keeps
+        # this dispatcher's own branch count flat regardless of how many event
+        # types it routes — each predicate/handler pair is a single row.
+        routes = (
+            (_is_text_start, lambda: self._on_text_start(event, sink, container)),
+            (_is_text_delta, lambda: self._on_text_delta(event, sink)),
+            (_is_thinking_start, lambda: self._on_thinking_start(event, sink, container)),
+            (_is_thinking_delta, lambda: self._on_thinking_delta(event, sink)),
+            (_is_tool_call, lambda: self._on_tool_call(event, sink, container)),
+            (_is_tool_result, lambda: self._on_tool_result(event, sink)),
+        )
+        for matches, handle in routes:
+            if matches(event):
+                await handle()
+                return

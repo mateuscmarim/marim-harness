@@ -337,14 +337,55 @@ async def _cmd_usage(app: HarnessApp, arg: str) -> None:
     await app.post_system("\n".join(lines))
 
 
-async def _cmd_worktree(app: HarnessApp, arg: str) -> None:
-    from ...workspace.worktree import (
-        WorktreeError,
-        create_or_reuse_worktree,
-        list_worktrees,
-        remove_worktree,
-        repo_root,
+async def _worktree_list(app: HarnessApp, root, ws) -> None:
+    from ...workspace.worktree import WorktreeError, list_worktrees
+
+    try:
+        rows = list_worktrees(root, current=ws)
+    except WorktreeError as exc:
+        await app.post_system(f"Could not list worktrees: {exc}")
+        return
+    lines = ["| | branch | path |", "|---|---|---|"]
+    for r in rows:
+        marker = "•" if r.is_current else ""
+        branch = r.branch or "(detached)"
+        lines.append(f"| {marker} | `{branch}` | `{r.path}` |")
+    await app.post_system("\n".join(lines))
+
+
+async def _worktree_create(app: HarnessApp, root, rest: str) -> None:
+    from ...workspace.worktree import WorktreeError, create_or_reuse_worktree
+
+    if not rest:
+        await app.post_system("Usage: /worktree create <branch>")
+        return
+    try:
+        path = create_or_reuse_worktree(root, rest)
+    except WorktreeError as exc:
+        await app.post_system(f"Could not create worktree: {exc}")
+        return
+    await app.post_system(
+        f"Created worktree at `{path}`.\n"
+        f"Launch into it with `marim --worktree {rest}` in a new terminal."
     )
+
+
+async def _worktree_remove(app: HarnessApp, root, rest: str) -> None:
+    from ...workspace.worktree import WorktreeError, remove_worktree
+
+    if not rest:
+        await app.post_system("Usage: /worktree remove <branch>")
+        return
+    try:
+        remove_worktree(root, rest)
+    except WorktreeError as exc:
+        await app.post_system(f"Could not remove worktree: {exc}")
+        return
+    await app.post_system(f"Removed worktree for `{rest}`.")
+
+
+async def _cmd_worktree(app: HarnessApp, arg: str) -> None:
+    from ...workspace.worktree import repo_root
 
     ws = app.harness.deps.workspace.root
     root = repo_root(ws)
@@ -355,40 +396,11 @@ async def _cmd_worktree(app: HarnessApp, arg: str) -> None:
     sub, _, rest = arg.partition(" ")
     rest = rest.strip()
     if sub in ("", "list"):
-        try:
-            rows = list_worktrees(root, current=ws)
-        except WorktreeError as exc:
-            await app.post_system(f"Could not list worktrees: {exc}")
-            return
-        lines = ["| | branch | path |", "|---|---|---|"]
-        for r in rows:
-            marker = "•" if r.is_current else ""
-            branch = r.branch or "(detached)"
-            lines.append(f"| {marker} | `{branch}` | `{r.path}` |")
-        await app.post_system("\n".join(lines))
+        await _worktree_list(app, root, ws)
     elif sub == "create":
-        if not rest:
-            await app.post_system("Usage: /worktree create <branch>")
-            return
-        try:
-            path = create_or_reuse_worktree(root, rest)
-        except WorktreeError as exc:
-            await app.post_system(f"Could not create worktree: {exc}")
-            return
-        await app.post_system(
-            f"Created worktree at `{path}`.\n"
-            f"Launch into it with `marim --worktree {rest}` in a new terminal."
-        )
+        await _worktree_create(app, root, rest)
     elif sub == "remove":
-        if not rest:
-            await app.post_system("Usage: /worktree remove <branch>")
-            return
-        try:
-            remove_worktree(root, rest)
-        except WorktreeError as exc:
-            await app.post_system(f"Could not remove worktree: {exc}")
-            return
-        await app.post_system(f"Removed worktree for `{rest}`.")
+        await _worktree_remove(app, root, rest)
     else:
         await app.post_system(
             "Usage: /worktree [list | create <branch> | remove <branch>]"

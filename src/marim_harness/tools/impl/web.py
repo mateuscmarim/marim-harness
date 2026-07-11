@@ -28,6 +28,67 @@ def _resolve_base_url(base_url: str | None) -> str:
     return base_url or os.environ.get("MARIM_SEARXNG_URL") or _DEFAULT_BASE_URL
 
 
+async def _fetch_results(base_url: str, params: dict[str, str]) -> tuple[list, str | None]:
+    """Query the SearXNG endpoint and return ``(results, None)`` on success or
+    ``([], error_message)`` on any failure — an HTTP error status, a transport
+    error, or a non-JSON body."""
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT, headers={"User-Agent": _UA}) as client:
+            resp = await client.get(f"{base_url.rstrip('/')}/search", params=params)
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.HTTPStatusError as exc:
+        msg = f"Search failed: HTTP {exc.response.status_code}"
+        detail = (exc.response.text or "").strip()
+        if detail:
+            snippet = detail[:_ERROR_BODY_CHARS]
+            if len(detail) > _ERROR_BODY_CHARS:
+                snippet += "…"
+            msg = f"{msg}\n{snippet}"
+        return [], msg
+    except httpx.RequestError as exc:
+        return [], f"Search failed: {exc}"
+    except ValueError:
+        # resp.json() raises on a non-JSON body — SearXNG ships with the JSON
+        # format disabled by default, so a misconfigured instance (or a rate-limit
+        # / Cloudflare interstitial) returns HTML with HTTP 200. Surface that
+        # rather than letting the decode error escape into the turn.
+        return [], (
+            "Search failed: response was not valid JSON "
+            "(is the SearXNG JSON format enabled?)"
+        )
+
+    # A valid-JSON-but-wrong-shape response (bare array, null, …) would make the
+    # `.get`/slice below throw; normalise both the envelope and the results list.
+    results = data.get("results", []) if isinstance(data, dict) else []
+    if not isinstance(results, list):
+        results = []
+    return results, None
+
+
+def _format_result(i: int, r: dict) -> list[str]:
+    """Render one search hit as the lines of its formatted block (title/date
+    header, url, optional snippet, optional engines) — a blank line follows so
+    hits stay visually separated."""
+    title = r.get("title", "(no title)")
+    url = r.get("url", "")
+    snippet = r.get("content", "")
+    if snippet and len(snippet) > _SNIPPET_MAX:
+        snippet = snippet[:_SNIPPET_MAX] + "…"
+    engines = ", ".join(r.get("engines", []))
+    date = r.get("publishedDate") or ""
+    header = f"{i}. {title}"
+    if date:
+        header += f"  ({date})"
+    out = [header, f"   {url}"]
+    if snippet:
+        out.append(f"   {snippet}")
+    if engines:
+        out.append(f"   [engines: {engines}]")
+    out.append("")
+    return out
+
+
 async def web_search(
     query: str,
     *,
@@ -57,56 +118,15 @@ async def web_search(
     if categories:
         params["categories"] = categories
 
-    try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT, headers={"User-Agent": _UA}) as client:
-            resp = await client.get(f"{base_url.rstrip('/')}/search", params=params)
-            resp.raise_for_status()
-            data = resp.json()
-    except httpx.HTTPStatusError as exc:
-        msg = f"Search failed: HTTP {exc.response.status_code}"
-        detail = (exc.response.text or "").strip()
-        if detail:
-            snippet = detail[:_ERROR_BODY_CHARS]
-            if len(detail) > _ERROR_BODY_CHARS:
-                snippet += "…"
-            msg = f"{msg}\n{snippet}"
-        return msg
-    except httpx.RequestError as exc:
-        return f"Search failed: {exc}"
-    except ValueError:
-        # resp.json() raises on a non-JSON body — SearXNG ships with the JSON
-        # format disabled by default, so a misconfigured instance (or a rate-limit
-        # / Cloudflare interstitial) returns HTML with HTTP 200. Surface that
-        # rather than letting the decode error escape into the turn.
-        return "Search failed: response was not valid JSON (is the SearXNG JSON format enabled?)"
-
-    # A valid-JSON-but-wrong-shape response (bare array, null, …) would make the
-    # `.get`/slice below throw; normalise both the envelope and the results list.
-    results = data.get("results", []) if isinstance(data, dict) else []
-    if not isinstance(results, list):
-        results = []
+    results, error = await _fetch_results(base_url, params)
+    if error is not None:
+        return error
     results = results[:max_results]
     if not results:
         return "No results found."
 
     lines: list[str] = []
     for i, r in enumerate(results, 1):
-        title = r.get("title", "(no title)")
-        url = r.get("url", "")
-        snippet = r.get("content", "")
-        if snippet and len(snippet) > _SNIPPET_MAX:
-            snippet = snippet[:_SNIPPET_MAX] + "…"
-        engines = ", ".join(r.get("engines", []))
-        date = r.get("publishedDate") or ""
-        header = f"{i}. {title}"
-        if date:
-            header += f"  ({date})"
-        lines.append(header)
-        lines.append(f"   {url}")
-        if snippet:
-            lines.append(f"   {snippet}")
-        if engines:
-            lines.append(f"   [engines: {engines}]")
-        lines.append("")
+        lines.extend(_format_result(i, r))
 
     return "\n".join(lines)

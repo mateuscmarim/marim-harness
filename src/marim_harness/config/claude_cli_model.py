@@ -23,7 +23,7 @@ import asyncio
 import contextlib
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -38,7 +38,7 @@ from ..usage import COST_DETAIL_KEY
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable
 
-    from pydantic_ai.messages import ModelMessage
+    from pydantic_ai.messages import ModelMessage, ModelRequest
     from pydantic_ai.settings import ModelSettings
 
 logger = logging.getLogger(__name__)
@@ -115,6 +115,36 @@ def _render_tool_args(args) -> str:
         return str(args)
 
 
+def _request_lines(msg: ModelRequest) -> list[str]:
+    """The rendered lines for one ``ModelRequest`` in :func:`flatten_history`:
+    a user prompt's text and any tool-return results."""
+    from pydantic_ai.messages import ToolReturnPart, UserPromptPart
+
+    lines: list[str] = []
+    for p in msg.parts:
+        if isinstance(p, UserPromptPart):
+            text = _part_text(p.content)
+            if text:
+                lines.append(f"User: {text}")
+        elif isinstance(p, ToolReturnPart):
+            lines.append(f"Tool {p.tool_name} returned: {_part_text(p.content)}")
+    return lines
+
+
+def _response_lines(msg: ModelResponse) -> list[str]:
+    """The rendered lines for one ``ModelResponse`` in :func:`flatten_history`:
+    assistant prose and any tool calls it made."""
+    from pydantic_ai.messages import TextPart, ToolCallPart
+
+    lines: list[str] = []
+    for p in msg.parts:
+        if isinstance(p, TextPart) and p.content:
+            lines.append(f"Assistant: {p.content}")
+        elif isinstance(p, ToolCallPart):
+            lines.append(f"Assistant called {p.tool_name}({_render_tool_args(p.args)})")
+    return lines
+
+
 def flatten_history(messages: list[ModelMessage]) -> str:
     """The whole conversation rendered to one prompt, for a cold first turn (no
     Claude session to resume).
@@ -125,33 +155,14 @@ def flatten_history(messages: list[ModelMessage]) -> str:
     render those too (``Assistant called <tool>(<args>)`` / ``Tool <tool>
     returned: <result>``) so the switched-in Claude sees what the tools did,
     not just the surrounding prose."""
-    from pydantic_ai.messages import (
-        ModelRequest,
-        ModelResponse,
-        TextPart,
-        ToolCallPart,
-        ToolReturnPart,
-        UserPromptPart,
-    )
+    from pydantic_ai.messages import ModelRequest, ModelResponse
 
     lines: list[str] = []
     for msg in messages:
         if isinstance(msg, ModelRequest):
-            for p in msg.parts:
-                if isinstance(p, UserPromptPart):
-                    text = _part_text(p.content)
-                    if text:
-                        lines.append(f"User: {text}")
-                elif isinstance(p, ToolReturnPart):
-                    lines.append(f"Tool {p.tool_name} returned: {_part_text(p.content)}")
+            lines.extend(_request_lines(msg))
         elif isinstance(msg, ModelResponse):
-            for p in msg.parts:
-                if isinstance(p, TextPart) and p.content:
-                    lines.append(f"Assistant: {p.content}")
-                elif isinstance(p, ToolCallPart):
-                    lines.append(
-                        f"Assistant called {p.tool_name}({_render_tool_args(p.args)})"
-                    )
+            lines.extend(_response_lines(msg))
     return "\n\n".join(lines)
 
 
@@ -270,6 +281,92 @@ def _flatten_result_content(content) -> str:
     return "" if content is None else str(content)
 
 
+def _is_subagent_noise(obj: dict) -> bool:
+    """True when ``obj`` is Claude-side sub-agent traffic — or that sub-agent's
+    system-event lifecycle noise — neither of which belongs in the main turn.
+
+    Objects tagged ``parent_tool_use_id`` belong to a Claude-side sub-agent, not
+    the main turn; headless there is no demux to route them to, so they are
+    dropped — otherwise a child's prose would leak into the main response text.
+    ``task_started``/``task_updated``/``task_notification`` system events are the
+    same sub-agent's lifecycle noise (the demux path renders it) and are skipped
+    too."""
+    if obj.get("parent_tool_use_id"):
+        return True
+    return obj.get("type") == "system" and obj.get("subtype") in (
+        "task_started",
+        "task_updated",
+        "task_notification",
+    )
+
+
+def _assistant_chunks(obj: dict) -> Iterator:
+    """The ``TextChunk``/``ToolUseChunk``s in one ``assistant`` stream-json
+    object's content blocks."""
+    for block in (obj.get("message") or {}).get("content") or []:
+        btype = block.get("type")
+        if btype == "text":
+            text = (block.get("text", "") or "").strip()
+            if text:
+                yield TextChunk(text)
+        elif btype == "tool_use":
+            yield ToolUseChunk(
+                name=block.get("name", "tool"),
+                tool_input=block.get("input") or {},
+                call_id=block.get("id", ""),
+            )
+
+
+def _user_chunks(obj: dict) -> Iterator:
+    """The ``ToolResultChunk``s in one ``user`` stream-json object's content
+    blocks."""
+    for block in (obj.get("message") or {}).get("content") or []:
+        if block.get("type") == "tool_result":
+            yield ToolResultChunk(
+                call_id=block.get("tool_use_id", ""),
+                content=_flatten_result_content(block.get("content")),
+                is_error=bool(block.get("is_error")),
+            )
+
+
+def _stream_chunks(kind: str, obj: dict) -> Iterator:
+    """Dispatch one ``assistant``/``user`` stream-json object to
+    :func:`_assistant_chunks`/:func:`_user_chunks`. A plain (sync) generator —
+    unlike ``consume_cli_stream`` it CAN ``yield from``, so the caller collapses
+    what would otherwise be two ``elif``/``for`` pairs into one."""
+    if kind == "assistant":
+        yield from _assistant_chunks(obj)
+    elif kind == "user":
+        yield from _user_chunks(obj)
+
+
+def _merge_session_id(session_id: str | None, obj: dict) -> str | None:
+    """The first-seen session id: keep the existing one, else take ``obj``'s."""
+    return session_id or obj.get("session_id")
+
+
+def _result_done_chunk(
+    results: list[dict], obj: dict, session_id: str | None
+) -> tuple[str | None, DoneChunk]:
+    """Fold one ``result`` stream-json object into ``results`` and build the
+    ``DoneChunk`` for it (usage folded across every result seen so far via
+    ``sum_result_usages``, cost = the last result's cumulative total).
+
+    Do NOT return early from the caller after this: an async sub-agent's
+    completion re-invokes the main agent, so more turns (and another result)
+    may follow. Consumers keep the LAST ``DoneChunk``."""
+    from ..subagents.cli_backend import sum_result_usages
+
+    session_id = _merge_session_id(session_id, obj)
+    results.append(obj)
+    summed, _turns, cost = sum_result_usages(results)
+    return session_id, DoneChunk(
+        session_id=session_id,
+        usage=request_usage_from_cli(summed, cost),
+        complete=True,
+    )
+
+
 async def consume_cli_stream(objs: AsyncIterator[dict]) -> AsyncIterator:
     """Turn parsed stream-json objects into structured chunks then one or more
     ``DoneChunk``s.
@@ -297,17 +394,15 @@ async def consume_cli_stream(objs: AsyncIterator[dict]) -> AsyncIterator:
     keeps reading to EOF; consumers keep the LAST ``DoneChunk`` (``request()``
     already ``continue``s past each one). A stream that ends without any ``result``
     yields a trailing ``DoneChunk(complete=False)``."""
-    from ..subagents.cli_backend import sum_result_usages
-
     session_id: str | None = None
     results: list[dict] = []
     error_detail = ""
     async for obj in objs:
-        if obj.get("parent_tool_use_id"):
-            # Sub-agent-internal traffic. With a UI the demux tee (see
-            # ClaudeCliStreamedResponse) consumes it before we ever see it;
-            # headless it is dropped so a child's prose never pollutes the
-            # main response text.
+        if _is_subagent_noise(obj):
+            # Sub-agent-internal traffic, or its lifecycle noise. With a UI the
+            # demux tee (see ClaudeCliStreamedResponse) consumes the traffic
+            # before we ever see it; headless it is dropped here so a child's
+            # prose never pollutes the main response text.
             continue
         kind = obj.get("type")
         if kind == "__cli_error__":
@@ -317,42 +412,16 @@ async def consume_cli_stream(objs: AsyncIterator[dict]) -> AsyncIterator:
             error_detail = str(obj.get("stderr") or "").strip() or error_detail
             continue
         if kind == "system":
-            if obj.get("subtype") in ("task_started", "task_updated", "task_notification"):
-                continue  # sub-agent lifecycle noise (the demux path renders it)
-            session_id = session_id or obj.get("session_id")
-        elif kind == "assistant":
-            for block in (obj.get("message") or {}).get("content") or []:
-                btype = block.get("type")
-                if btype == "text":
-                    text = (block.get("text", "") or "").strip()
-                    if text:
-                        yield TextChunk(text)
-                elif btype == "tool_use":
-                    yield ToolUseChunk(
-                        name=block.get("name", "tool"),
-                        tool_input=block.get("input") or {},
-                        call_id=block.get("id", ""),
-                    )
-        elif kind == "user":
-            for block in (obj.get("message") or {}).get("content") or []:
-                if block.get("type") == "tool_result":
-                    yield ToolResultChunk(
-                        call_id=block.get("tool_use_id", ""),
-                        content=_flatten_result_content(block.get("content")),
-                        is_error=bool(block.get("is_error")),
-                    )
+            session_id = _merge_session_id(session_id, obj)
+        elif kind in ("assistant", "user"):
+            for chunk in _stream_chunks(kind, obj):
+                yield chunk
         elif kind == "result":
-            session_id = session_id or obj.get("session_id")
-            results.append(obj)
-            summed, _turns, cost = sum_result_usages(results)
-            # Do NOT return: an async sub-agent's completion re-invokes the
+            # Do NOT return early: an async sub-agent's completion re-invokes the
             # main agent, so more turns (and another result) may follow.
             # Consumers keep the LAST DoneChunk.
-            yield DoneChunk(
-                session_id=session_id,
-                usage=request_usage_from_cli(summed, cost),
-                complete=True,
-            )
+            session_id, done = _result_done_chunk(results, obj, session_id)
+            yield done
     if not results:
         yield DoneChunk(
             session_id=session_id,
@@ -644,6 +713,67 @@ class ClaudeCliModel(Model):
         yield stream
 
 
+class _TextFolder:
+    """The vendor-part-id bookkeeping for ``_get_event_iterator``'s two
+    rendering modes.
+
+    With a UI side-channel (cards mode, ``on_activity`` set), Claude's
+    tool_use/tool_result become native tool cards pushed out-of-band, and each
+    run of assistant prose gets its own text part (a fresh vendor_part_id after
+    every tool) so the cards interleave between text blocks. Headless (fold
+    mode, no side-channel) folds tool_use into the text as ``▸`` lines in one
+    growing part. ``part_n`` (cards mode) and ``folded_any`` (fold mode, for
+    blank-line separation) both mutate across chunks AND across the text/tool
+    arms, so they're threaded via this small stateful object rather than loose
+    locals passed in/out of each arm."""
+
+    def __init__(
+        self, parts_manager, on_activity: Callable[[list], Awaitable[None]] | None
+    ) -> None:
+        self._parts_manager = parts_manager
+        self._on_activity = on_activity
+        self._cards = on_activity is not None
+        self.part_n = 0
+        self.folded_any = False
+
+    async def _emit(self, content: str, part_id: str):
+        for event in self._parts_manager.handle_text_delta(
+            vendor_part_id=part_id, content=content
+        ):
+            yield event
+
+    async def emit_text(self, delta: str):
+        """A ``TextChunk``: cards mode gives it its own vendor part id
+        (``text-{part_n}``); fold mode grows the single ``text-0`` part,
+        blank-line-separated from anything already folded into it."""
+        if self._cards:
+            async for ev in self._emit(delta, f"text-{self.part_n}"):
+                yield ev
+            return
+        seg = delta if not self.folded_any else f"\n\n{delta}"
+        async for ev in self._emit(seg, "text-0"):
+            yield ev
+        self.folded_any = True
+
+    async def emit_tool(self, chunk):
+        """A ``ToolUseChunk``/``ToolResultChunk``: cards mode pushes it
+        out-of-band via ``on_activity`` and, for a ``ToolUseChunk``, bumps
+        ``part_n`` so following prose starts a fresh part below the card;
+        fold mode folds it into the text stream as a ``▸`` line."""
+        if self._on_activity is not None:
+            events = cli_activity_events(chunk)
+            if events:
+                await self._on_activity(events)
+            if isinstance(chunk, ToolUseChunk):
+                self.part_n += 1  # following prose starts a fresh part below the card
+            return
+        seg = fold_chunk_text(chunk, leading=not self.folded_any)
+        if seg:
+            async for ev in self._emit(seg, "text-0"):
+                yield ev
+            self.folded_any = True
+
+
 @dataclass
 class ClaudeCliStreamedResponse(StreamedResponse):
     """Streams ``consume_cli_stream`` output as text-delta events. Stores Claude's
@@ -680,71 +810,43 @@ class ClaudeCliStreamedResponse(StreamedResponse):
             if remainder is not None:
                 yield remainder
 
-    async def _get_event_iterator(self):
-        if self._objs is None:
-            return
-        # Two rendering modes. With a UI side-channel (_on_activity set), Claude's
-        # tool_use/tool_result become native tool cards pushed out-of-band, and each
-        # run of assistant prose gets its own text part (a fresh vendor_part_id after
-        # every tool) so the cards interleave between text blocks. Headless (no
-        # side-channel) folds tool_use into the text as ▸ lines in one growing part.
-        on_activity = self._on_activity
-        cards = on_activity is not None
-        part_n = 0
-        folded_any = False  # for blank-line separation in the headless fold path
-        # The demux tee is active only when the sub-agent side-channel is wired
-        # (a UI is bound); headless keeps the cheap filter-only path in
-        # consume_cli_stream (Claude-side child traffic is simply dropped there).
-        objs = self._demuxed_objs() if self._on_subagent is not None else self._objs
+    def _finalize_done(self, done: DoneChunk | None) -> None:
+        """Mirror ``request()``: a stream that ends without a proper ``result``
+        event (Claude crashed / produced no result) is a FAILED turn — raise so
+        the harness flushes its resumable baseline (clean failure).
 
-        async def text_events(content: str, part_id: str):
-            for event in self._parts_manager.handle_text_delta(
-                vendor_part_id=part_id, content=content
-            ):
-                yield event
-
-        # Mirror ``request()``: a stream that ends without a proper ``result`` event
-        # (Claude crashed / produced no result) is a FAILED turn — raise after the
-        # loop so the harness flushes its resumable baseline (clean failure).
-        #
-        # Finalization (usage/session id/``_finished``) is deferred until AFTER the
-        # loop, not applied as each DoneChunk arrives: `claude -p` can emit several
-        # ``result`` events in one process (an async sub-agent's completion
-        # re-invokes the main agent for another turn), and marking the stream
-        # finished on the first one would cut the run short. The last DoneChunk
-        # wins.
-        done: DoneChunk | None = None
-        async for chunk in consume_cli_stream(objs):
-            if isinstance(chunk, TextChunk):
-                if cards:
-                    async for ev in text_events(chunk.delta, f"text-{part_n}"):
-                        yield ev
-                else:
-                    seg = chunk.delta if not folded_any else f"\n\n{chunk.delta}"
-                    async for ev in text_events(seg, "text-0"):
-                        yield ev
-                    folded_any = True
-            elif isinstance(chunk, (ToolUseChunk, ToolResultChunk)):
-                if on_activity is not None:
-                    events = cli_activity_events(chunk)
-                    if events:
-                        await on_activity(events)
-                    if isinstance(chunk, ToolUseChunk):
-                        part_n += 1  # following prose starts a fresh part below the card
-                else:
-                    seg = fold_chunk_text(chunk, leading=not folded_any)
-                    if seg:
-                        async for ev in text_events(seg, "text-0"):
-                            yield ev
-                        folded_any = True
-            elif isinstance(chunk, DoneChunk):
-                done = chunk  # last one wins (multi-result runs)
+        Called once, AFTER ``_get_event_iterator``'s loop — not applied as each
+        DoneChunk arrives — because `claude -p` can emit several ``result``
+        events in one process (an async sub-agent's completion re-invokes the
+        main agent for another turn), and marking the stream finished on the
+        first one would cut the run short. The last DoneChunk wins."""
         if done is None or not done.complete:
             raise CliModelError(_no_result_message(done))
         self._usage = done.usage
         if done.session_id and self._set_session is not None:
             self._set_session(done.session_id)
         self._finished = True
+
+    async def _get_event_iterator(self):
+        if self._objs is None:
+            return
+        # The demux tee is active only when the sub-agent side-channel is wired
+        # (a UI is bound); headless keeps the cheap filter-only path in
+        # consume_cli_stream (Claude-side child traffic is simply dropped there).
+        objs = self._demuxed_objs() if self._on_subagent is not None else self._objs
+        folder = _TextFolder(self._parts_manager, self._on_activity)
+
+        done: DoneChunk | None = None
+        async for chunk in consume_cli_stream(objs):
+            if isinstance(chunk, TextChunk):
+                async for ev in folder.emit_text(chunk.delta):
+                    yield ev
+            elif isinstance(chunk, (ToolUseChunk, ToolResultChunk)):
+                async for ev in folder.emit_tool(chunk):
+                    yield ev
+            elif isinstance(chunk, DoneChunk):
+                done = chunk  # last one wins (multi-result runs)
+        self._finalize_done(done)
 
     @property
     def model_name(self) -> str:
