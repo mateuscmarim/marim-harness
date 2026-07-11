@@ -179,3 +179,124 @@ async def test_plan_mode_handles_json_string_args():
     reqs = FakeRequests(approvals=[FakeCall("c1", "bash", '{"command": "ls -la"}')])
     results = await resolve_approvals(reqs, Mode.plan, None)
     assert results.approvals["c1"] is True
+
+
+@pytest.mark.anyio
+async def test_ask_mode_auto_approves_scratchpad_write(tmp_path):
+    ws = tmp_path / "ws"
+    scratch = tmp_path / "scratch"
+    ws.mkdir()
+    scratch.mkdir()
+    reqs = FakeRequests(
+        approvals=[FakeCall("c1", "write_file", {"path": str(scratch / "n.txt")})]
+    )
+
+    async def never(_call):  # pragma: no cover - must not prompt for scratchpad
+        raise AssertionError("scratchpad write must not prompt")
+
+    results = await resolve_approvals(
+        reqs, Mode.ask, never, workspace_root=ws, scratchpad=scratch
+    )
+    assert results.approvals["c1"] is True
+
+
+@pytest.mark.anyio
+async def test_ask_mode_still_prompts_for_workspace_write(tmp_path):
+    ws = tmp_path / "ws"
+    scratch = tmp_path / "scratch"
+    ws.mkdir()
+    scratch.mkdir()
+    reqs = FakeRequests(
+        approvals=[FakeCall("c1", "edit_file", {"path": "src/main.py"})]
+    )
+    seen = []
+
+    async def approve(call):
+        seen.append(call.tool_name)
+        return True
+
+    await resolve_approvals(
+        reqs, Mode.ask, approve, workspace_root=ws, scratchpad=scratch
+    )
+    assert seen == ["edit_file"]
+
+
+@pytest.mark.anyio
+async def test_ask_mode_bash_never_bypasses_via_scratchpad(tmp_path):
+    """Only write_file/edit_file qualify — a bash command mentioning the
+    scratchpad path still prompts (its filesystem reach can't be proven)."""
+    ws = tmp_path / "ws"
+    scratch = tmp_path / "scratch"
+    ws.mkdir()
+    scratch.mkdir()
+    reqs = FakeRequests(
+        approvals=[FakeCall("c1", "bash", {"command": f"rm -rf {scratch}"})]
+    )
+    seen = []
+
+    async def approve(call):
+        seen.append(call.tool_name)
+        return True
+
+    await resolve_approvals(
+        reqs, Mode.ask, approve, workspace_root=ws, scratchpad=scratch
+    )
+    assert seen == ["bash"]
+
+
+@pytest.mark.anyio
+async def test_plan_mode_still_denies_scratchpad_write(tmp_path):
+    """Plan mode's no-mutations promise stays absolute — even for the
+    scratchpad."""
+    from pydantic_ai import ToolDenied
+
+    ws = tmp_path / "ws"
+    scratch = tmp_path / "scratch"
+    ws.mkdir()
+    scratch.mkdir()
+    reqs = FakeRequests(
+        approvals=[FakeCall("c1", "write_file", {"path": str(scratch / "n.txt")})]
+    )
+    results = await resolve_approvals(
+        reqs, Mode.plan, None, workspace_root=ws, scratchpad=scratch
+    )
+    assert isinstance(results.approvals["c1"], ToolDenied)
+
+
+@pytest.mark.anyio
+async def test_scratchpad_write_approved_even_without_approver(tmp_path):
+    """Headless ask mode (no approver wired): scratchpad writes are
+    pre-blessed, so they succeed where everything else is denied."""
+    ws = tmp_path / "ws"
+    scratch = tmp_path / "scratch"
+    ws.mkdir()
+    scratch.mkdir()
+    reqs = FakeRequests(
+        approvals=[FakeCall("c1", "write_file", {"path": str(scratch / "n.txt")})]
+    )
+    results = await resolve_approvals(
+        reqs, Mode.ask, None, workspace_root=ws, scratchpad=scratch
+    )
+    assert results.approvals["c1"] is True
+
+
+@pytest.mark.anyio
+async def test_traversal_out_of_scratchpad_still_prompts(tmp_path):
+    """A path that dot-dots from the scratchpad back out must not inherit the
+    bypass — resolution is on the resolved target, not the string prefix."""
+    ws = tmp_path / "ws"
+    scratch = tmp_path / "scratch"
+    ws.mkdir()
+    scratch.mkdir()
+    escape = str(scratch / ".." / "outside.txt")
+    reqs = FakeRequests(approvals=[FakeCall("c1", "write_file", {"path": escape})])
+    seen = []
+
+    async def approve(call):
+        seen.append(call.tool_name)
+        return True
+
+    await resolve_approvals(
+        reqs, Mode.ask, approve, workspace_root=ws, scratchpad=scratch
+    )
+    assert seen == ["write_file"]

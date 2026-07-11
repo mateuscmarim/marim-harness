@@ -90,6 +90,25 @@ def _safe_read(root: Path, path: str, extra_read_roots: tuple[Path, ...]) -> Pat
         raise ModelRetry(str(exc)) from exc
 
 
+def _safe_write(root: Path, path: str, extra_write_roots: tuple[Path, ...]) -> Path:
+    """Resolve ``path`` for writing: inside ``root``, or inside one of
+    ``extra_write_roots`` (the session scratchpad). Mirrors ``_safe_read``'s
+    root-first ordering, which is load-bearing: a relative path always
+    resolves against — and lands in — the workspace; only a path the
+    workspace guard rejects (an absolute path outside it) may fall through
+    to an extra root. An extra root can therefore never capture a relative
+    workspace write."""
+    try:
+        return resolve_in_workspace(root, path)
+    except WorkspaceError as exc:
+        for extra in extra_write_roots:
+            try:
+                return resolve_in_workspace(extra, path)
+            except WorkspaceError:
+                continue
+        raise ModelRetry(str(exc)) from exc
+
+
 def read_file(
     root: Path,
     path: str,
@@ -206,10 +225,15 @@ def _atomic_write_preserving_mode(p: Path, content: str) -> None:
 
 
 def write_file(
-    root: Path, path: str, content: str, ledger: ReadLedger | None = None
+    root: Path,
+    path: str,
+    content: str,
+    ledger: ReadLedger | None = None,
+    extra_write_roots: tuple[Path, ...] = (),
 ) -> str:
-    """Create or overwrite a file relative to the workspace root."""
-    p = _safe(root, path)
+    """Create or overwrite a file relative to the workspace root (or, by
+    absolute path, inside an extra write root such as the session scratchpad)."""
+    p = _safe_write(root, path, extra_write_roots)
     # Read-before-edit applies only to *overwriting* an existing file (clobbering
     # content the agent may not have seen). Creating a brand-new file needs no
     # prior read — there's nothing to clobber.
@@ -266,13 +290,17 @@ def _apply_edit(text: str, edit: Edit, path: str, index: int) -> str:
 
 
 def edit_file(
-    root: Path, path: str, edits: list[Edit], ledger: ReadLedger | None = None
+    root: Path,
+    path: str,
+    edits: list[Edit],
+    ledger: ReadLedger | None = None,
+    extra_write_roots: tuple[Path, ...] = (),
 ) -> str:
     """Apply a list of edits to one file, in order and all-or-nothing. Each edit
     sees the result of the previous one; the file is written only if all succeed."""
     if not edits:
         raise ModelRetry("no edits given: pass at least one {old_string, new_string}.")
-    p = _safe(root, path)
+    p = _safe_write(root, path, extra_write_roots)
     if not p.is_file():
         raise ModelRetry(f"not a file: {path}")
     # Editing always modifies existing content, so the read-before-edit guard

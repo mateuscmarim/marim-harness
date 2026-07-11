@@ -310,18 +310,44 @@ def effective_tools(defn: AgentDef, *, allow_gated: bool) -> frozenset[str]:
 
 
 def subagent_instructions(
-    defn: AgentDef, workspace_root, max_output_chars: int | None = None
+    defn: AgentDef, workspace_root, max_output_chars: int | None = None,
+    scratchpad: "Path | None" = None, scratchpad_writable: bool = True,
 ) -> str:
     """The system prompt for a spawned sub-agent: its role plus where it works,
     and — when the spawner set one — a soft output budget it should distill
     toward. The budget is a target the model summarizes for, not a guillotine on
-    its return value; ``cap_subagent_output`` is the lossless backstop."""
+    its return value; ``cap_subagent_output`` is the lossless backstop.
+
+    ``scratchpad``, when set, is the path shared with the spawning agent (one
+    scratchpad per session); ``scratchpad_writable`` says whether *this* spawn
+    actually got ``write_file``/``edit_file`` (mode/agent-type gating can strip
+    them — see ``effective_tools``) and switches the wording between "use it"
+    and "read-only", so the line never tells a spawn to write with a tool it
+    doesn't have."""
     base = (
         f"{defn.prompt}\n\nYou are operating inside the workspace at "
         f"{workspace_root}. All file paths are relative to it."
     )
     if max_output_chars is not None:
         base += _output_budget_instruction(max_output_chars)
+    if scratchpad is not None:
+        # Shared with the spawning agent (one scratchpad per session), so a
+        # sub-agent can hand files back to its parent by writing there — but
+        # only when it actually has write_file/edit_file. Advertising a write
+        # to a spawn that doesn't (read-only agent types, or any type outside
+        # auto mode) would make the model call it and hard-fail.
+        if scratchpad_writable:
+            base += (
+                f"\n\nScratchpad directory for temporary files, shared with the "
+                f"agent that spawned you: {scratchpad}. Use it, by absolute path, "
+                "for intermediate artifacts instead of the workspace."
+            )
+        else:
+            base += (
+                f"\n\nScratchpad directory shared with the agent that spawned "
+                f"you: {scratchpad}. You cannot write there, but files staged "
+                "there for you are readable by absolute path."
+            )
     return base
 
 

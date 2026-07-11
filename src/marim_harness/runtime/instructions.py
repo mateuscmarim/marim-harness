@@ -190,6 +190,30 @@ def _build_memory_index(global_scope_, project_scope_) -> str:
     )
 
 
+def _scratchpad_block(ctx: RunContext[Deps]) -> str:
+    """The scratchpad prompt section, or "" when no scratchpad is available
+    (disabled, no session, or the dir can't be provided safely — the getter
+    already folded all of those to None). Module-level rather than only a
+    closure so it is directly unit-testable. The path is stable within a
+    session, so the block doesn't churn the prompt cache turn-to-turn."""
+    getter = ctx.deps.services.get_scratchpad
+    if getter is None:
+        return ""
+    path = getter()
+    if path is None:
+        return ""
+    return (
+        "Scratchpad directory for this session (outside the workspace):\n"
+        f"{path}\n\n"
+        "Use it, by absolute path, for temporary and intermediate files — "
+        "working scripts, staged outputs, analysis artifacts — instead of "
+        "writing them into the workspace. write_file/edit_file writes there "
+        "do not need approval. It is removed when the session is deleted and "
+        "the OS clears it on reboot, so anything worth keeping belongs in "
+        "the workspace."
+    )
+
+
 def register_instructions(
     agent: HarnessAgent, mcp_manager: McpManager, proactive_memory: bool,
     *, global_instructions: bool = True, groups: ToolGroups | None = None,
@@ -208,6 +232,8 @@ def register_instructions(
       ``groups.skills``.
     - ``_memory_indexes`` (advertises ``recall``, and reads MEMORY.md to do
       so) is gated on ``groups.memory``.
+    - ``_scratchpad`` (advertises that ``write_file``/``edit_file`` writes to
+      the scratchpad bypass approval) is gated on ``groups.files_write``.
 
     ``groups=None`` means "all groups on" — the CLI/bootstrap default, and
     also what a bare ``HarnessConfig()`` gets when constructed directly
@@ -228,6 +254,7 @@ def register_instructions(
     spawn_on = groups is None or groups.spawn
     skills_on = groups is None or groups.skills
     memory_on = groups is None or groups.memory
+    files_write_on = groups is None or groups.files_write
 
     if global_instructions:
 
@@ -250,6 +277,12 @@ def register_instructions(
         if not text:
             return ""
         return f"Project-specific instructions:\n\n{text}"
+
+    if files_write_on:
+
+        @agent.instructions
+        def _scratchpad(ctx: RunContext[Deps]) -> str:
+            return _scratchpad_block(ctx)
 
     if global_instructions:
 

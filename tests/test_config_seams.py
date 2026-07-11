@@ -5,7 +5,7 @@ from pydantic_ai.models.test import TestModel
 
 from marim_harness.forge.models import CiStatus, PullRequest
 from marim_harness.runtime.harness import Harness, HarnessConfig
-from marim_harness.tools.provider import BuiltinToolProvider
+from marim_harness.tools.provider import BuiltinToolProvider, ToolGroups
 from tests.conftest import _make_deps  # same helper test_provider uses
 
 
@@ -142,3 +142,29 @@ def test_global_instructions_gate(tmp_path, monkeypatch):
     # And confirm the gate-off harness truly never invokes it: nothing else
     # in this test called load_global_instructions, so calls is untouched.
     assert calls == [1]
+
+
+def test_scratchpad_instructions_gate_on_files_write_group(tmp_path):
+    """The _scratchpad closure advertises "write_file/edit_file writes there
+    do not need approval" — a claim that only holds when those tools are
+    actually registered. groups=ToolGroups(files_write=False) (no write_file/
+    edit_file on the agent) must drop the closure entirely; groups=None (the
+    HarnessConfig default, "every group is on") must keep registering it,
+    same as every other gated closure in register_instructions."""
+
+    def _closure(agent, name):
+        return next(
+            (
+                fn for fn in agent._instructions  # noqa: SLF001
+                if callable(fn) and getattr(fn, "__name__", None) == name
+            ),
+            None,
+        )
+
+    h_off = _harness(tmp_path, groups=ToolGroups(files_write=False))
+    h_on = _harness(tmp_path, groups=None)
+
+    off_closure = _closure(h_off.agent, "_scratchpad")
+    on_closure = _closure(h_on.agent, "_scratchpad")
+    assert off_closure is None, "files_write=False must not register _scratchpad"
+    assert on_closure is not None, "groups=None must still register _scratchpad"

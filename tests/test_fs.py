@@ -700,3 +700,61 @@ def test_tree_skips_unreadable_directories(tmp_path: Path, monkeypatch):
     out = fs.tree(tmp_path, ".", depth=2)
     assert "visible.txt" in out
     assert "hidden.txt" not in out
+
+
+class TestExtraWriteRoots:
+    def test_write_file_reaches_extra_root(self, tmp_path):
+        ws = tmp_path / "ws"
+        scratch = tmp_path / "scratch"
+        ws.mkdir()
+        scratch.mkdir()
+        fs.write_file(ws, str(scratch / "note.txt"), "hi", None, (scratch,))
+        assert (scratch / "note.txt").read_text() == "hi"
+
+    def test_write_file_outside_all_roots_refused(self, tmp_path):
+        ws = tmp_path / "ws"
+        scratch = tmp_path / "scratch"
+        ws.mkdir()
+        scratch.mkdir()
+        with pytest.raises(ModelRetry):
+            fs.write_file(
+                ws, str(tmp_path / "elsewhere.txt"), "hi", None, (scratch,)
+            )
+
+    def test_relative_path_still_lands_in_workspace(self, tmp_path):
+        """A relative path must always resolve into the workspace — an extra
+        root can never capture it (that would silently divert project writes)."""
+        ws = tmp_path / "ws"
+        scratch = tmp_path / "scratch"
+        ws.mkdir()
+        scratch.mkdir()
+        fs.write_file(ws, "note.txt", "hi", None, (scratch,))
+        assert (ws / "note.txt").exists()
+        assert not (scratch / "note.txt").exists()
+
+    def test_symlink_escape_from_extra_root_refused(self, tmp_path):
+        ws = tmp_path / "ws"
+        scratch = tmp_path / "scratch"
+        outside = tmp_path / "outside"
+        for d in (ws, scratch, outside):
+            d.mkdir()
+        (scratch / "link").symlink_to(outside)
+        with pytest.raises(ModelRetry):
+            fs.write_file(
+                ws, str(scratch / "link" / "x.txt"), "hi", None, (scratch,)
+            )
+
+    def test_edit_file_reaches_extra_root(self, tmp_path):
+        ws = tmp_path / "ws"
+        scratch = tmp_path / "scratch"
+        ws.mkdir()
+        scratch.mkdir()
+        (scratch / "note.txt").write_text("hello world")
+        fs.edit_file(
+            ws,
+            str(scratch / "note.txt"),
+            [fs.Edit(old_string="hello", new_string="goodbye")],
+            None,
+            (scratch,),
+        )
+        assert (scratch / "note.txt").read_text() == "goodbye world"

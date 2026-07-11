@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from pydantic_ai import Agent, DeferredToolRequests
@@ -36,6 +37,7 @@ from ..tools.forge_tools import build_forge_toolset, forge_toolsets
 from ..tools.impl.suggest import suggest_unknown_tool_retry
 from ..tools.names import SUBAGENT_MAX_DEPTH
 from ..tools.provider import ToolGroups, ToolProvider
+from ..workspace.scratchpad import ensure_scratchpad
 from ..workspace.snapshot import GitSnapshotter
 from .context import (
     actionable_error_note as _actionable_error_note,  # noqa: F401 — re-exported for tests
@@ -163,6 +165,10 @@ class HarnessConfig:
     # HarnessConfig built by hand (existing direct callers/tests keep their
     # historical "everything registers" behavior unchanged).
     groups: ToolGroups | None = None
+    # Session scratchpad master switch. False ⇒ services.get_scratchpad stays
+    # None, which degrades everything downstream at once: no prompt block, no
+    # extra write root in the file tools, no ask-mode approval bypass.
+    scratchpad_enabled: bool = True
 
 
 def build_services(
@@ -172,6 +178,7 @@ def build_services(
     turn_hooks: TurnHooks,
     subagents: SubagentRunner,
     get_session_id: Callable[[], str | None] | None = None,
+    get_scratchpad: Callable[[], Path | None] | None = None,
 ) -> HarnessServices:
     """Assemble the Harness-wired collaborator container and install it on
     ``deps``. Centralises the one late binding the deps<->services cycle
@@ -185,6 +192,7 @@ def build_services(
         run_background_agent=subagents.run_background,
         resume_subagent=subagents.resume_spawn,
         get_session_id=get_session_id,
+        get_scratchpad=get_scratchpad,
     )
     deps.services = services
     return services
@@ -331,6 +339,18 @@ def build_collaborators(
             if cfg.model_source is not None else None
         ),
     )
+    # Live like get_session_id below: a session switch swaps session.store,
+    # and the scratchpad must follow the active session. ensure_scratchpad
+    # re-mkdirs on every call, so a /tmp cleaned under a resumed session is
+    # transparently recreated.
+    get_scratchpad = None
+    if cfg.scratchpad_enabled:
+        def _get_scratchpad() -> Path | None:
+            sid = session.store.session_id if session.store is not None else None
+            if sid is None:
+                return None
+            return ensure_scratchpad(deps.workspace.root, sid)
+        get_scratchpad = _get_scratchpad
     # One cohesive late binding for the collaborator cycle: TurnHooks and the
     # sub-agent runners hold this deps object, and tools reach them back
     # through ctx.deps.services.
@@ -342,6 +362,7 @@ def build_collaborators(
         # Live getter: closes over the controller so a session switch (which swaps
         # ``session.store``) is reflected without rewiring services.
         get_session_id=lambda: session.store.session_id if session.store is not None else None,
+        get_scratchpad=get_scratchpad,
     )
     return Collaborators(
         agent=agent, mcp=mcp, lsp=lsp, session=session,

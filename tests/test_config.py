@@ -833,3 +833,17 @@ def test_build_model_claude_cli(monkeypatch):
 
     assert isinstance(m, ClaudeCliModel)
     assert m.model_name == "sonnet"
+
+
+def test_scratchpad_env_defaults_on(monkeypatch):
+    monkeypatch.delenv("MARIM_SCRATCHPAD", raising=False)
+    from marim_harness.config import load_config
+
+    assert load_config().scratchpad_enabled is True
+
+
+def test_scratchpad_env_off(monkeypatch):
+    monkeypatch.setenv("MARIM_SCRATCHPAD", "0")
+    from marim_harness.config import load_config
+
+    assert load_config().scratchpad_enabled is False

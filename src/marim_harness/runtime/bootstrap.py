@@ -131,6 +131,7 @@ def build_harness(
             # here), which would turn CLI forge OFF. Pin the config-driven value
             # so tea auto-detection keeps working — this override must stay.
             forge_enabled=cfg.forge_enabled,
+            scratchpad_enabled=cfg.scratchpad_enabled,
             model_label=model_source.label(model_id),
             store=store,
             manager=manager,

@@ -143,8 +143,11 @@ to avoid import cycles.
 - `plugins/` — bundles skills + sub-agents + hooks + MCP + `AGENTS.md`; hooks/MCP load
   only for *trusted* plugins. Namespaced `plugin:item`. See `docs/plugins.md`.
 - `workspace/` — fs primitives, memory (`remember`/`recall`), skills, sub-agent specs,
-  git worktrees, snapshots. (The root-level `compaction.py` builds the
-  summarizer/titler aux agents and the token-budget compaction helpers.)
+  git worktrees, snapshots, and the session scratchpad (a per-session /tmp dir for
+  intermediate files: advertised in the prompt, reachable by the file tools as an
+  extra guard root, auto-approved in ask mode, gated by `MARIM_SCRATCHPAD`). (The
+  root-level `compaction.py` builds the summarizer/titler aux agents and the
+  token-budget compaction helpers.)
 - `subagents/` — `runner.py` (`SubagentRunner`: spawn-lifecycle coordinator),
   `run_driver.py` (model-loop retry/overflow/contention recovery),
   `cli_spawn.py` (`claude -p` execute/resume orchestration), `masking.py`
