@@ -243,3 +243,21 @@ def test_with_hooks_and_with_deps_together_is_builder_error(tmp_path: Path):
          .build())
     msg = str(exc.value)
     assert "with_hooks" in msg and "with_deps" in msg
+
+
+def test_builder_resolves_workspace_path(tmp_path, monkeypatch):
+    """An embedder-supplied relative or symlinked workspace must normalize to
+    one canonical root at construction: every workspace-keyed artifact
+    (session-storage slug, scratchpad slug, checkpoint refs) hashes
+    str(root), and SessionManager resolves its own copy — an unresolved
+    Deps root would silently mis-key those artifacts against each other."""
+    real = tmp_path / "real-ws"
+    real.mkdir()
+    link = tmp_path / "link-ws"
+    link.symlink_to(real)
+    via_link = HarnessBuilder(workspace=link, model=TestModel()).build()
+    assert via_link.deps.workspace.root == real.resolve()
+
+    monkeypatch.chdir(tmp_path)
+    via_relative = HarnessBuilder(workspace=Path("real-ws"), model=TestModel()).build()
+    assert via_relative.deps.workspace.root == real.resolve()

@@ -49,7 +49,13 @@ class HarnessBuilder:
     """
 
     def __init__(self, *, workspace: Path, model: Model | str) -> None:
-        self._workspace = Path(workspace)
+        # Resolved once, here, so every workspace-keyed artifact agrees on one
+        # canonical root. Session storage, the scratchpad, and checkpoint refs
+        # all key on sha256(str(root)) — and SessionManager resolves its own
+        # copy — so threading an unresolved (relative/symlinked) root into
+        # Deps would silently mis-key those artifacts against each other
+        # (e.g. session delete cleaning a scratchpad dir that was never used).
+        self._workspace = Path(workspace).resolve()
         self._model: Model | str = model
         self._groups: dict[str, bool] = {"files_read": True, "files_write": True}
         self._command_policy: CommandPolicy | None = None
