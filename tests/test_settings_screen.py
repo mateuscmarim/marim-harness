@@ -1,8 +1,8 @@
 """Tests for the full-bleed SettingsScreen (replaces the centered SettingsModal).
 
 The screen mirrors the sub-agents full-bleed layout: a header breadcrumb, a left
-section rail (Session / Theme / MCP servers / Context & Memory / Tools /
-Notifications / Advanced), a content pane, and a footer hint bar. Sections are
+section rail (Session / Providers / Theme / MCP servers / Context & Memory /
+Tools / Notifications / Advanced), a content pane, and a footer hint bar. Sections are
 mounted once and shown/hidden by ``display`` so widget state and ids survive
 section switches.
 """

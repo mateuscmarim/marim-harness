@@ -4,12 +4,15 @@ import pytest
 
 from marim_harness.workspace import (
     ModelEntry,
+    catalog,
     filter_entries,
     model_supports_images,
     parse_models,
 )
 from marim_harness.workspace.catalog import (
+    fetch_google_models,
     fetch_local_models,
+    fetch_openrouter_models,
     parse_google_models,
     parse_lmstudio_models,
 )
@@ -60,6 +63,51 @@ async def test_fetch_local_models_returns_empty_on_error():
     cm, _ = _mock_async_client(None, raises=RuntimeError("connection refused"))
     with cm:
         assert await fetch_local_models("http://localhost:1234/v1", None) == []
+
+
+# -- strict=True: verification needs the real failure, not a silent [] -------
+#
+# These hit a real socket (port 9 is "discard", nothing listens there) rather
+# than mocking httpx, so they prove the actual connection-refused exception
+# propagates end to end — not just that our code re-raises whatever it's handed.
+
+
+@pytest.mark.anyio
+async def test_fetch_local_models_strict_raises_on_connection_refused():
+    with pytest.raises(Exception):  # noqa: B017 - real connection-refused, class varies
+        await fetch_local_models("http://127.0.0.1:9", strict=True)
+
+
+@pytest.mark.anyio
+async def test_fetch_local_models_non_strict_still_degrades_to_empty():
+    """Pins the picker's degrade-to-[] default even after the strict opt-in."""
+    assert await fetch_local_models("http://127.0.0.1:9") == []
+
+
+@pytest.mark.anyio
+async def test_fetch_google_models_strict_raises_on_connection_refused(monkeypatch):
+    monkeypatch.setattr(catalog, "_GOOGLE_MODELS_URL", "http://127.0.0.1:9/x")
+    with pytest.raises(Exception):  # noqa: B017 - real connection-refused, class varies
+        await fetch_google_models(strict=True)
+
+
+@pytest.mark.anyio
+async def test_fetch_google_models_non_strict_returns_empty(monkeypatch):
+    monkeypatch.setattr(catalog, "_GOOGLE_MODELS_URL", "http://127.0.0.1:9/x")
+    assert await fetch_google_models() == []
+
+
+@pytest.mark.anyio
+async def test_fetch_openrouter_models_strict_raises_on_connection_refused(monkeypatch):
+    monkeypatch.setattr(catalog, "_OPENROUTER_MODELS_URL", "http://127.0.0.1:9/x")
+    with pytest.raises(Exception):  # noqa: B017 - real connection-refused, class varies
+        await fetch_openrouter_models(strict=True)
+
+
+@pytest.mark.anyio
+async def test_fetch_openrouter_models_non_strict_returns_empty(monkeypatch):
+    monkeypatch.setattr(catalog, "_OPENROUTER_MODELS_URL", "http://127.0.0.1:9/x")
+    assert await fetch_openrouter_models() == []
 
 
 def test_parse_google_models_skips_row_with_non_list_methods():

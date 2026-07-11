@@ -239,7 +239,7 @@ async def test_model_source_list_models_fetches_local_catalog(monkeypatch):
                                   api_key="lmstudio"))
     entries = await src.list_models()
     assert [e.id for e in entries] == ["qwen2.5-coder"]
-    fake.assert_awaited_once_with("http://localhost:1234/v1", "lmstudio")
+    fake.assert_awaited_once_with("http://localhost:1234/v1", "lmstudio", strict=False)
 
 
 @pytest.mark.anyio

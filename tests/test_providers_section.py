@@ -310,6 +310,45 @@ async def test_failed_verification_shows_short_error(
 
 
 @pytest.mark.anyio
+async def test_verify_against_real_dead_server_shows_x_badge(
+    isolated_env, monkeypatch, tmp_path
+):
+    """No stubbed list_models here: a REAL ModelSource pointed at a dead local
+    server (port 9 is "discard" — connection refused, instantly). This proves
+    the production strict=True path — catalog.py's re-raise, ModelSource
+    threading strict through, and _verify's except clause — actually renders
+    a ✗ badge end to end, not just that a mock was told to raise."""
+    from marim_harness.config import ModelConfig
+    from marim_harness.config import model as _m
+    from marim_harness.config.model import ModelSource, MultiModelSource
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(_m, "_claude_cli_available", lambda: False)
+    monkeypatch.setenv("MARIM_PROVIDER", "local")
+    monkeypatch.setenv("MARIM_BASE_URL", "http://127.0.0.1:9/v1")
+    multi = MultiModelSource(
+        {
+            "local": ModelSource(
+                ModelConfig(provider="local", model="x", base_url="http://127.0.0.1:9/v1")
+            )
+        },
+        default="local",
+    )
+    app = _PaneHost(model_source=multi)
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        badge = str(
+            app.query_one(ProvidersPane)
+            .query_one("#prov-status-local", Static)
+            .render()
+        )
+    # The badge must lead with the ✗ verdict (mirrors _verify's f"✗ {...}").
+    assert badge.lstrip().startswith("✗")
+
+
+@pytest.mark.anyio
 async def test_remove_button_hidden_until_configured(
     isolated_env, monkeypatch, tmp_path
 ):

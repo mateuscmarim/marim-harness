@@ -56,7 +56,7 @@ _SECTIONS = (
     ("notifications", "Notifications"),
     ("advanced", "Advanced"),
 )
-_SETTINGS_HINTS = "↑↓ section · enter edit · changes save automatically · esc close"
+_SETTINGS_HINTS = "↑↓ section · click edit · changes save automatically · esc close"
 
 # Each theme's accent hex, for the colored dot in the Theme section + the rail badge.
 _ACCENTS = {t.name: str(t.primary) for t in MARIM_THEMES}

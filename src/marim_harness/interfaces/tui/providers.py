@@ -357,7 +357,11 @@ class ProvidersPane(Vertical):
         default = " · default" if name == current_default_provider() else ""
         badge.update(f"verifying…{default}")
         try:
-            models = await source.list_models()
+            # strict=True: verification must see the real failure, not the
+            # fetchers' default degrade-to-[] (that default exists so the
+            # model *picker* falls back to free-text, not so this badge can
+            # report "connected" on a dead server / bad key).
+            models = await source.list_models(strict=True)
         except Exception as exc:  # noqa: BLE001 - any fetch failure is a verdict
             badge.update(f"✗ {short_error(exc)}{default}")
             return

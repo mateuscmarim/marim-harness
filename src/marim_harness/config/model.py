@@ -407,14 +407,19 @@ class ModelSource:
         """Construct a Pydantic AI model for ``model_id`` on this provider."""
         return build_model(replace(self.cfg, model=model_id))
 
-    async def list_models(self) -> list[ModelEntry]:
-        """Available models for the picker. Returns [] on unsupported providers."""
+    async def list_models(self, *, strict: bool = False) -> list[ModelEntry]:
+        """Available models for the picker. Returns [] on unsupported providers.
+
+        ``strict=True`` propagates to the fetchers so a real failure (bad key,
+        dead server) raises instead of degrading to ``[]`` — used by provider
+        verification, which needs to tell "connected, 0 models" apart from
+        "failed to connect"."""
         if self.cfg.provider == "openrouter":
-            return await fetch_openrouter_models(self.cfg.api_key)
+            return await fetch_openrouter_models(self.cfg.api_key, strict=strict)
         if self.cfg.provider == "google":
-            return await fetch_google_models(self.cfg.api_key)
+            return await fetch_google_models(self.cfg.api_key, strict=strict)
         if self.cfg.provider == "local":
-            return await fetch_local_models(self.cfg.base_url, self.cfg.api_key)
+            return await fetch_local_models(self.cfg.base_url, self.cfg.api_key, strict=strict)
         if self.cfg.provider == "claude-cli":
             return [
                 ModelEntry(id="sonnet", name="sonnet", provider="claude-cli"),
