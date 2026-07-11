@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -447,6 +448,62 @@ def test_grep_small_result_still_inline(tmp_path):
     (tmp_path / "a.txt").write_text("alpha\nbeta")
     out = fs.grep(tmp_path, "alpha")
     assert out == "a.txt:1:alpha"
+
+
+def _offload_handle_path(out: str) -> str:
+    """Pull the sha-derived handle path out of an offload message, e.g.
+    '... saved to `.marim/output/grep-<digest>.txt` ...'."""
+    match = re.search(r"`([^`]+)`", out)
+    assert match, f"no handle path found in: {out!r}"
+    return match.group(1)
+
+
+def test_grep_case_insensitive_gets_distinct_offload_key(tmp_path, monkeypatch):
+    """Same pattern, same body (the content is already all-uppercase so matching
+    case-sensitively or case-insensitively yields identical output) but different
+    ``case_insensitive`` flag must still land in different offload files: the key
+    must encode the flag, not just derive uniqueness from body content."""
+    from marim_harness.tools.impl import offload
+
+    monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 50)
+    (tmp_path / "big.txt").write_text("\n".join(f"MATCH {i}" for i in range(100)))
+    out_sensitive = fs.grep(tmp_path, "MATCH")
+    out_insensitive = fs.grep(tmp_path, "MATCH", case_insensitive=True)
+    assert _offload_handle_path(out_sensitive) != _offload_handle_path(out_insensitive)
+
+
+def test_grep_head_limit_gets_distinct_offload_key(tmp_path, monkeypatch):
+    """Differing only in head_limit must produce a different offload handle path,
+    even though pattern/path/output_mode/glob/file_type are identical."""
+    from marim_harness.tools.impl import offload
+
+    monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 5)
+    (tmp_path / "big.txt").write_text("\n".join(f"m{i}" for i in range(100)))
+    out_a = fs.grep(tmp_path, "m", head_limit=3)
+    out_b = fs.grep(tmp_path, "m", head_limit=50)
+    assert _offload_handle_path(out_a) != _offload_handle_path(out_b)
+
+
+def test_grep_context_lines_get_distinct_offload_key(tmp_path, monkeypatch):
+    """before_context/after_context must be part of the offload key too."""
+    from marim_harness.tools.impl import offload
+
+    monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 5)
+    (tmp_path / "big.txt").write_text("\n".join(f"line {i}" for i in range(100)))
+    out_a = fs.grep(tmp_path, "line", before_context=0, after_context=0)
+    out_b = fs.grep(tmp_path, "line", before_context=1, after_context=1)
+    assert _offload_handle_path(out_a) != _offload_handle_path(out_b)
+
+
+def test_grep_multiline_gets_distinct_offload_key(tmp_path, monkeypatch):
+    """multiline must be part of the offload key too."""
+    from marim_harness.tools.impl import offload
+
+    monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 5)
+    (tmp_path / "big.txt").write_text("\n".join(f"foo bar {i}" for i in range(100)))
+    out_a = fs.grep(tmp_path, "foo.bar")
+    out_b = fs.grep(tmp_path, "foo.bar", multiline=True)
+    assert _offload_handle_path(out_a) != _offload_handle_path(out_b)
 
 
 def test_glob_offloads_large_result(tmp_path, monkeypatch):
