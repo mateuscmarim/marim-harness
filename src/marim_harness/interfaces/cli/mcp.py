@@ -35,7 +35,37 @@ def _parse_pairs(items: list[str], sep: str, what: str) -> dict[str, str]:
     return out
 
 
-def _build_spec(*, transport: str, rest: list[str], headers: list[str],  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
+def _build_stdio_spec(*, rest: list[str], headers: list[str], envs: list[str]) -> dict:
+    """Build the stdio-transport portion of a server spec: command, args, env.
+    Raises :class:`SpecError` if headers are given (http/sse only)."""
+    if headers:
+        raise SpecError("--header is only valid for http/sse transports")
+    spec: dict = {"command": rest[0]}
+    if rest[1:]:
+        spec["args"] = rest[1:]
+    if envs:
+        spec["env"] = _parse_pairs(envs, "=", "env")
+    return spec
+
+
+def _build_remote_spec(*, transport: str, rest: list[str], headers: list[str],
+                       envs: list[str]) -> dict:
+    """Build the http/sse-transport portion of a server spec: url, headers, type.
+    Raises :class:`SpecError` if env vars are given (stdio only) or extra positional
+    arguments follow the url."""
+    if envs:
+        raise SpecError("--env is only valid for the stdio transport")
+    if len(rest) > 1:
+        raise SpecError(f"unexpected extra arguments after url: {rest[1:]}")
+    spec: dict = {"url": rest[0]}
+    if headers:
+        spec["headers"] = _parse_pairs(headers, ":", "header")
+    if transport == "sse":
+        spec["type"] = "sse"
+    return spec
+
+
+def _build_spec(*, transport: str, rest: list[str], headers: list[str],
                 envs: list[str], trust: bool) -> dict:
     """Build a server spec dict from parsed CLI pieces. ``rest`` is the positional
     remainder after the name: ``[command, *args]`` for stdio, ``[url]`` for remote.
@@ -43,25 +73,10 @@ def _build_spec(*, transport: str, rest: list[str], headers: list[str],  # noqa:
     if not rest:
         need = "a command" if transport == "stdio" else "a url"
         raise SpecError(f"missing {need} for transport {transport!r}")
-    spec: dict = {}
     if transport == "stdio":
-        if headers:
-            raise SpecError("--header is only valid for http/sse transports")
-        spec["command"] = rest[0]
-        if rest[1:]:
-            spec["args"] = rest[1:]
-        if envs:
-            spec["env"] = _parse_pairs(envs, "=", "env")
+        spec = _build_stdio_spec(rest=rest, headers=headers, envs=envs)
     else:  # http or sse
-        if envs:
-            raise SpecError("--env is only valid for the stdio transport")
-        if len(rest) > 1:
-            raise SpecError(f"unexpected extra arguments after url: {rest[1:]}")
-        spec["url"] = rest[0]
-        if headers:
-            spec["headers"] = _parse_pairs(headers, ":", "header")
-        if transport == "sse":
-            spec["type"] = "sse"
+        spec = _build_remote_spec(transport=transport, rest=rest, headers=headers, envs=envs)
     if trust:
         spec["trust"] = True
     return spec

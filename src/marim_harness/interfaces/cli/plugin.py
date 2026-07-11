@@ -194,7 +194,46 @@ def _cmd_validate(args, *, out, err) -> int:
     return 0
 
 
-def main(  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
+def _resolve_workspace(args, *, err) -> Path | None:
+    """Resolve ``--workspace`` to an absolute directory. Prints an error and
+    returns ``None`` if the given path isn't a directory (caller exits 2)."""
+    if args.workspace is None:
+        return Path.cwd()
+    ws = Path(args.workspace)
+    if not ws.is_dir():
+        print(f"error: not a directory: {args.workspace}", file=err)
+        return None
+    return ws.resolve()
+
+
+def _toggle_action(cmd: str, args, ws: Path):
+    """Build the scope-taking mutation callable for the enable/disable/trust/
+    remove subcommands, so ``main`` can route them through one ``_cmd_toggle``
+    call instead of one branch per verb."""
+    if cmd == "enable":
+        return lambda s: set_enabled(args.name, scope=s, workspace_root=ws, enabled=True)
+    if cmd == "disable":
+        return lambda s: set_enabled(args.name, scope=s, workspace_root=ws, enabled=False)
+    if cmd == "trust":
+        return lambda s: set_trusted(args.name, scope=s, workspace_root=ws, trusted=True)
+    return lambda s: remove_plugin(args.name, scope=s, workspace_root=ws)
+
+
+def _cmd_update(args, *, ws, out, err, now_fn) -> int:
+    scope = _scope_of(args.name, ws, args.scope)
+    if scope is None:
+        print(f"error: plugin not found: {args.name}", file=err)
+        return 1
+    try:
+        rec = update_plugin(args.name, scope=scope, workspace_root=ws, now=now_fn())
+    except InstallError as exc:
+        print(f"error: {exc}", file=err)
+        return 1
+    print(f"updated {rec.name} to {rec.version or 'unknown'}", file=out)
+    return 0
+
+
+def main(
     argv: list[str],
     *,
     out=sys.stdout,
@@ -204,64 +243,21 @@ def main(  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/
 ) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
-    if args.workspace is not None:
-        ws = Path(args.workspace)
-        if not ws.is_dir():
-            print(f"error: not a directory: {args.workspace}", file=err)
-            return 2
-        ws = ws.resolve()
-    else:
-        ws = Path.cwd()
+    ws = _resolve_workspace(args, err=err)
+    if ws is None:
+        return 2
     if args.cmd == "install":
         return _cmd_install(args, ws=ws, out=out, err=err, input_fn=input_fn, now_fn=now_fn)
     if args.cmd == "list":
         return _cmd_list(args, ws=ws, out=out, err=err)
     if args.cmd == "info":
         return _cmd_info(args, ws=ws, out=out, err=err)
-    if args.cmd == "enable":
+    if args.cmd in ("enable", "disable", "trust", "remove"):
         return _cmd_toggle(
-            args,
-            ws=ws,
-            out=out,
-            err=err,
-            action=lambda s: set_enabled(args.name, scope=s, workspace_root=ws, enabled=True),
-        )
-    if args.cmd == "disable":
-        return _cmd_toggle(
-            args,
-            ws=ws,
-            out=out,
-            err=err,
-            action=lambda s: set_enabled(args.name, scope=s, workspace_root=ws, enabled=False),
-        )
-    if args.cmd == "trust":
-        return _cmd_toggle(
-            args,
-            ws=ws,
-            out=out,
-            err=err,
-            action=lambda s: set_trusted(args.name, scope=s, workspace_root=ws, trusted=True),
-        )
-    if args.cmd == "remove":
-        return _cmd_toggle(
-            args,
-            ws=ws,
-            out=out,
-            err=err,
-            action=lambda s: remove_plugin(args.name, scope=s, workspace_root=ws),
+            args, ws=ws, out=out, err=err, action=_toggle_action(args.cmd, args, ws)
         )
     if args.cmd == "update":
-        scope = _scope_of(args.name, ws, args.scope)
-        if scope is None:
-            print(f"error: plugin not found: {args.name}", file=err)
-            return 1
-        try:
-            rec = update_plugin(args.name, scope=scope, workspace_root=ws, now=now_fn())
-        except InstallError as exc:
-            print(f"error: {exc}", file=err)
-            return 1
-        print(f"updated {rec.name} to {rec.version or 'unknown'}", file=out)
-        return 0
+        return _cmd_update(args, ws=ws, out=out, err=err, now_fn=now_fn)
     if args.cmd == "validate":
         return _cmd_validate(args, out=out, err=err)
     parser.print_help(err)

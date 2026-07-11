@@ -39,7 +39,21 @@ def _hook_script(tmp_path: Path, name: str, body: str) -> str:
     return str(p)
 
 
-def _prompt_capturing_model(sink: list) -> FunctionModel:  # noqa: C901  # complexity-debt: 2026-07-11 — see docs/superpowers/plans/2026-07-11-cyclomatic-complexity-reduction.md
+def _latest_user_prompt(messages) -> str | None:
+    """The LAST user-prompt text visible in ``messages`` (the current turn's new
+    prompt, not history). pydantic-ai's FunctionModel receives the full
+    conversation history each call, so this scans all of it and keeps only the
+    latest UserPromptPart to isolate the current turn's new prompt."""
+    latest = None
+    for msg in messages:
+        for part in getattr(msg, "parts", []):
+            content = getattr(part, "content", None)
+            if isinstance(content, str) and part.__class__.__name__ == "UserPromptPart":
+                latest = content
+    return latest
+
+
+def _prompt_capturing_model(sink: list) -> FunctionModel:
     """Records the LAST user-prompt text it sees per call (the current turn's
     new prompt, not history), then replies 'ok'. pydantic-ai's FunctionModel
     receives the full conversation history each call, so we capture only the
@@ -47,23 +61,13 @@ def _prompt_capturing_model(sink: list) -> FunctionModel:  # noqa: C901  # compl
     Supports both non-streamed and streamed requests (streaming is required when
     an event_stream_handler is set, e.g. when hooks are configured)."""
     def fn(messages, info):
-        latest = None
-        for msg in messages:
-            for part in getattr(msg, "parts", []):
-                content = getattr(part, "content", None)
-                if isinstance(content, str) and part.__class__.__name__ == "UserPromptPart":
-                    latest = content
+        latest = _latest_user_prompt(messages)
         if latest is not None:
             sink.append(latest)
         return ModelResponse(parts=[TextPart(content="ok")])
 
     async def stream_fn(messages, info):
-        latest = None
-        for msg in messages:
-            for part in getattr(msg, "parts", []):
-                content = getattr(part, "content", None)
-                if isinstance(content, str) and part.__class__.__name__ == "UserPromptPart":
-                    latest = content
+        latest = _latest_user_prompt(messages)
         if latest is not None:
             sink.append(latest)
         yield "ok"
