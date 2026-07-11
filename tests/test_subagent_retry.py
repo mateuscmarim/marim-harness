@@ -5,7 +5,8 @@ A sub-agent run that dies on a transient provider error (a 504 gateway timeout, 
 run's context was lost and the orchestrator had to re-spawn or do the work itself.
 The runner now retries transient failures with backoff before giving up, while a
 permanent error (a genuine bad request) still fails fast. These tests pin that on
-the inner ``_run_to_completion`` loop so they don't depend on a live model.
+the inner ``SpawnRunDriver.run_to_completion`` loop so they don't depend on a
+live model.
 """
 
 from pathlib import Path
@@ -49,7 +50,7 @@ def _runner(tmp_path: Path):
     async def _record(attempt: int) -> None:
         sleeps.append(attempt)
 
-    runner._retry_backoff = _record
+    runner._driver.backoff = _record
     return runner, sleeps
 
 
@@ -70,7 +71,7 @@ def test_subagent_gets_the_same_tool_retry_budget_as_main_agent(tmp_path: Path):
 async def test_retries_a_transient_error_then_succeeds(tmp_path: Path):
     runner, sleeps = _runner(tmp_path)
     sub = _FlakySub(ModelHTTPError(504, "m", body="idle timeout"), fail_times=1)
-    result = await runner._run_to_completion(sub, "task", None, None, None)
+    result = await runner._driver.run_to_completion(sub, "task", None, None, None)
     assert result.output == "ok"
     assert sub.calls == 2          # one failure, one success
     assert sleeps == [1]           # backed off once before the retry
@@ -82,7 +83,7 @@ async def test_gives_up_after_the_retry_budget_and_reraises(tmp_path: Path):
     err = ModelHTTPError(503, "m", body="overloaded")
     sub = _FlakySub(err, fail_times=99)
     with pytest.raises(ModelHTTPError):
-        await runner._run_to_completion(sub, "task", None, None, None)
+        await runner._driver.run_to_completion(sub, "task", None, None, None)
     # default budget is 2 retries → 3 attempts total, 2 backoffs
     assert sub.calls == 3
     assert sleeps == [1, 2]
@@ -94,7 +95,7 @@ async def test_does_not_retry_a_permanent_error(tmp_path: Path):
     body = {"message": "invalid request: unsupported parameter", "code": 400}
     sub = _FlakySub(ModelHTTPError(400, "m", body=body), fail_times=99)
     with pytest.raises(ModelHTTPError):
-        await runner._run_to_completion(sub, "task", None, None, None)
+        await runner._driver.run_to_completion(sub, "task", None, None, None)
     assert sub.calls == 1          # failed once, never retried
     assert sleeps == []
 
@@ -128,7 +129,7 @@ async def test_resumes_after_transient_error_without_re_running_work(tmp_path: P
         state["tool_runs"] += 1
         return "counted"
 
-    result = await runner._run_to_completion(sub, "go", None, None, None)
+    result = await runner._driver.run_to_completion(sub, "go", None, None, None)
     assert result.output == "done"
     assert state["tool_runs"] == 1     # resumed, not restarted from scratch
     assert sleeps == [1]               # one transient retry
@@ -161,7 +162,7 @@ async def test_subagent_strips_a_nameless_tool_call_before_the_next_request(tmp_
     assert err is None, err
     assert sub is not None
 
-    result = await runner._run_to_completion(sub, "go", deps, None, None)
+    result = await runner._driver.run_to_completion(sub, "go", deps, None, None)
 
     assert result.output == "done"
     # The continuation request the model saw must not carry the nameless call.
@@ -184,7 +185,7 @@ async def test_retry_emits_a_ui_notice_for_a_foreground_spawn(tmp_path: Path):
 
     runner.deps.ui.on_subagent_notice = _notice
     sub = _FlakySub(ModelHTTPError(504, "m", body="idle timeout"), fail_times=1)
-    await runner._run_to_completion(sub, "task", None, None, None, "sid-1")
+    await runner._driver.run_to_completion(sub, "task", None, None, None, "sid-1")
     assert len(notices) == 1
     stream_id, message = notices[0]
     assert stream_id == "sid-1"
@@ -203,7 +204,7 @@ async def test_no_ui_notice_when_there_is_no_stream(tmp_path: Path):
 
     runner.deps.ui.on_subagent_notice = _notice
     sub = _FlakySub(ModelHTTPError(504, "m", body="idle timeout"), fail_times=1)
-    await runner._run_to_completion(sub, "task", None, None, None, None)
+    await runner._driver.run_to_completion(sub, "task", None, None, None, None)
     assert notices == []
 
 
@@ -242,7 +243,7 @@ async def test_overflow_sheds_stale_observations_and_resumes(tmp_path: Path):
     def blob() -> str:
         return "x" * 500
 
-    result = await runner._run_to_completion(sub, "go", None, None, None)
+    result = await runner._driver.run_to_completion(sub, "go", None, None, None)
     assert result.output == "done"
     assert sleeps == []  # overflow recovery resumes immediately, no backoff
 
@@ -278,7 +279,7 @@ async def test_overflow_with_nothing_to_shed_raises(tmp_path: Path):
         return "x" * 500
 
     with pytest.raises(ModelHTTPError):
-        await runner._run_to_completion(sub, "go", None, None, None)
+        await runner._driver.run_to_completion(sub, "go", None, None, None)
     assert calls["n"] == 2  # tool round + the failing request; no resume attempt
 
 
@@ -305,7 +306,7 @@ async def test_overflow_gives_up_after_one_shed(tmp_path: Path):
         return "x" * 500
 
     with pytest.raises(ModelHTTPError):
-        await runner._run_to_completion(sub, "go", None, None, None)
+        await runner._driver.run_to_completion(sub, "go", None, None, None)
     # 2 tool rounds + overflow, then exactly ONE resumed request that overflows
     # again and surfaces: 4 model calls total.
     assert calls["n"] == 4
@@ -339,7 +340,7 @@ async def test_overflow_shed_emits_a_ui_notice_for_a_foreground_spawn(tmp_path: 
     def blob() -> str:
         return "x" * 500
 
-    await runner._run_to_completion(sub, "go", None, None, None, "sid-1")
+    await runner._driver.run_to_completion(sub, "go", None, None, None, "sid-1")
     assert len(notices) == 1
     stream_id, message = notices[0]
     assert stream_id == "sid-1"
@@ -357,7 +358,7 @@ def test_fresh_capture_is_fresh_even_inside_a_used_capture():
     orchestrator's conversation."""
     from pydantic_ai import _agent_graph
 
-    from marim_harness.subagents.runner import _fresh_capture
+    from marim_harness.subagents.run_driver import _fresh_capture
 
     with capture_run_messages() as outer:
         # Simulate the main turn's agent.run having bound this context.
@@ -379,10 +380,10 @@ async def test_overflow_resume_inside_main_turn_capture_uses_the_subs_history(tm
     execution, where the TurnController already holds a capture_run_messages
     context that the main run has bound (``used=True``). pydantic-ai's public
     ``capture_run_messages`` REUSES that state instead of nesting, so a capture
-    opened in ``_run_to_completion`` would alias the MAIN turn's message list —
-    and an overflow shed (or transient resume) would resume the sub-agent with
-    the orchestrator's conversation. This pins that the sub-agent's resume history
-    is its OWN conversation and the outer capture stays untouched."""
+    opened in ``SpawnRunDriver.run_to_completion`` would alias the MAIN turn's
+    message list — and an overflow shed (or transient resume) would resume the
+    sub-agent with the orchestrator's conversation. This pins that the sub-agent's
+    resume history is its OWN conversation and the outer capture stays untouched."""
     runner, _ = _runner(tmp_path)
     state = {"raised": False}
     seen: dict = {}
@@ -417,7 +418,7 @@ async def test_overflow_resume_inside_main_turn_capture_uses_the_subs_history(tm
 
     @outer.tool_plain
     async def delegate() -> str:
-        result = await runner._run_to_completion(sub, "sub task", None, None, None)
+        result = await runner._driver.run_to_completion(sub, "sub task", None, None, None)
         inner_output["out"] = result.output
         return result.output
 
@@ -490,7 +491,7 @@ async def test_overflow_shed_resume_accumulates_usage_across_attempts(tmp_path: 
     def blob() -> str:
         return "x" * 500
 
-    result = await runner._run_to_completion(sub, "go", None, None, None)
+    result = await runner._driver.run_to_completion(sub, "go", None, None, None)
     assert result.output == "done"
     # First attempt completed 2 tool-round requests before overflowing; the
     # resumed attempt made 1 more. All three must be in the usage the foreground/
@@ -500,9 +501,10 @@ async def test_overflow_shed_resume_accumulates_usage_across_attempts(tmp_path: 
 
 @pytest.mark.anyio
 async def test_give_up_after_retries_banks_partial_usage_into_session(tmp_path: Path):
-    """When ``_run_to_completion`` exhausts its budget and re-raises, the spend
-    from the failed attempts must land in ``session.usage`` anyway — there is no
-    result for the callers to fold, but the provider billed those tokens."""
+    """When ``SpawnRunDriver.run_to_completion`` exhausts its budget and
+    re-raises, the spend from the failed attempts must land in ``session.usage``
+    anyway — there is no result for the callers to fold, but the provider billed
+    those tokens."""
     runner, _ = _runner(tmp_path)
 
     def fn(messages, info):
@@ -520,7 +522,7 @@ async def test_give_up_after_retries_banks_partial_usage_into_session(tmp_path: 
 
     before = runner.session.usage.requests
     with pytest.raises(ModelHTTPError):
-        await runner._run_to_completion(sub, "go", None, None, None)
+        await runner._driver.run_to_completion(sub, "go", None, None, None)
     # The first attempt's completed tool-round request survives the give-up.
     assert runner.session.usage.requests == before + 1
     assert runner.session.usage.input_tokens > 0
@@ -538,7 +540,7 @@ async def test_foreground_overflow_failure_tells_orchestrator_to_split(tmp_path:
             400, "m", body={"message": "maximum context length exceeded"}
         )
 
-    runner._run_to_completion = _boom
+    runner._driver.run_to_completion = _boom
     out = await runner.run("general", "task", "sid-1")
     assert "overflowed its context window" in out
     assert "split the task" in out.lower()
@@ -580,7 +582,7 @@ async def test_contention_overflow_retries_as_transient_instead_of_shedding(tmp_
     def blob() -> str:
         return "x" * 500
 
-    result = await runner._run_to_completion(sub, "go", None, None, None)
+    result = await runner._driver.run_to_completion(sub, "go", None, None, None)
     assert result.output == "done"
     assert sleeps == [1]  # backed off like a transient error, not an instant shed
 

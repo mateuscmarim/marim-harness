@@ -156,7 +156,7 @@ async def test_built_subagent_masks_stale_observations_in_requests(tmp_path):
     def blob() -> str:
         return "x" * 2000
 
-    result = await runner._run_to_completion(sub, "go", deps, None, None)
+    result = await runner._driver.run_to_completion(sub, "go", deps, None, None)
     assert result.output == "done"
 
     request_returns = [
