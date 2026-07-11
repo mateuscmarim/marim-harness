@@ -111,3 +111,41 @@ def test_existing_env_file_is_secured_on_update(isolated_env, tmp_path):
     os.chmod(target, 0o644)
     save_env_settings({"OPENROUTER_API_KEY": "sk-new"}, path=target)
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
+def test_write_env_values_routes_through_atomic_write_text(isolated_env, tmp_path, monkeypatch):
+    """The old writer hand-rolled its own mkstemp/replace dance with a
+    DETERMINISTIC temp name (`target.name + ".tmp"`) and no fsync — exactly the
+    anti-pattern atomic_io's module docstring calls out (two writers racing on
+    the same target clobber each other's temp). Assert the save is delegated to
+    atomic_write_text (unique temp per write, fsynced) rather than reimplemented
+    locally."""
+    import marim_harness.config.persist as persist_module
+
+    calls = []
+    original = persist_module.atomic_write_text
+
+    def spy(path, text, **kwargs):
+        calls.append((path, text))
+        return original(path, text, **kwargs)
+
+    monkeypatch.setattr(persist_module, "atomic_write_text", spy)
+    target = tmp_path / ".env"
+    save_env_settings({"MARIM_LSP": "0"}, path=target)
+    assert len(calls) == 1
+    assert calls[0][0] == target
+    assert "MARIM_LSP=0" in calls[0][1]
+
+
+def test_no_deterministic_tmp_sibling_left_behind(isolated_env, tmp_path):
+    """A save must not leave a `<name>.tmp` (or any other temp) sibling behind —
+    the old hand-rolled writer used a deterministic `target.name + ".tmp"` temp
+    name, which is exactly the anti-pattern atomic_io's unique-per-write temp
+    naming exists to avoid (two writers racing on that fixed name clobber each
+    other). Routing through atomic_write_text means the temp is cleaned up by
+    os.replace and nothing named "<target>.tmp" (or matching atomic_io's own
+    ".<name>.*.tmp" pattern) should remain."""
+    target = tmp_path / ".env"
+    save_env_settings({"MARIM_LSP": "0"}, path=target)
+    siblings = [p.name for p in tmp_path.iterdir() if p != target]
+    assert siblings == [], siblings

@@ -11,11 +11,11 @@ permissions. (An earlier version had the TUI path use ``set_key(...,
 quote_mode="never")``, a non-atomic in-place write that silently truncated such
 values at the first ``#``.)"""
 
-import contextlib
 import os
 from collections.abc import Iterable
 from pathlib import Path
 
+from ..atomic_io import atomic_write_text
 from .env import global_config_path
 
 
@@ -29,16 +29,6 @@ def _format_value(value: str) -> str:
         escaped = value.replace("\\", "\\\\").replace('"', '\\"')
         return f'"{escaped}"'
     return value
-
-
-def _secure(path: Path) -> None:
-    """Restrict the .env file to owner read/write (0600). It holds secrets such
-    as OPENROUTER_API_KEY, so it must not be world-readable. Best-effort: chmod
-    is meaningless on platforms (e.g. Windows) whose filesystems don't carry
-    POSIX permission bits, so a failure there is swallowed rather than breaking
-    the save."""
-    with contextlib.suppress(OSError, NotImplementedError):
-        os.chmod(path, 0o600)
 
 
 def _line_key(raw: str) -> str:
@@ -58,9 +48,11 @@ def write_env_values(
     removed in the same atomic write — used when a save RENAMES a setting
     (e.g. MARIM_MAX_CONTEXT_TOKENS → MARIM_CONTEXT_BUDGET), so the retired
     key can't linger and shadow or nag about the new one. Writes the whole
-    file atomically (temp file + ``replace``) so a crash mid-write can't
-    truncate the config, and secures the result to 0600 since it may hold
-    secrets.
+    file atomically via ``atomic_io.atomic_write_text`` (unique temp per write,
+    fsynced, then ``os.replace``), so a crash mid-write can't truncate the
+    config and two writers racing on the same target can't clobber each
+    other's temp (the bug in this module's old hand-rolled ``.tmp`` writer,
+    which used a single deterministic temp name).
 
     This is the one correct writer; ``save_env_settings`` (TUI) and the CLI
     ``_persist`` both delegate here so their on-disk format and durability match."""
@@ -81,13 +73,11 @@ def write_env_values(
         if not replaced:
             new_lines.append(line)
 
-    tmp = target.with_name(target.name + ".tmp")
-    tmp.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-    # Secure the temp file before the rename so the secret is never briefly
-    # exposed under a world-readable mode at the final path.
-    _secure(tmp)
-    tmp.replace(target)
-    _secure(target)
+    # No separate chmod(0600) needed: atomic_write_text's mkstemp creates the
+    # temp file 0600 and os.replace swaps that inode in whole, so the .env
+    # lands at 0600 regardless of what mode (if any) the old target had —
+    # a chmod on the target afterward would be redundant.
+    atomic_write_text(target, "\n".join(new_lines) + "\n")
 
 
 def save_env_settings(
