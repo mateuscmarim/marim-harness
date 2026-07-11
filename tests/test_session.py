@@ -1085,3 +1085,23 @@ def test_session_path_is_public_and_matches_store(tmp_path):
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "base")
     store = manager.create("named")
     assert manager.session_path(store.session_id) == store.path
+
+
+def test_delete_removes_scratchpad_dir(tmp_path, monkeypatch):
+    from marim_harness.session import SessionManager
+    from marim_harness.workspace.scratchpad import ensure_scratchpad
+
+    scratch_base = tmp_path / "scratch-base"
+    monkeypatch.setattr(
+        "marim_harness.workspace.scratchpad.scratchpad_base",
+        lambda: scratch_base,
+    )
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    manager = SessionManager(ws, base_dir=tmp_path / "sessions")
+    store = manager.create()
+    scratch = ensure_scratchpad(ws, store.session_id)
+    assert scratch is not None and scratch.is_dir()
+    manager.delete(store.session_id)
+    # the whole per-session dir (the scratchpad's parent) goes with it
+    assert not scratch.parent.exists()

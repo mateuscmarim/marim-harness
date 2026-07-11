@@ -422,16 +422,18 @@ class SessionManager:
     def delete(self, session_id: str) -> None:
         """Remove a session and every sidecar keyed by its id: the JSON file,
         the checkpoints sidecar, the sub-agent transcript dir, the image cache
-        dir, and the ``refs/marim/checkpoints/<id>/*`` git refs (which pin
-        whole-working-tree snapshot commits — untracked files included — in
-        ``.git`` indefinitely). Each step is independent and best-effort, so a
-        missing artifact never blocks removing the rest."""
+        dir, the session's scratchpad dir, and the
+        ``refs/marim/checkpoints/<id>/*`` git refs (which pin whole-working-tree
+        snapshot commits — untracked files included — in ``.git`` indefinitely).
+        Each step is independent and best-effort, so a missing artifact never
+        blocks removing the rest."""
         import shutil
 
         # Imported here, not at module top: transcripts imports from workspace,
         # and keeping store's top-level imports lean avoids widening the
         # session package's import surface for embedders that only list/save.
         from ..images import image_cache_root
+        from ..workspace.scratchpad import scratchpad_root
         from ..workspace.snapshot import delete_checkpoint_refs
         from .transcripts import TranscriptStore
 
@@ -441,3 +443,10 @@ class SessionManager:
         TranscriptStore(self._path(session_id), session_id).delete_all()
         shutil.rmtree(image_cache_root() / session_id, ignore_errors=True)
         delete_checkpoint_refs(self.workspace_root, session_id)
+        # The scratchpad's per-session dir — the PARENT of the `scratchpad`
+        # leaf — so any future sidecars in the same dir go with it. Like the
+        # rest: best-effort, and /tmp semantics reclaim it on reboot anyway.
+        shutil.rmtree(
+            scratchpad_root(self.workspace_root, session_id).parent,
+            ignore_errors=True,
+        )
