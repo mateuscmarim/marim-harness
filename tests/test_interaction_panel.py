@@ -7,7 +7,7 @@ from textual.containers import VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
-from marim_harness.interfaces.tui.interaction_panel import InteractionPanel, run_panel
+from marim_harness.interfaces.tui.interactions.base import InteractionPanel, run_panel
 
 
 class _PanelApp(App):

@@ -11,7 +11,7 @@ answered-vs-note by JSON-parse (never raises on malformed input)."""
 import json
 from dataclasses import dataclass
 
-from .tool_summary import _clip
+from ..widgets.tool_summary import _clip
 
 _AWAITING = "awaiting answer…"
 _CANCELLED_TAIL = "cancelled — no answer"

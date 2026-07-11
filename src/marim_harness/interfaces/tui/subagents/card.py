@@ -24,9 +24,9 @@ from textual.widgets import Static
 if TYPE_CHECKING:
     from pydantic_ai.usage import RunUsage
 
-    from .subagent_detail import SubAgentPane
+    from .pane import SubAgentPane
 
-from .tool_summary import summarize
+from ..widgets.tool_summary import summarize
 
 # Working-glyph animation frames (matches the status bar spinner) shown while the
 # sub-agent is still running; a finished agent shows a static ✓/✕ instead.
@@ -117,7 +117,7 @@ class SubAgentWidget(Vertical):
         # The stream_id of the spawn that created this card, when it was spawned
         # by another sub-agent rather than the top-level agent. None for a
         # top-level spawn. Drives the depth-first tree order + connectors in the
-        # sub-agents list (see subagent_stats.tree_order). Set by the renderer's
+        # sub-agents list (see stats.tree_order). Set by the renderer's
         # _claim_spawn at registration time.
         self.parent_id: str | None = None
         self.status = "pending"  # "pending" | "done" | "denied" | "failed" | "interrupted"

@@ -6,7 +6,7 @@ view widgets that call it)."""
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from .format import format_cost, human_tokens
+from ..widgets.format import format_cost, human_tokens
 
 STATUS_GLYPH = {"done": "✓", "denied": "✕", "failed": "✕", "interrupted": "⏸"}
 

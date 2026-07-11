@@ -151,9 +151,13 @@ to avoid import cycles.
   (per-spawn context masking of stale tool observations), and `cli_backend.py`
   (the optional `claude -p` CLI backend it delegates to). Re-exported as
   `marim_harness.subagents.SubagentRunner`.
-- `interfaces/tui/` — Textual app, widgets, `styles.tcss`, approval/ask-user modals,
-  streaming render. `interfaces/cli/` — router + per-command modules (lazily imported
-  so `config`/`models` don't pay for `pydantic_ai`).
+- `interfaces/tui/` — Textual app, widgets, `styles.tcss`, streaming render;
+  `interactions/` — inline approval/ask-user/plan-card panels (mounted above the
+  status bar, not modals, so the transcript stays scrollable) sharing an
+  `InteractionPanel` base; `subagents/` — the sub-agents screen: master list,
+  full-bleed view, inline card, persistent transcript pane, pure stats.
+  `interfaces/cli/` — router + per-command modules (lazily imported so
+  `config`/`models` don't pay for `pydantic_ai`).
 
 ## Conventions
 

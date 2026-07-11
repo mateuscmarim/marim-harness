@@ -161,8 +161,7 @@ async def test_replay_parts_spawn_agent_mounts_widget_no_pane(tmp_path: Path):
     and lives in replay_history after the _replay_parts call returns."""
     from pydantic_ai.messages import ToolCallPart
 
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
-    from marim_harness.interfaces.tui.widgets.subagent_detail import SubAgentDetailHost
+    from marim_harness.interfaces.tui.subagents import SubAgentDetailHost, SubAgentWidget
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:
@@ -203,8 +202,8 @@ async def test_parity_replay_history_and_replay_messages_into(tmp_path: Path):
     from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
     from textual.containers import VerticalScroll
 
+    from marim_harness.interfaces.tui.subagents import SubAgentDetailHost
     from marim_harness.interfaces.tui.widgets import AssistantMessage, ToolCallWidget
-    from marim_harness.interfaces.tui.widgets.subagent_detail import SubAgentDetailHost
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:
@@ -390,7 +389,7 @@ async def test_running_sidecar_with_no_card_synthesizes_ghost_card(tmp_path: Pat
     the sidecar meta alone — and it must run even though history is empty."""
     from pydantic_ai.messages import ModelResponse
 
-    from marim_harness.interfaces.tui.widgets.subagent_detail import SubAgentDetailHost
+    from marim_harness.interfaces.tui.subagents import SubAgentDetailHost
     from marim_harness.session import TranscriptStore
 
     app = _app_with_store(tmp_path)
@@ -503,7 +502,7 @@ async def test_render_session_twice_with_spawn_no_duplicate_panes(tmp_path: Path
     Regression for the ``/switch`` crash."""
     from pydantic_ai.messages import ModelResponse, ToolCallPart
 
-    from marim_harness.interfaces.tui.widgets.subagent_detail import SubAgentDetailHost
+    from marim_harness.interfaces.tui.subagents import SubAgentDetailHost
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:
@@ -596,7 +595,7 @@ async def test_nested_pane_replay_settles_child_from_jobs_history(tmp_path: Path
     so the newly created child card fills from jobs history instead of dangling."""
     from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
 
-    from marim_harness.interfaces.tui.widgets.subagent_detail import SubAgentDetailHost
+    from marim_harness.interfaces.tui.subagents import SubAgentDetailHost
     from marim_harness.session import TranscriptStore
 
     app = _app_with_store(tmp_path)

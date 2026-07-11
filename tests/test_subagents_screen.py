@@ -5,10 +5,10 @@ from textual.app import App, ComposeResult
 from textual.widgets import Static
 
 from marim_harness.interfaces.tui.stream_render import _SubAgentSink
-from marim_harness.interfaces.tui.widgets.subagent_detail import SubAgentDetailHost
-from marim_harness.interfaces.tui.widgets.subagent_stats import aggregate
-from marim_harness.interfaces.tui.widgets.subagent_viewer import SubAgentList
-from marim_harness.interfaces.tui.widgets.subagents_view import SubAgentSummary, SubAgentsView
+from marim_harness.interfaces.tui.subagents.list import SubAgentList
+from marim_harness.interfaces.tui.subagents.pane import SubAgentDetailHost
+from marim_harness.interfaces.tui.subagents.stats import aggregate
+from marim_harness.interfaces.tui.subagents.view import SubAgentSummary, SubAgentsView
 from tests.conftest import _make_deps
 
 
@@ -154,7 +154,7 @@ async def test_detached_spawn_streams_live_with_bg_marker(tmp_path):
     """Phase 2: a detached spawn is marked as a background run (bg marker + detached
     flag) and kept pending for settle, but streams live into its pane — no
     'no live transcript' placeholder."""
-    from marim_harness.interfaces.tui.widgets.subagent_stats import row_cells
+    from marim_harness.interfaces.tui.subagents.stats import row_cells
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:
@@ -513,7 +513,7 @@ async def test_nested_non_spawn_tool_not_claimed(tmp_path):
 
 @pytest.mark.anyio
 async def test_list_renders_child_indented_under_parent(tmp_path):
-    from marim_harness.interfaces.tui.widgets.subagent_viewer import SubAgentList
+    from marim_harness.interfaces.tui.subagents.list import SubAgentList
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:
@@ -594,7 +594,7 @@ def test_repaint_list_survives_uncomposed_view():
     stub view whose ``list`` always raises."""
     from textual.css.query import NoMatches
 
-    from marim_harness.interfaces.tui.subagents_viewer import SubAgentsViewer
+    from marim_harness.interfaces.tui.subagents.screen import SubAgentsViewer
 
     class _StubView:
         def repaint(self, *args, **kwargs):
@@ -645,7 +645,7 @@ async def test_after_dependent_card_waits_then_flips(tmp_path):
     throughout — waiting is display-only."""
     from types import SimpleNamespace
 
-    from marim_harness.interfaces.tui.widgets.subagent_stats import row_cells
+    from marim_harness.interfaces.tui.subagents.stats import row_cells
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:
@@ -721,7 +721,7 @@ async def test_transcript_loader_worker_survives_exclusive_turn_worker(tmp_path,
     hazard the shell-passthrough worker documents in app.py."""
     import asyncio
 
-    from marim_harness.interfaces.tui.subagents_viewer import SubAgentsViewer
+    from marim_harness.interfaces.tui.subagents.screen import SubAgentsViewer
 
     started = asyncio.Event()
     release = asyncio.Event()
@@ -774,7 +774,7 @@ async def test_cursor_move_lazy_loads_resumed_transcript(tmp_path, monkeypatch):
     other path through the lazy loader) never fires — the RowHighlighted
     handler itself must arm the loader, or every pane except the one selected
     at open stays blank forever."""
-    from marim_harness.interfaces.tui.subagents_viewer import SubAgentsViewer
+    from marim_harness.interfaces.tui.subagents.screen import SubAgentsViewer
 
     loaded: list[str] = []
 

@@ -396,7 +396,7 @@ async def test_tool_widget_survives_markup_like_args_and_result():
 async def test_subagent_widget_survives_markup_like_task():
     """A spawned sub-agent's task text is arbitrary and may contain markup
     syntax; the card header must render it literally rather than crash."""
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
 
     class H(App):
         def compose(self) -> ComposeResult:
@@ -765,14 +765,14 @@ async def test_prompt_input_submit_resets_navigation():
 
 class _SubHarness(App):
     def compose(self) -> ComposeResult:
-        from marim_harness.interfaces.tui.widgets import SubAgentWidget
+        from marim_harness.interfaces.tui.subagents import SubAgentWidget
 
         yield SubAgentWidget("explore", "map the code")
 
 
 @pytest.mark.anyio
 async def test_subagent_note_retry_shows_on_the_activity_line():
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
 
     app = _SubHarness()
     async with app.run_test() as pilot:
@@ -789,7 +789,7 @@ async def test_subagent_note_retry_shows_on_the_activity_line():
 async def test_detached_card_done_line_shows_real_tally():
     """Phase 2: a background (detached) sub-agent streams its steps, so its done
     line shows the real tool tally — "ran in background" is gone."""
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
 
     app = _SubHarness()
     async with app.run_test() as pilot:
@@ -809,7 +809,7 @@ async def test_foreground_card_done_line_keeps_toolcount():
     """A streamed (foreground) sub-agent keeps its real tool tally on the done
     line. (Background cards stream their steps too now, so they show a real
     tally as well — see test_detached_card_done_line_shows_real_tally.)"""
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
 
     app = _SubHarness()
     async with app.run_test() as pilot:
@@ -822,7 +822,7 @@ async def test_foreground_card_done_line_keeps_toolcount():
 
 
 def test_failure_reason_strips_prefix_and_clips():
-    from marim_harness.interfaces.tui.widgets.subagent import failure_reason
+    from marim_harness.interfaces.tui.subagents.card import failure_reason
 
     # The "Sub-agent 'x' failed: " prefix is stripped, leaving the real error.
     assert failure_reason("Sub-agent 'explore' failed: ValueError: boom") == "ValueError: boom"
@@ -835,7 +835,7 @@ def test_failure_reason_strips_prefix_and_clips():
 
 @pytest.mark.anyio
 async def test_subagent_failure_click_expands_to_full_reason():
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
 
     long_body = "ModelHTTPError: status_code: 400, body: " + "detail " * 60
     app = _SubHarness()
@@ -870,7 +870,7 @@ async def test_subagent_failure_click_expands_to_full_reason():
 async def test_subagent_short_failure_is_not_clickable():
     """A failure that fits within the cap has no ▸ marker and ignores clicks —
     there's nothing more to show."""
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
 
     app = _SubHarness()
     async with app.run_test() as pilot:
@@ -889,7 +889,7 @@ async def test_subagent_short_failure_is_not_clickable():
 def test_derive_subagent_title_takes_first_clause():
     """A verbose spawn prompt condenses to its first sentence/clause as the title,
     instead of inlining the whole prompt."""
-    from marim_harness.interfaces.tui.widgets.subagent import derive_title
+    from marim_harness.interfaces.tui.subagents.card import derive_title
 
     assert derive_title(
         "Provide a structural overview of the codebase. Include: a tree."
@@ -908,7 +908,7 @@ async def test_subagent_card_hover_toggles_highlight_class():
     leaf line under the pointer, not the container."""
     from textual.containers import VerticalScroll
 
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
 
     class H(App):
         def compose(self) -> ComposeResult:
@@ -945,7 +945,7 @@ async def test_subagent_card_has_no_inline_transcript():
     SubAgentPane owned by the detail host, attached by the renderer. A bare card
     (no renderer wiring) therefore has no pane, so the inline log stays a compact
     two-line card."""
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
 
     app = _SubHarness()
     async with app.run_test() as pilot:
@@ -955,7 +955,7 @@ async def test_subagent_card_has_no_inline_transcript():
 
 @pytest.mark.anyio
 async def test_subagent_card_shows_current_tool_then_tally():
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
 
     app = _SubHarness()
     async with app.run_test() as pilot:
@@ -976,7 +976,7 @@ async def test_subagent_card_shows_current_tool_then_tally():
 
 @pytest.mark.anyio
 async def test_subagent_finish_marks_done_and_freezes_duration():
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
 
     app = _SubHarness()
     async with app.run_test() as pilot:
@@ -993,7 +993,7 @@ async def test_subagent_finish_marks_done_and_freezes_duration():
 
 @pytest.mark.anyio
 async def test_subagent_tracks_token_usage():
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
 
     app = _SubHarness()
     async with app.run_test() as pilot:
@@ -1009,7 +1009,7 @@ async def test_subagent_tracks_token_usage():
 
 @pytest.mark.anyio
 async def test_subagent_token_usage_survives_finish():
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
 
     app = _SubHarness()
     async with app.run_test() as pilot:
@@ -1023,7 +1023,7 @@ async def test_subagent_token_usage_survives_finish():
 
 @pytest.mark.anyio
 async def test_subagent_set_usage_stores_total_cost_and_split():
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
 
     app = _SubHarness()
     async with app.run_test() as pilot:
@@ -1043,19 +1043,13 @@ class _PanedSubHarness(App):
     def compose(self) -> ComposeResult:
         from textual.containers import VerticalScroll
 
-        from marim_harness.interfaces.tui.widgets import (
-            SubAgentDetailHost,
-            SubAgentWidget,
-        )
+        from marim_harness.interfaces.tui.subagents import SubAgentDetailHost, SubAgentWidget
 
         yield VerticalScroll(SubAgentWidget("explore", "map the code"), id="log")
         yield SubAgentDetailHost(id="host")
 
     async def on_mount(self) -> None:
-        from marim_harness.interfaces.tui.widgets import (
-            SubAgentDetailHost,
-            SubAgentWidget,
-        )
+        from marim_harness.interfaces.tui.subagents import SubAgentDetailHost, SubAgentWidget
 
         card = self.query_one(SubAgentWidget)
         card.stream_id = "s1"
@@ -1067,7 +1061,7 @@ class _PanedSubHarness(App):
 async def test_subagent_expanded_body_shows_full_split_and_cost():
     from textual.widgets import Static
 
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
 
     app = _PanedSubHarness()
     async with app.run_test() as pilot:
@@ -1087,7 +1081,7 @@ async def test_subagent_expanded_body_shows_full_split_and_cost():
 async def test_subagent_body_usage_omits_cost_when_unpriced():
     from textual.widgets import Static
 
-    from marim_harness.interfaces.tui.widgets import SubAgentWidget
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
 
     app = _PanedSubHarness()
     async with app.run_test() as pilot:

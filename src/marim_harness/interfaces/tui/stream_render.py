@@ -24,16 +24,15 @@ from textual.containers import VerticalScroll
 from textual.widget import Widget
 
 from ...usage import resolve_cost
+from .subagents import SubAgentDetailHost, SubAgentPane, SubAgentWidget  # noqa: F401
 from .widgets import (
     AssistantMessage,
-    SubAgentWidget,
     ThinkingWidget,
     ToolCallWidget,
     ToolGroupWidget,
 )
 from .widgets import format_cost as _format_cost
 from .widgets import format_token_split as _format_token_split
-from .widgets.subagent_detail import SubAgentDetailHost, SubAgentPane  # noqa: F401
 
 
 def status_from_part(part) -> str:

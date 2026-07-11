@@ -12,8 +12,8 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Input, OptionList, SelectionList, Static
 from textual.widgets.option_list import Option
 
-from ...ask_user import Choice, Question
-from .interaction_panel import InteractionPanel
+from ....ask_user import Choice, Question
+from .base import InteractionPanel
 
 
 def _option_prompt(choice: Choice) -> Text:

@@ -10,17 +10,16 @@ from textual.widgets import Static
 from ...compaction import summary_text
 from ...runtime.harness import strip_turn_context
 from .stream_render import status_from_part, subagent_failed
+from .subagents import SubAgentDetailHost, SubAgentWidget
 from .widgets import (
     AssistantMessage,
     NoticeMessage,
-    SubAgentWidget,
     SummaryWidget,
     ThinkingWidget,
     ToolCallWidget,
     ToolGroupWidget,
     UserMessage,
 )
-from .widgets.subagent_detail import SubAgentDetailHost
 
 
 class SessionView:

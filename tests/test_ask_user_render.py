@@ -1,6 +1,6 @@
 import json
 
-from marim_harness.interfaces.tui.widgets.ask_user_render import (
+from marim_harness.interfaces.tui.interactions.ask_user_render import (
     ask_user_body,
     ask_user_title_tail,
     overall_state,
