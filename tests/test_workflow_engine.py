@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from marim_harness.workflows.engine import WorkflowEngine
+from marim_harness.workflows.engine import WorkflowEngine, _script_title
 from tests.conftest import _make_deps
 
 
@@ -409,6 +409,90 @@ async def test_post_abort_agent_calls_refuse_immediately(tmp_path):
         await run
     # Only the first spawn ever launched; the second was refused pre-spawn.
     assert calls == 1
+
+
+def test_script_title_prefers_the_leading_comment():
+    assert _script_title("# review sweep\nx = 1") == "review sweep"
+
+
+def test_script_title_falls_back_to_a_line_count():
+    assert _script_title("x = 1\n# late comment") == "workflow script (2 lines)"
+    assert _script_title("\n\n#\nx = 1") == "workflow script (4 lines)"
+
+
+@pytest.mark.anyio
+async def test_workflow_start_and_done_hooks_fire_on_success(tmp_path):
+    eng, deps = _engine(tmp_path, _echo_spawn)
+    events = []
+    deps.ui.on_workflow_start = lambda tcid, title: events.append(("start", tcid, title))
+    deps.ui.on_workflow_done = lambda tcid, outcome, failed: events.append(("done", tcid, failed))
+    out = await eng.run('# review sweep\n"ok"', None, "tcS")
+    assert events == [("start", "tcS", "review sweep"), ("done", "tcS", False)]
+    assert out == '"ok"'
+
+
+@pytest.mark.anyio
+async def test_on_workflow_done_fires_failed_on_script_raise(tmp_path):
+    eng, deps = _engine(tmp_path, _echo_spawn)
+    events = []
+    deps.ui.on_workflow_done = lambda tcid, outcome, failed: events.append((tcid, failed))
+    out = await eng.run("boom_undefined_name", None, "tcE")
+    assert "raised" in out
+    assert events == [("tcE", True)]
+
+
+@pytest.mark.anyio
+async def test_on_workflow_done_fires_failed_on_timeout(tmp_path):
+    async def slow_spawn(*a, **kw):
+        await asyncio.sleep(5)
+        return "never"
+
+    eng, deps = _engine(tmp_path, slow_spawn, timeout_secs=0.1)
+    events = []
+    deps.ui.on_workflow_done = lambda tcid, outcome, failed: events.append((tcid, failed, outcome))
+    out = await eng.run('await agent("x")\n"done"', None, "tcT")
+    assert "timed out" in out
+    assert events == [("tcT", True, out)]
+
+
+@pytest.mark.anyio
+async def test_on_workflow_done_fires_on_cancellation(tmp_path):
+    started = asyncio.Event()
+
+    async def slow_spawn(*a, **kw):
+        started.set()
+        await asyncio.sleep(30)
+        return "never"
+
+    eng, deps = _engine(tmp_path, slow_spawn)
+    events = []
+    deps.ui.on_workflow_done = lambda tcid, outcome, failed: events.append((tcid, outcome, failed))
+    run = asyncio.ensure_future(eng.run('await agent("x")\n"done"', None, "tcC"))
+    await started.wait()
+    run.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await run
+    assert events == [("tcC", "workflow aborted", True)]
+
+
+@pytest.mark.anyio
+async def test_parse_failure_fires_no_lifecycle_hooks(tmp_path):
+    eng, deps = _engine(tmp_path, _echo_spawn)
+    events = []
+    deps.ui.on_workflow_start = lambda *a: events.append(a)
+    deps.ui.on_workflow_done = lambda *a: events.append(a)
+    out = await eng.run("def broken(:\n    pass", None, "tcP")
+    assert "failed to parse" in out
+    assert events == []
+
+
+@pytest.mark.anyio
+async def test_log_lines_carry_the_tool_call_id(tmp_path):
+    eng, deps = _engine(tmp_path, _echo_spawn)
+    lines = []
+    deps.ui.on_workflow_log = lambda tcid, msg: lines.append((tcid, msg))
+    await eng.run('log("step 1")\n"ok"', None, "tcL")
+    assert lines == [("tcL", "step 1")]
 
 
 @pytest.mark.anyio

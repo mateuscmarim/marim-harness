@@ -226,14 +226,14 @@ async def test_bind_ui_wires_workflow_spawn_and_log_callbacks(tmp_path: Path, mo
 
         notified = []
         monkeypatch.setattr(app, "notify", lambda msg, **kw: notified.append((msg, kw)))
-        ui.on_workflow_log("step 1 done")
+        ui.on_workflow_log("tc1", "step 1 done")
         assert notified == [("step 1 done", {"title": "workflow", "timeout": 4})]
 
         # Script-controlled text can contain Rich markup fragments (e.g. a
         # bracketed file path); those must be escaped so notify() renders
         # them literally instead of interpreting them as markup tags.
         notified.clear()
-        ui.on_workflow_log("processing [bold red]injected[/bold red] file")
+        ui.on_workflow_log("tc1", "processing [bold red]injected[/bold red] file")
         assert notified == [
             (
                 "processing \\[bold red]injected\\[/bold red] file",

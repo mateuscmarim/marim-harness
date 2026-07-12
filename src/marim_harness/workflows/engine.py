@@ -105,6 +105,22 @@ class _PrintTail:
         return "".join(self._chunks)
 
 
+def _script_title(script: str) -> str:
+    """A short human label for the run's card: the script's first comment
+    line when it opens with one (models usually title their scripts), else a
+    line count. Pure; unit-tested directly."""
+    for line in script.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith("#"):
+            text = s.lstrip("#").strip()
+            if text:
+                return text
+        break
+    return f"workflow script ({len(script.splitlines())} lines)"
+
+
 class WorkflowEngine:
     """Runs workflow scripts. One engine per harness; state is per-run."""
 
@@ -118,6 +134,10 @@ class WorkflowEngine:
             monty = Monty(script, inputs=["args"], script_name="workflow.py")
         except MontySyntaxError as exc:
             return f"Workflow script failed to parse: {exc}"
+        # Announce the run only after a successful parse: a parse failure is
+        # returned above with no run to track, so no card is ever claimed for
+        # it and _announce_done below fires exactly once per announced run.
+        self._announce_start(tool_call_id, _script_title(script))
         state = _RunState(tool_call_id=tool_call_id)
         vm_limits: ResourceLimits = {
             # Never let the VM's own duration cap exceed the caller's
@@ -152,16 +172,23 @@ class WorkflowEngine:
             # let the cancellation propagate so the turn's resumability
             # invariants hold.
             await self._abort_and_drain(state, vm)
+            self._announce_done(tool_call_id, "workflow aborted", failed=True)
             raise
         if not done:
             await self._abort_and_drain(state, vm)
-            return (f"Workflow timed out after {self._timeout:.0f}s; "
-                    "in-flight sub-agents were cancelled.")
+            outcome = (f"Workflow timed out after {self._timeout:.0f}s; "
+                       "in-flight sub-agents were cancelled.")
+            self._announce_done(tool_call_id, outcome, failed=True)
+            return outcome
         try:
             value = vm.result()
         except MontyRuntimeError as exc:
-            return f"Workflow script raised: {exc}"
-        return self._shape(value, tool_call_id, prints.text())
+            outcome = f"Workflow script raised: {exc}"
+            self._announce_done(tool_call_id, outcome, failed=True)
+            return outcome
+        shaped = self._shape(value, tool_call_id, prints.text())
+        self._announce_done(tool_call_id, shaped, failed=False)
+        return shaped
 
     # -- host functions -----------------------------------------------------
 
@@ -174,7 +201,7 @@ class WorkflowEngine:
             )
 
         def log(message):
-            self._log(str(message))
+            self._log(state.tool_call_id, str(message))
 
         return {"agent": agent, "log": log}
 
@@ -242,11 +269,21 @@ class WorkflowEngine:
             done(stream_id, report)
         return report
 
-    def _log(self, message: str) -> None:
+    def _log(self, tool_call_id: str, message: str) -> None:
         logger.debug("workflow log: %s", message)
         cb = getattr(self.deps.ui, "on_workflow_log", None)
         if cb is not None:
-            cb(message)
+            cb(tool_call_id, message)
+
+    def _announce_start(self, tool_call_id: str, title: str) -> None:
+        cb = getattr(self.deps.ui, "on_workflow_start", None)
+        if cb is not None:
+            cb(tool_call_id, title)
+
+    def _announce_done(self, tool_call_id: str, outcome: str, *, failed: bool) -> None:
+        cb = getattr(self.deps.ui, "on_workflow_done", None)
+        if cb is not None:
+            cb(tool_call_id, outcome, failed)
 
     # -- teardown & result shaping -------------------------------------------
 

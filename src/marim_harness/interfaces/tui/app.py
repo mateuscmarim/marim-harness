@@ -116,7 +116,7 @@ class HarnessApp(App):
             ask_user=self._ask_user,
             on_present_plan=self._present_plan,
             on_workflow_spawn=self._on_workflow_spawn,
-            on_workflow_log=lambda msg: self.notify(
+            on_workflow_log=lambda _tcid, msg: self.notify(
                 rich.markup.escape(msg), title="workflow", timeout=4
             ),
             on_workflow_spawn_done=self.stream.finish_workflow_child,

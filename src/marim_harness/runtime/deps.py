@@ -204,14 +204,27 @@ class UIHooks:
     # a stream id that has no spawn_agent tool call to intercept (cards are
     # otherwise created only when a literal spawn_agent call renders).
     on_workflow_spawn: "Callable[[str, str, str, str], Awaitable[None]] | None" = None
-    # (message) -> None. A workflow script's log() line. None when headless
-    # (the engine falls back to DEBUG logging).
-    on_workflow_log: "Callable[[str], None] | None" = None
+    # (tool_call_id, message) -> None. A workflow script's log() line, keyed
+    # by the run's tool_call_id so the TUI can route it to the run's card.
+    # None when headless (the engine falls back to DEBUG logging).
+    on_workflow_log: "Callable[[str, str], None] | None" = None
     # (stream_id, report) -> None. Fired by the workflow engine AFTER each
     # child agent() call resolves, so the card claimed by on_workflow_spawn
     # can leave "pending" -- it has no literal tool-call/tool-return pair for
     # on_tool_result to intercept the way a real spawn_agent call does.
     on_workflow_spawn_done: "Callable[[str, str], None] | None" = None
+    # (tool_call_id, title) -> None. Fired by the workflow engine once the
+    # script has PARSED (a parse failure creates no run worth tracking), so
+    # the TUI can claim a first-class card for the run itself in the
+    # sub-agents screen — children then nest under it and log() lines have a
+    # pane to land in.
+    on_workflow_start: "Callable[[str, str], None] | None" = None
+    # (tool_call_id, outcome, failed) -> None. Fired exactly once at EVERY
+    # exit of a run announced by on_workflow_start — success, script raise,
+    # timeout, and cancellation — so the claimed card always settles. The
+    # failed flag is explicit because the engine knows which exit it took;
+    # the UI never re-sniffs result text.
+    on_workflow_done: "Callable[[str, str, bool], None] | None" = None
     detach_fanout: bool = False
     interactive: bool = False
     notifier: "Notifier | None" = None
