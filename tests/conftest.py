@@ -89,6 +89,22 @@ def _isolated_config(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(cfg))
 
 
+@pytest.fixture(autouse=True)
+def _isolated_data(tmp_path_factory, monkeypatch):
+    """Point the session store root at an empty per-test dir so the developer's
+    real ~/.local/share/marim-harness/sessions never accrues leaked sessions.
+
+    ``SessionStore``/``SessionManager`` resolve their base from ``$XDG_DATA_HOME``
+    at construction time when no explicit ``base_dir`` is passed. A test that
+    calls ``SessionManager(workspace)`` without ``base_dir=`` — easy to forget —
+    would otherwise write a ``{workspace.name}-{digest}/`` dir straight into the
+    real store. Isolating the env var makes that mistake harmless suite-wide.
+    Tests that pass their own ``base_dir`` ignore this; tests that exercise the
+    real XDG path set their own ``XDG_DATA_HOME`` in the body, which overrides."""
+    data = tmp_path_factory.mktemp("xdg-data")
+    monkeypatch.setenv("XDG_DATA_HOME", str(data))
+
+
 # Suites whose tests exercise project-local ``.marim/skills`` / ``.marim/agents``.
 # Those roots now load only in a TRUSTED workspace (gated behind
 # MARIM_TRUST_PROJECT_HOOKS, matching the hooks/MCP gate — a cloned untrusted repo's
