@@ -36,6 +36,7 @@ from . import (
     planning_tools,
     skill_tools,
     spawn_tools,
+    workflow_tools,
 )
 
 # Re-exported for backward compatibility; defined in the leaf module ``names``
@@ -67,6 +68,7 @@ class ToolGroups:
     tasks: bool = True
     jobs: bool = True
     spawn: bool = True
+    workflow: bool = True
 
     def enabled_tool_names(self) -> frozenset[str]:
         """Union of the tool names in every enabled group (both job-tool shapes
@@ -151,6 +153,8 @@ def _register_action_tools(agent: HarnessAgent, g: ToolGroups) -> None:
     # (subagent_max_depth), where the model can't touch it.
     if g.spawn:
         agent.tool(spawn_tools.spawn_agent)
+    if g.workflow:
+        agent.tool(requires_approval=True)(workflow_tools.run_workflow)
     if g.files_write:
         agent.tool(requires_approval=True)(edit_tools.write_file)
         agent.tool(requires_approval=True)(edit_tools.edit_file)

@@ -52,4 +52,5 @@ TOOL_GROUPS: dict[str, frozenset[str]] = {
     "tasks": frozenset({"update_tasks", "ask_user", "present_plan"}),
     "jobs": frozenset({"jobs", "job_output", "wait_for_job", "cancel_job", "job"}),
     "spawn": frozenset({"spawn_agent"}),
+    "workflow": frozenset({"run_workflow"}),
 }
