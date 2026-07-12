@@ -154,6 +154,13 @@ to avoid import cycles.
   (per-spawn context masking of stale tool observations), and `cli_backend.py`
   (the optional `claude -p` CLI backend it delegates to). Re-exported as
   `marim_harness.subagents.SubagentRunner`.
+- `workflows/` — dynamic workflows: the gated `run_workflow` tool executes a
+  model-authored Python script in a pydantic-monty sandbox (`engine.py`);
+  `agent()`/`log()` host functions delegate to `SubagentRunner.run` through
+  the `services.run_workflow` seam. Schema validation of agent() reports is
+  engine-level (`schema.py`, jsonschema). Never cancel the Monty VM task —
+  aborts flow through host functions (see engine.py's module docstring).
+  Optional extra `[workflows]`; `MARIM_WORKFLOWS` gates it.
 - `interfaces/tui/` — Textual app, widgets, `styles.tcss`, streaming render;
   `interactions/` — inline approval/ask-user/plan-card panels (mounted above the
   status bar, not modals, so the transcript stays scrollable) sharing an
