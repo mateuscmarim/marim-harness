@@ -1,6 +1,5 @@
-"""Pure helpers for workflow scripts: schema output contracts, report
-validation, and result shaping. No I/O — the engine owns all effects
-(spawning, spill writes, UI callbacks)."""
+"""Pure helpers for workflow scripts: report validation and result shaping.
+No I/O — the engine owns all effects (spawning, spill writes, UI callbacks)."""
 
 from __future__ import annotations
 
@@ -14,16 +13,6 @@ from ..workspace.agents import cap_subagent_output
 from .errors import WorkflowResultError
 
 _FENCED = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
-
-
-def output_contract(schema: dict) -> str:
-    """The output-contract paragraph appended to a schema'd agent() task: the
-    sub-agent must respond with ONLY a JSON object matching the schema."""
-    return (
-        "\n\nOutput contract: respond with ONLY a JSON object matching this "
-        "JSON Schema — no prose before or after it:\n"
-        + json.dumps(schema, indent=2)
-    )
 
 
 def extract_json(report: str) -> object | None:

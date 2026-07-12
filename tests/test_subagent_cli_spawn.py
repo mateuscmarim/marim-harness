@@ -208,3 +208,27 @@ def test_cli_timeout_env_falls_back_on_garbage(monkeypatch):
     assert _cli_timeout() == _DEFAULT_CLI_TIMEOUT
     monkeypatch.setenv("MARIM_CLAUDE_CLI_TIMEOUT", "42")
     assert _cli_timeout() == 42.0
+
+
+@pytest.mark.anyio
+async def test_cli_backend_schema_appends_prompt_contract(tmp_path: Path, monkeypatch):
+    """A claude-cli spawn is an external process marim only launches — it
+    can't take a pydantic-ai output type, so the runner (which knows the
+    backend) appends the prompt contract to the task instead."""
+    monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", _fake_cli(tmp_path))
+    _write_cli_agent(tmp_path)
+    runner = _make_harness(_dummy_model(), _make_deps(tmp_path)).subagents
+    seen = {}
+
+    async def fake_execute(defn, task, *args, **kwargs):
+        seen["task"] = task
+        return "ok"
+
+    monkeypatch.setattr(runner._cli, "execute", fake_execute)
+    out = await runner.run(
+        "cli-worker", "do the thing", "s1",
+        output_schema={"type": "object", "properties": {"ok": {"type": "boolean"}}},
+    )
+    assert out == "ok"
+    assert seen["task"].startswith("do the thing")
+    assert "Output contract" in seen["task"]

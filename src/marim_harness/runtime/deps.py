@@ -2,7 +2,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from dataclasses import replace as dataclass_replace
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import Agent, DeferredToolRequests
 from pydantic_ai.tools import DeferredToolApprovalResult
@@ -269,4 +269,7 @@ class Deps:
 # ``RunContext[Deps]`` tool checks cleanly. Sub-agents have no approval round, so
 # they produce plain ``str``.
 HarnessAgent = Agent[Deps, str | DeferredToolRequests]
-SubAgent = Agent[Deps, str]
+# str for ordinary spawns; a schema'd spawn (output_type=StructuredDict)
+# finishes with a dict, which the runner serializes back to str before it
+# crosses any seam (SpawnRun.output stays textual).
+SubAgent = Agent[Deps, str | dict[str, Any]]

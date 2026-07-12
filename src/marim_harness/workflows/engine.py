@@ -37,10 +37,11 @@ from dataclasses import dataclass, field
 from pydantic_monty import Monty, MontyRuntimeError, MontySyntaxError, ResourceLimits
 
 from ..runtime.deps import Deps
+from ..subagents.output_schema import output_contract
 from ..tools.impl import fs
 from ..workspace.agents import cap_subagent_output
 from .errors import WorkflowCancelled, WorkflowResultError
-from .schema import check_valid_schema, output_contract, shape_result, validate_report
+from .schema import check_valid_schema, shape_result, validate_report
 
 logger = logging.getLogger(__name__)
 
