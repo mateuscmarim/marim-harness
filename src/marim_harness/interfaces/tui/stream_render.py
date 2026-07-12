@@ -782,6 +782,20 @@ class StreamRenderer:
         self.solo_tool = None
         await self._log_container().mount(widget)
 
+    def finish_workflow_child(self, stream_id: str, content: str) -> None:
+        """Settle a workflow-spawned child's card: ``claim_workflow_spawn``
+        mounts it "pending" with no literal tool-call/tool-return pair for
+        ``_on_tool_result`` to intercept the way a real spawn_agent call has,
+        so the engine calls this directly once the child's agent() call
+        resolves. Mirrors ``_on_tool_result``'s failed-report detection so
+        both paths agree on status."""
+        widget = self.tool_widgets.get(stream_id)
+        if not isinstance(widget, SubAgentWidget):
+            return
+        status = "failed" if subagent_failed(content) else "done"
+        widget.finish(content, status=status)
+        self.app.subagents.refresh()
+
     def _log_container(self) -> VerticalScroll:
         """The main log's mount target — the one query-selector site shared by
         every top-level-sink construction (``on_events``, ``on_cli_activity``) and

@@ -119,6 +119,7 @@ class HarnessApp(App):
             on_workflow_log=lambda msg: self.notify(
                 rich.markup.escape(msg), title="workflow", timeout=4
             ),
+            on_workflow_spawn_done=self.stream.finish_workflow_child,
             on_subagent_event=self.stream.on_subagent_event,
             on_subagent_notice=self.stream.on_subagent_notice,
             on_subagent_model=self.stream.on_subagent_model,
