@@ -3,11 +3,12 @@
 # Install marim as a global command (`marim`, plus `marim-harness`).
 #
 # Usage:
-#   ./install.sh                 # install with the TUI and serve mode; prompt for the OpenRouter API key
+#   ./install.sh                 # install with the TUI, serve mode, and workflows; prompt for the OpenRouter API key
 #   ./install.sh --key sk-or-... # install non-interactively with a key
 #   ./install.sh --no-key        # install, don't touch the API key
 #   ./install.sh --no-tui        # skip the TUI (textual) dependency
 #   ./install.sh --no-serve      # skip the serve mode (starlette/uvicorn) dependency
+#   ./install.sh --no-workflows  # skip the dynamic workflows (pydantic-monty) dependency
 #
 # Re-run any time to upgrade; the install is editable, so source edits in this
 # checkout take effect on the next `marim` run without reinstalling.
@@ -20,6 +21,7 @@ KEY=""
 ASK_KEY=1
 TUI=1
 SERVE=1
+WORKFLOWS=1
 for arg in "$@"; do
     case "$arg" in
         --key=*) KEY="${arg#--key=}"; ASK_KEY=0 ;;
@@ -27,8 +29,9 @@ for arg in "$@"; do
         --no-key) ASK_KEY=0 ;;
         --no-tui) TUI=0 ;;
         --no-serve) SERVE=0 ;;
+        --no-workflows) WORKFLOWS=0 ;;
         -h|--help)
-            sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
             exit 0 ;;
         *) ;;
     esac
@@ -43,15 +46,18 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 # 2. Install (editable) — provides both `marim` and `marim-harness` on PATH.
-#    Compose the optional extras (tui, serve) the flags selected into one
-#    comma-separated `[...]` suffix; a bare install (both skipped) is
-#    headless-only.
+#    Compose the optional extras (tui, serve, workflows) the flags selected
+#    into one comma-separated `[...]` suffix; a bare install (all skipped)
+#    is headless-only.
 EXTRAS=""
 if [ "$TUI" -eq 1 ]; then
     EXTRAS="${EXTRAS:+$EXTRAS,}tui"
 fi
 if [ "$SERVE" -eq 1 ]; then
     EXTRAS="${EXTRAS:+$EXTRAS,}serve"
+fi
+if [ "$WORKFLOWS" -eq 1 ]; then
+    EXTRAS="${EXTRAS:+$EXTRAS,}workflows"
 fi
 TARGET="$SCRIPT_DIR"
 if [ -n "$EXTRAS" ]; then
