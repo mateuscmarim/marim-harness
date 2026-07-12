@@ -129,6 +129,100 @@ async def test_ctrl_x_opens_view_and_shows_selected_transcript(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_claim_workflow_spawn_registers_a_card_and_routes_events(tmp_path):
+    """Workflow children have synthesized stream ids (`<tool_call_id>::wfN`) with no
+    spawn_agent tool call for a sink to intercept, so the engine announces each spawn
+    through claim_workflow_spawn before launching it. Without this claim,
+    on_subagent_event's unknown-id guard (see test_stream_event_after_clear_is_a_noop)
+    would silently drop the child's whole stream."""
+    from pydantic_ai.messages import PartStartEvent, TextPart
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        r = app.stream
+        await r.claim_workflow_spawn("tc1::wf1", "explore", "review bugs", "tc1")
+        await pilot.pause()
+
+        widget = r.tool_widgets["tc1::wf1"]
+        assert widget.stream_id == "tc1::wf1"
+        assert widget in r.subagents
+        assert widget.agent_type == "explore"
+        assert widget.agent_task == "review bugs"
+        # Accepted for future tree grouping but not yet used for nesting.
+        assert widget.parent_id is None
+        # Actually mounted (into #log), not just registered in the bookkeeping dicts.
+        assert widget in app.query_one("#log").children
+
+        # Events for the synthesized id now route into the card instead of being
+        # dropped by on_subagent_event's unknown-id guard. Assert a concrete effect
+        # of the routed event landing (the pane existing proves nothing — it's
+        # already non-None before the event fires, since claim_workflow_spawn
+        # creates it): the streamed text lands in this stream's own assistant
+        # buffer, and the resulting widget is actually mounted into this card's
+        # pane (not dropped, and not some other stream's state).
+        await r.on_subagent_event(
+            "tc1::wf1", PartStartEvent(index=0, part=TextPart(content="hi"))
+        )
+        await pilot.pause()
+        state = r._sub_streams["tc1::wf1"]
+        assert state.assistant is not None
+        assert state.assistant.text == "hi"
+        assert state.assistant in widget.pane.children
+
+
+@pytest.mark.anyio
+async def test_claim_workflow_spawn_breaks_the_top_level_tool_run(tmp_path):
+    """Regression for a reviewer finding on Task 8: claim_workflow_spawn must break
+    the top-level run of consecutive tools the same way the literal spawn_agent path
+    (_claim_spawn) does. Before the fix it left ``solo_tool``/``tool_group`` pointing
+    at whatever tool call preceded the workflow spawn (e.g. run_workflow itself); the
+    next top-level tool call would then build a ToolGroupWidget anchored at that
+    stale widget's DOM position and reparent it there, visually reordering cards."""
+    from pydantic_ai.messages import FunctionToolCallEvent, ToolCallPart
+
+    from marim_harness.interfaces.tui.stream_render import _TopLevelSink
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        r = app.stream
+
+        # Simulate the run_workflow call itself landing as a lone top-level tool,
+        # the way it would just before the engine announces its children — this is
+        # what leaves solo_tool non-None going into claim_workflow_spawn.
+        top_sink = _TopLevelSink(r, app.query_one("#log"))
+        call = FunctionToolCallEvent(
+            part=ToolCallPart(tool_name="run_workflow", args={}, tool_call_id="wf_call")
+        )
+        await r.dispatch_stream_event(call, top_sink)
+        await pilot.pause()
+        assert r.solo_tool is not None  # the stale state the fix must clear
+
+        await r.claim_workflow_spawn("wf_call::wf1", "explore", "review bugs", "wf_call")
+        await pilot.pause()
+
+        # The workflow spawn must break the run exactly like _claim_spawn does, so
+        # a subsequent top-level tool call mounts bare (after the workflow card)
+        # instead of reparenting a stale solo widget into a new group.
+        assert r.solo_tool is None
+        assert r.tool_group is None
+
+        log = app.query_one("#log")
+        before = list(log.children)
+        next_call = FunctionToolCallEvent(
+            part=ToolCallPart(tool_name="bash", args={"command": "echo hi"}, tool_call_id="c2")
+        )
+        await r.dispatch_stream_event(next_call, top_sink)
+        await pilot.pause()
+
+        # The new tool call's widget lands after everything already mounted (the
+        # run_workflow call and the workflow card), never reparented earlier in the
+        # DOM the way the stale-solo bug would have caused.
+        after = list(log.children)
+        assert after[: len(before)] == before
+        assert len(after) == len(before) + 1
+
+
+@pytest.mark.anyio
 async def test_clicking_card_opens_screen_at_that_agent(tmp_path):
     """A click on a (non-failed) card jumps into the screen focused on it."""
     app = _app(tmp_path)

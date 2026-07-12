@@ -206,6 +206,66 @@ async def test_bind_ui_wires_ttft_reports_to_the_renderer(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_bind_ui_wires_workflow_spawn_and_log_callbacks(tmp_path: Path, monkeypatch):
+    """bind_ui threads UIHooks.on_workflow_spawn / on_workflow_log (Task 6) onto
+    deps.ui so the workflow engine's defensive getattr finds them: a card claim
+    delegates to the renderer (same seam a literal spawn_agent call uses) and a log
+    line surfaces as a toast, matching the neighboring on_subagent_event callback's
+    threading discipline (called directly, no call_from_thread marshalling)."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        ui = app.harness.deps.ui
+        assert ui.on_workflow_spawn is not None
+        assert ui.on_workflow_log is not None
+
+        await ui.on_workflow_spawn("tc1::wf1", "explore", "review bugs", "tc1")
+        await pilot.pause()
+        widget = app.stream.tool_widgets["tc1::wf1"]
+        assert widget in app.stream.subagents
+
+        notified = []
+        monkeypatch.setattr(app, "notify", lambda msg, **kw: notified.append((msg, kw)))
+        ui.on_workflow_log("step 1 done")
+        assert notified == [("step 1 done", {"title": "workflow", "timeout": 4})]
+
+        # Script-controlled text can contain Rich markup fragments (e.g. a
+        # bracketed file path); those must be escaped so notify() renders
+        # them literally instead of interpreting them as markup tags.
+        notified.clear()
+        ui.on_workflow_log("processing [bold red]injected[/bold red] file")
+        assert notified == [
+            (
+                "processing \\[bold red]injected\\[/bold red] file",
+                {"title": "workflow", "timeout": 4},
+            )
+        ]
+
+
+@pytest.mark.anyio
+async def test_bind_ui_wires_workflow_spawn_done_to_finish_the_card(tmp_path: Path):
+    """A workflow child's card has no literal tool-call/tool-return pair for
+    on_tool_result to intercept (claim_workflow_spawn mounts it standalone),
+    so bind_ui must wire on_workflow_spawn_done to actually settle it —
+    otherwise the card is stuck "pending" forever even after the workflow
+    completes successfully."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        ui = app.harness.deps.ui
+        assert ui.on_workflow_spawn_done is not None
+
+        await ui.on_workflow_spawn("tc1::wf1", "explore", "review bugs", "tc1")
+        await pilot.pause()
+        widget = app.stream.tool_widgets["tc1::wf1"]
+        assert widget.status == "pending"
+
+        ui.on_workflow_spawn_done("tc1::wf1", '{"summary": "done"}')
+        assert widget.status == "done"
+        assert widget.report == '{"summary": "done"}'
+
+
+@pytest.mark.anyio
 async def test_status_bar_shows_ttft_once_known(tmp_path: Path):
     """The bar surfaces the latest request's TTFT; before any stream the field
     is absent entirely (no 'ttft ?' placeholder noise)."""

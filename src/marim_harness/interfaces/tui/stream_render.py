@@ -756,6 +756,52 @@ class StreamRenderer:
         widget.after_ids = _after_ids(args)
         return widget
 
+    async def claim_workflow_spawn(
+        self, stream_id: str, type_: str, task: str, parent_id: str
+    ) -> None:
+        """A card for a workflow-spawned sub-agent. Workflow children have no
+        spawn_agent tool call for a sink to intercept (the engine synthesizes
+        their stream ids as ``<tool_call_id>::wfN``), so the engine announces each
+        spawn through this callback BEFORE launching it — otherwise its whole run
+        would be dropped by on_subagent_event's unknown-id guard. The card mounts
+        top-level, into the same ``#log`` container ``_TopLevelSink`` uses;
+        ``parent_id`` (the run_workflow tool_call_id) is accepted for future tree
+        grouping but not yet used for nesting."""
+        widget = self.mount_spawn_widget({"type": type_, "task": task})
+        widget.stream_id = stream_id
+        widget.parent_id = None
+        self.tool_widgets[stream_id] = widget
+        self.ensure_pane(widget)
+        # Break the current run of consecutive tools the same way _claim_spawn does
+        # for a literal spawn_agent call. Without this, a stale solo_tool/tool_group
+        # left over from before the workflow spawn (e.g. the run_workflow call
+        # itself) stays referenced; the next top-level tool call would then mount a
+        # ToolGroupWidget anchored at that stale widget's DOM position and reparent
+        # it in place, visually reordering already-finished cards.
+        self.tool_group = None
+        self.solo_tool = None
+        await self._log_container().mount(widget)
+
+    def finish_workflow_child(self, stream_id: str, content: str) -> None:
+        """Settle a workflow-spawned child's card: ``claim_workflow_spawn``
+        mounts it "pending" with no literal tool-call/tool-return pair for
+        ``_on_tool_result`` to intercept the way a real spawn_agent call has,
+        so the engine calls this directly once the child's agent() call
+        resolves. Mirrors ``_on_tool_result``'s failed-report detection so
+        both paths agree on status."""
+        widget = self.tool_widgets.get(stream_id)
+        if not isinstance(widget, SubAgentWidget):
+            return
+        status = "failed" if subagent_failed(content) else "done"
+        widget.finish(content, status=status)
+        self.app.subagents.refresh()
+
+    def _log_container(self) -> VerticalScroll:
+        """The main log's mount target — the one query-selector site shared by
+        every top-level-sink construction (``on_events``, ``on_cli_activity``) and
+        by ``claim_workflow_spawn``'s standalone card mount."""
+        return self.app.query_one("#log", VerticalScroll)
+
     def ensure_pane(self, widget: SubAgentWidget) -> "SubAgentPane | None":
         """Create (once) the detail-host pane for ``widget`` and attach it to the
         card. Returns the pane, or None if the host isn't mounted yet (headless /
@@ -786,7 +832,7 @@ class StreamRenderer:
         # A new run starts a fresh run of consecutive tool calls.
         self.tool_group = None
         self.solo_tool = None
-        sink = _TopLevelSink(self, self.app.query_one("#log", VerticalScroll))
+        sink = _TopLevelSink(self, self._log_container())
         async for event in events:
             # ctx.usage carries the run's live running total (ctx is None in some
             # unit tests); fold it into the status counter via the flush tick.
@@ -834,7 +880,7 @@ class StreamRenderer:
         here finalizes the in-flight assistant text and the model's next text part
         opens a fresh message below it — preserving interleaving. Fired on the app's
         event loop during the live turn, so direct widget mutation is safe."""
-        sink = _TopLevelSink(self, self.app.query_one("#log", VerticalScroll))
+        sink = _TopLevelSink(self, self._log_container())
         for event in events:
             await self.dispatch_stream_event(event, sink)
 

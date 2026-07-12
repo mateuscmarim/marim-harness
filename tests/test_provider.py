@@ -1007,7 +1007,7 @@ def test_bare_groups_register_only_file_tools():
     from marim_harness.tools.provider import ToolGroups
 
     groups = ToolGroups(bash=False, net=False, memory=False, skills=False,
-                        tasks=False, jobs=False, spawn=False)
+                        tasks=False, jobs=False, spawn=False, workflow=False)
     agent = Agent(TestModel(), deps_type=Deps)
     BuiltinToolProvider(groups=groups).register(agent)
     assert _tool_names(agent) == {
@@ -1038,7 +1038,64 @@ def test_enabled_tool_names_unions_active_groups():
     from marim_harness.tools.provider import ToolGroups
 
     groups = ToolGroups(bash=False, net=False, memory=False, skills=False,
-                        tasks=False, jobs=False, spawn=False)
+                        tasks=False, jobs=False, spawn=False, workflow=False)
     assert groups.enabled_tool_names() == frozenset(
         {"read_file", "glob", "tree", "grep", "write_file", "edit_file"}
     )
+
+
+def test_workflow_group_registers_the_gated_tool():
+    agent = _build_agent()
+    assert "run_workflow" in _tool_names(agent)
+
+
+def test_workflow_group_off_removes_it():
+    from marim_harness.tools.provider import ToolGroups
+
+    agent = Agent(TestModel(), deps_type=Deps)
+    BuiltinToolProvider(ToolGroups(workflow=False)).register(agent)
+    assert "run_workflow" not in _tool_names(agent)
+
+
+def test_run_workflow_requires_approval():
+    # Pins the requires_approval=True flag on the registration itself (in
+    # provider.py), independent of the plan-mode denial test below, which
+    # exercises resolve_approvals directly and would stay green even if the
+    # registration dropped requires_approval entirely.
+    agent = _build_agent()
+    tool = agent._function_toolset.tools["run_workflow"]
+    assert tool.requires_approval is True
+
+
+def test_run_workflow_is_not_grantable_to_subagents():
+    from marim_harness.tools.names import SUBAGENT_TOOLS
+
+    assert "run_workflow" not in SUBAGENT_TOOLS
+
+
+@pytest.mark.anyio
+async def test_run_workflow_is_denied_in_plan_mode():
+    # Approval flows through the generic resolve_approvals path (it is
+    # name-agnostic for requires_approval tools — verified against
+    # runtime/permissions.py), and plan mode's _plan_decision denies any
+    # gated tool it doesn't special-case. Pin that: workflows must not run
+    # in plan mode.
+    from dataclasses import dataclass, field
+
+    from pydantic_ai import ToolDenied
+
+    from marim_harness.runtime.permissions import resolve_approvals
+
+    @dataclass
+    class FakeCall:
+        tool_call_id: str
+        tool_name: str
+        args: object = field(default_factory=dict)
+
+    @dataclass
+    class FakeRequests:
+        approvals: list = field(default_factory=list)
+
+    requests = FakeRequests(approvals=[FakeCall("c1", "run_workflow", {})])
+    results = await resolve_approvals(requests, Mode.plan, None)
+    assert isinstance(results.approvals["c1"], ToolDenied)

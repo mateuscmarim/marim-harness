@@ -39,6 +39,13 @@ def test_load_config_reads_subagent_concurrency(monkeypatch):
     assert load_config().subagent.concurrency == 3
 
 
+def test_workflows_env_gate(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setenv("MARIM_WORKFLOWS", "0")
+    cfg = load_config()
+    assert cfg.workflows_enabled is False
+
+
 def test_subagent_concurrency_defaults_to_unbounded(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     monkeypatch.delenv("MARIM_SUBAGENT_CONCURRENCY", raising=False)

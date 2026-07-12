@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -64,6 +64,7 @@ from .deps import (
     SubAgentModelCb,
     SubAgentNoticeCb,
     SubAgentUsageCb,
+    WorkflowRunner,
 )
 from .instructions import register_instructions
 from .permissions import Mode
@@ -169,6 +170,35 @@ class HarnessConfig:
     # None, which degrades everything downstream at once: no prompt block, no
     # extra write root in the file tools, no ask-mode approval bypass.
     scratchpad_enabled: bool = True
+    # Dynamic workflows: the run_workflow tool's engine. Enabled by default,
+    # but the engine only builds when pydantic-monty is importable (the
+    # [workflows] extra); otherwise services.run_workflow stays None and the
+    # tool answers with an install hint. MARIM_WORKFLOWS=0 turns it off.
+    workflows_enabled: bool = True
+    # Overall wall-clock ceiling for one run_workflow call. VM compute is
+    # separately bounded by the engine's ResourceLimits; this bounds total
+    # duration including sub-agent time.
+    workflow_timeout_secs: float = 1800.0
+
+
+def _build_workflow_engine(cfg: HarnessConfig, deps: Deps, subagents: SubagentRunner):
+    """The workflow engine, or None when disabled or pydantic-monty is not
+    installed. The import is guarded HERE (not in the tool) so availability
+    is decided once at build time and the tool only checks the seam."""
+    if not cfg.workflows_enabled:
+        return None
+    try:
+        from ..workflows.engine import WorkflowEngine
+    except ImportError as exc:
+        if exc.name == "pydantic_monty":
+            logger.info(
+                "workflows unavailable: pydantic-monty not installed "
+                "(uv add 'marim-harness[workflows]')"
+            )
+        else:
+            logger.info("workflows unavailable: %s", exc)
+        return None
+    return WorkflowEngine(deps, subagents.run, timeout_secs=cfg.workflow_timeout_secs)
 
 
 def build_services(
@@ -179,6 +209,7 @@ def build_services(
     subagents: SubagentRunner,
     get_session_id: Callable[[], str | None] | None = None,
     get_scratchpad: Callable[[], Path | None] | None = None,
+    run_workflow: WorkflowRunner | None = None,
 ) -> HarnessServices:
     """Assemble the Harness-wired collaborator container and install it on
     ``deps``. Centralises the one late binding the deps<->services cycle
@@ -193,6 +224,7 @@ def build_services(
         resume_subagent=subagents.resume_spawn,
         get_session_id=get_session_id,
         get_scratchpad=get_scratchpad,
+        run_workflow=run_workflow,
     )
     deps.services = services
     return services
@@ -351,6 +383,9 @@ def build_collaborators(
                 return None
             return ensure_scratchpad(deps.workspace.root, sid)
         get_scratchpad = _get_scratchpad
+    # The run_workflow tool's engine. Guarded build: disabled by config, or
+    # pydantic-monty simply not installed (the [workflows] extra).
+    workflow_engine = _build_workflow_engine(cfg, deps, subagents)
     # One cohesive late binding for the collaborator cycle: TurnHooks and the
     # sub-agent runners hold this deps object, and tools reach them back
     # through ctx.deps.services.
@@ -363,6 +398,7 @@ def build_collaborators(
         # ``session.store``) is reflected without rewiring services.
         get_session_id=lambda: session.store.session_id if session.store is not None else None,
         get_scratchpad=get_scratchpad,
+        run_workflow=workflow_engine.run if workflow_engine is not None else None,
     )
     return Collaborators(
         agent=agent, mcp=mcp, lsp=lsp, session=session,
@@ -444,6 +480,9 @@ class Harness:
         on_ttft: Callable[[float], None] | None = None,
         on_mode_change: Callable[[], None] | None = None,
         on_present_plan: OnPresentPlanFn | None = None,
+        on_workflow_spawn: Callable[[str, str, str, str], Awaitable[None]] | None = None,
+        on_workflow_log: Callable[[str], None] | None = None,
+        on_workflow_spawn_done: Callable[[str, str], None] | None = None,
         on_tasks_changed: Callable[[], None] | None = None,
         on_jobs_changed: Callable[[], None] | None = None,
         on_compact: Callable[[int, int], None] | None = None,
@@ -474,6 +513,9 @@ class Harness:
         self._wire_cli_model(self.current_model)
         self.deps.ui.on_mode_change = on_mode_change
         self.deps.ui.on_present_plan = on_present_plan
+        self.deps.ui.on_workflow_spawn = on_workflow_spawn
+        self.deps.ui.on_workflow_log = on_workflow_log
+        self.deps.ui.on_workflow_spawn_done = on_workflow_spawn_done
         self.deps.tasks.on_change = on_tasks_changed
         self.deps.jobs.on_change = on_jobs_changed
         self.session.on_compact = on_compact

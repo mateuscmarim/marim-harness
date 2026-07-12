@@ -1,6 +1,7 @@
 import time
 from asyncio import CancelledError
 
+import rich.markup
 from pydantic_ai import ToolDenied
 from pydantic_ai.tools import DeferredToolApprovalResult
 from textual import events
@@ -114,6 +115,11 @@ class HarnessApp(App):
             request_approval=self._request_approval,
             ask_user=self._ask_user,
             on_present_plan=self._present_plan,
+            on_workflow_spawn=self._on_workflow_spawn,
+            on_workflow_log=lambda msg: self.notify(
+                rich.markup.escape(msg), title="workflow", timeout=4
+            ),
+            on_workflow_spawn_done=self.stream.finish_workflow_child,
             on_subagent_event=self.stream.on_subagent_event,
             on_subagent_notice=self.stream.on_subagent_notice,
             on_subagent_model=self.stream.on_subagent_model,
@@ -874,6 +880,15 @@ class HarnessApp(App):
         self._notify("Plan ready", summary, "ask_user")
         self._render_tasks()  # refresh the TaskPanel title now that deps.plan is set
         return await run_panel(self, PlanCard(summary, steps, choices))
+
+    async def _on_workflow_spawn(
+        self, stream_id: str, type_: str, task: str, parent_id: str
+    ) -> None:
+        """Claim a card for a workflow-spawned sub-agent (see bind_ui). Fired on
+        the app's event loop by the workflow engine before it launches the child,
+        so — like on_subagent_event — direct widget mutation via the renderer is
+        safe with no call_from_thread marshalling."""
+        await self.stream.claim_workflow_spawn(stream_id, type_, task, parent_id)
 
     # --- Slash-command autocomplete ---
 

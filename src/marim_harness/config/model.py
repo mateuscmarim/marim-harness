@@ -115,6 +115,10 @@ class ModelConfig:
     # advertised, writable, or approval-exempt (services.get_scratchpad
     # stays None).
     scratchpad_enabled: bool = True
+    # Dynamic workflows (the run_workflow tool) master switch. False ⇒ the
+    # engine is never built, regardless of whether pydantic-monty is
+    # installed (see HarnessConfig.workflows_enabled).
+    workflows_enabled: bool = True
     # Prototype: collapse the four job tools (jobs/job_output/wait_for_job/
     # cancel_job) into one job(action, …) tool. Off ⇒ the four separate tools.
     job_tool_combined: bool = False
@@ -208,6 +212,7 @@ def _common_kwargs() -> dict[str, Any]:
         lsp_tools_enabled=_bool_env("MARIM_LSP_TOOLS", True),
         forge_enabled=_bool_env("MARIM_FORGE", True),
         scratchpad_enabled=_bool_env("MARIM_SCRATCHPAD", True),
+        workflows_enabled=_bool_env("MARIM_WORKFLOWS", True),
         job_tool_combined=_bool_env("MARIM_JOB_TOOL_COMBINED", False),
         command_denylist=split_patterns(os.getenv("MARIM_COMMAND_DENYLIST", "")),
         command_allowlist=split_patterns(os.getenv("MARIM_COMMAND_ALLOWLIST", "")),

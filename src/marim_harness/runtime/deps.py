@@ -64,6 +64,11 @@ BackgroundAgentRunner = Callable[
 # non-None job_id on success (message is a user-renderable confirmation), or
 # None with a user-renderable refusal reason otherwise.
 ResumeSubagent = Callable[[str], Awaitable[tuple[str | None, str]]]
+# (script, args, tool_call_id) -> the workflow's final result, shaped for the
+# model. None when workflows are disabled (MARIM_WORKFLOWS=0) or
+# pydantic-monty is not installed — the run_workflow tool returns an install
+# hint in that case. Wired by the Harness (see _build_workflow_engine).
+WorkflowRunner = Callable[[str, object, str], Awaitable[str]]
 
 # (questions) -> {header: answer}, where answer is a str (single-select) or a
 # list[str] (multi-select); None when the user cancelled. Wired by the TUI; None
@@ -112,6 +117,9 @@ class HarnessServices:
     # Lets the sub-agents screen resume an interrupted spawn from its persisted
     # transcript as a background job (spec 2026-07-03-subagent-resume, §4).
     resume_subagent: "ResumeSubagent | None" = None
+    # Lets the run_workflow tool execute a model-authored orchestration
+    # script in the Monty sandbox. None ⇒ workflows unavailable.
+    run_workflow: WorkflowRunner | None = None
     # Returns the active session's id live (it changes on session switch), or None
     # when no session is active. Lets a tool stamp session-scoped artifacts (e.g.
     # plan files) without reaching into the session controller. None in headless /
@@ -191,6 +199,19 @@ class UIHooks:
     on_ttft: "Callable[[float], None] | None" = None
     on_mode_change: "Callable[[], None] | None" = None
     on_present_plan: "OnPresentPlanFn | None" = None
+    # (stream_id, type, task, parent_tool_call_id) -> None. Fired by the
+    # workflow engine BEFORE each child spawn so the TUI can claim a card for
+    # a stream id that has no spawn_agent tool call to intercept (cards are
+    # otherwise created only when a literal spawn_agent call renders).
+    on_workflow_spawn: "Callable[[str, str, str, str], Awaitable[None]] | None" = None
+    # (message) -> None. A workflow script's log() line. None when headless
+    # (the engine falls back to DEBUG logging).
+    on_workflow_log: "Callable[[str], None] | None" = None
+    # (stream_id, report) -> None. Fired by the workflow engine AFTER each
+    # child agent() call resolves, so the card claimed by on_workflow_spawn
+    # can leave "pending" -- it has no literal tool-call/tool-return pair for
+    # on_tool_result to intercept the way a real spawn_agent call does.
+    on_workflow_spawn_done: "Callable[[str, str], None] | None" = None
     detach_fanout: bool = False
     interactive: bool = False
     notifier: "Notifier | None" = None
