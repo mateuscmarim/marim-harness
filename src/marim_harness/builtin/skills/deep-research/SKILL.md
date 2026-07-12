@@ -5,8 +5,8 @@ description: Produce a multi-source, fact-checked, cited research report. Use wh
 # Deep research
 
 Produce a thorough, cited research report by DELEGATING — do NOT do the research
-yourself in this turn. Your job is to orchestrate sub-agents and synthesize their
-reports.
+yourself in this turn. Your job is to orchestrate researchers and synthesize their
+findings.
 
 ## 1. Scope, then plan
 Restate the question. Then do a quick SCOPING pass yourself — this is the one place you
@@ -26,36 +26,125 @@ grounded in what the scoping pass surfaced — split along the seams you actuall
 guessed), phrase each with the domain's real vocabulary, and check the set for gaps and
 overlap so no two researchers cover the same ground.
 
-## 2. Fan out (parallel)
-In a SINGLE turn, call `spawn_agent` once per sub-question:
-- `type`: `researcher`
-- `task`: the sub-question, stated precisely
-- `context`: the overall research question and why this sub-question matters
-- `returns`: "A list of findings; each = CLAIM + source (URL or workspace file path) +
-  evidence type + quality (high/medium/low). Type each finding by what's authoritative FOR THIS
-  DOMAIN — e.g. meta-analysis/RCT/observational for science, standard/RFC/official
-  doc vs blog for technical, primary vs secondary source for history."
+## 2. Run the pipeline (one run_workflow call)
+Author ONE `run_workflow` script implementing fan-out → coverage check → adversarial
+verify, adapting the reference below. Pass the sub-questions as a list of strings via
+`args`, and set the tool's `timeout_secs` to what the fan-out needs — researchers take
+minutes each; 1800 covers 4–6 of them. The script returns DATA (its last expression);
+you write the report from it afterward.
 
-The `researcher` agent already defines this findings format; the `returns` above just
-restates the domain-typing so a spawn on a non-medical sub-question doesn't default to
-the science taxonomy.
+```python
+# Deep research pipeline: fan out -> coverage -> adversarial verify
+import asyncio
 
-Spawn them together so they run concurrently. Do NOT research inline.
+FINDINGS = {
+    "type": "object",
+    "properties": {
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "claim": {"type": "string"},
+                    "source": {"type": "string"},
+                    "evidence_type": {"type": "string"},
+                    "quality": {"type": "string"},
+                    "load_bearing": {"type": "boolean"},
+                },
+                "required": ["claim", "source", "quality", "load_bearing"],
+            },
+        },
+        "open_questions": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["findings", "open_questions"],
+}
+VERDICT = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string", "enum": ["holds", "downgrade", "refuted"]},
+        "reason": {"type": "string"},
+    },
+    "required": ["verdict", "reason"],
+}
 
-## 3. Verify (adversarial)
-Collect the workers' findings. For the handful of load-bearing claims your conclusion
-actually rests on — NOT every claim — call `spawn_agent` with `type`: `explore` and a
-task to REFUTE it: find counter-evidence and confirm the cited source actually supports
-the claim. Drop or downgrade any claim that does not survive.
+async def research(sub_q, sharpen):
+    task = ("Research this sub-question and report findings, marking which are "
+            "load-bearing: " + sub_q + sharpen)
+    try:
+        return await agent(task, type="researcher", schema=FINDINGS)
+    except Exception:
+        return {"findings": [], "open_questions": ["researcher failed: " + sub_q]}
 
-## 4. Synthesize
-Write ONE report:
-- Every nontrivial claim keeps its citation.
+# Wave 1: one researcher per sub-question.
+waves = await asyncio.gather(*[research(q, "") for q in args])
+log("wave 1 done: " + str(sum(len(w["findings"]) for w in waves)) + " findings")
+
+# Coverage: exactly ONE follow-up round for sub-questions that came back thin.
+thin = [i for i in range(len(waves))
+        if not any(f["load_bearing"] for f in waves[i]["findings"])]
+if thin:
+    log("coverage round for " + str(len(thin)) + " thin sub-questions")
+    retries = await asyncio.gather(*[
+        research(args[i], "\n\nA first pass found little; dig for primary sources.")
+        for i in thin])
+    for j in range(len(thin)):
+        waves[thin[j]]["findings"] = waves[thin[j]]["findings"] + retries[j]["findings"]
+        waves[thin[j]]["open_questions"] = (waves[thin[j]]["open_questions"]
+                                            + retries[j]["open_questions"])
+
+# Adversarial verify: try to refute each load-bearing claim.
+flat = [f for w in waves for f in w["findings"]]
+load_bearing = [f for f in flat if f["load_bearing"]]
+
+async def refute(f):
+    task = ("Try to REFUTE this claim, and confirm the cited source actually "
+            "supports it. Claim: " + f["claim"] + " -- Source: " + f["source"])
+    try:
+        return await agent(task, type="explore", schema=VERDICT)
+    except Exception:
+        return {"verdict": "downgrade", "reason": "verifier failed; treat as unverified"}
+
+log("verifying " + str(len(load_bearing)) + " load-bearing claims")
+verdicts = await asyncio.gather(*[refute(f) for f in load_bearing])
+
+dropped = []
+for k in range(len(load_bearing)):
+    f = load_bearing[k]
+    v = verdicts[k]
+    if v["verdict"] == "refuted":
+        dropped.append({"claim": f["claim"], "reason": v["reason"]})
+    else:
+        f["verified"] = v["verdict"] + ": " + v["reason"]
+
+kept = [f for f in flat
+        if not f["load_bearing"] or "verified" in f]
+{"findings": kept,
+ "dropped": dropped,
+ "open_questions": [q for w in waves for q in w["open_questions"]]}
+```
+
+The script returns data; the model writes prose. Do not synthesize inside the script.
+
+## 3. Synthesize
+From the returned bundle, write ONE report:
+- Every nontrivial claim keeps its citation (the `source` field).
+- Note verification: claims whose `verified` starts with "downgrade" are presented as
+  weaker; `dropped` claims are omitted or explicitly called out as refuted.
 - Where good sources genuinely DISAGREE, say so and explain why (effect size, trial
   quality, population) — do not flatten into a single verdict.
 - End with: (a) 5 bullets separating what's well-supported from what's shaky or
   overstated, and (b) a per-sub-question confidence rating (high/medium/low) with
   the main limiting factor.
+
+## If run_workflow is unavailable
+Some installs lack the workflows extra. Run the same pipeline with `spawn_agent`
+directly: in a SINGLE turn, spawn one `researcher` per sub-question (`task` = the
+sub-question; `returns` = "a list of findings; each = CLAIM + source + evidence type +
+quality (high/medium/low) + whether it is load-bearing"). Collect the reports, then spawn
+one `explore` refuter per load-bearing claim, tasked to refute it and confirm the cited
+source supports it. Drop or downgrade what does not survive, then synthesize as above.
+Weaker guarantees than the script (no schema validation, no coverage loop) — keep the
+verify pass even so.
 
 ## Example
 Topic: "Evidence on creatine for cognition (not muscle)." Sub-questions → researchers:
