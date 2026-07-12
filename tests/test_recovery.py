@@ -438,6 +438,63 @@ async def test_orphaned_flush_persist_does_not_clobber_newer_write(tmp_path):
     assert store.saved[-1] == newer
 
 
+# --- first turn writes a resumable baseline before the model runs ------------
+
+
+async def test_first_turn_persists_a_baseline_before_the_model_runs(tmp_path):
+    """A brand-new session has no file on disk until its first *successful*
+    end-of-turn persist. A long first turn (a deep-research fan-out) that is
+    hard-killed mid-run would then leave ZERO trace: no session to resume and its
+    sub-agent sidecars orphaned — the real lost-session bug. The turn must write a
+    clean baseline BEFORE the model runs, so an interrupt at any later point still
+    leaves a resumable session."""
+    from marim_harness.session import SessionStore
+    from tests.conftest import _make_harness
+
+    store = SessionStore(path=tmp_path / "sessions" / "s.json",
+                         workspace_root=tmp_path, session_id="s", name="s")
+    existed_at_model_time: dict[str, bool] = {}
+
+    def fn(messages, info):
+        existed_at_model_time["v"] = store.path.exists()
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    harness = _make_harness(FunctionModel(fn), _make_deps(tmp_path), store=store)
+    assert not store.path.exists()  # nothing on disk before the turn
+    await harness.run_turn("first prompt")
+
+    assert existed_at_model_time["v"] is True  # baseline written before the model
+
+
+async def test_run_turn_starts_the_active_time_clock(tmp_path):
+    """A turn is active time by definition, so run_turn must ensure the segment
+    clock is running even when no mount / new_session / switch started it. Before,
+    a turn that ran (and was aborted) with ``_segment_start == 0`` flushed
+    ``duration_seconds == 0`` despite real wall-clock work — the aborted-turn
+    zero-duration bug. run_turn starts the clock, so the end-of-turn persist
+    records the turn's active time."""
+    import asyncio as _asyncio
+
+    from marim_harness.session import SessionStore
+    from tests.conftest import _make_harness
+
+    store = SessionStore(path=tmp_path / "sessions" / "s.json",
+                         workspace_root=tmp_path, session_id="s", name="s")
+
+    async def fn(messages, info):
+        await _asyncio.sleep(0.02)  # measurable active time
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    harness = _make_harness(FunctionModel(fn), _make_deps(tmp_path), store=store)
+    harness.session._segment_start = 0.0  # no mount/new/switch ran
+
+    await harness.run_turn("hi")
+
+    assert harness.session._segment_start != 0.0  # run_turn started the clock
+    _, _, _, dur, _ = store.load()
+    assert dur is not None and dur > 0  # the turn's active time was recorded
+
+
 # --- a failed, output-less turn rolls back its own checkpoint ----------------
 
 

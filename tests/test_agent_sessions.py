@@ -574,8 +574,13 @@ async def test_cancel_does_not_block_on_slow_persist(tmp_path: Path):
         instructions="x", store=store,
     )
 
+    # Write the baseline session file first, so the start-of-turn baseline
+    # persist no-ops (it only fires when no file exists yet) and this test
+    # isolates the *cancel-path* flush deadline it's about.
+    harness.session.persist()
+
     # Replace persist() with a sleeper to expose the absence of a deadline.
-    def slow_persist():
+    def slow_persist(*, force: bool = False):
         time.sleep(5.0)
     harness.session.persist = slow_persist
 

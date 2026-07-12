@@ -383,6 +383,23 @@ class TurnController:
             self.checkpoints.invalidate_after_compaction()
         return compacted
 
+    async def _ensure_session_baseline(self) -> None:
+        """Write the session file once, at turn start, if it doesn't exist yet.
+
+        A brand-new session has no file on disk until its first *successful*
+        end-of-turn persist. A long first turn — a deep-research fan-out — that is
+        hard-killed mid-run would then leave ZERO trace: no session to resume and
+        its sub-agent sidecars orphaned (their ``running`` status is the resume
+        marker, but only if a session exists to scan them). Persisting the clean
+        baseline before the model runs makes an interrupt at any later point leave
+        a resumable session. Gated on the file's absence, so it fires only on the
+        first turn (every later turn already has a file), and forced past the
+        version cache so the write actually lands. Off-loaded to a thread like the
+        success/rollback persists so a multi-MB serialize can't stall the loop."""
+        store = self.session.store
+        if store is not None and not store.path.exists():
+            await asyncio.to_thread(self.session.persist, force=True)
+
     async def _flush_resumable(
         self, captured: list[ModelMessage], resumable: list[ModelMessage]
     ) -> None:
@@ -952,6 +969,16 @@ class TurnController:
         # permanently eat the hook context / jobs digest and leak the dead
         # checkpoint snapshotted above.
         try:
+            # Guarantee an on-disk baseline before any long-running work, so a
+            # hard interrupt mid-turn can't leave a never-persisted (lost)
+            # session. One-shot: no-ops on every turn after the first.
+            await self._ensure_session_baseline()
+            # A turn is active time by definition, so make sure the segment clock
+            # is running before any work — otherwise a turn that ran with the
+            # clock still at 0 (no mount/new/switch started it) flushes
+            # duration_seconds=0 on abort despite real wall-clock work. Idempotent:
+            # ensure_segment_started no-ops once the clock is running.
+            self.session.ensure_segment_started()
             user_prompt: str | list[str | BinaryContent] | None = (
                 await self._assemble_prompt(prompt)
             )

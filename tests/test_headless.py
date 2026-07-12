@@ -234,10 +234,12 @@ async def test_finalizes_active_time_and_force_persists_on_shutdown(tmp_path: Pa
     code = await run_headless(harness, "go", "text", out=out)
     assert code == 0
     # finalize ran, and a forced persist followed it (order matters: finalize
-    # closes the segment so the forced persist counts it exactly once).
+    # closes the segment so the forced persist counts it exactly once). A first
+    # turn also force-writes a baseline persist at turn *start*, so assert on a
+    # forced persist that comes AFTER finalize, not merely the first one.
     assert "finalize" in calls
-    assert ("persist", True) in calls
-    assert calls.index("finalize") < calls.index(("persist", True))
+    finalize_at = calls.index("finalize")
+    assert any(c == ("persist", True) and i > finalize_at for i, c in enumerate(calls))
 
 
 @pytest.mark.anyio
