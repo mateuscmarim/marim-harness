@@ -1,3 +1,5 @@
+import json
+
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Horizontal
@@ -18,6 +20,18 @@ def _append_diff(detail: Text, old_string: str, new_string: str) -> None:
         detail.append(f"- {line}\n", style=REMOVED_STYLE)
     for line in str(new_string).splitlines():
         detail.append(f"+ {line}\n", style=ADDED_STYLE)
+
+
+def _append_workflow_script(detail: Text, args: dict) -> None:
+    """Render the run_workflow script as readable Python (real newlines, not
+    an escaped repr) followed by a compact JSON rendering of ``args`` when
+    present, so the user can actually review the script they're approving."""
+    for line in str(args["script"]).splitlines():
+        detail.append(f"{line}\n", style=ADDED_STYLE)
+    workflow_args = args.get("args")
+    if workflow_args is not None:
+        detail.append("\nargs: ", style=LABEL_STYLE)
+        detail.append(f"{json.dumps(workflow_args)}\n")
 
 
 def format_detail(tool_name: str, args: dict) -> Text:
@@ -41,6 +55,9 @@ def format_detail(tool_name: str, args: dict) -> Text:
         detail.append(f"{args.get('path', '?')}\n\n", style=HEADER_STYLE)
         for line in str(args["content"]).splitlines():
             detail.append(f"{line}\n", style=ADDED_STYLE)
+        return detail
+    if tool_name == "run_workflow" and "script" in args:
+        _append_workflow_script(detail, args)
         return detail
     for k, v in args.items():
         detail.append(f"{k}: {v!r}\n")

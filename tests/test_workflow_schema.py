@@ -2,6 +2,7 @@ import pytest
 
 from marim_harness.workflows.errors import WorkflowResultError
 from marim_harness.workflows.schema import (
+    check_valid_schema,
     extract_json,
     output_contract,
     shape_result,
@@ -69,3 +70,13 @@ def test_shape_result_caps_oversized_output_with_a_pointer():
 def test_shape_result_rejects_non_serializable_values():
     with pytest.raises(WorkflowResultError):
         shape_result(object(), 1000, "out.json")
+
+
+def test_check_valid_schema_accepts_a_valid_schema():
+    assert check_valid_schema(FINDINGS) is None
+
+
+def test_check_valid_schema_rejects_a_malformed_schema():
+    with pytest.raises(WorkflowResultError) as exc_info:
+        check_valid_schema({"type": "not-a-real-type"})
+    assert "not a valid JSON Schema" in str(exc_info.value)

@@ -189,11 +189,14 @@ def _build_workflow_engine(cfg: HarnessConfig, deps: Deps, subagents: SubagentRu
         return None
     try:
         from ..workflows.engine import WorkflowEngine
-    except ImportError:
-        logger.info(
-            "workflows unavailable: pydantic-monty not installed "
-            "(uv add 'marim-harness[workflows]')"
-        )
+    except ImportError as exc:
+        if exc.name == "pydantic_monty":
+            logger.info(
+                "workflows unavailable: pydantic-monty not installed "
+                "(uv add 'marim-harness[workflows]')"
+            )
+        else:
+            logger.info("workflows unavailable: %s", exc)
         return None
     return WorkflowEngine(deps, subagents.run, timeout_secs=cfg.workflow_timeout_secs)
 

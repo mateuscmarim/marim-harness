@@ -1057,6 +1057,16 @@ def test_workflow_group_off_removes_it():
     assert "run_workflow" not in _tool_names(agent)
 
 
+def test_run_workflow_requires_approval():
+    # Pins the requires_approval=True flag on the registration itself (in
+    # provider.py), independent of the plan-mode denial test below, which
+    # exercises resolve_approvals directly and would stay green even if the
+    # registration dropped requires_approval entirely.
+    agent = _build_agent()
+    tool = agent._function_toolset.tools["run_workflow"]
+    assert tool.requires_approval is True
+
+
 def test_run_workflow_is_not_grantable_to_subagents():
     from marim_harness.tools.names import SUBAGENT_TOOLS
 

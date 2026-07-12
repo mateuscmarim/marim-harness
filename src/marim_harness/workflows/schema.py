@@ -8,6 +8,7 @@ import json
 import re
 
 import jsonschema
+import jsonschema.validators
 
 from ..workspace.agents import cap_subagent_output
 from .errors import WorkflowResultError
@@ -39,6 +40,21 @@ def extract_json(report: str) -> object | None:
         except ValueError:
             continue
     return None
+
+
+def check_valid_schema(schema: dict) -> None:
+    """Validate that ``schema`` is itself a well-formed JSON Schema, before
+    it's used to gate an agent() call. Raises WorkflowResultError with a
+    model-actionable message on a malformed schema; returns None on success.
+    Catching this up front avoids spawning a sub-agent whose report can never
+    validate because the schema itself is broken."""
+    validator_cls = jsonschema.validators.validator_for(schema)
+    try:
+        validator_cls.check_schema(schema)
+    except jsonschema.SchemaError as exc:
+        raise WorkflowResultError(
+            f"agent(schema=...) is not a valid JSON Schema: {exc.message}"
+        ) from exc
 
 
 def validate_report(report: str, schema: dict) -> tuple[object | None, str | None]:

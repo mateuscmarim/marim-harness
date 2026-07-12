@@ -159,6 +159,29 @@ async def test_schema_failure_after_retry_raises_into_the_script(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_bad_schema_fails_fast_without_spawning(tmp_path):
+    spawn_calls = 0
+
+    async def spawn(type, task, *rest):
+        nonlocal spawn_calls
+        spawn_calls += 1
+        return '{"findings": []}'
+
+    eng, _ = _engine(tmp_path, spawn)
+    bad_schema = {"type": "not-a-real-type"}
+    script = (
+        "try:\n"
+        '    r = await agent("review", schema=' + repr(bad_schema) + ")\n"
+        "except Exception as e:\n"
+        '    r = "caught: " + str(e)\n'
+        "r"
+    )
+    out = await eng.run(script, None, "tc1")
+    assert "caught:" in out and "not a valid JSON Schema" in out
+    assert spawn_calls == 0
+
+
+@pytest.mark.anyio
 async def test_syntax_error_returns_a_fixable_tool_message(tmp_path):
     eng, _ = _engine(tmp_path, _echo_spawn)
     out = await eng.run("def broken(:\n    pass", None, "tc1")

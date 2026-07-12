@@ -149,6 +149,22 @@ def test_format_detail_write_file_highlights_content_as_added():
     assert ADDED_STYLE in _styled_text(detail, "print('hi')")
 
 
+def test_format_detail_run_workflow_shows_script_with_real_newlines():
+    detail = format_detail(
+        "run_workflow",
+        {"script": "x = 1\ny = 2\nresult = x + y", "args": {"n": 3}},
+    )
+    assert "x = 1\ny = 2\nresult = x + y" in detail.plain
+    assert "\\n" not in detail.plain
+    assert '"n": 3' in detail.plain
+
+
+def test_format_detail_run_workflow_without_args_omits_args_line():
+    detail = format_detail("run_workflow", {"script": "log('hi')"})
+    assert "log('hi')" in detail.plain
+    assert "args:" not in detail.plain
+
+
 def test_format_detail_fallback_formats_args():
     detail = format_detail("some_tool", {"a": 1, "b": "two"})
     assert "a: 1" in detail.plain

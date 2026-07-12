@@ -1,6 +1,7 @@
 import time
 from asyncio import CancelledError
 
+import rich.markup
 from pydantic_ai import ToolDenied
 from pydantic_ai.tools import DeferredToolApprovalResult
 from textual import events
@@ -115,7 +116,9 @@ class HarnessApp(App):
             ask_user=self._ask_user,
             on_present_plan=self._present_plan,
             on_workflow_spawn=self._on_workflow_spawn,
-            on_workflow_log=lambda msg: self.notify(msg, title="workflow", timeout=4),
+            on_workflow_log=lambda msg: self.notify(
+                rich.markup.escape(msg), title="workflow", timeout=4
+            ),
             on_subagent_event=self.stream.on_subagent_event,
             on_subagent_notice=self.stream.on_subagent_notice,
             on_subagent_model=self.stream.on_subagent_model,

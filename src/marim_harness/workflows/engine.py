@@ -28,7 +28,7 @@ from pydantic_monty import Monty, MontyRuntimeError, MontySyntaxError, ResourceL
 from ..runtime.deps import Deps
 from ..tools.impl import fs
 from .errors import WorkflowCancelled, WorkflowResultError
-from .schema import output_contract, shape_result, validate_report
+from .schema import check_valid_schema, output_contract, shape_result, validate_report
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +109,8 @@ class WorkflowEngine:
 
     async def _agent_call(self, state: _RunState, task: str, *, type: str,
                           model, schema, max_output_chars, isolation):
+        if schema is not None:
+            check_valid_schema(schema)
         report = await self._spawn_child(
             state, type, task + (output_contract(schema) if schema else ""),
             max_output_chars, model, isolation,
