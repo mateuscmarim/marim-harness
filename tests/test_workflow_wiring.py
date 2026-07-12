@@ -33,6 +33,16 @@ def test_harness_respects_workflows_disabled(tmp_path):
     assert h.deps.services.run_workflow is None
 
 
+def test_harness_threads_workflow_timeout_to_the_engine(tmp_path):
+    """The configured ceiling must reach the engine — services.run_workflow
+    holds the bound method, so the engine is its __self__."""
+    h: Harness = _make_harness(TestModel(), _make_deps(tmp_path),
+                               workflow_timeout_secs=42.0)
+    runner = h.deps.services.run_workflow
+    assert runner is not None
+    assert runner.__self__._timeout == 42.0
+
+
 def test_harness_degrades_when_pydantic_monty_unavailable(tmp_path, monkeypatch):
     """When pydantic-monty is unavailable, workflow engine fails to import
     but harness builds successfully with run_workflow set to None."""

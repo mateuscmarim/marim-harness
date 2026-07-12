@@ -149,6 +149,7 @@ def build_harness(
             forge_enabled=cfg.forge_enabled,
             scratchpad_enabled=cfg.scratchpad_enabled,
             workflows_enabled=cfg.workflows_enabled,
+            workflow_timeout_secs=cfg.workflow_timeout_secs,
             model_label=model_source.label(model_id),
             store=store,
             manager=manager,
