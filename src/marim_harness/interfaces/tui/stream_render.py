@@ -473,6 +473,7 @@ class StreamRenderer:
         self.solo_tool = None
         self._sub_streams.clear()
         self.subagents.clear()
+        self.workflow_cards.clear()
         self._detached_cards.clear()
         self.dirty_streams.clear()
         self.last_ttft = None

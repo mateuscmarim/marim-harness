@@ -4081,3 +4081,8 @@ async def test_workflow_card_lifecycle_and_child_nesting(tmp_path: Path):
         ui.on_workflow_done("tc1", '{"findings": []}', False)
         assert card.status == "done"
         assert card.report == '{"findings": []}'
+
+        # reset() rebuilds per-session stream state (new/switch/clear); the
+        # card map is per-session too and must not leak stale widgets across.
+        app.stream.reset()
+        assert app.stream.workflow_cards == {}
