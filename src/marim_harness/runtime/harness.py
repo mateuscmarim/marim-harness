@@ -452,6 +452,11 @@ class Harness:
         self.checkpoints = collab.checkpoints
         self.hooks = collab.hooks
         self.subagents = collab.subagents
+        # The workflow runner as built (None when disabled at launch or
+        # pydantic-monty is missing). Kept so set_workflows_enabled can
+        # restore the seam after a live disable — services.run_workflow
+        # itself is the mutable on/off switch the tool checks per call.
+        self._workflow_runner = deps.services.run_workflow if deps.services else None
         # The turn-lifecycle orchestrator. Owns all mutable turn-state
         # (pending notes, steer buffer, active RunContext) and drives the
         # run_turn → approval loop → persist pipeline.
@@ -634,6 +639,18 @@ class Harness:
         """Advance to the next approval mode and return it."""
         self.deps.workspace.mode = self.deps.workspace.mode.cycle()
         return self.deps.workspace.mode
+
+    def set_workflows_enabled(self, enabled: bool) -> bool:
+        """Turn dynamic workflows on/off for this session by flipping the
+        ``services.run_workflow`` seam the tool checks per call — no rebuild,
+        the tool stays registered and degrades to its unavailable hint.
+        Returns whether the seam now matches the request: enabling when no
+        engine was built at launch (workflows off, or pydantic-monty missing)
+        has nothing to restore, so it reports False and the caller can say
+        "applies next launch" instead of pretending."""
+        if self.deps.services is not None:
+            self.deps.services.run_workflow = self._workflow_runner if enabled else None
+        return (self._workflow_runner is not None) or not enabled
 
     def _apply_saved_model(self) -> None:
         """Re-point at a session's saved model after loading it, if one differs

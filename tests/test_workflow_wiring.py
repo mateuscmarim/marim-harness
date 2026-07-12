@@ -43,6 +43,32 @@ def test_harness_threads_workflow_timeout_to_the_engine(tmp_path):
     assert runner.__self__._timeout == 42.0
 
 
+def test_set_workflows_enabled_flips_the_live_seam(tmp_path):
+    """The settings screen's Dynamic-workflows toggle acts through this: the
+    run_workflow tool checks services.run_workflow per call, so flipping the
+    seam disables/re-enables workflows mid-session without a rebuild."""
+    h: Harness = _make_harness(TestModel(), _make_deps(tmp_path))
+    runner = h.deps.services.run_workflow
+    assert runner is not None
+
+    assert h.set_workflows_enabled(False) is True
+    assert h.deps.services.run_workflow is None
+
+    assert h.set_workflows_enabled(True) is True
+    assert h.deps.services.run_workflow is runner
+
+
+def test_set_workflows_enabled_cannot_enable_without_engine(tmp_path):
+    """Built with workflows off (or monty missing) there is no engine to
+    restore, so a live enable reports False — the settings screen renders
+    'applies next launch' instead of pretending it took effect."""
+    h: Harness = _make_harness(TestModel(), _make_deps(tmp_path), workflows_enabled=False)
+    assert h.set_workflows_enabled(True) is False
+    assert h.deps.services.run_workflow is None
+    # Disabling is always honest: the seam is (already) None.
+    assert h.set_workflows_enabled(False) is True
+
+
 def test_harness_degrades_when_pydantic_monty_unavailable(tmp_path, monkeypatch):
     """When pydantic-monty is unavailable, workflow engine fails to import
     but harness builds successfully with run_workflow set to None."""

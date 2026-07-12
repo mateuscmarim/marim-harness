@@ -1,7 +1,7 @@
 """The full-bleed settings screen: topic pages on a left rail (Session,
 Providers, Theme, MCP servers, Context & Memory, Tools, Notifications,
-Advanced). Live settings (mode, model, theme, MCP, provider credentials)
-apply immediately; env-backed settings auto-save per field.
+Advanced). Live settings (mode, model, theme, MCP, provider credentials,
+dynamic workflows) apply immediately; env-backed settings auto-save per field.
 
 Live widgets apply immediately by calling the same harness mutations the slash
 commands use. The env block (LSP, LSP tools, job-tool mode, context budget,
@@ -345,7 +345,10 @@ class SettingsScreen(Screen[None]):
         )
 
     def _tools_widgets(self) -> ComposeResult:
-        yield Static("Saved to .env — applies on next launch.", classes="muted")
+        yield Static(
+            "Saved to .env — applies on next launch (dynamic workflows applies live).",
+            classes="muted",
+        )
         yield BoxCheckbox("LSP", value=self.env_cfg.lsp_enabled, id="sw-lsp")
         yield BoxCheckbox(
             "LSP navigation tools",
@@ -354,6 +357,15 @@ class SettingsScreen(Screen[None]):
         )
         yield BoxCheckbox(
             "Job tool combined", value=self.env_cfg.job_tool_combined, id="sw-job"
+        )
+        # Not in _ENV_CHECKBOXES: unlike its neighbours this toggle also applies
+        # live (the run_workflow tool checks services.run_workflow per call, so
+        # flipping the seam needs no relaunch) — it takes a dedicated handler
+        # instead of the plain env commit.
+        yield BoxCheckbox(
+            "Dynamic workflows (run_workflow)",
+            value=self.env_cfg.workflows_enabled,
+            id="sw-workflows",
         )
         yield Label("Tool search (MCP/plugin tools)")
         with RadioSet(id="toolsearch-set"):
@@ -523,6 +535,9 @@ class SettingsScreen(Screen[None]):
             return
         if not self._ready:
             return
+        if cid == "sw-workflows":
+            self._toggle_workflows(event.value)
+            return
         env_key = _ENV_CHECKBOXES.get(cid)
         if env_key is not None:
             self._commit_env(env_key, _b(event.value))
@@ -591,6 +606,21 @@ class SettingsScreen(Screen[None]):
 
     def _set_providers_badge(self, provider: str) -> None:
         self.query_one("#badge-providers", Static).update(provider)
+
+    def _toggle_workflows(self, enabled: bool) -> None:
+        """Persist MARIM_WORKFLOWS and flip the harness's live run_workflow seam
+        in the same gesture. Disabling always takes effect at once; enabling is
+        live only when an engine was built at launch — otherwise (workflows off
+        at launch, or pydantic-monty missing) the harness reports False and the
+        status line falls back to the usual next-launch promise."""
+        try:
+            save_env_settings({"MARIM_WORKFLOWS": _b(enabled)})
+        except Exception as exc:
+            self._status(f"Save failed: {exc}")
+            return
+        applied = self.harness.set_workflows_enabled(enabled)
+        suffix = "applied" if applied else "applies next launch"
+        self._status(f"✓ saved MARIM_WORKFLOWS · {suffix}")
 
     def _commit_env(self, env_key: str, value: str) -> None:
         """Persist a single env var to the global .env (retiring any deprecated

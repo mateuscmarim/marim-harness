@@ -239,6 +239,63 @@ async def test_checkbox_autosaves(isolated_env, monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
+async def test_workflows_toggle_saves_env_and_applies_live(isolated_env, monkeypatch, tmp_path):
+    """The Tools page's Dynamic-workflows checkbox persists MARIM_WORKFLOWS and
+    flips the harness's live run_workflow seam in the same gesture (the tool
+    checks the seam per call, so no relaunch is needed)."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    harness = _fake_harness()
+    calls = []
+
+    def _set(enabled):
+        calls.append(enabled)
+        return True  # the engine exists — the flip took effect live
+
+    harness.set_workflows_enabled = _set
+    app = _Host(harness, _env_cfg())  # workflows_enabled defaults True
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        _scroll_to(app, "#sw-workflows")
+        await pilot.click("#sw-workflows")  # toggle workflows off
+        await pilot.pause()
+        status = str(app.screen.query_one("#settings-status").render())
+    assert "MARIM_WORKFLOWS=0" in (tmp_path / "marim" / ".env").read_text()
+    assert calls == [False]
+    assert "applied" in status
+    assert "next launch" not in status
+
+
+@pytest.mark.anyio
+async def test_workflows_toggle_reports_next_launch_without_engine(
+    isolated_env, monkeypatch, tmp_path
+):
+    """Enabling when the harness was built without an engine (workflows off at
+    launch, or pydantic-monty missing) cannot take effect live — the status
+    line must say so instead of pretending."""
+    from marim_harness.config import ModelConfig
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    harness = _fake_harness()
+    harness.set_workflows_enabled = lambda enabled: False  # no engine to restore
+    env_cfg = ModelConfig(provider="openrouter", model="x", workflows_enabled=False)
+    app = _Host(harness, env_cfg)
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        # The checkbox mirrors the configured state, not a hardcoded default.
+        assert app.screen.query_one("#sw-workflows").value is False
+        _scroll_to(app, "#sw-workflows")
+        await pilot.click("#sw-workflows")  # toggle workflows on
+        await pilot.pause()
+        status = str(app.screen.query_one("#settings-status").render())
+    assert "MARIM_WORKFLOWS=1" in (tmp_path / "marim" / ".env").read_text()
+    assert "next launch" in status
+
+
+@pytest.mark.anyio
 async def test_int_input_autosaves_on_submit(isolated_env, monkeypatch, tmp_path):
     from textual.widgets import Input
 
