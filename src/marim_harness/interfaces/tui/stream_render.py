@@ -772,6 +772,14 @@ class StreamRenderer:
         widget.parent_id = None
         self.tool_widgets[stream_id] = widget
         self.ensure_pane(widget)
+        # Break the current run of consecutive tools the same way _claim_spawn does
+        # for a literal spawn_agent call. Without this, a stale solo_tool/tool_group
+        # left over from before the workflow spawn (e.g. the run_workflow call
+        # itself) stays referenced; the next top-level tool call would then mount a
+        # ToolGroupWidget anchored at that stale widget's DOM position and reparent
+        # it in place, visually reordering already-finished cards.
+        self.tool_group = None
+        self.solo_tool = None
         await self._log_container().mount(widget)
 
     def _log_container(self) -> VerticalScroll:
