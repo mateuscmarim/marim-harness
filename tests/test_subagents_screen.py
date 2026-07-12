@@ -129,6 +129,40 @@ async def test_ctrl_x_opens_view_and_shows_selected_transcript(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_claim_workflow_spawn_registers_a_card_and_routes_events(tmp_path):
+    """Workflow children have synthesized stream ids (`<tool_call_id>::wfN`) with no
+    spawn_agent tool call for a sink to intercept, so the engine announces each spawn
+    through claim_workflow_spawn before launching it. Without this claim,
+    on_subagent_event's unknown-id guard (see test_stream_event_after_clear_is_a_noop)
+    would silently drop the child's whole stream."""
+    from pydantic_ai.messages import PartStartEvent, TextPart
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        r = app.stream
+        await r.claim_workflow_spawn("tc1::wf1", "explore", "review bugs", "tc1")
+        await pilot.pause()
+
+        widget = r.tool_widgets["tc1::wf1"]
+        assert widget.stream_id == "tc1::wf1"
+        assert widget in r.subagents
+        assert widget.agent_type == "explore"
+        assert widget.agent_task == "review bugs"
+        # Accepted for future tree grouping but not yet used for nesting.
+        assert widget.parent_id is None
+        # Actually mounted (into #log), not just registered in the bookkeeping dicts.
+        assert widget in app.query_one("#log").children
+
+        # Events for the synthesized id now route into the card instead of being
+        # dropped by on_subagent_event's unknown-id guard.
+        await r.on_subagent_event(
+            "tc1::wf1", PartStartEvent(index=0, part=TextPart(content="hi"))
+        )
+        await pilot.pause()
+        assert widget.pane is not None
+
+
+@pytest.mark.anyio
 async def test_clicking_card_opens_screen_at_that_agent(tmp_path):
     """A click on a (non-failed) card jumps into the screen focused on it."""
     app = _app(tmp_path)
