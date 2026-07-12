@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import shutil
 from collections.abc import Callable
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -44,12 +45,21 @@ _PUBLISH_QUIESCE = 0.2
 
 def _default_factory(language: str, root: Path):
     """Build a real multilspy async LanguageServer for ``language`` at ``root``.
-    Imported lazily so the heavy dependency loads only when a server is started."""
+    Imported lazily so the heavy dependency loads only when a server is started.
+
+    Python routes to marim's own BasedPyrightServer whenever the binary is on
+    PATH: multilspy's create() hard-wires python -> jedi-language-server, and
+    jedi upstream is in maintenance mode, so basedpyright is preferred with
+    jedi kept as the fallback (registry._PROBES accepts either binary)."""
     from multilspy import LanguageServer
     from multilspy.multilspy_config import MultilspyConfig
     from multilspy.multilspy_logger import MultilspyLogger
 
     config = MultilspyConfig.from_dict({"code_language": language})
+    if language == "python" and shutil.which("basedpyright-langserver"):
+        from .basedpyright import BasedPyrightServer
+
+        return BasedPyrightServer(config, MultilspyLogger(), str(root))
     return LanguageServer.create(config, MultilspyLogger(), str(root))
 
 

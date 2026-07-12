@@ -85,6 +85,38 @@ def test_workspace_languages_empty_or_missing_root(tmp_path):
     assert registry.workspace_languages(tmp_path / "nope") == set()
 
 
+def test_workspace_languages_drops_incidental_minority(tmp_path):
+    # A handful of vendored/example files in another language must not count
+    # as workspace coverage: 2 ts files against 30 py is noise, and reporting
+    # typescript here would let a global typescript-language-server satisfy
+    # the build-time gate for what is really a python repo.
+    for i in range(30):
+        (tmp_path / f"m{i:02}.py").write_text("")
+    (tmp_path / "a.ts").write_text("")
+    (tmp_path / "b.ts").write_text("")
+    assert registry.workspace_languages(tmp_path) == {"python"}
+
+
+def test_workspace_languages_keeps_minority_share(tmp_path):
+    # A small repo where the minority language still holds a real share
+    # (2/12 ≈ 17%) keeps both languages.
+    for i in range(10):
+        (tmp_path / f"m{i:02}.py").write_text("")
+    (tmp_path / "a.ts").write_text("")
+    (tmp_path / "b.ts").write_text("")
+    assert registry.workspace_languages(tmp_path) == {"python", "typescript"}
+
+
+def test_workspace_languages_keeps_minority_by_absolute_count(tmp_path):
+    # In a huge repo even a sub-10% share can be a real sub-project; an
+    # absolute floor (20 files) keeps it.
+    for i in range(300):
+        (tmp_path / f"m{i:03}.py").write_text("")
+    for i in range(20):
+        (tmp_path / f"w{i:02}.ts").write_text("")
+    assert registry.workspace_languages(tmp_path) == {"python", "typescript"}
+
+
 def test_workspace_languages_entry_cap_bounds_the_scan(tmp_path):
     # Files are visited in sorted order, so a cap smaller than the junk
     # prefix stops the walk before ever reaching zz.py.

@@ -35,12 +35,14 @@ _EXT_TO_LANG = {
 # with an empty probe tuple is auto-provided by multilspy (it downloads the
 # server on first use) and is always reported available.
 _PROBES: dict[str, tuple[tuple[str, ...], str]] = {
-    # multilspy starts jedi-language-server for Python (see multilspy's
-    # LanguageServer.create), so probe for *that* binary — not pyright, which the
-    # manager would never launch even when present.
+    # The manager launches basedpyright when its binary is present (marim's own
+    # multilspy subclass) and falls back to multilspy's jedi-language-server
+    # routing otherwise, so either binary makes python startable. basedpyright
+    # leads the hint: jedi-language-server is in maintenance mode upstream.
     "python": (
-        ("jedi-language-server",),
-        "install jedi-language-server (pip install jedi-language-server)",
+        ("basedpyright-langserver", "jedi-language-server"),
+        "install basedpyright (pip install basedpyright) or "
+        "jedi-language-server (pip install jedi-language-server)",
     ),
     "typescript": (
         ("typescript-language-server",),
@@ -92,14 +94,27 @@ def availability(language: str) -> Availability:
 _SCAN_IGNORED_DIRS = frozenset({"node_modules", "__pycache__", "venv", "dist", "build", "target"})
 
 
+# A language counts as "present" only when it holds a meaningful share of the
+# workspace's recognized files (or a solid absolute count, so a real
+# sub-project inside a huge repo isn't diluted away). Without this, a couple
+# of vendored/example files in a second language pass the build-time coverage
+# gate whenever *that* language's server happens to be installed globally —
+# registering six LSP tools that then fail their per-call probe for the
+# language the user actually edits.
+_MIN_SHARE = 0.10
+_MIN_COUNT = 20
+
+
 def workspace_languages(root: str | os.PathLike, *, max_entries: int = 50_000) -> set[str]:
-    """Languages present under ``root``, by file extension, from a bounded
-    walk that prunes hidden and dependency/cache directories. Entries are
-    visited in sorted order so the ``max_entries`` cap is deterministic.
-    Best-effort by design: the cap keeps startup cheap on huge trees, so a
-    language appearing only past it is simply not reported."""
-    found: set[str] = set()
+    """Languages *significantly* present under ``root``, by file extension,
+    from a bounded walk that prunes hidden and dependency/cache directories.
+    A language qualifies at >= 10% of recognized files or >= 20 files
+    outright. Entries are visited in sorted order so the ``max_entries`` cap
+    is deterministic. Best-effort by design: the cap keeps startup cheap on
+    huge trees, so a language appearing only past it is simply not reported."""
+    counts: dict[str, int] = {}
     seen = 0
+    capped = False
     for _dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(
             d for d in dirnames if not d.startswith(".") and d not in _SCAN_IGNORED_DIRS
@@ -107,11 +122,21 @@ def workspace_languages(root: str | os.PathLike, *, max_entries: int = 50_000) -
         for name in sorted(filenames):
             seen += 1
             if seen > max_entries:
-                return found
+                capped = True
+                break
             language = language_for(name)
             if language is not None:
-                found.add(language)
-    return found
+                counts[language] = counts.get(language, 0) + 1
+        if capped:
+            break
+    total = sum(counts.values())
+    if not total:
+        return set()
+    return {
+        language
+        for language, count in counts.items()
+        if count >= _MIN_COUNT or count / total >= _MIN_SHARE
+    }
 
 
 def locally_installed_languages() -> set[str]:

@@ -47,6 +47,10 @@ serve = ["starlette>=0.40", "uvicorn>=0.30"]
 # pydantic-monty. Bare installs leave the run_workflow tool returning an
 # install hint (services.run_workflow stays None).
 workflows = ["pydantic-monty>=0.0.18,<0.1", "jsonschema>=4"]
+# The preferred Python language server (ships basedpyright-langserver, which
+# the LSP manager auto-selects over multilspy's jedi fallback when on PATH).
+# Optional because it's a per-machine tool choice, not a library dependency.
+lsp-python = ["basedpyright>=1.13"]
 
 [project.urls]
 Repository = "https://git.marim.dev/mateuscmarim/marim-harness"
