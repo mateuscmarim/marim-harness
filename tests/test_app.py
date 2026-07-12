@@ -4040,3 +4040,44 @@ async def test_model_command_refused_mid_turn(tmp_path: Path):
         await pilot.pause()
         app._turn_worker = None
         assert calls == [], "/model applied mid-turn"
+
+
+@pytest.mark.anyio
+async def test_workflow_card_lifecycle_and_child_nesting(tmp_path: Path):
+    """on_workflow_start claims a first-class card for the run in the
+    sub-agents list — unmounted, because the run_workflow ToolCallWidget owns
+    the transcript slot and the tool_widgets[tool_call_id] key. Children nest
+    under it via parent_id, log() lines persist into its pane, and
+    on_workflow_done settles it with the engine's explicit failed flag."""
+    from marim_harness.interfaces.tui.subagents.stats import tree_order
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        ui = app.harness.deps.ui
+        assert ui.on_workflow_start is not None
+        assert ui.on_workflow_done is not None
+
+        ui.on_workflow_start("tc1", "review sweep")
+        card = app.stream.workflow_cards["tc1"]
+        assert card in app.stream.subagents
+        assert card.stream_id == "tc1" and card.status == "pending"
+        # The run_workflow tool call owns the tool_widgets slot; the card
+        # must not collide with it (and is never mounted in the transcript).
+        assert app.stream.tool_widgets.get("tc1") is not card
+        assert card.parent is None
+
+        await ui.on_workflow_spawn("tc1::wf1", "explore", "review bugs", "tc1")
+        await pilot.pause()
+        child = app.stream.tool_widgets["tc1::wf1"]
+        assert child.parent_id == "tc1"
+        assert [row.agent for row in tree_order(app.stream.subagents)] == [card, child]
+
+        ui.on_workflow_log("tc1", "step 1 done")
+        await pilot.pause()
+        assert card.pane is not None
+        assert len(card.pane.query(".workflow-log")) == 1
+
+        ui.on_workflow_done("tc1", '{"findings": []}', False)
+        assert card.status == "done"
+        assert card.report == '{"findings": []}'

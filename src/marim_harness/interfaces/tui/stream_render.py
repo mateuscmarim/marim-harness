@@ -416,6 +416,11 @@ class StreamRenderer:
         self.current_assistant: AssistantMessage | None = None
         self.current_thinking: ThinkingWidget | None = None
         self.tool_widgets: dict[str, ToolCallWidget | SubAgentWidget] = {}
+        # Workflow RUN cards, keyed by the run_workflow tool_call_id. A
+        # separate map from tool_widgets: that key is already taken by the
+        # run_workflow ToolCallWidget itself, which _on_tool_result must keep
+        # settling normally — registering the card there would clobber it.
+        self.workflow_cards: dict[str, SubAgentWidget] = {}
         self.tool_group: ToolGroupWidget | None = None
         self.solo_tool: ToolCallWidget | None = None
         self._sub_streams: dict[str, _SubStreamState] = {}
@@ -756,6 +761,45 @@ class StreamRenderer:
         widget.after_ids = _after_ids(args)
         return widget
 
+    def claim_workflow_card(self, tool_call_id: str, title: str) -> None:
+        """A first-class card for the workflow RUN itself, claimed when the
+        engine announces a parsed script (on_workflow_start). It registers in
+        the ordered ``subagents`` list — so the sub-agents screen shows the
+        run and ``tree_order`` nests its children under it (their parent_id
+        is this tool_call_id) — and gets a pane so log() lines have a
+        transcript to land in. It is NOT mounted into the main transcript:
+        the run_workflow tool widget already represents the run there. An
+        unmounted card is safe — its header/activity Statics exist from
+        __init__ and updating an unmounted Static just stores content."""
+        widget = SubAgentWidget("workflow", title, str(self.app.harness.model_label or ""))
+        widget.stream_id = tool_call_id
+        self.subagents.append(widget)
+        self.workflow_cards[tool_call_id] = widget
+        self.ensure_pane(widget)
+        self.app.subagents.refresh()
+
+    def append_workflow_log(self, tool_call_id: str, message: str) -> None:
+        """Persist a script's log() line into the run card's pane (the toast
+        the app also raises is transient). Unknown ids are dropped — the same
+        tolerance every optional UI callback has."""
+        widget = self.workflow_cards.get(tool_call_id)
+        if widget is None:
+            return
+        pane = self.ensure_pane(widget)
+        if pane is not None:
+            pane.append_log(message)
+
+    def finish_workflow_card(self, tool_call_id: str, outcome: str, failed: bool) -> None:
+        """Settle the run's card. The engine fires on_workflow_done on EVERY
+        exit path (success, raise, timeout, cancel) with an explicit failed
+        flag, so — unlike finish_workflow_child — there is no report-text
+        sniffing here: the engine knows which exit it took."""
+        widget = self.workflow_cards.get(tool_call_id)
+        if widget is None:
+            return
+        widget.finish(outcome, status="failed" if failed else "done")
+        self.app.subagents.refresh()
+
     async def claim_workflow_spawn(
         self, stream_id: str, type_: str, task: str, parent_id: str
     ) -> None:
@@ -765,11 +809,16 @@ class StreamRenderer:
         spawn through this callback BEFORE launching it — otherwise its whole run
         would be dropped by on_subagent_event's unknown-id guard. The card mounts
         top-level, into the same ``#log`` container ``_TopLevelSink`` uses;
-        ``parent_id`` (the run_workflow tool_call_id) is accepted for future tree
-        grouping but not yet used for nesting."""
+        ``parent_id`` (the run_workflow tool_call_id) nests the card under the
+        workflow run's own card in the sub-agents screen (see claim_workflow_card)."""
         widget = self.mount_spawn_widget({"type": type_, "task": task})
         widget.stream_id = stream_id
-        widget.parent_id = None
+        # Nest under the workflow run's card in the sub-agents screen:
+        # claim_workflow_card registered that card with stream_id ==
+        # parent_id (the run_workflow tool_call_id), so tree_order picks the
+        # pair up. If the card is absent (headless replay edge), tree_order's
+        # unknown-parent fallback renders the child at root — never lost.
+        widget.parent_id = parent_id
         self.tool_widgets[stream_id] = widget
         self.ensure_pane(widget)
         # Break the current run of consecutive tools the same way _claim_spawn does

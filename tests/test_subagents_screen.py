@@ -148,8 +148,8 @@ async def test_claim_workflow_spawn_registers_a_card_and_routes_events(tmp_path)
         assert widget in r.subagents
         assert widget.agent_type == "explore"
         assert widget.agent_task == "review bugs"
-        # Accepted for future tree grouping but not yet used for nesting.
-        assert widget.parent_id is None
+        # Nests under the workflow run's card (see claim_workflow_card / tree_order).
+        assert widget.parent_id == "tc1"
         # Actually mounted (into #log), not just registered in the bookkeeping dicts.
         assert widget in app.query_one("#log").children
 
