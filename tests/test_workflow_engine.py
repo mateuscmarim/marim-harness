@@ -12,7 +12,7 @@ def _engine(tmp_path, spawn, **kw):
 
 
 async def _echo_spawn(type, task, stream_id, mcp_names, max_output_chars,
-                      model, isolation, caller_depth):
+                      model, isolation, caller_depth, **kw):
     await asyncio.sleep(0)
     return f"[{type}@{caller_depth}] {task}"
 
@@ -28,7 +28,7 @@ async def test_last_expression_is_the_tool_result(tmp_path):
 async def test_agent_calls_reach_the_spawner_with_synth_stream_ids(tmp_path):
     seen: list[tuple] = []
 
-    async def spawn(*a):
+    async def spawn(*a, **kw):
         seen.append(a)
         return "report"
 
@@ -47,7 +47,7 @@ async def test_gather_fans_out_concurrently(tmp_path):
     running = 0
     peak = 0
 
-    async def spawn(type, task, *rest):
+    async def spawn(type, task, *rest, **kw):
         nonlocal running, peak
         running += 1
         peak = max(peak, running)
@@ -156,8 +156,9 @@ SCHEMA_SCRIPT = (
 
 @pytest.mark.anyio
 async def test_schema_valid_report_returns_a_dict_into_the_script(tmp_path):
-    async def spawn(type, task, *rest):
-        assert "Output contract" in task
+    async def spawn(type, task, *rest, output_schema=None):
+        assert output_schema is not None
+        assert "Output contract" not in task
         return '{"findings": ["bug in x"]}'
 
     eng, _ = _engine(tmp_path, spawn)
@@ -169,7 +170,7 @@ async def test_schema_valid_report_returns_a_dict_into_the_script(tmp_path):
 async def test_schema_failure_respawns_once_with_the_validation_error(tmp_path):
     calls: list[str] = []
 
-    async def spawn(type, task, *rest):
+    async def spawn(type, task, *rest, **kw):
         calls.append(task)
         if len(calls) == 1:
             return "not json at all"
@@ -184,7 +185,7 @@ async def test_schema_failure_respawns_once_with_the_validation_error(tmp_path):
 
 @pytest.mark.anyio
 async def test_schema_failure_after_retry_raises_into_the_script(tmp_path):
-    async def spawn(type, task, *rest):
+    async def spawn(type, task, *rest, **kw):
         return "still not json"
 
     eng, _ = _engine(tmp_path, spawn)
@@ -203,7 +204,7 @@ async def test_schema_failure_after_retry_raises_into_the_script(tmp_path):
 async def test_bad_schema_fails_fast_without_spawning(tmp_path):
     spawn_calls = 0
 
-    async def spawn(type, task, *rest):
+    async def spawn(type, task, *rest, **kw):
         nonlocal spawn_calls
         spawn_calls += 1
         return '{"findings": []}'
@@ -238,7 +239,7 @@ async def test_uncaught_script_exception_names_the_line(tmp_path):
 
 @pytest.mark.anyio
 async def test_agent_failure_is_catchable_in_script(tmp_path):
-    async def spawn(*a):
+    async def spawn(*a, **kw):
         raise RuntimeError("spawn exploded")
 
     eng, _ = _engine(tmp_path, spawn)
@@ -285,7 +286,7 @@ async def test_cumulative_host_call_time_counts_toward_vm_duration_cap(tmp_path,
     import marim_harness.workflows.engine as engine_mod
     monkeypatch.setattr(engine_mod, "_MAX_VM_DURATION_SECS", 0.2)
 
-    async def slow_spawn(*a):
+    async def slow_spawn(*a, **kw):
         await asyncio.sleep(0.05)
         return "ok"
 
@@ -306,7 +307,7 @@ async def test_several_real_host_calls_under_budget_do_not_spuriously_time_out(
     import marim_harness.workflows.engine as engine_mod
     monkeypatch.setattr(engine_mod, "_MAX_VM_DURATION_SECS", 1.0)
 
-    async def slow_spawn(*a):
+    async def slow_spawn(*a, **kw):
         await asyncio.sleep(0.1)
         return "ok"
 
@@ -332,7 +333,7 @@ def test_vm_duration_cap_is_generous_enough_for_real_workflows():
 async def test_wall_clock_timeout_cancels_children(tmp_path):
     cancelled = asyncio.Event()
 
-    async def slow_spawn(*a):
+    async def slow_spawn(*a, **kw):
         try:
             await asyncio.sleep(60)
         except asyncio.CancelledError:
@@ -351,7 +352,7 @@ async def test_cancelling_the_run_aborts_children_and_reraises(tmp_path):
     started = asyncio.Event()
     child_cancelled = asyncio.Event()
 
-    async def slow_spawn(*a):
+    async def slow_spawn(*a, **kw):
         started.set()
         try:
             await asyncio.sleep(60)
@@ -383,7 +384,7 @@ async def test_post_abort_agent_calls_refuse_immediately(tmp_path):
     calls = 0
     release = asyncio.Event()
 
-    async def spawn(type, task, *rest):
+    async def spawn(type, task, *rest, **kw):
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -508,7 +509,7 @@ async def test_abort_during_spawn_announce_refuses_the_child(tmp_path):
     announce_started = asyncio.Event()
     release_announce = asyncio.Event()
 
-    async def spawn(*a):
+    async def spawn(*a, **kw):
         nonlocal spawn_calls
         spawn_calls += 1
         return "r"
@@ -528,3 +529,51 @@ async def test_abort_during_spawn_announce_refuses_the_child(tmp_path):
     with pytest.raises(asyncio.CancelledError):
         await run
     assert spawn_calls == 0
+
+
+@pytest.mark.anyio
+async def test_schema_rides_the_spawn_seam_not_the_prompt(tmp_path):
+    seen = {}
+
+    async def spawn(type, task, stream_id, *rest, output_schema=None):
+        seen["task"], seen["output_schema"] = task, output_schema
+        return '{"findings": []}'
+
+    eng, _ = _engine(tmp_path, spawn)
+    out = await eng.run(SCHEMA_SCRIPT, None, "tc1")
+    assert out == "[]"
+    assert seen["output_schema"] == FINDINGS
+    assert "Output contract" not in seen["task"]
+
+
+@pytest.mark.anyio
+async def test_schema_retry_keeps_the_schema_on_the_seam(tmp_path):
+    calls = []
+
+    async def spawn(type, task, *rest, output_schema=None):
+        calls.append((task, output_schema))
+        if len(calls) == 1:
+            return "not json at all"
+        return '{"findings": []}'
+
+    eng, _ = _engine(tmp_path, spawn)
+    out = await eng.run(SCHEMA_SCRIPT, None, "tc1")
+    assert out == "[]"
+    assert len(calls) == 2
+    retry_task, retry_schema = calls[1]
+    assert "failed validation" in retry_task
+    assert "Output contract" not in retry_task
+    assert retry_schema == FINDINGS
+
+
+@pytest.mark.anyio
+async def test_unschemad_agent_calls_pass_no_schema(tmp_path):
+    seen = {}
+
+    async def spawn(type, task, *rest, output_schema=None):
+        seen["output_schema"] = output_schema
+        return "report"
+
+    eng, _ = _engine(tmp_path, spawn)
+    await eng.run('await agent("look around")', None, "tc1")
+    assert seen["output_schema"] is None

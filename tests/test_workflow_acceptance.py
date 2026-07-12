@@ -36,8 +36,9 @@ CANNED = {
 async def test_parallel_review_sweep_end_to_end(tmp_path):
     announced = []
 
-    async def spawn(type, task, stream_id, mcp, cap, model, iso, depth):
-        assert type == "explore" and "Output contract" in task
+    async def spawn(type, task, stream_id, mcp, cap, model, iso, depth, *, output_schema=None):
+        assert type == "explore" and output_schema is not None
+        assert "Output contract" not in task
         dim = next(d for d in CANNED if d in task)
         await asyncio.sleep(0.01)
         return json.dumps({"findings": CANNED[dim]})

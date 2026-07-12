@@ -37,7 +37,6 @@ from dataclasses import dataclass, field
 from pydantic_monty import Monty, MontyRuntimeError, MontySyntaxError, ResourceLimits
 
 from ..runtime.deps import Deps
-from ..subagents.output_schema import output_contract
 from ..tools.impl import fs
 from ..workspace.agents import cap_subagent_output
 from .errors import WorkflowCancelled, WorkflowResultError
@@ -210,9 +209,13 @@ class WorkflowEngine:
                           model, schema, max_output_chars, isolation):
         if schema is not None:
             check_valid_schema(schema)
+        # Enforcement rides the spawn seam (runner-side structured output,
+        # with the prompt contract as the runner's own claude-cli/non-object
+        # fallback); validate_report below stays as defense in depth — on the
+        # native path the JSON round-trips trivially, on the fallback path it
+        # does exactly the work it did when the engine owned the contract.
         report = await self._spawn_child(
-            state, type, task + (output_contract(schema) if schema else ""),
-            max_output_chars, model, isolation,
+            state, type, task, max_output_chars, model, isolation, schema,
         )
         if schema is None:
             return report
@@ -221,12 +224,12 @@ class WorkflowEngine:
             if err is None:
                 return data
             retry_task = (
-                task + output_contract(schema)
+                task
                 + f"\n\nA previous attempt failed validation: {err}. "
                   "Respond again with ONLY the corrected JSON."
             )
             report = await self._spawn_child(
-                state, type, retry_task, max_output_chars, model, isolation,
+                state, type, retry_task, max_output_chars, model, isolation, schema,
             )
             data, err = validate_report(report, schema)
         if err is None:
@@ -236,7 +239,8 @@ class WorkflowEngine:
         )
 
     async def _spawn_child(self, state: _RunState, type: str, task: str,
-                           max_output_chars, model, isolation) -> str:
+                           max_output_chars, model, isolation,
+                           output_schema: dict | None = None) -> str:
         if state.abort.is_set():
             raise WorkflowCancelled("workflow aborted")
         state.seq += 1
@@ -254,7 +258,7 @@ class WorkflowEngine:
             raise WorkflowCancelled("workflow aborted")
         child = asyncio.ensure_future(self._spawn(
             type, task, stream_id, None, max_output_chars, model, isolation,
-            self.deps.subagent_depth,
+            self.deps.subagent_depth, output_schema=output_schema,
         ))
         state.children.add(child)
         child.add_done_callback(state.children.discard)
