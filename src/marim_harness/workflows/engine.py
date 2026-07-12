@@ -14,19 +14,32 @@ functions instead — the abort event makes every in-flight and future
 agent() call raise WorkflowCancelled INTO the script; an uncaught host
 exception ends the run promptly, and the engine drains the VM with a short
 deadline before abandoning it (safe: once its host calls have raised, the
-VM holds no external resources)."""
+VM holds no external resources).
+
+VM duration limit (empirically re-verified against pydantic-monty 0.0.18,
+2026-07-11 — an earlier version of this comment claimed max_duration_secs
+counts interpreter time only and does not tick while awaiting host
+functions; that is false): the check only runs when the interpreter
+regains control (so it can't preempt a call mid-flight, and a
+gather()'d group is one control-return point checked only once every
+member has resolved), but once it runs it accounts real wall-clock time,
+including time spent awaiting agent()/log() host calls. So it doubles as
+a soft wall-clock budget for the whole script, not just a runaway-loop
+guard — see _MAX_VM_DURATION_SECS below."""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import logging
+from collections import deque
 from dataclasses import dataclass, field
 
 from pydantic_monty import Monty, MontyRuntimeError, MontySyntaxError, ResourceLimits
 
 from ..runtime.deps import Deps
 from ..tools.impl import fs
+from ..workspace.agents import cap_subagent_output
 from .errors import WorkflowCancelled, WorkflowResultError
 from .schema import check_valid_schema, output_contract, shape_result, validate_report
 
@@ -38,10 +51,25 @@ MAX_RESULT_CHARS = 24_000
 _SCHEMA_RETRIES = 1
 # How long to wait for the VM to finish on its own after an abort.
 _DRAIN_SECS = 3.0
-# VM compute limits. max_duration_secs counts interpreter time only (it does
-# NOT tick while awaiting host functions — spike-verified), so it bounds a
-# runaway `while True:` without limiting how long spawns may take.
-_VM_LIMITS: ResourceLimits = {"max_duration_secs": 30.0, "max_memory": 256 * 1024 * 1024}
+_VM_MEMORY_LIMIT_BYTES = 256 * 1024 * 1024
+# Cap on the VM's max_duration_secs (see the module docstring: this also
+# bounds real host-await wall time, not just interpreter compute). It is the
+# only thing that can stop a non-yielding compute loop — the outer
+# asyncio.wait_for below can't preempt one, since Monty holds the GIL the
+# whole time and direct cancellation is unsafe (crashes the interpreter).
+# Kept well under a realistic timeout_secs so ordinary multi-agent workflows
+# (several real, possibly slow, agent() calls) aren't spuriously killed,
+# while still bounding a truly stuck script to a few minutes instead of the
+# full configured timeout.
+_MAX_VM_DURATION_SECS = 300.0
+
+
+# Bound on the retained print() tail. Scripts shouldn't print at all (log()
+# is the progress channel; the last expression is the result), so this exists
+# only for the recovery path below -- big enough to hold any real payload a
+# script mistakenly printed, small enough that a print-happy loop can't grow
+# the engine's memory unbounded.
+_PRINT_TAIL_CHARS = 100_000
 
 
 @dataclass
@@ -52,6 +80,30 @@ class _RunState:
     abort: asyncio.Event = field(default_factory=asyncio.Event)
     children: set[asyncio.Task] = field(default_factory=set)
     seq: int = 0
+
+
+class _PrintTail:
+    """Bounded capture of the script's print() output (stdout and stderr
+    merged, oldest chunks dropped past the cap). A workflow script that ends
+    on ``print(result)`` instead of a bare ``result`` expression evaluates to
+    None -- but the payload it computed (possibly through several expensive
+    sub-agent runs) went through print, so this tail lets ``_shape`` return
+    that output with a corrective note instead of an error that forces the
+    model to re-run the whole workflow."""
+
+    def __init__(self, cap: int = _PRINT_TAIL_CHARS):
+        self._cap = cap
+        self._chunks: deque[str] = deque()
+        self._size = 0
+
+    def append(self, stream: str, text: str) -> None:
+        self._chunks.append(text)
+        self._size += len(text)
+        while self._size > self._cap and self._chunks:
+            self._size -= len(self._chunks.popleft())
+
+    def text(self) -> str:
+        return "".join(self._chunks)
 
 
 class WorkflowEngine:
@@ -68,11 +120,22 @@ class WorkflowEngine:
         except MontySyntaxError as exc:
             return f"Workflow script failed to parse: {exc}"
         state = _RunState(tool_call_id=tool_call_id)
+        vm_limits: ResourceLimits = {
+            # Never let the VM's own duration cap exceed the caller's
+            # configured timeout_secs — otherwise a non-yielding compute
+            # loop could outlast the SLA a short custom timeout implies
+            # (the outer asyncio.wait_for below can't preempt one; see the
+            # module docstring).
+            "max_duration_secs": min(self._timeout, _MAX_VM_DURATION_SECS),
+            "max_memory": _VM_MEMORY_LIMIT_BYTES,
+        }
+        prints = _PrintTail()
         vm = asyncio.ensure_future(
             monty.run_async(
                 inputs={"args": args},
-                limits=_VM_LIMITS,
+                limits=vm_limits,
                 external_functions=self._host_table(state),
+                print_callback=prints.append,
             )
         )
         try:
@@ -90,7 +153,7 @@ class WorkflowEngine:
             raise
         except MontyRuntimeError as exc:
             return f"Workflow script raised: {exc}"
-        return self._shape(value, tool_call_id)
+        return self._shape(value, tool_call_id, prints.text())
 
     # -- host functions -----------------------------------------------------
 
@@ -160,12 +223,16 @@ class WorkflowEngine:
         state.children.add(child)
         child.add_done_callback(state.children.discard)
         try:
-            return await child
+            report = await child
         except asyncio.CancelledError:
             # The abort path cancelled this child; surface a catchable
             # script-level exception instead of a bare cancel so the VM winds
             # down through normal exception flow.
             raise WorkflowCancelled("workflow aborted") from None
+        done = getattr(self.deps.ui, "on_workflow_spawn_done", None)
+        if done is not None and stream_id:
+            done(stream_id, report)
+        return report
 
     def _log(self, message: str) -> None:
         logger.debug("workflow log: %s", message)
@@ -193,8 +260,24 @@ class WorkflowEngine:
             # "Task exception was never retrieved" once it finally finishes.
             vm.add_done_callback(lambda f: f.cancelled() or f.exception())
 
-    def _shape(self, value: object, tool_call_id: str) -> str:
+    def _shape(self, value: object, tool_call_id: str, printed: str = "") -> str:
         rel = f".marim/workflow-output/{tool_call_id or 'workflow'}.json"
+        # A None final value with printed output is almost always a script
+        # that ended on print(result) instead of a bare `result` expression.
+        # The payload -- possibly the product of several expensive sub-agent
+        # runs -- already went through print, so return it (with a corrective
+        # note) rather than an error that would make the model re-run the
+        # whole workflow just to fix its last line.
+        if value is None and printed.strip():
+            text, spill = cap_subagent_output(printed, MAX_RESULT_CHARS, rel)
+            if spill is not None:
+                fs.write_file(self.deps.workspace.root, rel, spill)
+            return (
+                "Note: the workflow's final expression was None -- the tool "
+                "returns the script's LAST EXPRESSION, so end the script with "
+                "the value itself (not print(value)) next time. Returning the "
+                "script's printed output instead:\n\n" + text
+            )
         try:
             text, spill = shape_result(value, MAX_RESULT_CHARS, rel)
         except WorkflowResultError as exc:

@@ -482,6 +482,7 @@ class Harness:
         on_present_plan: OnPresentPlanFn | None = None,
         on_workflow_spawn: Callable[[str, str, str, str], Awaitable[None]] | None = None,
         on_workflow_log: Callable[[str], None] | None = None,
+        on_workflow_spawn_done: Callable[[str, str], None] | None = None,
         on_tasks_changed: Callable[[], None] | None = None,
         on_jobs_changed: Callable[[], None] | None = None,
         on_compact: Callable[[int, int], None] | None = None,
@@ -514,6 +515,7 @@ class Harness:
         self.deps.ui.on_present_plan = on_present_plan
         self.deps.ui.on_workflow_spawn = on_workflow_spawn
         self.deps.ui.on_workflow_log = on_workflow_log
+        self.deps.ui.on_workflow_spawn_done = on_workflow_spawn_done
         self.deps.tasks.on_change = on_tasks_changed
         self.deps.jobs.on_change = on_jobs_changed
         self.session.on_compact = on_compact

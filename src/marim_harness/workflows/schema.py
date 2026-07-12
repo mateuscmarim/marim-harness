@@ -75,6 +75,14 @@ def shape_result(value: object, max_chars: int, spill_path: str) -> tuple[str, s
     with the same lossless head-plus-pointer spill spawn reports use. Returns
     (text, spill): spill is the full serialization for the caller to persist
     at spill_path, or None when under budget."""
+    if value is None:
+        raise WorkflowResultError(
+            "the workflow's final expression is None. This usually means the "
+            "script ended on a statement (e.g. print(result), asyncio.run(...)) "
+            "instead of a bare expression — the tool returns whatever the LAST "
+            "EXPRESSION evaluates to. If you have a value to report, end the "
+            "script with it directly (e.g. just `result`), not print(result)."
+        )
     try:
         text = json.dumps(value, indent=2, ensure_ascii=False)
     except (TypeError, ValueError) as exc:

@@ -72,6 +72,18 @@ def test_shape_result_rejects_non_serializable_values():
         shape_result(object(), 1000, "out.json")
 
 
+def test_shape_result_rejects_none_as_likely_accidental():
+    with pytest.raises(WorkflowResultError, match="LAST EXPRESSION"):
+        shape_result(None, 1000, "out.json")
+
+
+def test_shape_result_accepts_other_falsy_values():
+    for falsy in (0, "", [], {}, False):
+        text, spill = shape_result(falsy, 1000, "out.json")
+        assert spill is None
+        assert text
+
+
 def test_check_valid_schema_accepts_a_valid_schema():
     assert check_valid_schema(FINDINGS) is None
 

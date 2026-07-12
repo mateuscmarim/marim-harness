@@ -207,6 +207,11 @@ class UIHooks:
     # (message) -> None. A workflow script's log() line. None when headless
     # (the engine falls back to DEBUG logging).
     on_workflow_log: "Callable[[str], None] | None" = None
+    # (stream_id, report) -> None. Fired by the workflow engine AFTER each
+    # child agent() call resolves, so the card claimed by on_workflow_spawn
+    # can leave "pending" -- it has no literal tool-call/tool-return pair for
+    # on_tool_result to intercept the way a real spawn_agent call does.
+    on_workflow_spawn_done: "Callable[[str, str], None] | None" = None
     detach_fanout: bool = False
     interactive: bool = False
     notifier: "Notifier | None" = None

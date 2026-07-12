@@ -101,6 +101,47 @@ async def test_on_workflow_spawn_fires_before_each_child(tmp_path):
     assert all(a[3] == "tcX" for a in announced)
 
 
+@pytest.mark.anyio
+async def test_printed_output_recovers_a_none_final_expression(tmp_path):
+    """A script that ends on print(result) instead of a bare `result`
+    evaluates to None, but its payload went through print -- possibly after
+    several expensive sub-agent runs. The engine returns the printed output
+    with a corrective note instead of an error, so the model doesn't have to
+    re-run the whole workflow just to fix its last line."""
+    eng, _ = _engine(tmp_path, _echo_spawn)
+    script = 'r = await agent("t1")\nprint("PAYLOAD: " + r)'
+    out = await eng.run(script, None, "tcP")
+    assert "LAST EXPRESSION" in out
+    assert "PAYLOAD: [general@0] t1" in out
+
+
+@pytest.mark.anyio
+async def test_none_final_expression_without_prints_is_an_error(tmp_path):
+    eng, _ = _engine(tmp_path, _echo_spawn)
+    out = await eng.run("x = 1", None, "tcQ")
+    assert "unusable" in out
+    assert "None" in out
+
+
+@pytest.mark.anyio
+async def test_on_workflow_spawn_done_fires_after_each_child_resolves(tmp_path):
+    """A workflow child has no literal tool-call/tool-return pair for the
+    TUI's on_tool_result to intercept (claim_workflow_spawn mounts its card
+    standalone), so the engine must call the completion hook itself once the
+    child's agent() call resolves -- otherwise the card is stuck "pending"
+    forever, even after the workflow completes successfully."""
+    finished: list[tuple] = []
+
+    def on_done(stream_id, report):
+        finished.append((stream_id, report))
+
+    eng, deps = _engine(tmp_path, _echo_spawn)
+    deps.ui.on_workflow_spawn_done = on_done
+    script = 'r = await agent("t1")\nr'
+    await eng.run(script, None, "tcY")
+    assert finished == [("tcY::wf1", "[general@0] t1")]
+
+
 FINDINGS = {
     "type": "object",
     "properties": {"findings": {"type": "array", "items": {"type": "string"}}},
@@ -228,10 +269,63 @@ async def test_sandbox_denies_filesystem_and_imports(tmp_path):
 @pytest.mark.anyio
 async def test_infinite_loop_is_killed_by_vm_limits(tmp_path, monkeypatch):
     import marim_harness.workflows.engine as engine_mod
-    monkeypatch.setattr(engine_mod, "_VM_LIMITS", {"max_duration_secs": 0.5})
+    monkeypatch.setattr(engine_mod, "_MAX_VM_DURATION_SECS", 0.5)
     eng, _ = _engine(tmp_path, _echo_spawn)
     out = await eng.run("while True:\n    pass", None, "tc1")
     assert "Workflow script raised" in out
+
+
+@pytest.mark.anyio
+async def test_cumulative_host_call_time_counts_toward_vm_duration_cap(tmp_path, monkeypatch):
+    """pydantic-monty's max_duration_secs is not compute-only: real
+    wall-clock time spent awaiting host (agent()) calls counts too, once the
+    interpreter regains control. This pins that behavior so a future
+    pydantic-monty upgrade that silently changes it gets caught here rather
+    than in a live workflow (see engine.py's _MAX_VM_DURATION_SECS)."""
+    import marim_harness.workflows.engine as engine_mod
+    monkeypatch.setattr(engine_mod, "_MAX_VM_DURATION_SECS", 0.2)
+
+    async def slow_spawn(*a):
+        await asyncio.sleep(0.05)
+        return "ok"
+
+    eng, _ = _engine(tmp_path, slow_spawn, timeout_secs=5.0)
+    script = "r = 0\nfor i in range(10):\n    r = await agent('x')\nr\n"
+    out = await eng.run(script, None, "tc1")
+    assert "Workflow script raised" in out and "time limit exceeded" in out
+
+
+@pytest.mark.anyio
+async def test_several_real_host_calls_under_budget_do_not_spuriously_time_out(
+    tmp_path, monkeypatch
+):
+    """The regression this guards: a realistic multi-agent workflow (several
+    real, non-instant host calls, fanned out with gather) must not be killed
+    by the VM duration guard as long as their cumulative real time stays
+    under the budget."""
+    import marim_harness.workflows.engine as engine_mod
+    monkeypatch.setattr(engine_mod, "_MAX_VM_DURATION_SECS", 1.0)
+
+    async def slow_spawn(*a):
+        await asyncio.sleep(0.1)
+        return "ok"
+
+    eng, _ = _engine(tmp_path, slow_spawn, timeout_secs=5.0)
+    script = (
+        "import asyncio\n"
+        "async def one():\n"
+        "    return await agent('x')\n"
+        "r = await asyncio.gather(*[one() for _ in range(3)])\n"
+        "r\n"
+    )
+    out = await eng.run(script, None, "tc1")
+    assert "raised" not in out and "timed out" not in out
+
+
+def test_vm_duration_cap_is_generous_enough_for_real_workflows():
+    from marim_harness.workflows.engine import _MAX_VM_DURATION_SECS
+
+    assert _MAX_VM_DURATION_SECS >= 120.0
 
 
 @pytest.mark.anyio
