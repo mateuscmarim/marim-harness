@@ -231,10 +231,68 @@ async def test_syntax_error_returns_a_fixable_tool_message(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_static_validation_rejects_undefined_name_before_spawning(tmp_path):
+    """An unresolved name (the classic model-authored-script bug) is caught by
+    static validation BEFORE anything runs: no sub-agent spawns, and — like the
+    parse-failure path — no card is ever claimed for the run."""
+    spawn_calls = 0
+
+    async def spawn(*a, **kw):
+        nonlocal spawn_calls
+        spawn_calls += 1
+        return "r"
+
+    eng, deps = _engine(tmp_path, spawn)
+    events = []
+    deps.ui.on_workflow_start = lambda *a: events.append(("start", *a))
+    deps.ui.on_workflow_done = lambda *a: events.append(("done", *a))
+    out = await eng.run('x = await agent("t")\nresult', None, "tc1")
+    assert "failed validation" in out
+    assert "result" in out and "not defined" in out
+    # Diagnostics must point at the USER script's line, unshifted by the
+    # host-declaration prefix type_check needs.
+    assert "workflow.py:2" in out
+    assert spawn_calls == 0
+    assert events == []
+
+
+@pytest.mark.anyio
+async def test_static_validation_accepts_host_functions_and_args(tmp_path):
+    """agent()/log()/args are injected at run time, not defined in the script —
+    validation must know the host surface or every real script would be
+    rejected. This is the false-positive guard for the validation gate."""
+    eng, _ = _engine(tmp_path, _echo_spawn)
+    script = (
+        "import asyncio\n"
+        'results = await asyncio.gather(*[agent(f"sum {f}") for f in [str(args)]])\n'
+        'log("ready")\n'
+        "results[0]"
+    )
+    out = await eng.run(script, "a.py", "tc1")
+    assert "failed validation" not in out
+    assert "sum a.py" in out
+
+
+@pytest.mark.anyio
 async def test_uncaught_script_exception_names_the_line(tmp_path):
     eng, _ = _engine(tmp_path, _echo_spawn)
     out = await eng.run('x = 1\nraise ValueError("boom")\nx', None, "tc1")
     assert "Workflow script raised" in out and "boom" in out
+    # Scripts are model-authored: the traceback (file/line frames) is what
+    # lets the model fix the script on the next attempt instead of guessing.
+    assert 'File "workflow.py", line 2' in out
+
+
+@pytest.mark.anyio
+async def test_script_exception_traceback_walks_helper_frames(tmp_path):
+    eng, _ = _engine(tmp_path, _echo_spawn)
+    # A runtime-only failure (KeyError on an empty dict): static validation
+    # can't see it, so it exercises the traceback rendering, not the gate.
+    script = 'def helper(d):\n    return d["missing"]\n\nhelper({})\n'
+    out = await eng.run(script, None, "tc1")
+    assert "Workflow script raised" in out
+    assert "KeyError" in out
+    assert 'File "workflow.py", line 2, in helper' in out
 
 
 @pytest.mark.anyio
@@ -259,12 +317,12 @@ async def test_sandbox_denies_filesystem_and_imports(tmp_path):
     eng, _ = _engine(tmp_path, _echo_spawn)
     out = await eng.run('open("/etc/passwd").read()', None, "tc1")
     # Monty denies `open` (no OS access is configured on run_async); whether
-    # it fails at parse or at run, it must surface as a tool-visible error,
-    # never as file contents.
+    # it fails at parse, validation, or run, it must surface as a tool-visible
+    # error, never as file contents.
     assert "root:" not in out
-    assert "raised" in out or "failed to parse" in out
+    assert "raised" in out or "failed to parse" in out or "failed validation" in out
     out2 = await eng.run("import socket\nsocket", None, "tc1")
-    assert "raised" in out2 or "failed to parse" in out2
+    assert "raised" in out2 or "failed to parse" in out2 or "failed validation" in out2
 
 
 @pytest.mark.anyio
@@ -437,7 +495,9 @@ async def test_on_workflow_done_fires_failed_on_script_raise(tmp_path):
     eng, deps = _engine(tmp_path, _echo_spawn)
     events = []
     deps.ui.on_workflow_done = lambda tcid, outcome, failed: events.append((tcid, failed))
-    out = await eng.run("boom_undefined_name", None, "tcE")
+    # Undefined names are now caught by static validation before any run, so
+    # a runtime raise is the fixture here.
+    out = await eng.run('raise ValueError("boom")', None, "tcE")
     assert "raised" in out
     assert events == [("tcE", True)]
 

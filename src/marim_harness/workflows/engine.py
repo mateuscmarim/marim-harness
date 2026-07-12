@@ -34,7 +34,13 @@ import logging
 from collections import deque
 from dataclasses import dataclass, field
 
-from pydantic_monty import Monty, MontyRuntimeError, MontySyntaxError, ResourceLimits
+from pydantic_monty import (
+    Monty,
+    MontyRuntimeError,
+    MontySyntaxError,
+    MontyTypingError,
+    ResourceLimits,
+)
 
 from ..runtime.deps import Deps
 from ..tools.impl import fs
@@ -105,6 +111,21 @@ class _PrintTail:
         return "".join(self._chunks)
 
 
+# The host surface declared to static validation. Monty.type_check() knows
+# nothing about run_async's external_functions/inputs wiring, so without these
+# declarations every real script would be rejected for using agent/log/args.
+# MUST stay in sync with _host_table()'s signatures and run()'s inputs list.
+# The prefix does not shift diagnostics: reported line numbers still point at
+# the user script's own lines (verified against pydantic-monty 0.0.18).
+_VALIDATION_PREFIX = (
+    "from typing import Any\n"
+    "async def agent(task, *, type='general', model=None, schema=None, "
+    "max_output_chars=None, isolation=None) -> Any: ...\n"
+    "def log(message) -> None: ...\n"
+    "args: Any = None\n"
+)
+
+
 def _script_title(script: str) -> str:
     """A short human label for the run's card: the script's first comment
     line when it opens with one (models usually title their scripts), else a
@@ -134,9 +155,24 @@ class WorkflowEngine:
             monty = Monty(script, inputs=["args"], script_name="workflow.py")
         except MontySyntaxError as exc:
             return f"Workflow script failed to parse: {exc}"
-        # Announce the run only after a successful parse: a parse failure is
-        # returned above with no run to track, so no card is ever claimed for
-        # it and _announce_done below fires exactly once per announced run.
+        # Static validation before anything runs: catches unresolved names —
+        # the classic model-authored-script bug — and real type errors, with
+        # line/column diagnostics, at zero sub-agent cost. Host-return values
+        # type as Any, so ordinary dynamic scripts pass untouched.
+        try:
+            monty.type_check(_VALIDATION_PREFIX)
+        except MontyTypingError as exc:
+            return f"Workflow script failed validation (nothing was executed):\n{exc}"
+        except Exception:
+            # type_check can raise RuntimeError when its own infrastructure
+            # fails. Validation is a cheap pre-flight, not the authority —
+            # never let its breakage block a script the interpreter could run.
+            logger.warning("workflow script validation errored; skipping",
+                           exc_info=True)
+        # Announce the run only after a successful parse + validation: both
+        # failures are returned above with no run to track, so no card is ever
+        # claimed for them and _announce_done below fires exactly once per
+        # announced run.
         self._announce_start(tool_call_id, _script_title(script))
         state = _RunState(tool_call_id=tool_call_id)
         vm_limits: ResourceLimits = {
@@ -183,7 +219,12 @@ class WorkflowEngine:
         try:
             value = vm.result()
         except MontyRuntimeError as exc:
-            outcome = f"Workflow script raised: {exc}"
+            # Scripts are model-authored, so the tool return is the model's
+            # only debugging surface: lead with the exception summary (the
+            # card headline), then the full traceback -- display() renders
+            # CPython-style file/line frames with source excerpts, and Monty
+            # collapses repeated frames so deep recursion stays bounded.
+            outcome = f"Workflow script raised: {exc}\n\n{exc.display()}"
             self._announce_done(tool_call_id, outcome, failed=True)
             return outcome
         shaped = self._shape(value, tool_call_id, prints.text())
