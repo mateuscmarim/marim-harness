@@ -26,6 +26,7 @@ from ..compaction import (
     make_titler,  # noqa: F401 — re-exported for tests
 )
 from ..config.context_limits import ContextLimits
+from ..config.model import DEFAULT_SUBAGENT_CONCURRENCY
 from ..hooks.dispatch import TurnHooks
 from ..lsp.manager import LspManager
 from ..mcp import McpManager
@@ -141,8 +142,10 @@ class HarnessConfig:
     subagent_retry_attempts: int = 2
     # Cap on how many spawns run their model loop concurrently. A wide fan-out
     # otherwise fires every request at once, tripping a shared route's upstream
-    # rate limit; the cap queues the excess. None ⇒ unbounded (historical default).
-    subagent_concurrency: int | None = None
+    # rate limit and letting a runaway loop (one live workflow queued a spawn per
+    # CHARACTER of a mis-stringified args value) balloon unchecked; the cap queues
+    # the excess. Defaults to the shared cap; pass None explicitly for unbounded.
+    subagent_concurrency: int | None = DEFAULT_SUBAGENT_CONCURRENCY
     # Maximum number of tokens' worth of messages kept when a sub-agent
     # transcript is written to its sidecar. Older messages are dropped first.
     subagent_transcript_cap: int = 2000

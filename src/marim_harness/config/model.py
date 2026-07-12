@@ -42,11 +42,35 @@ def parse_qualified(
     return default, qualified
 
 
+# How many spawns may run their model loop at once when nothing configures it —
+# shared by the env path (MARIM_SUBAGENT_CONCURRENCY unset) and the embedding
+# path (HarnessConfig) so the two defaults cannot drift. Wide enough for a
+# typical review/research fan-out to run fully parallel, small enough that a
+# runaway fan-out (a live workflow once queued one spawn per CHARACTER of a
+# mis-stringified args value) is contained by queueing, not by luck. None (via
+# the explicit 0 env sentinel, or passed directly) remains "unbounded".
+DEFAULT_SUBAGENT_CONCURRENCY = 8
+
+
+def _parse_concurrency(raw: str | None, default: int) -> int | None:
+    """Resolve the sub-agent concurrency cap from a raw env value. Unset/blank
+    ⇒ the default cap; a parseable non-positive int (0, -1) ⇒ None, the explicit
+    "unbounded" opt-out; unparseable garbage ⇒ the safe default cap (never
+    silently unbounded). Pure; unit-tested directly."""
+    if not raw:
+        return default
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else None
+
+
 @dataclass
 class SubagentConfig:
     """Fan-out and concurrency knobs for spawned sub-agents."""
 
-    concurrency: int | None = None
+    concurrency: int | None = DEFAULT_SUBAGENT_CONCURRENCY
     transcript_cap: int = 2000
     detach_fanout: bool = True
     autonomous_wake: bool = True
@@ -182,11 +206,14 @@ def _common_kwargs() -> dict[str, Any]:
     """Provider-independent knobs shared by every ModelConfig. Grouped sub-agent
     and notification knobs are built into their own config objects (see
     SubagentConfig/NotificationConfig) so every provider branch shares them."""
-    # 0 (and any non-positive value) is the "no cap" sentinel, mapped to None so
-    # the runner stays unbounded — matching the historical default.
-    _concurrency = _int_env("MARIM_SUBAGENT_CONCURRENCY", 0) or None
-    if _concurrency is not None and _concurrency < 0:
-        _concurrency = None
+    # Unset ⇒ the shared default cap; an explicit non-positive value (0, -1) is
+    # the "no cap" sentinel → None (unbounded). Can't route through _int_env: it
+    # clamps non-positive back to the default, which would swallow the sentinel
+    # now that the default is a positive cap rather than 0. Unparseable garbage
+    # falls back to the safe cap, not to unbounded.
+    _concurrency = _parse_concurrency(
+        os.getenv("MARIM_SUBAGENT_CONCURRENCY"), DEFAULT_SUBAGENT_CONCURRENCY
+    )
     subagent = SubagentConfig(
         concurrency=_concurrency,
         transcript_cap=_int_env("MARIM_SUBAGENT_TRANSCRIPT_CAP", 2000),

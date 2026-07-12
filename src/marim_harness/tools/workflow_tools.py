@@ -6,6 +6,7 @@ host API from, so treat every sentence as UI copy."""
 
 from __future__ import annotations
 
+import json
 import math
 
 from pydantic import JsonValue
@@ -18,6 +19,23 @@ _UNAVAILABLE = (
     "is not installed (install the marim-harness[workflows] extra) or "
     "MARIM_WORKFLOWS is off. Use spawn_agent for fan-out instead."
 )
+
+
+def _decode_stringified_args(args: JsonValue) -> JsonValue:
+    """Models routinely JSON-encode the ``args`` parameter — a string is a
+    valid JsonValue, so validation waves it through, and the script then
+    iterates the string's CHARACTERS (one live run spawned a researcher per
+    character of '["What is...') or crashes indexing it. A string that parses
+    to a dict/list is unambiguously a serialization slip: decode it. Scalars
+    and non-JSON strings pass through verbatim — a script may legitimately
+    want plain text. Pure; unit-tested directly through the tool."""
+    if not isinstance(args, str):
+        return args
+    try:
+        parsed = json.loads(args)
+    except ValueError:
+        return args
+    return parsed if isinstance(parsed, (dict, list)) else args
 
 
 def _bad_timeout(timeout_secs: float | None) -> str | None:
@@ -78,6 +96,10 @@ async def run_workflow(
     you need.
 
     Common mistakes (each has burned a real run):
+    - Passing `args` as a JSON-encoded string — `"[\\"a\\", \\"b\\"]"` instead
+      of the array itself. Iterating that string visits characters, not
+      items. A string that parses to a dict/list is decoded for you, but
+      pass real JSON values so scalars keep their types.
     - Ending with print(result): print returns None, so the tool result is
       None. End with the bare value — `result`, not `print(result)`.
     - Wrapping work in asyncio.run(...): the script body already runs in an
@@ -114,4 +136,5 @@ async def run_workflow(
     err = _bad_timeout(timeout_secs)
     if err is not None:
         return err
+    args = _decode_stringified_args(args)
     return await runner(script, args, ctx.tool_call_id or "", timeout_secs)

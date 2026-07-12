@@ -62,11 +62,15 @@ def test_workflow_timeout_defaults_and_rejects_garbage(monkeypatch):
         assert load_config().workflow_timeout_secs == 1800.0
 
 
-def test_subagent_concurrency_defaults_to_unbounded(monkeypatch):
+def test_subagent_concurrency_defaults_to_a_cap(monkeypatch):
+    """Unset means the default cap, not unlimited: a runaway fan-out (a live
+    workflow once iterated a JSON string and queued one spawn per CHARACTER)
+    must be contained by default. 0 stays the explicit no-cap escape hatch."""
+    from marim_harness.config.model import DEFAULT_SUBAGENT_CONCURRENCY
+
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     monkeypatch.delenv("MARIM_SUBAGENT_CONCURRENCY", raising=False)
-    # Unset (and the explicit 0 "off" sentinel) both mean no cap.
-    assert load_config().subagent.concurrency is None
+    assert load_config().subagent.concurrency == DEFAULT_SUBAGENT_CONCURRENCY
     monkeypatch.setenv("MARIM_SUBAGENT_CONCURRENCY", "0")
     assert load_config().subagent.concurrency is None
 
@@ -74,6 +78,20 @@ def test_subagent_concurrency_defaults_to_unbounded(monkeypatch):
 def test_negative_subagent_concurrency_maps_to_none(monkeypatch):
     monkeypatch.setenv("MARIM_SUBAGENT_CONCURRENCY", "-5")
     assert load_config().subagent.concurrency is None
+
+
+def test_parse_concurrency_helper():
+    """The pure resolver, tested directly: unset/blank ⇒ the cap; a parseable
+    non-positive int ⇒ None (unbounded opt-out); a positive int ⇒ itself;
+    unparseable garbage ⇒ the safe cap, never silently unbounded."""
+    from marim_harness.config.model import _parse_concurrency
+
+    assert _parse_concurrency(None, 8) == 8
+    assert _parse_concurrency("", 8) == 8
+    assert _parse_concurrency("0", 8) is None
+    assert _parse_concurrency("-3", 8) is None
+    assert _parse_concurrency("4", 8) == 4
+    assert _parse_concurrency("banana", 8) == 8  # garbage → cap, not unbounded
 
 
 def test_load_config_reads_subagent_request_limit(monkeypatch):

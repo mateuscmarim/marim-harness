@@ -48,7 +48,7 @@ async def test_concurrency_cap_bounds_simultaneous_spawns(tmp_path: Path):
 
 
 @pytest.mark.anyio
-async def test_unbounded_by_default(tmp_path: Path):
+async def test_unbounded_when_uncapped(tmp_path: Path):
     active = {"now": 0, "max": 0}
     runner = _runner_with_concurrency(tmp_path, _tracking_model(active), concurrency=None)
     await asyncio.gather(*[
@@ -63,3 +63,21 @@ def test_harness_config_threads_concurrency_to_the_runner(tmp_path: Path):
     harness = _make_harness(_tracking_model({"now": 0, "max": 0}), deps,
                             subagent_concurrency=4)
     assert harness.subagents._concurrency == 4
+
+
+def test_default_harness_config_is_capped(tmp_path: Path):
+    """An out-of-the-box HarnessConfig bounds fan-out at the shared default —
+    a runaway workflow (one spawn per character of a mis-typed args string, in
+    one live run) must queue, not fire everything at once. Explicit None stays
+    the unbounded escape hatch, shared with the MARIM_SUBAGENT_CONCURRENCY=0
+    env sentinel."""
+    from marim_harness.config.model import DEFAULT_SUBAGENT_CONCURRENCY
+
+    deps = _make_deps(tmp_path)
+    harness = _make_harness(_tracking_model({"now": 0, "max": 0}), deps)
+    assert harness.subagents._concurrency == DEFAULT_SUBAGENT_CONCURRENCY
+
+    deps2 = _make_deps(tmp_path / "w2")
+    unbounded = _make_harness(_tracking_model({"now": 0, "max": 0}), deps2,
+                              subagent_concurrency=None)
+    assert unbounded.subagents._concurrency is None
