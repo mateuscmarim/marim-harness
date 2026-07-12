@@ -31,3 +31,14 @@ async def test_delegates_script_args_and_tool_call_id(tmp_path):
     out = await run_workflow(_ctx(deps, "abc"), "1 + 1", args={"k": 1})
     assert out == "result"
     assert seen == {"script": "1 + 1", "args": {"k": 1}, "tool_call_id": "abc"}
+
+
+def test_docstring_warns_about_common_mistakes():
+    """The run_workflow docstring is the model-facing product doc for the
+    sandbox dialect; the common-mistakes section was added from failures
+    observed in live runs, so a future rewrite must not silently drop it."""
+    doc = run_workflow.__doc__ or ""
+    assert "Common mistakes" in doc
+    assert "print(result)" in doc
+    assert "asyncio.run" in doc
+    assert "log()" in doc
