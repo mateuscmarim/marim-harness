@@ -6,6 +6,8 @@ host API from, so treat every sentence as UI copy."""
 
 from __future__ import annotations
 
+import math
+
 from pydantic import JsonValue
 from pydantic_ai import RunContext
 
@@ -18,8 +20,21 @@ _UNAVAILABLE = (
 )
 
 
+def _bad_timeout(timeout_secs: float | None) -> str | None:
+    """A correctable-error message when the requested timeout is unusable,
+    else None. Pure; keeps run_workflow itself thin."""
+    if timeout_secs is None:
+        return None
+    if not math.isfinite(timeout_secs) or timeout_secs <= 0:
+        return (f"Invalid timeout_secs={timeout_secs!r}: it must be a positive "
+                "number of seconds. Omit it for the default, or request what "
+                "the work needs (long multi-agent runs may use e.g. 1800).")
+    return None
+
+
 async def run_workflow(
-    ctx: RunContext[Deps], script: str, args: JsonValue = None
+    ctx: RunContext[Deps], script: str, args: JsonValue = None,
+    timeout_secs: float | None = None,
 ) -> str:
     """Run a Python orchestration script that spawns sub-agents with loops,
     conditionals, and parallel fan-out — deterministic control flow the
@@ -50,6 +65,12 @@ async def run_workflow(
     - `asyncio.gather(...)` — run agent() calls concurrently. This is the
       fan-out primitive; concurrency is capped downstream, so gather as wide
       as the work needs.
+
+    The tool's `timeout_secs` parameter is the run's wall-clock budget.
+    Omit it for quick sweeps (default 300s). Request what the work needs
+    when spawning agents that each take minutes — e.g. 1800 for a
+    multi-researcher deep-research run. Requests are clamped to a
+    harness-configured ceiling.
 
     The script's LAST EXPRESSION is this tool's result — end with plain data
     (dict/list/str), JSON-serialized for you and spilled to a workspace file
@@ -84,10 +105,13 @@ async def run_workflow(
         log("reviewed " + str(len(per_dim)) + " dimensions")
         {"findings": [f for fs in per_dim for f in fs]}
 
-    Scripts are wall-clock bounded and aborted cleanly on interrupt. An
+    Scripts are bounded by timeout_secs and aborted cleanly on interrupt. An
     infinite compute loop is killed by the sandbox. If the script fails to
     parse, fix the reported error and call again."""
     runner = ctx.deps.services.run_workflow
     if runner is None:
         return _UNAVAILABLE
-    return await runner(script, args, ctx.tool_call_id or "")
+    err = _bad_timeout(timeout_secs)
+    if err is not None:
+        return err
+    return await runner(script, args, ctx.tool_call_id or "", timeout_secs)

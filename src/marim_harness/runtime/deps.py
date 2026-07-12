@@ -64,11 +64,11 @@ BackgroundAgentRunner = Callable[
 # non-None job_id on success (message is a user-renderable confirmation), or
 # None with a user-renderable refusal reason otherwise.
 ResumeSubagent = Callable[[str], Awaitable[tuple[str | None, str]]]
-# (script, args, tool_call_id) -> the workflow's final result, shaped for the
-# model. None when workflows are disabled (MARIM_WORKFLOWS=0) or
-# pydantic-monty is not installed — the run_workflow tool returns an install
-# hint in that case. Wired by the Harness (see _build_workflow_engine).
-WorkflowRunner = Callable[[str, object, str], Awaitable[str]]
+# (script, args, tool_call_id, requested timeout_secs | None) -> tool result.
+# None when workflows are disabled (MARIM_WORKFLOWS=0) or pydantic-monty is
+# not installed — the run_workflow tool returns an install hint in that
+# case. Wired by the Harness (see _build_workflow_engine).
+WorkflowRunner = Callable[[str, object, str, float | None], Awaitable[str]]
 
 # (questions) -> {header: answer}, where answer is a str (single-select) or a
 # list[str] (multi-select); None when the user cancelled. Wired by the TUI; None

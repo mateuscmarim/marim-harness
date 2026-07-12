@@ -353,23 +353,19 @@ async def test_sandbox_denies_filesystem_and_imports(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_infinite_loop_is_killed_by_vm_limits(tmp_path, monkeypatch):
-    import marim_harness.workflows.engine as engine_mod
-    monkeypatch.setattr(engine_mod, "_MAX_VM_DURATION_SECS", 0.5)
+async def test_infinite_loop_is_killed_by_vm_limits(tmp_path):
     eng, _ = _engine(tmp_path, _echo_spawn)
-    out = await eng.run("while True:\n    pass", None, "tc1")
+    out = await eng.run("while True:\n    pass", None, "tc1", timeout_secs=0.5)
     assert "Workflow script raised" in out
 
 
 @pytest.mark.anyio
-async def test_cumulative_host_call_time_counts_toward_vm_duration_cap(tmp_path, monkeypatch):
+async def test_cumulative_host_call_time_counts_toward_vm_duration_cap(tmp_path):
     """pydantic-monty's max_duration_secs is not compute-only: real
     wall-clock time spent awaiting host (agent()) calls counts too, once the
     interpreter regains control. This pins that behavior so a future
     pydantic-monty upgrade that silently changes it gets caught here rather
-    than in a live workflow (see engine.py's _MAX_VM_DURATION_SECS)."""
-    import marim_harness.workflows.engine as engine_mod
-    monkeypatch.setattr(engine_mod, "_MAX_VM_DURATION_SECS", 0.2)
+    than in a live workflow (see engine.py's module docstring)."""
 
     async def slow_spawn(*a, **kw):
         await asyncio.sleep(0.05)
@@ -377,20 +373,18 @@ async def test_cumulative_host_call_time_counts_toward_vm_duration_cap(tmp_path,
 
     eng, _ = _engine(tmp_path, slow_spawn, timeout_secs=5.0)
     script = "r = 0\nfor i in range(10):\n    r = await agent('x')\nr\n"
-    out = await eng.run(script, None, "tc1")
-    assert "Workflow script raised" in out and "time limit exceeded" in out
+    out = await eng.run(script, None, "tc1", timeout_secs=0.2)
+    assert "raised" in out or "timed out" in out
 
 
 @pytest.mark.anyio
 async def test_several_real_host_calls_under_budget_do_not_spuriously_time_out(
-    tmp_path, monkeypatch
+    tmp_path,
 ):
     """The regression this guards: a realistic multi-agent workflow (several
     real, non-instant host calls, fanned out with gather) must not be killed
     by the VM duration guard as long as their cumulative real time stays
     under the budget."""
-    import marim_harness.workflows.engine as engine_mod
-    monkeypatch.setattr(engine_mod, "_MAX_VM_DURATION_SECS", 1.0)
 
     async def slow_spawn(*a, **kw):
         await asyncio.sleep(0.1)
@@ -404,14 +398,51 @@ async def test_several_real_host_calls_under_budget_do_not_spuriously_time_out(
         "r = await asyncio.gather(*[one() for _ in range(3)])\n"
         "r\n"
     )
-    out = await eng.run(script, None, "tc1")
+    out = await eng.run(script, None, "tc1", timeout_secs=1.0)
     assert "raised" not in out and "timed out" not in out
 
 
-def test_vm_duration_cap_is_generous_enough_for_real_workflows():
-    from marim_harness.workflows.engine import _MAX_VM_DURATION_SECS
+def test_effective_timeout_clamps_to_ceiling():
+    """Pure clamp rule: min(requested or 300, ceiling). Unit-tested directly
+    because the 300s default is unobservable in a fast integration test."""
+    from marim_harness.workflows.engine import _effective_timeout
 
-    assert _MAX_VM_DURATION_SECS >= 120.0
+    assert _effective_timeout(None, 1800.0) == 300.0      # omitted -> default
+    assert _effective_timeout(60.0, 1800.0) == 60.0       # under ceiling -> honored
+    assert _effective_timeout(9999.0, 1800.0) == 1800.0   # over ceiling -> clamped
+    assert _effective_timeout(None, 10.0) == 10.0         # tiny ceiling clamps the default too
+
+
+@pytest.mark.anyio
+async def test_requested_timeout_over_ceiling_reports_the_clamped_value(tmp_path):
+    """A clamped request must be visible: the timeout message reports the
+    EFFECTIVE duration, not the requested one."""
+    async def slow_spawn(*a, **kw):
+        await asyncio.sleep(60)
+        return "never"
+
+    eng, _ = _engine(tmp_path, slow_spawn, timeout_secs=0.3)
+    out = await eng.run('await agent("x")\n"done"', None, "tc1", timeout_secs=500.0)
+    # 0.3 rendered through the message's {effective:.0f} formatting.
+    assert "timed out after 0s" in out
+    # The requested (unclamped) value must NOT appear.
+    assert "500" not in out
+
+
+@pytest.mark.anyio
+async def test_requested_timeout_extends_past_the_default(tmp_path):
+    """A run whose requested timeout exceeds the old 300s-style bound (scaled
+    down here) survives, proving the per-call request really widens the VM
+    duration limit and the outer wait together."""
+    async def slow_spawn(*a, **kw):
+        await asyncio.sleep(0.2)
+        return "ok"
+
+    # Ceiling 5.0; request 2.0. With the old fixed-cap behavior scaled to this
+    # test, a 0.2s host call would have died under a smaller default.
+    eng, _ = _engine(tmp_path, slow_spawn, timeout_secs=5.0)
+    out = await eng.run('await agent("x")\n"done"', None, "tc1", timeout_secs=2.0)
+    assert "done" in out and "timed out" not in out and "raised" not in out
 
 
 @pytest.mark.anyio

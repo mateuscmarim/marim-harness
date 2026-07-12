@@ -46,6 +46,22 @@ def test_workflows_env_gate(monkeypatch):
     assert cfg.workflows_enabled is False
 
 
+def test_workflow_timeout_env(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setenv("MARIM_WORKFLOW_TIMEOUT", "3600")
+    cfg = load_config()
+    assert cfg.workflow_timeout_secs == 3600.0
+
+
+def test_workflow_timeout_defaults_and_rejects_garbage(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.delenv("MARIM_WORKFLOW_TIMEOUT", raising=False)
+    assert load_config().workflow_timeout_secs == 1800.0
+    for bad in ("banana", "0", "-5"):
+        monkeypatch.setenv("MARIM_WORKFLOW_TIMEOUT", bad)
+        assert load_config().workflow_timeout_secs == 1800.0
+
+
 def test_subagent_concurrency_defaults_to_unbounded(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     monkeypatch.delenv("MARIM_SUBAGENT_CONCURRENCY", raising=False)

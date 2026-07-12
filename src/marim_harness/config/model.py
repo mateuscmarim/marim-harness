@@ -119,6 +119,9 @@ class ModelConfig:
     # engine is never built, regardless of whether pydantic-monty is
     # installed (see HarnessConfig.workflows_enabled).
     workflows_enabled: bool = True
+    # Ceiling (seconds) on the wall-clock budget a single run_workflow call
+    # may request via its timeout_secs parameter. MARIM_WORKFLOW_TIMEOUT.
+    workflow_timeout_secs: float = 1800.0
     # Prototype: collapse the four job tools (jobs/job_output/wait_for_job/
     # cancel_job) into one job(action, …) tool. Off ⇒ the four separate tools.
     job_tool_combined: bool = False
@@ -213,6 +216,7 @@ def _common_kwargs() -> dict[str, Any]:
         forge_enabled=_bool_env("MARIM_FORGE", True),
         scratchpad_enabled=_bool_env("MARIM_SCRATCHPAD", True),
         workflows_enabled=_bool_env("MARIM_WORKFLOWS", True),
+        workflow_timeout_secs=float(_int_env("MARIM_WORKFLOW_TIMEOUT", 1800)),
         job_tool_combined=_bool_env("MARIM_JOB_TOOL_COMBINED", False),
         command_denylist=split_patterns(os.getenv("MARIM_COMMAND_DENYLIST", "")),
         command_allowlist=split_patterns(os.getenv("MARIM_COMMAND_ALLOWLIST", "")),

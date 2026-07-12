@@ -25,7 +25,8 @@ gather()'d group is one control-return point checked only once every
 member has resolved), but once it runs it accounts real wall-clock time,
 including time spent awaiting agent()/log() host calls. So it doubles as
 a soft wall-clock budget for the whole script, not just a runaway-loop
-guard — see _MAX_VM_DURATION_SECS below."""
+guard — so it serves as the run's whole-script wall-clock budget — see
+`_effective_timeout`."""
 
 from __future__ import annotations
 
@@ -57,16 +58,11 @@ _SCHEMA_RETRIES = 1
 # How long to wait for the VM to finish on its own after an abort.
 _DRAIN_SECS = 3.0
 _VM_MEMORY_LIMIT_BYTES = 256 * 1024 * 1024
-# Cap on the VM's max_duration_secs (see the module docstring: this also
-# bounds real host-await wall time, not just interpreter compute). It is the
-# only thing that can stop a non-yielding compute loop — the outer
-# asyncio.wait_for below can't preempt one, since Monty holds the GIL the
-# whole time and direct cancellation is unsafe (crashes the interpreter).
-# Kept well under a realistic timeout_secs so ordinary multi-agent workflows
-# (several real, possibly slow, agent() calls) aren't spuriously killed,
-# while still bounding a truly stuck script to a few minutes instead of the
-# full configured timeout.
-_MAX_VM_DURATION_SECS = 300.0
+# Per-call default when run() is not given a timeout: short enough that an
+# ordinary sweep fails fast, long enough for a handful of real agent()
+# calls. A caller doing genuinely long work (a multi-researcher deep-research
+# run) requests more via timeout_secs, up to the engine's configured ceiling.
+DEFAULT_RUN_TIMEOUT_SECS = 300.0
 
 
 # Bound on the retained print() tail. Scripts shouldn't print at all (log()
@@ -155,15 +151,27 @@ def _script_title(script: str) -> str:
     return f"workflow script ({len(script.splitlines())} lines)"
 
 
+def _effective_timeout(requested: float | None, ceiling: float) -> float:
+    """The wall-clock budget one run actually gets: the caller's request
+    (defaulting to DEFAULT_RUN_TIMEOUT_SECS) clamped to the engine's
+    configured ceiling. Pure; unit-tested directly."""
+    return min(requested if requested is not None else DEFAULT_RUN_TIMEOUT_SECS, ceiling)
+
+
 class WorkflowEngine:
     """Runs workflow scripts. One engine per harness; state is per-run."""
 
     def __init__(self, deps: Deps, spawn, *, timeout_secs: float = DEFAULT_TIMEOUT_SECS):
         self.deps = deps
         self._spawn = spawn
+        # The CEILING on any one run's wall-clock budget. Each run() call may
+        # request its own timeout_secs (deep research legitimately needs 30
+        # minutes); the request is clamped to this, and omitted requests get
+        # DEFAULT_RUN_TIMEOUT_SECS. See _effective_timeout.
         self._timeout = timeout_secs
 
-    async def run(self, script: str, args: object, tool_call_id: str) -> str:
+    async def run(self, script: str, args: object, tool_call_id: str,
+                  timeout_secs: float | None = None) -> str:
         try:
             monty = Monty(script, inputs=["args"], script_name="workflow.py")
         except MontySyntaxError as exc:
@@ -188,13 +196,17 @@ class WorkflowEngine:
         # announced run.
         self._announce_start(tool_call_id, _script_title(script))
         state = _RunState(tool_call_id=tool_call_id)
+        effective = _effective_timeout(timeout_secs, self._timeout)
         vm_limits: ResourceLimits = {
-            # Never let the VM's own duration cap exceed the caller's
-            # configured timeout_secs — otherwise a non-yielding compute
-            # loop could outlast the SLA a short custom timeout implies
-            # (the outer asyncio.wait_for below can't preempt one; see the
-            # module docstring).
-            "max_duration_secs": min(self._timeout, _MAX_VM_DURATION_SECS),
+            # The VM's duration cap IS the run's effective timeout: it is the
+            # only thing that can stop a non-yielding compute loop (the outer
+            # asyncio.wait below can't preempt one — Monty holds the GIL and
+            # direct cancellation is unsafe; see the module docstring), and
+            # since it also counts host-await wall time it doubles as the
+            # whole-script budget. Trade-off accepted with the per-call knob:
+            # a spin loop can now burn up to the requested duration instead
+            # of a fixed few minutes, bounded by the configured ceiling.
+            "max_duration_secs": effective,
             "max_memory": _VM_MEMORY_LIMIT_BYTES,
         }
         prints = _PrintTail()
@@ -214,7 +226,7 @@ class WorkflowEngine:
         # raising (WorkflowCancelled surfaces as MontyRuntimeError), so every
         # abort would log a spurious "exception in shielded future".
         try:
-            done, _ = await asyncio.wait({vm}, timeout=self._timeout)
+            done, _ = await asyncio.wait({vm}, timeout=effective)
         except asyncio.CancelledError:
             # The turn was aborted. Wind the VM down through its host
             # functions (never a direct cancel — see module docstring), then
@@ -225,7 +237,7 @@ class WorkflowEngine:
             raise
         if not done:
             await self._abort_and_drain(state, vm)
-            outcome = (f"Workflow timed out after {self._timeout:.0f}s; "
+            outcome = (f"Workflow timed out after {effective:.0f}s; "
                        "in-flight sub-agents were cancelled.")
             self._announce_done(tool_call_id, outcome, failed=True)
             return outcome
