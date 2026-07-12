@@ -81,7 +81,7 @@ async def test_run_forwards_model_to_build(tmp_path: Path):
 
     def fake_build(
         type, max_output_chars=None, model=None, workspace_root=None, *,
-        defn=None, depth=0, mask_trigger=None, checkpoint=None,
+        defn=None, depth=0, mask_trigger=None, checkpoint=None, output_schema=None,
     ):
         seen["model"] = model
         return None, "stop here"
