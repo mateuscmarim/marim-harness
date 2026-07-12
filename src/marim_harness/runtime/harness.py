@@ -175,9 +175,8 @@ class HarnessConfig:
     # [workflows] extra); otherwise services.run_workflow stays None and the
     # tool answers with an install hint. MARIM_WORKFLOWS=0 turns it off.
     workflows_enabled: bool = True
-    # Overall wall-clock ceiling for one run_workflow call. VM compute is
-    # separately bounded by the engine's ResourceLimits; this bounds total
-    # duration including sub-agent time.
+    # Ceiling on the wall-clock budget any single run_workflow call may request;
+    # per-call requests are clamped to it (see workflows/engine.py).
     workflow_timeout_secs: float = 1800.0
 
 
