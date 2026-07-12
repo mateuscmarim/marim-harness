@@ -15,6 +15,9 @@ def test_ui_hooks_default_workflow_callbacks_none():
     ui = UIHooks()
     assert ui.on_workflow_spawn is None
     assert ui.on_workflow_log is None
+    assert ui.on_workflow_spawn_done is None
+    assert ui.on_workflow_start is None
+    assert ui.on_workflow_done is None
 
 
 def test_harness_wires_run_workflow_when_monty_available(tmp_path):

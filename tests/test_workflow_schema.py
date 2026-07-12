@@ -4,7 +4,6 @@ from marim_harness.workflows.errors import WorkflowResultError
 from marim_harness.workflows.schema import (
     check_valid_schema,
     extract_json,
-    output_contract,
     shape_result,
     validate_report,
 )
@@ -14,12 +13,6 @@ FINDINGS = {
     "properties": {"findings": {"type": "array", "items": {"type": "string"}}},
     "required": ["findings"],
 }
-
-
-def test_output_contract_embeds_the_schema_and_demands_bare_json():
-    text = output_contract(FINDINGS)
-    assert "ONLY a JSON object" in text
-    assert '"findings"' in text
 
 
 def test_extract_json_parses_a_bare_json_report():

@@ -116,9 +116,9 @@ class HarnessApp(App):
             ask_user=self._ask_user,
             on_present_plan=self._present_plan,
             on_workflow_spawn=self._on_workflow_spawn,
-            on_workflow_log=lambda msg: self.notify(
-                rich.markup.escape(msg), title="workflow", timeout=4
-            ),
+            on_workflow_start=self.stream.claim_workflow_card,
+            on_workflow_log=self._on_workflow_log,
+            on_workflow_done=self.stream.finish_workflow_card,
             on_workflow_spawn_done=self.stream.finish_workflow_child,
             on_subagent_event=self.stream.on_subagent_event,
             on_subagent_notice=self.stream.on_subagent_notice,
@@ -889,6 +889,14 @@ class HarnessApp(App):
         so — like on_subagent_event — direct widget mutation via the renderer is
         safe with no call_from_thread marshalling."""
         await self.stream.claim_workflow_spawn(stream_id, type_, task, parent_id)
+
+    def _on_workflow_log(self, tool_call_id: str, message: str) -> None:
+        """Route a workflow script's log() line: persist it into the run
+        card's pane (so it survives past the toast) and raise the transient
+        toast. Fired on the app's event loop by the engine, so direct
+        renderer mutation is safe — same as _on_workflow_spawn."""
+        self.stream.append_workflow_log(tool_call_id, message)
+        self.notify(rich.markup.escape(message), title="workflow", timeout=4)
 
     # --- Slash-command autocomplete ---
 

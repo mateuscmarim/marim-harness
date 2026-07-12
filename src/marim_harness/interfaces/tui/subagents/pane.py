@@ -120,6 +120,11 @@ class SubAgentPane(VerticalScroll):
         the transcript ends with the reason."""
         self.mount(Static(Content(report), classes="subagent-error"))
 
+    def append_log(self, message: str) -> None:
+        """A workflow script's log() progress line — kept in the run's
+        transcript so it outlives the transient toast the app also raises."""
+        self.mount(Static(Content(message), classes="workflow-log"))
+
 
 class SubAgentDetailHost(ContentSwitcher):
     """A ``ContentSwitcher`` of ``SubAgentPane``s — the screen's right pane. One

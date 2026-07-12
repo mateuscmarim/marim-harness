@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import re
 import time
@@ -20,7 +21,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, StructuredDict
 from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.settings import ModelSettings
 
@@ -49,6 +50,7 @@ from ..workspace import (
 from .backend import CONTINUATION_PROMPT, SpawnRun
 from .cli_spawn import CliSpawnOrchestrator
 from .isolation import SpawnWorktree
+from .output_schema import resolve_output_schema
 from .persistence import SpawnTranscripts
 from .policies import MaskingPolicy, RetryPolicy
 from .run_driver import SpawnRunDriver, _resumable_history
@@ -258,6 +260,7 @@ class SubagentRunner:
         model: str | None = None, workspace_root=None, *, defn=None,
         depth: int = 0, mask_trigger: int | None = None,
         checkpoint: Callable[[list], None] | None = None,
+        output_schema: dict | None = None,
     ) -> tuple[SubAgent | None, str | None]:
         """Build an isolated sub-agent of ``type``, with its reach decided up
         front: gated tools only in auto mode, so a run never needs an approval
@@ -272,8 +275,11 @@ class SubagentRunner:
         to pick the backend, then threads it through so discovery's filesystem walk
         isn't repeated); when None we resolve it here. ``mask_trigger`` is the
         masking trigger resolved by the caller; None falls back to the legacy
-        default. Returns ``(agent, None)`` or, for an unknown type or an
-        unresolvable model, ``(None, message)``."""
+        default. ``output_schema``, when set (already resolved by the caller to an
+        object-rooted schema), makes the sub-agent's output structured: its
+        ``output_type`` becomes ``StructuredDict(output_schema)``. Returns
+        ``(agent, None)`` or, for an unknown type or an unresolvable model,
+        ``(None, message)``."""
         if defn is None:
             defn = self._resolve_agent(type)
         if defn is None:
@@ -341,6 +347,12 @@ class SubagentRunner:
         sub = Agent(
             model_obj,
             deps_type=Deps,
+            # Schema'd spawns enforce their output natively: StructuredDict
+            # validates the final output against the schema and retries
+            # IN-RUN on mismatch, instead of the caller re-running the whole
+            # spawn. Everything downstream still sees str —
+            # _execute_native_spawn serializes a dict result.
+            output_type=StructuredDict(output_schema) if output_schema else str,
             instructions=subagent_instructions(
                 defn, instr_root, max_output_chars,
                 scratchpad=scratch, scratchpad_writable=scratchpad_writable,
@@ -509,6 +521,7 @@ class SubagentRunner:
         self, type: str, task: str, mcp_names: list[str] | None,
         max_output_chars: int | None, model: str | None, isolation: str | None,
         *, background: bool, stream_id: str, caller_depth: int = 0,
+        output_schema: dict | None = None,
     ) -> str:
         """Dispatch a spawn through shared setup then the shared run lifecycle.
 
@@ -545,6 +558,15 @@ class SubagentRunner:
         # walk a second time — it matters on a fan-out (2N walks → N).
         defn = self._resolve_agent(type)
         depth = caller_depth + 1
+        # Decide the schema enforcement path ONCE, where the backend is
+        # known: object-rooted schemas on native spawns ride structured
+        # output (build() below sets output_type); the claude-cli backend
+        # and non-object roots get the prompt contract appended to the task
+        # instead — see subagents/output_schema.py.
+        output_schema, contract = resolve_output_schema(
+            output_schema, defn.backend if defn is not None else None
+        )
+        task = task + contract
         if defn is not None and defn.backend == "claude-cli":
             return await self._cli.execute(
                 defn, task, work_root, iso, mcp_names, max_output_chars,
@@ -553,6 +575,7 @@ class SubagentRunner:
         prep = await self._prepare_spawn(
             type, task, mcp_names, max_output_chars, model,
             iso, work_root, stream_id, debug=debug, t0=t0, defn=defn, depth=depth,
+            output_schema=output_schema,
         )
         if isinstance(prep, str):
             return prep
@@ -565,7 +588,7 @@ class SubagentRunner:
         max_output_chars: int | None, model: str | None,
         iso: SpawnWorktree | None, work_root, stream_id: str,
         *, debug: bool, t0: float, defn=None, depth: int = 0,
-        resumed: bool = False,
+        resumed: bool = False, output_schema: dict | None = None,
     ) -> _SpawnPrep | str:
         """Build the sub-agent, grant MCP servers, fire the start hook, and wire the
         event handler. Returns a ``_SpawnPrep`` struct on success, or an error string
@@ -607,7 +630,7 @@ class SubagentRunner:
             checkpoint = _checkpoint
         sub, err = self.build(type, max_output_chars, model, work_root, defn=defn,
                               depth=depth, mask_trigger=mask_trigger,
-                              checkpoint=checkpoint)
+                              checkpoint=checkpoint, output_schema=output_schema)
         if sub is None:
             if iso:
                 # Own the failure teardown HERE rather than at the caller: a resumed
@@ -684,8 +707,13 @@ class SubagentRunner:
                 prep.sub, task, run_deps, prep.granted, prep.handler, stream_id,
                 history=history,
             )
+            out = result.output
             return SpawnRun(
-                output=result.output,
+                # A schema'd spawn (output_type=StructuredDict) finishes with
+                # a dict; every seam above returns str, so serialize HERE —
+                # the caller gets the same JSON text a prompt-contracted
+                # spawn would produce, minus the extraction guesswork.
+                output=out if isinstance(out, str) else json.dumps(out),
                 transcript=result.all_messages(),
                 usage=result.usage,
                 final_meta=self._transcripts.final_meta(
@@ -730,7 +758,7 @@ class SubagentRunner:
         self, type: str, task: str, stream_id: str,
         mcp_names: list[str] | None = None, max_output_chars: int | None = None,
         model: str | None = None, isolation: str | None = None,
-        caller_depth: int = 0,
+        caller_depth: int = 0, output_schema: dict | None = None,
     ) -> str:
         """Spawn one isolated sub-agent of ``type``, run it to completion on
         ``task``, and return its final report — streaming its events to the UI
@@ -747,10 +775,19 @@ class SubagentRunner:
         clobber each other or the main tree; its changes are committed to a
         branch named in the report and the worktree is torn down. ``caller_depth``
         is the nesting depth of the agent that issued the spawn (0 for the main
-        agent); the spawned sub-agent runs at ``caller_depth + 1``."""
+        agent); the spawned sub-agent runs at ``caller_depth + 1``.
+
+        ``output_schema`` is an optional JSON Schema the spawn's final report
+        must satisfy. Object-rooted schemas on native spawns are enforced with
+        pydantic-ai structured output (mismatches retry in-run); claude-cli
+        spawns and non-object roots fall back to a contract paragraph appended
+        to the task. The report is always returned as str — a structured
+        result is JSON-serialized.
+        """
         return await self._execute_spawn(
             type, task, mcp_names, max_output_chars, model, isolation,
             background=False, stream_id=stream_id, caller_depth=caller_depth,
+            output_schema=output_schema,
         )
 
     async def run_background(

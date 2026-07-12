@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from marim_harness.workflows.engine import WorkflowEngine
+from marim_harness.workflows.engine import WorkflowEngine, _script_title
 from tests.conftest import _make_deps
 
 
@@ -12,7 +12,7 @@ def _engine(tmp_path, spawn, **kw):
 
 
 async def _echo_spawn(type, task, stream_id, mcp_names, max_output_chars,
-                      model, isolation, caller_depth):
+                      model, isolation, caller_depth, **kw):
     await asyncio.sleep(0)
     return f"[{type}@{caller_depth}] {task}"
 
@@ -28,7 +28,7 @@ async def test_last_expression_is_the_tool_result(tmp_path):
 async def test_agent_calls_reach_the_spawner_with_synth_stream_ids(tmp_path):
     seen: list[tuple] = []
 
-    async def spawn(*a):
+    async def spawn(*a, **kw):
         seen.append(a)
         return "report"
 
@@ -47,7 +47,7 @@ async def test_gather_fans_out_concurrently(tmp_path):
     running = 0
     peak = 0
 
-    async def spawn(type, task, *rest):
+    async def spawn(type, task, *rest, **kw):
         nonlocal running, peak
         running += 1
         peak = max(peak, running)
@@ -156,8 +156,9 @@ SCHEMA_SCRIPT = (
 
 @pytest.mark.anyio
 async def test_schema_valid_report_returns_a_dict_into_the_script(tmp_path):
-    async def spawn(type, task, *rest):
-        assert "Output contract" in task
+    async def spawn(type, task, *rest, output_schema=None):
+        assert output_schema is not None
+        assert "Output contract" not in task
         return '{"findings": ["bug in x"]}'
 
     eng, _ = _engine(tmp_path, spawn)
@@ -169,7 +170,7 @@ async def test_schema_valid_report_returns_a_dict_into_the_script(tmp_path):
 async def test_schema_failure_respawns_once_with_the_validation_error(tmp_path):
     calls: list[str] = []
 
-    async def spawn(type, task, *rest):
+    async def spawn(type, task, *rest, **kw):
         calls.append(task)
         if len(calls) == 1:
             return "not json at all"
@@ -184,7 +185,7 @@ async def test_schema_failure_respawns_once_with_the_validation_error(tmp_path):
 
 @pytest.mark.anyio
 async def test_schema_failure_after_retry_raises_into_the_script(tmp_path):
-    async def spawn(type, task, *rest):
+    async def spawn(type, task, *rest, **kw):
         return "still not json"
 
     eng, _ = _engine(tmp_path, spawn)
@@ -203,7 +204,7 @@ async def test_schema_failure_after_retry_raises_into_the_script(tmp_path):
 async def test_bad_schema_fails_fast_without_spawning(tmp_path):
     spawn_calls = 0
 
-    async def spawn(type, task, *rest):
+    async def spawn(type, task, *rest, **kw):
         nonlocal spawn_calls
         spawn_calls += 1
         return '{"findings": []}'
@@ -238,7 +239,7 @@ async def test_uncaught_script_exception_names_the_line(tmp_path):
 
 @pytest.mark.anyio
 async def test_agent_failure_is_catchable_in_script(tmp_path):
-    async def spawn(*a):
+    async def spawn(*a, **kw):
         raise RuntimeError("spawn exploded")
 
     eng, _ = _engine(tmp_path, spawn)
@@ -285,7 +286,7 @@ async def test_cumulative_host_call_time_counts_toward_vm_duration_cap(tmp_path,
     import marim_harness.workflows.engine as engine_mod
     monkeypatch.setattr(engine_mod, "_MAX_VM_DURATION_SECS", 0.2)
 
-    async def slow_spawn(*a):
+    async def slow_spawn(*a, **kw):
         await asyncio.sleep(0.05)
         return "ok"
 
@@ -306,7 +307,7 @@ async def test_several_real_host_calls_under_budget_do_not_spuriously_time_out(
     import marim_harness.workflows.engine as engine_mod
     monkeypatch.setattr(engine_mod, "_MAX_VM_DURATION_SECS", 1.0)
 
-    async def slow_spawn(*a):
+    async def slow_spawn(*a, **kw):
         await asyncio.sleep(0.1)
         return "ok"
 
@@ -332,7 +333,7 @@ def test_vm_duration_cap_is_generous_enough_for_real_workflows():
 async def test_wall_clock_timeout_cancels_children(tmp_path):
     cancelled = asyncio.Event()
 
-    async def slow_spawn(*a):
+    async def slow_spawn(*a, **kw):
         try:
             await asyncio.sleep(60)
         except asyncio.CancelledError:
@@ -351,7 +352,7 @@ async def test_cancelling_the_run_aborts_children_and_reraises(tmp_path):
     started = asyncio.Event()
     child_cancelled = asyncio.Event()
 
-    async def slow_spawn(*a):
+    async def slow_spawn(*a, **kw):
         started.set()
         try:
             await asyncio.sleep(60)
@@ -383,7 +384,7 @@ async def test_post_abort_agent_calls_refuse_immediately(tmp_path):
     calls = 0
     release = asyncio.Event()
 
-    async def spawn(type, task, *rest):
+    async def spawn(type, task, *rest, **kw):
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -411,6 +412,113 @@ async def test_post_abort_agent_calls_refuse_immediately(tmp_path):
     assert calls == 1
 
 
+def test_script_title_prefers_the_leading_comment():
+    assert _script_title("# review sweep\nx = 1") == "review sweep"
+
+
+def test_script_title_falls_back_to_a_line_count():
+    assert _script_title("x = 1\n# late comment") == "workflow script (2 lines)"
+    assert _script_title("\n\n#\nx = 1") == "workflow script (4 lines)"
+
+
+@pytest.mark.anyio
+async def test_workflow_start_and_done_hooks_fire_on_success(tmp_path):
+    eng, deps = _engine(tmp_path, _echo_spawn)
+    events = []
+    deps.ui.on_workflow_start = lambda tcid, title: events.append(("start", tcid, title))
+    deps.ui.on_workflow_done = lambda tcid, outcome, failed: events.append(("done", tcid, failed))
+    out = await eng.run('# review sweep\n"ok"', None, "tcS")
+    assert events == [("start", "tcS", "review sweep"), ("done", "tcS", False)]
+    assert out == '"ok"'
+
+
+@pytest.mark.anyio
+async def test_on_workflow_done_fires_failed_on_script_raise(tmp_path):
+    eng, deps = _engine(tmp_path, _echo_spawn)
+    events = []
+    deps.ui.on_workflow_done = lambda tcid, outcome, failed: events.append((tcid, failed))
+    out = await eng.run("boom_undefined_name", None, "tcE")
+    assert "raised" in out
+    assert events == [("tcE", True)]
+
+
+@pytest.mark.anyio
+async def test_on_workflow_done_fires_failed_on_timeout(tmp_path):
+    async def slow_spawn(*a, **kw):
+        await asyncio.sleep(5)
+        return "never"
+
+    eng, deps = _engine(tmp_path, slow_spawn, timeout_secs=0.1)
+    events = []
+    deps.ui.on_workflow_done = lambda tcid, outcome, failed: events.append((tcid, failed, outcome))
+    out = await eng.run('await agent("x")\n"done"', None, "tcT")
+    assert "timed out" in out
+    assert events == [("tcT", True, out)]
+
+
+@pytest.mark.anyio
+async def test_on_workflow_done_fires_on_cancellation(tmp_path):
+    started = asyncio.Event()
+
+    async def slow_spawn(*a, **kw):
+        started.set()
+        await asyncio.sleep(30)
+        return "never"
+
+    eng, deps = _engine(tmp_path, slow_spawn)
+    events = []
+    deps.ui.on_workflow_done = lambda tcid, outcome, failed: events.append((tcid, outcome, failed))
+    run = asyncio.ensure_future(eng.run('await agent("x")\n"done"', None, "tcC"))
+    await started.wait()
+    run.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await run
+    assert events == [("tcC", "workflow aborted", True)]
+
+
+@pytest.mark.anyio
+async def test_parse_failure_fires_no_lifecycle_hooks(tmp_path):
+    eng, deps = _engine(tmp_path, _echo_spawn)
+    events = []
+    deps.ui.on_workflow_start = lambda *a: events.append(a)
+    deps.ui.on_workflow_done = lambda *a: events.append(a)
+    out = await eng.run("def broken(:\n    pass", None, "tcP")
+    assert "failed to parse" in out
+    assert events == []
+
+
+@pytest.mark.anyio
+async def test_log_lines_carry_the_tool_call_id(tmp_path):
+    eng, deps = _engine(tmp_path, _echo_spawn)
+    lines = []
+    deps.ui.on_workflow_log = lambda tcid, msg: lines.append((tcid, msg))
+    await eng.run('log("step 1")\n"ok"', None, "tcL")
+    assert lines == [("tcL", "step 1")]
+
+
+@pytest.mark.anyio
+async def test_log_callback_fires_on_the_event_loop(tmp_path):
+    """Monty invokes sync host functions on its interpreter thread, where no
+    event loop is running (async host functions like agent() are marshalled
+    to the loop first). The engine must hand log() lines back to the loop
+    before the UI callback runs: the TUI handler mounts widgets and app.py
+    documents it as "fired on the app's event loop" -- calling it off-loop
+    raised RuntimeError("no running event loop") INTO the script, failing a
+    workflow whose agent() work had already completed."""
+    eng, deps = _engine(tmp_path, _echo_spawn)
+    loop = asyncio.get_running_loop()
+    seen = []
+
+    def needs_loop(tcid, msg):
+        # Raises off-loop, exactly like the TUI's widget mount did.
+        seen.append((tcid, msg, asyncio.get_running_loop() is loop))
+
+    deps.ui.on_workflow_log = needs_loop
+    out = await eng.run('log("step 1")\n"ok"', None, "tcL")
+    assert "ok" in out and "raised" not in out
+    assert seen == [("tcL", "step 1", True)]
+
+
 @pytest.mark.anyio
 async def test_abort_during_spawn_announce_refuses_the_child(tmp_path):
     # Regression for the _spawn_child race: the abort pre-check happens
@@ -424,7 +532,7 @@ async def test_abort_during_spawn_announce_refuses_the_child(tmp_path):
     announce_started = asyncio.Event()
     release_announce = asyncio.Event()
 
-    async def spawn(*a):
+    async def spawn(*a, **kw):
         nonlocal spawn_calls
         spawn_calls += 1
         return "r"
@@ -444,3 +552,51 @@ async def test_abort_during_spawn_announce_refuses_the_child(tmp_path):
     with pytest.raises(asyncio.CancelledError):
         await run
     assert spawn_calls == 0
+
+
+@pytest.mark.anyio
+async def test_schema_rides_the_spawn_seam_not_the_prompt(tmp_path):
+    seen = {}
+
+    async def spawn(type, task, stream_id, *rest, output_schema=None):
+        seen["task"], seen["output_schema"] = task, output_schema
+        return '{"findings": []}'
+
+    eng, _ = _engine(tmp_path, spawn)
+    out = await eng.run(SCHEMA_SCRIPT, None, "tc1")
+    assert out == "[]"
+    assert seen["output_schema"] == FINDINGS
+    assert "Output contract" not in seen["task"]
+
+
+@pytest.mark.anyio
+async def test_schema_retry_keeps_the_schema_on_the_seam(tmp_path):
+    calls = []
+
+    async def spawn(type, task, *rest, output_schema=None):
+        calls.append((task, output_schema))
+        if len(calls) == 1:
+            return "not json at all"
+        return '{"findings": []}'
+
+    eng, _ = _engine(tmp_path, spawn)
+    out = await eng.run(SCHEMA_SCRIPT, None, "tc1")
+    assert out == "[]"
+    assert len(calls) == 2
+    retry_task, retry_schema = calls[1]
+    assert "failed validation" in retry_task
+    assert "Output contract" not in retry_task
+    assert retry_schema == FINDINGS
+
+
+@pytest.mark.anyio
+async def test_unschemad_agent_calls_pass_no_schema(tmp_path):
+    seen = {}
+
+    async def spawn(type, task, *rest, output_schema=None):
+        seen["output_schema"] = output_schema
+        return "report"
+
+    eng, _ = _engine(tmp_path, spawn)
+    await eng.run('await agent("look around")', None, "tc1")
+    assert seen["output_schema"] is None

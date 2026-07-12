@@ -40,7 +40,7 @@ from ..runtime.deps import Deps
 from ..tools.impl import fs
 from ..workspace.agents import cap_subagent_output
 from .errors import WorkflowCancelled, WorkflowResultError
-from .schema import check_valid_schema, output_contract, shape_result, validate_report
+from .schema import check_valid_schema, shape_result, validate_report
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +105,22 @@ class _PrintTail:
         return "".join(self._chunks)
 
 
+def _script_title(script: str) -> str:
+    """A short human label for the run's card: the script's first comment
+    line when it opens with one (models usually title their scripts), else a
+    line count. Pure; unit-tested directly."""
+    for line in script.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith("#"):
+            text = s.lstrip("#").strip()
+            if text:
+                return text
+        break
+    return f"workflow script ({len(script.splitlines())} lines)"
+
+
 class WorkflowEngine:
     """Runs workflow scripts. One engine per harness; state is per-run."""
 
@@ -118,6 +134,10 @@ class WorkflowEngine:
             monty = Monty(script, inputs=["args"], script_name="workflow.py")
         except MontySyntaxError as exc:
             return f"Workflow script failed to parse: {exc}"
+        # Announce the run only after a successful parse: a parse failure is
+        # returned above with no run to track, so no card is ever claimed for
+        # it and _announce_done below fires exactly once per announced run.
+        self._announce_start(tool_call_id, _script_title(script))
         state = _RunState(tool_call_id=tool_call_id)
         vm_limits: ResourceLimits = {
             # Never let the VM's own duration cap exceed the caller's
@@ -152,20 +172,40 @@ class WorkflowEngine:
             # let the cancellation propagate so the turn's resumability
             # invariants hold.
             await self._abort_and_drain(state, vm)
+            self._announce_done(tool_call_id, "workflow aborted", failed=True)
             raise
         if not done:
             await self._abort_and_drain(state, vm)
-            return (f"Workflow timed out after {self._timeout:.0f}s; "
-                    "in-flight sub-agents were cancelled.")
+            outcome = (f"Workflow timed out after {self._timeout:.0f}s; "
+                       "in-flight sub-agents were cancelled.")
+            self._announce_done(tool_call_id, outcome, failed=True)
+            return outcome
         try:
             value = vm.result()
         except MontyRuntimeError as exc:
-            return f"Workflow script raised: {exc}"
-        return self._shape(value, tool_call_id, prints.text())
+            outcome = f"Workflow script raised: {exc}"
+            self._announce_done(tool_call_id, outcome, failed=True)
+            return outcome
+        shaped = self._shape(value, tool_call_id, prints.text())
+        self._announce_done(tool_call_id, shaped, failed=False)
+        return shaped
 
     # -- host functions -----------------------------------------------------
 
     def _host_table(self, state: _RunState) -> dict:
+        # Called from run(), on the loop. Monty marshals ASYNC host functions
+        # (agent) back onto this loop before they run, but SYNC ones (log)
+        # execute directly on its interpreter thread, where no loop is
+        # running. UI callbacks assume the app's event loop -- the TUI's log
+        # handler mounts widgets -- so log() must hand the line back to the
+        # loop instead of calling into the UI from a loop-less thread: doing
+        # so raised RuntimeError("no running event loop") INTO the script,
+        # failing a workflow whose agent() work had already succeeded. Bonus
+        # of the threadsafe hop: a raising UI callback now lands in the
+        # loop's exception handler (a render bug, per the spec's posture)
+        # instead of killing the run.
+        loop = asyncio.get_running_loop()
+
         async def agent(task, *, type="general", model=None, schema=None,
                         max_output_chars=None, isolation=None):
             return await self._agent_call(
@@ -174,7 +214,7 @@ class WorkflowEngine:
             )
 
         def log(message):
-            self._log(str(message))
+            loop.call_soon_threadsafe(self._log, state.tool_call_id, str(message))
 
         return {"agent": agent, "log": log}
 
@@ -182,9 +222,13 @@ class WorkflowEngine:
                           model, schema, max_output_chars, isolation):
         if schema is not None:
             check_valid_schema(schema)
+        # Enforcement rides the spawn seam (runner-side structured output,
+        # with the prompt contract as the runner's own claude-cli/non-object
+        # fallback); validate_report below stays as defense in depth — on the
+        # native path the JSON round-trips trivially, on the fallback path it
+        # does exactly the work it did when the engine owned the contract.
         report = await self._spawn_child(
-            state, type, task + (output_contract(schema) if schema else ""),
-            max_output_chars, model, isolation,
+            state, type, task, max_output_chars, model, isolation, schema,
         )
         if schema is None:
             return report
@@ -193,12 +237,12 @@ class WorkflowEngine:
             if err is None:
                 return data
             retry_task = (
-                task + output_contract(schema)
+                task
                 + f"\n\nA previous attempt failed validation: {err}. "
                   "Respond again with ONLY the corrected JSON."
             )
             report = await self._spawn_child(
-                state, type, retry_task, max_output_chars, model, isolation,
+                state, type, retry_task, max_output_chars, model, isolation, schema,
             )
             data, err = validate_report(report, schema)
         if err is None:
@@ -208,7 +252,8 @@ class WorkflowEngine:
         )
 
     async def _spawn_child(self, state: _RunState, type: str, task: str,
-                           max_output_chars, model, isolation) -> str:
+                           max_output_chars, model, isolation,
+                           output_schema: dict | None = None) -> str:
         if state.abort.is_set():
             raise WorkflowCancelled("workflow aborted")
         state.seq += 1
@@ -226,7 +271,7 @@ class WorkflowEngine:
             raise WorkflowCancelled("workflow aborted")
         child = asyncio.ensure_future(self._spawn(
             type, task, stream_id, None, max_output_chars, model, isolation,
-            self.deps.subagent_depth,
+            self.deps.subagent_depth, output_schema=output_schema,
         ))
         state.children.add(child)
         child.add_done_callback(state.children.discard)
@@ -242,11 +287,21 @@ class WorkflowEngine:
             done(stream_id, report)
         return report
 
-    def _log(self, message: str) -> None:
+    def _log(self, tool_call_id: str, message: str) -> None:
         logger.debug("workflow log: %s", message)
         cb = getattr(self.deps.ui, "on_workflow_log", None)
         if cb is not None:
-            cb(message)
+            cb(tool_call_id, message)
+
+    def _announce_start(self, tool_call_id: str, title: str) -> None:
+        cb = getattr(self.deps.ui, "on_workflow_start", None)
+        if cb is not None:
+            cb(tool_call_id, title)
+
+    def _announce_done(self, tool_call_id: str, outcome: str, *, failed: bool) -> None:
+        cb = getattr(self.deps.ui, "on_workflow_done", None)
+        if cb is not None:
+            cb(tool_call_id, outcome, failed)
 
     # -- teardown & result shaping -------------------------------------------
 

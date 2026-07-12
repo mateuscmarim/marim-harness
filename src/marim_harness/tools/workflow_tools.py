@@ -51,6 +51,14 @@ async def run_workflow(
     if very large. Keep intermediate results in variables; return only what
     you need.
 
+    Common mistakes (each has burned a real run):
+    - Ending with print(result): print returns None, so the tool result is
+      None. End with the bare value — `result`, not `print(result)`.
+    - Wrapping work in asyncio.run(...): the script body already runs in an
+      event loop; `await` directly at top level.
+    - Reporting through log(): log() is the progress channel only. The
+      result must be the final expression.
+
     Example — parallel review sweep:
 
         import asyncio
