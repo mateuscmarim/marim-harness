@@ -23,14 +23,45 @@ async def test_delegates_script_args_and_tool_call_id(tmp_path):
     deps = _make_deps(tmp_path)
     seen = {}
 
-    async def fake_runner(script, args, tool_call_id):
-        seen.update(script=script, args=args, tool_call_id=tool_call_id)
+    async def fake_runner(script, args, tool_call_id, timeout_secs):
+        seen.update(script=script, args=args, tool_call_id=tool_call_id,
+                    timeout_secs=timeout_secs)
         return "result"
 
     deps.services.run_workflow = fake_runner
     out = await run_workflow(_ctx(deps, "abc"), "1 + 1", args={"k": 1})
     assert out == "result"
-    assert seen == {"script": "1 + 1", "args": {"k": 1}, "tool_call_id": "abc"}
+    assert seen == {"script": "1 + 1", "args": {"k": 1}, "tool_call_id": "abc",
+                    "timeout_secs": None}
+
+
+@pytest.mark.anyio
+async def test_timeout_secs_is_forwarded(tmp_path):
+    deps = _make_deps(tmp_path)
+    seen = {}
+
+    async def fake_runner(script, args, tool_call_id, timeout_secs):
+        seen["timeout_secs"] = timeout_secs
+        return "ok"
+
+    deps.services.run_workflow = fake_runner
+    await run_workflow(_ctx(deps), "1 + 1", timeout_secs=1800.0)
+    assert seen["timeout_secs"] == 1800.0
+
+
+@pytest.mark.anyio
+async def test_invalid_timeout_is_rejected_without_running(tmp_path):
+    """<=0 or non-finite timeouts are a model mistake: answer with a
+    correctable error and never start the VM."""
+    deps = _make_deps(tmp_path)
+
+    async def fake_runner(*a):
+        raise AssertionError("runner must not be called")
+
+    deps.services.run_workflow = fake_runner
+    for bad in (0.0, -5.0, float("inf"), float("nan")):
+        out = await run_workflow(_ctx(deps), "1 + 1", timeout_secs=bad)
+        assert "timeout_secs" in out and "positive" in out
 
 
 def test_docstring_warns_about_common_mistakes():
@@ -42,3 +73,4 @@ def test_docstring_warns_about_common_mistakes():
     assert "print(result)" in doc
     assert "asyncio.run" in doc
     assert "log()" in doc
+    assert "timeout_secs" in doc
