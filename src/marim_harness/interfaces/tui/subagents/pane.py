@@ -8,11 +8,28 @@ open), the live stream keeps mounting into a pane whether or not it's on screen,
 so opening the screen mid-run shows an already-current transcript. Nothing is
 ever reparented."""
 
+import json
 import re
 
 from textual.containers import VerticalScroll
 from textual.content import Content
 from textual.widgets import ContentSwitcher, Static
+
+from ..widgets.messages import AssistantMessage
+
+
+def _pretty_report(report: str) -> str:
+    """A schema'd spawn's report is compact ``json.dumps`` wire form; re-indent
+    it so the findings read as a document. Anything that isn't a JSON container
+    (a plain-text report, or a bare JSON scalar that would only gain quotes)
+    passes through verbatim."""
+    try:
+        parsed = json.loads(report)
+    except ValueError:
+        return report
+    if isinstance(parsed, (dict, list)):
+        return json.dumps(parsed, indent=2, ensure_ascii=False)
+    return report
 
 
 def pane_id(stream_id: str) -> str:
@@ -119,6 +136,22 @@ class SubAgentPane(VerticalScroll):
         """A failed spawn returns its error rather than streaming it; mount it so
         the transcript ends with the reason."""
         self.mount(Static(Content(report), classes="subagent-error"))
+
+    def append_report(self, report: str) -> None:
+        """A finished spawn's returned report, appended only when the transcript
+        would otherwise end without it. Two guards, both load-bearing:
+
+        - ``transcript_loaded`` distinguishes a live pane (set at ``ensure_pane``)
+          from a replayed one still awaiting its lazy sidecar load — appending to
+          the latter would land the report ABOVE the transcript once it loads.
+        - An existing ``AssistantMessage`` means the report was streamed as text
+          (a plain, no-schema spawn); appending would repeat the same prose. A
+          schema'd spawn streams no text at all — its whole answer exits through
+          the structured-output tool call, invisible to the stream renderer — so
+          this block is the only place its findings ever appear."""
+        if not self.transcript_loaded or self.query(AssistantMessage):
+            return
+        self.mount(Static(Content(_pretty_report(report)), classes="subagent-report"))
 
     def append_log(self, message: str) -> None:
         """A workflow script's log() progress line — kept in the run's

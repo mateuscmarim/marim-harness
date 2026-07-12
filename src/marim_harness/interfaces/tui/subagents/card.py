@@ -403,5 +403,12 @@ class SubAgentWidget(Vertical):
             # the reason. Guard: a detached/pre-pane card has no pane yet.
             if self.pane is not None:
                 self.pane.append_error(report)
+        elif status == "done" and report and self.pane is not None:
+            # Same rationale for success: a schema'd spawn's report exits via the
+            # structured-output tool call (never streamed as text), so without
+            # this the pane ends at the tool cards. append_report holds the
+            # render guards (live pane, no streamed text) — plain spawns whose
+            # report WAS streamed append nothing.
+            self.pane.append_report(report)
         self._paint_header()
         self._paint_activity()

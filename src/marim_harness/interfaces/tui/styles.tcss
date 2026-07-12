@@ -92,6 +92,7 @@ SubAgentWidget.-hovered .subagent-activity { color: white; text-style: bold; }
 .subagent-task-body { color: $text-muted; margin: 0 0 1 0; }
 .subagent-usage { color: $text-muted; }
 .subagent-error { color: $error; margin: 1 0 0 0; }
+.subagent-report { margin: 1 0 0 0; }
 .workflow-log { color: $text-muted; text-style: italic; margin: 0 0 0 2; }
 
 /* Full-bleed sub-agents screen (ctrl+x). Hidden by default; shown by the app

@@ -88,6 +88,29 @@ def test_finish_failure_appends_to_pane_when_present():
     assert w._fail_reason == "boom"
 
 
+def test_finish_done_forwards_report_to_pane():
+    """A successful spawn's report reaches the pane too — append_report holds
+    the render guards (live pane, no streamed text), the card just forwards.
+    Without this, a schema'd spawn's transcript ends at the tool cards: its
+    whole answer left via the structured-output call, never as text."""
+    class _Pane:
+        def __init__(self):
+            self.reports = []
+
+        def append_report(self, r):
+            self.reports.append(r)
+
+    w = SubAgentWidget("explore", "task", "sonnet")
+    w.pane = _Pane()
+    w.finish('{"findings": []}', status="done")
+    assert w.pane.reports == ['{"findings": []}']
+    # An empty report (the settle arms' placeholder finishes) appends nothing.
+    w2 = SubAgentWidget("explore", "task", "sonnet")
+    w2.pane = _Pane()
+    w2.finish("", status="done")
+    assert w2.pane.reports == []
+
+
 def test_waiting_card_shows_hourglass_after_tag_and_waiting_line():
     w = SubAgentWidget("merge", "Combine the reports", "sonnet")
     w.detached = True

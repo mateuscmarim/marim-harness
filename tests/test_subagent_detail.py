@@ -213,3 +213,71 @@ async def test_pane_streams_mounted_children():
         pane.set_usage_line("in 1.0k · out 0.2k · $0.01")
         await pilot.pause()
         assert len(pane.query(Static)) >= 2  # body header + the mounted child
+
+
+@pytest.mark.anyio
+async def test_append_report_pretty_prints_json_when_no_text_streamed():
+    """A schema'd spawn's whole answer exits through the structured-output tool
+    call — no text part is ever streamed — so the pane would otherwise end with
+    just the tool cards. finish() forwards the report here; a JSON report is
+    pretty-printed so the findings are readable."""
+    app = _Host()
+    async with app.run_test() as pilot:
+        host = app.query_one(SubAgentDetailHost)
+        pane = host.add_pane("c1", "explore", "owl")
+        pane.transcript_loaded = True  # a live pane (ensure_pane marks it so)
+        pane.append_report('{"findings": [{"file": "a.py"}]}')
+        await pilot.pause()
+        blocks = pane.query(".subagent-report")
+        assert len(blocks) == 1
+        text = str(blocks.first().render())
+        assert '"findings"' in text
+        assert "\n" in text  # pretty-printed, not the compact wire form
+
+
+@pytest.mark.anyio
+async def test_append_report_mounts_plain_text_verbatim():
+    app = _Host()
+    async with app.run_test() as pilot:
+        host = app.query_one(SubAgentDetailHost)
+        pane = host.add_pane("c1", "explore", "owl")
+        pane.transcript_loaded = True
+        pane.append_report("all clear, no findings")
+        await pilot.pause()
+        assert "all clear" in str(pane.query(".subagent-report").first().render())
+
+
+@pytest.mark.anyio
+async def test_append_report_skips_when_text_was_streamed():
+    """A plain (no-schema) spawn streams its report as assistant text — the
+    transcript already ends with it, so appending the returned report would
+    show the same prose twice."""
+    from marim_harness.interfaces.tui.widgets.messages import AssistantMessage
+
+    app = _Host()
+    async with app.run_test() as pilot:
+        host = app.query_one(SubAgentDetailHost)
+        pane = host.add_pane("c1", "general", "owl")
+        pane.transcript_loaded = True
+        msg = AssistantMessage()
+        await pane.add(msg)
+        await pilot.pause()
+        pane.append_report("the same prose the model already streamed")
+        await pilot.pause()
+        assert len(pane.query(".subagent-report")) == 0
+
+
+@pytest.mark.anyio
+async def test_append_report_skips_unloaded_replay_pane():
+    """A replayed card finishes while its pane's transcript is still a lazy
+    sidecar load (transcript_loaded False). Appending then would put the report
+    ABOVE the transcript once it loads — and duplicate the text for plain
+    spawns — so an unloaded pane skips; the sidecar replay is the record."""
+    app = _Host()
+    async with app.run_test() as pilot:
+        host = app.query_one(SubAgentDetailHost)
+        pane = host.add_pane("c1", "explore", "owl")
+        assert pane.transcript_loaded is False
+        pane.append_report('{"findings": []}')
+        await pilot.pause()
+        assert len(pane.query(".subagent-report")) == 0
