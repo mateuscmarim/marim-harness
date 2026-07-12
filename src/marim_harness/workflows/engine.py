@@ -30,7 +30,6 @@ guard — see _MAX_VM_DURATION_SECS below."""
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 from collections import deque
 from dataclasses import dataclass, field
@@ -138,12 +137,15 @@ class WorkflowEngine:
                 print_callback=prints.append,
             )
         )
+        # asyncio.wait (not wait_for + shield): both leave the VM task
+        # uncancelled on timeout/cancel, but on Python 3.14 an abandoned
+        # shield attaches a callback that reports the task's eventual
+        # exception to the loop's exception handler even after it has been
+        # retrieved -- and the deliberate wind-down below ENDS with the VM
+        # raising (WorkflowCancelled surfaces as MontyRuntimeError), so every
+        # abort would log a spurious "exception in shielded future".
         try:
-            value = await asyncio.wait_for(asyncio.shield(vm), self._timeout)
-        except asyncio.TimeoutError:
-            await self._abort_and_drain(state, vm)
-            return (f"Workflow timed out after {self._timeout:.0f}s; "
-                    "in-flight sub-agents were cancelled.")
+            done, _ = await asyncio.wait({vm}, timeout=self._timeout)
         except asyncio.CancelledError:
             # The turn was aborted. Wind the VM down through its host
             # functions (never a direct cancel — see module docstring), then
@@ -151,6 +153,12 @@ class WorkflowEngine:
             # invariants hold.
             await self._abort_and_drain(state, vm)
             raise
+        if not done:
+            await self._abort_and_drain(state, vm)
+            return (f"Workflow timed out after {self._timeout:.0f}s; "
+                    "in-flight sub-agents were cancelled.")
+        try:
+            value = vm.result()
         except MontyRuntimeError as exc:
             return f"Workflow script raised: {exc}"
         return self._shape(value, tool_call_id, prints.text())
@@ -250,15 +258,19 @@ class WorkflowEngine:
         state.abort.set()
         for child in list(state.children):
             child.cancel()
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(asyncio.shield(vm), _DRAIN_SECS)
+        # Retrieve the VM's eventual exception whenever it lands: the
+        # expected wind-down IS the script raising WorkflowCancelled (a
+        # MontyRuntimeError once Monty wraps it), and an unretrieved task
+        # exception is reported to the loop's exception handler at GC --
+        # which anyio's pytest runner escalates to a test failure. The
+        # callback covers both the drained and the abandoned branch below.
+        vm.add_done_callback(lambda f: f.cancelled() or f.exception())
+        # asyncio.wait, not wait_for+shield -- see the comment in run().
+        await asyncio.wait({vm}, timeout=_DRAIN_SECS)
         if not vm.done():
+            # Never cancel or await an abandoned VM (see module docstring).
             logger.warning("workflow VM did not drain within %.1fs; abandoned",
                            _DRAIN_SECS)
-            # Never cancel or await an abandoned VM (see module docstring) --
-            # but do retrieve its eventual exception so asyncio doesn't log
-            # "Task exception was never retrieved" once it finally finishes.
-            vm.add_done_callback(lambda f: f.cancelled() or f.exception())
 
     def _shape(self, value: object, tool_call_id: str, printed: str = "") -> str:
         rel = f".marim/workflow-output/{tool_call_id or 'workflow'}.json"
