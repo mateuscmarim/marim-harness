@@ -42,6 +42,11 @@ _MAX_HOVER_CHARS = 4_000
 # (bounded by the overall ``settle`` ceiling) and read whatever landed last.
 _PUBLISH_QUIESCE = 0.2
 
+# LSP RequestCancelled: the server dropped an in-flight request because newer
+# input invalidated it. Matched by ``code`` attribute (duck-typed, so the RPC
+# Error class needn't be imported outside the lazy multilspy path).
+_REQUEST_CANCELLED = -32800
+
 
 def _default_factory(language: str, root: Path):
     """Build a real multilspy async LanguageServer for ``language`` at ``root``.
@@ -320,15 +325,34 @@ class LspManager:
 
     # --- helpers -------------------------------------------------------------
 
-    async def _call(self, coro, what: str) -> tuple[Any | None, str | None]:
-        """Await ``coro`` under the request timeout. Returns (result, error)."""
-        try:
-            return await asyncio.wait_for(coro, timeout=self._request_timeout), None
-        except asyncio.TimeoutError:
-            return None, f"{what}: language server timed out."
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("%s failed: %s", what, exc)
-            return None, f"{what}: {exc}"
+    async def _call(self, make_coro, what: str) -> tuple[Any | None, str | None]:
+        """Await ``make_coro()`` under the request timeout. Returns
+        (result, error). Takes a coroutine *factory*, not a coroutine, so a
+        server-cancelled request can be re-issued: pyright answers -32800
+        (RequestCancelled) when newer input invalidates an in-flight request
+        — didOpen churn between back-to-back tool calls, background
+        re-analysis — which is transient by nature, so one retry usually
+        lands. A cancel that persists past the retry is reported as the
+        transient it is, never as a raw RPC code the model can't act on."""
+        retried = False
+        while True:
+            try:
+                return await asyncio.wait_for(make_coro(), timeout=self._request_timeout), None
+            except asyncio.TimeoutError:
+                return None, f"{what}: language server timed out."
+            except Exception as exc:  # noqa: BLE001
+                cancelled = getattr(exc, "code", None) == _REQUEST_CANCELLED
+                if cancelled and not retried:
+                    retried = True
+                    logger.debug("%s cancelled by server; retrying once", what)
+                    continue
+                logger.debug("%s failed: %s", what, exc)
+                if cancelled:
+                    return None, (
+                        f"{what}: the language server cancelled the request "
+                        "(busy re-analyzing); try again."
+                    )
+                return None, f"{what}: {exc}"
 
     def _format_locations(self, label: str, locs) -> str:
         items = locs or []
@@ -364,7 +388,7 @@ class LspManager:
         if err:
             return err
         res, err = await self._call(
-            server.request_definition(path, line - 1, col - 1), "goto_definition"
+            lambda: server.request_definition(path, line - 1, col - 1), "goto_definition"
         )
         return err or self._format_locations("definitions", res)
 
@@ -373,7 +397,7 @@ class LspManager:
         if err:
             return err
         res, err = await self._call(
-            server.request_references(path, line - 1, col - 1), "find_references"
+            lambda: server.request_references(path, line - 1, col - 1), "find_references"
         )
         return err or self._format_locations("references", res)
 
@@ -382,7 +406,7 @@ class LspManager:
         if err:
             return err
         res, err = await self._call(
-            server.request_hover(path, line - 1, col - 1), "hover"
+            lambda: server.request_hover(path, line - 1, col - 1), "hover"
         )
         if err:
             return err
@@ -393,7 +417,7 @@ class LspManager:
         if err:
             return err
         res, err = await self._call(
-            server.request_document_symbols(path), "document_symbols"
+            lambda: server.request_document_symbols(path), "document_symbols"
         )
         if err:
             return err
@@ -413,7 +437,8 @@ class LspManager:
         lines: list[str] = []
         for language, server in list(self._servers.items()):
             res, err = await self._call(
-                server.request_workspace_symbol(query), f"workspace_symbols[{language}]"
+                lambda server=server: server.request_workspace_symbol(query),
+                f"workspace_symbols[{language}]",
             )
             if err or not res:
                 continue
@@ -467,7 +492,7 @@ class LspManager:
 
         try:
             _res, err = await self._call(
-                _await_publishes(server, path, event, settle), "diagnostics"
+                lambda: _await_publishes(server, path, event, settle), "diagnostics"
             )
         finally:
             waiters = self._publish_waiters.get(uri)

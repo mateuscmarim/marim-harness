@@ -103,6 +103,62 @@ async def test_find_references_lists_all(tmp_path):
     await mgr.aclose()
 
 
+class _CancelledError(Exception):
+    """Shape of the RPC error multilspy raises for an LSP error response:
+    message plus a ``code`` attribute (-32800 = RequestCancelled)."""
+
+    def __init__(self):
+        super().__init__("request cancelled")
+        self.code = -32800
+
+
+@pytest.mark.anyio
+async def test_request_cancelled_is_retried_once(tmp_path):
+    """pyright cancels in-flight requests invalidated by newer input (didOpen
+    churn, background re-analysis) — transient by nature, so one retry lands.
+    The model must see the real result, not the raw -32800."""
+    (tmp_path / "m.py").write_text("x = 1\n")
+
+    class _Flaky(_FakeServer):
+        attempts = 0
+
+        async def request_references(self, relpath, line, col):
+            type(self).attempts += 1
+            if type(self).attempts == 1:
+                raise _CancelledError()
+            return await super().request_references(relpath, line, col)
+
+    fakes: list = []
+
+    def factory(language, root):
+        srv = _Flaky(root)
+        fakes.append(srv)
+        return srv
+
+    mgr = LspManager(tmp_path, server_factory=factory)
+    out = await mgr.find_references("m.py", 1, 1)
+    assert "a.py:1:1" in out
+    assert _Flaky.attempts == 2
+    await mgr.aclose()
+
+
+@pytest.mark.anyio
+async def test_request_cancelled_twice_reports_transient(tmp_path):
+    """A cancel that persists past the retry is reported as the transient it
+    is — with a retry suggestion, not the raw RPC error code."""
+    (tmp_path / "m.py").write_text("x = 1\n")
+
+    class _AlwaysCancelled(_FakeServer):
+        async def request_references(self, relpath, line, col):
+            raise _CancelledError()
+
+    mgr = LspManager(tmp_path, server_factory=lambda language, root: _AlwaysCancelled(root))
+    out = await mgr.find_references("m.py", 1, 1)
+    assert "cancelled" in out and "try again" in out
+    assert "-32800" not in out
+    await mgr.aclose()
+
+
 @pytest.mark.anyio
 async def test_server_started_once_and_reused(tmp_path):
     (tmp_path / "m.py").write_text("x = 1\n")

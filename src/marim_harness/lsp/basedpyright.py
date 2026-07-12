@@ -41,6 +41,16 @@ from multilspy.multilspy_config import MultilspyConfig
 from multilspy.multilspy_logger import MultilspyLogger
 
 
+def _is_null_response(exc: AssertionError) -> bool:
+    """multilspy hard-asserts `isinstance(response, list)` and embeds the
+    response in the assert message — shaped for jedi, which answers [] when
+    there is nothing to report. pyright instead answers the spec-legal `null`
+    (e.g. references/definition on a position with no symbol), which lands
+    here as an AssertionError ending in ": None". Only that exact case is a
+    normal empty result; any other malformed response must keep raising."""
+    return str(exc).endswith("Language Server: None")
+
+
 class BasedPyrightServer(LanguageServer):
     """basedpyright over stdio, driven through multilspy's client plumbing."""
 
@@ -81,6 +91,35 @@ class BasedPyrightServer(LanguageServer):
                 }
             ],
         })
+
+    # The request_* overrides below normalize pyright's `null` no-result
+    # answers (see _is_null_response) to the empty shapes multilspy's jedi
+    # routing produces, so the manager renders its ordinary "No X found."
+    # messages. hover/workspace_symbol already tolerate None upstream.
+
+    async def request_definition(self, relative_file_path: str, line: int, column: int):
+        try:
+            return await super().request_definition(relative_file_path, line, column)
+        except AssertionError as exc:
+            if _is_null_response(exc):
+                return []
+            raise
+
+    async def request_references(self, relative_file_path: str, line: int, column: int):
+        try:
+            return await super().request_references(relative_file_path, line, column)
+        except AssertionError as exc:
+            if _is_null_response(exc):
+                return []
+            raise
+
+    async def request_document_symbols(self, relative_file_path: str):
+        try:
+            return await super().request_document_symbols(relative_file_path)
+        except AssertionError as exc:
+            if _is_null_response(exc):
+                return [], None
+            raise
 
     @asynccontextmanager
     async def start_server(self) -> AsyncGenerator[BasedPyrightServer, None]:

@@ -8,6 +8,8 @@ process — the real end-to-end path is covered by test_lsp_integration.py when
 a server is locally installed.
 """
 
+import pytest
+
 from marim_harness.lsp import manager as manager_mod
 from marim_harness.lsp import registry
 
@@ -63,17 +65,69 @@ def test_factory_other_languages_unchanged(monkeypatch, tmp_path):
     assert isinstance(server, TypeScriptLanguageServer)
 
 
-def test_basedpyright_initialize_params_point_at_the_workspace(tmp_path):
+def _server(tmp_path):
     from multilspy.multilspy_config import MultilspyConfig
     from multilspy.multilspy_logger import MultilspyLogger
 
     from marim_harness.lsp.basedpyright import BasedPyrightServer
 
-    server = BasedPyrightServer(
+    return BasedPyrightServer(
         MultilspyConfig.from_dict({"code_language": "python"}),
         MultilspyLogger(),
         str(tmp_path),
     )
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+_NULL_MSG = "Unexpected response from Language Server: None"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("method", "empty"),
+    [
+        ("request_definition", []),
+        ("request_references", []),
+        ("request_document_symbols", ([], None)),
+    ],
+)
+async def test_null_response_normalizes_to_empty(monkeypatch, tmp_path, method, empty):
+    """pyright legally answers `null` for no-result (LSP: Location[] | null);
+    multilspy hard-asserts a list because jedi always answers []. The subclass
+    normalizes only that case so the manager renders its ordinary
+    'No X found.' message instead of the assert text."""
+    from multilspy.language_server import LanguageServer
+
+    async def null_assert(self, *a, **kw):
+        raise AssertionError(_NULL_MSG)
+
+    monkeypatch.setattr(LanguageServer, method, null_assert)
+    server = _server(tmp_path)
+    args = ("m.py",) if method == "request_document_symbols" else ("m.py", 0, 0)
+    assert await getattr(server, method)(*args) == empty
+
+
+@pytest.mark.anyio
+async def test_genuinely_malformed_response_still_raises(monkeypatch, tmp_path):
+    """Only the null case is normalized: a malformed non-null response keeps
+    surfacing loudly rather than masquerading as 'no results'."""
+    from multilspy.language_server import LanguageServer
+
+    async def bad_assert(self, *a, **kw):
+        raise AssertionError("Unexpected response from Language Server: {'weird': 1}")
+
+    monkeypatch.setattr(LanguageServer, "request_references", bad_assert)
+    server = _server(tmp_path)
+    with pytest.raises(AssertionError):
+        await server.request_references("m.py", 0, 0)
+
+
+def test_basedpyright_initialize_params_point_at_the_workspace(tmp_path):
+    server = _server(tmp_path)
     params = server._get_initialize_params(str(tmp_path))
     assert params["rootUri"] == tmp_path.as_uri()
     assert params["workspaceFolders"][0]["uri"] == tmp_path.as_uri()
