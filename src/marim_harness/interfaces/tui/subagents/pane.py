@@ -144,12 +144,16 @@ class SubAgentPane(VerticalScroll):
         - ``transcript_loaded`` distinguishes a live pane (set at ``ensure_pane``)
           from a replayed one still awaiting its lazy sidecar load — appending to
           the latter would land the report ABOVE the transcript once it loads.
-        - An existing ``AssistantMessage`` means the report was streamed as text
-          (a plain, no-schema spawn); appending would repeat the same prose. A
-          schema'd spawn streams no text at all — its whole answer exits through
-          the structured-output tool call, invisible to the stream renderer — so
-          this block is the only place its findings ever appear."""
-        if not self.transcript_loaded or self.query(AssistantMessage):
+        - An ``AssistantMessage`` with visible prose means the report was
+          streamed as text (a plain, no-schema spawn); appending would repeat
+          the same prose. Emptiness matters, not mere presence: OpenAI-style
+          streams open an empty text part before tool calls and _on_text_start
+          mounts a widget for it, so a schema'd spawn — which streams no prose
+          at all, its whole answer exiting through the structured-output tool
+          call, invisible to the stream renderer — often carries a blank
+          AssistantMessage; this block is the only place its findings appear."""
+        streamed = any(m.text.strip() for m in self.query(AssistantMessage))
+        if not self.transcript_loaded or streamed:
             return
         self.mount(Static(Content(_pretty_report(report)), classes="subagent-report"))
 

@@ -260,11 +260,38 @@ async def test_append_report_skips_when_text_was_streamed():
         pane = host.add_pane("c1", "general", "owl")
         pane.transcript_loaded = True
         msg = AssistantMessage()
+        msg.append("the report prose, already on screen")
         await pane.add(msg)
         await pilot.pause()
         pane.append_report("the same prose the model already streamed")
         await pilot.pause()
         assert len(pane.query(".subagent-report")) == 0
+
+
+@pytest.mark.anyio
+async def test_append_report_ignores_empty_assistant_messages():
+    """OpenAI-compatible streams routinely open an EMPTY text part before the
+    model goes to tool calls; _on_text_start mounts an AssistantMessage for it
+    unconditionally. That empty widget carries no prose, so it must not count
+    as 'the report was streamed' — a schema'd spawn whose only non-tool output
+    is the structured final_result would otherwise lose its report to an
+    invisible placeholder (the live-run regression this pins)."""
+    from marim_harness.interfaces.tui.widgets.messages import AssistantMessage
+
+    app = _Host()
+    async with app.run_test() as pilot:
+        host = app.query_one(SubAgentDetailHost)
+        pane = host.add_pane("c1", "explore", "owl")
+        pane.transcript_loaded = True
+        empty = AssistantMessage()  # text part opened, no content ever arrived
+        blank = AssistantMessage()
+        blank.append("  \n")  # whitespace-only delta: still no visible prose
+        await pane.add(empty)
+        await pane.add(blank)
+        await pilot.pause()
+        pane.append_report('{"findings": []}')
+        await pilot.pause()
+        assert len(pane.query(".subagent-report")) == 1
 
 
 @pytest.mark.anyio
