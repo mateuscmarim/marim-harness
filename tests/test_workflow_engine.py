@@ -497,6 +497,29 @@ async def test_log_lines_carry_the_tool_call_id(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_log_callback_fires_on_the_event_loop(tmp_path):
+    """Monty invokes sync host functions on its interpreter thread, where no
+    event loop is running (async host functions like agent() are marshalled
+    to the loop first). The engine must hand log() lines back to the loop
+    before the UI callback runs: the TUI handler mounts widgets and app.py
+    documents it as "fired on the app's event loop" -- calling it off-loop
+    raised RuntimeError("no running event loop") INTO the script, failing a
+    workflow whose agent() work had already completed."""
+    eng, deps = _engine(tmp_path, _echo_spawn)
+    loop = asyncio.get_running_loop()
+    seen = []
+
+    def needs_loop(tcid, msg):
+        # Raises off-loop, exactly like the TUI's widget mount did.
+        seen.append((tcid, msg, asyncio.get_running_loop() is loop))
+
+    deps.ui.on_workflow_log = needs_loop
+    out = await eng.run('log("step 1")\n"ok"', None, "tcL")
+    assert "ok" in out and "raised" not in out
+    assert seen == [("tcL", "step 1", True)]
+
+
+@pytest.mark.anyio
 async def test_abort_during_spawn_announce_refuses_the_child(tmp_path):
     # Regression for the _spawn_child race: the abort pre-check happens
     # before `await announce(...)`, and the child task is only created and

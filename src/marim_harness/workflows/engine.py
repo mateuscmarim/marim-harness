@@ -193,6 +193,19 @@ class WorkflowEngine:
     # -- host functions -----------------------------------------------------
 
     def _host_table(self, state: _RunState) -> dict:
+        # Called from run(), on the loop. Monty marshals ASYNC host functions
+        # (agent) back onto this loop before they run, but SYNC ones (log)
+        # execute directly on its interpreter thread, where no loop is
+        # running. UI callbacks assume the app's event loop -- the TUI's log
+        # handler mounts widgets -- so log() must hand the line back to the
+        # loop instead of calling into the UI from a loop-less thread: doing
+        # so raised RuntimeError("no running event loop") INTO the script,
+        # failing a workflow whose agent() work had already succeeded. Bonus
+        # of the threadsafe hop: a raising UI callback now lands in the
+        # loop's exception handler (a render bug, per the spec's posture)
+        # instead of killing the run.
+        loop = asyncio.get_running_loop()
+
         async def agent(task, *, type="general", model=None, schema=None,
                         max_output_chars=None, isolation=None):
             return await self._agent_call(
@@ -201,7 +214,7 @@ class WorkflowEngine:
             )
 
         def log(message):
-            self._log(state.tool_call_id, str(message))
+            loop.call_soon_threadsafe(self._log, state.tool_call_id, str(message))
 
         return {"agent": agent, "log": log}
 
