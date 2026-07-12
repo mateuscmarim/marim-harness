@@ -1,3 +1,5 @@
+import sys
+
 from pydantic_ai.models.test import TestModel
 
 from marim_harness.runtime.deps import HarnessServices, UIHooks
@@ -25,4 +27,19 @@ def test_harness_wires_run_workflow_when_monty_available(tmp_path):
 
 def test_harness_respects_workflows_disabled(tmp_path):
     h: Harness = _make_harness(TestModel(), _make_deps(tmp_path), workflows_enabled=False)
+    assert h.deps.services.run_workflow is None
+
+
+def test_harness_degrades_when_pydantic_monty_unavailable(tmp_path, monkeypatch):
+    """When pydantic-monty is unavailable, workflow engine fails to import
+    but harness builds successfully with run_workflow set to None."""
+    # Block the pydantic_monty import
+    monkeypatch.setitem(sys.modules, "pydantic_monty", None)
+    # Remove the engine module if already imported so it re-executes the try/except
+    monkeypatch.delitem(sys.modules, "marim_harness.workflows.engine", raising=False)
+
+    # Build harness with workflows enabled (config-wise) but package missing
+    h: Harness = _make_harness(TestModel(), _make_deps(tmp_path), workflows_enabled=True)
+
+    # Should gracefully degrade: service is None even though enabled
     assert h.deps.services.run_workflow is None
