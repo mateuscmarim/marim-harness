@@ -42,6 +42,11 @@ async def run_workflow(
     - `log(message)` — one short progress line to the user. Not awaited.
     - `args` — the value you passed in this tool call's `args` parameter
       (use it instead of interpolating big data into the script text).
+      For data that already lives in the workspace — diffs, file bodies,
+      command output — don't pass the content at all: put a path or git ref
+      in the task and let the sub-agent read it with its own tools. Reports
+      from earlier agent() calls are the exception: interpolating those into
+      a later task string is free, it never re-enters your context.
     - `asyncio.gather(...)` — run agent() calls concurrently. This is the
       fan-out primitive; concurrency is capped downstream, so gather as wide
       as the work needs.
@@ -58,6 +63,8 @@ async def run_workflow(
       event loop; `await` directly at top level.
     - Reporting through log(): log() is the progress channel only. The
       result must be the final expression.
+    - Pasting large content (a diff, a file body) into a task string:
+      sub-agents read the workspace themselves — pass the path/ref instead.
 
     Example — parallel review sweep:
 

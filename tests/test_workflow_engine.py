@@ -274,6 +274,33 @@ async def test_static_validation_accepts_host_functions_and_args(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_static_validation_rejects_indexing_a_plain_report(tmp_path):
+    """Without schema=, agent() returns a plain string report — indexing it
+    with a string key is the second-most-common model-authored bug (after
+    undefined names) and burned a real 27k-token spawn before dying. The
+    overloaded host declaration types the no-schema return as str, so the
+    type check rejects it BEFORE any sub-agent runs; schema'd indexing stays
+    accepted (SCHEMA_SCRIPT above runs r["findings"] end-to-end)."""
+    spawn_calls = 0
+
+    async def spawn(*a, **kw):
+        nonlocal spawn_calls
+        spawn_calls += 1
+        return "r"
+
+    eng, deps = _engine(tmp_path, spawn)
+    events = []
+    deps.ui.on_workflow_start = lambda *a: events.append(("start", *a))
+    script = 'r1 = await agent("summarize x")\nout = r1["result"]\nout'
+    out = await eng.run(script, None, "tc1")
+    assert "failed validation" in out
+    assert "str" in out  # the diagnostic names the offending type
+    assert "workflow.py:2" in out
+    assert spawn_calls == 0
+    assert events == []
+
+
+@pytest.mark.anyio
 async def test_uncaught_script_exception_names_the_line(tmp_path):
     eng, _ = _engine(tmp_path, _echo_spawn)
     out = await eng.run('x = 1\nraise ValueError("boom")\nx', None, "tc1")

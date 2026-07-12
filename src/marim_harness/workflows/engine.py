@@ -117,9 +117,22 @@ class _PrintTail:
 # MUST stay in sync with _host_table()'s signatures and run()'s inputs list.
 # The prefix does not shift diagnostics: reported line numbers still point at
 # the user script's own lines (verified against pydantic-monty 0.0.18).
+#
+# agent() is declared with overloads so its return is PRECISE where the truth
+# is knowable statically: no schema= -> the report is a plain str, so indexing
+# it with a string key (a bug that burned a real 27k-token spawn) is rejected
+# before anything runs; with schema= the parsed shape is only known at run
+# time, so that arm stays Any and schema'd indexing passes. When schema's
+# staticness is itself ambiguous (a `dict | None` variable), Monty resolves
+# the union of both arms — permissive, the right failure direction for a
+# validation gate.
 _VALIDATION_PREFIX = (
-    "from typing import Any\n"
-    "async def agent(task, *, type='general', model=None, schema=None, "
+    "from typing import Any, overload\n"
+    "@overload\n"
+    "async def agent(task, *, type='general', model=None, schema: None = None, "
+    "max_output_chars=None, isolation=None) -> str: ...\n"
+    "@overload\n"
+    "async def agent(task, *, type='general', model=None, schema: dict, "
     "max_output_chars=None, isolation=None) -> Any: ...\n"
     "def log(message) -> None: ...\n"
     "args: Any = None\n"
