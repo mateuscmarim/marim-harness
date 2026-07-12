@@ -57,3 +57,39 @@ def test_locally_installed_excludes_auto_download(monkeypatch):
     langs = registry.locally_installed_languages()
     assert "cpp" in langs
     assert "java" not in langs  # java has no PATH probe (auto-download only)
+
+
+def test_workspace_languages_scans_by_extension(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_text("x = 1")
+    (tmp_path / "web").mkdir()
+    (tmp_path / "web" / "App.tsx").write_text("")
+    (tmp_path / "README.md").write_text("")
+    (tmp_path / "Makefile").write_text("")
+    assert registry.workspace_languages(tmp_path) == {"python", "typescript"}
+
+
+def test_workspace_languages_prunes_hidden_and_dependency_dirs(tmp_path):
+    # Dependency/cache trees say nothing about what the user edits: a pure-docs
+    # repo with a .venv full of .py files must not report python.
+    for d in (".venv", ".git", "node_modules", "__pycache__", "venv"):
+        sub = tmp_path / d / "inner"
+        sub.mkdir(parents=True)
+        (sub / "mod.py").write_text("")
+    (tmp_path / "notes.md").write_text("")
+    assert registry.workspace_languages(tmp_path) == set()
+
+
+def test_workspace_languages_empty_or_missing_root(tmp_path):
+    assert registry.workspace_languages(tmp_path) == set()
+    assert registry.workspace_languages(tmp_path / "nope") == set()
+
+
+def test_workspace_languages_entry_cap_bounds_the_scan(tmp_path):
+    # Files are visited in sorted order, so a cap smaller than the junk
+    # prefix stops the walk before ever reaching zz.py.
+    for i in range(10):
+        (tmp_path / f"f{i:02}.txt").write_text("")
+    (tmp_path / "zz.py").write_text("")
+    assert registry.workspace_languages(tmp_path, max_entries=5) == set()
+    assert registry.workspace_languages(tmp_path) == {"python"}

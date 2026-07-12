@@ -413,3 +413,36 @@ def test_build_harness_claude_cli_default_model_is_blank_not_none(tmp_path, monk
     assert harness.current_model.model_name == "default"  # not "None"
     # bootstrap also late-binds the spawn cwd to the real workspace (Fix 2).
     assert harness.current_model.cwd == str(ws)
+
+
+def test_lsp_tools_gated_off_without_workspace_coverage(tmp_path: Path, monkeypatch):
+    """A workspace whose languages have no startable server must not register
+    the LSP navigation tools: they could only ever return their install hint,
+    costing schema tokens on every request and a wasted call per attempt."""
+    _stub_model_plumbing(monkeypatch)
+    _isolate_sessions(monkeypatch, tmp_path)
+    from marim_harness.lsp import registry
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "mod.py").write_text("x = 1")
+    monkeypatch.setattr(registry.shutil, "which", lambda b: None)
+    harness = bootstrap.build_harness(ws, mode=Mode.ask)
+    assert harness.provider.lsp_toolset() is None
+
+
+def test_lsp_tools_stay_on_with_workspace_coverage(tmp_path: Path, monkeypatch):
+    _stub_model_plumbing(monkeypatch)
+    _isolate_sessions(monkeypatch, tmp_path)
+    from marim_harness.lsp import registry
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "mod.py").write_text("x = 1")
+    monkeypatch.setattr(
+        registry.shutil, "which",
+        lambda b: "/usr/bin/jedi-language-server" if b == "jedi-language-server" else None,
+    )
+    harness = bootstrap.build_harness(ws, mode=Mode.ask)
+    ts = harness.provider.lsp_toolset()
+    assert ts is not None

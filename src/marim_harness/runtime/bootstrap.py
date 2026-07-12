@@ -11,6 +11,7 @@ from ..config import (
 )
 from ..config.context_limits import build_context_limits
 from ..hooks import HookRunner, load_hooks_config
+from ..lsp import registry as lsp_registry
 from ..mcp import build_mcp_servers, disabled_server_names, load_mcp_config
 from ..notifications import Notifier
 from ..session import SessionManager
@@ -98,9 +99,27 @@ def build_harness(
         logger.warning("MCP config: %s", warning)
     mcp_disabled = disabled_server_names(mcp_specs)
 
-    # LSP navigation tools are registered only when LSP is on AND tools are on;
+    # LSP navigation tools are registered only when LSP is on AND tools are on
+    # AND some language present in the workspace has a startable server;
     # diagnostics-on-edit is gated separately by lsp_enabled (the manager).
+    # Without the coverage gate, a workspace with no server (e.g. a Python
+    # repo on a machine without jedi-language-server) carries six tools that
+    # can only ever return their install hint — schema tokens on every
+    # request, a wasted round trip per attempt. Deciding at build time keeps
+    # the toolset stable for prompt caching; the cost is that when NO language
+    # was covered at startup, a server installed mid-session needs a restart
+    # to surface the tools (under partial coverage the tools stay registered
+    # and LspManager still probes availability per call).
     register_lsp_tools = cfg.lsp_enabled and cfg.lsp_tools_enabled
+    if register_lsp_tools:
+        found = lsp_registry.workspace_languages(workspace)
+        if not any(lsp_registry.availability(lang).available for lang in found):
+            register_lsp_tools = False
+            logger.info(
+                "LSP tools disabled: no language server available for "
+                "workspace languages %s",
+                sorted(found) if found else "(none detected)",
+            )
 
     # The aux agents (summarizer/titler) must NOT share a claude-cli main model:
     # that instance carries the live session_id, so they would resume — and reply

@@ -85,6 +85,35 @@ def availability(language: str) -> Availability:
     return Availability(found, hint)
 
 
+# Directories pruned from the workspace-language scan: dependency/cache trees
+# are large and say nothing about what the user edits (a .venv full of .py
+# files must not report python for a pure-docs repo). Hidden directories are
+# pruned wholesale, which also covers .git/.venv/.marim.
+_SCAN_IGNORED_DIRS = frozenset({"node_modules", "__pycache__", "venv", "dist", "build", "target"})
+
+
+def workspace_languages(root: str | os.PathLike, *, max_entries: int = 50_000) -> set[str]:
+    """Languages present under ``root``, by file extension, from a bounded
+    walk that prunes hidden and dependency/cache directories. Entries are
+    visited in sorted order so the ``max_entries`` cap is deterministic.
+    Best-effort by design: the cap keeps startup cheap on huge trees, so a
+    language appearing only past it is simply not reported."""
+    found: set[str] = set()
+    seen = 0
+    for _dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(
+            d for d in dirnames if not d.startswith(".") and d not in _SCAN_IGNORED_DIRS
+        )
+        for name in sorted(filenames):
+            seen += 1
+            if seen > max_entries:
+                return found
+            language = language_for(name)
+            if language is not None:
+                found.add(language)
+    return found
+
+
 def locally_installed_languages() -> set[str]:
     """Languages whose server binary is on PATH right now. Excludes
     auto-download-only languages (e.g. java) so callers can cheaply start
