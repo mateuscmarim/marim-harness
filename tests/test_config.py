@@ -955,3 +955,24 @@ def test_subagent_tiers_default_empty(monkeypatch):
     monkeypatch.delenv("MARIM_SUBAGENT_TIER_HIGH", raising=False)
     cfg = load_config()
     assert cfg.subagent.tiers.allowlist() == frozenset()
+
+
+def test_subagent_tiering_enabled_by_default(monkeypatch):
+    from marim_harness.config.model import load_config
+
+    monkeypatch.delenv("MARIM_SUBAGENT_TIERING", raising=False)
+    cfg = load_config()
+    assert cfg.subagent.tiers.enabled is True
+
+
+def test_subagent_tiering_disabled_via_env_keeps_slugs(monkeypatch):
+    # MARIM_SUBAGENT_TIERING=false flips the routing off but leaves the curated
+    # per-tier slugs intact, so re-enabling doesn't require re-entering them.
+    from marim_harness.config.model import load_config
+
+    monkeypatch.setenv("MARIM_SUBAGENT_TIER_CHEAP", "local:ornith-1.0-9b")
+    monkeypatch.setenv("MARIM_SUBAGENT_TIERING", "false")
+    cfg = load_config()
+    assert cfg.subagent.tiers.enabled is False
+    assert cfg.subagent.tiers.cheap == "local:ornith-1.0-9b"
+    assert cfg.subagent.tiers.model_for("cheap") is None  # bypassed while disabled

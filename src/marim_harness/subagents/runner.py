@@ -199,6 +199,14 @@ class SubagentRunner:
         # once the job is registered the jobs.list() running-scan takes over.
         self._resuming: set[str] = set()
 
+    def set_tiering_enabled(self, enabled: bool) -> None:
+        """Flip the tier set's master switch in place. Off ⇒ every subsequent
+        spawn resolves to the main model (``model_for``/``allowlist`` short-circuit
+        to None/empty) while the curated per-tier slugs are preserved, so turning
+        it back on restores routing without re-entry. Read per spawn, so only
+        spawns started after this call see the change."""
+        self._tiers = replace(self._tiers, enabled=enabled)
+
     def _resolve_agent(self, type_: str) -> AgentDef | None:
         """Programmatic defs (HarnessBuilder.with_subagent) take precedence over
         discovered ones, then fall back to workspace/built-in discovery."""

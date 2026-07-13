@@ -176,6 +176,36 @@ async def test_native_inherit_spawn_does_not_relabel(tmp_path: Path):
     assert seen == []
 
 
+@pytest.mark.anyio
+async def test_set_subagent_tiering_enabled_flips_live_routing(tmp_path: Path):
+    """Disabling tiering live makes new spawns inherit the main model instead of
+    routing to their tier — without discarding the configured tier slugs. A
+    mutating spawn that routed to tier-high-model no longer reports a resolved
+    model (nothing to relabel), and re-enabling restores routing."""
+    deps = _make_deps(tmp_path)
+    tiers = SubagentTiers(high="tier-high-model")
+    h = _make_harness(_text_model(), deps, subagent_tiers=tiers)
+    h.subagents._build_model = lambda mid: _text_model()
+    seen: list[tuple[str, str]] = []
+
+    async def on_model(stream_id: str, model: str) -> None:
+        seen.append((stream_id, model))
+
+    h.deps.ui.on_subagent_model = on_model
+
+    # Disable → the high-tier mutating spawn inherits main (no relabel fired).
+    h.set_subagent_tiering_enabled(False)
+    assert h.subagents._tiers.enabled is False
+    assert h.subagents._tiers.high == "tier-high-model"  # slug preserved
+    await h.subagents.run("general", "do it", "sid-off")
+    assert seen == []
+
+    # Re-enable → routing is restored and the tier model is reported again.
+    h.set_subagent_tiering_enabled(True)
+    await h.subagents.run("general", "do it", "sid-on")
+    assert ("sid-on", "tier-high-model") in seen
+
+
 def test_build_wires_configured_tiers_through_read_only_and_tool_reach(tmp_path: Path):
     """Integration coverage for build() with a CONFIGURED SubagentTiers: the
     real ``read_only = not (defn.tools & GATED_TOOLS)`` computation and the
