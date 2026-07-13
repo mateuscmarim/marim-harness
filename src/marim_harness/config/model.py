@@ -66,6 +66,26 @@ def _parse_concurrency(raw: str | None, default: int) -> int | None:
     return parsed if parsed > 0 else None
 
 
+@dataclass(frozen=True)
+class SubagentTiers:
+    """The user-curated model per sub-agent tier. Each value is a qualified
+    ``provider:model_id`` (or None ⇒ inherit the main model). The set of
+    non-None ids is the allowlist a raw ``model=`` slug override is bounded to
+    once any tier is configured."""
+
+    cheap: str | None = None
+    med: str | None = None
+    high: str | None = None
+
+    def model_for(self, tier: str) -> str | None:
+        """The configured model id for ``tier``, or None (unset ⇒ inherit main)."""
+        return {"cheap": self.cheap, "med": self.med, "high": self.high}.get(tier)
+
+    def allowlist(self) -> frozenset[str]:
+        """The non-None tier model ids — the permitted set for a slug override."""
+        return frozenset(m for m in (self.cheap, self.med, self.high) if m)
+
+
 @dataclass
 class SubagentConfig:
     """Fan-out and concurrency knobs for spawned sub-agents."""
@@ -79,6 +99,9 @@ class SubagentConfig:
     # before pydantic-ai aborts it. Bounds a runaway sub-agent (stuck calling
     # tools and never concluding) rather than blocking the spawning turn forever.
     request_limit: int = 50
+    # The user-curated model per sub-agent tier (cheap/med/high). Empty tiers
+    # inherit the main model, so an unconfigured install behaves like today.
+    tiers: "SubagentTiers" = field(default_factory=SubagentTiers)
 
 
 @dataclass
@@ -221,6 +244,11 @@ def _common_kwargs() -> dict[str, Any]:
         autonomous_wake=_bool_env("MARIM_AUTONOMOUS_WAKE", True),
         wake_depth_cap=_int_env("MARIM_WAKE_DEPTH_CAP", 8),
         request_limit=_int_env("MARIM_SUBAGENT_REQUEST_LIMIT", 50),
+        tiers=SubagentTiers(
+            cheap=(os.getenv("MARIM_SUBAGENT_TIER_CHEAP") or None),
+            med=(os.getenv("MARIM_SUBAGENT_TIER_MED") or None),
+            high=(os.getenv("MARIM_SUBAGENT_TIER_HIGH") or None),
+        ),
     )
     notifications = NotificationConfig(
         enabled=_bool_env("MARIM_NOTIFICATIONS", True),

@@ -67,7 +67,7 @@ async def test_auto_detach_defaults_output_budget(tmp_path: Path):
 
     async def _stub_background(
         type: str, task: str, mcp_names, max_output_chars, model, isolation,
-        stream_id: str = "", caller_depth: int = 0,
+        stream_id: str = "", caller_depth: int = 0, tier=None,
     ) -> str:
         recorded.append(max_output_chars)
         return "ok"
@@ -101,7 +101,7 @@ async def test_subagent_unset_spawn_runs_inline_not_detached(tmp_path: Path):
 
     async def fake_runner(
         type, task, tool_call_id, mcp_names, max_output_chars=None, model=None,
-        isolation=None, caller_depth: int = 0,
+        isolation=None, caller_depth: int = 0, tier=None,
     ):
         calls["inline"] = True
         return "inline-ok"

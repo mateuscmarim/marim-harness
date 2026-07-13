@@ -183,6 +183,7 @@ def build_harness(
             subagent_concurrency=cfg.subagent.concurrency,
             subagent_transcript_cap=cfg.subagent.transcript_cap,
             subagent_request_limit=cfg.subagent.request_limit,
+            subagent_tiers=cfg.subagent.tiers,
             mcp_servers=mcp_servers,
             mcp_disabled=mcp_disabled,
             notifications=cfg.notifications,

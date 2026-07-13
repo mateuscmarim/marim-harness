@@ -934,3 +934,24 @@ def test_multi_source_refresh_switches_default(monkeypatch):
     multi.refresh_from_env()
     assert multi.default == "google"
     assert "google" in multi.sources
+
+
+def test_subagent_tiers_parsed_from_env(monkeypatch):
+    from marim_harness.config.model import load_config
+
+    monkeypatch.setenv("MARIM_SUBAGENT_TIER_CHEAP", "local:ornith-1.0-9b")
+    monkeypatch.setenv("MARIM_SUBAGENT_TIER_HIGH", "openrouter:anthropic/claude-opus-4")
+    cfg = load_config()
+    assert cfg.subagent.tiers.cheap == "local:ornith-1.0-9b"
+    assert cfg.subagent.tiers.med is None
+    assert cfg.subagent.tiers.high == "openrouter:anthropic/claude-opus-4"
+
+
+def test_subagent_tiers_default_empty(monkeypatch):
+    from marim_harness.config.model import load_config
+
+    monkeypatch.delenv("MARIM_SUBAGENT_TIER_CHEAP", raising=False)
+    monkeypatch.delenv("MARIM_SUBAGENT_TIER_MED", raising=False)
+    monkeypatch.delenv("MARIM_SUBAGENT_TIER_HIGH", raising=False)
+    cfg = load_config()
+    assert cfg.subagent.tiers.allowlist() == frozenset()

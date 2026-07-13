@@ -159,6 +159,7 @@ async def _spawn_background(
     max_output_chars: int | None,
     auto_detached: bool,
     model: str | None,
+    tier: str | None,
     isolation: str | None,
 ) -> str:
     """The background/auto-detached spawn path: registers a job — chained after
@@ -191,7 +192,7 @@ async def _spawn_background(
         def _start_inner(full_task: str) -> "Awaitable[str]":
             return run_bg(
                 type, full_task, mcp_names, budget, model, isolation,
-                ctx.tool_call_id or "", ctx.deps.subagent_depth,
+                ctx.tool_call_id or "", ctx.deps.subagent_depth, tier,
             )
 
         job_id = ctx.deps.jobs.register(
@@ -205,7 +206,7 @@ async def _spawn_background(
             "agent", label,
             ctx.deps.services.run_background_agent(
                 type, task, mcp_names, budget, model, isolation,
-                ctx.tool_call_id or "", ctx.deps.subagent_depth,
+                ctx.tool_call_id or "", ctx.deps.subagent_depth, tier,
             ),
             stream_id=ctx.tool_call_id or None,
         )
@@ -227,6 +228,7 @@ async def spawn_agent(
     constraints: str | None = None,
     context: str | None = None,
     model: str | None = None,
+    tier: str | None = None,
     isolation: str | None = None,
 ) -> str:
     """Delegate a sub-task to an isolated sub-agent that runs on the same model
@@ -290,14 +292,21 @@ async def spawn_agent(
     not affect what the sub-agent does, only how the spawn is shown (it titles the
     sub-agent card and the tool line). Omit it and the card falls back to `task`.
 
-    `model` optionally runs this spawn on a different model than yours — pass a
-    cheaper model for read-only fan-out, or a stronger one for a hard sub-task.
-    Omit it to inherit your current model (the usual case). For a sub-agent whose
-    definition sets `backend: claude-cli`, `model` is a Claude Code model name (an
-    alias like `opus`, `sonnet`, `haiku`, or `fable`, or a full id like
-    `claude-sonnet-4-6`) passed straight to the CLI — not a harness/OpenRouter
-    model id. Omit it to use the agent's own `model:` default or the CLI's
-    configured default.
+    `tier` routes this spawn to one of your configured model tiers — `"cheap"`,
+    `"med"`, or `"high"` — instead of your own model. Prefer this over `model`:
+    pass `"cheap"` for read-only fan-out where a small model suffices, `"high"`
+    for a hard sub-task. Omit it and the spawn takes its automatic tier (a
+    read-only agent defaults to cheap, a workspace-mutating one to high; a custom
+    agent may pin its own tier). A tier with no model configured falls back to
+    your current model, so `tier` is always safe to pass.
+
+    `model` is an advanced escape hatch: it names a specific model id to run this
+    spawn on, bounded to your configured tier models. Prefer `tier` — reach for
+    `model` only when you need an exact model the tiers don't cover. For a
+    sub-agent whose definition sets `backend: claude-cli`, `model` is a Claude
+    Code model name (e.g. `opus`, `sonnet`, a full id) passed straight to the
+    CLI; `tier` does not apply to claude-cli spawns. Omit both to inherit your
+    current model (the usual case).
 
     `isolation="worktree"` runs a mutating spawn in its own git worktree, so
     several spawns editing files at once can't clobber each other or your working
@@ -342,6 +351,7 @@ async def spawn_agent(
             max_output_chars=max_output_chars,
             auto_detached=auto_detached,
             model=model,
+            tier=tier,
             isolation=isolation,
         )
     if ctx.deps.services.run_subagent is None:
@@ -351,5 +361,5 @@ async def spawn_agent(
     # agent's depth (0), so a depth-1 sub-agent's spawn would otherwise be mis-sized.
     return await ctx.deps.services.run_subagent(
         type, task, ctx.tool_call_id or "", mcp_names, max_output_chars, model,
-        isolation, ctx.deps.subagent_depth,
+        isolation, ctx.deps.subagent_depth, tier,
     )

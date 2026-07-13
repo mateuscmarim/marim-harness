@@ -395,3 +395,35 @@ def test_subagent_instructions_omit_scratchpad_when_none_regardless_of_writable(
         defn, Path("/work/space"), scratchpad=None, scratchpad_writable=False
     )
     assert "scratchpad" not in text.lower()
+
+
+def test_parse_agent_reads_valid_tier(tmp_path):
+    from marim_harness.workspace.agents import _parse_agent
+    p = tmp_path / "researcher.md"
+    p.write_text(
+        "---\ndescription: deep read\ntier: med\n---\nDo research.\n",
+        encoding="utf-8",
+    )
+    defn = _parse_agent("project", p)
+    assert defn is not None
+    assert defn.tier == "med"
+
+
+def test_parse_agent_drops_invalid_tier(tmp_path):
+    from marim_harness.workspace.agents import _parse_agent
+    p = tmp_path / "bad.md"
+    p.write_text(
+        "---\ndescription: x\ntier: enormous\n---\nBody.\n", encoding="utf-8"
+    )
+    defn = _parse_agent("project", p)
+    assert defn is not None
+    assert defn.tier is None
+
+
+def test_parse_agent_tier_absent_is_none(tmp_path):
+    from marim_harness.workspace.agents import _parse_agent
+    p = tmp_path / "plain.md"
+    p.write_text("---\ndescription: x\n---\nBody.\n", encoding="utf-8")
+    defn = _parse_agent("project", p)
+    assert defn is not None
+    assert defn.tier is None

@@ -13,6 +13,7 @@ that fire while widgets mount with their initial values."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from textual import events
@@ -32,7 +33,7 @@ from textual.widgets import (
     Static,
 )
 
-from ...config import ModelConfig, global_config_path, save_env_settings
+from ...config import ModelConfig, MultiModelSource, global_config_path, save_env_settings
 from ...runtime.permissions import Mode
 from ...subagents.cli_backend import resolve_cli_binary
 from .model_picker import ModelPickerModal
@@ -99,6 +100,17 @@ _ENV_RADIOS: dict[str, tuple[str, tuple[str, ...]]] = {
 }
 _ENV_TEXT_INPUTS: dict[str, str] = {"notif-events-input": "MARIM_NOTIFICATION_EVENTS"}
 
+# The three sub-agent model-tier rows: (tier key, env var, row label). Order
+# matches the picker rows top-to-bottom. Each tier's env var holds a qualified
+# ``provider:model_id`` or is unset (⇒ inherit the main model) — see
+# ``SubagentTiers`` in config/model.py.
+_TIER_ROWS: tuple[tuple[str, str, str], ...] = (
+    ("cheap", "MARIM_SUBAGENT_TIER_CHEAP", "Cheap tier"),
+    ("med", "MARIM_SUBAGENT_TIER_MED", "Med tier"),
+    ("high", "MARIM_SUBAGENT_TIER_HIGH", "High tier"),
+)
+_TIER_ENV: dict[str, str] = {tier: env_key for tier, env_key, _ in _TIER_ROWS}
+
 
 def _short_theme(name: str) -> str:
     """``marim-teal`` -> ``teal`` for the compact rail badge."""
@@ -158,6 +170,8 @@ class SettingsScreen(Screen[None]):
     .srow { width: 1fr; height: 1; }
     .srow Static { width: auto; }
     .srow Button { width: auto; height: 1; border: none; padding: 0 1; margin-left: 2; }
+    .tier-row-label { width: 12; }
+    .tier-row-value { width: 1fr; color: $text-muted; }
     .frow { width: 1fr; height: 3; }
     .frow Label { width: 24; height: 3; content-align: left middle; }
     .frow Input { width: 1fr; }
@@ -396,6 +410,24 @@ class SettingsScreen(Screen[None]):
                 id="wake-depth-cap",
                 type="integer",
             )
+        yield Static(
+            "Sub-agent model tiers — saved to .env and applied to the model "
+            "catalog immediately, but a running sub-agent runner was built with "
+            "the tiers at hand; a changed tier applies to new sessions (next "
+            "harness rebuild/relaunch), not sub-agents already in flight.",
+            classes="muted",
+        )
+        for tier, _env_key, label in _TIER_ROWS:
+            with Horizontal(classes="srow"):
+                yield Static(label, classes="tier-row-label")
+                yield Static(
+                    self._tier_value_text(tier),
+                    id=f"tier-value-{tier}",
+                    classes="tier-row-value",
+                )
+                yield Button(
+                    "change", id=f"tier-change-{tier}", variant="primary", compact=True
+                )
 
     def _notifications_widgets(self) -> ComposeResult:
         yield Static("Saved to .env — applies on next launch.", classes="muted")
@@ -518,9 +550,16 @@ class SettingsScreen(Screen[None]):
             env_key, choices = spec
             self._commit_env(env_key, choices[event.index])
 
+    def _tier_value_text(self, tier: str) -> str:
+        value = self.env_cfg.subagent.tiers.model_for(tier)
+        return value or "inherit main"
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if (event.button.id or "") == "model-change":
+        bid = event.button.id or ""
+        if bid == "model-change":
             self._open_model_picker()
+        elif bid.startswith("tier-change-"):
+            self._open_tier_picker(bid.removeprefix("tier-change-"))
 
     async def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         cid = event.checkbox.id or ""
@@ -671,6 +710,54 @@ class SettingsScreen(Screen[None]):
         self.query_one("#model-label", Static).update(
             f"Model: {self.harness.model_label}"
         )
+
+    def _open_tier_picker(self, tier: str) -> None:
+        """Open the model picker for one sub-agent tier row, current-seeded
+        from the in-memory ``env_cfg`` (kept in sync with .env by
+        ``_on_tier_chosen`` below, so a second pick without leaving the screen
+        still shows the last-saved value as current). Mirrors
+        ``_open_model_picker`` exactly, except the choice is persisted to .env
+        (like a Providers-pane credential) rather than applied to the live
+        session model — a sub-agent tier has no "current session" model to
+        swap."""
+        source = self.harness.model_source
+        if source is None:
+            self.query_one(f"#tier-value-{tier}", Static).update(
+                "Model switching isn't available here."
+            )
+            return
+        self.app.push_screen(
+            ModelPickerModal(
+                current=self.env_cfg.subagent.tiers.model_for(tier),
+                fetch=source.list_models,
+                is_local=source.is_local,
+            ),
+            lambda chosen, tier=tier: self._on_tier_chosen(tier, chosen),
+        )
+
+    def _on_tier_chosen(self, tier: str, chosen: str | None) -> None:
+        """Persist the chosen model for one tier and refresh the live model
+        catalog, same as a Providers credential save. Note the asymmetry with
+        ``_on_model_chosen``: that path calls ``harness.set_model`` because
+        there is one running session model to swap; a sub-agent tier has no
+        such live seam — ``SubagentRunner._tiers`` was captured once at build
+        time, so this save takes effect for sub-agents spawned after the next
+        harness rebuild/session relaunch, not those already in flight (a live
+        ``harness.set_subagent_tiers()`` setter is a deferred follow-up)."""
+        if chosen is None:
+            return
+        env_key = _TIER_ENV[tier]
+        try:
+            save_env_settings({env_key: chosen})
+        except Exception as exc:  # surface any write failure on the status line
+            self._status(f"Save failed: {exc}")
+            return
+        source = self.harness.model_source
+        if isinstance(source, MultiModelSource):
+            source.refresh_from_env()
+        self.env_cfg.subagent.tiers = replace(self.env_cfg.subagent.tiers, **{tier: chosen})
+        self.query_one(f"#tier-value-{tier}", Static).update(chosen)
+        self._status(f"✓ saved {env_key} · applies to new sessions")
 
     def action_cancel(self) -> None:
         # Two-stage escape mirroring enter: leave edit mode (back to the

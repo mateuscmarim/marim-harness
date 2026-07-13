@@ -153,7 +153,7 @@ to avoid import cycles.
   `cli_spawn.py` (`claude -p` execute/resume orchestration), `masking.py`
   (per-spawn context masking of stale tool observations), and `cli_backend.py`
   (the optional `claude -p` CLI backend it delegates to). Re-exported as
-  `marim_harness.subagents.SubagentRunner`.
+  `marim_harness.subagents.SubagentRunner`. Native spawns pick a model by **tier** (`cheap`/`med`/`high`, in `subagents/tiers.py`): resolved from the spawner's `tier=` override → the spec's `tier:` frontmatter → tool reach (read-only→cheap, mutating→high), mapped to `MARIM_SUBAGENT_TIER_*`; unset tiers inherit the main model and a `model=` slug stays a bounded escape hatch.
 - `workflows/` — dynamic workflows: the gated `run_workflow` tool executes a
   model-authored Python script in a pydantic-monty sandbox (`engine.py`);
   `agent()`/`log()` host functions delegate to `SubagentRunner.run` through

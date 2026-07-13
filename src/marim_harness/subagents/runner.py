@@ -34,12 +34,14 @@ if TYPE_CHECKING:
     from ..tools.provider import ToolProvider
     from ..workspace.agents import AgentDef
 
+from ..config.model import SubagentTiers
 from ..hooks.dispatch import TurnHooks
 from ..runtime.deps import Deps, SubAgent
 from ..runtime.errors import is_context_overflow_error
 from ..runtime.permissions import Mode
 from ..tasks import TaskList
 from ..tools.impl import fs
+from ..tools.names import GATED_TOOLS
 from ..workspace import (
     cap_subagent_output,
     discover_agents,
@@ -54,6 +56,7 @@ from .output_schema import resolve_output_schema
 from .persistence import SpawnTranscripts
 from .policies import MaskingPolicy, RetryPolicy
 from .run_driver import SpawnRunDriver, _resumable_history
+from .tiers import resolve_tier
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +71,29 @@ def _iso_branch(stream_id: str, seq: int) -> str:
     don't collide) and falls back to a sequence number when there's no id."""
     base = _ISO_SLUG.sub("-", (stream_id or "").lower()).strip("-")
     return f"subagent/{base or f'anon-{seq}'}"
+
+
+def _resolve_spawn_model_id(
+    override_tier: str | None,
+    slug: str | None,
+    spec_tier: str | None,
+    read_only: bool,
+    tiers: SubagentTiers,
+) -> str | None:
+    """The model id a spawn should run on, or None to inherit the main model.
+
+    A raw ``slug`` override is the escape hatch: honored as-is when no tier is
+    configured (legacy behavior, preserved), but bounded to the tier allowlist
+    once tiers exist — an out-of-allowlist slug is dropped in favor of the
+    tier-resolved model (the caller logs the drop). With no slug, the tier is
+    resolved from ``override_tier`` → ``spec_tier`` → tool reach, and mapped to
+    its configured model (None ⇒ inherit main). Pure; unit-tested directly."""
+    allow = tiers.allowlist()
+    if slug and (not allow or slug in allow):
+        return slug
+    # else: out-of-allowlist slug falls through to the tier default.
+    name = resolve_tier(override_tier, spec_tier, read_only)
+    return tiers.model_for(name)
 
 
 @dataclass(frozen=True)
@@ -101,6 +127,7 @@ class SubagentRunner:
                  max_depth: int = 3,
                  retry: RetryPolicy | None = None,
                  masking: MaskingPolicy | None = None,
+                 tiers: SubagentTiers | None = None,
                  extra_agents: tuple[AgentDef, ...] = ()) -> None:
         self.provider = provider
         self.mcp = mcp
@@ -156,6 +183,9 @@ class SubagentRunner:
         # overflow backstop in SpawnRunDriver.run_to_completion still covers any
         # late trigger a resolution miss leaves behind.
         self._masking = masking or MaskingPolicy()
+        # The user-curated model per tier. Empty (the default) ⇒ every spawn
+        # inherits the main model and a slug override keeps its legacy passthrough.
+        self._tiers = tiers or SubagentTiers()
         # The model-loop driver: retry/overflow/contention recovery lives there,
         # keeping this class the spawn-lifecycle coordinator. known_window is
         # passed as a callable because it reads the *current* session model.
@@ -260,7 +290,7 @@ class SubagentRunner:
         model: str | None = None, workspace_root=None, *, defn=None,
         depth: int = 0, mask_trigger: int | None = None,
         checkpoint: Callable[[list], None] | None = None,
-        output_schema: dict | None = None,
+        output_schema: dict | None = None, tier: str | None = None,
     ) -> tuple[SubAgent | None, str | None]:
         """Build an isolated sub-agent of ``type``, with its reach decided up
         front: gated tools only in auto mode, so a run never needs an approval
@@ -277,9 +307,12 @@ class SubagentRunner:
         masking trigger resolved by the caller; None falls back to the legacy
         default. ``output_schema``, when set (already resolved by the caller to an
         object-rooted schema), makes the sub-agent's output structured: its
-        ``output_type`` becomes ``StructuredDict(output_schema)``. Returns
-        ``(agent, None)`` or, for an unknown type or an unresolvable model,
-        ``(None, message)``."""
+        ``output_type`` becomes ``StructuredDict(output_schema)``. ``tier`` is
+        the named tier (cheap/med/high) selecting the spawn's model, resolved
+        override → spec ``tier:`` → tool-reach default (read-only spawns default
+        to cheap, mutating ones to high); ``None`` lets that resolution run
+        automatically rather than forcing a tier. Returns ``(agent, None)`` or,
+        for an unknown type or an unresolvable model, ``(None, message)``."""
         if defn is None:
             defn = self._resolve_agent(type)
         if defn is None:
@@ -291,15 +324,25 @@ class SubagentRunner:
         instr_root = (
             workspace_root if workspace_root is not None else self.deps.workspace.root
         )
-        if model is None:
+        read_only = not (defn.tools & GATED_TOOLS)
+        model_id = _resolve_spawn_model_id(
+            override_tier=tier, slug=model, spec_tier=defn.tier,
+            read_only=read_only, tiers=self._tiers,
+        )
+        if model and model_id != model:
+            logger.debug(
+                "sub-agent slug override %r not in tier allowlist; using %r",
+                model, model_id,
+            )
+        if model_id is None:
             model_obj = self._get_model()
         elif self._build_model is None:
             return None, (
-                f"Can't run sub-agent on model {model!r}: no model source is "
+                f"Can't run sub-agent on model {model_id!r}: no model source is "
                 "available to resolve an override here."
             )
         else:
-            model_obj = self._build_model(model)
+            model_obj = self._build_model(model_id)
         allow_gated = self.deps.workspace.mode is Mode.auto
         # Imported lazily for the same reason as run_driver.py's own harness
         # import: agent.py imports this module, so a top-level import of the
@@ -521,7 +564,7 @@ class SubagentRunner:
         self, type: str, task: str, mcp_names: list[str] | None,
         max_output_chars: int | None, model: str | None, isolation: str | None,
         *, background: bool, stream_id: str, caller_depth: int = 0,
-        output_schema: dict | None = None,
+        output_schema: dict | None = None, tier: str | None = None,
     ) -> str:
         """Dispatch a spawn through shared setup then the shared run lifecycle.
 
@@ -575,7 +618,7 @@ class SubagentRunner:
         prep = await self._prepare_spawn(
             type, task, mcp_names, max_output_chars, model,
             iso, work_root, stream_id, debug=debug, t0=t0, defn=defn, depth=depth,
-            output_schema=output_schema,
+            output_schema=output_schema, tier=tier,
         )
         if isinstance(prep, str):
             return prep
@@ -589,6 +632,7 @@ class SubagentRunner:
         iso: SpawnWorktree | None, work_root, stream_id: str,
         *, debug: bool, t0: float, defn=None, depth: int = 0,
         resumed: bool = False, output_schema: dict | None = None,
+        tier: str | None = None,
     ) -> _SpawnPrep | str:
         """Build the sub-agent, grant MCP servers, fire the start hook, and wire the
         event handler. Returns a ``_SpawnPrep`` struct on success, or an error string
@@ -630,7 +674,8 @@ class SubagentRunner:
             checkpoint = _checkpoint
         sub, err = self.build(type, max_output_chars, model, work_root, defn=defn,
                               depth=depth, mask_trigger=mask_trigger,
-                              checkpoint=checkpoint, output_schema=output_schema)
+                              checkpoint=checkpoint, output_schema=output_schema,
+                              tier=tier)
         if sub is None:
             if iso:
                 # Own the failure teardown HERE rather than at the caller: a resumed
@@ -758,7 +803,8 @@ class SubagentRunner:
         self, type: str, task: str, stream_id: str,
         mcp_names: list[str] | None = None, max_output_chars: int | None = None,
         model: str | None = None, isolation: str | None = None,
-        caller_depth: int = 0, output_schema: dict | None = None,
+        caller_depth: int = 0, tier: str | None = None,
+        output_schema: dict | None = None,
     ) -> str:
         """Spawn one isolated sub-agent of ``type``, run it to completion on
         ``task``, and return its final report — streaming its events to the UI
@@ -782,19 +828,21 @@ class SubagentRunner:
         pydantic-ai structured output (mismatches retry in-run); claude-cli
         spawns and non-object roots fall back to a contract paragraph appended
         to the task. The report is always returned as str — a structured
-        result is JSON-serialized.
+        result is JSON-serialized. ``tier`` is the named tier (cheap/med/high)
+        selecting the spawn's model, resolved override → spec ``tier:`` →
+        tool-reach default; ``None`` leaves that resolution automatic.
         """
         return await self._execute_spawn(
             type, task, mcp_names, max_output_chars, model, isolation,
             background=False, stream_id=stream_id, caller_depth=caller_depth,
-            output_schema=output_schema,
+            output_schema=output_schema, tier=tier,
         )
 
     async def run_background(
         self, type: str, task: str, mcp_names: list[str] | None = None,
         max_output_chars: int | None = None, model: str | None = None,
         isolation: str | None = None, stream_id: str = "",
-        caller_depth: int = 0,
+        caller_depth: int = 0, tier: str | None = None,
     ) -> str:
         """Run a sub-agent as a detached background job: same isolation, mode-based
         reach, and MCP grant as a foreground spawn. When ``stream_id`` is set (the
@@ -812,10 +860,13 @@ class SubagentRunner:
         depth of the agent that issued the spawn (0 for the main agent); the
         detached sub-agent runs at ``caller_depth + 1``, so a background spawn from
         a nested sub-agent is sized — and depth-limited — the same as a foreground
-        one."""
+        one. ``tier`` is the named tier (cheap/med/high) selecting the spawn's
+        model, resolved override → spec ``tier:`` → tool-reach default; ``None``
+        leaves that resolution automatic."""
         return await self._execute_spawn(
             type, task, mcp_names, max_output_chars, model, isolation,
             background=True, stream_id=stream_id, caller_depth=caller_depth,
+            tier=tier,
         )
 
     def _resume_preconditions(self, stream_id: str) -> tuple[dict | None, str | None]:
