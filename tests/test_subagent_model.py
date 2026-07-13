@@ -115,6 +115,67 @@ async def test_spawn_agent_tool_forwards_model(tmp_path: Path):
     assert captured["model"] == "cheap"
 
 
+@pytest.mark.anyio
+async def test_native_tier_spawn_reports_resolved_model_to_ui(tmp_path: Path):
+    """A tier-routed NATIVE spawn reports its resolved model to the UI relabel
+    callback (the same seam claude-cli uses), so the sub-agents card shows the
+    tier model instead of the main-model fallback that the spawn_agent args imply.
+    Regression: native tier spawns silently displayed the main model, because the
+    card is built from the tool args (which carry no tier-resolved model) and only
+    claude-cli spawns ever fired on_subagent_model to correct it."""
+    deps = _make_deps(tmp_path)
+    tiers = SubagentTiers(high="tier-high-model")
+    h = _make_harness(_text_model(), deps, subagent_tiers=tiers)
+    h.subagents._build_model = lambda mid: _text_model()
+    seen: list[tuple[str, str]] = []
+
+    async def on_model(stream_id: str, model: str) -> None:
+        seen.append((stream_id, model))
+
+    h.deps.ui.on_subagent_model = on_model
+    # "general" is mutating (touches gated tools) → high tier → tier-high-model.
+    await h.subagents.run("general", "do it", "sid-hi")
+    assert ("sid-hi", "tier-high-model") in seen
+
+
+@pytest.mark.anyio
+async def test_native_spawn_reports_final_usage_to_ui(tmp_path: Path):
+    """A native spawn pushes its FINAL run usage to the UI (the same seam the CLI
+    backend uses), so a spawn that makes a single model request (no tool calls) still
+    shows tokens/cost. Regression: the card accrued usage only from mid-stream events,
+    which carry the run's *running* total — 0 throughout a one-request spawn, since the
+    only response's usage isn't tallied until the run ends — so 0-tool spawns rendered
+    blank tokens/cost while multi-request (tool-using) spawns did not."""
+    deps = _make_deps(tmp_path)
+    h = _make_harness(_text_model(), deps)  # _text_model: one text response, no tools
+    seen: list[tuple[str, object]] = []
+
+    async def on_usage(stream_id: str, usage: object) -> None:
+        seen.append((stream_id, usage))
+
+    h.deps.ui.on_subagent_usage = on_usage
+    await h.subagents.run("explore", "reply ALPHA", "sid-u")
+    assert seen and seen[0][0] == "sid-u"
+    assert seen[0][1] is not None  # the run's final RunUsage, not None
+
+
+@pytest.mark.anyio
+async def test_native_inherit_spawn_does_not_relabel(tmp_path: Path):
+    """A spawn that inherits the main model (no configured tier) does NOT fire the
+    relabel callback — the card's main-model fallback is already correct, so there
+    is nothing to override."""
+    deps = _make_deps(tmp_path)
+    h = _make_harness(_text_model(), deps)  # no tiers → every spawn inherits main
+    seen: list[tuple[str, str]] = []
+
+    async def on_model(stream_id: str, model: str) -> None:
+        seen.append((stream_id, model))
+
+    h.deps.ui.on_subagent_model = on_model
+    await h.subagents.run("explore", "look", "sid-x")
+    assert seen == []
+
+
 def test_build_wires_configured_tiers_through_read_only_and_tool_reach(tmp_path: Path):
     """Integration coverage for build() with a CONFIGURED SubagentTiers: the
     real ``read_only = not (defn.tools & GATED_TOOLS)`` computation and the
