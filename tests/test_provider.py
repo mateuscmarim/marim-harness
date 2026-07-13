@@ -351,7 +351,7 @@ async def test_spawn_agent_forwards_mcp_foreground(tmp_path):
 
     async def fake_runner(
         type, task, tool_call_id, mcp_names, max_output_chars=None, model=None,
-        isolation=None, caller_depth: int = 0,
+        isolation=None, caller_depth: int = 0, tier=None,
     ):
         calls["args"] = (type, task, tool_call_id, mcp_names, max_output_chars)
         return "ok"
@@ -378,7 +378,7 @@ async def test_spawn_agent_composes_structured_task(tmp_path):
 
     async def fake_runner(
         type, task, tool_call_id, mcp_names, max_output_chars=None, model=None,
-        isolation=None, caller_depth: int = 0,
+        isolation=None, caller_depth: int = 0, tier=None,
     ):
         calls["task"] = task
         return "ok"
@@ -408,7 +408,7 @@ async def test_spawn_agent_without_structured_fields_passes_task_verbatim(tmp_pa
 
     async def fake_runner(
         type, task, tool_call_id, mcp_names, max_output_chars=None, model=None,
-        isolation=None, caller_depth: int = 0,
+        isolation=None, caller_depth: int = 0, tier=None,
     ):
         calls["task"] = task
         return "ok"
@@ -430,7 +430,7 @@ async def test_spawn_agent_forwards_mcp_background(tmp_path):
     captured = {}
 
     def fake_bg(type, task, mcp_names, max_output_chars=None, model=None, isolation=None,
-                stream_id: str = "", caller_depth: int = 0):
+                stream_id: str = "", caller_depth: int = 0, tier=None):
         captured["args"] = (type, task, mcp_names)
         async def _coro():
             return "bg-report"
@@ -459,7 +459,7 @@ async def test_spawn_agent_default_mcp_is_none(tmp_path):
 
     async def fake_runner(
         type, task, tool_call_id, mcp_names, max_output_chars=None, model=None,
-        isolation=None, caller_depth: int = 0,
+        isolation=None, caller_depth: int = 0, tier=None,
     ):
         calls["mcp_names"] = mcp_names
         return "ok"
@@ -507,7 +507,7 @@ async def test_spawn_agent_coerces_stringified_mcp(tmp_path):
 
     async def fake_runner(
         type, task, tool_call_id, mcp_names, max_output_chars=None, model=None,
-        isolation=None, caller_depth: int = 0,
+        isolation=None, caller_depth: int = 0, tier=None,
     ):
         calls["mcp_names"] = mcp_names
         return "ok"
@@ -529,7 +529,7 @@ async def test_spawn_agent_coerces_comma_separated_mcp_background(tmp_path):
     captured = {}
 
     def fake_bg(type, task, mcp_names, max_output_chars=None, model=None, isolation=None,
-                stream_id: str = "", caller_depth: int = 0):
+                stream_id: str = "", caller_depth: int = 0, tier=None):
         captured["mcp_names"] = mcp_names
 
         async def _coro():

@@ -800,7 +800,8 @@ class SubagentRunner:
         self, type: str, task: str, stream_id: str,
         mcp_names: list[str] | None = None, max_output_chars: int | None = None,
         model: str | None = None, isolation: str | None = None,
-        caller_depth: int = 0, output_schema: dict | None = None,
+        caller_depth: int = 0, tier: str | None = None,
+        output_schema: dict | None = None,
     ) -> str:
         """Spawn one isolated sub-agent of ``type``, run it to completion on
         ``task``, and return its final report — streaming its events to the UI
@@ -829,14 +830,14 @@ class SubagentRunner:
         return await self._execute_spawn(
             type, task, mcp_names, max_output_chars, model, isolation,
             background=False, stream_id=stream_id, caller_depth=caller_depth,
-            output_schema=output_schema,
+            output_schema=output_schema, tier=tier,
         )
 
     async def run_background(
         self, type: str, task: str, mcp_names: list[str] | None = None,
         max_output_chars: int | None = None, model: str | None = None,
         isolation: str | None = None, stream_id: str = "",
-        caller_depth: int = 0,
+        caller_depth: int = 0, tier: str | None = None,
     ) -> str:
         """Run a sub-agent as a detached background job: same isolation, mode-based
         reach, and MCP grant as a foreground spawn. When ``stream_id`` is set (the
@@ -858,6 +859,7 @@ class SubagentRunner:
         return await self._execute_spawn(
             type, task, mcp_names, max_output_chars, model, isolation,
             background=True, stream_id=stream_id, caller_depth=caller_depth,
+            tier=tier,
         )
 
     def _resume_preconditions(self, stream_id: str) -> tuple[dict | None, str | None]:

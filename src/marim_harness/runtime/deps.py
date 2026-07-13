@@ -24,13 +24,15 @@ from .permissions import Mode
 
 ApprovalFn = Callable[[object], Awaitable[DeferredToolApprovalResult | bool]]
 # (type, task, stream_id, mcp_names, max_output_chars, model, isolation,
-#  caller_depth) -> the sub-agent's final report. Wired by the Harness.
+#  caller_depth, tier) -> the sub-agent's final report. Wired by the Harness.
 # ``caller_depth`` is the depth of the agent *calling* spawn_agent (0 for the
 # main agent, 1 for a depth-1 sub-agent, …); the spawned child runs at
 # caller_depth + 1. It must come from the caller's deps, not the runner's own.
+# ``run`` also has ``output_schema`` and ``tier`` as trailing keyword-or-
+# positional args; this alias models the positional call shape callers use.
 SubAgentRunner = Callable[
     [str, str, str, list[str] | None, int | None, str | None,
-     str | None, int],
+     str | None, int, str | None],
     Awaitable[str],
 ]
 # (stream_id, event, usage) -> None. Forwards a sub-agent's run events to the UI
@@ -50,13 +52,14 @@ SubAgentModelCb = Callable[[str, str], Awaitable[None]]
 # the token total, cache split, and cost. None when no UI.
 SubAgentUsageCb = Callable[[str, object], Awaitable[None]]
 # (type, task, mcp_names, max_output_chars, model, isolation, stream_id,
-#  caller_depth) -> the sub-agent's final report. Like SubAgentRunner; when
+#  caller_depth, tier) -> the sub-agent's final report. Like SubAgentRunner; when
 # stream_id is set (the spawn's tool_call_id) the detached run also streams its
 # events to the UI (Phase 2). ``caller_depth`` propagates the caller's depth the
 # same way the foreground runner does, so a background spawn from a sub-agent
 # lands at the right depth and can't bypass the nesting ceiling.
 BackgroundAgentRunner = Callable[
-    [str, str, list[str] | None, int | None, str | None, str | None, str, int],
+    [str, str, list[str] | None, int | None, str | None, str | None, str, int,
+     str | None],
     Awaitable[str],
 ]
 # (stream_id) -> (job_id, message). Lets the sub-agents screen resume an

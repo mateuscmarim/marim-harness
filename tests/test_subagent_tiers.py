@@ -1,3 +1,5 @@
+import asyncio
+
 from marim_harness.config.model import SubagentTiers
 from marim_harness.subagents.runner import _resolve_spawn_model_id
 from marim_harness.subagents.tiers import TIER_NAMES, resolve_tier
@@ -116,3 +118,43 @@ def test_resolve_spawn_model_id_no_tiers_read_only_inherits_main():
         tiers=SubagentTiers(),
     )
     assert got is None
+
+
+def test_run_forwards_tier_to_execute_spawn(monkeypatch):
+    from marim_harness.subagents.runner import SubagentRunner
+
+    captured = {}
+
+    async def fake_exec(self, *a, **kw):
+        captured.update(kw)
+        return "ok"
+
+    monkeypatch.setattr(SubagentRunner, "_execute_spawn", fake_exec)
+    runner = object.__new__(SubagentRunner)  # bypass __init__; only run() is exercised
+    out = asyncio.run(
+        SubagentRunner.run(
+            runner, "explore", "task", "sid", None, None, None, None, 0, "cheap", None
+        )
+    )
+    assert out == "ok"
+    assert captured.get("tier") == "cheap"
+
+
+def test_run_background_forwards_tier_to_execute_spawn(monkeypatch):
+    from marim_harness.subagents.runner import SubagentRunner
+
+    captured = {}
+
+    async def fake_exec(self, *a, **kw):
+        captured.update(kw)
+        return "ok"
+
+    monkeypatch.setattr(SubagentRunner, "_execute_spawn", fake_exec)
+    runner = object.__new__(SubagentRunner)  # bypass __init__; only run_background() is exercised
+    out = asyncio.run(
+        SubagentRunner.run_background(
+            runner, "explore", "task", None, None, None, None, "sid", 0, "high"
+        )
+    )
+    assert out == "ok"
+    assert captured.get("tier") == "high"
