@@ -77,6 +77,10 @@ class AgentDef:
     # name (e.g. "opus"/"sonnet" alias or a full id), passed verbatim to --model;
     # ignored by the native backend, which tracks the harness's runtime model.
     model: str | None = None
+    # The spec's declared model tier (cheap/med/high) for the native backend's
+    # tier router. None ⇒ no label; the router falls back to tool reach. An
+    # out-of-range value is normalized to None at parse time.
+    tier: str | None = None
 
     @property
     def qualified_name(self) -> str:
@@ -162,6 +166,18 @@ def _parse_agent(source: str, path: Path, plugin: str | None = None) -> AgentDef
         return None
     backend = _opt_str(data.get("backend"), "native") or "native"
     model = _opt_str(data.get("model"), None)
+    tier = _opt_str(data.get("tier"), None)
+    # Validate against the canonical tier names, normalizing anything unknown to
+    # None. The import is deferred to call time (not module top) on purpose: a
+    # top-level `from ..subagents.tiers import TIER_NAMES` would cycle, because
+    # reaching that leaf first runs subagents/__init__ → runner → runtime.deps →
+    # back into this half-initialized module. By the time _parse_agent runs
+    # (agent discovery, well after startup) every module is loaded, so the
+    # deferred import is safe and keeps TIER_NAMES a single source of truth.
+    from ..subagents.tiers import TIER_NAMES
+
+    if tier is not None and tier not in TIER_NAMES:
+        tier = None
     return AgentDef(
         name=name,
         description=description.strip(),
@@ -171,6 +187,7 @@ def _parse_agent(source: str, path: Path, plugin: str | None = None) -> AgentDef
         plugin=plugin,
         backend=backend,
         model=model,
+        tier=tier,
     )
 
 
