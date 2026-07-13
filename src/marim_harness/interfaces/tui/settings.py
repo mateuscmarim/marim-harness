@@ -410,11 +410,17 @@ class SettingsScreen(Screen[None]):
                 id="wake-depth-cap",
                 type="integer",
             )
+        yield BoxCheckbox(
+            "Model tiering",
+            value=self.env_cfg.subagent.tiers.enabled,
+            id="sw-tiering",
+        )
         yield Static(
-            "Sub-agent model tiers — saved to .env and applied to the model "
-            "catalog immediately, but a running sub-agent runner was built with "
-            "the tiers at hand; a changed tier applies to new sessions (next "
-            "harness rebuild/relaunch), not sub-agents already in flight.",
+            "Master switch — off routes every new spawn to the main model while "
+            "keeping the tier models below saved (toggle back on to restore "
+            "routing, no re-entry). Applies to new spawns live; sub-agents "
+            "already in flight keep their model. Per-tier changes below save to "
+            ".env and apply to new sessions (next harness rebuild/relaunch).",
             classes="muted",
         )
         for tier, _env_key, label in _TIER_ROWS:
@@ -577,6 +583,9 @@ class SettingsScreen(Screen[None]):
         if cid == "sw-workflows":
             self._toggle_workflows(event.value)
             return
+        if cid == "sw-tiering":
+            self._toggle_tiering(event.value)
+            return
         env_key = _ENV_CHECKBOXES.get(cid)
         if env_key is not None:
             self._commit_env(env_key, _b(event.value))
@@ -660,6 +669,21 @@ class SettingsScreen(Screen[None]):
         applied = self.harness.set_workflows_enabled(enabled)
         suffix = "applied" if applied else "applies next launch"
         self._status(f"✓ saved MARIM_WORKFLOWS · {suffix}")
+
+    def _toggle_tiering(self, enabled: bool) -> None:
+        """Persist MARIM_SUBAGENT_TIERING and flip the harness's live tier set in
+        the same gesture — new spawns pick up the change without a relaunch. The
+        curated per-tier slugs are left untouched, so re-enabling restores routing
+        without re-entry."""
+        try:
+            save_env_settings({"MARIM_SUBAGENT_TIERING": _b(enabled)})
+        except Exception as exc:
+            self._status(f"Save failed: {exc}")
+            return
+        self.env_cfg.subagent.tiers = replace(self.env_cfg.subagent.tiers, enabled=enabled)
+        self.harness.set_subagent_tiering_enabled(enabled)
+        state = "on" if enabled else "off"
+        self._status(f"✓ saved MARIM_SUBAGENT_TIERING · tiering {state} · applied")
 
     def _commit_env(self, env_key: str, value: str) -> None:
         """Persist a single env var to the global .env (retiring any deprecated

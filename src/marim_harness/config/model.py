@@ -71,18 +71,32 @@ class SubagentTiers:
     """The user-curated model per sub-agent tier. Each value is a qualified
     ``provider:model_id`` (or None ⇒ inherit the main model). The set of
     non-None ids is the allowlist a raw ``model=`` slug override is bounded to
-    once any tier is configured."""
+    once any tier is configured.
+
+    ``enabled`` is the master switch: when False, every tier reports None (so all
+    spawns inherit the main model) and the allowlist is empty — WITHOUT clearing
+    the curated slugs, so the user can toggle routing off and back on without
+    re-entering their models. Both readers below funnel through it, so the whole
+    resolver (config → runner) sees a disabled tier set as "no tiers configured"."""
 
     cheap: str | None = None
     med: str | None = None
     high: str | None = None
+    enabled: bool = True
 
     def model_for(self, tier: str) -> str | None:
-        """The configured model id for ``tier``, or None (unset ⇒ inherit main)."""
+        """The configured model id for ``tier``, or None (unset/disabled ⇒ inherit
+        main)."""
+        if not self.enabled:
+            return None
         return {"cheap": self.cheap, "med": self.med, "high": self.high}.get(tier)
 
     def allowlist(self) -> frozenset[str]:
-        """The non-None tier model ids — the permitted set for a slug override."""
+        """The non-None tier model ids — the permitted set for a slug override.
+        Empty while disabled, which reverts a slug override to legacy passthrough
+        (disabling tiering is not a slug lockout)."""
+        if not self.enabled:
+            return frozenset()
         return frozenset(m for m in (self.cheap, self.med, self.high) if m)
 
 
@@ -248,6 +262,9 @@ def _common_kwargs() -> dict[str, Any]:
             cheap=(os.getenv("MARIM_SUBAGENT_TIER_CHEAP") or None),
             med=(os.getenv("MARIM_SUBAGENT_TIER_MED") or None),
             high=(os.getenv("MARIM_SUBAGENT_TIER_HIGH") or None),
+            # Master switch: off ⇒ bypass routing (spawns inherit main) while the
+            # slugs above stay parsed, so the toggle round-trips losslessly.
+            enabled=_bool_env("MARIM_SUBAGENT_TIERING", True),
         ),
     )
     notifications = NotificationConfig(

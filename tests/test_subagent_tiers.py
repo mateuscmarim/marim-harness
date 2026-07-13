@@ -120,6 +120,48 @@ def test_resolve_spawn_model_id_no_tiers_read_only_inherits_main():
     assert got is None
 
 
+def test_disabled_tiers_model_for_is_none_despite_configured_slugs():
+    # The disable switch bypasses routing WITHOUT clearing the curated slugs:
+    # every tier reports None (⇒ inherit the main model) while cheap/med/high
+    # stay populated for when tiering is turned back on.
+    tiers = SubagentTiers(cheap="p:c", med="p:m", high="p:h", enabled=False)
+    assert tiers.model_for("cheap") is None
+    assert tiers.model_for("med") is None
+    assert tiers.model_for("high") is None
+    # The curated slugs are untouched — re-enabling restores routing verbatim.
+    assert (tiers.cheap, tiers.med, tiers.high) == ("p:c", "p:m", "p:h")
+
+
+def test_disabled_tiers_allowlist_is_empty():
+    tiers = SubagentTiers(cheap="p:c", high="p:h", enabled=False)
+    assert tiers.allowlist() == frozenset()
+
+
+def test_disabled_tiers_default_is_enabled():
+    # Backwards compatible: an unconfigured install still routes by tier.
+    assert SubagentTiers().enabled is True
+
+
+def test_resolve_spawn_model_id_disabled_tiers_inherit_main():
+    # With tiering disabled, a mutating spawn that would route to the high tier
+    # instead inherits the main model (None).
+    tiers = SubagentTiers(cheap="p:c", high="p:h", enabled=False)
+    got = _resolve_spawn_model_id(
+        override_tier=None, slug=None, spec_tier=None, read_only=False, tiers=tiers
+    )
+    assert got is None
+
+
+def test_resolve_spawn_model_id_disabled_tiers_still_honor_explicit_slug():
+    # Disabling tiering is not a slug lockout: an empty allowlist reverts to the
+    # legacy passthrough, so an explicit model= override is still honored.
+    tiers = SubagentTiers(cheap="p:c", high="p:h", enabled=False)
+    got = _resolve_spawn_model_id(
+        override_tier=None, slug="p:explicit", spec_tier=None, read_only=True, tiers=tiers
+    )
+    assert got == "p:explicit"
+
+
 def test_run_forwards_tier_to_execute_spawn(monkeypatch):
     from marim_harness.subagents.runner import SubagentRunner
 

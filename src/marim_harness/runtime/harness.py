@@ -660,6 +660,15 @@ class Harness:
             self.deps.services.run_workflow = self._workflow_runner if enabled else None
         return (self._workflow_runner is not None) or not enabled
 
+    def set_subagent_tiering_enabled(self, enabled: bool) -> None:
+        """Turn sub-agent model tiering on/off for this session by flipping the
+        runner's live tier set. Off ⇒ new spawns inherit the main model; the
+        curated per-tier slugs are preserved, so re-enabling restores routing
+        without re-entry. In-flight sub-agents keep the model they were built
+        with — only spawns started after the flip see the change (the runner
+        reads ``self._tiers`` per spawn)."""
+        self.subagents.set_tiering_enabled(enabled)
+
     def _apply_saved_model(self) -> None:
         """Re-point at a session's saved model after loading it, if one differs
         from what's already active."""

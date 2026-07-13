@@ -585,6 +585,47 @@ async def test_settings_has_three_tier_rows():
 
 
 @pytest.mark.anyio
+async def test_tiering_toggle_saves_env_and_applies_live(isolated_env, monkeypatch, tmp_path):
+    """The Tools page's Model-tiering checkbox persists MARIM_SUBAGENT_TIERING and
+    flips the harness's live tier set in the same gesture — new spawns pick it up
+    without a relaunch, and the curated per-tier slugs are left untouched."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    harness = _fake_harness()
+    calls = []
+    harness.set_subagent_tiering_enabled = lambda enabled: calls.append(enabled)
+    app = _Host(harness, _env_cfg())  # tiers.enabled defaults True
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        assert app.screen.query_one("#sw-tiering").value is True
+        _scroll_to(app, "#sw-tiering")
+        await pilot.click("#sw-tiering")  # toggle tiering off
+        await pilot.pause()
+        status = str(app.screen.query_one("#settings-status").render())
+        # The live config mirror flips too, so a re-render shows the new state.
+        assert app.screen.env_cfg.subagent.tiers.enabled is False
+    assert "MARIM_SUBAGENT_TIERING=0" in (tmp_path / "marim" / ".env").read_text()
+    assert calls == [False]
+    assert "applied" in status
+
+
+@pytest.mark.anyio
+async def test_tiering_toggle_reflects_disabled_config():
+    """The checkbox mirrors the configured state, not a hardcoded default."""
+    from dataclasses import replace
+
+    env_cfg = _env_cfg()
+    env_cfg.subagent.tiers = replace(env_cfg.subagent.tiers, enabled=False)
+    app = _Host(_fake_harness(), env_cfg)
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        assert app.screen.query_one("#sw-tiering").value is False
+
+
+@pytest.mark.anyio
 async def test_tier_rows_show_inherit_main_by_default():
     """An unset tier reads 'inherit main', not a blank or None."""
     app = _Host(_fake_harness(), _env_cfg())  # tiers all unset
