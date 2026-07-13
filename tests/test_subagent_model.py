@@ -8,6 +8,9 @@ import pytest
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
+from marim_harness.config.model import SubagentTiers
+from marim_harness.tools.names import GATED_TOOLS
+from marim_harness.workspace.agents import _builtins
 from tests.conftest import _make_deps, _make_harness, _text_model
 
 
@@ -110,3 +113,37 @@ async def test_spawn_agent_tool_forwards_model(tmp_path: Path):
     out = await h.run_turn("investigate")
     assert "REPORT" in out
     assert captured["model"] == "cheap"
+
+
+def test_build_wires_configured_tiers_through_read_only_and_tool_reach(tmp_path: Path):
+    """Integration coverage for build() with a CONFIGURED SubagentTiers: the
+    real ``read_only = not (defn.tools & GATED_TOOLS)`` computation and the
+    ``spec_tier=defn.tier`` wiring must route a read-only built-in ("explore")
+    to the cheap tier and a mutating one ("general") to the high tier. Would
+    fail if the `not` were dropped/inverted or if build() read `defn.model`
+    (a different field) instead of `defn.tier`."""
+    explore = _builtins()["explore"]
+    general = _builtins()["general"]
+    # Sanity-check the fixtures actually exercise the read_only line as intended:
+    # explore has no gated-tool overlap, general does.
+    assert not (explore.tools & GATED_TOOLS)
+    assert general.tools & GATED_TOOLS
+
+    deps = _make_deps(tmp_path)
+    tiers = SubagentTiers(cheap="tier-cheap-model", high="tier-high-model")
+    h = _make_harness(_text_model(), deps, subagent_tiers=tiers)
+    seen: list[str] = []
+
+    def resolve(mid):
+        seen.append(mid)
+        return _text_model()
+
+    h.subagents._build_model = resolve
+
+    sub, err = h.subagents.build("explore")
+    assert err is None
+    assert seen == ["tier-cheap-model"]
+
+    sub, err = h.subagents.build("general")
+    assert err is None
+    assert seen == ["tier-cheap-model", "tier-high-model"]

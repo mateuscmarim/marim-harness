@@ -307,9 +307,12 @@ class SubagentRunner:
         masking trigger resolved by the caller; None falls back to the legacy
         default. ``output_schema``, when set (already resolved by the caller to an
         object-rooted schema), makes the sub-agent's output structured: its
-        ``output_type`` becomes ``StructuredDict(output_schema)``. Returns
-        ``(agent, None)`` or, for an unknown type or an unresolvable model,
-        ``(None, message)``."""
+        ``output_type`` becomes ``StructuredDict(output_schema)``. ``tier`` is
+        the named tier (cheap/med/high) selecting the spawn's model, resolved
+        override → spec ``tier:`` → tool-reach default (read-only spawns default
+        to cheap, mutating ones to high); ``None`` lets that resolution run
+        automatically rather than forcing a tier. Returns ``(agent, None)`` or,
+        for an unknown type or an unresolvable model, ``(None, message)``."""
         if defn is None:
             defn = self._resolve_agent(type)
         if defn is None:
@@ -825,7 +828,9 @@ class SubagentRunner:
         pydantic-ai structured output (mismatches retry in-run); claude-cli
         spawns and non-object roots fall back to a contract paragraph appended
         to the task. The report is always returned as str — a structured
-        result is JSON-serialized.
+        result is JSON-serialized. ``tier`` is the named tier (cheap/med/high)
+        selecting the spawn's model, resolved override → spec ``tier:`` →
+        tool-reach default; ``None`` leaves that resolution automatic.
         """
         return await self._execute_spawn(
             type, task, mcp_names, max_output_chars, model, isolation,
@@ -855,7 +860,9 @@ class SubagentRunner:
         depth of the agent that issued the spawn (0 for the main agent); the
         detached sub-agent runs at ``caller_depth + 1``, so a background spawn from
         a nested sub-agent is sized — and depth-limited — the same as a foreground
-        one."""
+        one. ``tier`` is the named tier (cheap/med/high) selecting the spawn's
+        model, resolved override → spec ``tier:`` → tool-reach default; ``None``
+        leaves that resolution automatic."""
         return await self._execute_spawn(
             type, task, mcp_names, max_output_chars, model, isolation,
             background=True, stream_id=stream_id, caller_depth=caller_depth,
