@@ -573,6 +573,110 @@ async def test_settings_open_does_not_verify_until_providers_shown(
 
 
 @pytest.mark.anyio
+async def test_settings_has_three_tier_rows():
+    """The Tools page owns three sub-agent model-tier rows, one per tier."""
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        labels = {str(w.render()) for w in app.screen.query(".tier-row-label")}
+    assert {"Cheap tier", "Med tier", "High tier"} <= labels
+
+
+@pytest.mark.anyio
+async def test_tier_rows_show_inherit_main_by_default():
+    """An unset tier reads 'inherit main', not a blank or None."""
+    app = _Host(_fake_harness(), _env_cfg())  # tiers all unset
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        value = str(app.screen.query_one("#tier-value-cheap").render())
+    assert value == "inherit main"
+
+
+@pytest.mark.anyio
+async def test_tier_choice_saves_env_and_refreshes_catalog(isolated_env, monkeypatch, tmp_path):
+    """Choosing a model for the cheap tier persists MARIM_SUBAGENT_TIER_CHEAP to
+    .env (mirrored into os.environ), refreshes the live MultiModelSource catalog
+    (same as a Providers credential save), and updates the row's displayed value —
+    mirroring the exact save + refresh_from_env pattern the main-model picker and
+    ProvidersPane already use."""
+    from marim_harness.config.model import MultiModelSource
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("MARIM_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-tier-test")
+    multi = MultiModelSource.from_env()
+    refresh_calls = []
+    monkeypatch.setattr(multi, "refresh_from_env", lambda: refresh_calls.append(True))
+    harness = _fake_harness()
+    harness.model_source = multi
+    app = _Host(harness, _env_cfg())
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        app.screen._on_tier_chosen("cheap", "openrouter/cheap-model")
+        await pilot.pause()
+        value = str(app.screen.query_one("#tier-value-cheap").render())
+    env_text = (tmp_path / "marim" / ".env").read_text()
+    assert "MARIM_SUBAGENT_TIER_CHEAP=openrouter/cheap-model" in env_text
+    assert os.environ.get("MARIM_SUBAGENT_TIER_CHEAP") == "openrouter/cheap-model"
+    assert refresh_calls == [True]
+    assert value == "openrouter/cheap-model"
+
+
+@pytest.mark.anyio
+async def test_tier_change_button_opens_model_picker_with_current_value():
+    """The 'change' button on a tier row opens ModelPickerModal seeded with
+    that tier's current configured value (the med tier here)."""
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from marim_harness.interfaces.tui.model_picker import ModelPickerModal
+
+    async def _empty_catalog():
+        return []
+
+    harness = _fake_harness()
+    harness.model_source = SimpleNamespace(list_models=_empty_catalog, is_local=False)
+    env_cfg = _env_cfg()
+    env_cfg.subagent.tiers = replace(env_cfg.subagent.tiers, med="openrouter/med-model")
+    app = _Host(harness, env_cfg)
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        _scroll_to(app, "#tier-change-med")
+        await pilot.click("#tier-change-med")
+        await pilot.pause()
+        modal = app.screen_stack[-1]
+    assert isinstance(modal, ModelPickerModal)
+    assert modal.current == "openrouter/med-model"
+
+
+@pytest.mark.anyio
+async def test_tier_picker_unavailable_without_model_source():
+    """When the harness has no model_source (embedding/tests), the tier row
+    reports unavailability on the row's own value line instead of opening a
+    picker it can't populate — mirroring the main model row's guard."""
+    harness = _fake_harness()  # model_source is None
+    app = _Host(harness, _env_cfg())
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        _scroll_to(app, "#tier-change-high")
+        await pilot.click("#tier-change-high")
+        await pilot.pause()
+        value = str(app.screen.query_one("#tier-value-high").render())
+        assert isinstance(app.screen, SettingsScreen)
+    assert "isn't available" in value
+
+
+@pytest.mark.anyio
 async def test_escape_discards_half_typed_secret(isolated_env, monkeypatch, tmp_path):
     """Escape reads as cancel: leaving edit mode must not blur-commit a
     half-typed API key. Non-secret fields keep the screen's save-on-blur
