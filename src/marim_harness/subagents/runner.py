@@ -684,6 +684,29 @@ class SubagentRunner:
                 # a plain discard() here would already have deleted it.
                 iso.teardown_after_failure(resumed=resumed)
             return err or f"Failed to build sub-agent {type!r}."
+        # The spawn's card/pane were created from the spawn_agent tool args, which
+        # carry at most a raw ``model=`` slug — never the tier-resolved model. So a
+        # tier-routed spawn (or any spec/tool-reach default) renders with the MAIN
+        # model as a fallback, misreporting the model it actually runs on. Report the
+        # resolved model to the UI relabel callback (the same seam claude-cli uses)
+        # and stamp it into the sidecar meta, so both the live card and a resumed
+        # card name the real model. ``None`` means "inherit main", which the existing
+        # fallback already shows correctly — so only override when a model was chosen.
+        spawn_defn = defn if defn is not None else self._resolve_agent(type)
+        resolved_model = (
+            _resolve_spawn_model_id(
+                override_tier=tier, slug=model, spec_tier=spawn_defn.tier,
+                read_only=not (spawn_defn.tools & GATED_TOOLS), tiers=self._tiers,
+            )
+            if spawn_defn is not None
+            else None
+        )
+        if resolved_model is not None:
+            if meta is not None:
+                meta["model"] = resolved_model
+            report_model = self.deps.ui.on_subagent_model
+            if report_model is not None and stream_id:
+                await report_model(stream_id, resolved_model)
         t_built = time.perf_counter()
         # Apply the same tool-search deferral the main agent uses: a large granted
         # MCP surface is combined behind ToolSearch rather than injected wholesale,
@@ -752,6 +775,17 @@ class SubagentRunner:
                 prep.sub, task, run_deps, prep.granted, prep.handler, stream_id,
                 history=history,
             )
+            # The card accrues usage only from mid-stream events, which carry the
+            # run's *running* total. A spawn that makes a single model request (no
+            # tool calls) streams every event BEFORE that one response's usage is
+            # tallied, so the card never sees a non-zero reading and shows blank
+            # tokens/cost; a multi-request (tool-using) spawn is masked only because
+            # an earlier request's usage rides on a later request's events. Push the
+            # final, authoritative usage through the same seam the CLI backend uses so
+            # every native spawn's card lands on its true total.
+            report_usage = self.deps.ui.on_subagent_usage
+            if report_usage is not None and stream_id and result.usage is not None:
+                await report_usage(stream_id, result.usage)
             out = result.output
             return SpawnRun(
                 # A schema'd spawn (output_type=StructuredDict) finishes with
