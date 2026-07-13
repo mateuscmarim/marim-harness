@@ -1,4 +1,5 @@
 from marim_harness.config.model import SubagentTiers
+from marim_harness.subagents.runner import _resolve_spawn_model_id
 from marim_harness.subagents.tiers import TIER_NAMES, resolve_tier
 
 
@@ -49,3 +50,69 @@ def test_model_for_unknown_name_is_none():
 def test_allowlist_drops_unset():
     tiers = SubagentTiers(cheap="p:c", high="p:h")
     assert tiers.allowlist() == frozenset({"p:c", "p:h"})
+
+
+def test_resolve_spawn_model_id_read_only_uses_cheap_tier():
+    tiers = SubagentTiers(cheap="p:c", high="p:h")
+    got = _resolve_spawn_model_id(
+        override_tier=None, slug=None, spec_tier=None, read_only=True, tiers=tiers
+    )
+    assert got == "p:c"
+
+
+def test_resolve_spawn_model_id_mutating_uses_high_tier():
+    tiers = SubagentTiers(cheap="p:c", high="p:h")
+    got = _resolve_spawn_model_id(
+        override_tier=None, slug=None, spec_tier=None, read_only=False, tiers=tiers
+    )
+    assert got == "p:h"
+
+
+def test_resolve_spawn_model_id_override_tier_wins():
+    tiers = SubagentTiers(cheap="p:c", high="p:h")
+    got = _resolve_spawn_model_id(
+        override_tier="cheap", slug=None, spec_tier=None, read_only=False, tiers=tiers
+    )
+    assert got == "p:c"
+
+
+def test_resolve_spawn_model_id_unset_tier_inherits_main():
+    # med is unconfigured → None means "inherit the main model".
+    tiers = SubagentTiers(cheap="p:c")
+    got = _resolve_spawn_model_id(
+        override_tier="med", slug=None, spec_tier=None, read_only=True, tiers=tiers
+    )
+    assert got is None
+
+
+def test_resolve_spawn_model_id_slug_in_allowlist_honored():
+    tiers = SubagentTiers(cheap="p:c", high="p:h")
+    got = _resolve_spawn_model_id(
+        override_tier=None, slug="p:h", spec_tier=None, read_only=True, tiers=tiers
+    )
+    assert got == "p:h"
+
+
+def test_resolve_spawn_model_id_slug_out_of_allowlist_falls_back():
+    tiers = SubagentTiers(cheap="p:c", high="p:h")
+    got = _resolve_spawn_model_id(
+        override_tier=None, slug="p:evil", spec_tier=None, read_only=True, tiers=tiers
+    )
+    assert got == "p:c"  # dropped to the read-only default tier
+
+
+def test_resolve_spawn_model_id_no_tiers_configured_passes_slug_through():
+    # Legacy behavior: with no tiers set, any slug override is honored as-is.
+    got = _resolve_spawn_model_id(
+        override_tier=None, slug="p:anything", spec_tier=None, read_only=True,
+        tiers=SubagentTiers(),
+    )
+    assert got == "p:anything"
+
+
+def test_resolve_spawn_model_id_no_tiers_read_only_inherits_main():
+    got = _resolve_spawn_model_id(
+        override_tier=None, slug=None, spec_tier=None, read_only=True,
+        tiers=SubagentTiers(),
+    )
+    assert got is None
