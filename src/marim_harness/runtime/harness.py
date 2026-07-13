@@ -26,7 +26,7 @@ from ..compaction import (
     make_titler,  # noqa: F401 — re-exported for tests
 )
 from ..config.context_limits import ContextLimits
-from ..config.model import DEFAULT_SUBAGENT_CONCURRENCY
+from ..config.model import DEFAULT_SUBAGENT_CONCURRENCY, SubagentTiers
 from ..hooks.dispatch import TurnHooks
 from ..lsp.manager import LspManager
 from ..mcp import McpManager
@@ -181,6 +181,10 @@ class HarnessConfig:
     # Ceiling on the wall-clock budget any single run_workflow call may request;
     # per-call requests are clamped to it (see workflows/engine.py).
     workflow_timeout_secs: float = 1800.0
+    # The user-curated model per sub-agent tier (cheap/med/high), threaded
+    # straight into SubagentRunner(tiers=...). None ⇒ SubagentRunner falls
+    # back to its own all-empty SubagentTiers() default.
+    subagent_tiers: SubagentTiers | None = None
 
 
 def _build_workflow_engine(cfg: HarnessConfig, deps: Deps, subagents: SubagentRunner):
@@ -355,6 +359,7 @@ def build_collaborators(
         transcript_cap=cfg.subagent_transcript_cap,
         max_depth=SUBAGENT_MAX_DEPTH,
         extra_agents=cfg.extra_agents,
+        tiers=cfg.subagent_tiers,
         # Sub-agents share the session's context-limits RESOLVER and masking
         # knobs: one discovery cache governs both the main history and spawned
         # runs, but each spawn resolves its own threshold through it — a

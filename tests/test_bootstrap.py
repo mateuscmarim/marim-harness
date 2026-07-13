@@ -431,6 +431,18 @@ def test_lsp_tools_gated_off_without_workspace_coverage(tmp_path: Path, monkeypa
     assert harness.provider.lsp_toolset() is None
 
 
+def test_build_harness_threads_subagent_tiers(monkeypatch, tmp_path):
+    """The env-configured tiers (SubagentConfig.tiers) reach the SubagentRunner
+    the harness builds, so a spawned sub-agent actually gets tiered models."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("MARIM_SUBAGENT_TIER_CHEAP", "openrouter:some/cheap-model")
+    _stub_model_plumbing(monkeypatch)
+    _isolate_sessions(monkeypatch, tmp_path)
+
+    harness = bootstrap.build_harness(tmp_path / "ws", mode=Mode.ask)
+    assert harness.subagents._tiers.cheap == "openrouter:some/cheap-model"
+
+
 def test_lsp_tools_stay_on_with_workspace_coverage(tmp_path: Path, monkeypatch):
     _stub_model_plumbing(monkeypatch)
     _isolate_sessions(monkeypatch, tmp_path)
