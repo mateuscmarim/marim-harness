@@ -354,9 +354,17 @@ async def test_sandbox_denies_filesystem_and_imports(tmp_path):
 
 @pytest.mark.anyio
 async def test_infinite_loop_is_killed_by_vm_limits(tmp_path):
+    # A non-yielding spin loop is stopped by one of two co-timed guards, both
+    # armed at `effective` (here 0.5s): the Monty VM's internal max_duration_secs
+    # cap (surfaces as "Workflow script raised") or the outer asyncio.wait
+    # wall-clock backstop (surfaces as "Workflow timed out"). Which one wins is a
+    # genuine race under load — asserting only the VM-raise branch made this test
+    # flaky (a loaded CI runner let the wall-clock backstop fire first). Both are
+    # correct kills; the contract this pins is that the loop IS stopped, not that
+    # it surfaces via one specific path. Mirrors the sibling assertion below.
     eng, _ = _engine(tmp_path, _echo_spawn)
     out = await eng.run("while True:\n    pass", None, "tc1", timeout_secs=0.5)
-    assert "Workflow script raised" in out
+    assert "Workflow script raised" in out or "Workflow timed out" in out
 
 
 @pytest.mark.anyio
