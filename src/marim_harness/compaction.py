@@ -90,6 +90,55 @@ def last_request_input_tokens(history: list[ModelMessage]) -> int | None:
     return None
 
 
+# Shown once when the breaker opens; mirrors Claude Code's thrashing message.
+BREAKER_NOTICE = (
+    "Auto-compaction is thrashing: the context refilled right after each of the "
+    "last 3 compactions. A file read or tool output is likely too large for the "
+    "context window — read in smaller chunks, or /clear to start fresh."
+)
+
+
+@dataclasses.dataclass
+class CompactionBreaker:
+    """Rapid-refill circuit breaker for auto-compaction.
+
+    If a compaction's result refills past the threshold within ``rapid_turns``
+    turns, ``trip_after`` consecutive times, the breaker opens and the caller
+    should skip *auto* compaction (manual and forced compaction bypass it).
+    Without this, one oversized tool observation re-triggers the summarizer
+    every turn forever — burning summarizer calls without ever getting under
+    the threshold. Pure state machine: the owner calls ``note_turn()`` once per
+    post-turn compaction check and ``note_compact()`` when a compaction fires.
+    """
+
+    rapid_turns: int = 3
+    trip_after: int = 3
+    turns_since_compact: int | None = None  # None until the first compaction
+    consecutive_rapid_refills: int = 0
+
+    @property
+    def open(self) -> bool:
+        return self.consecutive_rapid_refills >= self.trip_after
+
+    def note_turn(self) -> None:
+        if self.turns_since_compact is not None:
+            self.turns_since_compact += 1
+
+    def note_compact(self) -> None:
+        if (
+            self.turns_since_compact is not None
+            and self.turns_since_compact <= self.rapid_turns
+        ):
+            self.consecutive_rapid_refills += 1
+        else:
+            self.consecutive_rapid_refills = 0
+        self.turns_since_compact = 0
+
+    def reset(self) -> None:
+        self.turns_since_compact = None
+        self.consecutive_rapid_refills = 0
+
+
 def _is_user_turn(message) -> bool:
     """True for a ModelRequest that opens a user turn (carries a UserPromptPart).
 
