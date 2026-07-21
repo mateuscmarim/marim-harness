@@ -9,10 +9,12 @@ from pydantic_ai.messages import (
 )
 
 from marim_harness.compaction import (
+    _SUMMARY_INSTRUCTIONS,
     ELIDED_POINTER_PREFIX,
     MASKED_OBSERVATION,
     SUMMARY_PREFIX,
     CompactionBreaker,
+    _summarize_prompt,
     compact_history,
     compact_history_with_summary,
     estimate_tokens,
@@ -206,7 +208,7 @@ def test_keeps_roughly_the_last_messages():
 
 
 def _summarizer(text: str = "SUMMARY", record: list | None = None):
-    async def summarize(messages: list) -> str:
+    async def summarize(messages, instructions=None):
         if record is not None:
             record.extend(messages)
         return text
@@ -256,7 +258,7 @@ async def test_summarizer_receives_the_dropped_middle():
 async def test_summary_failure_falls_back_to_truncation():
     history = _history(20)
 
-    async def boom(messages: list) -> str:
+    async def boom(messages: list, instructions: str | None = None) -> str:
         raise RuntimeError("summary model down")
 
     result, did = await compact_history_with_summary(
@@ -283,7 +285,7 @@ async def test_no_summary_under_threshold():
     history = _history(3)
     called: list = []
 
-    async def rec(messages: list) -> str:
+    async def rec(messages: list, instructions: str | None = None) -> str:
         called.append(messages)
         return "x"
 
@@ -319,7 +321,9 @@ async def test_make_summarizer_sends_framed_prompt_to_model():
         return ModelResponse(parts=[TextPart(content="ok")])
 
     summarize = make_summarizer(FunctionModel(fn))
-    out = await summarize([ModelRequest(parts=[UserPromptPart(content="explain this")])])
+    out = await summarize(
+        [ModelRequest(parts=[UserPromptPart(content="explain this")])], None
+    )
     assert out == "ok"
     assert "explain this" in seen["prompt"]  # the transcript reached the model
     assert "ummariz" in seen["prompt"]  # wrapped with the explicit framing
@@ -480,3 +484,36 @@ def test_breaker_ignores_turns_before_first_compact():
     b.note_compact()
     assert b.consecutive_rapid_refills == 0
     assert not b.open
+
+
+def test_summarize_prompt_appends_compact_instructions_block():
+    prompt = _summarize_prompt("T", "focus on the auth bug")
+    assert "## Compact instructions" in prompt
+    assert "focus on the auth bug" in prompt
+    assert "## Compact instructions" not in _summarize_prompt("T", None)
+
+
+def test_summary_instructions_cover_the_structured_schema():
+    for needle in (
+        "Primary request and intent",
+        "All user messages",
+        "verbatim",
+        "Next step",
+        "Security-relevant",
+    ):
+        assert needle in _SUMMARY_INSTRUCTIONS, needle
+
+
+@pytest.mark.anyio
+async def test_compact_with_summary_threads_instructions_to_summarizer():
+    received: list = []
+
+    async def summarizer(messages, instructions=None):
+        received.append(instructions)
+        return "SUMMARY"
+
+    history = _history(rounds=12)
+    await compact_history_with_summary(
+        history, max_tokens=10, summarizer=summarizer, instructions="keep the tests"
+    )
+    assert received == ["keep the tests"]

@@ -592,7 +592,7 @@ async def test_pre_compact_fires_before_compaction_work(tmp_path):
         async def dispatch(self, event, payload):
             order.append(f"hook:{event}")
 
-    async def _summarizer(middle):
+    async def _summarizer(middle, instructions=None):
         order.append("summarizer")
         return "SUMMARY"
 
@@ -852,7 +852,7 @@ async def test_update_model_rebuilds_summarizer_and_titler(tmp_path: Path):
 
     model_b = FunctionModel(fn)
 
-    async def _stub_summarizer(mid):
+    async def _stub_summarizer(mid, instructions=None):
         return "summary"
 
     async def _stub_titler(history):

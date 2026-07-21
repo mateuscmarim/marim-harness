@@ -38,7 +38,9 @@ _CHARS_PER_TOKEN = 4
 # ~500k). This nominal value keeps the context gauge and compaction planning sane.
 _IMAGE_TOKEN_ESTIMATE = 1500
 
-Summarizer = Callable[[list[ModelMessage]], Awaitable[str]]
+# (messages, custom_instructions) -> summary text. Instructions come from a
+# manual `/compact <instructions>` and are None for automatic compaction.
+Summarizer = Callable[[list[ModelMessage], str | None], Awaitable[str]]
 
 # Sentinel so the compaction entry points can accept an already-computed tail
 # start (None is a valid value — "nothing to drop") and reuse it instead of
@@ -438,6 +440,7 @@ async def compact_history_with_summary(
     *,
     force: bool = False,
     tail_start: int | None = _UNSET,
+    instructions: str | None = None,
 ) -> tuple[list, bool]:
     """Like ``compact_history`` but replace the dropped middle with a summary.
 
@@ -447,6 +450,8 @@ async def compact_history_with_summary(
 
     ``tail_start`` behaves as in ``compact_history``: pass a precomputed
     ``_plan_tail_start`` result to avoid recomputing the whole-history estimate.
+    ``instructions`` is the manual `/compact <instructions>` focus, threaded
+    through to the summarizer verbatim; ``None`` for automatic compaction.
     """
     start = (
         _plan_tail_start(history, max_tokens, keep_last_messages, force=force)
@@ -459,7 +464,7 @@ async def compact_history_with_summary(
     middle = history[1:start]
     summary: str | None
     try:
-        summary = await summarizer(middle)
+        summary = await summarizer(middle, instructions)
     except Exception as exc:
         logger.warning("compaction summarizer failed, falling back to truncation: %s", exc)
         summary = None
@@ -473,10 +478,26 @@ Titler = Callable[[list[ModelMessage]], Awaitable[str]]
 
 _SUMMARY_INSTRUCTIONS = (
     "You compress a coding-session transcript into a dense summary so the agent "
-    "can keep working with less context. Preserve: the user's goals and "
-    "constraints, decisions made, files read or edited and what changed, command "
-    "results, and any unresolved problems or next steps. Drop pleasantries and "
-    "redundant detail. Write terse notes, not prose."
+    "can keep working with less context. Write terse notes, not prose, under "
+    "these headings:\n"
+    "1. Primary request and intent — every explicit ask from the user.\n"
+    "2. Key technical concepts — technologies, patterns, decisions.\n"
+    "3. Files and code sections — files read or edited, what changed and why, "
+    "with short snippets only where essential to continue.\n"
+    "4. Errors and fixes — each error hit, how it was fixed, and any user "
+    "feedback about doing it differently.\n"
+    "5. All user messages — every non-tool-result user message, condensed but "
+    "none omitted.\n"
+    "6. Pending tasks — work explicitly requested but not finished.\n"
+    "7. Current work — precisely what was in progress at the cut, file names "
+    "and snippets included.\n"
+    "8. Next step — only if directly in line with the most recent explicit "
+    "request; include a verbatim quote from the recent conversation showing "
+    "where work left off, so the task cannot drift.\n"
+    "Security-relevant user instructions (files or data to avoid, operations "
+    "that must not be performed, credential handling rules) MUST be preserved "
+    "verbatim so they continue to apply after compaction. Drop pleasantries "
+    "and redundant detail."
 )
 
 _TITLE_INSTRUCTIONS = (
@@ -489,16 +510,24 @@ _TITLE_INSTRUCTIONS = (
 _MAX_TITLE_CHARS = 50
 
 
-def _summarize_prompt(transcript: str) -> str:
+def _summarize_prompt(transcript: str, instructions: str | None = None) -> str:
     """Wrap the transcript in an explicit, in-message summarize instruction. A bare
     transcript with the rules only in the system prompt lets weaker models reply
     conversationally instead of summarizing; restating the task in the user turn
-    and delimiting the transcript keeps them on task."""
+    and delimiting the transcript keeps them on task. ``instructions`` is the
+    user's manual `/compact` focus, honored as an extra block the summarizer is
+    told to follow."""
+    extra = (
+        f"\n\n## Compact instructions\nAlso follow these user-supplied "
+        f"instructions when summarizing:\n{instructions}\n"
+        if instructions
+        else ""
+    )
     return (
-        "Summarize the coding-session transcript below into dense notes, following "
-        "the rules in your instructions (goals, decisions, files changed, command "
-        "results, open problems; terse notes, not prose). Output only the summary "
-        "— do not reply conversationally or address the user.\n\n"
+        "Summarize the coding-session transcript below into dense notes under "
+        "the headings from your instructions. Output only the summary — do not "
+        "reply conversationally or address the user."
+        f"{extra}\n\n"
         "=== TRANSCRIPT START ===\n"
         f"{transcript}\n"
         "=== TRANSCRIPT END ===\n\n"
@@ -510,8 +539,10 @@ def make_summarizer(model) -> Summarizer:
     """Build a summarizer backed by a dedicated, tool-free agent on ``model``."""
     summary_agent = Agent(model, instructions=_SUMMARY_INSTRUCTIONS)
 
-    async def summarize(messages: list) -> str:
-        result = await summary_agent.run(_summarize_prompt(render_transcript(messages)))
+    async def summarize(messages: list, instructions: str | None = None) -> str:
+        result = await summary_agent.run(
+            _summarize_prompt(render_transcript(messages), instructions)
+        )
         return result.output
 
     return summarize

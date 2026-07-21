@@ -348,7 +348,7 @@ async def test_run_turn_summarizes_when_over_budget(tmp_path: Path):
     (tmp_path / "a.txt").write_text("foo")
     deps = _make_deps(tmp_path)
 
-    async def summarizer(messages):
+    async def summarizer(messages, instructions=None):
         return "CONDENSED RECAP"
 
     harness = Harness(
@@ -381,7 +381,7 @@ async def test_make_summarizer_produces_text():
     from marim_harness.runtime.harness import make_summarizer
 
     summarize = make_summarizer(TestModel(custom_output_text="A SUMMARY"))
-    out = await summarize([ModelRequest(parts=[UserPromptPart(content="hello")])])
+    out = await summarize([ModelRequest(parts=[UserPromptPart(content="hello")])], None)
     assert "A SUMMARY" in out
 
 
