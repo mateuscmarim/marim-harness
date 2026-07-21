@@ -270,7 +270,6 @@ def _is_masked(content) -> bool:
     )
 
 
-
 def _count_recent_parts(history: list, keep_recent: int) -> set[tuple[int, int]]:
     """Identify which ToolReturnParts should be kept (first pass: newest-first counting)."""
     seen = 0
@@ -302,7 +301,10 @@ def _mask_part(
         return None
     replacement = MASKED_OBSERVATION
     if persist is not None:
-        path = persist(str(part.content), part.tool_name)
+        try:
+            path = persist(str(part.content), part.tool_name)
+        except Exception:
+            path = None
         if path:
             replacement = _elided_pointer(path)
     return replacement

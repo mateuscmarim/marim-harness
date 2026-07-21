@@ -9,6 +9,7 @@ from pydantic_ai.messages import (
 )
 
 from marim_harness.compaction import (
+    ELIDED_POINTER_PREFIX,
     MASKED_OBSERVATION,
     SUMMARY_PREFIX,
     CompactionBreaker,
@@ -383,11 +384,7 @@ def test_mask_does_not_mutate_input_and_is_idempotent():
     assert again == 0
 
 
-
-
 def test_mask_persist_puts_path_in_placeholder():
-    from marim_harness.compaction import ELIDED_POINTER_PREFIX
-
     history = [_tool_return(f"t{i}", "X" * 300) for i in range(6)]
     calls: list[tuple[str, str]] = []
 
@@ -406,11 +403,22 @@ def test_mask_persist_puts_path_in_placeholder():
 
 
 def test_mask_persist_failure_falls_back_to_plain_placeholder():
-    from marim_harness.compaction import MASKED_OBSERVATION
-
     history = [_tool_return(f"t{i}", "X" * 300) for i in range(3)]
     masked, n = mask_stale_observations(
         history, keep_recent=1, persist=lambda content, name: None
+    )
+    assert n == 2
+    assert masked[0].parts[0].content == MASKED_OBSERVATION
+
+
+def test_mask_persist_raising_falls_back_to_plain_placeholder():
+    history = [_tool_return(f"t{i}", "X" * 300) for i in range(3)]
+
+    def persist_raises(content: str, tool_name: str) -> str:
+        raise OSError("disk full")
+
+    masked, n = mask_stale_observations(
+        history, keep_recent=1, persist=persist_raises
     )
     assert n == 2
     assert masked[0].parts[0].content == MASKED_OBSERVATION
