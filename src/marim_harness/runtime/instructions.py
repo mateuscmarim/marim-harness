@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from ..mcp import McpManager
     from ..tools.provider import ToolGroups
 
+from ..advisor import ADVISOR_GUIDANCE
 from ..config import config_dir
 from ..mcp.catalog import tool_catalog_text
 from ..plugins import plugin_instruction_texts
@@ -306,6 +307,17 @@ def _agent_index(ctx: RunContext[Deps]) -> str:
     )
 
 
+def _advisor_guidance(ctx: RunContext[Deps]) -> str:
+    # Gated on the SAME seam that gates the tool (the prepare hook in
+    # tools/advisor_tools.py), so the prompt can never advertise a tool that
+    # isn't in the schema, or vice versa. Toggling the advisor mid-session
+    # therefore changes both together — one prompt-cache break per toggle,
+    # inherent to a client-side advisor and accepted (see the design spec).
+    if ctx.deps.services.advise is None:
+        return ""
+    return ADVISOR_GUIDANCE
+
+
 def register_instructions(
     agent: HarnessAgent, mcp_manager: McpManager, proactive_memory: bool,
     *, global_instructions: bool = True, groups: ToolGroups | None = None,
@@ -370,6 +382,7 @@ def register_instructions(
         (memory_on, _memory_indexes),
         (skills_on, _skill_index),
         (spawn_on, _agent_index),
+        (True, _advisor_guidance),
         (True, _mcp_index),
         (True, _tool_catalog),
         (True, _memory_policy),
