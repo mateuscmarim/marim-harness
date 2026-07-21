@@ -478,6 +478,12 @@ class SessionController:
     async def _dispatch_post_compact(
         self, trigger: str, pre_tokens: int, post_tokens: int, stage: str
     ) -> None:
+        """Fire the PostCompact hook with before/after token counts. Note the two
+        counts are measured differently: ``pre_compact_tokens`` may be the
+        provider-measured last-request count (when a real measurement was
+        available), while ``post_compact_tokens`` is always the char/4 estimate of
+        the freshly compacted history — so a small pre/post delta can reflect the
+        estimator, not only the actual reduction."""
         if self.deps.hooks is None:
             return
         await self.deps.hooks.dispatch(
@@ -535,6 +541,9 @@ class SessionController:
             self.breaker.reset()
             self._breaker_noticed = False
         else:
+            # Also fires on the mid-turn force-recovery invocation (force=True,
+            # not manual) — conservative: an extra note_turn only makes the
+            # rapid-refill breaker trip a little later, never suppresses it.
             self.breaker.note_turn()
         # Warm window discovery before gating: this is an async site, and the
         # resolver caches, so all later sync reads (the gauge, the property
@@ -657,7 +666,8 @@ class SessionController:
             # after the turn's own persist, so without this the smaller history
             # lives only in memory until the next turn — a process death
             # between turns would lose it and leave the rollback baseline
-            # diverged from disk.
+            # diverged from disk. The setter bumped the version, so a plain
+            # persist() writes.
             self.persist()
             self.breaker.note_compact()
             await self._dispatch_post_compact(
