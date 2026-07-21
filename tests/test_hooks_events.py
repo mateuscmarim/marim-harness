@@ -29,3 +29,7 @@ def test_new_events_are_not_injecting():
     assert events.POST_TOOL_USE_FAILURE not in events.INJECTING_EVENTS
     assert events.NOTIFICATION not in events.INJECTING_EVENTS
     assert events.TASK_COMPLETED not in events.INJECTING_EVENTS
+
+
+def test_post_compact_event_name():
+    assert events.POST_COMPACT == "PostCompact"

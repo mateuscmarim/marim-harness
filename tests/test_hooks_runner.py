@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from marim_harness.hooks import events
-from marim_harness.hooks.runner import HookRunner, base_payload
+from marim_harness.hooks.runner import HookRunner, HookVerdict, base_payload
 
 
 def _script(tmp_path: Path, name: str, body: str) -> str:
@@ -246,3 +246,53 @@ async def test_timeout_failure_is_logged_at_debug(caplog, tmp_path):
         r.name == "marim_harness.hooks.runner" and r.levelno == logging.DEBUG
         for r in caplog.records
     ), f"no DEBUG record from runner: {[(r.name, r.levelname) for r in caplog.records]}"
+
+
+@pytest.mark.anyio
+async def test_verdict_exit_2_blocks_with_stderr_reason(tmp_path):
+    cmd = _script(tmp_path, "block.sh", 'echo "dirty git state" >&2\nexit 2\n')
+    runner = HookRunner({events.PRE_COMPACT: [_entry(cmd)]})
+    v = await runner.dispatch_verdict(events.PRE_COMPACT, {"trigger": "manual"})
+    assert isinstance(v, HookVerdict)
+    assert v.blocked and "dirty git state" in v.reason
+
+
+@pytest.mark.anyio
+async def test_verdict_json_decision_block(tmp_path):
+    cmd = _script(tmp_path, "jb.sh", """echo '{"decision": "block", "reason": "nope"}'\n""")
+    runner = HookRunner({events.PRE_COMPACT: [_entry(cmd)]})
+    v = await runner.dispatch_verdict(events.PRE_COMPACT, {"trigger": "manual"})
+    assert v.blocked and v.reason == "nope"
+
+
+@pytest.mark.anyio
+async def test_verdict_clean_exit_and_malformed_json_do_not_block(tmp_path):
+    bodies = ("exit 0\n", "echo not-json\n", 'echo \'{"decision": "allow"}\'\n')
+    for i, body in enumerate(bodies):
+        cmd = _script(tmp_path, f"ok{i}.sh", body)
+        runner = HookRunner({events.PRE_COMPACT: [_entry(cmd)]})
+        v = await runner.dispatch_verdict(events.PRE_COMPACT, {"trigger": "auto"})
+        assert not v.blocked
+
+
+@pytest.mark.anyio
+async def test_verdict_crash_and_other_exit_codes_are_not_blocks(tmp_path):
+    cmd = _script(tmp_path, "crash.sh", "exit 1\n")
+    runner = HookRunner({events.PRE_COMPACT: [_entry(cmd)]})
+    v = await runner.dispatch_verdict(events.PRE_COMPACT, {"trigger": "manual"})
+    assert not v.blocked
+    missing = HookRunner({events.PRE_COMPACT: [_entry("/nonexistent/hook")]})
+    assert not (await missing.dispatch_verdict(events.PRE_COMPACT, {"trigger": "manual"})).blocked
+
+
+@pytest.mark.anyio
+async def test_verdict_matcher_matches_trigger(tmp_path):
+    cmd = _script(tmp_path, "m.sh", "exit 2\n")
+    runner = HookRunner({events.PRE_COMPACT: [_entry(cmd, matcher="manual")]})
+    assert (await runner.dispatch_verdict(events.PRE_COMPACT, {"trigger": "manual"})).blocked
+    assert not (await runner.dispatch_verdict(events.PRE_COMPACT, {"trigger": "auto"})).blocked
+
+
+@pytest.mark.anyio
+async def test_verdict_unconfigured_event_allows():
+    assert not (await HookRunner({}).dispatch_verdict(events.PRE_COMPACT, {})).blocked

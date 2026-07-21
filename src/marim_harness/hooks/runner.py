@@ -9,12 +9,23 @@ import logging
 import os
 import re
 import signal
+from dataclasses import dataclass
 
-from .events import INJECTING_EVENTS, POST_TOOL_USE, PRE_TOOL_USE
+from .events import INJECTING_EVENTS, POST_TOOL_USE, PRE_COMPACT, PRE_TOOL_USE
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 30
+
+
+@dataclass(frozen=True)
+class HookVerdict:
+    """Outcome of a verdict dispatch (PreCompact only). ``blocked`` is honored
+    by the caller only for manual triggers; a crash, timeout, or nonzero exit
+    other than 2 is never a block (the swallow-and-log contract holds)."""
+
+    blocked: bool = False
+    reason: str = ""
 
 
 def _coerce_timeout(value) -> float:
@@ -54,21 +65,23 @@ def base_payload(
     return payload
 
 
-def _matches(matcher, event: str, tool_name: str) -> bool:
-    """``matcher`` (a regex on the tool name) gates only the tool events; for all
-    other events it is ignored. Absent/empty/``*`` matches everything. Non-string
-    matchers are treated as non-matching.
+def _matches(matcher, event: str, subject: str) -> bool:
+    """``matcher`` (a regex on ``subject``) gates the tool events (subject = tool
+    name) and PreCompact (subject = trigger, "manual"/"auto" — Claude Code's
+    PreCompact matcher semantics); for all other events it is ignored. Absent/
+    empty/``*`` matches everything. Non-string matchers are treated as
+    non-matching.
 
     The match is anchored (``re.fullmatch``) to mirror Claude Code's contract: the
-    matcher must match the *whole* tool name. An unanchored ``re.search`` over-matches
+    matcher must match the *whole* subject. An unanchored ``re.search`` over-matches
     — ``"Edit"`` would fire for ``"MultiEdit"`` — which is not the documented
     semantics this module claims to reproduce."""
-    if event not in (PRE_TOOL_USE, POST_TOOL_USE):
+    if event not in (PRE_TOOL_USE, POST_TOOL_USE, PRE_COMPACT):
         return True
     if not matcher or matcher == "*":
         return True
     try:
-        return re.fullmatch(matcher, tool_name) is not None
+        return re.fullmatch(matcher, subject) is not None
     except (re.error, TypeError):
         return False
 
@@ -123,6 +136,47 @@ async def _run_one(command: str, payload: dict, timeout) -> str | None:
     return stdout.decode(errors="replace").strip() or None
 
 
+async def _run_one_verdict(command: str, payload: dict, timeout) -> HookVerdict:
+    """Run one hook for a verdict. Exit 2 blocks (stderr = reason); exit 0 with
+    ``{"decision": "block"}`` on stdout blocks; everything else — including
+    spawn failure, timeout, and other exit codes — allows."""
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        logger.debug("hook command %r failed to spawn: %s", command, exc)
+        return HookVerdict()
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(input=json.dumps(payload).encode()),
+            timeout=_coerce_timeout(timeout),
+        )
+    except (asyncio.TimeoutError, OSError, ValueError) as exc:
+        logger.debug("hook command %r failed/timed out: %s", command, exc)
+        _kill(proc)
+        await proc.wait()
+        return HookVerdict()
+    if proc.returncode == 2:
+        return HookVerdict(blocked=True, reason=stderr.decode(errors="replace").strip())
+    if proc.returncode != 0:
+        logger.debug("hook command %r exited %s", command, proc.returncode)
+        return HookVerdict()
+    out = stdout.decode(errors="replace").strip()
+    if out:
+        try:
+            data = json.loads(out)
+        except ValueError:
+            return HookVerdict()
+        if isinstance(data, dict) and data.get("decision") == "block":
+            return HookVerdict(blocked=True, reason=str(data.get("reason", "")))
+    return HookVerdict()
+
+
 async def _run_entry(entry: object, event: str, payload: dict, tool_name: str) -> list[str]:
     """Run one config entry's command hooks whose matcher passes; return any
     injected contexts (empty for non-injecting events or no output)."""
@@ -167,3 +221,35 @@ class HookRunner:
         for entry in entries:
             contexts.extend(await _run_entry(entry, event, payload, tool_name))
         return "\n".join(contexts) if contexts else None
+
+    async def dispatch_verdict(self, event: str, payload: dict) -> HookVerdict:
+        """Run ``event``'s hooks for a block/allow verdict. The matcher subject
+        is the payload's ``trigger`` (Claude Code matches PreCompact hooks on
+        "manual"/"auto", not on a tool name). All matching hooks run; the first
+        block wins but later hooks still execute (observability). Never raises."""
+        entries = self._config.get(event)
+        if not entries:
+            return HookVerdict()
+        trigger = str(payload.get("trigger", ""))
+        verdict = HookVerdict()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            if not _matches(entry.get("matcher"), event, trigger):
+                continue
+            for spec in entry.get("hooks", []) or []:
+                if not isinstance(spec, dict) or spec.get("type") != "command":
+                    continue
+                command = spec.get("command")
+                if not command:
+                    continue
+                try:
+                    v = await _run_one_verdict(
+                        str(command), payload, spec.get("timeout", _DEFAULT_TIMEOUT)
+                    )
+                except Exception as exc:
+                    logger.warning("hook %r failed: %s", command, exc)
+                    continue
+                if v.blocked and not verdict.blocked:
+                    verdict = v
+        return verdict
