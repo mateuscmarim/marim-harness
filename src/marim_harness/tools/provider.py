@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
     from ..runtime.deps import Deps
 from . import (
+    advisor_tools,
     edit_tools,
     fs_tools,
     job_tools,
@@ -190,6 +191,12 @@ class BuiltinToolProvider:
         g = self._groups
         _register_read_tools(agent, g)
         _register_action_tools(agent, g)
+        # The advisor tool registers unconditionally rather than behind a
+        # ToolGroups flag: its prepare hook already omits it from every run
+        # where services.advise is None, so an unconfigured install (or an
+        # embedder that never calls with_advisor) advertises nothing — a
+        # second build-time gate would be redundant state to keep in sync.
+        agent.tool(prepare=advisor_tools.prepare_advisor)(advisor_tools.advisor)
         self._register_jobs(agent)
 
     def _register_jobs(self, agent: HarnessAgent) -> None:

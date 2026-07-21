@@ -161,6 +161,17 @@ to avoid import cycles.
   engine-level (`schema.py`, jsonschema). Never cancel the Monty VM task —
   aborts flow through host functions (see engine.py's module docstring).
   Optional extra `[workflows]`; `MARIM_WORKFLOWS` gates it.
+- `advisor.py` (root) — the advisor: an `advisor()` tool on the main agent
+  forwards the full transcript to a separately-configured model
+  (`MARIM_ADVISOR_MODEL`, any provider) and returns strategic guidance.
+  Live seam is `services.advise` (a pydantic-ai `prepare` hook omits the tool
+  when it's `None`, so `/advisor <model>`/`/advisor off` toggle without a
+  rebuild — at the cost of one prompt-cache break per toggle). Session
+  persistence mirrors `store.model` (`"off"` sentinel = explicitly disabled);
+  per-turn call cap `MARIM_ADVISOR_MAX_USES` rides on `Deps`. Main loop only
+  (sub-agents have tiering); the tool doesn't exist under the claude-cli
+  main-loop provider (marim's tools don't apply there), but a claude-cli
+  *advisor* model works via the `aux_model_for` clone.
 - `interfaces/tui/` — Textual app, widgets, `styles.tcss`, streaming render;
   `interactions/` — inline approval/ask-user/plan-card panels (mounted above the
   status bar, not modals, so the transcript stays scrollable) sharing an

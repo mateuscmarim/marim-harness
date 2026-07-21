@@ -742,3 +742,71 @@ async def test_escape_discards_half_typed_secret(isolated_env, monkeypatch, tmp_
         assert inp.value == ""
         assert os.environ.get("OPENROUTER_API_KEY") is None
     assert not (tmp_path / "marim" / ".env").exists()
+
+
+@pytest.mark.anyio
+async def test_settings_has_advisor_row_defaulting_off():
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        value = str(app.screen.query_one("#advisor-value").render())
+    assert value == "off"
+
+
+@pytest.mark.anyio
+async def test_advisor_choice_saves_env_and_refreshes_catalog(
+    isolated_env, monkeypatch, tmp_path
+):
+    from marim_harness.config.model import MultiModelSource
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("MARIM_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-advisor-test")
+    multi = MultiModelSource.from_env()
+    refresh_calls = []
+    monkeypatch.setattr(multi, "refresh_from_env", lambda: refresh_calls.append(True))
+    harness = _fake_harness()
+    harness.model_source = multi
+    app = _Host(harness, _env_cfg())
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        app.screen._on_advisor_chosen("openrouter:advisor-model")
+        await pilot.pause()
+        value = str(app.screen.query_one("#advisor-value").render())
+    env_text = (tmp_path / "marim" / ".env").read_text()
+    assert "MARIM_ADVISOR_MODEL=openrouter:advisor-model" in env_text
+    assert os.environ.get("MARIM_ADVISOR_MODEL") == "openrouter:advisor-model"
+    assert refresh_calls == [True]
+    assert value == "openrouter:advisor-model"
+
+
+@pytest.mark.anyio
+async def test_advisor_off_choice_drops_the_env_var(isolated_env, monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("MARIM_ADVISOR_MODEL", "openrouter:old-advisor")
+    env_cfg = _env_cfg()
+    env_cfg.advisor_model = "openrouter:old-advisor"
+    app = _Host(_fake_harness(), env_cfg)
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        app.screen._on_advisor_chosen("off")
+        await pilot.pause()
+        value = str(app.screen.query_one("#advisor-value").render())
+    assert os.environ.get("MARIM_ADVISOR_MODEL") is None
+    assert value == "off"
+
+
+@pytest.mark.anyio
+async def test_advisor_numeric_knobs_are_registered():
+    from marim_harness.interfaces.tui.settings import _ENV_INT_INPUTS, _ZERO_OK_INPUTS
+
+    assert _ENV_INT_INPUTS["advisor-max-tokens"][0] == "MARIM_ADVISOR_MAX_TOKENS"
+    assert _ENV_INT_INPUTS["advisor-max-uses"][0] == "MARIM_ADVISOR_MAX_USES"
+    # 0 = unlimited must be commit-able, like the context budget's 0.
+    assert "advisor-max-uses" in _ZERO_OK_INPUTS

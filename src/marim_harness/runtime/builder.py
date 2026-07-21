@@ -160,6 +160,20 @@ class HarnessBuilder:
         self._hook_runner = runner
         return self
 
+    def with_advisor(self, model: str, *, max_tokens: int = 2048,
+                     max_uses: int | None = None) -> HarnessBuilder:
+        """Configure an advisor: a model the main agent can consult mid-task
+        via the ``advisor`` tool (the full transcript is forwarded to it).
+        ``model`` is a pydantic-ai model string, or a qualified
+        ``provider:slug`` when a model_source override is composed.
+        ``max_tokens`` caps each consultation's output; ``max_uses`` caps
+        calls per turn (None = unlimited)."""
+        return self.with_config_overrides(
+            advisor_model=model,
+            advisor_max_tokens=max_tokens,
+            advisor_max_uses=max_uses,
+        )
+
     def with_defaults(self) -> HarnessBuilder:
         """The full marim toolset: every group, LSP with tools, spawn, jobs,
         and the user-level global instructions. Workspace *scanning* (project

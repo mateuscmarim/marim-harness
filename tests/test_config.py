@@ -976,3 +976,28 @@ def test_subagent_tiering_disabled_via_env_keeps_slugs(monkeypatch):
     assert cfg.subagent.tiers.enabled is False
     assert cfg.subagent.tiers.cheap == "local:ornith-1.0-9b"
     assert cfg.subagent.tiers.model_for("cheap") is None  # bypassed while disabled
+
+
+def test_advisor_env_config(monkeypatch):
+    monkeypatch.setenv("MARIM_ADVISOR_MODEL", "openrouter:anthropic/claude-opus-4.8")
+    monkeypatch.setenv("MARIM_ADVISOR_MAX_TOKENS", "1024")
+    monkeypatch.setenv("MARIM_ADVISOR_MAX_USES", "3")
+    cfg = load_config()
+    assert cfg.advisor_model == "openrouter:anthropic/claude-opus-4.8"
+    assert cfg.advisor_max_tokens == 1024
+    assert cfg.advisor_max_uses == 3
+
+
+def test_advisor_env_defaults(monkeypatch):
+    for var in ("MARIM_ADVISOR_MODEL", "MARIM_ADVISOR_MAX_TOKENS", "MARIM_ADVISOR_MAX_USES"):
+        monkeypatch.delenv(var, raising=False)
+    cfg = load_config()
+    assert cfg.advisor_model is None
+    assert cfg.advisor_max_tokens == 2048
+    assert cfg.advisor_max_uses is None  # unset = unlimited
+
+
+def test_advisor_max_uses_zero_means_unlimited(monkeypatch):
+    monkeypatch.setenv("MARIM_ADVISOR_MAX_USES", "0")
+    cfg = load_config()
+    assert cfg.advisor_max_uses is None

@@ -315,6 +315,24 @@ class SessionController:
                 # would be lost on an immediate session switch. Create the file.
                 self.persist(force=True)
 
+    @property
+    def saved_advisor_id(self) -> str | None:
+        """The advisor persisted with this session — a provider:slug, the
+        "off" sentinel, or None (unset) — or None if no store."""
+        return self.store.advisor_model if self.store is not None else None
+
+    def set_advisor(self, value: str) -> None:
+        """Persist the session's advisor choice (a provider:slug or the "off"
+        sentinel). Same metadata-only patch rules as ``set_model``: a switch
+        can land mid-turn when in-memory history must never reach disk, so
+        patch the header when a file exists, else force one clean persist."""
+        if self.store is not None:
+            self.store.advisor_model = value
+            if self.store.path.exists():
+                self.store.save_meta()
+            else:
+                self.persist(force=True)
+
     def update_model(self, model: Model) -> None:
         """Rebuild aux agents (summarizer/titler) for a new model. Only
         replaces those that were originally configured — a None stays None.

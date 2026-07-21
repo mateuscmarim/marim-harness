@@ -173,6 +173,21 @@ async def _cmd_model(app: HarnessApp, arg: str) -> None:
     await app.open_model_picker()
 
 
+async def _cmd_advisor(app: HarnessApp, arg: str) -> None:
+    # Unlike /model, no mid-turn refusal: the advisor model is resolved per
+    # consultation, so a switch simply applies to the next advisor call.
+    arg = arg.strip()
+    if arg.lower() == "off":
+        app.harness.set_advisor_model(None)
+        await app.post_system("Advisor: **off** (persisted for this session)")
+        return
+    if arg:
+        app.harness.set_advisor_model(arg)
+        await app.post_system(f"Advisor: `{arg}` — applies to the next consultation.")
+        return
+    await app.open_advisor_picker()
+
+
 async def _cmd_theme(app: HarnessApp, arg: str) -> None:
     """List the available themes, or switch to one: ``/theme [name]``."""
     name = arg.strip()
@@ -502,6 +517,7 @@ COMMANDS: list[Command] = [
     Command("name", "name this session: /name [title] (auto-titles if blank)", _cmd_name),
     Command("mode", "set approval mode: /mode [ask|auto|plan]", _cmd_mode),
     Command("model", "switch model: /model [id] (opens a picker if blank)", _cmd_model),
+    Command("advisor", "set the advisor model: /advisor [id|off] (picker if blank)", _cmd_advisor),
     Command("theme", "list or set the color theme: /theme [name]", _cmd_theme),
     Command("remember", "save a note to memory: /remember <fact>", _cmd_remember),
     Command("skill", "list or run skills: /skill [name [context]]", _cmd_skill),

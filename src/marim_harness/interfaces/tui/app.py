@@ -218,6 +218,12 @@ class HarnessApp(App):
         self._render_tasks()  # reflect any checklist restored with the session
         self._render_jobs()  # process-scoped jobs survive session switches
         self._render_queue()
+        # One-line advisor status at session start, so an active advisor (env
+        # default or session-persisted) is visible without opening settings.
+        if self.harness.advisor_model_id is not None:
+            self._append_log(
+                NoticeMessage(f"Advisor: {self.harness.advisor_model_id} · /advisor")
+            )
         # Seed vision capabilities in the background so the text-only-model
         # warning can fire even before the user opens the model picker.
         source = self.harness.model_source
@@ -827,6 +833,37 @@ class HarnessApp(App):
         self.harness.set_model(chosen)
         self.status.refresh_status()
         self._append_log(NoticeMessage(f"model: {self.harness.model_label}"))
+
+    async def open_advisor_picker(self) -> None:
+        """Model picker for the advisor. Mirrors open_model_picker, but the
+        choice lands on the advisor seam (session-persisted) rather than the
+        live turn model."""
+        source = self.harness.model_source
+        if source is None:
+            await self.post_system("Model switching isn't available here.")
+            return
+        self.push_screen(
+            ModelPickerModal(
+                current=self.harness.advisor_model_id,
+                fetch=source.list_models,
+                is_local=source.is_local,
+            ),
+            self._on_advisor_chosen,
+        )
+
+    def _on_advisor_chosen(self, chosen: str | None) -> None:
+        if not chosen:
+            return
+        # A typed "off" in the free-text picker means "disable", same as
+        # `/advisor off` and the settings picker — map it to None (the seam's
+        # off state), never persist the literal "off" as a model id (which
+        # would leave the seam active and every consult failing to build it).
+        if chosen.strip().lower() == "off":
+            self.harness.set_advisor_model(None)
+            self._append_log(NoticeMessage("advisor: off"))
+            return
+        self.harness.set_advisor_model(chosen)
+        self._append_log(NoticeMessage(f"advisor: {chosen}"))
 
     def _append_log(self, widget) -> None:
         """Mount a notice/error into the log, keeping the viewport pinned to the

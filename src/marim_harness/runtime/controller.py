@@ -921,6 +921,9 @@ class TurnController:
     ) -> str:
         """Run the agent until it produces a final text answer, looping through
         any approval rounds. Returns the final text output."""
+        # Fresh per-turn advisor budget: the cap is per TURN, but Deps is
+        # session-lived, so the counter must be re-zeroed as each turn starts.
+        self.deps.advisor_uses = 0
         await self._maybe_compact()
         # Self-heal a session left mid-exchange by an earlier aborted turn or a
         # flaky model, BEFORE snapshotting this turn's rewind point. Two distinct

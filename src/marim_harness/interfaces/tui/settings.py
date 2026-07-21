@@ -81,11 +81,14 @@ _ENV_INT_INPUTS: dict[str, tuple[str, str]] = {
     "mask-min-chars": ("MARIM_MASK_MIN_CHARS", "Mask: min chars to elide"),
     "subagent-req-limit": ("MARIM_SUBAGENT_REQUEST_LIMIT", "Sub-agent request limit"),
     "wake-depth-cap": ("MARIM_WAKE_DEPTH_CAP", "Autonomous wake turns"),
+    "advisor-max-tokens": ("MARIM_ADVISOR_MAX_TOKENS", "Advisor max tokens"),
+    "advisor-max-uses": ("MARIM_ADVISOR_MAX_USES", "Advisor max uses/turn"),
 }
 # Integer inputs whose domain includes 0. The context budget's label promises
-# "0 = unbudgeted" (window-only), so its commit must accept it; every other
-# integer field still requires a positive value.
-_ZERO_OK_INPUTS = frozenset({"ctx-input"})
+# "0 = unbudgeted" (window-only); the advisor per-turn cap's label promises
+# "0 = unlimited" — both must accept it; every other integer field still
+# requires a positive value.
+_ZERO_OK_INPUTS = frozenset({"ctx-input", "advisor-max-uses"})
 # env var -> deprecated aliases removed in the same save. Saving the budget
 # must retire MARIM_MAX_CONTEXT_TOKENS: leaving the old line behind would make
 # the deprecation nag fire against a line the app wrote itself, and — worse —
@@ -434,6 +437,35 @@ class SettingsScreen(Screen[None]):
                 yield Button(
                     "change", id=f"tier-change-{tier}", variant="primary", compact=True
                 )
+        yield Static(
+            "Advisor — a model the agent can consult mid-task for strategic "
+            "guidance (the advisor tool). This row saves the global default "
+            "to .env (new sessions); /advisor overrides it per session, live. "
+            "Type 'off' in the picker to clear it. Uses/turn: 0 = unlimited.",
+            classes="muted",
+        )
+        with Horizontal(classes="srow"):
+            yield Static("Advisor", classes="tier-row-label")
+            yield Static(
+                self._advisor_value_text(), id="advisor-value", classes="tier-row-value"
+            )
+            yield Button(
+                "change", id="advisor-change", variant="primary", compact=True
+            )
+        with Horizontal(classes="frow"):
+            yield Label("Advisor max tokens")
+            yield Input(
+                value=str(self.env_cfg.advisor_max_tokens),
+                id="advisor-max-tokens",
+                type="integer",
+            )
+        with Horizontal(classes="frow"):
+            yield Label("Advisor max uses/turn")
+            yield Input(
+                value=str(self.env_cfg.advisor_max_uses or 0),
+                id="advisor-max-uses",
+                type="integer",
+            )
 
     def _notifications_widgets(self) -> ComposeResult:
         yield Static("Saved to .env — applies on next launch.", classes="muted")
@@ -560,12 +592,17 @@ class SettingsScreen(Screen[None]):
         value = self.env_cfg.subagent.tiers.model_for(tier)
         return value or "inherit main"
 
+    def _advisor_value_text(self) -> str:
+        return self.env_cfg.advisor_model or "off"
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id or ""
         if bid == "model-change":
             self._open_model_picker()
         elif bid.startswith("tier-change-"):
             self._open_tier_picker(bid.removeprefix("tier-change-"))
+        elif bid == "advisor-change":
+            self._open_advisor_picker()
 
     async def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         cid = event.checkbox.id or ""
@@ -782,6 +819,47 @@ class SettingsScreen(Screen[None]):
         self.env_cfg.subagent.tiers = replace(self.env_cfg.subagent.tiers, **{tier: chosen})
         self.query_one(f"#tier-value-{tier}", Static).update(chosen)
         self._status(f"✓ saved {env_key} · applies to new sessions")
+
+    def _open_advisor_picker(self) -> None:
+        """Model picker for the global advisor default. Mirrors the tier rows:
+        the pick persists to .env (new sessions); the live per-session switch
+        is /advisor. Typing ``off`` in the picker clears the default."""
+        source = self.harness.model_source
+        if source is None:
+            self.query_one("#advisor-value", Static).update(
+                "Model switching isn't available here."
+            )
+            return
+        self.app.push_screen(
+            ModelPickerModal(
+                current=self.env_cfg.advisor_model,
+                fetch=source.list_models,
+                is_local=source.is_local,
+            ),
+            self._on_advisor_chosen,
+        )
+
+    def _on_advisor_chosen(self, chosen: str | None) -> None:
+        if not chosen:
+            return
+        try:
+            if chosen.strip().lower() == "off":
+                # An explicit off DROPS the var rather than writing a
+                # sentinel: unset is the env layer's own "no advisor", and a
+                # written "off" would round-trip as a bogus model slug.
+                save_env_settings({}, drop=("MARIM_ADVISOR_MODEL",))
+                self.env_cfg.advisor_model = None
+            else:
+                save_env_settings({"MARIM_ADVISOR_MODEL": chosen})
+                self.env_cfg.advisor_model = chosen
+        except Exception as exc:  # surface any write failure on the status line
+            self._status(f"Save failed: {exc}")
+            return
+        source = self.harness.model_source
+        if isinstance(source, MultiModelSource):
+            source.refresh_from_env()
+        self.query_one("#advisor-value", Static).update(self._advisor_value_text())
+        self._status("✓ saved MARIM_ADVISOR_MODEL · applies to new sessions")
 
     def action_cancel(self) -> None:
         # Two-stage escape mirroring enter: leave edit mode (back to the

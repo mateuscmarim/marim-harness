@@ -105,6 +105,13 @@ _DETACH_PREFIX = "Started detached sub-agent "
 _BG_PREFIX = "Started "
 _BG_AGENT_MARK = " (agent)"
 
+# Tools whose calls mount standalone in the main log instead of joining the
+# collapsed tool-run group: user-facing conversation content (a question and
+# its answer; the advisor's guidance) would otherwise hide behind a
+# "≡ N tools" fold. spawn_agent is NOT here — it has its own claim path that
+# builds a live SubAgentWidget (see _TopLevelSink.intercept_tool).
+_STANDALONE_TOOLS = frozenset({"ask_user", "advisor"})
+
 
 def _detached_job_id(content: str) -> str | None:
     """The background job id behind an agent spawn's return, or None for any
@@ -317,12 +324,13 @@ class _TopLevelSink(_StreamSink):
         if event.part.tool_name == "spawn_agent":
             await self._claim_spawn(event, args, container, parent_id=None)
             return True
-        # ask_user is a user-facing Q&A, not mechanical work — keep it out of the
-        # collapsed tool group, where the question and the user's answer would be
-        # hidden behind a "≡ N tools" fold. Render a normal tool widget but mount
-        # it standalone and break the run on both sides (same rationale as the
-        # foreground spawn_agent case above).
-        if event.part.tool_name == "ask_user":
+        # ask_user (a user-facing Q&A) and advisor (the reviewer's guidance)
+        # are conversation content, not mechanical work — keep them out of the
+        # collapsed tool group, where they'd hide behind a "≡ N tools" fold.
+        # Render a normal tool widget but mount it standalone and break the
+        # run on both sides (same rationale as the foreground spawn_agent
+        # case above).
+        if event.part.tool_name in _STANDALONE_TOOLS:
             widget = ToolCallWidget(
                 event.part.tool_name, args,
                 workspace_root=self._r.app.harness.deps.workspace.root,
