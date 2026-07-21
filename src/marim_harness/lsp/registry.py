@@ -11,62 +11,17 @@ import os
 import shutil
 from dataclasses import dataclass
 
-# File extension (lowercase, including dot) -> multilspy ``code_language``.
-_EXT_TO_LANG = {
-    ".py": "python",
-    ".ts": "typescript",
-    ".tsx": "typescript",
-    ".js": "javascript",
-    ".jsx": "javascript",
-    ".mjs": "javascript",
-    ".cjs": "javascript",
-    ".java": "java",
-    ".cpp": "cpp",
-    ".cc": "cpp",
-    ".cxx": "cpp",
-    ".c": "cpp",
-    ".h": "cpp",
-    ".hpp": "cpp",
-    ".hh": "cpp",
-}
 
-# language -> (PATH probe binaries, install hint). A language with a non-empty
-# probe tuple is "available" only when one of its binaries is on PATH. A language
-# with an empty probe tuple is auto-provided by multilspy (it downloads the
-# server on first use) and is always reported available.
-_PROBES: dict[str, tuple[tuple[str, ...], str]] = {
-    # The manager launches basedpyright when its binary is present (marim's own
-    # multilspy subclass) and falls back to multilspy's jedi-language-server
-    # routing otherwise, so either binary makes python startable. basedpyright
-    # leads the hint: jedi-language-server is in maintenance mode upstream.
-    "python": (
-        ("basedpyright-langserver", "jedi-language-server"),
-        "install basedpyright (pip install basedpyright) or "
-        "jedi-language-server (pip install jedi-language-server)",
-    ),
-    "typescript": (
-        ("typescript-language-server",),
-        "install typescript-language-server (npm i -g typescript-language-server typescript)",
-    ),
-    "javascript": (
-        ("typescript-language-server",),
-        "install typescript-language-server (npm i -g typescript-language-server typescript)",
-    ),
-    "cpp": (("clangd",), "install clangd (e.g. pacman -S clang)"),
-    "java": ((), "auto-downloaded by multilspy on first use"),
-}
-
-
-def language_for(path: str) -> str | None:
-    """Return the multilspy ``code_language`` for ``path``, or None if the file
-    extension isn't one we support."""
+def language_for(path: str, ext_to_lang: dict[str, str]) -> str | None:
+    """Return the language for ``path`` per ``ext_to_lang``, or None if the
+    file extension isn't one we support."""
     # Split the *basename* only: a dotted directory (e.g. ``src.v2/Makefile`` or
     # ``foo.bar/baz``) must not have its parent's dot mistaken for the file's
     # extension. ``splitext`` returns "" for an extensionless basename.
     _stem, ext = os.path.splitext(os.path.basename(path))
     if not ext:
         return None
-    return _EXT_TO_LANG.get(ext.lower())
+    return ext_to_lang.get(ext.lower())
 
 
 @dataclass(frozen=True)
@@ -75,15 +30,17 @@ class Availability:
     hint: str
 
 
-def availability(language: str) -> Availability:
-    """Whether a server for ``language`` can be started, with an install hint."""
-    entry = _PROBES.get(language)
+def availability(language: str, probes: dict[str, tuple[tuple[str, ...], str]]) -> Availability:
+    """Whether a server for ``language`` can be started, with an install hint.
+    ``probes`` maps language -> (probe binaries, install hint). An empty probe
+    tuple means auto-provided (always available)."""
+    entry = probes.get(language)
     if entry is None:
         return Availability(False, "unsupported language")
-    probes, hint = entry
-    if not probes:  # auto-provided by multilspy
+    probe_bins, hint = entry
+    if not probe_bins:  # auto-provided by multilspy
         return Availability(True, hint)
-    found = any(shutil.which(b) for b in probes)
+    found = any(shutil.which(b) for b in probe_bins)
     return Availability(found, hint)
 
 
@@ -105,8 +62,10 @@ _MIN_SHARE = 0.10
 _MIN_COUNT = 20
 
 
-def workspace_languages(root: str | os.PathLike, *, max_entries: int = 50_000) -> set[str]:
-    """Languages *significantly* present under ``root``, by file extension,
+def workspace_languages(
+    root: str | os.PathLike, ext_to_lang: dict[str, str], *, max_entries: int = 50_000
+) -> set[str]:
+    """Languages *significantly* present under ``root`` per ``ext_to_lang``,
     from a bounded walk that prunes hidden and dependency/cache directories.
     A language qualifies at >= 10% of recognized files or >= 20 files
     outright. Entries are visited in sorted order so the ``max_entries`` cap
@@ -124,7 +83,7 @@ def workspace_languages(root: str | os.PathLike, *, max_entries: int = 50_000) -
             if seen > max_entries:
                 capped = True
                 break
-            language = language_for(name)
+            language = language_for(name, ext_to_lang)
             if language is not None:
                 counts[language] = counts.get(language, 0) + 1
         if capped:
@@ -139,12 +98,13 @@ def workspace_languages(root: str | os.PathLike, *, max_entries: int = 50_000) -
     }
 
 
-def locally_installed_languages() -> set[str]:
-    """Languages whose server binary is on PATH right now. Excludes
-    auto-download-only languages (e.g. java) so callers can cheaply start
-    every locally-present server without triggering a multi-hundred-MB download."""
+def locally_installed_languages(probes: dict[str, tuple[tuple[str, ...], str]]) -> set[str]:
+    """Languages whose server binary is on PATH right now, per ``probes``.
+    Excludes auto-download-only languages (e.g. java) so callers can cheaply
+    start every locally-present server without triggering a multi-hundred-MB
+    download."""
     out: set[str] = set()
-    for language, (probes, _hint) in _PROBES.items():
-        if probes and any(shutil.which(b) for b in probes):
+    for language, (probe_bins, _hint) in probes.items():
+        if probe_bins and any(shutil.which(b) for b in probe_bins):
             out.add(language)
     return out

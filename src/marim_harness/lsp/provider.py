@@ -15,6 +15,8 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import registry as _registry
+
 logger = logging.getLogger(__name__)
 
 # Recognized bundled-only backend keys. `multilspy:<lang>` is validated by prefix.
@@ -177,3 +179,35 @@ def parse_lsp_providers(
         if p is not None:
             out.append(p)
     return out
+
+
+class LspRegistry:
+    """The per-session merged view of all LSP providers. Later providers win on
+    an extension or language collision (project plugins shadow global shadow
+    bundled — callers order the list accordingly)."""
+
+    def __init__(self, providers: list[LspProvider]) -> None:
+        self._providers = list(providers)
+        self._ext_to_lang: dict[str, str] = {}
+        self._by_language: dict[str, LspProvider] = {}
+        self._probes: dict[str, tuple[tuple[str, ...], str]] = {}
+        for p in self._providers:
+            self._by_language[p.language] = p
+            self._probes[p.language] = (p.probe, p.install_hint)
+            for ext in p.extensions:
+                self._ext_to_lang[ext] = p.language
+
+    def language_for(self, path: str) -> str | None:
+        return _registry.language_for(path, self._ext_to_lang)
+
+    def availability(self, language: str) -> _registry.Availability:
+        return _registry.availability(language, self._probes)
+
+    def workspace_languages(self, root, *, max_entries: int = 50_000) -> set[str]:
+        return _registry.workspace_languages(root, self._ext_to_lang, max_entries=max_entries)
+
+    def locally_installed_languages(self) -> set[str]:
+        return _registry.locally_installed_languages(self._probes)
+
+    def provider_for(self, language: str) -> LspProvider | None:
+        return self._by_language.get(language)

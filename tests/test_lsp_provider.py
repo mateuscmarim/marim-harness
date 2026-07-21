@@ -2,6 +2,7 @@ import pytest
 
 from marim_harness.lsp.provider import (
     LspProviderError,
+    LspRegistry,
     parse_lsp_providers,
 )
 
@@ -122,3 +123,74 @@ def test_extension_normalized_to_lowercase_with_dot():
         block, bundled=False, source="global", plugin_root=None, strict=True
     )
     assert p.extensions == (".go", ".go")
+
+
+def _prov(language, exts, *, command=None, backend=None, probe=None,
+          diagnostics="lsp", source="global"):
+    block = {"language": language, "extensions": exts, "diagnostics": diagnostics}
+    if command:
+        block["command"] = command
+    if backend:
+        block["backend"] = backend
+    if probe is not None:
+        block["probe"] = probe
+    (p,) = parse_lsp_providers(
+        block, bundled=backend is not None, source=source,
+        plugin_root=None, strict=True,
+    )
+    return p
+
+
+def test_registry_language_for():
+    reg = LspRegistry([_prov("go", [".go"], command="gopls")])
+    assert reg.language_for("main.go") == "go"
+    assert reg.language_for("main.py") is None
+    assert reg.language_for("src.v2/Makefile") is None  # dotted dir, no ext
+
+
+def test_registry_availability_probe_present(monkeypatch):
+    reg = LspRegistry([_prov("go", [".go"], command="gopls", probe=["gopls"])])
+    monkeypatch.setattr(
+        "marim_harness.lsp.registry.shutil.which", lambda b: "/usr/bin/gopls"
+    )
+    assert reg.availability("go").available is True
+
+
+def test_registry_availability_probe_missing():
+    reg = LspRegistry(
+        [_prov("go", [".go"], command="gopls", probe=["definitely-not-on-path-xyz"])]
+    )
+    a = reg.availability("go")
+    assert a.available is False
+
+
+def test_registry_empty_probe_always_available():
+    reg = LspRegistry([_prov("java", [".java"], backend="multilspy:java", probe=[])])
+    assert reg.availability("java").available is True
+
+
+def test_registry_unknown_language():
+    reg = LspRegistry([])
+    assert reg.availability("nope").available is False
+
+
+def test_registry_provider_for():
+    reg = LspRegistry([_prov("go", [".go"], command="gopls")])
+    assert reg.provider_for("go").command == "gopls"
+    assert reg.provider_for("py") is None
+
+
+def test_registry_workspace_languages(tmp_path):
+    (tmp_path / "a.go").write_text("package main")
+    (tmp_path / "b.go").write_text("package main")
+    reg = LspRegistry([_prov("go", [".go"], command="gopls")])
+    assert reg.workspace_languages(tmp_path) == {"go"}
+
+
+def test_registry_last_provider_wins_on_extension_conflict():
+    # A later provider (e.g. project plugin) overriding the same extension wins.
+    reg = LspRegistry([
+        _prov("python", [".py"], backend="basedpyright", source="bundled"),
+        _prov("python2", [".py"], command="custom-py-ls", source="project"),
+    ])
+    assert reg.language_for("x.py") == "python2"
