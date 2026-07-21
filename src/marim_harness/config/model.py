@@ -186,6 +186,14 @@ class ModelConfig:
     # Prototype: collapse the four job tools (jobs/job_output/wait_for_job/
     # cancel_job) into one job(action, …) tool. Off ⇒ the four separate tools.
     job_tool_combined: bool = False
+    # Advisor: a model the main agent can consult mid-task via the advisor
+    # tool. ``advisor_model`` is a qualified ``provider:model_id`` (or a bare
+    # slug for the default provider); None = no advisor. ``advisor_max_tokens``
+    # caps each consultation's output; ``advisor_max_uses`` caps calls per turn
+    # (None = unlimited).
+    advisor_model: str | None = None
+    advisor_max_tokens: int = 2048
+    advisor_max_uses: int | None = None
     # Shell-command allow/deny patterns (regex), enforced in the bash tool in
     # every mode. Empty lists -> no restriction.
     command_denylist: list[str] = field(default_factory=list)
@@ -290,6 +298,11 @@ def _common_kwargs() -> dict[str, Any]:
         workflows_enabled=_bool_env("MARIM_WORKFLOWS", True),
         workflow_timeout_secs=float(_int_env("MARIM_WORKFLOW_TIMEOUT", 1800)),
         job_tool_combined=_bool_env("MARIM_JOB_TOOL_COMBINED", False),
+        advisor_model=(os.getenv("MARIM_ADVISOR_MODEL") or None),
+        advisor_max_tokens=_int_env("MARIM_ADVISOR_MAX_TOKENS", 2048),
+        # Unset or 0 = unlimited — the same "0 falls through to None" pattern
+        # context_window uses (see _int_env: non-positive returns the default).
+        advisor_max_uses=(_int_env("MARIM_ADVISOR_MAX_USES", 0) or None),
         command_denylist=split_patterns(os.getenv("MARIM_COMMAND_DENYLIST", "")),
         command_allowlist=split_patterns(os.getenv("MARIM_COMMAND_ALLOWLIST", "")),
         subagent=subagent,
