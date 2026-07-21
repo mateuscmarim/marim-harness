@@ -131,6 +131,7 @@ class HarnessApp(App):
             on_jobs_changed=self._on_jobs_changed,
             on_compact=self._on_compact,
             on_compact_start=self._on_compact_start,
+            on_notice=self._on_session_notice,
             on_rename=self.session.on_rename,
         )
         self._compacting_notice: NoticeMessage | None = None
@@ -144,6 +145,15 @@ class HarnessApp(App):
         # exact hazard turn_busy exists to prevent. Set before the first await,
         # cleared on every _start_turn exit path.
         self._turn_starting = False
+        # True while the /compact worker (group "compact") is mid-run. A
+        # summarize can take seconds, and starting a turn or rebinding the
+        # session store under it risks silent turn loss, cross-session history
+        # contamination (a late `self.history=…; persist()` after the store was
+        # swapped), and the only path to concurrent persist_elided calls. So the
+        # session-teardown/turn-start flows gate on it, symmetric with the guard
+        # /compact itself applies against turn_busy. Set in _cmd_compact, cleared
+        # in its worker's finally.
+        self.compact_busy = False
         self._queue = TurnQueue()
         # Confirm-to-quit guard (see _QUIT_CONFIRM_WINDOW): timestamp of the last
         # unconfirmed quit attempt, or None if there isn't one outstanding.
@@ -664,6 +674,20 @@ class HarnessApp(App):
         self._compacting_notice = NoticeMessage("compacting conversation…")
         log.mount(self._compacting_notice)
 
+    def clear_compacting_notice(self) -> None:
+        """Remove the live "compacting…" indicator if it is still mounted.
+        Idempotent and exception-safe. Called from both the turn worker's finally
+        and the /compact worker's error path so a ``maybe_compact`` that raised
+        between ``on_compact_start()`` and ``on_compact()`` can never leave the
+        notice stranded on screen forever."""
+        if self._compacting_notice is not None:
+            try:
+                self._compacting_notice.remove()
+            except ValueError:
+                pass  # widget already removed; safe to ignore
+            finally:
+                self._compacting_notice = None
+
     def _on_compact(self, before: int, after: int) -> None:
         """Note in the log when history was trimmed to stay under the token budget.
         Called synchronously from run_turn; mount without awaiting."""
@@ -686,6 +710,11 @@ class HarnessApp(App):
         if body is not None:
             log.mount(SummaryWidget(body))
         self.status.refresh_status()  # context gauge shrinks immediately
+
+    def _on_session_notice(self, message: str) -> None:
+        """Session-level advisory (breaker tripped, manual compact blocked).
+        Same call-from-anywhere contract as _on_compact."""
+        self._append_log(NoticeMessage(message))
 
     def _latest_summary(self) -> "str | None":
         """The body of the most recent compaction summary in history, or None."""
@@ -714,6 +743,9 @@ class HarnessApp(App):
         if self.turn_busy:
             await self.post_system("Can't clear while a turn is running. Press Esc first.")
             return
+        if self.compact_busy:
+            await self.post_system("Compaction in progress — wait for it to finish.")
+            return
         await self.session.reset_conversation()
 
     async def start_new_session(self, name: str | None = None) -> None:
@@ -725,6 +757,9 @@ class HarnessApp(App):
                 "Can't start a new session while a turn is running. Press Esc first."
             )
             return
+        if self.compact_busy:
+            await self.post_system("Compaction in progress — wait for it to finish.")
+            return
         await self.session.start_new_session(name)
 
     async def switch_to_session_id(self, session_id: str) -> None:
@@ -735,6 +770,9 @@ class HarnessApp(App):
             await self.post_system(
                 "Can't switch sessions while a turn is running. Press Esc first."
             )
+            return
+        if self.compact_busy:
+            await self.post_system("Compaction in progress — wait for it to finish.")
             return
         await self.session.switch_to_session_id(session_id)
 
@@ -1027,6 +1065,14 @@ class HarnessApp(App):
         if reason is not None:
             self._append_log(NoticeMessage(reason))
             return
+        if self.compact_busy:
+            # Refuse (don't enqueue) so the turn isn't silently lost or run against
+            # a session the compact worker is mid-summarize on. Symmetric with the
+            # notice /compact posts when a turn is running.
+            self._append_log(
+                NoticeMessage("Compaction in progress — wait for it to finish.")
+            )
+            return
         if self.turn_busy:
             # turn_busy (not _turn_worker) so a submit landing in the start-up gap
             # is queued rather than racing a second exclusive worker.
@@ -1135,11 +1181,5 @@ class HarnessApp(App):
             self.status.set_busy(False)
             # Guard against an orphaned compaction notice if maybe_compact raised
             # between on_compact_start() and on_compact(). Always try to clean up.
-            if self._compacting_notice is not None:
-                try:
-                    self._compacting_notice.remove()
-                except ValueError:
-                    pass  # widget already removed; safe to ignore
-                finally:
-                    self._compacting_notice = None
+            self.clear_compacting_notice()
             await self._after_turn()  # drain next queued item, or wake on jobs

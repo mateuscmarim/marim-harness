@@ -399,3 +399,122 @@ async def test_clear_pending_shell_results_empties_queue(tmp_path):
     tc.clear_pending_shell_results()
     prompt = await tc._assemble_prompt("hi")
     assert "<user-shell-commands>" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# Stage-aware checkpoint invalidation (I2) + the manual /compact entry point (C1)
+# ---------------------------------------------------------------------------
+
+
+def _spy_invalidate(tc) -> list[bool]:
+    """Record calls to the checkpoint invalidation without touching real git."""
+    calls: list[bool] = []
+    tc.checkpoints.invalidate_after_compaction = lambda: calls.append(True)  # type: ignore[method-assign]
+    return calls
+
+
+def _fake_compact(tc, *, new_len: int | None):
+    """Stub ``session.maybe_compact`` to report success and optionally rewrite
+    ``session.history`` to ``new_len`` messages (simulating a summary stage).
+    ``new_len=None`` leaves the length untouched — the micro-only case.
+    Returns a dict recording the trigger/instructions it was called with."""
+    seen: dict = {}
+
+    async def fake(*, force=False, trigger="auto", instructions=None):
+        seen.update(force=force, trigger=trigger, instructions=instructions)
+        if new_len is not None:
+            tc.session.history = [object() for _ in range(new_len)]
+        return True
+
+    tc.session.maybe_compact = fake  # type: ignore[method-assign]
+    return seen
+
+
+@pytest.mark.anyio
+async def test_micro_only_compaction_keeps_checkpoints(tmp_path):
+    """A stage-1-only ('micro') compaction rewrites tool-return content in place
+    and moves no message boundary, so the message count is unchanged and the
+    checkpoints stay rewindable — they must NOT be invalidated."""
+    tc = _make_tc(_ok_model(), tmp_path)
+    tc.session.history = [object(), object(), object()]
+    invalidated = _spy_invalidate(tc)
+    _fake_compact(tc, new_len=None)  # micro: same length
+    assert await tc._maybe_compact() is True
+    assert invalidated == []
+
+
+@pytest.mark.anyio
+async def test_summary_compaction_invalidates_checkpoints(tmp_path):
+    """A summary compaction collapses a prefix into one summary message — the
+    message count shrinks, so the stale absolute checkpoint indices must be
+    invalidated."""
+    tc = _make_tc(_ok_model(), tmp_path)
+    tc.session.history = [object(), object(), object(), object()]
+    invalidated = _spy_invalidate(tc)
+    _fake_compact(tc, new_len=2)  # summary: collapsed to a shorter list
+    assert await tc._maybe_compact() is True
+    assert invalidated == [True]
+
+
+@pytest.mark.anyio
+async def test_manual_compact_passes_trigger_and_invalidates_when_restructured(tmp_path):
+    """C1: /compact routed through ``manual_compact`` passes trigger='manual'
+    and still invalidates stale checkpoints when the history is restructured —
+    the wrapper is the single place invalidation happens for every trigger."""
+    tc = _make_tc(_ok_model(), tmp_path)
+    tc.session.history = [object(), object(), object()]
+    invalidated = _spy_invalidate(tc)
+    seen = _fake_compact(tc, new_len=1)  # collapsed
+    assert await tc.manual_compact(instructions="focus on auth") is True
+    assert seen["trigger"] == "manual"
+    assert seen["instructions"] == "focus on auth"
+    assert invalidated == [True]
+
+
+@pytest.mark.anyio
+async def test_manual_compact_keeps_checkpoints_when_micro_only(tmp_path):
+    """A manual /compact that only micro-compacts (no restructuring) must also
+    preserve the user's rewind history."""
+    tc = _make_tc(_ok_model(), tmp_path)
+    tc.session.history = [object(), object()]
+    invalidated = _spy_invalidate(tc)
+    _fake_compact(tc, new_len=None)
+    assert await tc.manual_compact() is True
+    assert invalidated == []
+
+
+@pytest.mark.anyio
+async def test_no_compaction_never_invalidates(tmp_path):
+    """When ``maybe_compact`` reports no compaction, checkpoints are untouched
+    even though the wrapper ran."""
+    tc = _make_tc(_ok_model(), tmp_path)
+    tc.session.history = [object(), object()]
+    invalidated = _spy_invalidate(tc)
+
+    async def fake(*, force=False, trigger="auto", instructions=None):
+        return False
+
+    tc.session.maybe_compact = fake  # type: ignore[method-assign]
+    assert await tc._maybe_compact() is False
+    assert invalidated == []
+
+
+@pytest.mark.anyio
+async def test_harness_manual_compact_delegates_to_controller(tmp_path):
+    """``Harness.manual_compact`` is a thin delegate to the turn controller's
+    single invalidating entry point."""
+    from pydantic_ai.models.test import TestModel
+
+    deps = _make_deps(tmp_path)
+    harness = Harness(
+        TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="t"
+    )
+    seen: dict = {}
+
+    async def fake(instructions=None):
+        seen.update(instructions=instructions)
+        return True
+
+    harness.turn_controller.manual_compact = fake  # type: ignore[method-assign]
+    assert await harness.manual_compact(instructions="hi") is True
+    assert seen == {"instructions": "hi"}

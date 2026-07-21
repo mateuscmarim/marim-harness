@@ -138,8 +138,11 @@ to avoid import cycles.
   `MARIM_FORGE` is on (default) and a backend is available (`tea` on PATH + a
   configured login). A `gh` backend is a future drop-in behind the same protocol.
 - `hooks/` — Claude-Code-compatible lifecycle hook engine (session/prompt/tool/
-  compaction events). Observe-only except SessionStart/UserPromptSubmit, which inject
-  context. Project-local hooks run only when trusted (`MARIM_TRUST_PROJECT_HOOKS`).
+  compaction events). Observe-only except SessionStart/UserPromptSubmit (inject
+  context) and PreCompact (may block a *manual* /compact via exit 2 or
+  `{"decision":"block"}`; block verdicts on auto compaction are logged and
+  ignored). Project-local hooks run only when trusted
+  (`MARIM_TRUST_PROJECT_HOOKS`).
 - `plugins/` — bundles skills + sub-agents + hooks + MCP + `AGENTS.md`; hooks/MCP load
   only for *trusted* plugins. Namespaced `plugin:item`. See `docs/plugins.md`.
 - `workspace/` — fs primitives, memory (`remember`/`recall`), skills, sub-agent specs,

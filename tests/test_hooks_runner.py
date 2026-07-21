@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from marim_harness.hooks import events
-from marim_harness.hooks.runner import HookRunner, base_payload
+from marim_harness.hooks.runner import HookRunner, HookVerdict, base_payload
 
 
 def _script(tmp_path: Path, name: str, body: str) -> str:
@@ -246,3 +246,107 @@ async def test_timeout_failure_is_logged_at_debug(caplog, tmp_path):
         r.name == "marim_harness.hooks.runner" and r.levelno == logging.DEBUG
         for r in caplog.records
     ), f"no DEBUG record from runner: {[(r.name, r.levelname) for r in caplog.records]}"
+
+
+@pytest.mark.anyio
+async def test_verdict_exit_2_blocks_with_stderr_reason(tmp_path):
+    cmd = _script(tmp_path, "block.sh", 'echo "dirty git state" >&2\nexit 2\n')
+    runner = HookRunner({events.PRE_COMPACT: [_entry(cmd)]})
+    v = await runner.dispatch_verdict(events.PRE_COMPACT, {"trigger": "manual"})
+    assert isinstance(v, HookVerdict)
+    assert v.blocked and "dirty git state" in v.reason
+
+
+@pytest.mark.anyio
+async def test_verdict_json_decision_block(tmp_path):
+    cmd = _script(tmp_path, "jb.sh", """echo '{"decision": "block", "reason": "nope"}'\n""")
+    runner = HookRunner({events.PRE_COMPACT: [_entry(cmd)]})
+    v = await runner.dispatch_verdict(events.PRE_COMPACT, {"trigger": "manual"})
+    assert v.blocked and v.reason == "nope"
+
+
+@pytest.mark.anyio
+async def test_verdict_clean_exit_and_malformed_json_do_not_block(tmp_path):
+    bodies = ("exit 0\n", "echo not-json\n", 'echo \'{"decision": "allow"}\'\n')
+    for i, body in enumerate(bodies):
+        cmd = _script(tmp_path, f"ok{i}.sh", body)
+        runner = HookRunner({events.PRE_COMPACT: [_entry(cmd)]})
+        v = await runner.dispatch_verdict(events.PRE_COMPACT, {"trigger": "auto"})
+        assert not v.blocked
+
+
+@pytest.mark.anyio
+async def test_verdict_crash_and_other_exit_codes_are_not_blocks(tmp_path):
+    cmd = _script(tmp_path, "crash.sh", "exit 1\n")
+    runner = HookRunner({events.PRE_COMPACT: [_entry(cmd)]})
+    v = await runner.dispatch_verdict(events.PRE_COMPACT, {"trigger": "manual"})
+    assert not v.blocked
+    missing = HookRunner({events.PRE_COMPACT: [_entry("/nonexistent/hook")]})
+    assert not (await missing.dispatch_verdict(events.PRE_COMPACT, {"trigger": "manual"})).blocked
+
+
+@pytest.mark.anyio
+async def test_verdict_timeout_is_not_a_block(tmp_path):
+    """A verdict hook that sleeps past its timeout is killed and yields a
+    non-blocking verdict — a timeout must never be read as a deliberate block,
+    or a slow/hung PreCompact hook could wedge a manual /compact. Mirrors
+    test_timeout_is_killed_and_swallowed for the verdict path."""
+    cmd = _script(tmp_path, "slow.sh", "sleep 5\nexit 2\n")  # would block if it ran
+    runner = HookRunner({events.PRE_COMPACT: [_entry(cmd, timeout=1)]})
+    v = await runner.dispatch_verdict(events.PRE_COMPACT, {"trigger": "manual"})
+    assert isinstance(v, HookVerdict)
+    assert not v.blocked
+
+
+@pytest.mark.anyio
+async def test_verdict_matcher_matches_trigger(tmp_path):
+    cmd = _script(tmp_path, "m.sh", "exit 2\n")
+    runner = HookRunner({events.PRE_COMPACT: [_entry(cmd, matcher="manual")]})
+    assert (await runner.dispatch_verdict(events.PRE_COMPACT, {"trigger": "manual"})).blocked
+    assert not (await runner.dispatch_verdict(events.PRE_COMPACT, {"trigger": "auto"})).blocked
+
+
+@pytest.mark.anyio
+async def test_verdict_unconfigured_event_allows():
+    assert not (await HookRunner({}).dispatch_verdict(events.PRE_COMPACT, {})).blocked
+
+
+@pytest.mark.anyio
+async def test_dispatch_precompact_matcher_matches_trigger(tmp_path):
+    """The observe-only dispatch() path must gate PreCompact hooks on the
+    payload's ``trigger`` (compact events ride the tool_name matcher slot with
+    their trigger), the same as dispatch_verdict already does — a plain
+    dispatch() call must not silently skip a matchered PreCompact hook."""
+    out = tmp_path / "ran.txt"
+    cmd = _script(tmp_path, "h.sh", f"echo ran >> {out}\n")
+    runner = HookRunner({events.PRE_COMPACT: [_entry(cmd, matcher="manual")]})
+    await runner.dispatch(events.PRE_COMPACT, {"trigger": "auto"})
+    assert not out.exists()  # matcher 'manual' does not match trigger 'auto'
+    await runner.dispatch(events.PRE_COMPACT, {"trigger": "manual"})
+    assert out.read_text().strip() == "ran"
+
+
+@pytest.mark.anyio
+async def test_dispatch_postcompact_matcher_matches_trigger(tmp_path):
+    """PostCompact must be gated the same way: matcher filtering is inert
+    unless POST_COMPACT is in _matches's event-gating tuple."""
+    out = tmp_path / "ran.txt"
+    cmd = _script(tmp_path, "h.sh", f"echo ran >> {out}\n")
+    runner = HookRunner({events.POST_COMPACT: [_entry(cmd, matcher="manual")]})
+    await runner.dispatch(events.POST_COMPACT, {"trigger": "auto"})
+    assert not out.exists()  # matcher 'manual' does not match trigger 'auto'
+    await runner.dispatch(events.POST_COMPACT, {"trigger": "manual"})
+    assert out.read_text().strip() == "ran"
+
+
+@pytest.mark.anyio
+async def test_verdict_first_block_wins_reason(tmp_path):
+    """Two matching PreCompact entries both block; the returned verdict must
+    carry the FIRST blocking reason, even though later hooks still execute."""
+    first = _script(tmp_path, "first.sh", 'echo "reason A" >&2\nexit 2\n')
+    second = _script(tmp_path, "second.sh", 'echo "reason B" >&2\nexit 2\n')
+    runner = HookRunner({events.PRE_COMPACT: [_entry(first), _entry(second)]})
+    v = await runner.dispatch_verdict(events.PRE_COMPACT, {"trigger": "manual"})
+    assert v.blocked
+    assert "reason A" in v.reason
+    assert "reason B" not in v.reason

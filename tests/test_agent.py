@@ -297,7 +297,7 @@ async def test_set_model_switches_model_and_label(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_set_model_rebuilds_configured_aux_agents(tmp_path: Path):
-    async def summarizer(messages):
+    async def summarizer(messages, instructions=None):
         return "s"
 
     h = _switch_harness(tmp_path, source=_FakeSource(),

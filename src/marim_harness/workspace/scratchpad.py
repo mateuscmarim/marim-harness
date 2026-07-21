@@ -11,6 +11,7 @@ See docs/superpowers/specs/2026-07-11-scratchpad-design.md.
 import hashlib
 import logging
 import os
+import re
 import stat
 import tempfile
 from pathlib import Path
@@ -82,4 +83,33 @@ def ensure_scratchpad(
         if b not in _warned:
             _warned.add(b)
             logger.warning("scratchpad disabled: %s", exc)
+        return None
+
+
+def persist_elided(scratchpad: Path, content: str, hint: str) -> Path | None:
+    """Write an elided tool payload under ``<scratchpad>/elided/`` and return
+    its path, or None on any failure (callers degrade to a plain placeholder).
+
+    Files are numbered so listing the directory reads chronologically; the
+    ``hint`` (tool name) is slugged into the filename so the model can spot
+    the right one without opening each. Best-effort by contract: compaction
+    must proceed identically whether this succeeds or not.
+    """
+    try:
+        d = scratchpad / "elided"
+        d.mkdir(parents=True, exist_ok=True)
+        slug = re.sub(r"[^a-z0-9_-]+", "-", hint.lower()).strip("-") or "output"
+        # Derive next number from the maximum existing file number, not the
+        # count, so file deletions don't cause reuse of lower numbers.
+        nums = (
+            int(m.group(1))
+            for m in (re.match(r"(\d{3})-", p.name) for p in d.glob("*.txt"))
+            if m
+        )
+        n = max(nums, default=0) + 1
+        path = d / f"{n:03d}-{slug[:40]}.txt"
+        path.write_text(content, encoding="utf-8")
+        return path
+    except OSError as exc:
+        logger.debug("persist_elided failed: %s", exc)
         return None

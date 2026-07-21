@@ -4,12 +4,20 @@ from pathlib import Path
 
 import pytest
 from pydantic_ai import Agent
-from pydantic_ai.messages import BinaryContent, ModelRequest, UserPromptPart
+from pydantic_ai.messages import (
+    BinaryContent,
+    ModelRequest,
+    ModelResponse,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
+from marim_harness.compaction import ELIDED_POINTER_PREFIX, estimate_tokens
 from marim_harness.hooks import events as hook_events
-from marim_harness.hooks.runner import HookRunner
+from marim_harness.hooks.runner import HookRunner, HookVerdict
 from marim_harness.runtime.deps import Deps, WorkspaceConfig
 from marim_harness.runtime.permissions import Mode
 from marim_harness.session import SessionManager, SessionStore
@@ -592,7 +600,11 @@ async def test_pre_compact_fires_before_compaction_work(tmp_path):
         async def dispatch(self, event, payload):
             order.append(f"hook:{event}")
 
-    async def _summarizer(middle):
+        async def dispatch_verdict(self, event, payload):
+            order.append(f"hook:{event}")
+            return HookVerdict()
+
+    async def _summarizer(middle, instructions=None):
         order.append("summarizer")
         return "SUMMARY"
 
@@ -607,7 +619,10 @@ async def test_pre_compact_fires_before_compaction_work(tmp_path):
         ModelRequest(parts=[UserPromptPart(content="z" * 5000)]),
     ]
     await ctrl.maybe_compact()
-    assert order == [f"hook:{hook_events.PRE_COMPACT}", "summarizer"]
+    # PostCompact now also lands in `order` after the summarizer.
+    assert order[0] == f"hook:{hook_events.PRE_COMPACT}"
+    assert "summarizer" in order
+    assert order.index("summarizer") > 0
 
 
 @pytest.mark.anyio
@@ -673,6 +688,41 @@ async def test_forced_compaction_clears_indicator_even_without_shrink(tmp_path):
     done = [e for e in events if isinstance(e, tuple) and e[0] == "done"]
     assert done, "on_compact must fire to clear the indicator even with no shrink"
     assert done[0][1] == done[0][2]  # before == after: the clear-only signal
+
+
+@pytest.mark.anyio
+async def test_precompact_and_indicator_fire_even_when_nothing_droppable(tmp_path):
+    """Intentional behavior: an over-threshold auto trigger fires PreCompact AND
+    the compacting indicator even when the history is undroppable (keep_last
+    covers the whole history and masking is off). The hook still gets to snapshot
+    the transcript, the UI shows the attempt, and the history is left unchanged."""
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    log = tmp_path / "pc.log"
+    cmd = _hook_cmd(tmp_path, log)
+    deps = Deps(
+        workspace=WorkspaceConfig(root=tmp_path),
+        hooks=HookRunner(
+            {hook_events.PRE_COMPACT: [{"hooks": [{"type": "command", "command": cmd}]}]}
+        ),
+    )
+    # Over threshold (tiny budget) but nothing to drop: keep_last_messages=20
+    # retains the single message, and masking is off by default.
+    ctrl = SessionController(None, None, deps, max_context_tokens=1, keep_last_messages=20)
+    ctrl.history = [ModelRequest(parts=[UserPromptPart(content="x" * 5000)])]
+    before = list(ctrl.history)
+    events: list = []
+    ctrl.on_compact_start = lambda: events.append("start")
+    ctrl.on_compact = lambda b, a: events.append(("done", b, a))
+
+    did = await ctrl.maybe_compact()
+
+    assert did is False  # nothing droppable → no shrink
+    assert ctrl.history == before  # history unchanged
+    assert log.exists() and '"hook_event_name": "PreCompact"' in log.read_text()
+    assert "start" in events  # indicator was shown
+    done = [e for e in events if isinstance(e, tuple) and e[0] == "done"]
+    assert done and done[0][1] == done[0][2]  # on_compact fired, before == after
 
 
 @pytest.mark.anyio
@@ -822,6 +872,202 @@ async def test_no_compaction_does_not_force_a_write(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Staged pipeline: breaker, PreCompact verdicts, PostCompact, stage ordering
+# ---------------------------------------------------------------------------
+
+
+def _bulky_tool_history(rounds: int = 8, payload: int = 6000) -> list:
+    """User turns each followed by a tool round with a huge return — the shape
+    where stage-1 masking alone can get a history back under threshold."""
+    msgs = [ModelRequest(parts=[UserPromptPart(content="start")])]
+    for i in range(rounds):
+        msgs.append(ModelRequest(parts=[UserPromptPart(content=f"turn {i}")]))
+        msgs.append(ModelResponse(parts=[
+            ToolCallPart(tool_name="run_bash", args={"c": i}, tool_call_id=f"t{i}")
+        ]))
+        msgs.append(ModelRequest(parts=[
+            ToolReturnPart(tool_name="run_bash", content="X" * payload, tool_call_id=f"t{i}")
+        ]))
+    msgs.append(ModelRequest(parts=[UserPromptPart(content="latest")]))
+    return msgs
+
+
+class _FakeHooks:
+    """Records every dispatch and returns a fixed verdict for PreCompact."""
+
+    def __init__(self, blocked: bool = False, reason: str = ""):
+        self.events: list[str] = []
+        self.payloads: dict[str, dict] = {}
+        self._verdict = HookVerdict(blocked=blocked, reason=reason)
+
+    async def dispatch(self, event, payload):
+        self.events.append(f"dispatch:{event}")
+        self.payloads[event] = payload
+
+    async def dispatch_verdict(self, event, payload):
+        self.events.append(f"verdict:{event}")
+        self.payloads[event] = payload
+        return self._verdict
+
+
+@pytest.mark.anyio
+async def test_stage1_masking_alone_skips_the_summarizer(tmp_path):
+    """Over threshold, but the bloat is old tool output: masking must get the
+    history under threshold WITHOUT a summarizer call."""
+    called = []
+
+    async def summarizer(messages, instructions=None):
+        called.append(1)
+        return "SUMMARY"
+
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+    # 8 x 6000-char returns ≈ 12k tokens; masking all but the 4 most recent
+    # drops ≈ 6k, landing under the 8k threshold.
+    ctrl = SessionController(
+        None, None, deps, max_context_tokens=8000, keep_last_messages=20,
+        summarizer=summarizer, mask_observations=True,
+    )
+    ctrl.history = _bulky_tool_history()
+    assert await ctrl.maybe_compact() is True
+    assert called == []                                    # stage 1 sufficed
+    assert estimate_tokens(ctrl.history) <= 8000
+
+
+@pytest.mark.anyio
+async def test_manual_bypasses_gate_and_resets_breaker(tmp_path):
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+    ctrl = SessionController(
+        None, None, deps, max_context_tokens=10_000_000, keep_last_messages=1,
+    )
+    ctrl.history = _bulky_tool_history()
+    ctrl.breaker.consecutive_rapid_refills = 99
+    assert await ctrl.maybe_compact(trigger="manual") is True   # under threshold, still compacts
+    assert ctrl.breaker.consecutive_rapid_refills == 0          # reset, then non-rapid note
+
+
+@pytest.mark.anyio
+async def test_open_breaker_skips_auto_but_not_manual(tmp_path):
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+    ctrl = SessionController(
+        None, None, deps, max_context_tokens=10, keep_last_messages=1,
+    )
+    ctrl.history = _bulky_tool_history()
+    notices: list[str] = []
+    ctrl.on_notice = notices.append
+    ctrl.breaker.consecutive_rapid_refills = ctrl.breaker.trip_after
+    assert await ctrl.maybe_compact() is False
+    assert len(notices) == 1                               # notice shown once
+    assert await ctrl.maybe_compact() is False
+    assert len(notices) == 1                               # ...and only once
+    assert await ctrl.maybe_compact(trigger="manual") is True
+
+
+def test_new_session_resets_breaker(tmp_path):
+    """new_session() must reset the compaction breaker and clear the notice flag.
+
+    Regression: a session that tripped the breaker would leak the open state
+    into a brand-new session created via /new, silently skipping auto-compaction
+    with no notice. This test ensures the breaker is closed and the notice flag
+    is cleared on new_session."""
+    mgr = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
+    store = mgr.create("Initial Session")
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+    ctrl = SessionController(
+        store, mgr, deps, max_context_tokens=10, keep_last_messages=1,
+    )
+    # Set the breaker to an open state and mark the notice as shown
+    ctrl.breaker.consecutive_rapid_refills = ctrl.breaker.trip_after
+    ctrl._breaker_noticed = True
+    assert ctrl.breaker.open is True
+    assert ctrl._breaker_noticed is True
+
+    # Create a new session
+    ctrl.new_session("Test Session")
+
+    # Breaker should be closed and notice flag cleared
+    assert ctrl.breaker.open is False
+    assert ctrl._breaker_noticed is False
+
+
+@pytest.mark.anyio
+async def test_manual_block_verdict_aborts_with_notice(tmp_path):
+    hooks = _FakeHooks(blocked=True, reason="snapshot first")
+    deps = _make_deps(tmp_path, mode=Mode.ask, hooks=hooks)
+    ctrl = SessionController(
+        None, None, deps, max_context_tokens=10, keep_last_messages=1,
+    )
+    ctrl.history = _bulky_tool_history()
+    notices: list[str] = []
+    ctrl.on_notice = notices.append
+    before = list(ctrl.history)
+    assert await ctrl.maybe_compact(trigger="manual") is False
+    assert ctrl.history == before
+    assert notices and "snapshot first" in notices[0]
+
+
+@pytest.mark.anyio
+async def test_auto_ignores_block_verdict(tmp_path):
+    hooks = _FakeHooks(blocked=True, reason="nope")
+    deps = _make_deps(tmp_path, mode=Mode.ask, hooks=hooks)
+    ctrl = SessionController(
+        None, None, deps, max_context_tokens=10, keep_last_messages=1,
+    )
+    ctrl.history = _bulky_tool_history()
+    assert await ctrl.maybe_compact() is True              # block logged, not honored
+
+
+@pytest.mark.anyio
+async def test_pipeline_order_and_post_compact_payload(tmp_path):
+    """Full pipeline: PreCompact verdict → mask (payload persisted to the
+    scratchpad) → summarize → PostCompact with stage + token counts."""
+    hooks = _FakeHooks()
+    order: list[str] = []
+
+    async def summarizer(messages, instructions=None):
+        order.append("summarizer")
+        return "SUMMARY"
+
+    pad = tmp_path / "pad"
+    pad.mkdir()
+    deps = _make_deps(tmp_path, mode=Mode.ask, hooks=hooks)
+    deps.get_scratchpad = lambda: pad   # if Deps is frozen, pass via _make_deps kwarg
+    # keep_last_messages=15 (not 1): large enough that the tail-cut boundary
+    # falls inside the masked prefix, so a persisted pointer placeholder
+    # survives into the retained tail alongside the synthetic summary — with
+    # keep_last_messages=1 the aggressive cut discards the whole masked
+    # region (indices 1..24), leaving nothing for the pointer assertion below
+    # to find even though masking/persisting still happened correctly.
+    ctrl = SessionController(
+        None, None, deps, max_context_tokens=10, keep_last_messages=15,
+        summarizer=summarizer, mask_observations=True,
+    )
+    ctrl.history = _bulky_tool_history()
+    assert await ctrl.maybe_compact() is True
+
+    # Order: verdict fired before the summarizer, PostCompact after it.
+    assert hooks.events[0] == f"verdict:{hook_events.PRE_COMPACT}"
+    assert hooks.events[-1] == f"dispatch:{hook_events.POST_COMPACT}"
+    assert order == ["summarizer"]
+
+    # Elided payloads landed in the scratchpad and placeholders point at them.
+    files = list((pad / "elided").glob("*.txt"))
+    assert files
+    pointers = [
+        p.content
+        for m in ctrl.history
+        for p in getattr(m, "parts", [])
+        if isinstance(p, ToolReturnPart) and str(p.content).startswith(ELIDED_POINTER_PREFIX)
+    ]
+    assert pointers and str(pad) in pointers[0]
+
+    # PostCompact payload carries the observability fields.
+    post = hooks.payloads[hook_events.POST_COMPACT]
+    assert post["trigger"] == "auto"
+    assert post["pre_compact_tokens"] > post["post_compact_tokens"]
+    assert post["stage"] in {"micro", "summary", "micro+summary"}
+
+
+# ---------------------------------------------------------------------------
 # saved_model_id and update_model encapsulation tests
 # ---------------------------------------------------------------------------
 
@@ -852,7 +1098,7 @@ async def test_update_model_rebuilds_summarizer_and_titler(tmp_path: Path):
 
     model_b = FunctionModel(fn)
 
-    async def _stub_summarizer(mid):
+    async def _stub_summarizer(mid, instructions=None):
         return "summary"
 
     async def _stub_titler(history):

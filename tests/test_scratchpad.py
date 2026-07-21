@@ -10,6 +10,7 @@ from marim_harness.tools import edit_tools, fs_tools
 from marim_harness.tools.impl import fs
 from marim_harness.workspace.scratchpad import (
     ensure_scratchpad,
+    persist_elided,
     scratchpad_base,
     scratchpad_root,
 )
@@ -140,3 +141,46 @@ def test_ensure_tightens_loose_preexisting_base(tmp_path):
     p = ensure_scratchpad(Path("/w/proj"), "s1", base=base)
     assert p is not None
     assert (base.stat().st_mode & 0o777) == 0o700
+
+
+def test_persist_elided_writes_numbered_slugged_file(tmp_path):
+    p1 = persist_elided(tmp_path, "payload one", "run_bash")
+    p2 = persist_elided(tmp_path, "payload two", "read_file")
+    assert p1 is not None and p1.name == "001-run_bash.txt"
+    assert p2 is not None and p2.name == "002-read_file.txt"
+    assert p1.parent == tmp_path / "elided"
+    assert p1.read_text(encoding="utf-8") == "payload one"
+
+
+def test_persist_elided_sanitizes_hint(tmp_path):
+    p = persist_elided(tmp_path, "x", "mcp__weird/Tool Name!")
+    assert p is not None
+    assert p.name == "001-mcp__weird-tool-name.txt"
+
+
+def test_persist_elided_failure_returns_none(tmp_path):
+    blocker = tmp_path / "elided"
+    blocker.write_text("not a directory")   # occupies the dir name with a file
+    assert persist_elided(tmp_path, "x", "run_bash") is None
+
+
+def test_persist_elided_numbering_survives_deletion(tmp_path):
+    """Numbering should track the maximum existing file number, not the count.
+    If a file is deleted, the next call should not reuse a lower number."""
+    p1 = persist_elided(tmp_path, "payload one", "tool1")
+    p2 = persist_elided(tmp_path, "payload two", "tool2")
+    p3 = persist_elided(tmp_path, "payload three", "tool3")
+    assert p1 is not None and p1.name == "001-tool1.txt"
+    assert p2 is not None and p2.name == "002-tool2.txt"
+    assert p3 is not None and p3.name == "003-tool3.txt"
+
+    # Delete the first file
+    p1.unlink()
+
+    # The next call should create 004-, not reuse 001-
+    p4 = persist_elided(tmp_path, "payload four", "tool4")
+    assert p4 is not None and p4.name == "004-tool4.txt"
+
+    # Verify that the file with 003- still exists and has the original content
+    assert p3.exists()
+    assert p3.read_text(encoding="utf-8") == "payload three"

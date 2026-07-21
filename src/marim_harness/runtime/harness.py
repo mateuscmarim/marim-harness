@@ -526,6 +526,7 @@ class Harness:
         on_jobs_changed: Callable[[], None] | None = None,
         on_compact: Callable[[int, int], None] | None = None,
         on_compact_start: Callable[[], None] | None = None,
+        on_notice: Callable[[str], None] | None = None,
         on_rename: Callable[[str, str], None] | None = None,
     ) -> None:
         """Wire the interactive UI's callbacks into the harness in one place.
@@ -561,6 +562,7 @@ class Harness:
         self.deps.jobs.on_change = on_jobs_changed
         self.session.on_compact = on_compact
         self.session.on_compact_start = on_compact_start
+        self.session.on_notice = on_notice
         self.session.on_rename = on_rename
 
     # --- session lifecycle (operations carrying harness-level logic; plain
@@ -806,3 +808,10 @@ class Harness:
         """Run the agent until it produces a final text answer, looping through
         any approval rounds. Returns the final text output."""
         return await self.turn_controller.run_turn(prompt, event_stream_handler, attachments)
+
+    async def manual_compact(self, instructions: str | None = None) -> bool:
+        """Manual /compact entry point. Delegates to the turn controller so the
+        checkpoint-invalidation wrapper stays the single place every compaction
+        is funneled through — a bare ``session.maybe_compact`` here would skip it
+        and leave stale checkpoints that a later /rewind would slice mid-pair."""
+        return await self.turn_controller.manual_compact(instructions=instructions)

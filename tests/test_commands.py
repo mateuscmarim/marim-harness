@@ -1,3 +1,4 @@
+import asyncio
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +16,10 @@ from marim_harness.mcp.manager import McpStatus
 from marim_harness.session import SessionInfo
 
 
+async def _default_manual_compact(instructions=None) -> bool:
+    return False
+
+
 class _FakeApp:
     """Minimal stand-in for HarnessApp: records posts and spawned turns."""
 
@@ -22,16 +27,24 @@ class _FakeApp:
         self.posted: list[str] = []
         self.turn_prompts: list[str] = []
         self._turn_worker = None
+        self.turn_busy = False
+        self.compact_busy = False
+        self.compacting_notice_cleared = False
+        self._worker_tasks: list[asyncio.Future] = []
         self.stream = SimpleNamespace(current_assistant="sentinel")
         self.harness = SimpleNamespace(
             deps=SimpleNamespace(
                 workspace=SimpleNamespace(root=workspace_root, skill_dirs=None)
             ),
             checkpoints=SimpleNamespace(list=lambda: []),
+            manual_compact=_default_manual_compact,
         )
 
         self.undone = False
         self.rewound: list[int] = []
+
+    def clear_compacting_notice(self) -> None:
+        self.compacting_notice_cleared = True
 
     async def post_system(self, msg: str) -> None:
         self.posted.append(msg)
@@ -46,8 +59,21 @@ class _FakeApp:
         self.turn_prompts.append(text)
         return ("coro", text)  # stand-in; not awaited by the fake
 
-    def run_worker(self, coro, exclusive=False):
+    def run_worker(self, coro, exclusive=False, group="default", exit_on_error=True):
+        # Real coroutines (e.g. /compact's `run()`) are scheduled as tasks so a
+        # test can `await drain_workers()` to observe their effects; the
+        # `_run_turn` stand-in above returns a plain tuple, not a coroutine, so
+        # it falls through to the old no-op behavior other command tests rely on.
+        if asyncio.iscoroutine(coro):
+            task = asyncio.ensure_future(coro)
+            self._worker_tasks.append(task)
+            return task
         return ("worker", coro)
+
+    async def drain_workers(self) -> None:
+        tasks, self._worker_tasks = self._worker_tasks, []
+        if tasks:
+            await asyncio.gather(*tasks)
 
     def start_system_turn(self, prompt: str) -> None:
         self.stream.current_assistant = None
@@ -585,3 +611,86 @@ async def test_jobs_unknown_subcommand_shows_usage():
     app.harness = SimpleNamespace(deps=SimpleNamespace(jobs=JobRegistry()))
     await dispatch(app, "/jobs frobnicate")
     assert "usage" in app.posted[-1].lower()
+
+
+@pytest.mark.anyio
+async def test_compact_refuses_while_turn_busy():
+    app = _FakeApp()
+    app.turn_busy = True
+    await dispatch(app, "/compact")
+    assert any("turn is running" in m for m in app.posted)
+
+
+@pytest.mark.anyio
+async def test_compact_passes_instructions_to_manual_compact():
+    app = _FakeApp()
+    calls = {}
+
+    async def fake_manual_compact(instructions=None):
+        calls.update(instructions=instructions)
+        return True
+
+    app.harness.manual_compact = fake_manual_compact
+    await dispatch(app, "/compact focus on the auth bug")
+    await app.drain_workers()
+    # Routed through the harness manual entry point (which applies the same
+    # checkpoint invalidation as the auto path), not session.maybe_compact.
+    assert calls == {"instructions": "focus on the auth bug"}
+
+
+@pytest.mark.anyio
+async def test_compact_reports_nothing_to_do():
+    app = _FakeApp()
+
+    async def fake_manual_compact(instructions=None):
+        return False
+
+    app.harness.manual_compact = fake_manual_compact
+    await dispatch(app, "/compact")
+    await app.drain_workers()
+    assert any("Nothing to compact" in m for m in app.posted)
+
+
+@pytest.mark.anyio
+async def test_compact_refuses_while_already_compacting():
+    """I1: a second /compact while the compact worker is in flight is refused,
+    symmetric with the turn-busy guard — it must not cancel the running one."""
+    app = _FakeApp()
+    app.compact_busy = True
+    await dispatch(app, "/compact")
+    assert any("Already compacting" in m for m in app.posted)
+
+
+@pytest.mark.anyio
+async def test_compact_latches_busy_until_worker_finishes():
+    """I1: compact_busy is latched synchronously (before the worker runs) and
+    cleared in the worker's finally, so the teardown/turn-start flows can gate
+    on it for the worker's whole lifetime."""
+    app = _FakeApp()
+
+    async def fake_manual_compact(instructions=None):
+        return True
+
+    app.harness.manual_compact = fake_manual_compact
+    await dispatch(app, "/compact")
+    assert app.compact_busy is True  # set before the worker is awaited
+    await app.drain_workers()
+    assert app.compact_busy is False  # cleared in finally
+
+
+@pytest.mark.anyio
+async def test_compact_worker_reports_error_and_clears_notice():
+    """I3: an exception from manual_compact (e.g. a persist OSError) is posted to
+    the user, the compacting notice is cleared, the busy flag drops, and nothing
+    escapes the worker."""
+    app = _FakeApp()
+
+    async def boom(instructions=None):
+        raise OSError("disk full")
+
+    app.harness.manual_compact = boom
+    await dispatch(app, "/compact")
+    await app.drain_workers()  # must not raise
+    assert any("Compaction failed" in m and "disk full" in m for m in app.posted)
+    assert app.compacting_notice_cleared is True
+    assert app.compact_busy is False

@@ -131,7 +131,7 @@ async def test_compaction_logs_on_summarizer_failure(caplog):
     for n in range(20):
         history.extend(_round(n))
 
-    async def boom(messages):
+    async def boom(messages, instructions=None):
         raise RuntimeError("summary model down")
 
     with caplog.at_level(logging.WARNING, logger="marim_harness.compaction"):

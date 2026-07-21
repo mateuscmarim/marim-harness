@@ -51,6 +51,52 @@ async def _cmd_clear(app: HarnessApp, arg: str) -> None:
     await app.reset_conversation()
 
 
+async def _cmd_compact(app: HarnessApp, arg: str) -> None:
+    """Manually compact the session: mask stale tool output, then summarize.
+    Runs in its own worker group — the summarizer can take a while, and the
+    default worker group would let a starting turn cancel it (WorkerManager
+    sweeps a group when an exclusive worker joins; see _handle_bang).
+
+    Routed through ``harness.manual_compact`` (not ``session.maybe_compact``
+    directly) so the manual trigger goes through the same checkpoint-invalidating
+    wrapper as the auto path — otherwise a later /rewind could slice a stale
+    checkpoint index mid-pair. ``app.compact_busy`` is latched for the worker's
+    lifetime so turn submits and session teardown refuse rather than race it."""
+    if app.turn_busy:
+        await app.post_system("Can't compact while a turn is running. Press Esc first.")
+        return
+    if app.compact_busy:
+        await app.post_system("Already compacting — wait for the current one to finish.")
+        return
+
+    async def run() -> None:
+        try:
+            did = await app.harness.manual_compact(instructions=arg or None)
+            if not did:
+                await app.post_system("Nothing to compact.")
+        except Exception as exc:  # noqa: BLE001 — surface, don't strand the notice
+            # exit_on_error=False means an escaping exception would vanish
+            # silently AND leave the "compacting…" indicator mounted forever.
+            # Mirror the turn worker's finally discipline: report and clean up.
+            # Clear the notice BEFORE posting: if post_system itself raises
+            # (UI mid-teardown) the notice must not strand.
+            app.clear_compacting_notice()
+            await app.post_system(f"Compaction failed: {exc}")
+        finally:
+            app.compact_busy = False
+
+    app.compact_busy = True
+    try:
+        app.run_worker(run(), group="compact", exclusive=True, exit_on_error=False)
+    except Exception:
+        # run_worker itself can raise mid-teardown (the hazard start_system_turn
+        # guards the same way). If the worker never starts, its finally never
+        # runs — without this reset the latched flag would wedge submits and
+        # the session commands permanently.
+        app.compact_busy = False
+        raise
+
+
 def resolve_ref(infos: list[SessionInfo], ref: str) -> SessionInfo | None:
     """Find a session by 1-based list position, exact id, or exact name
     (case-insensitive). Returns the matching SessionInfo or None."""
@@ -510,6 +556,11 @@ async def _cmd_exit(app: HarnessApp, arg: str) -> None:
 COMMANDS: list[Command] = [
     Command("help", "list available commands", _cmd_help, aliases=("?",)),
     Command("clear", "clear this conversation's history", _cmd_clear),
+    Command(
+        "compact",
+        "free context now: /compact [summary instructions]",
+        _cmd_compact,
+    ),
     Command("sessions", "list saved sessions", _cmd_sessions, aliases=("ls",)),
     Command("new", "start a new session: /new [name]", _cmd_new),
     Command("switch", "switch sessions: /switch <number|name>", _cmd_switch),

@@ -38,7 +38,9 @@ _CHARS_PER_TOKEN = 4
 # ~500k). This nominal value keeps the context gauge and compaction planning sane.
 _IMAGE_TOKEN_ESTIMATE = 1500
 
-Summarizer = Callable[[list[ModelMessage]], Awaitable[str]]
+# (messages, custom_instructions) -> summary text. Instructions come from a
+# manual `/compact <instructions>` and are None for automatic compaction.
+Summarizer = Callable[[list[ModelMessage], str | None], Awaitable[str]]
 
 # Sentinel so the compaction entry points can accept an already-computed tail
 # start (None is a valid value — "nothing to drop") and reuse it instead of
@@ -88,6 +90,55 @@ def last_request_input_tokens(history: list[ModelMessage]) -> int | None:
         if tokens:
             return int(tokens)
     return None
+
+
+# Shown once when the breaker opens; mirrors Claude Code's thrashing message.
+BREAKER_NOTICE = (
+    "Auto-compaction is thrashing: the context refilled right after each of the "
+    "last 3 compactions. A file read or tool output is likely too large for the "
+    "context window — read in smaller chunks, or /clear to start fresh."
+)
+
+
+@dataclasses.dataclass
+class CompactionBreaker:
+    """Rapid-refill circuit breaker for auto-compaction.
+
+    If a compaction's result refills past the threshold within ``rapid_turns``
+    turns, ``trip_after`` consecutive times, the breaker opens and the caller
+    should skip *auto* compaction (manual and forced compaction bypass it).
+    Without this, one oversized tool observation re-triggers the summarizer
+    every turn forever — burning summarizer calls without ever getting under
+    the threshold. Pure state machine: the owner calls ``note_turn()`` once per
+    post-turn compaction check and ``note_compact()`` when a compaction fires.
+    """
+
+    rapid_turns: int = 3
+    trip_after: int = 3
+    turns_since_compact: int | None = None  # None until the first compaction
+    consecutive_rapid_refills: int = 0
+
+    @property
+    def open(self) -> bool:
+        return self.consecutive_rapid_refills >= self.trip_after
+
+    def note_turn(self) -> None:
+        if self.turns_since_compact is not None:
+            self.turns_since_compact += 1
+
+    def note_compact(self) -> None:
+        if (
+            self.turns_since_compact is not None
+            and self.turns_since_compact <= self.rapid_turns
+        ):
+            self.consecutive_rapid_refills += 1
+        else:
+            self.consecutive_rapid_refills = 0
+        self.turns_since_compact = 0
+
+    def reset(self) -> None:
+        self.turns_since_compact = None
+        self.consecutive_rapid_refills = 0
 
 
 def _is_user_turn(message) -> bool:
@@ -204,12 +255,69 @@ MASKED_OBSERVATION = (
     "[observation elided to save context — re-run the tool if you need this output]"
 )
 
+# When the payload was persisted to the session scratchpad before eliding, the
+# placeholder points at the file so the model can recover the exact bytes with
+# read_file instead of re-running the tool. Both placeholder forms are treated
+# as already-masked by _is_masked, keeping re-runs idempotent.
+ELIDED_POINTER_PREFIX = "[output elided to save context; full content at "
+
+
+def _elided_pointer(path: str) -> str:
+    return f"{ELIDED_POINTER_PREFIX}{path} — read_file it if still needed]"
+
+
+def _is_masked(content) -> bool:
+    return content == MASKED_OBSERVATION or (
+        isinstance(content, str) and content.startswith(ELIDED_POINTER_PREFIX)
+    )
+
+
+def _count_recent_parts(history: list, keep_recent: int) -> set[tuple[int, int]]:
+    """Identify which ToolReturnParts should be kept (first pass: newest-first counting)."""
+    seen = 0
+    parts_to_keep: set[tuple[int, int]] = set()
+    for idx in range(len(history) - 1, -1, -1):
+        message = history[idx]
+        parts = getattr(message, "parts", None)
+        if not parts:
+            continue
+        for pidx in range(len(parts) - 1, -1, -1):
+            part = parts[pidx]
+            if not isinstance(part, ToolReturnPart):
+                continue
+            seen += 1
+            if seen <= keep_recent:
+                parts_to_keep.add((idx, pidx))
+    return parts_to_keep
+
+
+def _mask_part(
+    part: ToolReturnPart,
+    min_chars: int,
+    persist: Callable[[str, str], str | None] | None,
+) -> str | None:
+    """Determine the replacement content for a part, or None if it should not be masked."""
+    if _is_masked(part.content):
+        return None
+    if len(str(part.content)) < min_chars:
+        return None
+    replacement = MASKED_OBSERVATION
+    if persist is not None:
+        try:
+            path = persist(str(part.content), part.tool_name)
+        except Exception:
+            path = None
+        if path:
+            replacement = _elided_pointer(path)
+    return replacement
+
 
 def mask_stale_observations(
     history: list,
     keep_recent: int = 4,
     *,
     min_chars: int = 200,
+    persist: Callable[[str, str], str | None] | None = None,
 ) -> tuple[list, int]:
     """Replace the body of older tool-observation returns with a short placeholder.
 
@@ -226,29 +334,38 @@ def mask_stale_observations(
     turn and cost more than it saves). Already-masked returns and small ones are
     skipped, so re-running it is idempotent. Returns ``(new_history, masked_count)``
     and never mutates the input — masked messages are rebuilt via ``replace``.
+
+    When ``persist`` is given, it is called with ``(content, tool_name)`` and should
+    write the payload somewhere recoverable, returning the path (used in a pointer
+    placeholder) or ``None`` (falls back to plain placeholder). Persist is best-effort:
+    a ``None``/failure never blocks masking.
     """
-    seen = 0
+    # First pass: identify which parts should be kept (newest-first counting).
+    parts_to_keep = _count_recent_parts(history, keep_recent)
+
+    # Second pass: apply masking in forward order so persist calls happen in document
+    # order (oldest to newest).
     masked = 0
     new_history = list(history)
-    # Newest-first (messages and parts both reversed) so "keep the most recent N"
-    # is a single running count across the whole history.
-    for idx in range(len(new_history) - 1, -1, -1):
+    for idx in range(len(history)):
         message = new_history[idx]
         parts = getattr(message, "parts", None)
         if not parts:
             continue
         new_parts = list(parts)
         changed = False
-        for pidx in range(len(parts) - 1, -1, -1):
+        for pidx in range(len(parts)):
             part = parts[pidx]
             if not isinstance(part, ToolReturnPart):
                 continue
-            seen += 1
-            if seen <= keep_recent or part.content == MASKED_OBSERVATION:
+            # Skip if this part should be kept.
+            if (idx, pidx) in parts_to_keep:
                 continue
-            if len(str(part.content)) < min_chars:
+            # Determine replacement content (or None to skip).
+            replacement = _mask_part(part, min_chars, persist)
+            if replacement is None:
                 continue
-            new_parts[pidx] = dataclasses.replace(part, content=MASKED_OBSERVATION)
+            new_parts[pidx] = dataclasses.replace(part, content=replacement)
             changed = True
             masked += 1
         if changed:
@@ -323,6 +440,7 @@ async def compact_history_with_summary(
     *,
     force: bool = False,
     tail_start: int | None = _UNSET,
+    instructions: str | None = None,
 ) -> tuple[list, bool]:
     """Like ``compact_history`` but replace the dropped middle with a summary.
 
@@ -332,6 +450,8 @@ async def compact_history_with_summary(
 
     ``tail_start`` behaves as in ``compact_history``: pass a precomputed
     ``_plan_tail_start`` result to avoid recomputing the whole-history estimate.
+    ``instructions`` is the manual `/compact <instructions>` focus, threaded
+    through to the summarizer verbatim; ``None`` for automatic compaction.
     """
     start = (
         _plan_tail_start(history, max_tokens, keep_last_messages, force=force)
@@ -344,7 +464,7 @@ async def compact_history_with_summary(
     middle = history[1:start]
     summary: str | None
     try:
-        summary = await summarizer(middle)
+        summary = await summarizer(middle, instructions)
     except Exception as exc:
         logger.warning("compaction summarizer failed, falling back to truncation: %s", exc)
         summary = None
@@ -358,10 +478,26 @@ Titler = Callable[[list[ModelMessage]], Awaitable[str]]
 
 _SUMMARY_INSTRUCTIONS = (
     "You compress a coding-session transcript into a dense summary so the agent "
-    "can keep working with less context. Preserve: the user's goals and "
-    "constraints, decisions made, files read or edited and what changed, command "
-    "results, and any unresolved problems or next steps. Drop pleasantries and "
-    "redundant detail. Write terse notes, not prose."
+    "can keep working with less context. Write terse notes, not prose, under "
+    "these headings:\n"
+    "1. Primary request and intent — every explicit ask from the user.\n"
+    "2. Key technical concepts — technologies, patterns, decisions.\n"
+    "3. Files and code sections — files read or edited, what changed and why, "
+    "with short snippets only where essential to continue.\n"
+    "4. Errors and fixes — each error hit, how it was fixed, and any user "
+    "feedback about doing it differently.\n"
+    "5. All user messages — every non-tool-result user message, condensed but "
+    "none omitted.\n"
+    "6. Pending tasks — work explicitly requested but not finished.\n"
+    "7. Current work — precisely what was in progress at the cut, file names "
+    "and snippets included.\n"
+    "8. Next step — only if directly in line with the most recent explicit "
+    "request; include a verbatim quote from the recent conversation showing "
+    "where work left off, so the task cannot drift.\n"
+    "Security-relevant user instructions (files or data to avoid, operations "
+    "that must not be performed, credential handling rules) MUST be preserved "
+    "verbatim so they continue to apply after compaction. Drop pleasantries "
+    "and redundant detail."
 )
 
 _TITLE_INSTRUCTIONS = (
@@ -374,16 +510,24 @@ _TITLE_INSTRUCTIONS = (
 _MAX_TITLE_CHARS = 50
 
 
-def _summarize_prompt(transcript: str) -> str:
+def _summarize_prompt(transcript: str, instructions: str | None = None) -> str:
     """Wrap the transcript in an explicit, in-message summarize instruction. A bare
     transcript with the rules only in the system prompt lets weaker models reply
     conversationally instead of summarizing; restating the task in the user turn
-    and delimiting the transcript keeps them on task."""
+    and delimiting the transcript keeps them on task. ``instructions`` is the
+    user's manual `/compact` focus, honored as an extra block the summarizer is
+    told to follow."""
+    extra = (
+        f"\n\n## Compact instructions\nAlso follow these user-supplied "
+        f"instructions when summarizing:\n{instructions}\n"
+        if instructions
+        else ""
+    )
     return (
-        "Summarize the coding-session transcript below into dense notes, following "
-        "the rules in your instructions (goals, decisions, files changed, command "
-        "results, open problems; terse notes, not prose). Output only the summary "
-        "— do not reply conversationally or address the user.\n\n"
+        "Summarize the coding-session transcript below into dense notes under "
+        "the headings from your instructions. Output only the summary — do not "
+        "reply conversationally or address the user."
+        f"{extra}\n\n"
         "=== TRANSCRIPT START ===\n"
         f"{transcript}\n"
         "=== TRANSCRIPT END ===\n\n"
@@ -395,8 +539,10 @@ def make_summarizer(model) -> Summarizer:
     """Build a summarizer backed by a dedicated, tool-free agent on ``model``."""
     summary_agent = Agent(model, instructions=_SUMMARY_INSTRUCTIONS)
 
-    async def summarize(messages: list) -> str:
-        result = await summary_agent.run(_summarize_prompt(render_transcript(messages)))
+    async def summarize(messages: list, instructions: str | None = None) -> str:
+        result = await summary_agent.run(
+            _summarize_prompt(render_transcript(messages), instructions)
+        )
         return result.output
 
     return summarize
