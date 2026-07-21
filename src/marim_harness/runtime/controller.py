@@ -404,7 +404,11 @@ class TurnController:
         # invalidating then would needlessly destroy the user's rewind history.
         # Detect restructuring by whether the message count changed — the summary
         # stage collapses a prefix into a single summary message (count shrinks),
-        # while a pure mask leaves the count untouched.
+        # while a pure mask leaves the count untouched. One summary edge leaves
+        # the count unchanged (tail_start == 2: a 1-message middle replaced by
+        # the 1-message summary); skipping invalidation there is benign — the
+        # tail keeps the same objects at the same indices, so every stored
+        # history_len still lands on a valid boundary.
         before = len(self.session.history)
         compacted = await self.session.maybe_compact(
             force=force, trigger=trigger, instructions=instructions

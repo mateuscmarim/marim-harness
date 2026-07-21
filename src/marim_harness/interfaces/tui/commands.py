@@ -78,13 +78,23 @@ async def _cmd_compact(app: HarnessApp, arg: str) -> None:
             # exit_on_error=False means an escaping exception would vanish
             # silently AND leave the "compacting…" indicator mounted forever.
             # Mirror the turn worker's finally discipline: report and clean up.
-            await app.post_system(f"Compaction failed: {exc}")
+            # Clear the notice BEFORE posting: if post_system itself raises
+            # (UI mid-teardown) the notice must not strand.
             app.clear_compacting_notice()
+            await app.post_system(f"Compaction failed: {exc}")
         finally:
             app.compact_busy = False
 
     app.compact_busy = True
-    app.run_worker(run(), group="compact", exclusive=True, exit_on_error=False)
+    try:
+        app.run_worker(run(), group="compact", exclusive=True, exit_on_error=False)
+    except Exception:
+        # run_worker itself can raise mid-teardown (the hazard start_system_turn
+        # guards the same way). If the worker never starts, its finally never
+        # runs — without this reset the latched flag would wedge submits and
+        # the session commands permanently.
+        app.compact_busy = False
+        raise
 
 
 def resolve_ref(infos: list[SessionInfo], ref: str) -> SessionInfo | None:
