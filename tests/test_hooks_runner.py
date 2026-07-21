@@ -296,3 +296,44 @@ async def test_verdict_matcher_matches_trigger(tmp_path):
 @pytest.mark.anyio
 async def test_verdict_unconfigured_event_allows():
     assert not (await HookRunner({}).dispatch_verdict(events.PRE_COMPACT, {})).blocked
+
+
+@pytest.mark.anyio
+async def test_dispatch_precompact_matcher_matches_trigger(tmp_path):
+    """The observe-only dispatch() path must gate PreCompact hooks on the
+    payload's ``trigger`` (compact events ride the tool_name matcher slot with
+    their trigger), the same as dispatch_verdict already does — a plain
+    dispatch() call must not silently skip a matchered PreCompact hook."""
+    out = tmp_path / "ran.txt"
+    cmd = _script(tmp_path, "h.sh", f"echo ran >> {out}\n")
+    runner = HookRunner({events.PRE_COMPACT: [_entry(cmd, matcher="manual")]})
+    await runner.dispatch(events.PRE_COMPACT, {"trigger": "auto"})
+    assert not out.exists()  # matcher 'manual' does not match trigger 'auto'
+    await runner.dispatch(events.PRE_COMPACT, {"trigger": "manual"})
+    assert out.read_text().strip() == "ran"
+
+
+@pytest.mark.anyio
+async def test_dispatch_postcompact_matcher_matches_trigger(tmp_path):
+    """PostCompact must be gated the same way: matcher filtering is inert
+    unless POST_COMPACT is in _matches's event-gating tuple."""
+    out = tmp_path / "ran.txt"
+    cmd = _script(tmp_path, "h.sh", f"echo ran >> {out}\n")
+    runner = HookRunner({events.POST_COMPACT: [_entry(cmd, matcher="manual")]})
+    await runner.dispatch(events.POST_COMPACT, {"trigger": "auto"})
+    assert not out.exists()  # matcher 'manual' does not match trigger 'auto'
+    await runner.dispatch(events.POST_COMPACT, {"trigger": "manual"})
+    assert out.read_text().strip() == "ran"
+
+
+@pytest.mark.anyio
+async def test_verdict_first_block_wins_reason(tmp_path):
+    """Two matching PreCompact entries both block; the returned verdict must
+    carry the FIRST blocking reason, even though later hooks still execute."""
+    first = _script(tmp_path, "first.sh", 'echo "reason A" >&2\nexit 2\n')
+    second = _script(tmp_path, "second.sh", 'echo "reason B" >&2\nexit 2\n')
+    runner = HookRunner({events.PRE_COMPACT: [_entry(first), _entry(second)]})
+    v = await runner.dispatch_verdict(events.PRE_COMPACT, {"trigger": "manual"})
+    assert v.blocked
+    assert "reason A" in v.reason
+    assert "reason B" not in v.reason

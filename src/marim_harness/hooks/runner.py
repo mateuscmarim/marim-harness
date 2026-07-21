@@ -11,7 +11,7 @@ import re
 import signal
 from dataclasses import dataclass
 
-from .events import INJECTING_EVENTS, POST_TOOL_USE, PRE_COMPACT, PRE_TOOL_USE
+from .events import INJECTING_EVENTS, POST_COMPACT, POST_TOOL_USE, PRE_COMPACT, PRE_TOOL_USE
 
 logger = logging.getLogger(__name__)
 
@@ -67,16 +67,16 @@ def base_payload(
 
 def _matches(matcher, event: str, subject: str) -> bool:
     """``matcher`` (a regex on ``subject``) gates the tool events (subject = tool
-    name) and PreCompact (subject = trigger, "manual"/"auto" — Claude Code's
-    PreCompact matcher semantics); for all other events it is ignored. Absent/
-    empty/``*`` matches everything. Non-string matchers are treated as
-    non-matching.
+    name) and the compact events, PreCompact/PostCompact (subject = trigger,
+    "manual"/"auto" — Claude Code's compact-event matcher semantics); for all
+    other events it is ignored. Absent/empty/``*`` matches everything.
+    Non-string matchers are treated as non-matching.
 
     The match is anchored (``re.fullmatch``) to mirror Claude Code's contract: the
     matcher must match the *whole* subject. An unanchored ``re.search`` over-matches
     — ``"Edit"`` would fire for ``"MultiEdit"`` — which is not the documented
     semantics this module claims to reproduce."""
-    if event not in (PRE_TOOL_USE, POST_TOOL_USE, PRE_COMPACT):
+    if event not in (PRE_TOOL_USE, POST_TOOL_USE, PRE_COMPACT, POST_COMPACT):
         return True
     if not matcher or matcher == "*":
         return True
@@ -177,12 +177,12 @@ async def _run_one_verdict(command: str, payload: dict, timeout) -> HookVerdict:
     return HookVerdict()
 
 
-async def _run_entry(entry: object, event: str, payload: dict, tool_name: str) -> list[str]:
+async def _run_entry(entry: object, event: str, payload: dict, subject: str) -> list[str]:
     """Run one config entry's command hooks whose matcher passes; return any
     injected contexts (empty for non-injecting events or no output)."""
     if not isinstance(entry, dict):
         return []
-    if not _matches(entry.get("matcher"), event, tool_name):
+    if not _matches(entry.get("matcher"), event, subject):
         return []
     contexts: list[str] = []
     for spec in entry.get("hooks", []) or []:
@@ -216,10 +216,15 @@ class HookRunner:
         entries = self._config.get(event)
         if not entries:
             return None
-        tool_name = str(payload.get("tool_name", ""))
+        # Compact events (PreCompact/PostCompact) have no tool_name — they ride
+        # the same matcher slot with their trigger ("manual"/"auto") instead,
+        # per the hook design. Fall back to it so a matchered compact-event
+        # entry isn't silently starved of a subject on this observe-only path
+        # (dispatch_verdict already does this for the verdict path).
+        subject = str(payload.get("tool_name") or payload.get("trigger", ""))
         contexts: list[str] = []
         for entry in entries:
-            contexts.extend(await _run_entry(entry, event, payload, tool_name))
+            contexts.extend(await _run_entry(entry, event, payload, subject))
         return "\n".join(contexts) if contexts else None
 
     async def dispatch_verdict(self, event: str, payload: dict) -> HookVerdict:
