@@ -44,6 +44,16 @@ Model API keys follow pydantic-ai's own per-provider env-var convention
 (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …) — marim never reads its own
 `MARIM_*`/`.env` config on this path; that's a CLI-only concern.
 
+### `with_advisor(model, *, max_tokens=2048, max_uses=None)`
+
+Gives the main agent an `advisor` tool: calling it forwards the full
+conversation transcript to `model` (a pydantic-ai model string) and returns
+its strategic guidance as the tool result. The tool is only advertised while
+an advisor is configured (`harness.set_advisor_model(None)` disables it live),
+advice output is capped at `max_tokens`, and `max_uses` caps calls per turn.
+Advisor failures come back as text inside the tool result — a broken advisor
+never fails the turn. Note: the transcript is sent to `model`'s provider.
+
 ## The SDK docs
 
 | Page | Covers |

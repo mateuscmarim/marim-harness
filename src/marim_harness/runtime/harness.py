@@ -10,6 +10,7 @@ from pydantic_ai import Agent, DeferredToolRequests
 from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.settings import ModelSettings
 
+from ..advisor import ADVISOR_OFF, make_advisor
 from ..mcp.discovered_instructions_capability import DiscoveredInstructionsCapability
 
 if TYPE_CHECKING:
@@ -185,6 +186,14 @@ class HarnessConfig:
     # straight into SubagentRunner(tiers=...). None ⇒ SubagentRunner falls
     # back to its own all-empty SubagentTiers() default.
     subagent_tiers: SubagentTiers | None = None
+    # Advisor: the DEFAULT advisor model (provider:slug, or any pydantic-ai
+    # model string when no model_source is composed; None = no advisor), the
+    # output cap per consultation, and the per-turn call cap (None =
+    # unlimited). The session store's advisor_model overrides advisor_model
+    # at runtime — see Harness._apply_saved_advisor.
+    advisor_model: str | None = None
+    advisor_max_tokens: int = 2048
+    advisor_max_uses: int | None = None
 
 
 def _build_workflow_engine(cfg: HarnessConfig, deps: Deps, subagents: SubagentRunner):
@@ -478,6 +487,22 @@ class Harness:
             lsp_toolset=self.provider.lsp_toolset(),
             get_model=lambda: self.current_model,
         )
+        # Advisor: build ONE advise callable for the harness lifetime; which
+        # model it consults is re-resolved PER CALL through the closure over
+        # advisor_model_id, so /advisor switches apply to the next
+        # consultation with no rebuild. services.advise is the live on/off
+        # seam (the run_workflow pattern): the tool's prepare hook and the
+        # steering-instructions closure both read it per request.
+        self._advisor_env_default = cfg.advisor_model
+        self.advisor_model_id: str | None = None
+        self.deps.advisor_max_uses = cfg.advisor_max_uses
+        self._advise_fn = make_advisor(
+            self._build_advisor_model,
+            lambda: self.advisor_model_id,
+            cwd=str(deps.workspace.root),
+            max_tokens=cfg.advisor_max_tokens,
+        )
+        self._apply_saved_advisor()
 
     def bind_ui(
         self,
@@ -545,6 +570,7 @@ class Harness:
         count = self.session.resume()
         self.checkpoints.reload()
         self._apply_saved_model()
+        self._apply_saved_advisor()
         return count
 
     def _clear_job_context(self) -> None:
@@ -571,6 +597,7 @@ class Harness:
         saved = self.session.saved_model_id
         if saved and saved != self.model_id:
             self.set_model(saved, persist=False)
+        self._apply_saved_advisor()
 
     def switch_session(self, session_id: str) -> int:
         # Clear the OUTGOING session's job context BEFORE loading the incoming one.
@@ -586,6 +613,7 @@ class Harness:
         count = self.session.switch_session(session_id)
         self.checkpoints.reload()
         self._apply_saved_model()
+        self._apply_saved_advisor()
         return count
 
     async def rename_session(self, name: str | None = None) -> str | None:
@@ -632,6 +660,52 @@ class Harness:
             model.on_activity = self.deps.ui.on_cli_activity
             model.on_subagent = self.deps.ui.on_subagent_event
             model.on_subagent_model = self.deps.ui.on_subagent_model
+
+    def _build_advisor_model(self, model_id: str) -> Model:
+        """Build the advisor's model: through the active model source when one
+        exists (cross-provider qualified slugs, the same routing /model uses),
+        else pydantic-ai's stock ``infer_model`` — so an embedded harness
+        without a source can still pass standard model strings to
+        ``with_advisor``. Errors propagate to make_advisor, which folds them
+        into the advice-unavailable string."""
+        if self.model_source is not None:
+            return self.model_source.build(model_id)
+        from pydantic_ai.models import infer_model
+
+        return infer_model(model_id)
+
+    def _resolve_advisor_id(self) -> str | None:
+        """Session override → env/config default → None. The "off" sentinel is
+        itself an override: it beats a configured default, so an explicit
+        disable survives restarts distinguishably from "unset"."""
+        saved = self.session.saved_advisor_id
+        if saved == ADVISOR_OFF:
+            return None
+        return saved or self._advisor_env_default
+
+    def _apply_saved_advisor(self) -> None:
+        """Point the advisor seam at the active session's choice. Called at
+        build and after every session change (resume/new/switch), mirroring
+        ``_apply_saved_model``."""
+        self.advisor_model_id = self._resolve_advisor_id()
+        if self.deps.services is not None:
+            self.deps.services.advise = (
+                self._advise_fn if self.advisor_model_id is not None else None
+            )
+
+    def set_advisor_model(self, model_id: str | None, *, persist: bool = True) -> None:
+        """Switch the advisor at runtime (None = disable). Unlike set_model
+        this is safe mid-turn: resolution is per-consultation, so a switch
+        simply applies to the next advisor call; the prepare hook and the
+        steering block follow ``services.advise`` on the next model request
+        (breaking the prompt cache once — inherent to a client-side advisor)."""
+        self.advisor_model_id = model_id
+        if self.deps.services is not None:
+            self.deps.services.advise = (
+                self._advise_fn if model_id is not None else None
+            )
+        if persist:
+            self.session.set_advisor(model_id if model_id is not None else ADVISOR_OFF)
 
     @property
     def mode(self) -> Mode:
