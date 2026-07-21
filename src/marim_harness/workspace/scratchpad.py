@@ -99,7 +99,14 @@ def persist_elided(scratchpad: Path, content: str, hint: str) -> Path | None:
         d = scratchpad / "elided"
         d.mkdir(parents=True, exist_ok=True)
         slug = re.sub(r"[^a-z0-9_-]+", "-", hint.lower()).strip("-") or "output"
-        n = sum(1 for _ in d.glob("*.txt")) + 1
+        # Derive next number from the maximum existing file number, not the
+        # count, so file deletions don't cause reuse of lower numbers.
+        nums = (
+            int(m.group(1))
+            for m in (re.match(r"(\d{3})-", p.name) for p in d.glob("*.txt"))
+            if m
+        )
+        n = max(nums, default=0) + 1
         path = d / f"{n:03d}-{slug[:40]}.txt"
         path.write_text(content, encoding="utf-8")
         return path

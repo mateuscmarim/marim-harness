@@ -162,3 +162,25 @@ def test_persist_elided_failure_returns_none(tmp_path):
     blocker = tmp_path / "elided"
     blocker.write_text("not a directory")   # occupies the dir name with a file
     assert persist_elided(tmp_path, "x", "run_bash") is None
+
+
+def test_persist_elided_numbering_survives_deletion(tmp_path):
+    """Numbering should track the maximum existing file number, not the count.
+    If a file is deleted, the next call should not reuse a lower number."""
+    p1 = persist_elided(tmp_path, "payload one", "tool1")
+    p2 = persist_elided(tmp_path, "payload two", "tool2")
+    p3 = persist_elided(tmp_path, "payload three", "tool3")
+    assert p1 is not None and p1.name == "001-tool1.txt"
+    assert p2 is not None and p2.name == "002-tool2.txt"
+    assert p3 is not None and p3.name == "003-tool3.txt"
+
+    # Delete the first file
+    p1.unlink()
+
+    # The next call should create 004-, not reuse 001-
+    p4 = persist_elided(tmp_path, "payload four", "tool4")
+    assert p4 is not None and p4.name == "004-tool4.txt"
+
+    # Verify that the file with 003- still exists and has the original content
+    assert p3.exists()
+    assert p3.read_text(encoding="utf-8") == "payload three"
