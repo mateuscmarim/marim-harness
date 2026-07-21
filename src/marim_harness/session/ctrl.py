@@ -16,18 +16,23 @@ from pydantic_ai.messages import ModelMessage
 from pydantic_ai.usage import RunUsage
 
 from ..compaction import (
+    BREAKER_NOTICE,
+    CompactionBreaker,
     Summarizer,
     Titler,
+    _measured_or_estimated,
     _plan_tail_start,
     compact_history,
     compact_history_with_summary,
+    estimate_tokens,
     make_summarizer,
     make_titler,
     mask_stale_observations,
 )
 from ..hooks import events as hook_events
-from ..hooks.runner import base_payload
+from ..hooks.runner import HookVerdict, base_payload
 from ..runtime.deps import Deps
+from ..workspace.scratchpad import persist_elided
 from .store import SessionInfo, SessionManager, SessionStore
 
 logger = logging.getLogger(__name__)
@@ -187,6 +192,12 @@ class SessionController:
         # The in-flight background autoname, if any (see schedule_autoname).
         # Doubles as the strong reference that keeps the task alive.
         self._autoname_task: asyncio.Task[None] | None = None
+        # Rapid-refill breaker for auto-compaction plus its one-shot notice
+        # flag. In-memory only: a resumed session re-measures, so persisting
+        # breaker state would carry stale thrash verdicts across restarts.
+        self.breaker = CompactionBreaker()
+        self._breaker_noticed = False
+        self.on_notice: Callable[[str], None] | None = None
 
     @property
     def session_name(self) -> str | None:
@@ -355,6 +366,8 @@ class SessionController:
         self.deps.jobs.import_history(jobs)
         self.duration_seconds = prev_duration or 0.0
         self._segment_start = time.monotonic()
+        self.breaker.reset()
+        self._breaker_noticed = False
         return len(self.history)
 
     def resume(self) -> int:
@@ -393,6 +406,11 @@ class SessionController:
         self.deps.tasks.clear()
         if self.store is not None:
             self.store.clear()
+        # /clear (TUI reset_conversation -> Harness.reset -> here) does not go
+        # through _load_active_store, so it must reset the breaker itself — a
+        # cleared conversation must always start with a closed breaker.
+        self.breaker.reset()
+        self._breaker_noticed = False
 
     def new_session(self, name: str | None = None, model_id: str | None = None) -> None:
         if self.manager is None:
@@ -422,112 +440,223 @@ class SessionController:
         self.cancel_autoname()
         return result
 
-    async def maybe_compact(self, *, force: bool = False) -> bool:
-        """Compact the history when over budget (or unconditionally when ``force``,
-        used after a provider context-overflow error where the token estimate
-        undershot). Returns True if it actually shrank the history."""
-        before = len(self.history)
-        # Plan the tail boundary exactly once. It both decides whether a
-        # compaction will happen (so the PreCompact hook / on_compact_start
-        # indicator fire iff one actually will) AND is handed to the compaction
-        # call below, so estimate_tokens runs over the whole history once per
-        # maybe_compact instead of twice when a compaction fires. The PreCompact
-        # hook between here and the compaction is observe-only (it can't mutate
-        # the history), so the precomputed boundary stays valid. A forced
-        # compaction is always "going"; _plan_tail_start still returns None when
-        # there is nothing meaningful to drop.
-        #
-        # Warm window discovery before gating: this is an async site, and the
-        # resolver caches, so all later sync reads (the gauge, the property
-        # above) see the discovered window. Never raises — discovery is
-        # best-effort by contract.
+    def _elided_persist(self) -> Callable[[str, str], str | None] | None:
+        """The persist callback for mask_stale_observations, or None when the
+        scratchpad is unavailable — masking then degrades to plain placeholders."""
+        get = getattr(self.deps, "get_scratchpad", None)
+        if get is None:
+            return None
+        pad = get()
+        if pad is None:
+            return None
+
+        def persist(content: str, tool_name: str) -> str | None:
+            path = persist_elided(pad, content, tool_name)
+            return str(path) if path is not None else None
+
+        return persist
+
+    async def _dispatch_pre_compact(
+        self, trigger: str, instructions: str | None
+    ) -> HookVerdict:
+        if self.deps.hooks is None:
+            return HookVerdict()
+        return await self.deps.hooks.dispatch_verdict(
+            hook_events.PRE_COMPACT,
+            base_payload(
+                hook_events.PRE_COMPACT,
+                session_id=self.store.session_id if self.store is not None else "",
+                cwd=str(self.deps.workspace.root),
+                transcript_path=str(self.store.path) if self.store is not None else "",
+                trigger=trigger,
+                custom_instructions=instructions or "",
+            ),
+        )
+
+    async def _dispatch_post_compact(
+        self, trigger: str, pre_tokens: int, post_tokens: int, stage: str
+    ) -> None:
+        if self.deps.hooks is None:
+            return
+        await self.deps.hooks.dispatch(
+            hook_events.POST_COMPACT,
+            base_payload(
+                hook_events.POST_COMPACT,
+                session_id=self.store.session_id if self.store is not None else "",
+                cwd=str(self.deps.workspace.root),
+                transcript_path=str(self.store.path) if self.store is not None else "",
+                trigger=trigger,
+                pre_compact_tokens=pre_tokens,
+                post_compact_tokens=post_tokens,
+                stage=stage,
+            ),
+        )
+
+    def _breaker_should_skip(self, over: bool, manual: bool, force: bool) -> bool:
+        """True if auto-compaction should be skipped because the breaker is
+        open (thrashing: compacting again would just refill). Manual and
+        forced compaction always bypass the breaker. Fires the one-shot
+        notice (only once per open spell) as a side effect."""
+        if not (over and not (manual or force) and self.breaker.open):
+            return False
+        if not self._breaker_noticed and self.on_notice is not None:
+            self._breaker_noticed = True
+            self.on_notice(BREAKER_NOTICE)
+        return True
+
+    async def _verdict_blocks(
+        self, trigger: str, instructions: str | None, *, manual: bool
+    ) -> bool:
+        """Dispatch PreCompact and return True if ``maybe_compact`` should
+        abort. A block verdict is honored ONLY for a manual /compact — a hook
+        must never be able to wedge a session into the hard context limit, so
+        on auto/force it's merely logged and compaction proceeds."""
+        verdict = await self._dispatch_pre_compact(trigger, instructions)
+        if not verdict.blocked:
+            return False
+        if manual:
+            if self.on_notice is not None:
+                reason = f": {verdict.reason}" if verdict.reason else ""
+                self.on_notice(f"Compaction blocked by PreCompact hook{reason}")
+            return True
+        logger.info("PreCompact block ignored (trigger=%s): %s", trigger, verdict.reason)
+        return False
+
+    async def _prepare_compact(self, *, manual: bool) -> None:
+        """Breaker bookkeeping and limits refresh that must happen before the
+        size gate is evaluated: a manual /compact always resets the breaker
+        (a deliberate, user-initiated compaction is never "thrashing"),
+        while an auto/force attempt feeds the rapid-refill window so a
+        subsequent open-breaker check sees this attempt. Limits are
+        re-resolved so ``compact_threshold`` reflects the current model."""
+        if manual:
+            self.breaker.reset()
+            self._breaker_noticed = False
+        else:
+            self.breaker.note_turn()
         if self.limits is not None:
             model_id = self.get_model_id() if self.get_model_id else None
             await self.limits.resolve(model_id)
-        threshold = self.compact_threshold
-        # Gate on the larger of the char/4 estimate and the provider's real
-        # last-request input-token count (last_input_tokens): the estimate
-        # undershoots dense code/JSON by ~25%, so on its own it lets a session
-        # sail past the true window. When no request has reported usage yet the
-        # helper falls back to the estimate alone (legacy behavior).
+
+    def _stage_mask(self, *, force: bool, manual: bool) -> bool:
+        """STAGE 1 — microcompact: elide stale tool observations (persisting
+        payloads to the scratchpad when available). Runs before the
+        summarizer so that when old tool output IS the bloat, we get under
+        threshold without a model call. Cache-safe: this only ever runs when
+        the gate has tripped, i.e. when a history rewrite (and its cache
+        miss) was about to happen anyway. Force/manual run it regardless of
+        the routine-hygiene toggle — force is recovery of last resort, and a
+        manual /compact asks for maximum reduction. Mutates ``self.history``
+        and returns whether it actually shrank."""
+        if not (self.mask_observations or force or manual):
+            return False
+        masked_history, n_masked = mask_stale_observations(
+            self.history,
+            self.mask_keep_recent,
+            min_chars=self.mask_min_chars,
+            persist=self._elided_persist(),
+        )
+        if not n_masked:
+            return False
+        self.history = masked_history
+        return True
+
+    async def _stage_summarize(
+        self,
+        threshold: int,
+        *,
+        manual: bool,
+        force: bool,
+        has_masked: bool,
+        instructions: str | None,
+    ) -> bool:
+        """STAGE 2 — summarize-compact, only if still over (manual/force always
+        proceed: the user or the overflow retry asked for a real compaction).
+        After a stage-1 mask the provider's measured count is stale (the
+        history just shrank under it), so the tail planner runs on the
+        estimate alone in that case — but when stage 1 didn't touch the
+        history (masking off/ineffective, ``has_masked`` False),
+        last_input_tokens is still fresh and must keep gating here exactly as
+        it did the entry check in ``maybe_compact``; otherwise a measured-only
+        overflow (dense content the char/4 estimate undershoots) would trip
+        the initial gate, fire PreCompact, then silently do nothing. Mutates
+        ``self.history`` and returns whether it actually shrank."""
+        measured = None if has_masked else self.last_input_tokens
+        still_over = _measured_or_estimated(self.history, measured) > threshold
+        if not (manual or force or still_over):
+            return False
         tail_start = _plan_tail_start(
             self.history, threshold, self.keep_last_messages,
-            force=force, measured_tokens=self.last_input_tokens,
+            force=force or manual, measured_tokens=measured,
         )
-        going = force or tail_start is not None
-        # Fire PreCompact *before* the compaction work, while the transcript is
-        # still full — matching Claude Code, where the hook can snapshot the
-        # conversation before it's summarized/collapsed.
-        if going and self.deps.hooks is not None:
-            await self.deps.hooks.dispatch(
-                hook_events.PRE_COMPACT,
-                base_payload(
-                    hook_events.PRE_COMPACT,
-                    session_id=self.store.session_id if self.store is not None else "",
-                    cwd=str(self.deps.workspace.root),
-                    transcript_path=str(self.store.path) if self.store is not None else "",
-                    trigger="auto",
-                    custom_instructions="",
-                ),
-            )
-        # Surface a live "compacting…" indicator before the (possibly slow,
-        # summarizer-driven) work begins; the on_compact finish callback clears it.
-        indicator_shown = going and self.on_compact_start is not None
-        if going and self.on_compact_start is not None:
-            self.on_compact_start()
+        if tail_start is None:
+            return False
         if self.summarizer is not None:
-            new_history, compacted = await compact_history_with_summary(
+            new_history, did = await compact_history_with_summary(
                 self.history, threshold, self.summarizer,
-                self.keep_last_messages, force=force, tail_start=tail_start,
+                self.keep_last_messages, force=force or manual,
+                tail_start=tail_start, instructions=instructions,
             )
         else:
-            new_history, compacted = compact_history(
+            new_history, did = compact_history(
                 self.history, threshold, self.keep_last_messages,
-                force=force, tail_start=tail_start,
+                force=force or manual, tail_start=tail_start,
             )
-        # Mask stale tool observations only when a compaction actually fired: the
-        # rewrite has already invalidated the cached message tail, so eliding the
-        # bulky payloads here is free of any extra cache miss (a per-turn mask
-        # would bust that cache every turn instead). Skipped when nothing compacted
-        # so a warm cache stays warm.
-        if compacted and self.mask_observations:
-            new_history, _ = mask_stale_observations(
-                new_history,
-                self.mask_keep_recent,
-                min_chars=self.mask_min_chars,
-            )
-        if compacted:
+        if did:
             self.history = new_history
-            # Persist the compacted history now. The post-turn compaction runs
+        return did
+
+    async def maybe_compact(
+        self,
+        *,
+        force: bool = False,
+        trigger: str = "auto",
+        instructions: str | None = None,
+    ) -> bool:
+        """Run the staged reduction pipeline: mask stale tool observations
+        first, then summarize-compact only if the history is still over
+        threshold. ``force`` is the post-overflow path (the estimate is known
+        to have undershot); ``trigger="manual"`` is the /compact command —
+        it bypasses the size gate and the breaker, and is the only trigger a
+        PreCompact hook can block. Returns True if the history shrank."""
+        before = len(self.history)
+        manual = trigger == "manual"
+        await self._prepare_compact(manual=manual)
+        threshold = self.compact_threshold
+        pre_tokens = _measured_or_estimated(self.history, self.last_input_tokens)
+        over = pre_tokens > threshold
+        if not (over or force or manual):
+            return False
+        if self._breaker_should_skip(over, manual, force):
+            return False
+        if await self._verdict_blocks(trigger, instructions, manual=manual):
+            return False
+        indicator_shown = self.on_compact_start is not None
+        if self.on_compact_start is not None:
+            self.on_compact_start()
+        stages: list[str] = []
+        if self._stage_mask(force=force, manual=manual):
+            stages.append("micro")
+        if await self._stage_summarize(
+            threshold, manual=manual, force=force,
+            has_masked="micro" in stages, instructions=instructions,
+        ):
+            stages.append("summary")
+        compacted = bool(stages)
+        if compacted:
+            # Persist the compacted history now: the post-turn compaction runs
             # after the turn's own persist, so without this the smaller history
-            # lives only in memory until the next turn — a process death between
-            # turns would lose it and leave the rollback baseline diverged from
-            # disk. The setter bumped the version, so a plain persist() writes.
+            # lives only in memory until the next turn — a process death
+            # between turns would lose it and leave the rollback baseline
+            # diverged from disk.
             self.persist()
-        elif force:
-            # Forced (post-overflow) compaction found no droppable prefix: the
-            # overflow lives inside a single enormous turn, which the tail
-            # planner can't split. Without a fallback the retry fails
-            # identically and the session wedges until a manual /clear — so
-            # mask stale tool observations instead, the one lever that shrinks
-            # a turn in place. Runs regardless of the mask_observations toggle:
-            # that flag governs routine compaction hygiene, while this is a
-            # recovery of last resort (and the cache concern is moot — the
-            # request just failed, there is no warm tail to protect).
-            masked_history, masked = mask_stale_observations(
-                self.history,
-                self.mask_keep_recent,
-                min_chars=self.mask_min_chars,
+            self.breaker.note_compact()
+            await self._dispatch_post_compact(
+                trigger, pre_tokens, estimate_tokens(self.history), "+".join(stages)
             )
-            if masked:
-                self.history = masked_history
-                self.persist()
-                compacted = True
-        # on_compact both reports the result AND clears the "compacting…" notice,
-        # so it must fire whenever the notice was shown — not only when history
-        # shrank. A forced compaction (post-overflow) can run without shrinking;
-        # before == len(history) then signals the UI to just drop the notice
-        # instead of leaving a stuck spinner.
+        # on_compact both reports the result AND clears the "compacting…"
+        # notice, so it must fire whenever the notice was shown — not only
+        # when history shrank.
         if self.on_compact is not None and (compacted or indicator_shown):
             self.on_compact(before, len(self.history))
         return compacted

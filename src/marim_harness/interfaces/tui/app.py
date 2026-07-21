@@ -131,6 +131,7 @@ class HarnessApp(App):
             on_jobs_changed=self._on_jobs_changed,
             on_compact=self._on_compact,
             on_compact_start=self._on_compact_start,
+            on_notice=self._on_session_notice,
             on_rename=self.session.on_rename,
         )
         self._compacting_notice: NoticeMessage | None = None
@@ -680,6 +681,11 @@ class HarnessApp(App):
         if body is not None:
             log.mount(SummaryWidget(body))
         self.status.refresh_status()  # context gauge shrinks immediately
+
+    def _on_session_notice(self, message: str) -> None:
+        """Session-level advisory (breaker tripped, manual compact blocked).
+        Same call-from-anywhere contract as _on_compact."""
+        self._append_log(NoticeMessage(message))
 
     def _latest_summary(self) -> "str | None":
         """The body of the most recent compaction summary in history, or None."""

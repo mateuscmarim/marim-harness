@@ -501,6 +501,7 @@ class Harness:
         on_jobs_changed: Callable[[], None] | None = None,
         on_compact: Callable[[int, int], None] | None = None,
         on_compact_start: Callable[[], None] | None = None,
+        on_notice: Callable[[str], None] | None = None,
         on_rename: Callable[[str, str], None] | None = None,
     ) -> None:
         """Wire the interactive UI's callbacks into the harness in one place.
@@ -536,6 +537,7 @@ class Harness:
         self.deps.jobs.on_change = on_jobs_changed
         self.session.on_compact = on_compact
         self.session.on_compact_start = on_compact_start
+        self.session.on_notice = on_notice
         self.session.on_rename = on_rename
 
     # --- session lifecycle (operations carrying harness-level logic; plain
