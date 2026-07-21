@@ -253,12 +253,67 @@ MASKED_OBSERVATION = (
     "[observation elided to save context — re-run the tool if you need this output]"
 )
 
+# When the payload was persisted to the session scratchpad before eliding, the
+# placeholder points at the file so the model can recover the exact bytes with
+# read_file instead of re-running the tool. Both placeholder forms are treated
+# as already-masked by _is_masked, keeping re-runs idempotent.
+ELIDED_POINTER_PREFIX = "[output elided to save context; full content at "
+
+
+def _elided_pointer(path: str) -> str:
+    return f"{ELIDED_POINTER_PREFIX}{path} — read_file it if still needed]"
+
+
+def _is_masked(content) -> bool:
+    return content == MASKED_OBSERVATION or (
+        isinstance(content, str) and content.startswith(ELIDED_POINTER_PREFIX)
+    )
+
+
+
+def _count_recent_parts(history: list, keep_recent: int) -> set[tuple[int, int]]:
+    """Identify which ToolReturnParts should be kept (first pass: newest-first counting)."""
+    seen = 0
+    parts_to_keep: set[tuple[int, int]] = set()
+    for idx in range(len(history) - 1, -1, -1):
+        message = history[idx]
+        parts = getattr(message, "parts", None)
+        if not parts:
+            continue
+        for pidx in range(len(parts) - 1, -1, -1):
+            part = parts[pidx]
+            if not isinstance(part, ToolReturnPart):
+                continue
+            seen += 1
+            if seen <= keep_recent:
+                parts_to_keep.add((idx, pidx))
+    return parts_to_keep
+
+
+def _mask_part(
+    part: ToolReturnPart,
+    min_chars: int,
+    persist: Callable[[str, str], str | None] | None,
+) -> str | None:
+    """Determine the replacement content for a part, or None if it should not be masked."""
+    if _is_masked(part.content):
+        return None
+    if len(str(part.content)) < min_chars:
+        return None
+    replacement = MASKED_OBSERVATION
+    if persist is not None:
+        path = persist(str(part.content), part.tool_name)
+        if path:
+            replacement = _elided_pointer(path)
+    return replacement
+
 
 def mask_stale_observations(
     history: list,
     keep_recent: int = 4,
     *,
     min_chars: int = 200,
+    persist: Callable[[str, str], str | None] | None = None,
 ) -> tuple[list, int]:
     """Replace the body of older tool-observation returns with a short placeholder.
 
@@ -275,29 +330,38 @@ def mask_stale_observations(
     turn and cost more than it saves). Already-masked returns and small ones are
     skipped, so re-running it is idempotent. Returns ``(new_history, masked_count)``
     and never mutates the input — masked messages are rebuilt via ``replace``.
+
+    When ``persist`` is given, it is called with ``(content, tool_name)`` and should
+    write the payload somewhere recoverable, returning the path (used in a pointer
+    placeholder) or ``None`` (falls back to plain placeholder). Persist is best-effort:
+    a ``None``/failure never blocks masking.
     """
-    seen = 0
+    # First pass: identify which parts should be kept (newest-first counting).
+    parts_to_keep = _count_recent_parts(history, keep_recent)
+
+    # Second pass: apply masking in forward order so persist calls happen in document
+    # order (oldest to newest).
     masked = 0
     new_history = list(history)
-    # Newest-first (messages and parts both reversed) so "keep the most recent N"
-    # is a single running count across the whole history.
-    for idx in range(len(new_history) - 1, -1, -1):
+    for idx in range(len(history)):
         message = new_history[idx]
         parts = getattr(message, "parts", None)
         if not parts:
             continue
         new_parts = list(parts)
         changed = False
-        for pidx in range(len(parts) - 1, -1, -1):
+        for pidx in range(len(parts)):
             part = parts[pidx]
             if not isinstance(part, ToolReturnPart):
                 continue
-            seen += 1
-            if seen <= keep_recent or part.content == MASKED_OBSERVATION:
+            # Skip if this part should be kept.
+            if (idx, pidx) in parts_to_keep:
                 continue
-            if len(str(part.content)) < min_chars:
+            # Determine replacement content (or None to skip).
+            replacement = _mask_part(part, min_chars, persist)
+            if replacement is None:
                 continue
-            new_parts[pidx] = dataclasses.replace(part, content=MASKED_OBSERVATION)
+            new_parts[pidx] = dataclasses.replace(part, content=replacement)
             changed = True
             masked += 1
         if changed:

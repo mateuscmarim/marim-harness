@@ -383,6 +383,50 @@ def test_mask_does_not_mutate_input_and_is_idempotent():
     assert again == 0
 
 
+
+
+def test_mask_persist_puts_path_in_placeholder():
+    from marim_harness.compaction import ELIDED_POINTER_PREFIX
+
+    history = [_tool_return(f"t{i}", "X" * 300) for i in range(6)]
+    calls: list[tuple[str, str]] = []
+
+    def persist(content: str, tool_name: str) -> str:
+        calls.append((content, tool_name))
+        return f"/pad/elided/{len(calls):03d}-{tool_name}.txt"
+
+    masked, n = mask_stale_observations(history, keep_recent=2, persist=persist)
+    assert n == 4 and len(calls) == 4
+    first = masked[0].parts[0]
+    assert first.content.startswith(ELIDED_POINTER_PREFIX)
+    assert "/pad/elided/001-" in first.content
+    assert "read_file" in first.content
+    # persisted content is the original payload
+    assert calls[0][0] == "X" * 300
+
+
+def test_mask_persist_failure_falls_back_to_plain_placeholder():
+    from marim_harness.compaction import MASKED_OBSERVATION
+
+    history = [_tool_return(f"t{i}", "X" * 300) for i in range(3)]
+    masked, n = mask_stale_observations(
+        history, keep_recent=1, persist=lambda content, name: None
+    )
+    assert n == 2
+    assert masked[0].parts[0].content == MASKED_OBSERVATION
+
+
+def test_mask_is_idempotent_over_pointer_placeholders():
+    history = [_tool_return(f"t{i}", "X" * 300) for i in range(4)]
+    once, n1 = mask_stale_observations(
+        history, keep_recent=1, persist=lambda c, t: "/pad/e/001-x.txt"
+    )
+    twice, n2 = mask_stale_observations(
+        once, keep_recent=1, persist=lambda c, t: "/pad/e/002-x.txt"
+    )
+    assert n1 == 3 and n2 == 0
+    assert [p.parts[0].content for p in twice] == [p.parts[0].content for p in once]
+
 # --- CompactionBreaker (rapid-refill circuit breaker) -------------------------
 
 
