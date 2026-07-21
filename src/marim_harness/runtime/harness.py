@@ -734,3 +734,10 @@ class Harness:
         """Run the agent until it produces a final text answer, looping through
         any approval rounds. Returns the final text output."""
         return await self.turn_controller.run_turn(prompt, event_stream_handler, attachments)
+
+    async def manual_compact(self, instructions: str | None = None) -> bool:
+        """Manual /compact entry point. Delegates to the turn controller so the
+        checkpoint-invalidation wrapper stays the single place every compaction
+        is funneled through — a bare ``session.maybe_compact`` here would skip it
+        and leave stale checkpoints that a later /rewind would slice mid-pair."""
+        return await self.turn_controller.manual_compact(instructions=instructions)

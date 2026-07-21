@@ -369,17 +369,47 @@ class TurnController:
         await asyncio.sleep(_CONTENTION_BACKOFF_SECONDS)
 
     async def _maybe_compact(self, *, force: bool = False) -> bool:
-        # When compaction actually shrinks the history, the checkpoints captured
-        # against the old (absolute) indices are stale — rewinding to one would
-        # slice the restructured history at the wrong boundary. Drop them so a
-        # later rewind can't corrupt the conversation. (At the between-turn call
-        # sites run_turn re-snapshots after this, so the current turn keeps a
-        # valid rewind point; the mid-turn overflow retry instead loses this
-        # turn's rewind point — a missing checkpoint beats a corrupting one.)
-        # Every compaction must go through here rather than calling
-        # session.maybe_compact directly, or the invalidation is skipped.
-        compacted = await self.session.maybe_compact(force=force)
-        if compacted:
+        return await self._compact_and_invalidate(force=force)
+
+    async def manual_compact(self, instructions: str | None = None) -> bool:
+        """Run a user-initiated /compact through the same invalidating wrapper
+        as the auto path. This is the single manual-compaction entry point:
+        routing the /compact command through here (rather than calling
+        ``session.maybe_compact`` directly) keeps the "every compaction goes
+        through one place" rule intact for the manual trigger, so checkpoint
+        invalidation can never be skipped. Returns True if the history shrank."""
+        return await self._compact_and_invalidate(trigger="manual", instructions=instructions)
+
+    async def _compact_and_invalidate(
+        self,
+        *,
+        force: bool = False,
+        trigger: str = "auto",
+        instructions: str | None = None,
+    ) -> bool:
+        # The one place every compaction (auto, forced, or manual /compact) is
+        # funneled through, so checkpoint invalidation is never skipped. When a
+        # compaction RESTRUCTURES the history, the checkpoints captured against
+        # the old (absolute) indices are stale — rewinding to one would slice the
+        # restructured history at the wrong boundary. Drop them so a later rewind
+        # can't corrupt the conversation. (At the between-turn call sites run_turn
+        # re-snapshots after this, so the current turn keeps a valid rewind point;
+        # the mid-turn overflow retry instead loses this turn's rewind point — a
+        # missing checkpoint beats a corrupting one.)
+        #
+        # But invalidation must be stage-aware: a stage-1-only ("micro")
+        # compaction replaces ToolReturnPart content in place and moves no message
+        # boundary, so the stored absolute history_len indices stay valid and the
+        # checkpoints remain rewindable. Since micro-only is now the frequent case,
+        # invalidating then would needlessly destroy the user's rewind history.
+        # Detect restructuring by whether the message count changed — the summary
+        # stage collapses a prefix into a single summary message (count shrinks),
+        # while a pure mask leaves the count untouched.
+        before = len(self.session.history)
+        compacted = await self.session.maybe_compact(
+            force=force, trigger=trigger, instructions=instructions
+        )
+        if compacted and len(self.session.history) != before:
             self.checkpoints.invalidate_after_compaction()
         return compacted
 
