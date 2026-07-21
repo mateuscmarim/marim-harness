@@ -149,6 +149,7 @@ class SessionInfo:
     tokens: int
     duration_seconds: float | None = None
     model: str | None = None
+    advisor_model: str | None = None
 
 
 class SessionStore:
@@ -157,7 +158,8 @@ class SessionStore:
     path, id, and name."""
 
     def __init__(self, path, workspace_root, session_id: str, name: str,
-                 auto_named: bool = False, model: str | None = None) -> None:
+                 auto_named: bool = False, model: str | None = None,
+                 advisor_model: str | None = None) -> None:
         self.path = Path(path)
         self.workspace_root = Path(workspace_root).resolve()
         self.session_id = session_id
@@ -166,6 +168,10 @@ class SessionStore:
         self.auto_named = auto_named
         # The model id this session was last using (None -> the env default).
         self.model = model
+        # The advisor this session chose: a provider:slug, the "off" sentinel
+        # (explicitly disabled — must survive restarts distinguishably from
+        # unset), or None (unset -> inherit MARIM_ADVISOR_MODEL).
+        self.advisor_model = advisor_model
 
     def save(self, history: list, usage: RunUsage,
              tasks: list | None = None,
@@ -177,6 +183,7 @@ class SessionStore:
             "name": self.name,
             "auto": self.auto_named,
             "model": self.model,
+            "advisor_model": self.advisor_model,
             "workspace": str(self.workspace_root),
             "updated": _now(),
             "duration_seconds": duration_seconds,
@@ -238,6 +245,7 @@ class SessionStore:
             data["name"] = self.name
             data["auto"] = self.auto_named
             data["model"] = self.model
+            data["advisor_model"] = self.advisor_model
             atomic_write_text(self.path, json.dumps(data))
 
     def load(self) -> tuple[list, RunUsage, list, float | None, list]:
@@ -349,6 +357,7 @@ class SessionManager:
                     tokens=_total_tokens(data.get("tokens", {})),
                     duration_seconds=data.get("duration_seconds"),
                     model=data.get("model"),
+                    advisor_model=data.get("advisor_model"),
                 )
             )
         infos.sort(key=lambda info: info.updated, reverse=True)
@@ -369,10 +378,11 @@ class SessionManager:
             name = str(meta.get("name") or session_id)
         auto_named = bool(meta.get("auto", False))
         model = meta.get("model")
+        advisor_model = meta.get("advisor_model")
         self._reserved.add(session_id)
         return SessionStore(
             path, self.workspace_root, session_id, name,
-            auto_named=auto_named, model=model,
+            auto_named=auto_named, model=model, advisor_model=advisor_model,
         )
 
     def create(self, name: str | None = None) -> SessionStore:
@@ -405,6 +415,11 @@ class SessionManager:
         # Inherit the model from the most recent session when none is set yet.
         if store.model is None:
             store.model = self.latest_model()
+        # Same inheritance as the model above: a new session keeps the advisor
+        # the user last chose (including the "off" sentinel — an explicit
+        # disable carries forward too, not just positive picks).
+        if store.advisor_model is None:
+            store.advisor_model = self.latest_advisor_model()
         return store
 
     def _unique_id(self, base: str) -> str:
@@ -423,6 +438,11 @@ class SessionManager:
         """Return the model id of the most recent session, or *None*."""
         latest = self.latest()
         return latest.model if latest is not None else None
+
+    def latest_advisor_model(self) -> str | None:
+        """The advisor id of the most recent session, or *None*."""
+        latest = self.latest()
+        return latest.advisor_model if latest is not None else None
 
     def delete(self, session_id: str) -> None:
         """Remove a session and every sidecar keyed by its id: the JSON file,
