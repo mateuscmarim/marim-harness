@@ -10,6 +10,7 @@ from marim_harness.tools import edit_tools, fs_tools
 from marim_harness.tools.impl import fs
 from marim_harness.workspace.scratchpad import (
     ensure_scratchpad,
+    persist_elided,
     scratchpad_base,
     scratchpad_root,
 )
@@ -140,3 +141,24 @@ def test_ensure_tightens_loose_preexisting_base(tmp_path):
     p = ensure_scratchpad(Path("/w/proj"), "s1", base=base)
     assert p is not None
     assert (base.stat().st_mode & 0o777) == 0o700
+
+
+def test_persist_elided_writes_numbered_slugged_file(tmp_path):
+    p1 = persist_elided(tmp_path, "payload one", "run_bash")
+    p2 = persist_elided(tmp_path, "payload two", "read_file")
+    assert p1 is not None and p1.name == "001-run_bash.txt"
+    assert p2 is not None and p2.name == "002-read_file.txt"
+    assert p1.parent == tmp_path / "elided"
+    assert p1.read_text(encoding="utf-8") == "payload one"
+
+
+def test_persist_elided_sanitizes_hint(tmp_path):
+    p = persist_elided(tmp_path, "x", "mcp__weird/Tool Name!")
+    assert p is not None
+    assert p.name == "001-mcp__weird-tool-name.txt"
+
+
+def test_persist_elided_failure_returns_none(tmp_path):
+    blocker = tmp_path / "elided"
+    blocker.write_text("not a directory")   # occupies the dir name with a file
+    assert persist_elided(tmp_path, "x", "run_bash") is None
