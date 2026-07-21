@@ -51,6 +51,25 @@ async def _cmd_clear(app: HarnessApp, arg: str) -> None:
     await app.reset_conversation()
 
 
+async def _cmd_compact(app: HarnessApp, arg: str) -> None:
+    """Manually compact the session: mask stale tool output, then summarize.
+    Runs in its own worker group — the summarizer can take a while, and the
+    default worker group would let a starting turn cancel it (WorkerManager
+    sweeps a group when an exclusive worker joins; see _handle_bang)."""
+    if app.turn_busy:
+        await app.post_system("Can't compact while a turn is running. Press Esc first.")
+        return
+
+    async def run() -> None:
+        did = await app.harness.session.maybe_compact(
+            trigger="manual", instructions=arg or None
+        )
+        if not did:
+            await app.post_system("Nothing to compact.")
+
+    app.run_worker(run(), group="compact", exclusive=True, exit_on_error=False)
+
+
 def resolve_ref(infos: list[SessionInfo], ref: str) -> SessionInfo | None:
     """Find a session by 1-based list position, exact id, or exact name
     (case-insensitive). Returns the matching SessionInfo or None."""
@@ -495,6 +514,11 @@ async def _cmd_exit(app: HarnessApp, arg: str) -> None:
 COMMANDS: list[Command] = [
     Command("help", "list available commands", _cmd_help, aliases=("?",)),
     Command("clear", "clear this conversation's history", _cmd_clear),
+    Command(
+        "compact",
+        "free context now: /compact [summary instructions]",
+        _cmd_compact,
+    ),
     Command("sessions", "list saved sessions", _cmd_sessions, aliases=("ls",)),
     Command("new", "start a new session: /new [name]", _cmd_new),
     Command("switch", "switch sessions: /switch <number|name>", _cmd_switch),
