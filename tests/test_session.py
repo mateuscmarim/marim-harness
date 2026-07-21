@@ -691,6 +691,41 @@ async def test_forced_compaction_clears_indicator_even_without_shrink(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_precompact_and_indicator_fire_even_when_nothing_droppable(tmp_path):
+    """Intentional behavior: an over-threshold auto trigger fires PreCompact AND
+    the compacting indicator even when the history is undroppable (keep_last
+    covers the whole history and masking is off). The hook still gets to snapshot
+    the transcript, the UI shows the attempt, and the history is left unchanged."""
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    log = tmp_path / "pc.log"
+    cmd = _hook_cmd(tmp_path, log)
+    deps = Deps(
+        workspace=WorkspaceConfig(root=tmp_path),
+        hooks=HookRunner(
+            {hook_events.PRE_COMPACT: [{"hooks": [{"type": "command", "command": cmd}]}]}
+        ),
+    )
+    # Over threshold (tiny budget) but nothing to drop: keep_last_messages=20
+    # retains the single message, and masking is off by default.
+    ctrl = SessionController(None, None, deps, max_context_tokens=1, keep_last_messages=20)
+    ctrl.history = [ModelRequest(parts=[UserPromptPart(content="x" * 5000)])]
+    before = list(ctrl.history)
+    events: list = []
+    ctrl.on_compact_start = lambda: events.append("start")
+    ctrl.on_compact = lambda b, a: events.append(("done", b, a))
+
+    did = await ctrl.maybe_compact()
+
+    assert did is False  # nothing droppable → no shrink
+    assert ctrl.history == before  # history unchanged
+    assert log.exists() and '"hook_event_name": "PreCompact"' in log.read_text()
+    assert "start" in events  # indicator was shown
+    done = [e for e in events if isinstance(e, tuple) and e[0] == "done"]
+    assert done and done[0][1] == done[0][2]  # on_compact fired, before == after
+
+
+@pytest.mark.anyio
 async def test_compaction_masks_stale_observations_when_enabled(tmp_path):
     """With mask_observations on, a compaction that fires also elides the bulky
     tool-observation payloads in the retained tail (keeping the most recent)."""

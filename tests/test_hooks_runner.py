@@ -286,6 +286,19 @@ async def test_verdict_crash_and_other_exit_codes_are_not_blocks(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_verdict_timeout_is_not_a_block(tmp_path):
+    """A verdict hook that sleeps past its timeout is killed and yields a
+    non-blocking verdict — a timeout must never be read as a deliberate block,
+    or a slow/hung PreCompact hook could wedge a manual /compact. Mirrors
+    test_timeout_is_killed_and_swallowed for the verdict path."""
+    cmd = _script(tmp_path, "slow.sh", "sleep 5\nexit 2\n")  # would block if it ran
+    runner = HookRunner({events.PRE_COMPACT: [_entry(cmd, timeout=1)]})
+    v = await runner.dispatch_verdict(events.PRE_COMPACT, {"trigger": "manual"})
+    assert isinstance(v, HookVerdict)
+    assert not v.blocked
+
+
+@pytest.mark.anyio
 async def test_verdict_matcher_matches_trigger(tmp_path):
     cmd = _script(tmp_path, "m.sh", "exit 2\n")
     runner = HookRunner({events.PRE_COMPACT: [_entry(cmd, matcher="manual")]})
