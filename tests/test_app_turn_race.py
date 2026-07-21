@@ -118,6 +118,61 @@ async def test_start_turn_clears_latch_on_error(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# Compaction-worker concurrency guard (I1): the reset/new/switch flows and turn
+# submission refuse while the /compact worker is mid-summarize.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_compact_busy_blocks_reset_new_and_switch(tmp_path: Path):
+    """While ``compact_busy`` is latched, /clear, /new, and /switch refuse with a
+    notice rather than rebinding the session store under the compact worker."""
+    app = _app(tmp_path)
+    posted: list[str] = []
+
+    async def _capture(msg: str) -> None:
+        posted.append(msg)
+
+    reached: list[str] = []
+    async with app.run_test():
+        app.post_system = _capture  # type: ignore[assignment]
+        # Trip guards if a flow slips past the compact-busy check.
+        app.session.reset_conversation = lambda *a, **k: reached.append("reset")  # type: ignore[assignment]
+        app.session.start_new_session = lambda *a, **k: reached.append("new")  # type: ignore[assignment]
+        app.session.switch_to_session_id = lambda *a, **k: reached.append("switch")  # type: ignore[assignment]
+        app.compact_busy = True
+
+        await app.reset_conversation()
+        await app.start_new_session("x")
+        await app.switch_to_session_id("whatever")
+
+    assert reached == []  # none of the session flows ran
+    assert len(posted) == 3
+    assert all("Compaction in progress" in m for m in posted)
+
+
+@pytest.mark.anyio
+async def test_compact_busy_refuses_turn_submission_without_losing_it_silently(
+    tmp_path: Path,
+):
+    """A turn submitted mid-compaction is refused with a notice — NOT started
+    (which would race the summarize) and NOT silently enqueued."""
+    app = _app(tmp_path)
+    started: list[str] = []
+
+    async def _fake_start_turn(text, attachments=None):
+        started.append(text)
+
+    async with app.run_test():
+        app._start_turn = _fake_start_turn  # type: ignore[assignment]
+        app.compact_busy = True
+        await app._route_submission("hello", None)
+
+        assert started == []  # not started
+        assert not app._queue.items  # not silently enqueued either
+
+
+# ---------------------------------------------------------------------------
 # Per-turn pruning of completed tool-widget entries
 # ---------------------------------------------------------------------------
 

@@ -16,7 +16,7 @@ from marim_harness.mcp.manager import McpStatus
 from marim_harness.session import SessionInfo
 
 
-async def _default_maybe_compact(**kwargs) -> bool:
+async def _default_manual_compact(instructions=None) -> bool:
     return False
 
 
@@ -28,6 +28,8 @@ class _FakeApp:
         self.turn_prompts: list[str] = []
         self._turn_worker = None
         self.turn_busy = False
+        self.compact_busy = False
+        self.compacting_notice_cleared = False
         self._worker_tasks: list[asyncio.Future] = []
         self.stream = SimpleNamespace(current_assistant="sentinel")
         self.harness = SimpleNamespace(
@@ -35,11 +37,14 @@ class _FakeApp:
                 workspace=SimpleNamespace(root=workspace_root, skill_dirs=None)
             ),
             checkpoints=SimpleNamespace(list=lambda: []),
-            session=SimpleNamespace(maybe_compact=_default_maybe_compact),
+            manual_compact=_default_manual_compact,
         )
 
         self.undone = False
         self.rewound: list[int] = []
+
+    def clear_compacting_notice(self) -> None:
+        self.compacting_notice_cleared = True
 
     async def post_system(self, msg: str) -> None:
         self.posted.append(msg)
@@ -617,28 +622,75 @@ async def test_compact_refuses_while_turn_busy():
 
 
 @pytest.mark.anyio
-async def test_compact_passes_manual_trigger_and_instructions():
+async def test_compact_passes_instructions_to_manual_compact():
     app = _FakeApp()
     calls = {}
 
-    async def fake_maybe_compact(*, force=False, trigger="auto", instructions=None):
-        calls.update(trigger=trigger, instructions=instructions)
+    async def fake_manual_compact(instructions=None):
+        calls.update(instructions=instructions)
         return True
 
-    app.harness.session.maybe_compact = fake_maybe_compact
+    app.harness.manual_compact = fake_manual_compact
     await dispatch(app, "/compact focus on the auth bug")
     await app.drain_workers()
-    assert calls == {"trigger": "manual", "instructions": "focus on the auth bug"}
+    # Routed through the harness manual entry point (which applies the same
+    # checkpoint invalidation as the auto path), not session.maybe_compact.
+    assert calls == {"instructions": "focus on the auth bug"}
 
 
 @pytest.mark.anyio
 async def test_compact_reports_nothing_to_do():
     app = _FakeApp()
 
-    async def fake_maybe_compact(**kw):
+    async def fake_manual_compact(instructions=None):
         return False
 
-    app.harness.session.maybe_compact = fake_maybe_compact
+    app.harness.manual_compact = fake_manual_compact
     await dispatch(app, "/compact")
     await app.drain_workers()
     assert any("Nothing to compact" in m for m in app.posted)
+
+
+@pytest.mark.anyio
+async def test_compact_refuses_while_already_compacting():
+    """I1: a second /compact while the compact worker is in flight is refused,
+    symmetric with the turn-busy guard — it must not cancel the running one."""
+    app = _FakeApp()
+    app.compact_busy = True
+    await dispatch(app, "/compact")
+    assert any("Already compacting" in m for m in app.posted)
+
+
+@pytest.mark.anyio
+async def test_compact_latches_busy_until_worker_finishes():
+    """I1: compact_busy is latched synchronously (before the worker runs) and
+    cleared in the worker's finally, so the teardown/turn-start flows can gate
+    on it for the worker's whole lifetime."""
+    app = _FakeApp()
+
+    async def fake_manual_compact(instructions=None):
+        return True
+
+    app.harness.manual_compact = fake_manual_compact
+    await dispatch(app, "/compact")
+    assert app.compact_busy is True  # set before the worker is awaited
+    await app.drain_workers()
+    assert app.compact_busy is False  # cleared in finally
+
+
+@pytest.mark.anyio
+async def test_compact_worker_reports_error_and_clears_notice():
+    """I3: an exception from manual_compact (e.g. a persist OSError) is posted to
+    the user, the compacting notice is cleared, the busy flag drops, and nothing
+    escapes the worker."""
+    app = _FakeApp()
+
+    async def boom(instructions=None):
+        raise OSError("disk full")
+
+    app.harness.manual_compact = boom
+    await dispatch(app, "/compact")
+    await app.drain_workers()  # must not raise
+    assert any("Compaction failed" in m and "disk full" in m for m in app.posted)
+    assert app.compacting_notice_cleared is True
+    assert app.compact_busy is False
