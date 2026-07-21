@@ -426,6 +426,8 @@ class SessionController:
         self.duration_seconds = 0.0
         self._segment_start = time.monotonic()
         self.deps.tasks.clear()
+        self.breaker.reset()
+        self._breaker_noticed = False
 
     def switch_session(self, session_id: str) -> int:
         if self.manager is None:
@@ -534,6 +536,10 @@ class SessionController:
             self._breaker_noticed = False
         else:
             self.breaker.note_turn()
+        # Warm window discovery before gating: this is an async site, and the
+        # resolver caches, so all later sync reads (the gauge, the property
+        # above) see the discovered window. Never raises — discovery is
+        # best-effort by contract.
         if self.limits is not None:
             model_id = self.get_model_id() if self.get_model_id else None
             await self.limits.resolve(model_id)
@@ -631,6 +637,9 @@ class SessionController:
             return False
         if await self._verdict_blocks(trigger, instructions, manual=manual):
             return False
+        # Fire PreCompact *before* the compaction work, while the transcript is
+        # still full — matching Claude Code, where the hook can snapshot the
+        # conversation before it's summarized/collapsed.
         indicator_shown = self.on_compact_start is not None
         if self.on_compact_start is not None:
             self.on_compact_start()

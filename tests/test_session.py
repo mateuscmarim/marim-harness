@@ -927,6 +927,33 @@ async def test_open_breaker_skips_auto_but_not_manual(tmp_path):
     assert await ctrl.maybe_compact(trigger="manual") is True
 
 
+def test_new_session_resets_breaker(tmp_path):
+    """new_session() must reset the compaction breaker and clear the notice flag.
+
+    Regression: a session that tripped the breaker would leak the open state
+    into a brand-new session created via /new, silently skipping auto-compaction
+    with no notice. This test ensures the breaker is closed and the notice flag
+    is cleared on new_session."""
+    mgr = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
+    store = mgr.create("Initial Session")
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+    ctrl = SessionController(
+        store, mgr, deps, max_context_tokens=10, keep_last_messages=1,
+    )
+    # Set the breaker to an open state and mark the notice as shown
+    ctrl.breaker.consecutive_rapid_refills = ctrl.breaker.trip_after
+    ctrl._breaker_noticed = True
+    assert ctrl.breaker.open is True
+    assert ctrl._breaker_noticed is True
+
+    # Create a new session
+    ctrl.new_session("Test Session")
+
+    # Breaker should be closed and notice flag cleared
+    assert ctrl.breaker.open is False
+    assert ctrl._breaker_noticed is False
+
+
 @pytest.mark.anyio
 async def test_manual_block_verdict_aborts_with_notice(tmp_path):
     hooks = _FakeHooks(blocked=True, reason="snapshot first")
