@@ -1011,7 +1011,7 @@ def test_bare_groups_register_only_file_tools():
     agent = Agent(TestModel(), deps_type=Deps)
     BuiltinToolProvider(groups=groups).register(agent)
     assert _tool_names(agent) == {
-        "read_file", "glob", "tree", "grep", "write_file", "edit_file",
+        "read_file", "glob", "tree", "grep", "write_file", "edit_file", "advisor",
     }
 
 

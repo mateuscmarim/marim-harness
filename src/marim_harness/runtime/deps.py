@@ -73,6 +73,12 @@ ResumeSubagent = Callable[[str], Awaitable[tuple[str | None, str]]]
 # case. Wired by the Harness (see _build_workflow_engine).
 WorkflowRunner = Callable[[str, object, str, float | None], Awaitable[str]]
 
+# (messages) -> advice text. The advisor tool forwards the in-flight run
+# history (ctx.messages) to the configured advisor model; failures come back
+# as text so the turn never fails on advisor failure. None ⇒ no advisor is
+# configured — the tool's prepare hook then omits it from the run entirely.
+AdviseFn = Callable[[list], Awaitable[str]]
+
 # (questions) -> {header: answer}, where answer is a str (single-select) or a
 # list[str] (multi-select); None when the user cancelled. Wired by the TUI; None
 # when there's no interactive UI (headless), so the tool degrades gracefully.
@@ -135,6 +141,11 @@ class HarnessServices:
     # file tools widen their path guard with it; the approval resolver
     # auto-approves writes into it; an instructions closure advertises it.
     get_scratchpad: Callable[[], Path | None] | None = None
+    # Lets the advisor tool consult the configured advisor model. Live on/off
+    # seam (like run_workflow): Harness.set_advisor_model flips it at runtime,
+    # and both the tool's prepare hook and the steering-instructions closure
+    # read it per request, so tool schema and prompt toggle together.
+    advise: AdviseFn | None = None
 
 
 @dataclass
@@ -260,6 +271,14 @@ class Deps:
     # raise its own ceiling. SubagentRunner stamps its configured ceiling here
     # when building a child's deps.
     subagent_max_depth: int = SUBAGENT_MAX_DEPTH
+    # Advisor per-turn call accounting: how many consultations this turn has
+    # made (reset by TurnController.run_turn at each turn start) and the cap
+    # (None = unlimited; stamped from HarnessConfig at build). On Deps rather
+    # than a tool parameter for the same reason as subagent_max_depth: anything
+    # in the advertised schema is model-writable, and the model must not be
+    # able to raise its own ceiling.
+    advisor_uses: int = 0
+    advisor_max_uses: int | None = None
 
     def replace(self, **kw) -> "Deps":
         """Return a shallow copy with specified fields replaced."""
