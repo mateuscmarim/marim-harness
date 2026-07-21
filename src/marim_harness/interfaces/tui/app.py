@@ -854,6 +854,14 @@ class HarnessApp(App):
     def _on_advisor_chosen(self, chosen: str | None) -> None:
         if not chosen:
             return
+        # A typed "off" in the free-text picker means "disable", same as
+        # `/advisor off` and the settings picker — map it to None (the seam's
+        # off state), never persist the literal "off" as a model id (which
+        # would leave the seam active and every consult failing to build it).
+        if chosen.strip().lower() == "off":
+            self.harness.set_advisor_model(None)
+            self._append_log(NoticeMessage("advisor: off"))
+            return
         self.harness.set_advisor_model(chosen)
         self._append_log(NoticeMessage(f"advisor: {chosen}"))
 

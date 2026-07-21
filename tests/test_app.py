@@ -710,6 +710,48 @@ async def test_slash_mode_no_arg_cycles(tmp_path: Path):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("typed", ["off", "OFF", " Off ", "oFf"])
+async def test_on_advisor_chosen_off_disables_advisor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, typed: str
+):
+    # ModelPickerModal allows free-text entry, so a typed "off" must map to
+    # the seam's off state (None) — same as `/advisor off` and the settings
+    # picker — never persist the literal "off" as a model id.
+    app = _app(tmp_path)
+    calls: list[str | None] = []
+    monkeypatch.setattr(app.harness, "set_advisor_model", lambda mid: calls.append(mid))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._on_advisor_chosen(typed)
+        await pilot.pause()
+    assert calls == [None]
+
+
+@pytest.mark.anyio
+async def test_on_advisor_chosen_slug_sets_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    app = _app(tmp_path)
+    calls: list[str | None] = []
+    monkeypatch.setattr(app.harness, "set_advisor_model", lambda mid: calls.append(mid))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._on_advisor_chosen("openrouter:some-model")
+        await pilot.pause()
+    assert calls == ["openrouter:some-model"]
+
+
+@pytest.mark.anyio
+async def test_on_advisor_chosen_none_is_a_noop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    app = _app(tmp_path)
+    calls: list[str | None] = []
+    monkeypatch.setattr(app.harness, "set_advisor_model", lambda mid: calls.append(mid))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._on_advisor_chosen(None)
+        await pilot.pause()
+    assert calls == []
+
+
+@pytest.mark.anyio
 async def test_slash_clear_resets_conversation(tmp_path: Path):
     from pydantic_ai.messages import ModelRequest, UserPromptPart
 
