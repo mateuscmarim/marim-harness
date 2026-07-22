@@ -371,7 +371,7 @@ def test_session_image_requires_auth(client):
     assert response.status_code == 401
 
 
-def test_session_image_roundtrip(client, tmp_path, monkeypatch):
+def test_session_image_roundtrip(client, monkeypatch):
     test_client, tmp_path = client
     monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path / "image-cache"))
     ws_id, sid, _ = _setup_workspace_and_session(test_client, tmp_path)
@@ -386,7 +386,7 @@ def test_session_image_roundtrip(client, tmp_path, monkeypatch):
     assert response.headers["content-type"] == "image/png"
 
 
-def test_session_image_unknown_sha(client, tmp_path, monkeypatch):
+def test_session_image_unknown_sha(client, monkeypatch):
     test_client, tmp_path = client
     monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path / "image-cache"))
     ws_id, sid, _ = _setup_workspace_and_session(test_client, tmp_path)
@@ -426,6 +426,16 @@ def test_session_image_unknown_session(client):
     valid_shape_sha = "b" * 64
     response = test_client.get(
         f"/v1/workspaces/{ws_id}/sessions/nope/images/{valid_shape_sha}", headers=AUTH
+    )
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
+def test_session_image_unknown_workspace(client):
+    test_client, _ = client
+    valid_shape_sha = "c" * 64
+    response = test_client.get(
+        f"/v1/workspaces/nope/sessions/nope/images/{valid_shape_sha}", headers=AUTH
     )
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "not_found"
