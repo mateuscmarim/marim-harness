@@ -11,9 +11,11 @@ from ..config import (
 )
 from ..config.context_limits import build_context_limits
 from ..hooks import HookRunner, load_hooks_config
-from ..lsp import registry as lsp_registry
+from ..lsp.bundled import bundled_lsp_providers
+from ..lsp.provider import LspRegistry
 from ..mcp import build_mcp_servers, disabled_server_names, load_mcp_config
 from ..notifications import Notifier
+from ..plugins.discovery import plugin_lsp_providers
 from ..session import SessionManager
 from ..session.ctrl import aux_model_for
 from .deps import Deps, UIHooks, WorkspaceConfig
@@ -21,6 +23,15 @@ from .harness import Harness
 from .permissions import Mode
 
 logger = logging.getLogger(__name__)
+
+
+def build_lsp_registry(workspace: Path, *, trust_project: bool) -> LspRegistry:
+    """Assemble the session LSP registry: bundled providers first (lowest
+    precedence), then trusted third-party plugin providers, so a project/global
+    plugin can override a bundled language by declaring the same extension."""
+    providers = list(bundled_lsp_providers())
+    providers += plugin_lsp_providers(workspace, trust_project=trust_project)
+    return LspRegistry(providers)
 
 
 def build_harness(
@@ -110,10 +121,11 @@ def build_harness(
     # was covered at startup, a server installed mid-session needs a restart
     # to surface the tools (under partial coverage the tools stay registered
     # and LspManager still probes availability per call).
+    lsp_reg = build_lsp_registry(workspace, trust_project=cfg.trust_project_hooks)
     register_lsp_tools = cfg.lsp_enabled and cfg.lsp_tools_enabled
     if register_lsp_tools:
-        found = lsp_registry.workspace_languages(workspace)
-        if not any(lsp_registry.availability(lang).available for lang in found):
+        found = lsp_reg.workspace_languages(workspace)
+        if not any(lsp_reg.availability(lang).available for lang in found):
             register_lsp_tools = False
             logger.info(
                 "LSP tools disabled: no language server available for "
@@ -141,7 +153,7 @@ def build_harness(
         # two-switch config (manager vs. navigation tools) rather than reach
         # into builder privates — with_lsp(enabled=False) still folds tools
         # off too, matching register_lsp_tools's own "both must be true" rule.
-        .with_lsp(enabled=cfg.lsp_enabled, tools=register_lsp_tools)
+        .with_lsp(enabled=cfg.lsp_enabled, tools=register_lsp_tools, registry=lsp_reg)
         .with_config_overrides(
             # The builder derives forge_enabled from an explicit backend (None
             # here), which would turn CLI forge OFF. Pin the config-driven value
