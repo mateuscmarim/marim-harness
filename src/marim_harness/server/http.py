@@ -1,4 +1,5 @@
-"""The HTTP transport: Starlette routes + SSE over the transport-neutral core.
+"""The HTTP transport: Starlette routes + WebSocket over the transport-neutral
+core.
 
 This is the ONLY server module allowed to import starlette (an optional
 extra). Handlers validate with the schema models, delegate to the supervisor /
@@ -6,6 +7,7 @@ registry, and translate outcomes to status codes. Auth is an explicit check at
 the top of every handler (not middleware): BaseHTTPMiddleware buffers
 streaming bodies, and an explicit call is easier to follow and test."""
 
+import asyncio
 import base64
 import contextlib
 import json
@@ -17,19 +19,19 @@ from pydantic import ValidationError
 from pydantic_ai.usage import RunUsage
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response, StreamingResponse
-from starlette.routing import Route
+from starlette.responses import JSONResponse, Response
+from starlette.routing import Route, WebSocketRoute
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from ..images import image_cache_root, media_type_for_path
 from ..runtime.permissions import Mode
 from ..session import SessionManager
 from .auth import token_matches
 from .host import HostClosed, TurnQueueFull
-from .schema import AskAnswerIn, MessageIn, SessionIn, SteerIn, WorkspaceIn, sse_format
+from .schema import AskAnswerIn, MessageIn, SessionIn, SteerIn, WorkspaceIn
 from .supervisor import SessionSupervisor
 from .workspaces import WorkspaceRegistry
 
-_HEARTBEAT_SECONDS = 15.0
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -38,25 +40,19 @@ def _error(status: int, code: str, message: str) -> JSONResponse:
 
 
 def _unauthorized(request: Request) -> JSONResponse | None:
-    """None when the request carries a valid token; the 401 response otherwise.
-    The SSE endpoint additionally accepts ?access_token= because a browser
-    EventSource cannot set headers."""
+    """None when the request carries a valid bearer token; the 401 otherwise."""
     token = request.app.state.token
     header = request.headers.get("authorization", "")
     if header.startswith("Bearer ") and token_matches(token, header[len("Bearer "):]):
         return None
-    if request.url.path.endswith("/events"):
-        presented = request.query_params.get("access_token")
-        if presented and token_matches(token, presented):
-            return None
     return _error(401, "unauthorized", "missing or invalid bearer token")
 
 
-def _registry(request: Request) -> WorkspaceRegistry:
+def _registry(request: Request | WebSocket) -> WorkspaceRegistry:
     return request.app.state.registry
 
 
-def _supervisor(request: Request) -> SessionSupervisor:
+def _supervisor(request: Request | WebSocket) -> SessionSupervisor:
     return request.app.state.supervisor
 
 
@@ -304,36 +300,60 @@ async def answer_ask(request: Request) -> Response:
     return JSONResponse({"ok": True})
 
 
-async def get_events(request: Request) -> Response:
-    denied = _unauthorized(request)
-    if denied:
-        return denied
-    record = _workspace(request)
-    if record is None:
-        return _error(404, "not_found", "unknown workspace")
-    session_id = request.path_params["sid"]
-    if not _session_exists(record, session_id):
-        return _error(404, "not_found", "unknown session")
-    bus = _supervisor(request).bus_for(record.id, session_id)
-    last = request.headers.get("last-event-id", "")
-    after_seq = int(last) if last.isdigit() else None
+async def session_ws(websocket: WebSocket) -> None:
+    """Live event stream over WebSocket.
 
-    async def stream():
-        subscription = bus.attach(after_seq=after_seq)
+    Auth is the Authorization: Bearer header on the upgrade.
+    Resume via ?after_seq=<seq>; the synthetic stream.gap that EventBus.attach
+    prepends when the resume point fell off the ring is delivered like any
+    other event. One JSON text frame per Event (Event.as_dict()).
+
+    A background pump forwards bus events; the main coroutine blocks on
+    receive() purely to observe client disconnect, then cancels the pump —
+    otherwise a dead client with no pending events would leak the
+    subscription until the next publish."""
+    token = websocket.app.state.token
+    header = websocket.headers.get("authorization", "")
+    if not (header.startswith("Bearer ")
+            and token_matches(token, header[len("Bearer "):])):
+        await websocket.close(code=4401)
+        return
+    record = _registry(websocket).get(websocket.path_params["ws"])
+    session_id = websocket.path_params["sid"]
+    if record is None or not _session_exists(record, session_id):
+        await websocket.close(code=4404)
+        return
+    raw = websocket.query_params.get("after_seq", "")
+    after_seq = int(raw) if raw.isdigit() else None
+    bus = _supervisor(websocket).bus_for(record.id, session_id)
+
+    await websocket.accept()
+    subscription = bus.attach(after_seq=after_seq)
+
+    async def pump() -> None:
+        while True:
+            # timeout=None (the default) blocks until an event is queued, so
+            # next_event() only returns None on a timeout — this assert is
+            # for the type checker, not a runtime possibility here.
+            event = await subscription.next_event()
+            assert event is not None
+            await websocket.send_json(event.as_dict())
+
+    pump_task = asyncio.ensure_future(pump())
+    try:
+        while True:
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                break
+    except WebSocketDisconnect:
+        pass
+    finally:
+        pump_task.cancel()
         try:
-            while True:
-                event = await subscription.next_event(timeout=_HEARTBEAT_SECONDS)
-                if event is None:
-                    yield ": keepalive\n\n"  # comment frame keeps proxies open
-                    continue
-                yield sse_format(event)
+            with contextlib.suppress(asyncio.CancelledError):
+                await pump_task
         finally:
             subscription.close()
-
-    return StreamingResponse(
-        stream(), media_type="text/event-stream",
-        headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
-    )
 
 
 async def get_history(request: Request) -> Response:
@@ -411,7 +431,7 @@ def create_app(
         Route(f"{base}/steer", post_steer, methods=["POST"]),
         Route(f"{base}/asks", list_asks, methods=["GET"]),
         Route(f"{base}/asks/{{aid}}", answer_ask, methods=["POST"]),
-        Route(f"{base}/events", get_events, methods=["GET"]),
+        WebSocketRoute(f"{base}/ws", session_ws),
         Route(f"{base}/history", get_history, methods=["GET"]),
         Route(f"{base}/images/{{sha}}", get_session_image, methods=["GET"]),
     ]

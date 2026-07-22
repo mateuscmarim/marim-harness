@@ -1,7 +1,7 @@
-from marim_harness.server.schema import STREAM_EVENT_TYPES, AskAnswerIn, Event, sse_format
+from marim_harness.server.schema import STREAM_EVENT_TYPES, AskAnswerIn, Event
 
 
-def test_event_as_dict_and_sse_format():
+def test_event_as_dict():
     event = Event(seq=7, ts="2026-07-06T00:00:00+00:00", type="turn.started", data={"a": 1})
     assert event.as_dict() == {
         "seq": 7,
@@ -9,7 +9,6 @@ def test_event_as_dict_and_sse_format():
         "type": "turn.started",
         "data": {"a": 1},
     }
-    assert sse_format(event) == 'id: 7\nevent: turn.started\ndata: {"a": 1}\n\n'
 
 
 def test_stream_event_types_cover_shared_mapping():

@@ -1,11 +1,10 @@
 """Transport-neutral wire schema: the event envelope every transport carries
 and the request-body models the HTTP layer validates with.
 
-The envelope is the contract — SSE + POST is merely the first transport. A
-future WebSocket endpoint pipes the same ``Event`` dicts both ways with no
-changes here (which is why nothing in this module knows about HTTP)."""
+The envelope is the contract — WebSocket + POST is the transport. Nothing in
+this module knows about HTTP or WebSocket; ``Event.as_dict()`` is the sole
+wire serializer."""
 
-import json
 from dataclasses import dataclass
 
 from pydantic import BaseModel
@@ -14,7 +13,7 @@ from pydantic import BaseModel
 @dataclass(frozen=True)
 class Event:
     """One bus message. ``seq`` is monotonic per session and doubles as the
-    SSE event id for Last-Event-ID resume."""
+    resume cursor for ``?after_seq=``."""
 
     seq: int
     ts: str
@@ -23,11 +22,6 @@ class Event:
 
     def as_dict(self) -> dict:
         return {"seq": self.seq, "ts": self.ts, "type": self.type, "data": self.data}
-
-
-def sse_format(event: Event) -> str:
-    """Render an Event as a Server-Sent Events frame."""
-    return f"id: {event.seq}\nevent: {event.type}\ndata: {json.dumps(event.data)}\n\n"
 
 
 # Maps stream_events.event_to_dict()'s "type" field to the wire event type

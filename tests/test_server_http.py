@@ -234,7 +234,6 @@ def test_full_turn_with_parked_approval(client):
 
     accepted = test_client.post(f"{base}/messages", headers=AUTH, json={"prompt": "edit it"})
     assert accepted.status_code == 202
-    turn_id = accepted.json()["turn_id"]
 
     # The edit parks for approval; answer it over the API.
     state = _poll(test_client, base, lambda s: s["status"] == "waiting_ask")
@@ -246,22 +245,6 @@ def test_full_turn_with_parked_approval(client):
 
     _poll(test_client, base, lambda s: s["status"] == "idle")
     assert (project / "a.txt").read_text() == "bar\n"
-
-    # Replay the whole stream via SSE and find the lifecycle events.
-    events = []
-    with test_client.stream("GET", f"{base}/events?access_token={TOKEN}",
-                            headers={"Last-Event-ID": "0"}) as stream:
-        for line in stream.iter_lines():
-            if line.startswith("event: "):
-                events.append(line.removeprefix("event: "))
-            if line.startswith("data: ") and '"turn_id"' in line and "output" in line:
-                payload = _json.loads(line.removeprefix("data: "))
-                if payload.get("turn_id") == turn_id and "output" in payload:
-                    break
-    assert "turn.started" in events
-    assert "ask.pending" in events
-    assert "ask.resolved" in events
-    assert "turn.finished" in events
 
     # History endpoint serves the persisted messages.
     history = test_client.get(f"{base}/history", headers=AUTH).json()
@@ -318,47 +301,6 @@ def test_malformed_base64_attachment_returns_400(client):
     error_body = response.json()
     assert error_body["error"]["code"] == "bad_request"
     assert "base64" in error_body["error"]["message"]
-
-
-def test_get_events_unknown_session_returns_404(client):
-    test_client, tmp_path = client
-    project = tmp_path / "proj"
-    project.mkdir()
-    ws = test_client.post("/v1/workspaces", headers=AUTH,
-                          json={"name": "proj", "path": str(project)}).json()
-    # A real workspace, but a session id that was never created via POST
-    # /sessions — get_events must 404 instead of lazily minting a bus.
-    response = test_client.get(
-        f"/v1/workspaces/{ws['id']}/sessions/nope/events?access_token={TOKEN}"
-    )
-    assert response.status_code == 404
-    assert response.json()["error"]["code"] == "not_found"
-
-
-def test_sse_resume_with_last_event_id(client):
-    test_client, tmp_path = client
-    ws_id, sid, _ = _setup_workspace_and_session(test_client, tmp_path, mode="auto")
-    base = f"/v1/workspaces/{ws_id}/sessions/{sid}"
-    test_client.post(f"{base}/messages", headers=AUTH, json={"prompt": "go"})
-    _poll(test_client, base, lambda s: s["status"] == "idle")
-
-    # First read: take only the first event and note its id.
-    first_id = None
-    with test_client.stream("GET", f"{base}/events?access_token={TOKEN}",
-                            headers={"Last-Event-ID": "0"}) as stream:
-        for line in stream.iter_lines():
-            if line.startswith("id: "):
-                first_id = int(line.removeprefix("id: "))
-                break
-    assert first_id is not None
-
-    # Reconnect after that id: replay resumes strictly after it.
-    with test_client.stream("GET", f"{base}/events?access_token={TOKEN}",
-                            headers={"Last-Event-ID": str(first_id)}) as stream:
-        for line in stream.iter_lines():
-            if line.startswith("id: "):
-                assert int(line.removeprefix("id: ")) == first_id + 1
-                break
 
 
 def test_session_image_requires_auth(client):
