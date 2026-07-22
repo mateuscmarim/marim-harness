@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import DeferredToolRequests, capture_run_messages
 from pydantic_ai.messages import BinaryContent, ModelMessage
+from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RunUsage
 
 if TYPE_CHECKING:
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
     from .deps import Deps, HarnessAgent
 
 from ..compaction import estimate_tokens, last_request_input_tokens
+from ..thinking import settings_for
 from ..tools.names import LSP_TOOLS
 from .context import (
     actionable_error_note as _actionable_error_note,
@@ -275,6 +277,7 @@ class TurnController:
         mcp: McpManager,
         deps: Deps,
         get_model: Callable[[], Model],
+        get_thinking: Callable[[], str | None] = lambda: None,
         lsp_toolset: FunctionToolset[Deps] | None = None,
     ) -> None:
         self.agent = agent
@@ -284,6 +287,10 @@ class TurnController:
         self.mcp = mcp
         self.deps = deps
         self.get_model = get_model
+        # Live getter for the session thinking level (closes over the Harness's
+        # mutable thinking_level_id), read PER ROUND so a /think switch applies
+        # to the next turn with no agent rebuild — the get_model pattern.
+        self.get_thinking = get_thinking
         self.lsp_toolset = lsp_toolset
 
         # One-shot turn state (consumed by _assemble_prompt, restored on failure).
@@ -327,6 +334,17 @@ class TurnController:
         if on_ttft is not None:
             model = TtftTrackingModel(model, on_ttft=on_ttft)
         return model
+
+    def _turn_model_settings(self) -> ModelSettings:
+        """Per-round model settings: the agent-level default with the live
+        thinking level folded in (settings_for OMITS the key for off/unset, so
+        an unset session stays byte-identical to the agent default and keeps the
+        prompt cache warm). Deferred import of the harness default keeps the
+        harness→controller import edge one-directional (harness imports
+        controller at module top)."""
+        from .harness import _DEFAULT_MODEL_SETTINGS
+
+        return settings_for(self.get_thinking(), _DEFAULT_MODEL_SETTINGS)
 
     def apply_session_start_context(self, ctx: str) -> None:
         """Stash SessionStart-injected context for the next turn's prompt."""
@@ -870,6 +888,7 @@ class TurnController:
                     result = await self.agent.run(
                         user_prompt,
                         model=self._turn_model(),
+                        model_settings=self._turn_model_settings(),
                         message_history=self.session.history,
                         deps=self.deps,
                         deferred_tool_results=deferred_results,

@@ -211,6 +211,12 @@ class HarnessConfig:
     advisor_model: str | None = None
     advisor_max_tokens: int = 2048
     advisor_max_uses: int | None = None
+    # Thinking level (reasoning effort) applied to the main model per turn via
+    # ModelSettings.thinking. One of thinking.THINKING_LEVELS, or None (unset).
+    # The session store's ``thinking`` overrides this — see
+    # Harness._apply_saved_thinking. Sub-agents inherit the live level via the
+    # runner's thinking_default closure (get_thinking below).
+    thinking_level: str | None = None
 
 
 def _build_workflow_engine(cfg: HarnessConfig, deps: Deps, subagents: SubagentRunner):
@@ -286,6 +292,7 @@ def build_collaborators(
     cfg: HarnessConfig,
     *,
     get_model: Callable[[], Model],
+    get_thinking: Callable[[], str | None] = lambda: None,
 ) -> Collaborators:
     """Build and wire the full collaborator graph for a Harness, in dependency
     order, and install the deps<->services binding via ``build_services``.
@@ -293,6 +300,11 @@ def build_collaborators(
     ``get_model`` is supplied by the caller (closing over the live
     ``Harness.current_model``) so a runtime ``/model`` switch is tracked
     without rewiring the sub-agent runner.
+
+    ``get_thinking`` is the same kind of live getter (closing over the live
+    ``Harness.thinking_level_id``) so a spawned sub-agent inherits the session's
+    current thinking level when its own override/spec don't set one. It defaults
+    to "no inherited level" for the embedding builder path.
     """
     mcp = McpManager(
         cfg.mcp_servers or [], set(cfg.mcp_disabled or []),
@@ -407,6 +419,9 @@ def build_collaborators(
         max_depth=SUBAGENT_MAX_DEPTH,
         extra_agents=cfg.extra_agents,
         tiers=cfg.subagent_tiers,
+        # Inherited thinking level for spawns whose override/spec don't set
+        # one — read lazily per spawn so a /think switch reaches later spawns.
+        thinking_default=get_thinking,
         # Sub-agents share the session's context-limits RESOLVER and masking
         # knobs: one discovery cache governs both the main history and spawned
         # runs, but each spawn resolves its own threshold through it — a
@@ -494,11 +509,17 @@ class Harness:
         # Surfaced for the TUI wake scheduler (interactive only).
         self.autonomous_wake = cfg.autonomous_wake
         self.wake_depth_cap = cfg.wake_depth_cap
+        # Live thinking level (reasoning effort). Set before build_collaborators
+        # and TurnController so their get_thinking closures capture a live
+        # attribute; the real value is resolved by _apply_saved_thinking below.
+        self._thinking_env_default = cfg.thinking_level
+        self.thinking_level_id: str | None = None
         # Build the collaborator graph in one named, testable place. get_model
         # closes over self so a runtime /model switch (set_model) is tracked.
         collab = build_collaborators(
             model, provider, deps, instructions, cfg,
             get_model=lambda: self.current_model,
+            get_thinking=lambda: self.thinking_level_id,
         )
         self.agent = collab.agent
         self.mcp = collab.mcp
@@ -524,6 +545,7 @@ class Harness:
             deps=self.deps,
             lsp_toolset=self.provider.lsp_toolset(),
             get_model=lambda: self.current_model,
+            get_thinking=lambda: self.thinking_level_id,
         )
         # Advisor: build ONE advise callable for the harness lifetime; which
         # model it consults is re-resolved PER CALL through the closure over
@@ -541,6 +563,7 @@ class Harness:
             max_tokens=cfg.advisor_max_tokens,
         )
         self._apply_saved_advisor()
+        self._apply_saved_thinking()
 
     def bind_ui(
         self,
@@ -611,6 +634,7 @@ class Harness:
         self.checkpoints.reload()
         self._apply_saved_model()
         self._apply_saved_advisor()
+        self._apply_saved_thinking()
         return count
 
     def _clear_job_context(self) -> None:
@@ -638,6 +662,7 @@ class Harness:
         if saved and saved != self.model_id:
             self.set_model(saved, persist=False)
         self._apply_saved_advisor()
+        self._apply_saved_thinking()
 
     def switch_session(self, session_id: str) -> int:
         # Clear the OUTGOING session's job context BEFORE loading the incoming one.
@@ -654,6 +679,7 @@ class Harness:
         self.checkpoints.reload()
         self._apply_saved_model()
         self._apply_saved_advisor()
+        self._apply_saved_thinking()
         return count
 
     async def rename_session(self, name: str | None = None) -> str | None:
@@ -746,6 +772,34 @@ class Harness:
             )
         if persist:
             self.session.set_advisor(model_id if model_id is not None else ADVISOR_OFF)
+
+    def get_thinking(self) -> str | None:
+        """The live thinking level (session override → env/config default →
+        None). Read by the controller per round and the sub-agent runner per
+        spawn, so a switch applies without a rebuild."""
+        return self.thinking_level_id
+
+    def _resolve_thinking_id(self) -> str | None:
+        """Session override → env/config default → None. A persisted level
+        (including "off") beats the env default; None means "unset — inherit
+        the env default"."""
+        saved = self.session.saved_thinking_id
+        return saved if saved is not None else self._thinking_env_default
+
+    def _apply_saved_thinking(self) -> None:
+        """Point the live thinking level at the active session's choice. Called
+        at build and after every session change (resume/new/switch), mirroring
+        ``_apply_saved_model``. No seam to flip: the controller and runner read
+        thinking_level_id lazily per round/spawn."""
+        self.thinking_level_id = self._resolve_thinking_id()
+
+    def set_thinking_level(self, level: str, *, persist: bool = True) -> None:
+        """Switch the thinking level at runtime (a member of
+        thinking.THINKING_LEVELS, "off" to disable). Safe mid-turn: the level is
+        read per round, so a switch simply applies to the next turn/spawn."""
+        self.thinking_level_id = level
+        if persist:
+            self.session.set_thinking(level)
 
     @property
     def mode(self) -> Mode:
