@@ -39,6 +39,7 @@ from ...subagents.cli_backend import resolve_cli_binary
 from .model_picker import ModelPickerModal
 from .providers import ProvidersPane, current_default_provider
 from .themes import MARIM_THEMES, THEME_NAMES
+from .thinking_picker import ThinkingPickerModal
 
 if TYPE_CHECKING:
     from ...runtime.harness import Harness
@@ -466,6 +467,20 @@ class SettingsScreen(Screen[None]):
                 id="advisor-max-uses",
                 type="integer",
             )
+        yield Static(
+            "Thinking — reasoning effort applied to the model "
+            "(off/minimal/low/medium/high/xhigh). This row saves the global "
+            "default to .env (new sessions); /think overrides it per session, "
+            "live. Not every provider supports it; unsupported models ignore it.",
+            classes="muted",
+        )
+        with Horizontal(classes="srow"):
+            yield Static("Thinking", classes="tier-row-label")
+            yield Static(
+                self._thinking_value_text(), id="thinking-value",
+                classes="tier-row-value",
+            )
+            yield Button("change", id="thinking-change", variant="primary", compact=True)
 
     def _notifications_widgets(self) -> ComposeResult:
         yield Static("Saved to .env — applies on next launch.", classes="muted")
@@ -595,6 +610,9 @@ class SettingsScreen(Screen[None]):
     def _advisor_value_text(self) -> str:
         return self.env_cfg.advisor_model or "off"
 
+    def _thinking_value_text(self) -> str:
+        return self.env_cfg.thinking_level or "off"
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id or ""
         if bid == "model-change":
@@ -603,6 +621,8 @@ class SettingsScreen(Screen[None]):
             self._open_tier_picker(bid.removeprefix("tier-change-"))
         elif bid == "advisor-change":
             self._open_advisor_picker()
+        elif bid == "thinking-change":
+            self._open_thinking_picker()
 
     async def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         cid = event.checkbox.id or ""
@@ -860,6 +880,34 @@ class SettingsScreen(Screen[None]):
             source.refresh_from_env()
         self.query_one("#advisor-value", Static).update(self._advisor_value_text())
         self._status("✓ saved MARIM_ADVISOR_MODEL · applies to new sessions")
+
+    def _open_thinking_picker(self) -> None:
+        """Fixed-list picker for the global thinking default. The pick persists
+        to .env (new sessions); the live per-session switch is /think."""
+        self.app.push_screen(
+            ThinkingPickerModal(current=self.env_cfg.thinking_level),
+            self._on_thinking_chosen,
+        )
+
+    def _on_thinking_chosen(self, chosen: str | None) -> None:
+        if not chosen:
+            return
+        try:
+            if chosen == "off":
+                # off DROPS the var rather than writing a sentinel: unset is the
+                # env layer's own "no thinking", and a written "off" round-trips
+                # to the same None anyway (parse_thinking_level("off") == "off",
+                # but the .env default should read as absent).
+                save_env_settings({}, drop=("MARIM_THINKING",))
+                self.env_cfg.thinking_level = None
+            else:
+                save_env_settings({"MARIM_THINKING": chosen})
+                self.env_cfg.thinking_level = chosen
+        except Exception as exc:  # surface any write failure on the status line
+            self._status(f"Save failed: {exc}")
+            return
+        self.query_one("#thinking-value", Static).update(self._thinking_value_text())
+        self._status("✓ saved MARIM_THINKING · applies to new sessions")
 
     def action_cancel(self) -> None:
         # Two-stage escape mirroring enter: leave edit mode (back to the

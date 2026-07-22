@@ -810,3 +810,49 @@ async def test_advisor_numeric_knobs_are_registered():
     assert _ENV_INT_INPUTS["advisor-max-uses"][0] == "MARIM_ADVISOR_MAX_USES"
     # 0 = unlimited must be commit-able, like the context budget's 0.
     assert "advisor-max-uses" in _ZERO_OK_INPUTS
+
+
+@pytest.mark.anyio
+async def test_settings_has_thinking_row_defaulting_off():
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        value = str(app.screen.query_one("#thinking-value").render())
+    assert value == "off"
+
+
+@pytest.mark.anyio
+async def test_thinking_choice_saves_env(isolated_env, monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        app.screen._on_thinking_chosen("high")
+        await pilot.pause()
+        value = str(app.screen.query_one("#thinking-value").render())
+    env_text = (tmp_path / "marim" / ".env").read_text()
+    assert "MARIM_THINKING=high" in env_text
+    assert os.environ.get("MARIM_THINKING") == "high"
+    assert value == "high"
+
+
+@pytest.mark.anyio
+async def test_thinking_off_choice_drops_the_env_var(isolated_env, monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("MARIM_THINKING", "high")
+    env_cfg = _env_cfg()
+    env_cfg.thinking_level = "high"
+    app = _Host(_fake_harness(), env_cfg)
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        app.screen._on_thinking_chosen("off")
+        await pilot.pause()
+        value = str(app.screen.query_one("#thinking-value").render())
+    assert os.environ.get("MARIM_THINKING") is None
+    assert value == "off"
