@@ -375,7 +375,7 @@ async def get_session_image(request: Request) -> Response:
     if record is None:
         return _error(404, "not_found", "unknown workspace")
     session_id = request.path_params["sid"]
-    if not SessionManager(Path(record.path)).session_path(session_id).exists():
+    if not _session_exists(record, session_id):
         return _error(404, "not_found", "unknown session")
     sha = request.path_params["sha"]
     if not _SHA_RE.fullmatch(sha):
