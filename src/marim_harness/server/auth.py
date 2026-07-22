@@ -2,8 +2,7 @@
 
 The token is generated once, stored 0600 under the server state dir, and
 printed by ``marim serve`` at startup. Every request except /health must carry
-it (Authorization: Bearer, or ?access_token= on the SSE endpoint, where
-browser EventSource cannot set headers)."""
+it as an Authorization: Bearer header — including the WebSocket upgrade."""
 
 import secrets
 from hmac import compare_digest
