@@ -49,10 +49,13 @@ tools, but `remember` is ungated, so the flag would silently bypass approval).
 - `tools/provider.py` registers `forget` on the main agent with
   `requires_approval=True` — it moves through the gated registration path, not
   the ungated read/query block that registers `remember`/`recall`.
-- **Sub-agent reach:** sub-agents register tools plain (no mid-run approval
-  exists there), so the `"memory"` group in `tools/names.py` stays
-  `{remember, recall}`. `forget` is main-agent-only; a sub-agent granted memory
-  can read and save but never delete. This keeps the gating decision meaningful.
+- **Sub-agent reach:** memory tools are main-agent-only already — none of them
+  appear in `names.SUBAGENT_TOOLS`, and `forget` must not be added there (a
+  sub-agent registers tools plain, with no mid-run approval). The
+  `TOOL_GROUPS["memory"]` entry in `tools/names.py` is a different thing — the
+  embeddable builder's composition group — and *does* gain `"forget"`, so that
+  toggling the memory group off removes all three tools (the
+  `test_each_group_toggles_exactly_its_tools` invariant).
 - No new TUI command. Deletion is asked in natural language and flows through
   the gated tool; a `/forget` command is sugar we skip.
 
