@@ -91,10 +91,13 @@ def _cmd_install(args, *, ws, out, err, input_fn, now_fn) -> int:
                 print(
                     f"Plugin {manifest.name!r} bundles "
                     f"{summary['skills']} skills, {summary['agents']} agents, "
-                    f"{summary['hooks']} hooks, {summary['mcpServers']} MCP servers.",
+                    f"{summary['hooks']} hooks, {summary['mcpServers']} MCP servers, "
+                    f"{summary['lsp']} LSP servers.",
                     file=out,
                 )
-                answer = input_fn("Trust this plugin's hooks/MCP servers? [y/N] ").strip().lower()
+                answer = input_fn(
+                    "Trust this plugin's hooks/MCP/LSP servers? [y/N] "
+                ).strip().lower()
                 trust = answer in ("y", "yes")
     try:
         rec = install_plugin(
