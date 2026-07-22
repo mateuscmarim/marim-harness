@@ -128,9 +128,17 @@ to avoid import cycles.
   selectively to sub-agents. Project-local `.marim/mcp.json` servers launch code on
   connect, so they load only when the project is trusted (the same
   `MARIM_TRUST_PROJECT_HOOKS` gate as project hooks); global/plugin servers always load.
-- `lsp/` — multilspy-backed language-server pool. Two independent switches:
-  `lsp_enabled` (the manager + diagnostics-on-edit) and `lsp_tools_enabled` (the six
-  navigation tools). Diagnostics are appended to write/edit results best-effort.
+- `lsp/` — multilspy-backed language servers, now assembled from **LSP providers**
+  (`provider.py`: `LspProvider` + `LspRegistry`) rather than a hard-coded set. Four
+  bundled language plugins (`lsp/bundled/{python,typescript,cpp,java}`) ship in-tree
+  and always load; third-party plugins add languages via an `lsp` manifest block
+  (declarative `command`/`args` only) under the same `MARIM_TRUST_PROJECT_HOOKS` gate
+  as MCP. `backend:`/named-`diagnostics:` keys are a bundled-only seam to in-tree tuned
+  code (`basedpyright.py`, ruff/pyright via `checks.py`). Declarative servers launch
+  through `GenericStdioServer` (`generic.py`). Two switches still gate the whole thing:
+  `lsp_enabled` (manager + diagnostics-on-edit) and `lsp_tools_enabled` (the six nav
+  tools). marim never downloads server binaries — it probes PATH and surfaces the
+  provider's install hint.
 - `forge/` — Gitea/GitHub integration via a `ForgeBackend` seam. `TeaBackend`
   shells out to the `tea` CLI (`--output json`); five forge-agnostic tools
   (`tools/forge_tools.py`) list/view PRs, check CI, and open/check out PRs, with
