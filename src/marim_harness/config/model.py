@@ -6,6 +6,7 @@ from typing import Any
 
 from ..command_policy import split_patterns
 from ..notifications import NotificationConfig, parse_events
+from ..thinking import parse_thinking_level
 from ..workspace.catalog import (
     ModelEntry,
     fetch_google_models,
@@ -194,6 +195,11 @@ class ModelConfig:
     advisor_model: str | None = None
     advisor_max_tokens: int = 2048
     advisor_max_uses: int | None = None
+    # Thinking level (reasoning effort) applied to the model via
+    # ModelSettings.thinking. One of thinking.THINKING_LEVELS, or None (unset —
+    # no reasoning effort, marim's pre-thinking behavior). The session store's
+    # ``thinking`` overrides this at runtime (see Harness._resolve_thinking_id).
+    thinking_level: str | None = None
     # Shell-command allow/deny patterns (regex), enforced in the bash tool in
     # every mode. Empty lists -> no restriction.
     command_denylist: list[str] = field(default_factory=list)
@@ -303,6 +309,10 @@ def _common_kwargs() -> dict[str, Any]:
         # Unset or 0 = unlimited — the same "0 falls through to None" pattern
         # context_window uses (see _int_env: non-positive returns the default).
         advisor_max_uses=(_int_env("MARIM_ADVISOR_MAX_USES", 0) or None),
+        # parse_thinking_level folds an unknown/blank MARIM_THINKING to None
+        # (unset), so a typo silently disables thinking rather than crashing
+        # startup — detection/selection is always best-effort (see the spec).
+        thinking_level=parse_thinking_level(os.getenv("MARIM_THINKING")),
         command_denylist=split_patterns(os.getenv("MARIM_COMMAND_DENYLIST", "")),
         command_allowlist=split_patterns(os.getenv("MARIM_COMMAND_ALLOWLIST", "")),
         subagent=subagent,

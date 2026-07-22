@@ -1001,3 +1001,27 @@ def test_advisor_max_uses_zero_means_unlimited(monkeypatch):
     monkeypatch.setenv("MARIM_ADVISOR_MAX_USES", "0")
     cfg = load_config()
     assert cfg.advisor_max_uses is None
+
+
+def test_thinking_env_config(monkeypatch):
+    monkeypatch.setenv("MARIM_THINKING", "high")
+    cfg = load_config()
+    assert cfg.thinking_level == "high"
+
+
+def test_thinking_env_is_case_insensitive(monkeypatch):
+    monkeypatch.setenv("MARIM_THINKING", "  Medium ")
+    cfg = load_config()
+    assert cfg.thinking_level == "medium"
+
+
+def test_thinking_env_default_is_none(monkeypatch):
+    monkeypatch.delenv("MARIM_THINKING", raising=False)
+    cfg = load_config()
+    assert cfg.thinking_level is None
+
+
+def test_thinking_env_unknown_value_is_none(monkeypatch):
+    monkeypatch.setenv("MARIM_THINKING", "ultra")
+    cfg = load_config()
+    assert cfg.thinking_level is None
