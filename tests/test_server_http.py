@@ -384,6 +384,7 @@ def test_session_image_roundtrip(client, monkeypatch):
     assert response.status_code == 200
     assert response.content == data
     assert response.headers["content-type"] == "image/png"
+    assert response.headers["cache-control"] == "public, max-age=31536000, immutable"
 
 
 def test_session_image_unknown_sha(client, monkeypatch):
@@ -438,4 +439,37 @@ def test_session_image_unknown_workspace(client):
         f"/v1/workspaces/nope/sessions/nope/images/{valid_shape_sha}", headers=AUTH
     )
     assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
+def test_session_image_traversal_encoded(client):
+    """Verify that percent-encoded traversal attempts get 404.
+
+    ASGI/uvicorn decodes percent-escapes before routing, so a %2f-encoded
+    slash decodes to "/" and doesn't match the {sha} converter [^/]+, yielding
+    a plain 404 at the router. A slash-free encoding like %2e%2e decodes to
+    "..", DOES reach the handler, and must 404 with the standard envelope."""
+    test_client, tmp_path = client
+    ws_id, sid, _ = _setup_workspace_and_session(test_client, tmp_path)
+    base = f"/v1/workspaces/{ws_id}/sessions/{sid}/images"
+
+    # Construct the URLs manually to avoid httpx re-encoding or normalizing
+    # dot-segments. httpx.URL accepts a path parameter that is passed
+    # directly to the request without further normalization.
+
+    # Case 1: ..%2f..%2fetc%2fpasswd decodes to ../../etc/passwd
+    # The "/" after decoding doesn't match the {sha} converter [^/]+, so
+    # the router itself rejects it with a plain 404 (no JSON envelope).
+    encoded_with_slashes = f"{base}/..%2f..%2fetc%2fpasswd"
+    response = test_client.get(encoded_with_slashes, headers=AUTH)
+    assert response.status_code == 404
+    # Router-level 404 is plain text, not JSON; we only check status here.
+
+    # Case 2: %2e%2e decodes to "..", which has no slashes and DOES match
+    # [^/]+, so it reaches the handler. The handler's sha regex check
+    # rejects it, returning the standard error envelope.
+    encoded_no_slashes = f"{base}/%2e%2e"
+    response = test_client.get(encoded_no_slashes, headers=AUTH)
+    assert response.status_code == 404
+    # This case reaches the handler, so we get the JSON envelope.
     assert response.json()["error"]["code"] == "not_found"

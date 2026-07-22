@@ -386,7 +386,10 @@ async def get_session_image(request: Request) -> Response:
             data = path.read_bytes()
         except OSError:
             continue
-        return Response(data, media_type=media)
+        return Response(
+            data, media_type=media,
+            headers={"cache-control": "public, max-age=31536000, immutable"}
+        )
     return _error(404, "not_found", "unknown image")
 
 
