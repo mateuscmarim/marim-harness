@@ -40,6 +40,7 @@ from .status import (
 from .stream_render import StreamRenderer
 from .subagents import SubAgentsScreen, SubAgentsView
 from .themes import MARIM_THEMES
+from .thinking_picker import ThinkingPickerModal
 from .wake import WakeController
 from .widgets import (
     AssistantMessage,
@@ -234,6 +235,12 @@ class HarnessApp(App):
             self._append_log(
                 NoticeMessage(f"Advisor: {self.harness.advisor_model_id} · /advisor")
             )
+        # One-line thinking status at session start when a non-off level is
+        # active (env default or session-persisted), so it's visible without
+        # opening settings. off/unset stays silent (that's the default).
+        level = self.harness.thinking_level_id
+        if level is not None and level != "off":
+            self._append_log(NoticeMessage(f"Thinking: {level} · /think"))
         # Seed vision capabilities in the background so the text-only-model
         # warning can fire even before the user opens the model picker.
         source = self.harness.model_source
@@ -902,6 +909,20 @@ class HarnessApp(App):
             return
         self.harness.set_advisor_model(chosen)
         self._append_log(NoticeMessage(f"advisor: {chosen}"))
+
+    async def open_thinking_picker(self) -> None:
+        """Fixed-list picker for the session thinking level. The choice lands
+        on Harness.set_thinking_level (session-persisted, live)."""
+        self.push_screen(
+            ThinkingPickerModal(current=self.harness.thinking_level_id),
+            self._on_thinking_chosen,
+        )
+
+    def _on_thinking_chosen(self, chosen: str | None) -> None:
+        if not chosen:
+            return
+        self.harness.set_thinking_level(chosen)
+        self._append_log(NoticeMessage(f"thinking: {chosen}"))
 
     def _append_log(self, widget) -> None:
         """Mount a notice/error into the log, keeping the viewport pinned to the

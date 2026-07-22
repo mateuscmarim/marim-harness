@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from ...mcp.manager import McpStatus
 from ...runtime.permissions import Mode
+from ...thinking import THINKING_LEVELS, parse_thinking_level
 from ...workspace import discover_skills
 from .themes import THEME_NAMES
 
@@ -232,6 +233,24 @@ async def _cmd_advisor(app: HarnessApp, arg: str) -> None:
         await app.post_system(f"Advisor: `{arg}` — applies to the next consultation.")
         return
     await app.open_advisor_picker()
+
+
+async def _cmd_thinking(app: HarnessApp, arg: str) -> None:
+    # Like /advisor, no mid-turn refusal: the level is read per round, so a
+    # switch simply applies to the next turn/spawn.
+    arg = arg.strip()
+    if not arg:
+        await app.open_thinking_picker()
+        return
+    level = parse_thinking_level(arg)
+    if level is None:
+        await app.post_system(
+            f"Unknown thinking level {arg!r}. Choose one of: "
+            f"{', '.join(THINKING_LEVELS)}."
+        )
+        return
+    app.harness.set_thinking_level(level)
+    await app.post_system(f"Thinking: **{level}** (persisted for this session)")
 
 
 async def _cmd_theme(app: HarnessApp, arg: str) -> None:
@@ -569,6 +588,12 @@ COMMANDS: list[Command] = [
     Command("mode", "set approval mode: /mode [ask|auto|plan]", _cmd_mode),
     Command("model", "switch model: /model [id] (opens a picker if blank)", _cmd_model),
     Command("advisor", "set the advisor model: /advisor [id|off] (picker if blank)", _cmd_advisor),
+    Command(
+        "think",
+        "set the thinking level: /think [level|off] (picker if blank)",
+        _cmd_thinking,
+        aliases=("effort",),
+    ),
     Command("theme", "list or set the color theme: /theme [name]", _cmd_theme),
     Command("remember", "save a note to memory: /remember <fact>", _cmd_remember),
     Command("skill", "list or run skills: /skill [name [context]]", _cmd_skill),
