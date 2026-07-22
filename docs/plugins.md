@@ -27,10 +27,11 @@ In the TUI: `/plugin [list | enable <name> | disable <name>]`.
 A plugin can add a language server by declaring an `lsp` block in its
 `plugin.json` manifest (object or list, for multiple languages) — purely
 declarative: `language`, `extensions`, `command`, `args`, `env`, `probe`,
-`installHint`, `rootMarkers`. The declared command is launched over generic
-stdio LSP; there's no separate file, unlike `mcp.json`. `backend` and a named
-`diagnostics` value are a bundled-only seam into marim's in-tree tuned
-servers (used by the four language plugins marim ships in-tree) — a
+`installHint`, `rootMarkers` (reserved — parsed but not yet honored; servers
+currently launch at the workspace root). The declared command is launched
+over generic stdio LSP; there's no separate file, unlike `mcp.json`. `backend`
+and a named `diagnostics` value are a bundled-only seam into marim's in-tree
+tuned servers (used by the four language plugins marim ships in-tree) — a
 third-party manifest using either key is rejected (strict parse) or dropped
 (lenient parse). See `docs/lsp-plugins.md` for the full manifest reference,
 the four bundled languages, and the declare/probe/install-hint model.

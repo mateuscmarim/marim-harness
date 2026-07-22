@@ -16,11 +16,12 @@ from marim_harness.plugins import (
 )
 
 
-def _make_source(src: Path, name: str, *, with_hooks: bool = False):
+def _make_source(src: Path, name: str, *, with_hooks: bool = False, with_lsp: bool = False):
+    manifest: dict = {"name": name, "version": "1.0.0"}
+    if with_lsp:
+        manifest["lsp"] = {"language": "go", "extensions": [".go"], "command": "gopls"}
     (src / ".marim-plugin").mkdir(parents=True, exist_ok=True)
-    (src / ".marim-plugin" / "plugin.json").write_text(
-        json.dumps({"name": name, "version": "1.0.0"}), encoding="utf-8"
-    )
+    (src / ".marim-plugin" / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
     sk = src / "skills" / "demo"
     sk.mkdir(parents=True, exist_ok=True)
     (sk / "SKILL.md").write_text("---\nname: demo\ndescription: d\n---\nx", encoding="utf-8")
@@ -62,6 +63,21 @@ def test_install_with_hooks_respects_trust_flag(tmp_path, monkeypatch):
     _make_source(src, "exec", with_hooks=True)
     rec = install_plugin(str(src), scope="global", workspace_root=ws, trust=False, now="T")
     assert rec.trusted is False  # executable, not trusted unless asked
+    rec2 = install_plugin(str(src), scope="global", workspace_root=ws, trust=True, now="T")
+    assert rec2.trusted is True
+
+
+def test_install_with_lsp_only_respects_trust_flag(tmp_path, monkeypatch):
+    # An lsp-only plugin (no hooks/MCP) still launches a process on connect —
+    # the same arbitrary-code-execution risk class as hooks/MCP — so it must
+    # NOT be auto-trusted, mirroring test_install_with_hooks_respects_trust_flag.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    src = tmp_path / "src"
+    _make_source(src, "lsp-exec", with_lsp=True)
+    rec = install_plugin(str(src), scope="global", workspace_root=ws, trust=False, now="T")
+    assert rec.trusted is False  # executable (lsp), not trusted unless asked
     rec2 = install_plugin(str(src), scope="global", workspace_root=ws, trust=True, now="T")
     assert rec2.trusted is True
 

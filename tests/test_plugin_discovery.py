@@ -274,8 +274,28 @@ def test_bundle_summary_and_has_executable(tmp_path):
     summary = plugin_bundle_summary(m)
     assert summary["skills"] == 1
     assert summary["hooks"] == 1
+    assert summary["lsp"] == 0
     assert has_executable(summary) is True
     assert has_executable({"skills": 2, "agents": 1, "hooks": 0, "mcpServers": 0}) is False
+
+
+def test_bundle_summary_and_has_executable_lsp_only(tmp_path):
+    # An lsp-only plugin (no hooks/MCP) still launches a process on connect —
+    # its command is the SAME arbitrary-code-execution risk class as a hook or
+    # an MCP server, so it must count as executable surface too.
+    pdir = _make_plugin(
+        tmp_path, "lsp-only",
+        manifest={
+            "lsp": {"language": "go", "extensions": [".go"], "command": "gopls"}
+        },
+        files={},
+    )
+    m = load_manifest(pdir)
+    summary = plugin_bundle_summary(m)
+    assert summary["hooks"] == 0
+    assert summary["mcpServers"] == 0
+    assert summary["lsp"] == 1
+    assert has_executable(summary) is True
 
 
 def test_registered_plugin_with_missing_dir_is_skipped(tmp_path, monkeypatch):

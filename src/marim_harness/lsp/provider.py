@@ -12,6 +12,7 @@ heavy dependency.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -55,7 +56,11 @@ def _valid_backend(backend: str) -> bool:
 
 
 def _validate_launch_config(
-    backend: str | None, command: str | None, bundled: bool, language: str, fail
+    backend: str | None,
+    command: str | None,
+    bundled: bool,
+    language: str,
+    fail: Callable[[str], None],
 ) -> tuple[str | None, str | None] | None:
     """Validate backend/command exclusivity and bundled restrictions.
     Returns (backend, command) tuple or None if validation failed."""
@@ -79,7 +84,9 @@ def _validate_launch_config(
     return backend, command
 
 
-def _validate_diagnostics(diagnostics: str, bundled: bool, language: str, fail) -> str:
+def _validate_diagnostics(
+    diagnostics: str, bundled: bool, language: str, fail: Callable[[str], None]
+) -> str | None:
     """Validate diagnostics strategy and bundled restrictions."""
     if diagnostics not in _DIAGNOSTICS_STRATEGIES:
         return fail(f"provider {language!r}: unknown diagnostics {diagnostics!r}")
@@ -117,7 +124,7 @@ def _parse_optional_fields(raw: dict, command: str | None) -> tuple:
 def _parse_one(
     raw: dict, *, bundled: bool, source: str, plugin_root: Path | None, strict: bool
 ) -> LspProvider | None:
-    def fail(msg: str) -> LspProvider | None:
+    def fail(msg: str) -> None:
         if strict:
             raise LspProviderError(msg)
         logger.warning("skipping lsp provider: %s", msg)

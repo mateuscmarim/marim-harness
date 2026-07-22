@@ -42,8 +42,11 @@ required:
   handshake, definition requests, the diagnostics-publish path). The existing
   `${MARIM_PLUGIN_ROOT}` substitution applies, so a plugin can ship a wrapper
   script alongside its manifest.
-- `rootMarkers` / `env` — optional workspace-root detection files and extra
-  environment variables for the launched process.
+- `rootMarkers` — **reserved**: parsed and stored on the provider, but not yet
+  honored — servers currently always launch at the workspace root, not at a
+  detected sub-root. Safe to include for forward-compat, but it has no effect
+  today.
+- `env` — extra environment variables for the launched process.
 - `probe` — binaries checked on `PATH` before the server is considered
   available; defaults to `[command]` when omitted, and an empty list means
   "always available" (nothing to probe).

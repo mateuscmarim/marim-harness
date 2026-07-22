@@ -31,8 +31,6 @@ from multilspy.multilspy_logger import MultilspyLogger
 
 from .provider import LspProvider
 
-logger = logging.getLogger(__name__)
-
 
 class GenericStdioServer(LanguageServer):
     """Any LSP server over stdio, driven through multilspy's client plumbing."""

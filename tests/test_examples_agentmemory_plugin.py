@@ -20,7 +20,7 @@ def test_bundle_wires_nine_hooks_and_one_mcp_server():
     m = load_manifest(PLUGIN_ROOT)
     summary = plugin_bundle_summary(m)
     # Wiring-only: no vendored skills/agents, all value is the hooks + MCP server.
-    assert summary == {"skills": 0, "agents": 0, "hooks": 9, "mcpServers": 1}
+    assert summary == {"skills": 0, "agents": 0, "hooks": 9, "mcpServers": 1, "lsp": 0}
 
 
 def test_hooks_reference_external_agentmemory_scripts():
