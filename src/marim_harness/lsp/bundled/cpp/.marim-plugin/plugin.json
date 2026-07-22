@@ -1,0 +1,12 @@
+{
+  "name": "lsp-cpp",
+  "description": "C/C++ language server (clangd).",
+  "lsp": {
+    "language": "cpp",
+    "extensions": [".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".hh"],
+    "backend": "multilspy:cpp",
+    "diagnostics": "lsp",
+    "probe": ["clangd"],
+    "installHint": "install clangd (e.g. pacman -S clang)"
+  }
+}
