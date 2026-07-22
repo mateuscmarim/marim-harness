@@ -970,6 +970,14 @@ class StreamRenderer:
             if parent.pane is not None:
                 parent.pane.set_model(model)
 
+    async def on_subagent_thinking(self, stream_id: str, level: str) -> None:
+        """Relay the resolved sub-agent thinking level onto its card, mirroring
+        on_subagent_model. No-op if the card is gone. Fired on the app's event
+        loop, so direct widget mutation is safe."""
+        parent = self.tool_widgets.get(stream_id)
+        if isinstance(parent, SubAgentWidget):
+            parent.set_thinking_level(level)
+
     async def _on_text_start(
         self, event: PartStartEvent, sink: "_StreamSink", container: Widget
     ) -> None:

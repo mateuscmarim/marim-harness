@@ -54,6 +54,10 @@ SubAgentNoticeCb = Callable[[str, str], Awaitable[None]]
 # — e.g. the model a claude-cli spawn reports in its stream — so the spawn card
 # shows it instead of falling back to the harness's own model. None when no UI.
 SubAgentModelCb = Callable[[str, str], Awaitable[None]]
+# (stream_id, level) -> None. Surfaces the resolved thinking level a spawn ran
+# with (override → spec → inherited) so the card can annotate it. Fired only
+# when a real level resolves; off/none stays silent. None when no UI.
+SubAgentThinkingCb = Callable[[str, str], Awaitable[None]]
 # (stream_id, usage) -> None. Delivers the final RunUsage for a CLI spawn (which
 # can only report usage once, at the end of its run) so the card and pane show
 # the token total, cache split, and cost. None when no UI.
@@ -216,6 +220,7 @@ class UIHooks:
     on_subagent_event: SubAgentEventCb | None = None
     on_subagent_notice: SubAgentNoticeCb | None = None
     on_subagent_model: SubAgentModelCb | None = None
+    on_subagent_thinking: SubAgentThinkingCb | None = None
     on_subagent_usage: SubAgentUsageCb | None = None
     on_cli_activity: CliActivityCb | None = None
     # Latest streamed request's time-to-first-token, in seconds. Reported by

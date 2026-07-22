@@ -105,6 +105,11 @@ class SubAgentWidget(Vertical):
         self.agent_task = agent_task
         self.description = description
         self.model_label = model_label
+        # The resolved thinking level (e.g. "high") this spawn ran with, set by
+        # set_thinking_level once the runner reports it. Empty when nothing
+        # resolved (off/none) — mirrors model_label's "not shown on the card
+        # itself" storage: a pane created later can pick it up.
+        self.thinking_label = ""
         # Derived lazily from description-or-task (both fixed) and cached:
         # _paint_header asks for it on every spinner tick just to redraw one glyph,
         # so condensing the (often multi-paragraph) prompt per frame, ×N running
@@ -247,6 +252,14 @@ class SubAgentWidget(Vertical):
         Also stores a pricing-compatible id by stripping the [1m]-style context-window
         suffix the Claude CLI appends, which isn't present in the price table."""
         self.model_label = model_label
+
+    def set_thinking_level(self, level: str) -> None:
+        """Annotate the reasoning effort this spawn ran with. Named
+        set_thinking_level (not set_thinking) to avoid colliding with the
+        streaming-reasoning sink's set_thinking(widget). Like set_model, this
+        isn't painted on the card itself — storing it here means a pane
+        created later (or already open) can pick it up."""
+        self.thinking_label = level
 
     def set_waiting(self, waiting: bool) -> None:
         """Flip the derived waiting display state (an after= spawn blocked on

@@ -319,6 +319,25 @@ class SubagentRunner:
         # settings_for needs a concrete mapping to copy.
         return settings_for(level, self._model_settings or ModelSettings())
 
+    async def _report_spawn_thinking(self, stream_id: str, override: str | None,
+                                     spawn_defn) -> None:
+        """Report the spawn's resolved thinking level to the UI, the same seam
+        the model report uses — so the card can annotate the reasoning effort it
+        actually ran with. Fires ONLY for a real level (off/none is the default;
+        no annotation). Extracted so the resolve+fire is unit-testable without
+        the full spawn machinery."""
+        inherited = (
+            self._thinking_default() if self._thinking_default is not None else None
+        )
+        level = resolve_thinking(
+            override, spawn_defn.thinking if spawn_defn is not None else None, inherited
+        )
+        if not level or level == "off":
+            return
+        report = self.deps.ui.on_subagent_thinking
+        if report is not None and stream_id:
+            await report(stream_id, level)
+
     def build(
         self, type: str, max_output_chars: int | None = None,
         model: str | None = None, workspace_root=None, *, defn=None,
@@ -760,6 +779,7 @@ class SubagentRunner:
             report_model = self.deps.ui.on_subagent_model
             if report_model is not None and stream_id:
                 await report_model(stream_id, resolved_model)
+        await self._report_spawn_thinking(stream_id, thinking, spawn_defn)
         t_built = time.perf_counter()
         granted, unknown, mcp_withheld, ask_withheld = await self._spawn_mcp_grant(
             mcp_names
