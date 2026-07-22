@@ -183,6 +183,20 @@ to avoid import cycles.
   (sub-agents have tiering); the tool doesn't exist under the claude-cli
   main-loop provider (marim's tools don't apply there), but a claude-cli
   *advisor* model works via the `aux_model_for` clone.
+- `thinking.py` (root) — thinking level (reasoning effort): one ordered
+  vocabulary (`off/minimal/low/medium/high/xhigh`) and three pure helpers —
+  `parse_thinking_level` (env/CLI/`/think` coercion), `settings_for` (fold a
+  level into `ModelSettings.thinking`; `off`/unset OMITS the key, byte-identical
+  to pre-thinking behavior), and `resolve_thinking` (sub-agent precedence:
+  spawn override → spec `thinking:`/`effort:` → inherited session level). The
+  main loop applies it per turn in `TurnController._turn_model_settings`; the
+  level persists on `SessionStore.thinking` and lives on `Harness.thinking_level_id`
+  (read lazily by the controller closure and the sub-agent runner, so `/think`
+  switches without a rebuild). Seeded by `MARIM_THINKING` / `--think`; TUI
+  `/think` command + Settings row. Under the `claude-cli` main provider it's a
+  documented no-op (marim's `ModelSettings` don't reach Claude Code). Detection
+  (`catalog.supports_thinking`) is best-effort UI annotation only — it never
+  blocks a level.
 - `interfaces/tui/` — Textual app, widgets, `styles.tcss`, streaming render;
   `interactions/` — inline approval/ask-user/plan-card panels (mounted above the
   status bar, not modals, so the transcript stays scrollable) sharing an

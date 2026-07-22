@@ -9,6 +9,7 @@ import os
 import sys
 from pathlib import Path
 
+from ...thinking import THINKING_LEVELS
 from ..history import PromptHistory, default_history_path
 
 
@@ -54,6 +55,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--worktree", metavar="BRANCH", default=None,
         help="run inside a git worktree for BRANCH under <repo>/.worktrees/, "
              "creating it (from current HEAD) or reusing it",
+    )
+    p.add_argument(
+        "--think",
+        choices=THINKING_LEVELS,
+        default=None,
+        help="thinking level (reasoning effort) for this run: "
+        "off/minimal/low/medium/high/xhigh. Overrides MARIM_THINKING.",
     )
     return p
 
@@ -111,6 +119,13 @@ def run_default(argv, *, stdin=None, out=None, err=None) -> int:
         workspace = _enter_worktree(workspace, args.worktree, err)
         if workspace is None:
             return 2
+
+    # --think seeds MARIM_THINKING so the level flows through the normal
+    # bootstrap → config → builder path (no separate wiring). A new session
+    # then persists it; an existing session's saved level still wins (the
+    # session override beats the env default — see Harness._resolve_thinking_id).
+    if args.think is not None:
+        os.environ["MARIM_THINKING"] = args.think
 
     # Heavy imports (pydantic_ai) deferred to here so `--help` and arg errors stay
     # fast; only an actual launch pays for the agent.
