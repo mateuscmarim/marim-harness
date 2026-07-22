@@ -127,7 +127,12 @@ def _read_window(p: Path, start: int, end: int) -> tuple[list[str], int]:
     in-line text here, which never arises for normal-size text files."""
     window: list[str] = []
     total = 0
-    with p.open("r", errors="replace") as fh:
+    # Explicit UTF-8, matching edit_file's read and _read_text_for_grep: without
+    # it, open() decodes under the process/platform locale (e.g. CP1252/Latin-1
+    # on some hosts), so a read could show different text than the UTF-8 bytes
+    # edit_file (and the file itself) actually contain — mojibake here, a
+    # byte-for-byte different view there.
+    with p.open("r", encoding="utf-8", errors="replace") as fh:
         for i, raw in enumerate(fh):
             if start <= i < end:
                 window.append(raw[:-1] if raw.endswith("\n") else raw)

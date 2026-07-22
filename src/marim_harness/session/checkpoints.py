@@ -120,6 +120,12 @@ class CheckpointManager:
         # back but left checkpoints #4+ (and their snapshots) gone for good. In-memory
         # only, like the history stash above (a process restart still loses undo).
         self._pre_rewind_checkpoints: list[Checkpoint] | None = None
+        # Session id recorded when the stash above was created. The undo stash's
+        # git refs live under that id's namespace; by the time reload() runs on a
+        # session switch the store already points at the NEW session, so reaping
+        # the abandoned refs needs the id captured at stash time, not the current
+        # one.
+        self._stash_session_id: str | None = None
         self.reload()
 
     # --- persistence -----------------------------------------------------
@@ -156,13 +162,17 @@ class CheckpointManager:
         """Load the checkpoint list for the current session (called on
         resume/switch/new). A missing or corrupt sidecar yields an empty list."""
         self._checkpoints = []
-        # Abandon the in-memory undo stash (it belongs to the session we're leaving).
-        # Clear the fields WITHOUT deleting refs: _discard_undo_stash would target the
-        # current (post-switch) session id, deleting the wrong namespace's refs. The
-        # old session's dropped refs are re-derivable from its own sidecar if reloaded.
-        self._pre_rewind_history = None
-        self._pre_restore_commit = None
-        self._pre_rewind_checkpoints = None
+        # Abandon the in-memory undo stash (it belongs to the session we're
+        # leaving) and REAP its git refs — they are NOT re-derivable from the old
+        # session's sidecar: rewind() saved that sidecar without the dropped
+        # checkpoints, and the _pre_restore/_pre_undo safety snapshots are
+        # recorded in no sidecar at all, so nothing but a full session delete()
+        # would ever free them. Those are whole-working-tree captures (untracked
+        # files, potentially secrets) that would otherwise stay pinned in .git
+        # indefinitely. The refs are addressed under the session id recorded at
+        # stash time (_reap_stash_refs) — _discard_undo_stash would target the
+        # current (post-switch) session id, deleting the wrong namespace's refs.
+        self._reap_stash_refs()
         path = self._sidecar_path()
         if path is None or not path.exists():
             return
@@ -204,8 +214,9 @@ class CheckpointManager:
         ``_checkpoints`` anymore) and clear every rewind stash. Called when the user
         moves forward (a new snapshot), rewinds again, or the session is cleared —
         anything that supersedes the pending undo. Uses the CURRENT session id, so it
-        must not run across a session switch (see ``reload``, which clears the stash
-        without deleting refs to avoid targeting the wrong session's namespace)."""
+        must not run across a session switch (see ``reload``, which reaps the stash
+        refs under the session id recorded at stash time to avoid targeting the wrong
+        session's namespace)."""
         if self._pre_rewind_checkpoints:
             for cp in self._pre_rewind_checkpoints:
                 if cp.commit is not None:
@@ -213,6 +224,30 @@ class CheckpointManager:
         self._pre_rewind_checkpoints = None
         self._pre_rewind_history = None
         self._pre_restore_commit = None
+        self._stash_session_id = None
+
+    def _reap_stash_refs(self) -> None:
+        """The switch-safe sibling of ``_discard_undo_stash``: delete the git refs
+        the undo stash was keeping alive, addressed under the session id recorded
+        when the stash was created — safe to run after the store has been rebound
+        to another session. Reaps only refs no sidecar references: the dropped
+        checkpoints were removed from their sidecar by rewind()'s save (and if
+        undo_rewind put them back, the stash list is already None so they are
+        skipped), and the ``_pre_restore``/``_pre_undo`` safety snapshots are
+        never recorded in any sidecar. delete() is a best-effort no-op on an
+        absent ref, so the unconditional safety-ref deletes are safe."""
+        sid = self._stash_session_id
+        if sid is not None:
+            if self._pre_rewind_checkpoints:
+                for cp in self._pre_rewind_checkpoints:
+                    if cp.commit is not None:
+                        self.snapshotter.delete(f"{_REF_PREFIX}/{sid}/{cp.index}")
+            self.snapshotter.delete(f"{_REF_PREFIX}/{sid}/_pre_restore")
+            self.snapshotter.delete(f"{_REF_PREFIX}/{sid}/_pre_undo")
+        self._pre_rewind_checkpoints = None
+        self._pre_rewind_history = None
+        self._pre_restore_commit = None
+        self._stash_session_id = None
 
     def snapshot(self, prompt_preview: str) -> int:
         """Capture a checkpoint of the current state before a turn runs. Returns
@@ -308,6 +343,10 @@ class CheckpointManager:
         # Stash the conversation, THEN truncate. The best-effort restore above never
         # blocks this, so the conversation always rewinds — and the stash lets
         # undo_rewind put it back even when the file restore failed or was absent.
+        # Record which session the stash (and its refs) belongs to, so a later
+        # session switch can reap the refs under the right namespace (see
+        # _reap_stash_refs — the store may be rebound before reload() runs).
+        self._stash_session_id = self._session_id()
         self._pre_rewind_history = list(self.session.history)
         self.session.set_history(self.session.history[: cp.history_len])
         self.session.persist(force=True)

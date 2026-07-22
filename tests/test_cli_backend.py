@@ -34,6 +34,27 @@ def test_build_cli_argv_defaults_unchanged():
     assert "--safe-mode" not in argv
 
 
+def test_build_cli_argv_disallowed_tools():
+    # --allowedTools is ADDITIVE pre-approval only: under a permissive
+    # --permission-mode (Claude Code's plan mode auto-allows WebSearch/WebFetch)
+    # absence from the allowlist denies nothing. --disallowedTools is the hard
+    # deny headless -p honors — and it must be emitted even when the allowlist
+    # maps empty and --allowedTools is omitted entirely.
+    argv = build_cli_argv(
+        "claude", "task", "SYSTEM", "plan", [], None,
+        disallowed_tools=["WebFetch", "WebSearch"],
+    )
+    assert "--allowedTools" not in argv
+    assert argv[argv.index("--disallowedTools") + 1] == "WebFetch,WebSearch"
+
+
+def test_build_cli_argv_no_disallowed_by_default():
+    # Callers that don't deny anything (auto/ask spawns) must not grow a
+    # spurious --disallowedTools flag.
+    argv = build_cli_argv("claude", "task", "SYSTEM", "acceptEdits", ["Read"], None)
+    assert "--disallowedTools" not in argv
+
+
 def test_build_cli_argv_safe_mode():
     # The main-loop model runs claude in safe mode so the user's plugins/hooks
     # (e.g. agentmemory's cross-session context injection) don't pollute the turn.

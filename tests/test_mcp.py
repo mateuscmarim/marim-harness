@@ -122,6 +122,9 @@ def test_persist_writes_to_global_when_server_is_global(tmp_path: Path, monkeypa
 
 def test_persist_prefers_project_when_server_defined_there(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    # The project file is only the winning definition when the project is
+    # trusted (load_mcp_config skips it otherwise) — mirror that here.
+    monkeypatch.setenv("MARIM_TRUST_PROJECT_HOOKS", "1")
     gpath = tmp_path / "xdg" / "marim" / "mcp.json"
     _write(gpath, {"shared": {"command": "from-global"}})
     ws = tmp_path / "ws"
@@ -133,6 +136,54 @@ def test_persist_prefers_project_when_server_defined_there(tmp_path: Path, monke
     assert _read_back(ppath)["shared"]["enabled"] is False
     # ...and the global one is left untouched.
     assert "enabled" not in _read_back(gpath)["shared"]
+
+
+def test_persist_untrusted_project_collision_writes_to_global(tmp_path: Path, monkeypatch):
+    """Regression: an UNTRUSTED repo's ``.marim/mcp.json`` naming a server that
+    collides with a global one used to soak up the toggle — the write landed in
+    the never-loaded project file, so disabling the live (global-sourced) server
+    silently didn't stick across restarts. The write target must follow the same
+    trust gate as ``load_mcp_config``: untrusted project file → persist to the
+    global file that is actually loaded."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("MARIM_TRUST_PROJECT_HOOKS", raising=False)
+    gpath = tmp_path / "xdg" / "marim" / "mcp.json"
+    _write(gpath, {"shared": {"command": "from-global"}})
+    ws = tmp_path / "ws"
+    ppath = ws / ".marim" / "mcp.json"
+    _write(ppath, {"shared": {"command": "from-project"}})
+
+    assert persist_server_enabled(ws, "shared", False) is True
+    # The loaded (global) definition took the toggle...
+    assert _read_back(gpath)["shared"]["enabled"] is False
+    # ...and the untrusted, never-loaded project file was not touched.
+    assert "enabled" not in _read_back(ppath)["shared"]
+
+
+def test_persist_untrusted_project_only_server_is_not_persisted(tmp_path: Path, monkeypatch):
+    """A server defined ONLY in an untrusted project file is never loaded, so
+    there is nothing live to toggle — report False, write nowhere."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("MARIM_TRUST_PROJECT_HOOKS", raising=False)
+    ws = tmp_path / "ws"
+    ppath = ws / ".marim" / "mcp.json"
+    _write(ppath, {"proj-only": {"command": "x"}})
+
+    assert persist_server_enabled(ws, "proj-only", False) is False
+    assert "enabled" not in _read_back(ppath)["proj-only"]
+
+
+def test_persist_explicit_trust_flag_wins_over_env(tmp_path: Path, monkeypatch):
+    """An explicit ``trust_project`` decision overrides the env fallback, matching
+    the shared ``project_trusted`` predicate's explicit-wins semantics."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("MARIM_TRUST_PROJECT_HOOKS", raising=False)
+    ws = tmp_path / "ws"
+    ppath = ws / ".marim" / "mcp.json"
+    _write(ppath, {"proj": {"command": "x"}})
+
+    assert persist_server_enabled(ws, "proj", False, trust_project=True) is True
+    assert _read_back(ppath)["proj"]["enabled"] is False
 
 
 def test_persist_preserves_other_servers_and_fields(tmp_path: Path, monkeypatch):

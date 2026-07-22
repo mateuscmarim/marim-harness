@@ -553,6 +553,74 @@ def test_invalidate_after_compaction_deletes_the_safety_refs(tmp_path: Path):
     assert any(ref.endswith("sess/_pre_undo") for ref in snap.deleted)
 
 
+def test_reload_reaps_the_abandoned_undo_stash_refs(tmp_path: Path):
+    """Regression: switching sessions while an undo window is open orphaned git
+    refs forever. rewind() saves the sidecar WITHOUT the dropped checkpoints and
+    keeps their refs (plus the _pre_restore safety snapshot) only in memory — so
+    when reload() abandoned the stash on a session switch, nothing ever deleted
+    those refs, pinning whole-working-tree snapshots (potentially with secrets)
+    in .git indefinitely. reload() must reap them, addressed under the OLD
+    session's id (the store is already rebound to the new session by then)."""
+    s, snap, mgr = _mgr_with_three(tmp_path)
+    mgr.rewind(0)  # stashes #1/#2 (refs alive), captured sess/_pre_restore
+    snap.deleted.clear()
+
+    # Switch: the controller rebinds the store BEFORE checkpoints.reload().
+    s.store = _FakeStore(tmp_path / "other.json", "other")
+    mgr.reload()
+
+    # The abandoned stash's refs are reaped under the OLD session id...
+    assert any(r.endswith("sess/1") for r in snap.deleted)
+    assert any(r.endswith("sess/2") for r in snap.deleted)
+    assert any(r.endswith("sess/_pre_restore") for r in snap.deleted)
+    # ...never under the new session's namespace (the old bug _discard_undo_stash
+    # would have had), and the undo window is closed.
+    assert not any("/other/" in r for r in snap.deleted)
+    assert mgr.undo_rewind() is False
+
+
+def test_reload_reaps_the_pre_undo_ref_of_a_consumed_undo(tmp_path: Path):
+    """After a rewind + undo, the _pre_undo safety snapshot ref still exists (it
+    is recorded in no sidecar); a session switch must reap it too, not leave it
+    pinned until a full session delete()."""
+    s, snap, mgr = _mgr_with_three(tmp_path)
+    mgr.rewind(0)
+    mgr.undo_rewind()  # captures sess/_pre_undo, restores #1/#2 into the sidecar
+    snap.deleted.clear()
+
+    s.store = _FakeStore(tmp_path / "other.json", "other")
+    mgr.reload()
+
+    assert any(r.endswith("sess/_pre_undo") for r in snap.deleted)
+    assert any(r.endswith("sess/_pre_restore") for r in snap.deleted)
+
+
+def test_reload_never_reaps_refs_the_sidecar_still_references(tmp_path: Path):
+    """undo_rewind put the dropped checkpoints BACK into the sidecar — their refs
+    are live again and must survive the switch-reap (only the safety snapshots,
+    which no sidecar ever records, go)."""
+    s, snap, mgr = _mgr_with_three(tmp_path)
+    mgr.rewind(0)
+    mgr.undo_rewind()  # #1/#2 restored to _checkpoints and re-saved
+    snap.deleted.clear()
+
+    s.store = _FakeStore(tmp_path / "other.json", "other")
+    mgr.reload()
+
+    assert not any(r.endswith("sess/1") for r in snap.deleted)
+    assert not any(r.endswith("sess/2") for r in snap.deleted)
+
+
+def test_reload_with_no_open_undo_window_deletes_no_refs(tmp_path: Path):
+    """A plain switch (no rewind since the last reap) has nothing stashed, so
+    reload deletes nothing — the old session's checkpoints stay rewindable."""
+    s, snap, mgr = _mgr_with_three(tmp_path)
+    snap.deleted.clear()
+    s.store = _FakeStore(tmp_path / "other.json", "other")
+    mgr.reload()
+    assert snap.deleted == []
+
+
 def test_manager_has_no_dead_pre_undo_commit_field(tmp_path: Path):
     """``_pre_undo_commit`` was written by ``undo_rewind`` but never read (no redo
     path). The dead state is gone; only the ref-capture fail-safe remains."""

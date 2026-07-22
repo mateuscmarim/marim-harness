@@ -40,6 +40,7 @@ from ..config import config_dir
 from ..runtime.permissions import Mode
 from ..tools.impl.coerce import coerce_by_schema
 from ..tools.impl.offload import _INLINE_CHAR_LIMIT, offload_if_large
+from ..trust import project_trusted
 
 
 def _bound_tool_result(result, *, label: str, name: str, args: dict | None,
@@ -168,13 +169,28 @@ def load_mcp_config(workspace_root: Path, *, trust_project: bool = False) -> dic
     return merged
 
 
-def persist_server_enabled(workspace_root: Path, name: str, enabled: bool) -> bool:
+def persist_server_enabled(
+    workspace_root: Path, name: str, enabled: bool, *, trust_project: bool | None = None
+) -> bool:
     """Write ``enabled`` into the config file that defines ``name``, so a runtime
     toggle survives restarts. Prefers the project file (the winning definition)
     over the global one. Returns True if a file was updated, False if no config
     defines the server (nothing to persist). Best-effort: a missing or malformed
-    file is treated as not defining the server."""
-    for path in (project_mcp_config_path(workspace_root), global_mcp_config_path()):
+    file is treated as not defining the server.
+
+    The write target follows the same trust gate as ``load_mcp_config``: an
+    UNTRUSTED project's ``.marim/mcp.json`` is never loaded, so it must never
+    soak up the toggle either. Without this gate, a cloned repo shipping a
+    server name that collides with a global one would capture the user's
+    "disable" into the never-loaded project file — and on restart the live
+    global server comes back enabled, the disable silently not sticking.
+    ``trust_project`` follows the shared predicate's semantics (explicit wins,
+    env fallback, untrusted by default — see ``marim_harness.trust``)."""
+    candidates = [global_mcp_config_path()]
+    if project_trusted(trust_project):
+        # Only a trusted project's file is the winning (loaded) definition.
+        candidates.insert(0, project_mcp_config_path(workspace_root))
+    for path in candidates:
         if name not in _read_servers(path):
             continue
         try:

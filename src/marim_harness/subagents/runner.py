@@ -351,7 +351,19 @@ class SubagentRunner:
             )
         else:
             model_obj = self._build_model(model_id)
-        allow_gated = self.deps.workspace.mode is Mode.auto
+        # Reach is decided HERE, at spawn time, from the live session mode
+        # (WorkspaceConfig.mode is rewritten in place by set_mode/cycle_mode, and
+        # self.deps is the main harness's Deps — the live object — even for a
+        # nested spawn, whose caller carries a replace()d copy). Spawn time is
+        # the right evaluation point: a sub-agent's tools are registered plain
+        # (no approval round), so its grant must be fixed when it launches; a
+        # mode flip mid-run affects the NEXT spawn, not a running one — exactly
+        # how allow_gated has always behaved. allow_net mirrors the main agent's
+        # plan-mode egress denial (_plan_decision): without it, a plan-mode
+        # spawn of a net-granting role would be an unapproved exfiltration path.
+        mode = self.deps.workspace.mode
+        allow_gated = mode is Mode.auto
+        allow_net = mode is not Mode.plan
         # Imported lazily for the same reason as run_driver.py's own harness
         # import: agent.py imports this module, so a top-level import of the
         # harness would cycle.
@@ -392,7 +404,7 @@ class SubagentRunner:
         # advertising a write the spawn doesn't have makes the model call it
         # and hard-fail (same rationale as the files_write gate on the main
         # agent's _scratchpad instructions block, commit d0d038c).
-        tools = effective_tools(defn, allow_gated=allow_gated)
+        tools = effective_tools(defn, allow_gated=allow_gated, allow_net=allow_net)
         scratchpad_writable = "write_file" in tools
 
         sub = Agent(

@@ -504,6 +504,43 @@ async def test_await_settled_returns_cancelled_dependency_as_settled():
 
 
 @pytest.mark.anyio
+async def test_wait_cancelled_waiter_propagates_and_leaves_wake_unconsumed():
+    """The waiter's own cancellation (user abort while sitting in wait_for_job)
+    must propagate out of wait(), mirroring await_settled's disambiguation —
+    and must not mark the job wake-consumed, since the caller never actually
+    got the result."""
+    reg = JobRegistry()
+    ev = asyncio.Event()
+    jid = reg.register("agent", "a", _ev_job(ev))
+    waiter = asyncio.ensure_future(reg.wait(jid, 5))
+    await asyncio.sleep(0)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert reg.get(jid).status == "running"  # the shield's guarantee
+    ev.set()
+    await _settled(reg)
+    # Wake was NOT consumed by the aborted wait — the digest/wake scheduler
+    # can still surface this job's completion on a later turn.
+    assert reg.has_finished_pending() is True
+    digest = reg.take_finished_digest()
+    assert jid in digest
+
+
+@pytest.mark.anyio
+async def test_wait_returns_normally_when_job_itself_is_cancelled():
+    reg = JobRegistry()
+    ev = asyncio.Event()
+    jid = reg.register("agent", "a", _ev_job(ev))
+    waiter = asyncio.ensure_future(reg.wait(jid, 5))
+    await asyncio.sleep(0)
+    await reg.cancel(jid)
+    result = await asyncio.wait_for(waiter, 5)
+    assert result == "(cancelled)"  # returned, not raised
+    assert reg.get(jid).status == "cancelled"
+
+
+@pytest.mark.anyio
 async def test_await_settled_missing_id_raises_prerequisite_failed():
     reg = JobRegistry()
     with pytest.raises(PrerequisiteFailed):

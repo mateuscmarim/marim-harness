@@ -145,6 +145,21 @@ def test_will_compact_matches_compact_history_decision(n_rounds, max_tokens, kee
     assert will_compact(history, max_tokens=max_tokens, keep_last_messages=keep_last) is did
 
 
+def test_will_compact_gates_on_measured_tokens_like_maybe_compact():
+    """will_compact must accept the provider's measured input-token count so a
+    pre-compaction caller reaches the same verdict maybe_compact will: a history
+    the char/4 estimate says fits but the provider reported as huge WILL compact,
+    and will_compact must say so when handed the measurement."""
+    history = [
+        ModelRequest(parts=[UserPromptPart(content=f"{i}" * 400)]) for i in range(3)
+    ]
+    assert estimate_tokens(history) <= 1000
+    assert will_compact(history, 1000, keep_last_messages=1) is False
+    assert (
+        will_compact(history, 1000, keep_last_messages=1, measured_tokens=5000) is True
+    )
+
+
 def test_measured_tokens_trigger_compaction_the_estimate_would_miss():
     """The gate prefers the provider's real last-request input-token count over the
     char/4 estimate, which undershoots dense code/JSON by ~25%. A history whose

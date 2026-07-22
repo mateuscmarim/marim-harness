@@ -233,8 +233,14 @@ async def test_enable_after_close_does_not_double_list_connected(tmp_path: Path)
 
 
 @pytest.mark.anyio
-async def test_toggle_persists_to_config_across_the_session(tmp_path: Path):
+async def test_toggle_persists_to_config_across_the_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     import json as _json
+
+    # The project mcp.json is a persist target only when the project is
+    # trusted — untrusted toggles land in the global file instead.
+    monkeypatch.setenv("MARIM_TRUST_PROJECT_HOOKS", "1")
 
     ppath = tmp_path / ".marim" / "mcp.json"
     ppath.parent.mkdir(parents=True)

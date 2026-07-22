@@ -680,6 +680,13 @@ class SessionController:
             stages.append("summary")
         compacted = bool(stages)
         if compacted:
+            # The measurement that triggered this compaction described the old,
+            # larger history; carried forward it would gate the NEXT
+            # maybe_compact on max(estimate, stale_measured) and re-compact a
+            # history that now comfortably fits (detail loss and a busted
+            # prompt cache for nothing). Drop it — the estimate governs until
+            # the next real request reports usage.
+            self.last_input_tokens = None
             # Persist the compacted history now: the post-turn compaction runs
             # after the turn's own persist, so without this the smaller history
             # lives only in memory until the next turn — a process death

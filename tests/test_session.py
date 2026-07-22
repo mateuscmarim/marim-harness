@@ -550,6 +550,51 @@ async def test_maybe_compact_gates_on_measured_last_request_tokens(tmp_path):
     assert await measured.maybe_compact() is True      # gated on the real count
 
 
+@pytest.mark.anyio
+async def test_maybe_compact_resets_last_input_tokens_after_firing(tmp_path):
+    """A compaction that actually fires must drop the stale last_input_tokens
+    measurement that triggered it. _measured_or_estimated gates on
+    max(estimate, last_input_tokens) — if the pre-compaction measurement lingered,
+    the NEXT maybe_compact call would gate on that now-stale, too-large figure and
+    re-compact again for no reason, even though the just-shrunk history is nowhere
+    near the budget (detail loss, a busted prompt cache, an invalidated checkpoint —
+    all for nothing)."""
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+    ctrl = SessionController(
+        None, None, deps, max_context_tokens=1000, keep_last_messages=1
+    )
+    ctrl.history = [
+        ModelRequest(parts=[UserPromptPart(content="a" * 400)]),
+        ModelRequest(parts=[UserPromptPart(content="b" * 400)]),
+        ModelRequest(parts=[UserPromptPart(content="c" * 400)]),
+    ]
+    # Simulate turn N: the provider reported a huge input-token count for the
+    # request that just ran, even though the char/4 estimate alone would say
+    # this history comfortably fits under the budget.
+    ctrl.last_input_tokens = 5000
+    assert await ctrl.maybe_compact() is True  # fires because of the measurement
+    assert ctrl.last_input_tokens is None      # stale measurement must not survive
+    assert len(ctrl.history) == 2              # compact_history(:1] + [2:]) fired
+
+    # Simulate turn N+1..N+5: ordinary small turns arrive, no new usage has been
+    # reported yet (last_input_tokens stays None until the next real request).
+    # The raw char/4 estimate over the whole history is still nowhere near the
+    # 1000-token budget.
+    for i in range(5):
+        ctrl.history.append(ModelRequest(parts=[UserPromptPart(content=f"turn{i}" * 8)]))
+    assert len(ctrl.history) == 7
+
+    from marim_harness.compaction import estimate_tokens
+
+    assert estimate_tokens(ctrl.history) <= 1000  # still comfortably under budget
+
+    # If last_input_tokens had NOT been reset, this call would gate on
+    # max(small_estimate, 5000) = 5000 > 1000 and needlessly re-compact down to
+    # 2 messages, discarding the 5 turns just added. With the reset, it must not.
+    assert await ctrl.maybe_compact() is False
+    assert len(ctrl.history) == 7
+
+
 # ---------------------------------------------------------------------------
 # PreCompact hook tests
 # ---------------------------------------------------------------------------

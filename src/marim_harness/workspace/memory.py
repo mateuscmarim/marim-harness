@@ -142,20 +142,30 @@ def save_memory(
     mem_type: str,
     body: str,
     title: str,
-) -> Path:
+) -> Path | None:
     """Write ``<slug>.md`` (frontmatter + body) and upsert its index line.
-    Returns the path to the memory file. Creates the scope dir on demand."""
-    scope.root.mkdir(parents=True, exist_ok=True)
+    Returns the path to the memory file, or ``None`` if the write failed (e.g. an
+    unwritable/read-only memory directory). Creates the scope dir on demand.
+
+    Per this module's docstring, nothing here raises into a turn: every write —
+    the scope dir, the memory file, and the index upsert — is wrapped in one
+    try/except OSError, matching load_index/read_memory's existing fail-soft
+    style (log and return a caller-checkable "didn't work" value instead of
+    propagating). The caller (the ``remember`` tool) is expected to turn a
+    ``None`` into an actionable message rather than crash the model's turn."""
     slug = _slugify(name)
     # Clamp the single-line fields before they reach the frontmatter / index; the
     # body keeps its newlines.
     description = _single_line(description)
     title = _single_line(title)
-
     frontmatter = _render_frontmatter(slug=slug, description=description, mem_type=mem_type)
     path = scope.root / f"{slug}.md"
-    atomic_write_text(path, f"{frontmatter}\n{body.strip()}\n")
+    try:
+        scope.root.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(path, f"{frontmatter}\n{body.strip()}\n")
+        _upsert_index_line(scope, slug=slug, title=title, hook=description)
+    except OSError as exc:
+        logger.debug("failed to save memory %s (%s): %s", path, scope.name, exc)
+        return None
     logger.debug("saved memory %s (%s)", path, scope.name)
-
-    _upsert_index_line(scope, slug=slug, title=title, hook=description)
     return path

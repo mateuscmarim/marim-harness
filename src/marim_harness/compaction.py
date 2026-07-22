@@ -203,12 +203,24 @@ def will_compact(
     history: list,
     max_tokens: int,
     keep_last_messages: int = 20,
+    *,
+    measured_tokens: int | None = None,
 ) -> bool:
     """Whether compacting ``history`` would actually drop anything — the same
     decision ``compact_history``/``compact_history_with_summary`` make, exposed
     so a caller can act *before* the (possibly expensive) compaction runs, e.g.
-    firing a pre-compaction hook while the transcript is still full."""
-    return _plan_tail_start(history, max_tokens, keep_last_messages) is not None
+    firing a pre-compaction hook while the transcript is still full.
+
+    Pass ``measured_tokens`` (the provider's real last-request input-token
+    count) when it is known — ``maybe_compact`` gates on it, so a caller that
+    omits it can reach the opposite verdict on a history the estimate
+    undershoots."""
+    return (
+        _plan_tail_start(
+            history, max_tokens, keep_last_messages, measured_tokens=measured_tokens
+        )
+        is not None
+    )
 
 
 def compact_history(

@@ -247,7 +247,18 @@ class JobRegistry:
         except asyncio.TimeoutError:
             return f"job {job_id} still running after {timeout:g}s"
         except asyncio.CancelledError:
-            pass  # the job itself was cancelled while we waited
+            # Ambiguous by construction (same as await_settled): shield raises
+            # CancelledError both when the job's own task was cancelled and when
+            # *we* (the waiter) were — e.g. a user abort (Esc/Ctrl-C) while the
+            # model sits in wait_for_job. The job's task state disambiguates.
+            # Re-raising on the waiter's own cancellation matters because
+            # cancellation delivery is one-shot: swallowing it here would let
+            # the turn keep running with the abort silently lost. If we
+            # propagate, skip the wake-consumption bookkeeping below — the
+            # caller never got the result, so a later digest/wake must still
+            # be able to surface it.
+            if not job.task.cancelled():
+                raise  # the waiter itself was cancelled — propagate
         except Exception as exc:
             logger.debug("wait for job %s: %s (already settled)", job_id, exc)
         # Job finished (or was already settled) — mark as wake-consumed.

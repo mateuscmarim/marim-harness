@@ -4,7 +4,8 @@ frontmatter parsing, name dedup).
 
 A sub-agent is launched by the main agent via the ``spawn_agent`` tool. It runs
 in isolation on the same model, with a tool reach decided by its definition
-intersected with the current mode (gated tools only in ``auto``). Two built-ins
+intersected with the current mode (gated tools only in ``auto``; outbound
+network tools stripped in ``plan`` — see ``effective_tools``). Two built-ins
 always exist — ``explore`` (read-only) and ``general`` (full toolset). Custom
 agents live in ``.marim/agents/<name>.md`` (and the parallel global
 root); their file body is the role's system prompt and an optional ``tools:``
@@ -302,13 +303,26 @@ def find_agent(
     return None
 
 
-def effective_tools(defn: AgentDef, *, allow_gated: bool) -> frozenset[str]:
-    """The tool names a spawn should actually grant: the definition's tools, with
-    workspace-mutating (gated) tools removed unless the mode allows them (auto).
-    Network tools are not gated here — they're decided by the definition itself."""
-    if allow_gated:
-        return defn.tools
-    return defn.tools - GATED_TOOLS
+def effective_tools(
+    defn: AgentDef, *, allow_gated: bool, allow_net: bool
+) -> frozenset[str]:
+    """The tool names a spawn should actually grant: the definition's tools,
+    with workspace-mutating (gated) tools removed unless the mode allows them
+    (auto), and outbound network tools (web_search/fetch_url) removed unless
+    the mode allows egress (any mode but plan).
+
+    ``allow_net`` exists because sub-agents register their tools PLAIN — no
+    approval round, no per-call plan denial (reach is decided up front, see
+    provider.register_subagent). Plan mode denies the MAIN agent's
+    fetch_url/web_search (runtime/permissions._plan_decision) precisely to stop
+    prompt-injected exfiltration; without this strip, the ungated spawn_agent
+    tool would launder that boundary — a plan-mode spawn of a net-granting role
+    would get unapproved egress. Both flags are required keywords on purpose: a
+    permissive default on a security boundary is how this hole existed in the
+    first place, so every call site must state its decision. Pure; unit-tested
+    directly."""
+    tools = defn.tools if allow_gated else defn.tools - GATED_TOOLS
+    return tools if allow_net else tools - NET_TOOLS
 
 
 def subagent_instructions(
