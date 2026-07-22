@@ -12,6 +12,13 @@ import pytest
 
 from marim_harness.lsp import manager as manager_mod
 from marim_harness.lsp import registry
+from marim_harness.lsp.bundled import bundled_lsp_providers
+from marim_harness.lsp.manager import LspManager
+from marim_harness.lsp.provider import LspRegistry
+
+
+def _bundled_reg():
+    return LspRegistry(bundled_lsp_providers())
 
 
 def test_python_available_via_basedpyright_alone(monkeypatch):
@@ -20,12 +27,12 @@ def test_python_available_via_basedpyright_alone(monkeypatch):
         "which",
         lambda b: "/x/basedpyright-langserver" if b == "basedpyright-langserver" else None,
     )
-    assert registry.availability("python").available is True
+    assert _bundled_reg().availability("python").available is True
 
 
 def test_python_hint_recommends_basedpyright_first(monkeypatch):
     monkeypatch.setattr(registry.shutil, "which", lambda b: None)
-    avail = registry.availability("python")
+    avail = _bundled_reg().availability("python")
     assert avail.available is False
     assert "basedpyright" in avail.hint
     # basedpyright is the recommended (actively developed) option; jedi stays
@@ -41,7 +48,8 @@ def test_factory_prefers_basedpyright_when_on_path(monkeypatch, tmp_path):
     )
     from marim_harness.lsp.basedpyright import BasedPyrightServer
 
-    server = manager_mod._default_factory("python", tmp_path)
+    mgr = LspManager(tmp_path, registry=_bundled_reg())
+    server = mgr._default_factory("python", tmp_path)
     assert isinstance(server, BasedPyrightServer)
 
 
@@ -49,7 +57,8 @@ def test_factory_falls_back_to_jedi_without_basedpyright(monkeypatch, tmp_path):
     monkeypatch.setattr(manager_mod.shutil, "which", lambda b: None)
     from multilspy.language_servers.jedi_language_server.jedi_server import JediServer
 
-    server = manager_mod._default_factory("python", tmp_path)
+    mgr = LspManager(tmp_path, registry=_bundled_reg())
+    server = mgr._default_factory("python", tmp_path)
     assert isinstance(server, JediServer)
 
 
@@ -61,7 +70,8 @@ def test_factory_other_languages_unchanged(monkeypatch, tmp_path):
         TypeScriptLanguageServer,
     )
 
-    server = manager_mod._default_factory("typescript", tmp_path)
+    mgr = LspManager(tmp_path, registry=_bundled_reg())
+    server = mgr._default_factory("typescript", tmp_path)
     assert isinstance(server, TypeScriptLanguageServer)
 
 
