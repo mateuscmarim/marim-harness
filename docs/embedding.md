@@ -54,6 +54,16 @@ advice output is capped at `max_tokens`, and `max_uses` caps calls per turn.
 Advisor failures come back as text inside the tool result — a broken advisor
 never fails the turn. Note: the transcript is sent to `model`'s provider.
 
+### `with_thinking(level)`
+
+Sets the thinking level (reasoning effort) applied to the main model each turn
+via `ModelSettings.thinking`. `level` is one of `off`, `minimal`, `low`,
+`medium`, `high`, `xhigh` (`off` omits the setting — the default). The level
+persists per session and can be switched live with
+`harness.set_thinking_level(...)`; sub-agents inherit it unless their spec or
+the spawn call overrides it. Providers that don't support reasoning effort
+ignore the setting.
+
 ## The SDK docs
 
 | Page | Covers |

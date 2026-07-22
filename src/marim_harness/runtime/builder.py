@@ -182,6 +182,13 @@ class HarnessBuilder:
             advisor_max_uses=max_uses,
         )
 
+    def with_thinking(self, level: str) -> HarnessBuilder:
+        """Set the thinking level (reasoning effort) applied to the model via
+        ModelSettings.thinking. ``level`` is one of thinking.THINKING_LEVELS
+        (``off`` disables it — the default). The session store's thinking level
+        overrides this at runtime (harness.set_thinking_level switches it live)."""
+        return self.with_config_overrides(thinking_level=level)
+
     def with_defaults(self) -> HarnessBuilder:
         """The full marim toolset: every group, LSP with tools, spawn, jobs,
         and the user-level global instructions. Workspace *scanning* (project

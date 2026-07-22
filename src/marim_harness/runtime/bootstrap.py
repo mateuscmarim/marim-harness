@@ -199,6 +199,7 @@ def build_harness(
             advisor_model=cfg.advisor_model,
             advisor_max_tokens=cfg.advisor_max_tokens,
             advisor_max_uses=cfg.advisor_max_uses,
+            thinking_level=cfg.thinking_level,
             mcp_servers=mcp_servers,
             mcp_disabled=mcp_disabled,
             # Same trust decision load_mcp_config was just called with above
