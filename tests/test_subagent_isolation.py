@@ -138,7 +138,8 @@ async def test_spawn_agent_tool_forwards_isolation(repo: Path):
 
     async def fake_run(type, task, stream_id, mcp_names=None,
                        max_output_chars=None, model=None, isolation=None,
-                       caller_depth: int = 0, tier=None, thinking=None):
+                       caller_depth: int = 0, tier=None, output_schema=None,
+                       thinking=None):
         captured["isolation"] = isolation
         return "REPORT"
 

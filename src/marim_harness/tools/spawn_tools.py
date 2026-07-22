@@ -160,6 +160,7 @@ async def _spawn_background(
     auto_detached: bool,
     model: str | None,
     tier: str | None,
+    thinking: str | None,
     isolation: str | None,
 ) -> str:
     """The background/auto-detached spawn path: registers a job — chained after
@@ -192,7 +193,7 @@ async def _spawn_background(
         def _start_inner(full_task: str) -> "Awaitable[str]":
             return run_bg(
                 type, full_task, mcp_names, budget, model, isolation,
-                ctx.tool_call_id or "", ctx.deps.subagent_depth, tier,
+                ctx.tool_call_id or "", ctx.deps.subagent_depth, tier, thinking,
             )
 
         job_id = ctx.deps.jobs.register(
@@ -206,7 +207,7 @@ async def _spawn_background(
             "agent", label,
             ctx.deps.services.run_background_agent(
                 type, task, mcp_names, budget, model, isolation,
-                ctx.tool_call_id or "", ctx.deps.subagent_depth, tier,
+                ctx.tool_call_id or "", ctx.deps.subagent_depth, tier, thinking,
             ),
             stream_id=ctx.tool_call_id or None,
         )
@@ -229,6 +230,7 @@ async def spawn_agent(
     context: str | None = None,
     model: str | None = None,
     tier: str | None = None,
+    thinking: str | None = None,
     isolation: str | None = None,
 ) -> str:
     """Delegate a sub-task to an isolated sub-agent that runs on the same model
@@ -308,6 +310,11 @@ async def spawn_agent(
     CLI; `tier` does not apply to claude-cli spawns. Omit both to inherit your
     current model (the usual case).
 
+    `thinking` overrides this spawn's reasoning effort — one of `"off"`,
+    `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`. Omit it and the
+    spawn inherits the sub-agent spec's own `thinking:` setting, then your
+    session's level. `"off"` forces no reasoning effort for this spawn.
+
     `isolation="worktree"` runs a mutating spawn in its own git worktree, so
     several spawns editing files at once can't clobber each other or your working
     tree. Its changes are committed to a branch (named in the report) and the
@@ -352,6 +359,7 @@ async def spawn_agent(
             auto_detached=auto_detached,
             model=model,
             tier=tier,
+            thinking=thinking,
             isolation=isolation,
         )
     if ctx.deps.services.run_subagent is None:
@@ -359,7 +367,12 @@ async def spawn_agent(
     # Pass the *caller's* depth so the runner builds the child at caller_depth + 1.
     # The runner can't read this off its own deps — those are fixed at the main
     # agent's depth (0), so a depth-1 sub-agent's spawn would otherwise be mis-sized.
+    # The literal ``None`` before ``thinking`` is SubagentRunner.run's
+    # ``output_schema`` slot (workflows-only; spawn_agent never sets a schema) —
+    # it MUST stay explicit here, since ``thinking`` is a positional dispatch
+    # and dropping this placeholder would silently shift ``thinking`` onto
+    # ``output_schema`` instead of the runner's ``thinking`` param.
     return await ctx.deps.services.run_subagent(
         type, task, ctx.tool_call_id or "", mcp_names, max_output_chars, model,
-        isolation, ctx.deps.subagent_depth, tier,
+        isolation, ctx.deps.subagent_depth, tier, None, thinking,
     )

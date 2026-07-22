@@ -24,15 +24,22 @@ from .permissions import Mode
 
 ApprovalFn = Callable[[object], Awaitable[DeferredToolApprovalResult | bool]]
 # (type, task, stream_id, mcp_names, max_output_chars, model, isolation,
-#  caller_depth, tier) -> the sub-agent's final report. Wired by the Harness.
-# ``caller_depth`` is the depth of the agent *calling* spawn_agent (0 for the
-# main agent, 1 for a depth-1 sub-agent, …); the spawned child runs at
-# caller_depth + 1. It must come from the caller's deps, not the runner's own.
-# ``run`` also has ``output_schema`` and ``tier`` as trailing keyword-or-
-# positional args; this alias models the positional call shape callers use.
+#  caller_depth, tier, output_schema, thinking) -> the sub-agent's final
+# report. Wired by the Harness. ``caller_depth`` is the depth of the agent
+# *calling* spawn_agent (0 for the main agent, 1 for a depth-1 sub-agent, …);
+# the spawned child runs at caller_depth + 1. It must come from the caller's
+# deps, not the runner's own.
+# ``output_schema`` sits between ``tier`` and ``thinking`` on
+# ``SubagentRunner.run`` itself (workflows-only — the run_workflow engine
+# calls ``run`` directly, bypassing this seam, so spawn_agent's dispatch
+# always passes ``None`` here). The alias keeps that slot explicit rather
+# than dropping it: a caller that instead tacked ``thinking`` on as a bare
+# trailing positional would silently land it on ``output_schema`` and leave
+# ``thinking`` unset. ``thinking`` is the spawn-call reasoning-effort
+# override (None ⇒ inherit spec/session).
 SubAgentRunner = Callable[
     [str, str, str, list[str] | None, int | None, str | None,
-     str | None, int, str | None],
+     str | None, int, str | None, dict | None, str | None],
     Awaitable[str],
 ]
 # (stream_id, event, usage) -> None. Forwards a sub-agent's run events to the UI
@@ -52,14 +59,17 @@ SubAgentModelCb = Callable[[str, str], Awaitable[None]]
 # the token total, cache split, and cost. None when no UI.
 SubAgentUsageCb = Callable[[str, object], Awaitable[None]]
 # (type, task, mcp_names, max_output_chars, model, isolation, stream_id,
-#  caller_depth, tier) -> the sub-agent's final report. Like SubAgentRunner; when
-# stream_id is set (the spawn's tool_call_id) the detached run also streams its
-# events to the UI (Phase 2). ``caller_depth`` propagates the caller's depth the
-# same way the foreground runner does, so a background spawn from a sub-agent
-# lands at the right depth and can't bypass the nesting ceiling.
+#  caller_depth, tier, thinking) -> the sub-agent's final report. Like
+# SubAgentRunner; when stream_id is set (the spawn's tool_call_id) the
+# detached run also streams its events to the UI (Phase 2). ``caller_depth``
+# propagates the caller's depth the same way the foreground runner does, so
+# a background spawn from a sub-agent lands at the right depth and can't
+# bypass the nesting ceiling. Unlike the foreground alias, ``run_background``
+# has no ``output_schema`` param between ``tier`` and ``thinking``, so
+# ``thinking`` is a plain trailing positional here.
 BackgroundAgentRunner = Callable[
     [str, str, list[str] | None, int | None, str | None, str | None, str, int,
-     str | None],
+     str | None, str | None],
     Awaitable[str],
 ]
 # (stream_id) -> (job_id, message). Lets the sub-agents screen resume an

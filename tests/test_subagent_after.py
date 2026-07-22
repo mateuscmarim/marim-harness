@@ -27,7 +27,7 @@ def _fake_runner(calls: list, gate: asyncio.Event | None = None):
     task's first line so tests can tell whose report got injected where."""
 
     async def run(type, task, mcp_names, budget, model, isolation, stream_id, depth,
-                  tier=None):
+                  tier=None, thinking=None):
         if gate is not None:
             await gate.wait()
         calls.append(task)
@@ -61,7 +61,7 @@ async def test_dependent_waits_then_receives_injected_report(tmp_path):
     gate_a, gate_b = asyncio.Event(), asyncio.Event()
 
     async def run(type, task, mcp_names, budget, model, isolation, stream_id, depth,
-                  tier=None):
+                  tier=None, thinking=None):
         await (gate_a if task.startswith("task A") else gate_b).wait()
         calls.append(task)
         return f"report[{task.splitlines()[0]}]"
@@ -117,7 +117,7 @@ async def test_failed_prerequisite_skips_dependent(tmp_path):
     calls: list = []
 
     async def run(type, task, mcp_names, budget, model, isolation, stream_id, depth,
-                  tier=None):
+                  tier=None, thinking=None):
         if task.startswith("task A"):
             raise RuntimeError("boom")
         calls.append(task)
