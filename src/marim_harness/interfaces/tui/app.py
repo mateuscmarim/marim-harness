@@ -124,6 +124,7 @@ class HarnessApp(App):
             on_subagent_event=self.stream.on_subagent_event,
             on_subagent_notice=self.stream.on_subagent_notice,
             on_subagent_model=self.stream.on_subagent_model,
+            on_subagent_thinking=self.stream.on_subagent_thinking,
             on_subagent_usage=self.stream.on_subagent_usage,
             on_cli_activity=self.stream.on_cli_activity,
             on_ttft=self.stream.on_ttft,

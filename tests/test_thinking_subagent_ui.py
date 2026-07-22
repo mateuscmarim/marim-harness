@@ -28,6 +28,21 @@ def test_card_set_thinking_level_updates_label():
     assert widget.thinking_label == "high"
 
 
+def test_bind_ui_wires_on_subagent_thinking(tmp_path):
+    """bind_ui lands the thinking callback on deps.ui, so the runner's report
+    reaches the TUI at runtime — not just in unit tests. Without this wiring the
+    card would never annotate the resolved level (the callback stays None)."""
+    from tests.conftest import _make_deps, _make_harness, _text_model
+
+    deps = _make_deps(tmp_path)
+    h = _make_harness(_text_model(), deps)
+
+    async def sink(stream_id: str, level: str) -> None: ...
+
+    h.bind_ui(on_subagent_thinking=sink)
+    assert h.deps.ui.on_subagent_thinking is sink
+
+
 def _runner(tmp_path, on_thinking, **kwargs) -> SubagentRunner:
     deps = Deps(workspace=WorkspaceConfig(root=tmp_path, mode=Mode.auto))
     deps.ui.on_subagent_thinking = on_thinking

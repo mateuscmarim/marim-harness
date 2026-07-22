@@ -66,6 +66,7 @@ from .deps import (
     SubAgentEventCb,
     SubAgentModelCb,
     SubAgentNoticeCb,
+    SubAgentThinkingCb,
     SubAgentUsageCb,
     WorkflowRunner,
 )
@@ -573,6 +574,7 @@ class Harness:
         on_subagent_event: SubAgentEventCb | None = None,
         on_subagent_notice: SubAgentNoticeCb | None = None,
         on_subagent_model: SubAgentModelCb | None = None,
+        on_subagent_thinking: SubAgentThinkingCb | None = None,
         on_subagent_usage: SubAgentUsageCb | None = None,
         on_cli_activity: CliActivityCb | None = None,
         on_ttft: Callable[[float], None] | None = None,
@@ -608,6 +610,7 @@ class Harness:
         self.deps.ui.on_subagent_event = on_subagent_event
         self.deps.ui.on_subagent_notice = on_subagent_notice
         self.deps.ui.on_subagent_model = on_subagent_model
+        self.deps.ui.on_subagent_thinking = on_subagent_thinking
         self.deps.ui.on_subagent_usage = on_subagent_usage
         self.deps.ui.on_cli_activity = on_cli_activity
         self.deps.ui.on_ttft = on_ttft
