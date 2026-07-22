@@ -39,7 +39,7 @@ def _capture_deps(h):
 
     h.subagents.build = lambda type, max_output_chars=None, model=None, \
         workspace_root=None, defn=None, depth=0, mask_trigger=None, \
-        checkpoint=None, output_schema=None, tier=None: (_StubAgent(), None)
+        checkpoint=None, output_schema=None, tier=None, thinking=None: (_StubAgent(), None)
     return cap
 
 
@@ -81,7 +81,7 @@ async def test_isolated_spawn_commits_changes_and_reports_branch(repo: Path):
 
     h.subagents.build = lambda type, max_output_chars=None, model=None, \
         workspace_root=None, defn=None, depth=0, mask_trigger=None, \
-        checkpoint=None, output_schema=None, tier=None: (_WritingAgent(), None)
+        checkpoint=None, output_schema=None, tier=None, thinking=None: (_WritingAgent(), None)
 
     out = await h.subagents.run("general", "add a file", "tc1", isolation="worktree")
     assert "wrote new.txt" in out
@@ -138,7 +138,7 @@ async def test_spawn_agent_tool_forwards_isolation(repo: Path):
 
     async def fake_run(type, task, stream_id, mcp_names=None,
                        max_output_chars=None, model=None, isolation=None,
-                       caller_depth: int = 0, tier=None):
+                       caller_depth: int = 0, tier=None, thinking=None):
         captured["isolation"] = isolation
         return "REPORT"
 
@@ -194,7 +194,7 @@ async def test_isolated_spawn_crash_cleans_up_worktree_and_branch(repo: Path):
 
     h.subagents.build = lambda type, max_output_chars=None, model=None, \
         workspace_root=None, defn=None, depth=0, mask_trigger=None, \
-        checkpoint=None, output_schema=None, tier=None: (_CrashAgent(), None)
+        checkpoint=None, output_schema=None, tier=None, thinking=None: (_CrashAgent(), None)
 
     out = await h.subagents.run("general", "do it", "tc1", isolation="worktree")
     assert "boom" in out  # contained, not raised
@@ -210,7 +210,7 @@ def _crash_build(h):
 
     h.subagents.build = lambda type, max_output_chars=None, model=None, \
         workspace_root=None, defn=None, depth=0, mask_trigger=None, \
-        checkpoint=None, output_schema=None, tier=None: (_CrashAgent(), None)
+        checkpoint=None, output_schema=None, tier=None, thinking=None: (_CrashAgent(), None)
 
 
 def _dangling_resume_history():
@@ -288,7 +288,7 @@ async def test_isolated_spawn_cancel_preserves_in_progress_work(repo: Path):
 
     h.subagents.build = lambda type, max_output_chars=None, model=None, \
         workspace_root=None, defn=None, depth=0, mask_trigger=None, \
-        checkpoint=None, output_schema=None, tier=None: (_CancelAgent(), None)
+        checkpoint=None, output_schema=None, tier=None, thinking=None: (_CancelAgent(), None)
 
     with pytest.raises(asyncio.CancelledError):
         await h.subagents.run("general", "do it", "tc1", isolation="worktree")
@@ -320,7 +320,7 @@ async def test_isolated_spawn_cancel_with_no_changes_drops_branch(repo: Path):
 
     h.subagents.build = lambda type, max_output_chars=None, model=None, \
         workspace_root=None, defn=None, depth=0, mask_trigger=None, \
-        checkpoint=None, output_schema=None, tier=None: (_CancelAgent(), None)
+        checkpoint=None, output_schema=None, tier=None, thinking=None: (_CancelAgent(), None)
 
     with pytest.raises(asyncio.CancelledError):
         await h.subagents.run("general", "do it", "tc1", isolation="worktree")
@@ -346,7 +346,7 @@ async def test_isolated_background_spawn_cancel_preserves_in_progress_work(repo:
 
     h.subagents.build = lambda type, max_output_chars=None, model=None, \
         workspace_root=None, defn=None, depth=0, mask_trigger=None, \
-        checkpoint=None, output_schema=None, tier=None: (_CancelAgent(), None)
+        checkpoint=None, output_schema=None, tier=None, thinking=None: (_CancelAgent(), None)
 
     with pytest.raises(asyncio.CancelledError):
         await h.subagents.run_background(
