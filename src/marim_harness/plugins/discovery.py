@@ -14,6 +14,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..lsp.provider import LspProvider, parse_lsp_providers
 from ..trust import project_trusted as _project_trusted
 from .manifest import (
     MANIFEST_DIR,
@@ -395,6 +396,30 @@ def plugin_mcp_specs(workspace_root, *, trust_project: bool = False) -> dict:
                 continue
             merged[f"{p.name}_{server_name}"] = substitute_root(spec, p.root)
     return merged
+
+
+def plugin_lsp_providers(
+    workspace_root, *, trust_project: bool = False
+) -> list["LspProvider"]:
+    """LSP providers contributed by enabled+trusted plugins. Follows the exact
+    trust rule as plugin_mcp_specs — an LSP server launches code on connect, so
+    project-scope plugins need both the per-plugin trust bit AND the project
+    trust gate. Third-party providers are declarative only: the bundled-only
+    ``backend``/named-``diagnostics`` keys are dropped by the lenient parse.
+    ``${MARIM_PLUGIN_ROOT}`` is substituted in each provider's command/args."""
+    out: list[LspProvider] = []
+    for p in _enabled_trusted(workspace_root, trust_project=trust_project):
+        block = p.manifest.lsp_block()
+        if block is None:
+            continue
+        block = substitute_root(block, p.root)
+        out.extend(
+            parse_lsp_providers(
+                block, bundled=False, source=p.scope,
+                plugin_root=p.root, strict=False,
+            )
+        )
+    return out
 
 
 def plugin_bundle_summary(manifest: PluginManifest) -> dict:
