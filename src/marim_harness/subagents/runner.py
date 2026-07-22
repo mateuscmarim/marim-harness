@@ -40,6 +40,7 @@ from ..runtime.deps import Deps, SubAgent
 from ..runtime.errors import is_context_overflow_error
 from ..runtime.permissions import Mode
 from ..tasks import TaskList
+from ..thinking import resolve_thinking, settings_for
 from ..tools.impl import fs
 from ..tools.names import GATED_TOOLS
 from ..workspace import (
@@ -134,6 +135,7 @@ class SubagentRunner:
                  retry: RetryPolicy | None = None,
                  masking: MaskingPolicy | None = None,
                  tiers: SubagentTiers | None = None,
+                 thinking_default: Callable[[], str | None] | None = None,
                  extra_agents: tuple[AgentDef, ...] = ()) -> None:
         self.provider = provider
         self.mcp = mcp
@@ -192,6 +194,10 @@ class SubagentRunner:
         # The user-curated model per tier. Empty (the default) ⇒ every spawn
         # inherits the main model and a slug override keeps its legacy passthrough.
         self._tiers = tiers or SubagentTiers()
+        # The inherited session thinking level, read LAZILY per spawn (closes
+        # over the live Harness.thinking_level_id) so a /think switch reaches
+        # later spawns. None ⇒ nothing to inherit (spec/override still apply).
+        self._thinking_default = thinking_default
         # The model-loop driver: retry/overflow/contention recovery lives there,
         # keeping this class the spawn-lifecycle coordinator. known_window is
         # passed as a callable because it reads the *current* session model.
@@ -299,12 +305,27 @@ class SubagentRunner:
         model_id = getattr(self._get_model(), "model_name", None)
         return self._masking.limits.window_for(model_id)
 
+    def _spawn_thinking_settings(self, override: str | None, defn) -> ModelSettings | None:
+        """The per-spawn model settings: the runner's base settings with the
+        resolved thinking level folded in. Precedence: spawn override → spec
+        ``thinking:`` → inherited session level. off/None returns the base
+        UNCHANGED (settings_for omits the key), so a spawn with no thinking
+        anywhere is byte-identical to today's behavior."""
+        inherited = self._thinking_default() if self._thinking_default is not None else None
+        level = resolve_thinking(override, defn.thinking, inherited)
+        if not level or level == "off":
+            return self._model_settings
+        # base may be None for an embedder that composed no default settings;
+        # settings_for needs a concrete mapping to copy.
+        return settings_for(level, self._model_settings or ModelSettings())
+
     def build(
         self, type: str, max_output_chars: int | None = None,
         model: str | None = None, workspace_root=None, *, defn=None,
         depth: int = 0, mask_trigger: int | None = None,
         checkpoint: Callable[[list], None] | None = None,
         output_schema: dict | None = None, tier: str | None = None,
+        thinking: str | None = None,
     ) -> tuple[SubAgent | None, str | None]:
         """Build an isolated sub-agent of ``type``, with its reach decided up
         front: gated tools only in auto mode, so a run never needs an approval
@@ -325,7 +346,11 @@ class SubagentRunner:
         the named tier (cheap/med/high) selecting the spawn's model, resolved
         override → spec ``tier:`` → tool-reach default (read-only spawns default
         to cheap, mutating ones to high); ``None`` lets that resolution run
-        automatically rather than forcing a tier. Returns ``(agent, None)`` or,
+        automatically rather than forcing a tier. ``thinking`` is the spawn-call
+        thinking override; it wins over the spec's ``thinking:`` frontmatter and
+        the inherited session level (resolved in ``_spawn_thinking_settings``).
+        ``None`` lets that resolution run; a resolved ``off``/none leaves the
+        base settings intact. Returns ``(agent, None)`` or,
         for an unknown type or an unresolvable model, ``(None, message)``."""
         if defn is None:
             defn = self._resolve_agent(type)
@@ -412,6 +437,7 @@ class SubagentRunner:
         # agent's _scratchpad instructions block, commit d0d038c).
         tools = effective_tools(defn, allow_gated=allow_gated, allow_net=allow_net)
         scratchpad_writable = "write_file" in tools
+        sub_settings = self._spawn_thinking_settings(thinking, defn)
 
         sub = Agent(
             model_obj,
@@ -437,7 +463,7 @@ class SubagentRunner:
             # Match the main agent's pin: v2 defaults to 'graceful'; 'early'
             # keeps the v1 stop-on-final-result behavior (see harness.py).
             end_strategy="early",
-            model_settings=self._model_settings,
+            model_settings=sub_settings,
             capabilities=capabilities,
         )
         self.provider.register_subagent(sub, tools)
@@ -591,6 +617,7 @@ class SubagentRunner:
         max_output_chars: int | None, model: str | None, isolation: str | None,
         *, background: bool, stream_id: str, caller_depth: int = 0,
         output_schema: dict | None = None, tier: str | None = None,
+        thinking: str | None = None,
     ) -> str:
         """Dispatch a spawn through shared setup then the shared run lifecycle.
 
@@ -644,7 +671,7 @@ class SubagentRunner:
         prep = await self._prepare_spawn(
             type, task, mcp_names, max_output_chars, model,
             iso, work_root, stream_id, debug=debug, t0=t0, defn=defn, depth=depth,
-            output_schema=output_schema, tier=tier,
+            output_schema=output_schema, tier=tier, thinking=thinking,
         )
         if isinstance(prep, str):
             return prep
@@ -658,7 +685,7 @@ class SubagentRunner:
         iso: SpawnWorktree | None, work_root, stream_id: str,
         *, debug: bool, t0: float, defn=None, depth: int = 0,
         resumed: bool = False, output_schema: dict | None = None,
-        tier: str | None = None,
+        tier: str | None = None, thinking: str | None = None,
     ) -> _SpawnPrep | str:
         """Build the sub-agent, grant MCP servers, fire the start hook, and wire the
         event handler. Returns a ``_SpawnPrep`` struct on success, or an error string
@@ -701,7 +728,7 @@ class SubagentRunner:
         sub, err = self.build(type, max_output_chars, model, work_root, defn=defn,
                               depth=depth, mask_trigger=mask_trigger,
                               checkpoint=checkpoint, output_schema=output_schema,
-                              tier=tier)
+                              tier=tier, thinking=thinking)
         if sub is None:
             if iso:
                 # Own the failure teardown HERE rather than at the caller: a resumed
@@ -956,7 +983,7 @@ class SubagentRunner:
         mcp_names: list[str] | None = None, max_output_chars: int | None = None,
         model: str | None = None, isolation: str | None = None,
         caller_depth: int = 0, tier: str | None = None,
-        output_schema: dict | None = None,
+        output_schema: dict | None = None, thinking: str | None = None,
     ) -> str:
         """Spawn one isolated sub-agent of ``type``, run it to completion on
         ``task``, and return its final report — streaming its events to the UI
@@ -983,11 +1010,14 @@ class SubagentRunner:
         result is JSON-serialized. ``tier`` is the named tier (cheap/med/high)
         selecting the spawn's model, resolved override → spec ``tier:`` →
         tool-reach default; ``None`` leaves that resolution automatic.
+        ``thinking`` is the spawn-call thinking-level override, resolved
+        override → spec ``thinking:`` → inherited session level; ``None``
+        leaves that resolution automatic.
         """
         return await self._execute_spawn(
             type, task, mcp_names, max_output_chars, model, isolation,
             background=False, stream_id=stream_id, caller_depth=caller_depth,
-            output_schema=output_schema, tier=tier,
+            output_schema=output_schema, tier=tier, thinking=thinking,
         )
 
     async def run_background(
@@ -995,6 +1025,7 @@ class SubagentRunner:
         max_output_chars: int | None = None, model: str | None = None,
         isolation: str | None = None, stream_id: str = "",
         caller_depth: int = 0, tier: str | None = None,
+        thinking: str | None = None,
     ) -> str:
         """Run a sub-agent as a detached background job: same isolation, mode-based
         reach, and MCP grant as a foreground spawn. When ``stream_id`` is set (the
@@ -1014,11 +1045,13 @@ class SubagentRunner:
         a nested sub-agent is sized — and depth-limited — the same as a foreground
         one. ``tier`` is the named tier (cheap/med/high) selecting the spawn's
         model, resolved override → spec ``tier:`` → tool-reach default; ``None``
-        leaves that resolution automatic."""
+        leaves that resolution automatic. ``thinking`` is the spawn-call
+        thinking-level override, resolved override → spec ``thinking:`` →
+        inherited session level; ``None`` leaves that resolution automatic."""
         return await self._execute_spawn(
             type, task, mcp_names, max_output_chars, model, isolation,
             background=True, stream_id=stream_id, caller_depth=caller_depth,
-            tier=tier,
+            tier=tier, thinking=thinking,
         )
 
     def _resume_preconditions(self, stream_id: str) -> tuple[dict | None, str | None]:

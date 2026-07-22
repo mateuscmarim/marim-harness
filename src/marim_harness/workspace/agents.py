@@ -23,6 +23,7 @@ from pathlib import Path
 import yaml
 
 from ..config import builtin_root, config_dir
+from ..thinking import parse_thinking_level
 from ..tools.names import GATED_TOOLS, NET_TOOLS, READ_TOOLS, SUBAGENT_TOOLS
 from ..trust import project_trusted as _project_trusted
 from ._discovery import cached_discover
@@ -82,6 +83,10 @@ class AgentDef:
     # tier router. None ⇒ no label; the router falls back to tool reach. An
     # out-of-range value is normalized to None at parse time.
     tier: str | None = None
+    # Thinking level (reasoning effort) for this sub-agent: a member of
+    # thinking.THINKING_LEVELS, or None (inherit the spawner's level). Set via
+    # the `thinking:` (or `effort:`) frontmatter key.
+    thinking: str | None = None
 
     @property
     def qualified_name(self) -> str:
@@ -179,6 +184,11 @@ def _parse_agent(source: str, path: Path, plugin: str | None = None) -> AgentDef
 
     if tier is not None and tier not in TIER_NAMES:
         tier = None
+    # thinking:/effort: → a canonical level (or None if unknown/absent). Same
+    # graceful-drop as tier: a bad value degrades to "inherit", never errors.
+    thinking = parse_thinking_level(
+        _opt_str(data.get("thinking"), None) or _opt_str(data.get("effort"), None)
+    )
     return AgentDef(
         name=name,
         description=description.strip(),
@@ -189,6 +199,7 @@ def _parse_agent(source: str, path: Path, plugin: str | None = None) -> AgentDef
         backend=backend,
         model=model,
         tier=tier,
+        thinking=thinking,
     )
 
 
