@@ -6,6 +6,7 @@ registry, and translate outcomes to status codes. Auth is an explicit check at
 the top of every handler (not middleware): BaseHTTPMiddleware buffers
 streaming bodies, and an explicit call is easier to follow and test."""
 
+import asyncio
 import base64
 import contextlib
 import json
@@ -18,7 +19,8 @@ from pydantic_ai.usage import RunUsage
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
-from starlette.routing import Route
+from starlette.routing import Route, WebSocketRoute
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from ..images import image_cache_root, media_type_for_path
 from ..runtime.permissions import Mode
@@ -336,6 +338,57 @@ async def get_events(request: Request) -> Response:
     )
 
 
+async def session_ws(websocket: WebSocket) -> None:
+    """Live event stream over WebSocket — replaces GET .../events.
+
+    Auth is the Authorization: Bearer header on the upgrade (okhttp can set
+    it, unlike a browser EventSource, so there is no access_token fallback).
+    Resume via ?after_seq=<seq>; the synthetic stream.gap that EventBus.attach
+    prepends when the resume point fell off the ring is delivered like any
+    other event. One JSON text frame per Event (Event.as_dict()).
+
+    A background pump forwards bus events; the main coroutine blocks on
+    receive() purely to observe client disconnect, then cancels the pump —
+    otherwise a dead client with no pending events would leak the
+    subscription until the next publish."""
+    token = websocket.app.state.token
+    header = websocket.headers.get("authorization", "")
+    if not (header.startswith("Bearer ")
+            and token_matches(token, header[len("Bearer "):])):
+        await websocket.close(code=4401)
+        return
+    record = _registry(websocket).get(websocket.path_params["ws"])
+    session_id = websocket.path_params["sid"]
+    if record is None or not _session_exists(record, session_id):
+        await websocket.close(code=4404)
+        return
+    raw = websocket.query_params.get("after_seq", "")
+    after_seq = int(raw) if raw.isdigit() else None
+    bus = _supervisor(websocket).bus_for(record.id, session_id)
+
+    await websocket.accept()
+    subscription = bus.attach(after_seq=after_seq)
+
+    async def pump() -> None:
+        while True:
+            event = await subscription.next_event()
+            await websocket.send_json(event.as_dict())
+
+    pump_task = asyncio.ensure_future(pump())
+    try:
+        while True:
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                break
+    except WebSocketDisconnect:
+        pass
+    finally:
+        pump_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await pump_task
+        subscription.close()
+
+
 async def get_history(request: Request) -> Response:
     denied = _unauthorized(request)
     if denied:
@@ -412,6 +465,7 @@ def create_app(
         Route(f"{base}/asks", list_asks, methods=["GET"]),
         Route(f"{base}/asks/{{aid}}", answer_ask, methods=["POST"]),
         Route(f"{base}/events", get_events, methods=["GET"]),
+        WebSocketRoute(f"{base}/ws", session_ws),
         Route(f"{base}/history", get_history, methods=["GET"]),
         Route(f"{base}/images/{{sha}}", get_session_image, methods=["GET"]),
     ]
