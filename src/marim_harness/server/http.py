@@ -388,9 +388,11 @@ async def session_ws(websocket: WebSocket) -> None:
         pass
     finally:
         pump_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await pump_task
-        subscription.close()
+        try:
+            with contextlib.suppress(asyncio.CancelledError):
+                await pump_task
+        finally:
+            subscription.close()
 
 
 async def get_history(request: Request) -> Response:
