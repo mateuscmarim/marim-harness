@@ -40,6 +40,7 @@ import uvicorn
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
+from marim_harness.images import store_image
 from marim_harness.runtime.deps import Deps, UIHooks, WorkspaceConfig
 from marim_harness.runtime.harness import Harness
 from marim_harness.runtime.permissions import Mode
@@ -358,3 +359,73 @@ def test_sse_resume_with_last_event_id(client):
             if line.startswith("id: "):
                 assert int(line.removeprefix("id: ")) == first_id + 1
                 break
+
+
+def test_session_image_requires_auth(client):
+    test_client, _ = client
+    # Auth is checked before workspace/session lookup, so placeholder ids
+    # are enough to exercise the 401 path.
+    response = test_client.get(
+        "/v1/workspaces/nope/sessions/nope/images/" + "0" * 64
+    )
+    assert response.status_code == 401
+
+
+def test_session_image_roundtrip(client, tmp_path, monkeypatch):
+    test_client, tmp_path = client
+    monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path / "image-cache"))
+    ws_id, sid, _ = _setup_workspace_and_session(test_client, tmp_path)
+    data = b"\x89PNG\r\n\x1a\n" + b"fake-png-bytes"
+    cached = store_image(sid, data, "image/png")
+
+    response = test_client.get(
+        f"/v1/workspaces/{ws_id}/sessions/{sid}/images/{cached.sha}", headers=AUTH
+    )
+    assert response.status_code == 200
+    assert response.content == data
+    assert response.headers["content-type"] == "image/png"
+
+
+def test_session_image_unknown_sha(client, tmp_path, monkeypatch):
+    test_client, tmp_path = client
+    monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path / "image-cache"))
+    ws_id, sid, _ = _setup_workspace_and_session(test_client, tmp_path)
+
+    valid_shape_sha = "a" * 64
+    response = test_client.get(
+        f"/v1/workspaces/{ws_id}/sessions/{sid}/images/{valid_shape_sha}", headers=AUTH
+    )
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
+def test_session_image_malformed_sha(client):
+    test_client, tmp_path = client
+    ws_id, sid, _ = _setup_workspace_and_session(test_client, tmp_path)
+    base = f"/v1/workspaces/{ws_id}/sessions/{sid}/images"
+
+    for bad_sha in ("abc", "A" * 64):
+        response = test_client.get(f"{base}/{bad_sha}", headers=AUTH)
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "not_found"
+
+    # A traversal attempt embedded in the path segment: the router itself
+    # will not route a slash-containing segment to a single {sha} param, so
+    # this must 404 one way or another (route-miss or our regex check).
+    traversal = test_client.get(f"{base}/../../../../etc/passwd", headers=AUTH)
+    assert traversal.status_code == 404
+
+
+def test_session_image_unknown_session(client):
+    test_client, tmp_path = client
+    project = tmp_path / "proj-image-unknown-session"
+    project.mkdir()
+    ws_id = test_client.post("/v1/workspaces", headers=AUTH,
+                             json={"name": "proj-image-unknown-session",
+                                   "path": str(project)}).json()["id"]
+    valid_shape_sha = "b" * 64
+    response = test_client.get(
+        f"/v1/workspaces/{ws_id}/sessions/nope/images/{valid_shape_sha}", headers=AUTH
+    )
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"

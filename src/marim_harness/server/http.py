@@ -9,6 +9,7 @@ streaming bodies, and an explicit call is easier to follow and test."""
 import base64
 import contextlib
 import json
+import re
 from dataclasses import asdict
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
+from ..images import image_cache_root, media_type_for_path
 from ..runtime.permissions import Mode
 from ..session import SessionManager
 from .auth import token_matches
@@ -28,6 +30,7 @@ from .supervisor import SessionSupervisor
 from .workspaces import WorkspaceRegistry
 
 _HEARTBEAT_SECONDS = 15.0
+_SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _error(status: int, code: str, message: str) -> JSONResponse:
@@ -364,6 +367,29 @@ async def get_history(request: Request) -> Response:
     })
 
 
+async def get_session_image(request: Request) -> Response:
+    denied = _unauthorized(request)
+    if denied:
+        return denied
+    record = _workspace(request)
+    if record is None:
+        return _error(404, "not_found", "unknown workspace")
+    session_id = request.path_params["sid"]
+    if not SessionManager(Path(record.path)).session_path(session_id).exists():
+        return _error(404, "not_found", "unknown session")
+    sha = request.path_params["sha"]
+    if not _SHA_RE.fullmatch(sha):
+        return _error(404, "not_found", "unknown image")
+    for path in sorted((image_cache_root() / session_id).glob(f"{sha}.*")):
+        media = media_type_for_path(path) or "application/octet-stream"
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        return Response(data, media_type=media)
+    return _error(404, "not_found", "unknown image")
+
+
 def create_app(
     *, registry: WorkspaceRegistry, supervisor: SessionSupervisor, token: str
 ) -> Starlette:
@@ -384,6 +410,7 @@ def create_app(
         Route(f"{base}/asks/{{aid}}", answer_ask, methods=["POST"]),
         Route(f"{base}/events", get_events, methods=["GET"]),
         Route(f"{base}/history", get_history, methods=["GET"]),
+        Route(f"{base}/images/{{sha}}", get_session_image, methods=["GET"]),
     ]
 
     @contextlib.asynccontextmanager
