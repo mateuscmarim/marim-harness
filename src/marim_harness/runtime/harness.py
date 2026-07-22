@@ -117,6 +117,16 @@ class HarnessConfig:
     proactive_memory: bool = False
     mcp_servers: list[object] = field(default_factory=list)
     mcp_disabled: set | None = None
+    # The project-trust decision McpManager threads into every disable_server/
+    # enable_server persist call (mcp.manager.McpManager.trust_project). It
+    # must be the SAME decision ``load_mcp_config`` was built with — mismatched
+    # trust would let a toggle write to a file the load path never reads back
+    # (or the reverse). The CLI preset (bootstrap.build_harness) wires this
+    # from ``cfg.trust_project_hooks``, the very value it already passes to
+    # ``load_mcp_config``; an embedder composing HarnessBuilder directly has
+    # no project-file loading path at all, so False (untrusted) is the correct
+    # default — matching load_mcp_config's own default.
+    mcp_trust_project: bool = False
     # LSP master switch. False ⇒ no LspManager is built (deps.services.lsp stays None), so
     # diagnostics-on-edit no-ops. Navigation-tool registration is gated separately
     # on the provider (see build_harness), keyed on lsp_enabled and lsp_tools_enabled.
@@ -277,7 +287,10 @@ def build_collaborators(
     ``Harness.current_model``) so a runtime ``/model`` switch is tracked
     without rewiring the sub-agent runner.
     """
-    mcp = McpManager(cfg.mcp_servers or [], set(cfg.mcp_disabled or []))
+    mcp = McpManager(
+        cfg.mcp_servers or [], set(cfg.mcp_disabled or []),
+        trust_project=cfg.mcp_trust_project,
+    )
     # Forge (Gitea/GitHub) tools: an explicit backend (embedders) attaches
     # directly; otherwise attach only when enabled AND a backend is available
     # (tea on PATH + a configured login); forge_toolsets returns [] otherwise,

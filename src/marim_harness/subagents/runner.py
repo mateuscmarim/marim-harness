@@ -110,6 +110,7 @@ class _SpawnPrep:
     first_event_at: list[float]  # mutable; ``on_first_event`` probe appends during run
     depth: int  # depth of the spawned sub-agent
     meta: dict | None = None  # sidecar meta template (Task: subagent resume)
+    mcp_withheld: bool = False  # plan mode withheld a requested MCP grant
 
 
 class SubagentRunner:
@@ -728,16 +729,7 @@ class SubagentRunner:
             if report_model is not None and stream_id:
                 await report_model(stream_id, resolved_model)
         t_built = time.perf_counter()
-        # Apply the same tool-search deferral the main agent uses: a large granted
-        # MCP surface is combined behind ToolSearch rather than injected wholesale,
-        # so a spawn granted (say) an 86-tool browser server searches for tools on
-        # demand instead of carrying every schema. Policy/threshold are the same
-        # workspace settings the controller reads for the main turn.
-        granted, unknown = await self.mcp.granted_toolsets(
-            mcp_names,
-            self.deps.workspace.tool_search,
-            self.deps.workspace.tool_search_threshold,
-        )
+        granted, unknown, mcp_withheld = await self._spawn_mcp_grant(mcp_names)
         await self.hooks.subagent_start(type, task)
         # Foreground passes its tool_call_id; a background spawn now passes its own
         # stream_id too (Phase 2), so it streams to the UI exactly like foreground.
@@ -749,7 +741,65 @@ class SubagentRunner:
         return _SpawnPrep(
             sub=sub, granted=granted, unknown=unknown, handler=handler,
             iso=iso, t0=t0, t_built=t_built, first_event_at=first_event_at,
-            depth=depth, meta=meta,
+            depth=depth, meta=meta, mcp_withheld=mcp_withheld,
+        )
+
+    async def _spawn_mcp_grant(
+        self, mcp_names: list[str] | None,
+    ) -> tuple[list[object], list[str], bool]:
+        """The MCP toolsets a spawn is granted — or nothing at all in plan mode.
+
+        Plan mode withholds the whole grant, snapshot at spawn/resume time
+        exactly like ``allow_gated``/``allow_net`` in ``build`` (a mode flip
+        affects the NEXT spawn, never a running one). The main agent's own MCP
+        calls are already denied per-call in plan mode by the
+        ``process_tool_call`` hook ``build_mcp_servers`` attaches
+        (mcp/config.py ``make_approval_hook``), but a spawn must not rely on
+        that hook: it exists only on config-built servers — an
+        embedder-supplied one (``HarnessBuilder.with_mcp_server``) carries no
+        hook — and a sub-agent's tools run with no approval round, so a granted
+        hookless server would be an open egress/mutation channel with zero user
+        gate. Withholding up front closes the channel structurally (same
+        rationale as ``allow_net`` mirroring ``_plan_decision``'s net-egress
+        denial), is deliberately stricter than the main loop's call-time deny,
+        and spares a plan spawn from burning its turns on denials. The sidecar
+        meta still records the REQUESTED names, so a spawn interrupted here and
+        resumed outside plan mode gets its grant back.
+
+        Outside plan mode, applies the same tool-search deferral the main agent
+        uses: a large granted MCP surface is combined behind ToolSearch rather
+        than injected wholesale, so a spawn granted (say) an 86-tool browser
+        server searches for tools on demand instead of carrying every schema.
+        Policy/threshold are the same workspace settings the controller reads
+        for the main turn.
+
+        Returns ``(granted, unknown, withheld)``; ``withheld`` is True only
+        when plan mode dropped a non-empty request, driving the spawner-facing
+        note in ``_withheld_mcp_note``. The requested names are deliberately
+        NOT folded into ``unknown`` — they exist, they're just ungrantable
+        here, and the unknown-servers note would misname them."""
+        if self.deps.workspace.mode is Mode.plan:
+            return [], [], bool(mcp_names)
+        granted, unknown = await self.mcp.granted_toolsets(
+            mcp_names,
+            self.deps.workspace.tool_search,
+            self.deps.workspace.tool_search_threshold,
+        )
+        return granted, unknown, False
+
+    @staticmethod
+    def _withheld_mcp_note(prep: _SpawnPrep) -> str:
+        """A one-line note on the spawn's report when plan mode withheld a
+        requested MCP grant (see ``_spawn_mcp_grant``): the spawner asked for
+        servers and must be told why its sub-agent lacked them, rather than the
+        grant silently vanishing — mirrors the CLI path's not-forwarded
+        ``_mcp_note``."""
+        if not prep.mcp_withheld:
+            return ""
+        return (
+            "[note: MCP server grants are withheld from sub-agents in plan "
+            "mode (local research only) — switch out of plan mode to grant "
+            "MCP servers]\n\n"
         )
 
     async def _execute_native_spawn(
@@ -825,7 +875,8 @@ class SubagentRunner:
         # summary follows the active session — accepted.)
         return await self._run_spawn_lifecycle(
             _run, iso=prep.iso, resumed=resumed, background=background, name=type,
-            stop_task=stop_task, note=self.mcp.grant_note(prep.unknown),
+            stop_task=stop_task,
+            note=self._withheld_mcp_note(prep) + self.mcp.grant_note(prep.unknown),
             max_output_chars=max_output_chars, stream_id=stream_id,
             timing=(prep.t0, prep.t_built, prep.first_event_at),
         )

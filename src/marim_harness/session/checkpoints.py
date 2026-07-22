@@ -191,36 +191,65 @@ class CheckpointManager:
         store = self._store()
         return store.session_id if store is not None else "anon"
 
+    @staticmethod
+    def _ref_for(sid: str, index: int) -> str:
+        return f"{_REF_PREFIX}/{sid}/{index}"
+
+    @staticmethod
+    def _pre_restore_ref_for(sid: str) -> str:
+        """Per-session ref for the pre-rewind safety snapshot, under an explicit
+        sid. Namespacing by session id keeps a rewind in one session from
+        clobbering another's recovery point (the bug behind the old shared
+        ``_pre_restore`` ref). Takes ``sid`` explicitly (rather than reading
+        ``self._session_id()``) so ``_reap_stash_refs`` can address refs under the
+        session recorded at stash time — the current session id may already point
+        at a different session by then."""
+        return f"{_REF_PREFIX}/{sid}/_pre_restore"
+
+    @staticmethod
+    def _pre_undo_ref_for(sid: str) -> str:
+        """Per-session ref for the safety snapshot taken just before an undo's file
+        restore, under an explicit sid (see ``_pre_restore_ref_for``). Without it,
+        undo_rewind's restore would delete any file created after the rewind (files
+        present now but absent from the pre-restore tree) with no recovery path.
+        Capturing the current tree here makes undo itself recoverable, mirroring
+        how rewind() guards its own restore."""
+        return f"{_REF_PREFIX}/{sid}/_pre_undo"
+
     def _ref(self, index: int) -> str:
-        return f"{_REF_PREFIX}/{self._session_id()}/{index}"
+        return self._ref_for(self._session_id(), index)
 
     def _pre_restore_ref(self) -> str:
-        """Per-session ref for the pre-rewind safety snapshot. Namespacing by
-        session id keeps a rewind in one session from clobbering another's
-        recovery point (the bug behind the old shared ``_pre_restore`` ref)."""
-        return f"{_REF_PREFIX}/{self._session_id()}/_pre_restore"
+        """The current-session ref for the pre-rewind safety snapshot."""
+        return self._pre_restore_ref_for(self._session_id())
 
     def _pre_undo_ref(self) -> str:
-        """Per-session ref for the safety snapshot taken just before an undo's file
-        restore. Without it, undo_rewind's restore would delete any file created
-        after the rewind (files present now but absent from the pre-restore tree)
-        with no recovery path. Capturing the current tree here makes undo itself
-        recoverable, mirroring how rewind() guards its own restore."""
-        return f"{_REF_PREFIX}/{self._session_id()}/_pre_undo"
+        """The current-session ref for the pre-undo safety snapshot."""
+        return self._pre_undo_ref_for(self._session_id())
 
     def _discard_undo_stash(self) -> None:
         """Close the undo window: the last rewind can no longer be undone, so delete
         the git refs of the checkpoints it dropped (now truly orphaned — they aren't in
-        ``_checkpoints`` anymore) and clear every rewind stash. Called when the user
-        moves forward (a new snapshot), rewinds again, or the session is cleared —
-        anything that supersedes the pending undo. Uses the CURRENT session id, so it
-        must not run across a session switch (see ``reload``, which reaps the stash
-        refs under the session id recorded at stash time to avoid targeting the wrong
-        session's namespace)."""
+        ``_checkpoints`` anymore), the ``_pre_restore``/``_pre_undo`` safety snapshots
+        (whole-working-tree captures, potentially with secrets, that no sidecar ever
+        records — closing the window is their only other release point short of a full
+        session ``delete()``), and clear every rewind stash. Called when the user moves
+        forward (a new snapshot), rewinds again, or the session is cleared — anything
+        that supersedes the pending undo. Deleting the safety refs unconditionally here
+        is safe: ``rewind()`` (the only place that captures a NEW ``_pre_restore``)
+        calls this first and re-captures immediately after when the target checkpoint
+        has a commit, so the delete-then-maybe-recapture never leaves a caller mid-undo
+        with a dangling reference to a ref that no longer exists — and ``delete()`` is a
+        best-effort no-op when there was nothing to free. Uses the CURRENT session id,
+        so it must not run across a session switch (see ``reload``, which reaps the
+        stash refs under the session id recorded at stash time to avoid targeting the
+        wrong session's namespace)."""
         if self._pre_rewind_checkpoints:
             for cp in self._pre_rewind_checkpoints:
                 if cp.commit is not None:
                     self.snapshotter.delete(self._ref(cp.index))
+        self.snapshotter.delete(self._pre_restore_ref())
+        self.snapshotter.delete(self._pre_undo_ref())
         self._pre_rewind_checkpoints = None
         self._pre_rewind_history = None
         self._pre_restore_commit = None
@@ -241,9 +270,9 @@ class CheckpointManager:
             if self._pre_rewind_checkpoints:
                 for cp in self._pre_rewind_checkpoints:
                     if cp.commit is not None:
-                        self.snapshotter.delete(f"{_REF_PREFIX}/{sid}/{cp.index}")
-            self.snapshotter.delete(f"{_REF_PREFIX}/{sid}/_pre_restore")
-            self.snapshotter.delete(f"{_REF_PREFIX}/{sid}/_pre_undo")
+                        self.snapshotter.delete(self._ref_for(sid, cp.index))
+            self.snapshotter.delete(self._pre_restore_ref_for(sid))
+            self.snapshotter.delete(self._pre_undo_ref_for(sid))
         self._pre_rewind_checkpoints = None
         self._pre_rewind_history = None
         self._pre_restore_commit = None
@@ -415,23 +444,16 @@ class CheckpointManager:
 
     def _delete_all_refs(self) -> None:
         """Delete every checkpoint's git ref and clear the list. Also closes any open
-        undo window, since its stashed dropped checkpoints (not in ``_checkpoints``)
-        would otherwise leak their refs — and reaps the per-session ``_pre_restore``
-        /``_pre_undo`` safety snapshots. Those are whole-working-tree captures
-        (untracked files, potentially secrets); ``_discard_undo_stash`` only clears
-        the in-memory commit handle, so without deleting the refs here a ``clear()``
-        /compaction-invalidate would leave the snapshots reachable in ``.git`` until
-        a full session ``delete()``. delete() is best-effort — a no-op on an absent
-        ref (a session that never rewound), so the unconditional deletes are safe.
-        Uses the CURRENT session id, like ``_discard_undo_stash``; safe because the
-        two callers (clear / invalidate_after_compaction) never run across a
-        session switch."""
+        undo window via ``_discard_undo_stash``, since its stashed dropped checkpoints
+        (not in ``_checkpoints``) would otherwise leak their refs — and that same call
+        reaps the per-session ``_pre_restore``/``_pre_undo`` safety snapshots (whole-
+        working-tree captures, potentially with secrets). Uses the CURRENT session id,
+        like ``_discard_undo_stash``; safe because the two callers (clear /
+        invalidate_after_compaction) never run across a session switch."""
         self._discard_undo_stash()
         for cp in self._checkpoints:
             if cp.commit is not None:
                 self.snapshotter.delete(self._ref(cp.index))
-        self.snapshotter.delete(self._pre_restore_ref())
-        self.snapshotter.delete(self._pre_undo_ref())
         self._checkpoints = []
 
     def invalidate_after_compaction(self) -> None:

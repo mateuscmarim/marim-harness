@@ -231,6 +231,12 @@ class JobRegistry:
         """Block until the job finishes or ``timeout`` elapses, then return its
         result. A timeout leaves the job running (it isn't cancelled).
 
+        Cancellation is two-sided and must not be conflated: the job's own task
+        being cancelled settles it and is returned like any terminal state (the
+        caller decides what a cancelled job means), while the *waiter* being
+        cancelled re-raises so the caller's own task settles cancelled. The
+        shield makes the waiter's cancellation leave the job running.
+
         When the job completes during the wait its id is marked as
         wake-consumed so the autonomous wake scheduler won't fire a redundant
         turn — the caller already has the result. The digest entry is preserved

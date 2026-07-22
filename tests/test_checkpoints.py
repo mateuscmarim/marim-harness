@@ -462,6 +462,31 @@ def test_moving_forward_after_rewind_closes_undo_and_frees_refs(tmp_path: Path):
     assert mgr.undo_rewind() is False
 
 
+def test_snapshot_after_undo_rewind_deletes_the_pre_restore_and_pre_undo_refs(
+    tmp_path: Path,
+):
+    """Regression: rewind() -> undo_rewind() -> snapshot() closed the undo window
+    via _discard_undo_stash, which cleared _stash_session_id in memory WITHOUT
+    deleting the _pre_restore/_pre_undo safety refs (whole-working-tree captures,
+    potentially with secrets). reload() has no recorded sid left to reap under in
+    this session, so those two refs stayed pinned in .git until a later
+    clear()/invalidate or a full session delete(). snapshot() must free them
+    directly when it closes the window."""
+    s = _session(tmp_path)
+    snap = _FakeSnap()
+    mgr = CheckpointManager(s, snap)
+    mgr.snapshot("t1")
+    s.set_history(["u1", "a1"])
+    mgr.rewind(0)  # captures the sess/_pre_restore safety snapshot
+    mgr.undo_rewind()  # captures the sess/_pre_undo safety snapshot
+    snap.deleted.clear()
+
+    mgr.snapshot("t2")  # closes the undo window
+
+    assert any(ref.endswith("sess/_pre_restore") for ref in snap.deleted)
+    assert any(ref.endswith("sess/_pre_undo") for ref in snap.deleted)
+
+
 def test_second_rewind_frees_the_first_rewinds_dropped_refs(tmp_path: Path):
     # Undo is single-level: a second rewind supersedes the first's undo, so the first
     # rewind's dropped checkpoint refs are freed (not leaked).

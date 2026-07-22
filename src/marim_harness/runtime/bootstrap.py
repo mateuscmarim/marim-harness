@@ -189,6 +189,10 @@ def build_harness(
             advisor_max_uses=cfg.advisor_max_uses,
             mcp_servers=mcp_servers,
             mcp_disabled=mcp_disabled,
+            # Same trust decision load_mcp_config was just called with above
+            # (see HarnessConfig.mcp_trust_project's docstring for why this
+            # must not be re-derived independently downstream).
+            mcp_trust_project=cfg.trust_project_hooks,
             notifications=cfg.notifications,
         )
     )

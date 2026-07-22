@@ -186,6 +186,31 @@ def test_persist_explicit_trust_flag_wins_over_env(tmp_path: Path, monkeypatch):
     assert _read_back(ppath)["proj"]["enabled"] is False
 
 
+def test_manager_explicit_distrust_wins_over_env_on_toggle(tmp_path: Path, monkeypatch):
+    """McpManager's own trust decision — not the env var — must decide where
+    disable_server/enable_server persist. An embedder passing an explicit
+    ``trust_project=False`` through HarnessBuilder must see that decision
+    honored even when the process env says otherwise; load and persist must
+    agree, which they only do if persist consults the SAME explicit flag the
+    load path was built with, not a re-derived env read."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("MARIM_TRUST_PROJECT_HOOKS", "1")
+    gpath = tmp_path / "xdg" / "marim" / "mcp.json"
+    _write(gpath, {"shared": {"command": "from-global"}})
+    ws = tmp_path / "ws"
+    ppath = ws / ".marim" / "mcp.json"
+    _write(ppath, {"shared": {"command": "from-project"}})
+
+    mgr = McpManager([], set(), trust_project=False)
+    mgr.disable_server("shared", ws)
+
+    # Explicit False wins over the truthy env var: the write must land in the
+    # global file (the one load_mcp_config(trust_project=False) actually
+    # reads), not the project file.
+    assert _read_back(gpath)["shared"]["enabled"] is False
+    assert "enabled" not in _read_back(ppath)["shared"]
+
+
 def test_persist_preserves_other_servers_and_fields(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     gpath = tmp_path / "xdg" / "marim" / "mcp.json"

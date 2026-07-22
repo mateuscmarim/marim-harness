@@ -312,3 +312,24 @@ async def test_find_pr_pages_even_when_server_clamps_below_page_size(monkeypatch
     monkeypatch.setattr(tb, "_run_tea", _paging_run(rows, cap=10))
     pr = await tb.TeaBackend(Path(".")).view_pr(1, None)
     assert pr is not None and pr.number == 1
+
+
+@pytest.mark.anyio
+async def test_find_pr_stops_at_max_pages_when_server_never_empties(monkeypatch):
+    # A pathological server that always returns a full, non-empty page (e.g.
+    # looping through the same items) gives the empty-page termination
+    # nothing to key off of. The _MAX_PAGES safety net must still bound the
+    # scan instead of paging forever: exactly _MAX_PAGES pages of
+    # _PAGE_SIZE rows each (_MAX_PAGES * _PAGE_SIZE PRs scanned), then give up.
+    calls: list[list[str]] = []
+
+    async def fake_run(args, cwd, timeout=20.0):
+        calls.append(args)
+        limit = int(args[args.index("--limit") + 1])
+        assert limit == tb._PAGE_SIZE
+        return json.dumps(_pr_rows(range(1, limit + 1)))  # always a full page
+
+    monkeypatch.setattr(tb, "_run_tea", fake_run)
+    pr = await tb.TeaBackend(Path(".")).view_pr(999999, None)  # never present
+    assert pr is None
+    assert len(calls) == tb._MAX_PAGES

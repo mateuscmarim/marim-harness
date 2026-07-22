@@ -1,3 +1,4 @@
+import os
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -98,6 +99,9 @@ def test_save_memory_clamps_newlines_in_description_and_title(tmp_path: Path):
     assert "with legit newlines" in (sc.root / "auth-notes.md").read_text()
 
 
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="root ignores mode bits; chmod cannot provoke the failure"
+)
 def test_save_memory_returns_none_on_unwritable_dir(tmp_path: Path):
     """The module docstring promises 'Nothing here ever raises into a turn' —
     save_memory must fail soft (log + return None) rather than propagate OSError
@@ -116,6 +120,9 @@ def test_save_memory_returns_none_on_unwritable_dir(tmp_path: Path):
     assert result is None
 
 
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="root ignores mode bits; chmod cannot provoke the failure"
+)
 def test_remember_tool_returns_error_string_on_unwritable_dir(tmp_path: Path):
     """The ``remember`` tool has no guard around save_memory: an unwritable
     ``.marim/`` (read-only workspace) would previously propagate OSError straight

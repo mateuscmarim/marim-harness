@@ -50,13 +50,28 @@ class McpStatus:
 class McpManager:
     """Owns MCP server lifecycle: connections, enable/disable, grant resolution."""
 
-    def __init__(self, servers: list[object], disabled: set[str]) -> None:
+    def __init__(
+        self, servers: list[object], disabled: set[str], *, trust_project: bool = False
+    ) -> None:
         self.mcp_servers: list[object] = list(servers)
         self._live_servers: list[object] = []
         self._mcp_stack: AsyncExitStack | None = None
         self._connected: bool = False
         self.disabled: set[str] = set(disabled)
         self.mcp_status: McpStatus = McpStatus()
+        # The trust decision that gates project-local .marim/mcp.json — passed
+        # to persist_server_enabled below on every disable_server/enable_server
+        # call, explicitly, never omitted. The invariant this upholds: the
+        # trust decision used to WRITE mcp config must be the SAME one used to
+        # LOAD it (mcp.config.load_mcp_config's own trust_project). Both the
+        # CLI preset (bootstrap.build_harness, via HarnessConfig.mcp_trust_project)
+        # and an embedder composing HarnessBuilder directly resolve trust once,
+        # up front, and thread that single value into both load and this
+        # manager — so persist can't independently re-derive it from the env
+        # (persist_server_enabled's own env fallback only fires when its
+        # trust_project kwarg is left None, which this class never does) and
+        # drift from whatever load actually used.
+        self.trust_project: bool = trust_project
 
     @staticmethod
     def server_name(server) -> str:
@@ -305,11 +320,11 @@ class McpManager:
 
     def disable_server(self, name: str, workspace_root: Path) -> None:
         self.disabled.add(name)
-        persist_server_enabled(workspace_root, name, False)
+        persist_server_enabled(workspace_root, name, False, trust_project=self.trust_project)
 
     async def enable_server(self, name: str, workspace_root: Path) -> str | None:
         self.disabled.discard(name)
-        persist_server_enabled(workspace_root, name, True)
+        persist_server_enabled(workspace_root, name, True, trust_project=self.trust_project)
         if any(self.server_name(s) == name for s in self._live_servers):
             return None
         server = next(
