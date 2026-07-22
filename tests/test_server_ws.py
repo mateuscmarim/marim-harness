@@ -1,6 +1,5 @@
 """WebSocket event transport: auth, not-found, live/replay, resume."""
 
-import json as _json
 from pathlib import Path
 
 import pytest
@@ -78,11 +77,11 @@ def test_ws_rejects_missing_token(app):
     application, tmp_path = app
     with TestClient(application) as tc:
         ws_id, sid = _make_session(tc, tmp_path)
-        with pytest.raises(WebSocketDisconnect) as exc:
-            with tc.websocket_connect(
-                f"/v1/workspaces/{ws_id}/sessions/{sid}/ws"
-            ) as socket:
-                socket.receive_text()
+        with (
+            pytest.raises(WebSocketDisconnect) as exc,
+            tc.websocket_connect(f"/v1/workspaces/{ws_id}/sessions/{sid}/ws") as socket,
+        ):
+            socket.receive_text()
         assert exc.value.code == 4401
 
 
@@ -93,11 +92,13 @@ def test_ws_unknown_session_closes_4404(app):
         project.mkdir(exist_ok=True)
         ws = tc.post("/v1/workspaces", headers=AUTH,
                      json={"name": "proj", "path": str(project)}).json()
-        with pytest.raises(WebSocketDisconnect) as exc:
-            with tc.websocket_connect(
+        with (
+            pytest.raises(WebSocketDisconnect) as exc,
+            tc.websocket_connect(
                 f"/v1/workspaces/{ws['id']}/sessions/nope/ws", headers=AUTH
-            ) as socket:
-                socket.receive_text()
+            ) as socket,
+        ):
+            socket.receive_text()
         assert exc.value.code == 4404
 
 

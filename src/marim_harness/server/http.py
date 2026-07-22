@@ -54,11 +54,11 @@ def _unauthorized(request: Request) -> JSONResponse | None:
     return _error(401, "unauthorized", "missing or invalid bearer token")
 
 
-def _registry(request: Request) -> WorkspaceRegistry:
+def _registry(request: Request | WebSocket) -> WorkspaceRegistry:
     return request.app.state.registry
 
 
-def _supervisor(request: Request) -> SessionSupervisor:
+def _supervisor(request: Request | WebSocket) -> SessionSupervisor:
     return request.app.state.supervisor
 
 
@@ -371,7 +371,11 @@ async def session_ws(websocket: WebSocket) -> None:
 
     async def pump() -> None:
         while True:
+            # timeout=None (the default) blocks until an event is queued, so
+            # next_event() only returns None on a timeout — this assert is
+            # for the type checker, not a runtime possibility here.
             event = await subscription.next_event()
+            assert event is not None
             await websocket.send_json(event.as_dict())
 
     pump_task = asyncio.ensure_future(pump())
