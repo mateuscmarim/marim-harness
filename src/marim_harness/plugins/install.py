@@ -7,6 +7,7 @@ auto-trusted; one with executable parts is trusted only when ``trust`` is set.
 Git sources are shallow-cloned to a temp dir and copied in, recording the
 resolved commit SHA."""
 
+import json
 import logging
 import os
 import shutil
@@ -14,7 +15,12 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from .discovery import has_executable, plugin_bundle_summary
+from .discovery import (
+    _resolve_hooks_entries,
+    _resolve_mcp_servers,
+    has_executable,
+    plugin_bundle_summary,
+)
 from .manifest import ManifestError, PluginManifest, load_manifest, valid_plugin_name
 from .state import (
     InstalledPlugin,
@@ -256,16 +262,33 @@ def remove_plugin(name: str, *, scope: str, workspace_root) -> bool:
     return True
 
 
-def _has_executable_surface(plugin_dir: Path) -> bool:
-    """Whether the plugin currently on disk ships hooks/MCP. Best-effort: an
-    unreadable/invalid manifest is treated as inert, which is the safe default
-    for the update trust check (it makes any newly-added executable surface look
-    like an elevation and drop trust)."""
+def executable_surface_fingerprint(hooks: dict | None, mcp_servers: dict | None) -> str:
+    """Canonical, stable fingerprint of a plugin's executable surface: its hook
+    entries (commands, args, env, event wiring) and MCP server specs (commands,
+    args, env, urls). Pure — takes the already-resolved dicts, returns their
+    canonical JSON. ``None`` and ``{}`` both mean "no surface" and fingerprint
+    equal; any content change (not just presence) changes the fingerprint.
+
+    The dicts are compared UNSUBSTITUTED (``${MARIM_PLUGIN_ROOT}`` intact), so
+    the fingerprint is independent of where the plugin happens to sit on disk —
+    a staging clone and the installed copy of the same content compare equal."""
+    payload = {"hooks": hooks or {}, "mcpServers": mcp_servers or {}}
+    return json.dumps(payload, sort_keys=True, default=str)
+
+
+def _surface_fingerprint(plugin_dir: Path) -> str:
+    """Fingerprint the executable surface of the plugin at ``plugin_dir``.
+    Best-effort: an unreadable/invalid manifest reads as an EMPTY surface, the
+    safe default for the update trust check — any surface in the incoming
+    version then registers as a change and drops trust."""
     try:
         manifest = load_manifest(plugin_dir)
     except ManifestError:
-        return False
-    return has_executable(plugin_bundle_summary(manifest))
+        return executable_surface_fingerprint(None, None)
+    return executable_surface_fingerprint(
+        _resolve_hooks_entries(manifest.hooks_source()),
+        _resolve_mcp_servers(manifest.mcp_source()),
+    )
 
 
 def update_plugin(name: str, *, scope: str, workspace_root, now: str) -> InstalledPlugin:
@@ -285,23 +308,35 @@ def update_plugin(name: str, *, scope: str, workspace_root, now: str) -> Install
     url = rec.source["url"]
     ref = rec.source.get("ref")
     dest = target_root / name
-    # Executable surface of the version on disk *before* we overwrite it. Used to
-    # detect an update that introduces hooks/MCP into a previously inert plugin.
-    had_executable = _has_executable_surface(dest)
+    # Fingerprint the executable surface of the version on disk *before* we
+    # overwrite it, to compare against the incoming clone's below.
+    surface_before = _surface_fingerprint(dest)
     with tempfile.TemporaryDirectory() as tmp:
         staging = Path(tmp) / "clone"
         source_record = _clone_git(url, staging, ref=ref)
         manifest = _validated_manifest(staging)
         now_executable = has_executable(plugin_bundle_summary(manifest))
+        surface_after = _surface_fingerprint(staging)
         _materialize(staging, dest, link=False)
     rec.version = manifest.version
     rec.source = source_record
     rec.installed_at = now
-    # Trust-elevation guard. An inert plugin is auto-trusted at install; if an
-    # upstream update adds a hook or MCP server, that now-executable code would
-    # otherwise run trusted with no prompt. Drop trust so it must be re-granted —
-    # the same threat the linked-install path guards against (see install_plugin).
-    if now_executable and not had_executable:
-        rec.trusted = False
+    # Trust guard: an update whose executable surface CONTENT changed must not
+    # keep running under the old grant. Presence-elevation alone (inert ->
+    # executable, the old check) left a hole: an upstream that already shipped
+    # one benign hook could swap that hook's command for anything in a later tag
+    # and it ran trusted with no re-prompt — the exact residual risk documented
+    # for linked plugins (discovery._linked_elevation_revokes_trust), unguarded
+    # here. Comparing fingerprints of hooks + MCP specs closes it: elevation is
+    # a subset (empty != non-empty), and a byte-identical surface preserves
+    # trust — the user's grant covered exactly this content. On a change,
+    # recompute trust the way install would: inert -> auto-trusted, executable
+    # -> must be explicitly re-granted. Residual gap: the fingerprint only
+    # covers the hooks/MCP config, not the bytes of any script it references,
+    # so a config-identical update that rewrites the body of e.g.
+    # ${MARIM_PLUGIN_ROOT}/run.sh (path/args unchanged in hooks.json) keeps
+    # trust with no re-prompt.
+    if surface_after != surface_before:
+        rec.trusted = not now_executable
     save_state(target_root, state)
     return rec

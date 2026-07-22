@@ -189,21 +189,52 @@ def test_agents_index_text_lists_all(isolated_home):
 def test_effective_tools_drops_gated_without_auto():
     general = AgentDef("general", "d", "p", SUBAGENT_TOOLS, "built-in")
     # Without auto, only the mutating (gated) tools are dropped — local reads and
-    # network tools survive.
-    assert effective_tools(general, allow_gated=False) == READ_TOOLS | NET_TOOLS
-    assert effective_tools(general, allow_gated=True) == SUBAGENT_TOOLS
+    # network tools survive (ask mode: the user still approves the main agent's
+    # own net calls, and a spawn's grant follows the definition).
+    assert effective_tools(general, allow_gated=False, allow_net=True) == (
+        READ_TOOLS | NET_TOOLS
+    )
+    assert effective_tools(general, allow_gated=True, allow_net=True) == SUBAGENT_TOOLS
 
 
 def test_effective_tools_keeps_net_but_drops_gated_without_auto():
-    """Network tools aren't gated by mode — only workspace mutators are."""
+    """With allow_net, network tools ride the definition — only workspace
+    mutators are stripped outside auto."""
     defn = AgentDef(
         "net-writer", "d", "p",
         frozenset({"read_file", "web_search", "fetch_url", "write_file"}), "p",
     )
-    assert effective_tools(defn, allow_gated=False) == frozenset(
+    assert effective_tools(defn, allow_gated=False, allow_net=True) == frozenset(
         {"read_file", "web_search", "fetch_url"}
     )
-    assert effective_tools(defn, allow_gated=True) == defn.tools
+    assert effective_tools(defn, allow_gated=True, allow_net=True) == defn.tools
+
+
+def test_effective_tools_strips_net_when_disallowed():
+    """Plan mode's egress boundary: without allow_net, web_search/fetch_url are
+    stripped no matter what the definition grants — a spawn must not become an
+    unapproved exfiltration path when the main agent's own net tools are denied
+    (see runtime/permissions._plan_decision)."""
+    defn = AgentDef(
+        "net-writer", "d", "p",
+        frozenset({"read_file", "web_search", "fetch_url", "write_file"}), "p",
+    )
+    assert effective_tools(defn, allow_gated=False, allow_net=False) == frozenset(
+        {"read_file"}
+    )
+    # allow_gated without allow_net is not a combination any current mode
+    # produces (plan implies no gated tools either), but the axes are
+    # independent — each strips only its own set.
+    assert effective_tools(defn, allow_gated=True, allow_net=False) == frozenset(
+        {"read_file", "write_file"}
+    )
+
+
+def test_effective_tools_net_strip_removes_whole_net_set():
+    explore = AgentDef("explore", "d", "p", READ_TOOLS | NET_TOOLS, "built-in")
+    stripped = effective_tools(explore, allow_gated=False, allow_net=False)
+    assert stripped == READ_TOOLS
+    assert not (stripped & NET_TOOLS)
 
 
 def test_tool_groups_are_disjoint():
@@ -216,17 +247,19 @@ def test_tool_groups_are_disjoint():
 
 def test_effective_tools_read_only_agent_unaffected():
     explore = AgentDef("explore", "d", "p", READ_TOOLS, "built-in")
-    assert effective_tools(explore, allow_gated=True) == READ_TOOLS
-    assert effective_tools(explore, allow_gated=False) == READ_TOOLS
+    assert effective_tools(explore, allow_gated=True, allow_net=True) == READ_TOOLS
+    assert effective_tools(explore, allow_gated=False, allow_net=False) == READ_TOOLS
 
 
 def test_effective_tools_keeps_only_known_gated():
     """A custom agent granting one gated tool keeps just that one in auto mode."""
     writer = AgentDef("writer", "d", "p", frozenset({"read_file", "write_file"}), "p")
-    assert effective_tools(writer, allow_gated=True) == frozenset(
+    assert effective_tools(writer, allow_gated=True, allow_net=True) == frozenset(
         {"read_file", "write_file"}
     )
-    assert effective_tools(writer, allow_gated=False) == frozenset({"read_file"})
+    assert effective_tools(writer, allow_gated=False, allow_net=True) == frozenset(
+        {"read_file"}
+    )
     assert GATED_TOOLS  # sanity: the gated set is non-empty
 
 

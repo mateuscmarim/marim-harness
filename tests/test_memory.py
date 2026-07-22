@@ -1,8 +1,11 @@
+import os
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from marim_harness.tools.memory_tools import remember
 from marim_harness.workspace import memory
 
 
@@ -94,6 +97,50 @@ def test_save_memory_clamps_newlines_in_description_and_title(tmp_path: Path):
     assert len([ln for ln in index.splitlines() if ln.strip()]) == 1
     # The multi-line body is untouched — only single-line fields are clamped.
     assert "with legit newlines" in (sc.root / "auth-notes.md").read_text()
+
+
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="root ignores mode bits; chmod cannot provoke the failure"
+)
+def test_save_memory_returns_none_on_unwritable_dir(tmp_path: Path):
+    """The module docstring promises 'Nothing here ever raises into a turn' —
+    save_memory must fail soft (log + return None) rather than propagate OSError
+    when the memory directory can't be written to (e.g. a read-only .marim/, or
+    a read-only filesystem), matching load_index/read_memory's existing fail-soft
+    style rather than crashing the model's turn."""
+    sc = memory.project_scope(tmp_path)
+    sc.root.mkdir(parents=True)
+    sc.root.chmod(0o500)  # read-only: mkstemp for the memory file will raise OSError
+    try:
+        result = memory.save_memory(
+            sc, name="x", description="d", mem_type="project", body="b", title="X"
+        )
+    finally:
+        sc.root.chmod(0o700)  # restore so tmp_path cleanup can remove the dir
+    assert result is None
+
+
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="root ignores mode bits; chmod cannot provoke the failure"
+)
+def test_remember_tool_returns_error_string_on_unwritable_dir(tmp_path: Path):
+    """The ``remember`` tool has no guard around save_memory: an unwritable
+    ``.marim/`` (read-only workspace) would previously propagate OSError straight
+    out of the tool, which pydantic-ai treats as an unhandled exception and aborts
+    the whole turn. remember must translate a failed save into an actionable
+    string the model can read and report, not a turn-killing crash."""
+    marim_dir = tmp_path / ".marim"
+    marim_dir.mkdir()
+    marim_dir.chmod(0o500)  # read-only: creating .marim/memory underneath fails
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(workspace=SimpleNamespace(memory_root=None, root=tmp_path))
+    )
+    try:
+        result = remember(ctx, title="X", description="d", body="b")
+    finally:
+        marim_dir.chmod(0o700)  # restore so tmp_path cleanup can remove it
+    assert isinstance(result, str)
+    assert "not writable" in result.lower() or "could not save" in result.lower()
 
 
 def test_save_memory_creates_missing_dir(tmp_path: Path):

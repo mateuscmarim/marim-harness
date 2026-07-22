@@ -40,6 +40,12 @@ def remember(
         sc, name=title, description=description,
         mem_type=type, body=body, title=title,
     )
+    # save_memory fails soft (returns None) rather than raising — an unhandled
+    # exception here would abort the whole pydantic-ai run, so a read-only
+    # workspace/.marim would otherwise make `remember` turn-killing. Report the
+    # failure back to the model as an ordinary tool result instead.
+    if path is None:
+        return f"Could not save {sc.name} memory — its directory ({sc.root}) is not writable."
     return f"Saved {sc.name} memory to {path.name}"
 
 

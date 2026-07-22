@@ -168,10 +168,12 @@ class CliSpawnOrchestrator:
         tools only in auto mode. Model precedence: per-spawn override, then the
         agent's frontmatter model, then $MARIM_CLAUDE_CLI_MODEL, then the CLI's
         own default."""
+        from ..tools.names import NET_TOOLS
         from .cli_backend import (
             CLI_MODEL_ENV,
             ClaudeCliRunner,
             CliUnavailable,
+            map_tools_to_cc,
             resolve_cli_binary,
         )
 
@@ -181,8 +183,23 @@ class CliSpawnOrchestrator:
                 "no `claude` binary found (set MARIM_CLAUDE_CLI_BIN or install "
                 "Claude Code)"
             )
-        allow_gated = self.deps.workspace.mode is Mode.auto
-        tools = effective_tools(defn, allow_gated=allow_gated)
+        # Same spawn-time mode snapshot as the native path (SubagentRunner.build):
+        # reach is fixed when the CLI process launches; a mode flip affects the
+        # next spawn. Plan mode strips web_search/fetch_url from the grant AND
+        # hard-denies their Claude Code counterparts (WebSearch/WebFetch) via
+        # --disallowedTools. The strip alone is NOT enough: --allowedTools is
+        # additive pre-approval only, and the CLI degrades every non-auto mode
+        # to `--permission-mode plan`, whose own policy auto-allows the web
+        # research tools — so absence from the allowlist (or an allowlist
+        # omitted entirely when the stripped set maps empty) denies nothing.
+        # --disallowedTools is the deny headless `claude -p` actually honors,
+        # closing marim's plan-mode egress boundary (_plan_decision) on this
+        # backend too. Only the two net tools are denied — the rest of the
+        # CLI's reach stays governed by its own permission mode.
+        mode = self.deps.workspace.mode
+        allow_gated = mode is Mode.auto
+        deny_net = mode is Mode.plan
+        tools = effective_tools(defn, allow_gated=allow_gated, allow_net=not deny_net)
         cwd = str(work_root or self.deps.workspace.root)
         model_name = model or defn.model or os.environ.get(CLI_MODEL_ENV)
         cbs = self.deps.ui
@@ -192,6 +209,7 @@ class CliSpawnOrchestrator:
         result = await runner.run(
             binary=binary, prompt=task, system_prompt=defn.prompt, cwd=cwd,
             allow_gated=allow_gated, allowed_tools=tools, model=model_name,
+            disallowed_tools=map_tools_to_cc(NET_TOOLS) if deny_net else None,
             stream_id=stream_id, checkpoint=checkpoint,
             resume_session_id=resume_session_id,
         )

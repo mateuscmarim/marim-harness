@@ -194,6 +194,7 @@ def build_cli_argv(
     allowed_tools: list[str],
     model: str | None,
     *,
+    disallowed_tools: list[str] | None = None,
     resume_session_id: str | None = None,
     append_system: bool = True,
     safe_mode: bool = False,
@@ -202,7 +203,15 @@ def build_cli_argv(
     The task is a single positional arg (we exec, not shell — no quoting hazard);
     the agent's role prompt is appended to the CLI's own system prompt. ``--model``
     is omitted when None so the CLI uses its configured default; ``--allowedTools``
-    is omitted when empty (which, in plan mode, simply leaves the CLI read-only).
+    is omitted when empty.
+
+    ``--allowedTools`` is ADDITIVE pre-approval only — absence from it (or an
+    omitted flag) is NOT a denial: a permissive ``--permission-mode`` still
+    permits tools never named (Claude Code's plan mode, for one, auto-allows
+    its web research tools). The hard deny headless ``-p`` honors is
+    ``--disallowedTools``; a caller that must block a tool (the plan-mode
+    net-egress boundary in ``CliSpawnOrchestrator.run_cli``) names it in
+    ``disallowed_tools``, which is emitted even when the allowlist is empty.
 
     The main-loop ``ClaudeCliModel`` uses ``resume_session_id`` to continue an
     existing Claude session (sending only the new user message), and sets
@@ -225,6 +234,8 @@ def build_cli_argv(
         argv += ["--resume", resume_session_id]
     if allowed_tools:
         argv += ["--allowedTools", ",".join(allowed_tools)]
+    if disallowed_tools:
+        argv += ["--disallowedTools", ",".join(disallowed_tools)]
     if model:
         argv += ["--model", model]
     return argv
@@ -515,6 +526,7 @@ class ClaudeCliRunner:
     async def run(
         self, *, binary: str, prompt: str, system_prompt: str, cwd: str,
         allow_gated: bool, allowed_tools, model: str | None, stream_id: str,
+        disallowed_tools: list[str] | None = None,
         checkpoint: Callable[[list, str | None], None] | None = None,
         resume_session_id: str | None = None,
     ) -> CliResult:
@@ -522,6 +534,7 @@ class ClaudeCliRunner:
             binary, prompt, system_prompt,
             cli_permission_mode(allow_gated),
             map_tools_to_cc(allowed_tools), model,
+            disallowed_tools=disallowed_tools,
             resume_session_id=resume_session_id,
             # A resumed session already carries its system prompt from creation;
             # re-appending would duplicate it (same rule as ClaudeCliModel's

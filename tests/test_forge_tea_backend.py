@@ -256,12 +256,19 @@ def _pr_rows(indices):
     ]
 
 
-def _paging_run(rows):
-    """Fake _run_tea honoring --limit: returns the newest ``limit`` rows, as tea
-    would. ``rows`` are newest-first."""
+def _paging_run(rows, *, cap=50):
+    """Fake _run_tea modeling *real* Gitea paging: whatever ``--limit`` asks
+    for is clamped server-side to ``cap`` (``api.MAX_RESPONSE_ITEMS``, default
+    50 in real Gitea), and ``--page`` (1-indexed, default 1) selects a slice of
+    that clamped page size — a growing ``--limit`` with no ``--page`` therefore
+    keeps re-fetching the very same newest-``cap`` window. ``rows`` are
+    newest-first."""
     async def fake_run(args, cwd, timeout=20.0):
-        limit = int(args[args.index("--limit") + 1])
-        return json.dumps(rows[:limit])
+        requested = int(args[args.index("--limit") + 1])
+        page = int(args[args.index("--page") + 1]) if "--page" in args else 1
+        size = min(requested, cap)
+        start = (page - 1) * size
+        return json.dumps(rows[start:start + size])
     return fake_run
 
 
@@ -279,4 +286,50 @@ async def test_view_pr_returns_none_when_absent_after_paging(monkeypatch):
     rows = _pr_rows(range(60, 0, -1))
     monkeypatch.setattr(tb, "_run_tea", _paging_run(rows))
     pr = await tb.TeaBackend(Path(".")).view_pr(999, None)
-    assert pr is None  # exhausted the list (short page), so genuinely missing
+    assert pr is None  # walked every page to an empty one, so genuinely missing
+
+
+@pytest.mark.anyio
+async def test_view_pr_finds_pr_older_than_newest_50_on_page_capping_server(monkeypatch):
+    # Regression for the real-Gitea clamp bug: the server always caps a page
+    # at 50 regardless of --limit, so a naive "grow --limit and re-query"
+    # strategy re-fetches the same newest-50 window forever and never sees
+    # PR #1. With --page walking (the fix), #1 is on the second page (rows
+    # 51-100) and must be found.
+    rows = _pr_rows(range(100, 0, -1))  # PRs #100..#1, newest-first
+    monkeypatch.setattr(tb, "_run_tea", _paging_run(rows, cap=50))
+    pr = await tb.TeaBackend(Path(".")).view_pr(1, None)
+    assert pr is not None and pr.number == 1
+
+
+@pytest.mark.anyio
+async def test_find_pr_pages_even_when_server_clamps_below_page_size(monkeypatch):
+    # A server whose actual per-page cap (10) is *smaller* than what we ask
+    # for (_PAGE_SIZE, 50): every page is "short" relative to our request, so
+    # a short-page termination heuristic would stop after page 1 and miss an
+    # older PR. Only empty-page termination is safe here.
+    rows = _pr_rows(range(35, 0, -1))  # 35 PRs, so page 4 (rows 31-35) is short but non-empty
+    monkeypatch.setattr(tb, "_run_tea", _paging_run(rows, cap=10))
+    pr = await tb.TeaBackend(Path(".")).view_pr(1, None)
+    assert pr is not None and pr.number == 1
+
+
+@pytest.mark.anyio
+async def test_find_pr_stops_at_max_pages_when_server_never_empties(monkeypatch):
+    # A pathological server that always returns a full, non-empty page (e.g.
+    # looping through the same items) gives the empty-page termination
+    # nothing to key off of. The _MAX_PAGES safety net must still bound the
+    # scan instead of paging forever: exactly _MAX_PAGES pages of
+    # _PAGE_SIZE rows each (_MAX_PAGES * _PAGE_SIZE PRs scanned), then give up.
+    calls: list[list[str]] = []
+
+    async def fake_run(args, cwd, timeout=20.0):
+        calls.append(args)
+        limit = int(args[args.index("--limit") + 1])
+        assert limit == tb._PAGE_SIZE
+        return json.dumps(_pr_rows(range(1, limit + 1)))  # always a full page
+
+    monkeypatch.setattr(tb, "_run_tea", fake_run)
+    pr = await tb.TeaBackend(Path(".")).view_pr(999999, None)  # never present
+    assert pr is None
+    assert len(calls) == tb._MAX_PAGES

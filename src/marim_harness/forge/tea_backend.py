@@ -29,6 +29,16 @@ def _list_prs_args(state: str, limit: int) -> list[str]:
             "-o", "json", "--fields", PR_FIELDS]
 
 
+def _list_prs_page_args(state: str, page: int) -> list[str]:
+    """Same shape as ``_list_prs_args`` but with a fixed page size and an
+    explicit ``--page`` (1-indexed; ``tea pulls list`` supports it, confirmed
+    against the installed tea CLI's ``--help``). Used only by ``_find_pr``'s
+    paging scan below, which needs a page-offset flag rather than a growing
+    ``--limit`` — see ``_PAGE_SIZE``'s comment for why."""
+    return ["pr", "list", "--state", state, "--limit", str(_PAGE_SIZE), "--page", str(page),
+            "-o", "json", "--fields", PR_FIELDS]
+
+
 def _create_pr_args(title: str, body: str, base: str | None, draft: bool,
                     head: str) -> list[str]:
     args = ["pr", "create", "--head", head, "--title", title, "--description",
@@ -149,10 +159,22 @@ def tea_available() -> bool:
     return (Path(base) / "tea" / "config.yml").is_file()
 
 
-# Starting page size for the paging scan below. tea exposes no stable
-# page-offset flag, so we grow ``--limit`` and re-query rather than scan a fixed
-# newest-N window (which would report a real, older PR as missing).
+# Page size for the paging scan below. Real Gitea clamps the effective page
+# size server-side to `api.MAX_RESPONSE_ITEMS` (default 50) regardless of what
+# `--limit` asks for, so growing `--limit` and re-querying (the previous
+# approach) just re-fetches the same capped newest-50 window forever — an old
+# PR past that window is falsely reported missing. Instead we page with a
+# fixed size and tea's `--page` flag (`tea pulls list --help` confirms it),
+# terminating on an empty page rather than a short one: a short page is only a
+# reliable "last page" signal when the server's actual per-page cap equals
+# what we asked for, which we can't verify from here, whereas an empty page
+# unambiguously means there is nothing left, however the server clamps.
 _PAGE_SIZE = 50
+
+# Safety net against a pathological/misbehaving server that never returns an
+# empty page (e.g. loops through the same items). 40 pages * 50/page = 2000
+# PRs scanned, comfortably beyond any real repo's history, before giving up.
+_MAX_PAGES = 40
 
 
 class TeaBackend:
@@ -171,18 +193,20 @@ class TeaBackend:
         """First PR satisfying ``match``, paging past the newest page. tea's
         field-rich ``pr list`` is the only endpoint carrying ``ci``/``mergeable``
         (``tea pr <n>`` has a ci-less shape and is deliberately avoided — see the
-        module header), so we grow the limit and re-query until the target is
-        found or a short page proves the list exhausted. This keeps an old PR
-        (e.g. #5 in a repo with hundreds) findable instead of falsely 'missing'."""
-        limit = _PAGE_SIZE
-        while True:
-            prs = await self.list_prs(state, limit)
+        module header), so we walk ``--page`` at a fixed ``--limit`` until the
+        target is found or an empty page proves the list exhausted. This keeps
+        an old PR (e.g. #5 in a repo with hundreds) findable instead of falsely
+        'missing', and stays correct however the server clamps the per-page
+        size (see ``_PAGE_SIZE``'s comment)."""
+        for page in range(1, _MAX_PAGES + 1):
+            raw = await _run_tea(_list_prs_page_args(state, page), self._root)
+            prs = [_map_pr(o) for o in _loads_dict_list(raw, "pull requests")]
+            if not prs:
+                return None  # empty page: we've walked past the end of the list
             found = next((p for p in prs if match(p)), None)
             if found is not None:
                 return found
-            if len(prs) < limit:
-                return None  # a short page means we saw every PR; genuinely absent
-            limit *= 2
+        return None  # gave up after _MAX_PAGES pages without an empty page
 
     async def view_pr(
         self, number: int | None, branch: str | None

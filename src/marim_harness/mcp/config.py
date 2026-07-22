@@ -40,6 +40,7 @@ from ..config import config_dir
 from ..runtime.permissions import Mode
 from ..tools.impl.coerce import coerce_by_schema
 from ..tools.impl.offload import _INLINE_CHAR_LIMIT, offload_if_large
+from ..trust import project_trusted
 
 
 def _bound_tool_result(result, *, label: str, name: str, args: dict | None,
@@ -168,13 +169,28 @@ def load_mcp_config(workspace_root: Path, *, trust_project: bool = False) -> dic
     return merged
 
 
-def persist_server_enabled(workspace_root: Path, name: str, enabled: bool) -> bool:
+def persist_server_enabled(
+    workspace_root: Path, name: str, enabled: bool, *, trust_project: bool | None = None
+) -> bool:
     """Write ``enabled`` into the config file that defines ``name``, so a runtime
     toggle survives restarts. Prefers the project file (the winning definition)
     over the global one. Returns True if a file was updated, False if no config
     defines the server (nothing to persist). Best-effort: a missing or malformed
-    file is treated as not defining the server."""
-    for path in (project_mcp_config_path(workspace_root), global_mcp_config_path()):
+    file is treated as not defining the server.
+
+    The write target follows the same trust gate as ``load_mcp_config``: an
+    UNTRUSTED project's ``.marim/mcp.json`` is never loaded, so it must never
+    soak up the toggle either. Without this gate, a cloned repo shipping a
+    server name that collides with a global one would capture the user's
+    "disable" into the never-loaded project file — and on restart the live
+    global server comes back enabled, the disable silently not sticking.
+    ``trust_project`` follows the shared predicate's semantics (explicit wins,
+    env fallback, untrusted by default — see ``marim_harness.trust``)."""
+    candidates = [global_mcp_config_path()]
+    if project_trusted(trust_project):
+        # Only a trusted project's file is the winning (loaded) definition.
+        candidates.insert(0, project_mcp_config_path(workspace_root))
+    for path in candidates:
         if name not in _read_servers(path):
             continue
         try:
@@ -333,7 +349,14 @@ def make_approval_hook(label: str, trusted: bool, *, schema_holder: dict | None 
     ``schema_holder`` (when given) is passed straight through to
     :class:`_SchemaCoercer` — see its docstring for the lazy-load/coerce
     semantics; absent a holder, a fetch error, or an unknown tool, the args
-    pass through untouched, exactly as before."""
+    pass through untouched, exactly as before.
+
+    The returned hook carries a ``prompts_in_ask`` attribute (read back via
+    ``server_prompts_in_ask``): the ``trusted`` decision is captured in this
+    closure and otherwise unobservable, but the sub-agent runner must know it
+    UP FRONT — a spawn's reach is decided at spawn time, and a server whose
+    calls would prompt per-call in ask mode must be withheld from the grant
+    rather than surfacing mid-run prompts inside an approval-less spawn."""
     coercer = _SchemaCoercer(schema_holder)
 
     async def hook(ctx, call_tool, name, args):
@@ -368,7 +391,24 @@ def make_approval_hook(label: str, trusted: bool, *, schema_holder: dict | None 
             )
         return f"Denied: the user rejected {display}."
 
+    # Function attribute, not a wrapper class: the hook must stay a plain
+    # ProcessToolCallback for MCPToolset, and a function attribute is the
+    # smallest honest way to make the captured trust decision observable.
+    hook.prompts_in_ask = not trusted  # pyright: ignore[reportFunctionMemberAccess]
     return hook
+
+
+def server_prompts_in_ask(server) -> bool:
+    """Whether this server's tool calls would raise a per-call user approval
+    prompt in ask mode. True exactly for a config-built server whose
+    ``make_approval_hook`` was built untrusted (the only prompting path);
+    False for a trusted server (its hook runs calls without prompting) and
+    for a hookless toolset (e.g. ``HarnessBuilder.with_mcp_server``), whose
+    calls carry no gate at all and thus never prompt. Pure read — the flag is
+    stamped where the trust decision is made, so this predicate cannot drift
+    from the hook's actual ask-mode behavior."""
+    hook = getattr(server, "process_tool_call", None)
+    return bool(getattr(hook, "prompts_in_ask", False))
 
 
 def build_mcp_servers(specs: dict) -> tuple[list, list[str]]:

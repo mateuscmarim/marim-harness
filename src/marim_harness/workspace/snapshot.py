@@ -115,7 +115,9 @@ class GitSnapshotter:
                 return True
         return False
 
-    def _run(self, *args: str, env: dict[str, str] | None = None) -> str:
+    def _run(
+        self, *args: str, env: dict[str, str] | None = None, input: str | None = None
+    ) -> str:
         """Run a git command with cwd=workspace_root (the actual working tree).
 
         For linked worktrees this is the linked worktree directory, NOT the
@@ -123,7 +125,7 @@ class GitSnapshotter:
         are shared across all worktrees, so update-ref/read-tree/etc. still
         resolve correctly from here."""
         return subprocess.run(
-            ["git", *args], cwd=self.workspace_root, env=env,
+            ["git", *args], cwd=self.workspace_root, env=env, input=input,
             capture_output=True, text=True, check=True,
         ).stdout.strip()
 
@@ -154,6 +156,14 @@ class GitSnapshotter:
                 # Stage the whole working tree (tracked + untracked, honoring
                 # .gitignore) into the throwaway index, then snapshot it.
                 self._run("add", "-A", env=env)
+                # ``add -A`` against the FRESH index applies ignore rules to
+                # every file (the fresh index doesn't know what's tracked), so a
+                # file that is gitignored yet tracked in the real index (a
+                # force-added .env) gets silently skipped. It must be in the
+                # snapshot: _present_files lists it from the real index, so if
+                # the tree omits it, restore's set-difference marks it "extra"
+                # and deletes it — permanent data loss. Stage those explicitly.
+                self._stage_tracked_ignored(env)
                 tree = self._run("write-tree", env=env)
                 # Pass the committer identity inline (see _COMMITTER_IDENTITY) so
                 # this never depends on the user's git config being set.
@@ -171,6 +181,36 @@ class GitSnapshotter:
         except subprocess.CalledProcessError as exc:
             logger.debug("checkpoint capture failed: %s", exc.stderr or exc)
             return None
+
+    def _stage_tracked_ignored(self, env: dict[str, str]) -> None:
+        """Stage tracked-but-gitignored files into the throwaway index (see the
+        call site in capture() for why ``add -A`` misses them).
+
+        ``ls-files -c -i --exclude-standard`` reads the REAL index and lists
+        exactly the tracked files matched by ignore rules — the same "tracked"
+        notion _present_files uses, which is what keeps capture and the restore
+        deletion set consistent. Untracked-ignored files are NOT listed, so they
+        stay out of the snapshot (and _present_files excludes them too, so they
+        survive restore untouched — both invariants hold). Staging goes through
+        ``update-index --add --stdin -z`` (plumbing: no ignore rules, paths are
+        literal — no pathspec globbing, NUL-safe for newline filenames). A
+        tracked-ignored file deleted from disk is filtered out (update-index
+        --add errors on missing files); it is then simply absent from the
+        snapshot, matching add -A's treatment of deleted tracked files."""
+        out = self._run("ls-files", "-z", "-c", "-i", "--exclude-standard")
+        if not out:
+            return
+        # lexists, not exists: a tracked broken symlink is still on disk and
+        # stageable; exists() would follow the link and wrongly drop it.
+        present = sorted(
+            p for p in self._split_nul(out) if os.path.lexists(self.workspace_root / p)
+        )
+        if not present:
+            return
+        self._run(
+            "update-index", "--add", "-z", "--stdin",
+            env=env, input="\0".join(present) + "\0",
+        )
 
     @staticmethod
     def _split_nul(out: str) -> set[str]:
@@ -224,7 +264,12 @@ class GitSnapshotter:
         failed: list[str] = []
         for rel in self._present_files() - target:
             path = self.workspace_root / rel
-            if path.is_dir():
+            # is_dir() FOLLOWS symlinks, so an extra symlink-to-directory would be
+            # misclassified as a nested repo, skipped, and restore would report
+            # success while silently leaving it behind. A symlink is a file-sized
+            # entry (git lists it as one); unlink() removes just the link, never
+            # its target — so it takes the normal file-removal path below.
+            if path.is_dir() and not path.is_symlink():
                 # A directory here is a nested git repo/worktree gitlink (see
                 # _present_files): it is outside what the snapshot captured (a
                 # gitlink, not tracked content), and recursively deleting a spawn

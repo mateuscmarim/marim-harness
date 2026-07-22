@@ -1,3 +1,4 @@
+import locale
 import os
 import re
 from pathlib import Path
@@ -17,6 +18,27 @@ def test_read_file_adds_line_numbers(tmp_path: Path):
 def test_read_missing_file_raises_model_retry(tmp_path: Path):
     with pytest.raises(ModelRetry):
         fs.read_file(tmp_path, "nope.txt")
+
+
+def test_read_file_decodes_utf8_regardless_of_locale(tmp_path: Path):
+    """Finding: read_file's open() omitted ``encoding=``, so it decoded under
+    the process locale instead of always UTF-8 — unlike edit_file (~336) and
+    _read_text_for_grep (~482), which force UTF-8. On a non-UTF-8-locale host
+    that means the model reads mojibake, then edits against a byte-for-byte
+    different view of the same file. Force the C locale in-process (a real
+    reproduction of the bug, not a mocked assertion) and verify non-ASCII
+    UTF-8 content still round-trips exactly regardless."""
+    content = "héllo wörld"
+    (tmp_path / "a.txt").write_text(content, encoding="utf-8")
+
+    saved = locale.setlocale(locale.LC_ALL)
+    try:
+        locale.setlocale(locale.LC_ALL, "C")
+        out = fs.read_file(tmp_path, "a.txt")
+    finally:
+        locale.setlocale(locale.LC_ALL, saved)
+
+    assert out == f"1\t{content}"
 
 
 def test_read_file_offset_starts_at_line(tmp_path: Path):

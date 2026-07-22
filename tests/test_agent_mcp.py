@@ -233,8 +233,21 @@ async def test_enable_after_close_does_not_double_list_connected(tmp_path: Path)
 
 
 @pytest.mark.anyio
-async def test_toggle_persists_to_config_across_the_session(tmp_path: Path):
+async def test_toggle_persists_to_config_across_the_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     import json as _json
+
+    # The project mcp.json is a persist target only when the project is
+    # trusted — untrusted toggles land in the global file instead. Passed
+    # explicitly (mcp_trust_project) rather than via the env var: McpManager
+    # now threads its own trust decision into every persist call rather than
+    # letting persist_server_enabled re-derive it from the environment (see
+    # HarnessConfig.mcp_trust_project / McpManager.trust_project), so a bare
+    # env-var monkeypatch with no matching explicit flag would no longer be
+    # honored here — this test's default (unset) mcp_trust_project would be
+    # False and the write would land in the global file instead.
+    monkeypatch.delenv("MARIM_TRUST_PROJECT_HOOKS", raising=False)
 
     ppath = tmp_path / ".marim" / "mcp.json"
     ppath.parent.mkdir(parents=True)
@@ -244,7 +257,7 @@ async def test_toggle_persists_to_config_across_the_session(tmp_path: Path):
     srv = _FakeServer("demo")
     deps = _make_deps(tmp_path)
     h = Harness(model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
-                instructions="x", mcp_servers=[srv])
+                instructions="x", mcp_servers=[srv], mcp_trust_project=True)
     await h.connect()
 
     await h.disable_server("demo")

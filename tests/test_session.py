@@ -8,6 +8,7 @@ from pydantic_ai.messages import (
     BinaryContent,
     ModelRequest,
     ModelResponse,
+    TextPart,
     ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
@@ -15,7 +16,12 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
-from marim_harness.compaction import ELIDED_POINTER_PREFIX, estimate_tokens
+from marim_harness.compaction import (
+    ELIDED_POINTER_PREFIX,
+    MASKED_OBSERVATION,
+    _elided_pointer,
+    estimate_tokens,
+)
 from marim_harness.hooks import events as hook_events
 from marim_harness.hooks.runner import HookRunner, HookVerdict
 from marim_harness.runtime.deps import Deps, WorkspaceConfig
@@ -520,6 +526,59 @@ def test_switch_to_corrupt_session_does_not_clobber_target(tmp_path):
     assert len(reloaded_source) == len(source_history)
 
 
+# ---------------------------------------------------------------------------
+# resume revalidates elided pointers (the scratchpad may not have survived)
+# ---------------------------------------------------------------------------
+
+
+def test_resume_degrades_dangling_elided_pointers(tmp_path: Path):
+    """A session can outlive its /tmp scratchpad (reboot, systemd-tmpfiles aging),
+    dangling the elided-pointer placeholders in its persisted history. Resume must
+    rewrite pointers whose file is gone to the plain masked placeholder (which
+    honestly says "re-run the tool"), leave live pointers untouched, and let the
+    healed history reach disk on the next normal persist."""
+    mgr = _manager(tmp_path)
+    store = mgr.create("s")
+    pad = tmp_path / "pad" / "elided"
+    pad.mkdir(parents=True)
+    live = pad / "001-read_file.txt"
+    live.write_text("payload")
+    gone = pad / "002-run_bash.txt"  # never written — the scratchpad aged out
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="go")]),
+        ModelResponse(parts=[
+            ToolCallPart(tool_name="read_file", args={"path": "a"}, tool_call_id="t1"),
+            ToolCallPart(tool_name="run_bash", args={"cmd": "ls"}, tool_call_id="t2"),
+        ]),
+        ModelRequest(parts=[
+            ToolReturnPart(
+                tool_name="read_file", content=_elided_pointer(str(live)), tool_call_id="t1"
+            ),
+            ToolReturnPart(
+                tool_name="run_bash", content=_elided_pointer(str(gone)), tool_call_id="t2"
+            ),
+        ]),
+        ModelResponse(parts=[TextPart(content="done")]),
+    ]
+    store.save(history, RunUsage())
+
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+    ctrl = SessionController(
+        store, mgr, deps, max_context_tokens=100_000, keep_last_messages=20
+    )
+    ctrl.resume()
+
+    returns = ctrl.history[2].parts
+    assert returns[0].content == _elided_pointer(str(live))  # live pointer survives
+    assert returns[1].content == MASKED_OBSERVATION  # dangling -> honest placeholder
+
+    # The healed history rides the normal persist path to disk — no forced write.
+    ctrl.persist()
+    reloaded, _, _, _, _ = mgr.store(store.session_id).load()
+    assert reloaded[2].parts[1].content == MASKED_OBSERVATION
+    assert reloaded[2].parts[0].content == _elided_pointer(str(live))
+
+
 @pytest.mark.anyio
 async def test_maybe_compact_gates_on_measured_last_request_tokens(tmp_path):
     """maybe_compact prefers the real last-request input-token count
@@ -548,6 +607,51 @@ async def test_maybe_compact_gates_on_measured_last_request_tokens(tmp_path):
     measured = _fresh_ctrl()
     measured.last_input_tokens = 5000  # provider reported the real context is huge
     assert await measured.maybe_compact() is True      # gated on the real count
+
+
+@pytest.mark.anyio
+async def test_maybe_compact_resets_last_input_tokens_after_firing(tmp_path):
+    """A compaction that actually fires must drop the stale last_input_tokens
+    measurement that triggered it. _measured_or_estimated gates on
+    max(estimate, last_input_tokens) — if the pre-compaction measurement lingered,
+    the NEXT maybe_compact call would gate on that now-stale, too-large figure and
+    re-compact again for no reason, even though the just-shrunk history is nowhere
+    near the budget (detail loss, a busted prompt cache, an invalidated checkpoint —
+    all for nothing)."""
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+    ctrl = SessionController(
+        None, None, deps, max_context_tokens=1000, keep_last_messages=1
+    )
+    ctrl.history = [
+        ModelRequest(parts=[UserPromptPart(content="a" * 400)]),
+        ModelRequest(parts=[UserPromptPart(content="b" * 400)]),
+        ModelRequest(parts=[UserPromptPart(content="c" * 400)]),
+    ]
+    # Simulate turn N: the provider reported a huge input-token count for the
+    # request that just ran, even though the char/4 estimate alone would say
+    # this history comfortably fits under the budget.
+    ctrl.last_input_tokens = 5000
+    assert await ctrl.maybe_compact() is True  # fires because of the measurement
+    assert ctrl.last_input_tokens is None      # stale measurement must not survive
+    assert len(ctrl.history) == 2              # compact_history(:1] + [2:]) fired
+
+    # Simulate turn N+1..N+5: ordinary small turns arrive, no new usage has been
+    # reported yet (last_input_tokens stays None until the next real request).
+    # The raw char/4 estimate over the whole history is still nowhere near the
+    # 1000-token budget.
+    for i in range(5):
+        ctrl.history.append(ModelRequest(parts=[UserPromptPart(content=f"turn{i}" * 8)]))
+    assert len(ctrl.history) == 7
+
+    from marim_harness.compaction import estimate_tokens
+
+    assert estimate_tokens(ctrl.history) <= 1000  # still comfortably under budget
+
+    # If last_input_tokens had NOT been reset, this call would gate on
+    # max(small_estimate, 5000) = 5000 > 1000 and needlessly re-compact down to
+    # 2 messages, discarding the 5 turns just added. With the reset, it must not.
+    assert await ctrl.maybe_compact() is False
+    assert len(ctrl.history) == 7
 
 
 # ---------------------------------------------------------------------------

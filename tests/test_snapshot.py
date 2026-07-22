@@ -279,6 +279,76 @@ def test_restore_does_not_delete_a_file_ignored_at_capture(tmp_path: Path):
     assert (repo / ".gitignore").read_text() == ".env\n"    # gitignore restored
 
 
+def test_tracked_but_ignored_file_is_captured_and_survives_restore(tmp_path: Path):
+    """Regression / data-safety: a file that is gitignored yet TRACKED (forced in
+    with ``git add -f``, e.g. a committed .env) was skipped by capture's ``add -A``
+    against the fresh throwaway index (ignore rules apply because the fresh index
+    doesn't know the file is tracked) — but listed by ``ls-files`` against the REAL
+    index in _present_files. Absent from the snapshot yet "present", the
+    set-difference marked it extra and EVERY restore permanently deleted it."""
+    repo = _init_repo(tmp_path)
+    (repo / ".gitignore").write_text(".env\n")
+    (repo / ".env").write_text("SECRET\n")
+    _git(repo, "add", ".gitignore")
+    _git(repo, "add", "-f", ".env")  # ignored, but force-tracked
+    _git(repo, "commit", "-qm", "track env")
+
+    snap = GitSnapshotter(repo)
+    # Dirty the tracked-ignored file so capture must take the full (add -A) path
+    # and record the LIVE content, not just reuse HEAD.
+    (repo / ".env").write_text("SECRET-v2\n")
+    commit = snap.capture("refs/marim/checkpoints/s/0", "cp")
+    assert commit
+    # The tracked-ignored file must be IN the snapshot tree, at live content.
+    assert _git(repo, "show", f"{commit}:.env") == "SECRET-v2"
+
+    # After the checkpoint the agent edits both files; rewind must revert them —
+    # and above all must NOT delete .env.
+    (repo / ".env").write_text("CLOBBERED\n")
+    (repo / "a.txt").write_text("MODIFIED\n")
+    assert snap.restore(commit) is True
+    assert (repo / ".env").read_text() == "SECRET-v2\n"  # restored, NOT deleted
+    assert (repo / "a.txt").read_text() == "one\n"
+
+
+def test_untracked_ignored_file_stays_out_of_snapshot_and_survives_restore(tmp_path: Path):
+    """The complement of the tracked-ignored fix: a *plain* ignored file (never
+    added) must remain OUT of the snapshot and must NOT be deleted on restore.
+    Guards the fix from over-correcting into capturing all ignored files."""
+    repo = _init_repo(tmp_path)
+    (repo / ".gitignore").write_text(".env\n")
+    (repo / ".env").write_text("SECRET\n")  # ignored and never tracked
+    _git(repo, "add", ".gitignore")
+    _git(repo, "commit", "-qm", "ignore env")
+
+    snap = GitSnapshotter(repo)
+    (repo / "a.txt").write_text("dirty\n")  # force the full capture path
+    commit = snap.capture("refs/marim/checkpoints/s/0", "cp")
+    assert commit
+    assert ".env" not in _git(repo, "ls-tree", "-r", "--name-only", commit)
+    (repo / "a.txt").write_text("MODIFIED\n")
+    assert snap.restore(commit) is True
+    assert (repo / ".env").read_text() == "SECRET\n"  # untouched
+
+
+def test_restore_removes_symlink_to_directory_created_after_checkpoint(tmp_path: Path):
+    """Regression: _remove_extra_files used ``is_dir()``, which FOLLOWS symlinks —
+    a post-checkpoint symlink pointing at a directory was misclassified as a
+    nested repo, skipped, and restore still returned True (silently incomplete).
+    A symlink is a file-sized entry; it must be unlinked like any extra file."""
+    repo = _init_repo(tmp_path)
+    snap = GitSnapshotter(repo)
+    commit = snap.capture("refs/marim/checkpoints/s/0", "cp 0")
+    assert commit
+    target = repo / "real_dir"
+    target.mkdir()
+    (repo / "link_dir").symlink_to(target, target_is_directory=True)
+    assert snap.restore(commit) is True
+    assert not (repo / "link_dir").is_symlink()  # the extra symlink is gone
+    assert not (repo / "link_dir").exists()
+    assert target.is_dir()  # only the link was removed, never its target
+
+
 def test_capture_restore_act_on_linked_worktree(tmp_path: Path):
     """Regression: GitSnapshotter(wt) must capture/restore the LINKED worktree,
     not the main worktree toplevel returned by repo_root()."""
