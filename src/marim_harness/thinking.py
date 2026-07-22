@@ -16,7 +16,10 @@ erroring, so a fat-fingered override degrades gracefully."""
 
 from __future__ import annotations
 
-from pydantic_ai.settings import ModelSettings
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pydantic_ai.settings import ModelSettings
 
 # The ordered thinking vocabulary. ``off`` is FIRST and disables reasoning
 # effort (settings_for omits the key). The rest are pydantic-ai's
@@ -43,7 +46,17 @@ def settings_for(level: str | None, base: ModelSettings) -> ModelSettings:
     set to ``False``) — that is what keeps an unset/disabled session
     byte-identical to today's per-run settings and preserves prompt caching.
     Any other level returns a NEW mapping with ``thinking`` set; ``base`` is
-    never mutated (a per-round settings object must not accumulate state)."""
+    never mutated (a per-round settings object must not accumulate state).
+
+    ``ModelSettings`` is imported LAZILY here (not at module top) so that
+    importing this module for its pure string helpers — ``parse_thinking_level``
+    is pulled in by ``config/model.py``, which sits on the CLI-router import
+    path — does not drag in ``pydantic_ai``. That eager import would break the
+    ``cli.router`` lazy-load guard (test_cli_startup.py) and cost every
+    ``config``/``models``/``--help`` invocation ~1s for an agent it never
+    builds. Only ``settings_for`` needs the real class at runtime."""
+    from pydantic_ai.settings import ModelSettings
+
     if not level or level == "off":
         return base
     return ModelSettings({**base, "thinking": level})  # type: ignore[arg-type]
