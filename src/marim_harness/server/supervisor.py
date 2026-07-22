@@ -67,6 +67,11 @@ class SessionSupervisor:
             self._buses[key] = EventBus(ring_size=self._ring_size)
         return self._buses[key]
 
+    def bus_peek(self, ws_id: str, session_id: str) -> EventBus | None:
+        """The session's bus if one exists, without creating one — a read for
+        callers (e.g. /history) that must not spawn a bus as a side effect."""
+        return self._buses.get((ws_id, session_id))
+
     def set_mode(self, ws_id: str, session_id: str, mode: Mode) -> None:
         self._modes[(ws_id, session_id)] = mode
 

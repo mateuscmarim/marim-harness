@@ -56,3 +56,27 @@ async def test_next_event_timeout_returns_none():
     with anyio.fail_after(2):
         assert await sub.next_event(timeout=0.01) is None
     sub.close()
+
+
+async def test_history_seq_starts_at_zero():
+    bus = EventBus()
+    assert bus.history_seq == 0
+
+
+async def test_history_seq_advances_only_on_persisted_boundaries():
+    # Deltas, turn.started, asks, and status never move the watermark: none of
+    # them change the persisted message history. Only turn.finished / turn.error
+    # / compaction.finished do, and each is published after its persist().
+    bus = EventBus()
+    bus.publish("turn.started", {"turn_id": "t1"})  # seq 1
+    bus.publish("text.delta", {"text": "hi"})        # seq 2
+    assert bus.history_seq == 0
+    bus.publish("turn.finished", {"turn_id": "t1"})  # seq 3 -> persisted
+    assert bus.history_seq == 3
+    bus.publish("ask.pending", {"id": "a1"})         # seq 4
+    bus.publish("session.status", {"status": "idle"})  # seq 5
+    assert bus.history_seq == 3
+    bus.publish("compaction.finished", {})           # seq 6 -> persisted
+    assert bus.history_seq == 6
+    bus.publish("turn.error", {"turn_id": "t2"})     # seq 7 -> rolled-back baseline on disk
+    assert bus.history_seq == 7

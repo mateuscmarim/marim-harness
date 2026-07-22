@@ -48,9 +48,21 @@ class Subscription:
 
 
 class EventBus:
+    # Events whose publication means the on-disk message history now reflects
+    # them: a turn's messages are persisted inside run_turn *before* the host
+    # publishes turn.finished; a failed turn rolls back to its persisted
+    # baseline before turn.error; compaction persists the compacted history
+    # before compaction.finished. So the seq of the latest such event is a safe
+    # watermark for "everything <= this seq is durably on disk" — see
+    # history_seq.
+    _PERSISTED_BOUNDARIES = frozenset(
+        {"turn.finished", "turn.error", "compaction.finished"}
+    )
+
     def __init__(self, ring_size: int = 1000) -> None:
         self._ring: deque[Event] = deque(maxlen=ring_size)
         self._seq = 0
+        self._history_seq = 0
         self._queues: set[asyncio.Queue[Event]] = set()
 
     @property
@@ -58,11 +70,24 @@ class EventBus:
         return self._seq
 
     @property
+    def history_seq(self) -> int:
+        """The seq up to which the persisted message history is consistent.
+
+        Advances only on ``_PERSISTED_BOUNDARIES``, each published after its
+        persist() completes, so a /history read reporting this value is served
+        from a file that already contains every event <= it. A live event with
+        a larger seq is genuinely absent from that snapshot and safe to render
+        without duplicating the history copy."""
+        return self._history_seq
+
+    @property
     def subscriber_count(self) -> int:
         return len(self._queues)
 
     def publish(self, type: str, data: dict) -> Event:
         self._seq += 1
+        if type in self._PERSISTED_BOUNDARIES:
+            self._history_seq = self._seq
         event = Event(seq=self._seq, ts=_now(), type=type, data=data)
         self._ring.append(event)
         for queue in self._queues:

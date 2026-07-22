@@ -377,12 +377,20 @@ async def get_history(request: Request) -> Response:
         limit = max(1, int(request.query_params.get("limit", "100")))
     except ValueError:
         return _error(400, "bad_request", "offset/limit must be integers")
+    # The seq watermark this on-disk snapshot is consistent up to. Peek (never
+    # create) the live bus: a session with no live bus (daemon just started,
+    # host never mounted) has published nothing, so 0 is correct. The client
+    # uses this to tell a resync echo (seq <= history_seq, already in these
+    # messages) from an in-flight tail (seq > history_seq, not yet persisted).
+    bus = _supervisor(request).bus_peek(record.id, session_id)
+    history_seq = bus.history_seq if bus is not None else 0
     return JSONResponse({
         "id": data.get("id"),
         "name": data.get("name"),
         "model": data.get("model"),
         "message_count": len(messages),
         "offset": offset,
+        "history_seq": history_seq,
         "messages": messages[offset:offset + limit],
     })
 

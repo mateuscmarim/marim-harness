@@ -199,6 +199,10 @@ def test_session_create_and_list(client):
     detail = test_client.get(f"/v1/workspaces/{ws_id}/sessions/{sid}", headers=AUTH).json()
     assert detail["status"] == "idle"
     assert detail["pending_asks"] == []
+    # A freshly created session has never mounted a host, so no live bus exists;
+    # /history still serves the on-disk snapshot and reports history_seq 0.
+    history = test_client.get(f"/v1/workspaces/{ws_id}/sessions/{sid}/history", headers=AUTH)
+    assert history.json()["history_seq"] == 0
     missing = test_client.get(f"/v1/workspaces/{ws_id}/sessions/nope", headers=AUTH)
     assert missing.status_code == 404
 
@@ -250,6 +254,10 @@ def test_full_turn_with_parked_approval(client):
     history = test_client.get(f"{base}/history", headers=AUTH).json()
     assert history["message_count"] > 0
     assert len(history["messages"]) > 0
+    # ...and reports the seq watermark its snapshot is consistent up to. After a
+    # completed turn (turn.finished published post-persist) it is positive; the
+    # client uses it to tell echoes from an in-flight tail across a resync.
+    assert history["history_seq"] > 0
 
 
 def test_interrupt_parked_turn(client):
