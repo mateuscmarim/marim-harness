@@ -28,6 +28,19 @@ def test_launch_info_uses_command_and_args(tmp_path):
     assert srv.language_id == "fake"
 
 
+def test_initialize_params_declare_nav_capabilities(tmp_path):
+    # A conformant LSP server gates each feature response on the matching client
+    # capability, so GenericStdioServer must advertise every feature marim's nav
+    # tools consume — otherwise declarative servers silently return empty for
+    # symbols/hover/definition/references (see generic.py's capabilities comment).
+    srv = GenericStdioServer.from_provider(_fake_provider(), tmp_path)
+    params = srv._get_initialize_params(str(tmp_path))
+    text_doc = params["capabilities"]["textDocument"]
+    for feature in ("hover", "definition", "references", "documentSymbol"):
+        assert feature in text_doc, f"missing textDocument.{feature} capability"
+    assert "symbol" in params["capabilities"]["workspace"]
+
+
 @pytest.mark.anyio
 async def test_generic_definition_round_trip(tmp_path):
     (tmp_path / "x.fake").write_text("hello\n")
