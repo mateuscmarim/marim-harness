@@ -150,6 +150,7 @@ class SessionInfo:
     duration_seconds: float | None = None
     model: str | None = None
     advisor_model: str | None = None
+    thinking: str | None = None
 
 
 class SessionStore:
@@ -159,7 +160,8 @@ class SessionStore:
 
     def __init__(self, path, workspace_root, session_id: str, name: str,
                  auto_named: bool = False, model: str | None = None,
-                 advisor_model: str | None = None) -> None:
+                 advisor_model: str | None = None,
+                 thinking: str | None = None) -> None:
         self.path = Path(path)
         self.workspace_root = Path(workspace_root).resolve()
         self.session_id = session_id
@@ -172,6 +174,10 @@ class SessionStore:
         # (explicitly disabled — must survive restarts distinguishably from
         # unset), or None (unset -> inherit MARIM_ADVISOR_MODEL).
         self.advisor_model = advisor_model
+        # The thinking level this session chose (one of thinking.THINKING_LEVELS
+        # — including "off" as an explicit disable — or None: unset, inherit
+        # MARIM_THINKING).
+        self.thinking = thinking
 
     def save(self, history: list, usage: RunUsage,
              tasks: list | None = None,
@@ -184,6 +190,7 @@ class SessionStore:
             "auto": self.auto_named,
             "model": self.model,
             "advisor_model": self.advisor_model,
+            "thinking": self.thinking,
             "workspace": str(self.workspace_root),
             "updated": _now(),
             "duration_seconds": duration_seconds,
@@ -246,6 +253,7 @@ class SessionStore:
             data["auto"] = self.auto_named
             data["model"] = self.model
             data["advisor_model"] = self.advisor_model
+            data["thinking"] = self.thinking
             atomic_write_text(self.path, json.dumps(data))
 
     def load(self) -> tuple[list, RunUsage, list, float | None, list]:
@@ -358,6 +366,7 @@ class SessionManager:
                     duration_seconds=data.get("duration_seconds"),
                     model=data.get("model"),
                     advisor_model=data.get("advisor_model"),
+                    thinking=data.get("thinking"),
                 )
             )
         infos.sort(key=lambda info: info.updated, reverse=True)
@@ -379,10 +388,12 @@ class SessionManager:
         auto_named = bool(meta.get("auto", False))
         model = meta.get("model")
         advisor_model = meta.get("advisor_model")
+        thinking = meta.get("thinking")
         self._reserved.add(session_id)
         return SessionStore(
             path, self.workspace_root, session_id, name,
             auto_named=auto_named, model=model, advisor_model=advisor_model,
+            thinking=thinking,
         )
 
     def create(self, name: str | None = None) -> SessionStore:
@@ -420,6 +431,10 @@ class SessionManager:
         # disable carries forward too, not just positive picks).
         if store.advisor_model is None:
             store.advisor_model = self.latest_advisor_model()
+        # Same inheritance as the model/advisor above: a new session keeps the
+        # thinking level the user last chose (including an explicit "off").
+        if store.thinking is None:
+            store.thinking = self.latest_thinking()
         return store
 
     def _unique_id(self, base: str) -> str:
@@ -443,6 +458,11 @@ class SessionManager:
         """The advisor id of the most recent session, or *None*."""
         latest = self.latest()
         return latest.advisor_model if latest is not None else None
+
+    def latest_thinking(self) -> str | None:
+        """The thinking level of the most recent session, or *None*."""
+        latest = self.latest()
+        return latest.thinking if latest is not None else None
 
     def delete(self, session_id: str) -> None:
         """Remove a session and every sidecar keyed by its id: the JSON file,

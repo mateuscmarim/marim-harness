@@ -345,6 +345,25 @@ class SessionController:
             else:
                 self.persist(force=True)
 
+    @property
+    def saved_thinking_id(self) -> str | None:
+        """The thinking level persisted with this session — a level name
+        (including "off"), or None (unset) — or None if no store."""
+        return self.store.thinking if self.store is not None else None
+
+    def set_thinking(self, value: str) -> None:
+        """Persist the session's thinking choice (a member of
+        thinking.THINKING_LEVELS). Same metadata-only patch rules as
+        ``set_advisor``: a switch can land mid-turn when in-memory history must
+        never reach disk, so patch the header when a file exists, else force one
+        clean persist."""
+        if self.store is not None:
+            self.store.thinking = value
+            if self.store.path.exists():
+                self.store.save_meta()
+            else:
+                self.persist(force=True)
+
     def update_model(self, model: Model) -> None:
         """Rebuild aux agents (summarizer/titler) for a new model. Only
         replaces those that were originally configured — a None stays None.
