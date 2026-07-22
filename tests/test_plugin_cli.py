@@ -119,6 +119,11 @@ def test_install_lsp_only_prompts_and_mentions_lsp(tmp_path, monkeypatch):
     code, out, err = _run(["list", "--json"])
     rec = {p["name"]: p for p in json.loads(out)}["lsponly"]
     assert rec["trusted"] is False
+    # The audit commands an admin runs must disclose the LSP surface too.
+    code, out, err = _run(["info", "lsponly"])
+    assert "1 LSP servers" in out, out
+    code, out, err = _run(["validate", str(src)])
+    assert "1 LSP servers" in out, out
 
 
 def test_install_inert_does_not_prompt(tmp_path, monkeypatch):
