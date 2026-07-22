@@ -1,0 +1,12 @@
+{
+  "name": "lsp-java",
+  "description": "Java language server (eclipse.jdt.ls, auto-downloaded by multilspy).",
+  "lsp": {
+    "language": "java",
+    "extensions": [".java"],
+    "backend": "multilspy:java",
+    "diagnostics": "lsp",
+    "probe": [],
+    "installHint": "auto-downloaded by multilspy on first use"
+  }
+}

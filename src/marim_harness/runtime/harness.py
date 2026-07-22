@@ -30,6 +30,7 @@ from ..config.context_limits import ContextLimits
 from ..config.model import DEFAULT_SUBAGENT_CONCURRENCY, SubagentTiers
 from ..hooks.dispatch import TurnHooks
 from ..lsp.manager import LspManager
+from ..lsp.provider import LspRegistry
 from ..mcp import McpManager
 from ..notifications import NotificationConfig
 from ..session import SessionController, SessionManager, SessionStore
@@ -131,6 +132,12 @@ class HarnessConfig:
     # diagnostics-on-edit no-ops. Navigation-tool registration is gated separately
     # on the provider (see build_harness), keyed on lsp_enabled and lsp_tools_enabled.
     lsp_enabled: bool = True
+    # The assembled LSP registry (bundled + plugin providers), threaded from
+    # bootstrap.build_lsp_registry (CLI) or HarnessBuilder.build()'s embedding
+    # default. None ⇒ no LspManager is built even when lsp_enabled is True —
+    # a HarnessConfig built by hand without a registry gets no LSP, matching
+    # "opt-in, nothing implicit" for direct HarnessConfig construction.
+    lsp_registry: LspRegistry | None = None
     # Forge (Gitea/GitHub) tools master switch. False ⇒ forge_toolsets returns []
     # and no forge tools are attached to the Agent, regardless of backend
     # availability (tea on PATH + a configured login).
@@ -346,7 +353,25 @@ def build_collaborators(
     )
     # Session-scoped LSP server pool, reachable by the navigation/diagnostics
     # tools through deps. Subagents share this deps object, so they get LSP too.
-    lsp = LspManager(deps.workspace.root) if cfg.lsp_enabled else None
+    # cfg.lsp_registry is normally pre-resolved by the caller: bootstrap always
+    # assembles bundled+plugin providers (build_lsp_registry), and
+    # HarnessBuilder.build() defaults to the bundled-only registry whenever LSP
+    # ends up enabled. A HarnessConfig built by hand (bypassing both — direct
+    # Harness()/HarnessConfig() construction, as tests and simple embedders do)
+    # can still leave lsp_registry unset; falling back to the bundled registry
+    # here keeps that path's default consistent with HarnessConfig's own
+    # "every field has a sensible default" contract, matching the pre-Task-7
+    # behavior where lsp_enabled alone was sufficient to get LSP.
+    lsp_registry = cfg.lsp_registry
+    if lsp_registry is None and cfg.lsp_enabled:
+        from ..lsp.bundled import bundled_lsp_providers
+
+        lsp_registry = LspRegistry(bundled_lsp_providers())
+    lsp = (
+        LspManager(deps.workspace.root, registry=lsp_registry)
+        if cfg.lsp_enabled and lsp_registry is not None
+        else None
+    )
     limits = cfg.context_limits or ContextLimits(budget=cfg.max_context_tokens or None)
     # The live model id for threshold resolution: reads the current model each
     # call, so a runtime /model switch re-keys thresholds without rewiring —

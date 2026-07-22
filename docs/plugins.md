@@ -1,12 +1,12 @@
 # Plugins
 
-A plugin bundles skills, sub-agents, hooks, MCP servers, and optional
-`AGENTS.md` instructions into one installable directory.
+A plugin bundles skills, sub-agents, hooks, MCP servers, language servers, and
+optional `AGENTS.md` instructions into one installable directory.
 
 ## Layout
 
     my-plugin/
-    ├── .marim-plugin/plugin.json   # manifest (name required)
+    ├── .marim-plugin/plugin.json   # manifest (name required; optional "lsp" block)
     ├── skills/<name>/SKILL.md
     ├── agents/<name>.md
     ├── hooks/hooks.json
@@ -22,13 +22,30 @@ A plugin bundles skills, sub-agents, hooks, MCP servers, and optional
 
 In the TUI: `/plugin [list | enable <name> | disable <name>]`.
 
+## Language servers (`lsp`)
+
+A plugin can add a language server by declaring an `lsp` block in its
+`plugin.json` manifest (object or list, for multiple languages) — purely
+declarative: `language`, `extensions`, `command`, `args`, `env`, `probe`,
+`installHint`, `rootMarkers` (reserved — parsed but not yet honored; servers
+currently launch at the workspace root). The declared command is launched
+over generic stdio LSP; there's no separate file, unlike `mcp.json`. `backend`
+and a named `diagnostics` value are a bundled-only seam into marim's in-tree
+tuned servers (used by the four language plugins marim ships in-tree) — a
+third-party manifest using either key is rejected (strict parse) or dropped
+(lenient parse). See `docs/lsp-plugins.md` for the full manifest reference,
+the four bundled languages, and the declare/probe/install-hint model.
+
 ## Trust
 
 Skills, sub-agents, and instructions load for any enabled plugin — except that
 project-scope plugins also require the project itself to be trusted (see
-below). Hooks and MCP servers execute code, so they load only for plugins you
-trust. Installing a plugin with hooks/MCP prompts for trust; pass `--trust` to
-grant it non-interactively (e.g. in CI). Trust is recorded per plugin.
+below). Hooks, MCP servers, and LSP providers execute code, so they load only
+for plugins you trust — an untrusted plugin's `lsp` block contributes no
+provider (its extensions never route to it, and its server binary is never
+launched). Installing a plugin with hooks/MCP/`lsp` prompts for trust; pass
+`--trust` to grant it non-interactively (e.g. in CI). Trust is recorded per
+plugin.
 
 *Project-scope* plugins additionally require the project itself to be trusted
 (`MARIM_TRUST_PROJECT_HOOKS=1`, the same gate as `.marim/hooks.json` and
@@ -37,8 +54,10 @@ enabled/trusted bits included — is committed to the repo, so on a freshly
 cloned repo those bits are whoever-committed-it's word, not yours. An
 untrusted project's plugins contribute nothing: skills, sub-agents, and
 instructions are withheld by the project-trust gate alone (no per-plugin trust
-needed, since inert text doesn't execute code), while hooks/MCP additionally
-require the per-plugin trust bit once the project is trusted.
+needed, since inert text doesn't execute code), while hooks/MCP/`lsp`
+additionally require the per-plugin trust bit once the project is trusted.
+Bundled LSP providers (the four languages marim ships in-tree) are exempt —
+they're always trusted, the same as bundled skills/agents.
 
 > **Note:** Toggling a plugin-provided MCP server via the MCP UI (e.g. `/mcp
 > disable <name>`) is session-only and not persisted; use `marim plugin disable

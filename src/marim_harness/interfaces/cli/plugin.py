@@ -91,10 +91,13 @@ def _cmd_install(args, *, ws, out, err, input_fn, now_fn) -> int:
                 print(
                     f"Plugin {manifest.name!r} bundles "
                     f"{summary['skills']} skills, {summary['agents']} agents, "
-                    f"{summary['hooks']} hooks, {summary['mcpServers']} MCP servers.",
+                    f"{summary['hooks']} hooks, {summary['mcpServers']} MCP servers, "
+                    f"{summary['lsp']} LSP servers.",
                     file=out,
                 )
-                answer = input_fn("Trust this plugin's hooks/MCP servers? [y/N] ").strip().lower()
+                answer = input_fn(
+                    "Trust this plugin's hooks/MCP/LSP servers? [y/N] "
+                ).strip().lower()
                 trust = answer in ("y", "yes")
     try:
         rec = install_plugin(
@@ -156,7 +159,8 @@ def _cmd_info(args, *, ws, out, err) -> int:
             print(f"description: {p.manifest.description}", file=out)
             print(
                 f"bundles:     {summary['skills']} skills, {summary['agents']} agents, "
-                f"{summary['hooks']} hooks, {summary['mcpServers']} MCP servers",
+                f"{summary['hooks']} hooks, {summary['mcpServers']} MCP servers, "
+                f"{summary['lsp']} LSP servers",
                 file=out,
             )
             print(f"source:      {p.record.source}", file=out)
@@ -188,7 +192,8 @@ def _cmd_validate(args, *, out, err) -> int:
     print(
         f"valid: {manifest.name} ({manifest.version or 'unknown'}) — "
         f"{summary['skills']} skills, {summary['agents']} agents, "
-        f"{summary['hooks']} hooks, {summary['mcpServers']} MCP servers",
+        f"{summary['hooks']} hooks, {summary['mcpServers']} MCP servers, "
+        f"{summary['lsp']} LSP servers",
         file=out,
     )
     return 0

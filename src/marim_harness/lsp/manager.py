@@ -20,8 +20,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from . import checks, registry
+from . import checks
 from .diagnostics import DiagnosticsCollector, format_diagnostics
+from .provider import LspProvider, LspRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -46,26 +47,6 @@ _PUBLISH_QUIESCE = 0.2
 # input invalidated it. Matched by ``code`` attribute (duck-typed, so the RPC
 # Error class needn't be imported outside the lazy multilspy path).
 _REQUEST_CANCELLED = -32800
-
-
-def _default_factory(language: str, root: Path):
-    """Build a real multilspy async LanguageServer for ``language`` at ``root``.
-    Imported lazily so the heavy dependency loads only when a server is started.
-
-    Python routes to marim's own BasedPyrightServer whenever the binary is on
-    PATH: multilspy's create() hard-wires python -> jedi-language-server, and
-    jedi upstream is in maintenance mode, so basedpyright is preferred with
-    jedi kept as the fallback (registry._PROBES accepts either binary)."""
-    from multilspy import LanguageServer
-    from multilspy.multilspy_config import MultilspyConfig
-    from multilspy.multilspy_logger import MultilspyLogger
-
-    config = MultilspyConfig.from_dict({"code_language": language})
-    if language == "python" and shutil.which("basedpyright-langserver"):
-        from .basedpyright import BasedPyrightServer
-
-        return BasedPyrightServer(config, MultilspyLogger(), str(root))
-    return LanguageServer.create(config, MultilspyLogger(), str(root))
 
 
 def _server_alive(server: Any) -> bool:
@@ -128,14 +109,16 @@ class LspManager:
         self,
         root: Path,
         *,
+        registry: LspRegistry,
         disabled: frozenset[str] = frozenset(),
         server_factory: Callable[[str, Path], Any] | None = None,
         request_timeout: float = 15.0,
         start_timeout: float = 60.0,
     ) -> None:
         self.root = root
+        self._registry = registry
         self._disabled = disabled
-        self._factory = server_factory or _default_factory
+        self._factory = server_factory or self._default_factory
         self._request_timeout = request_timeout
         self._start_timeout = start_timeout
         self._stack = AsyncExitStack()
@@ -218,6 +201,52 @@ class LspManager:
         self._install_publish_signal(server, collector)
         return None
 
+    def _default_factory(self, language: str, root: Path):
+        """Build a server for ``language`` from its provider. `backend:
+        basedpyright` → BasedPyrightServer (jedi fallback via multilspy);
+        `backend: multilspy:<lang>` → multilspy's tuned server; a declarative
+        command → GenericStdioServer. Imported lazily so multilspy loads only
+        when a server actually starts."""
+        provider = self._registry.provider_for(language)
+        if provider is None:
+            raise ValueError(f"no LSP provider for {language!r}")
+        if provider.backend == "basedpyright":
+            return self._make_basedpyright(root)
+        if provider.backend and provider.backend.startswith("multilspy:"):
+            return self._make_multilspy(provider.backend, root)
+        return self._make_generic(provider, root)
+
+    def _make_basedpyright(self, root: Path):
+        """Python routes to marim's own BasedPyrightServer whenever the binary
+        is on PATH: multilspy's create() hard-wires python -> jedi-language-
+        server, and jedi upstream is in maintenance mode, so basedpyright is
+        preferred with jedi kept as the fallback."""
+        from multilspy.multilspy_config import MultilspyConfig
+        from multilspy.multilspy_logger import MultilspyLogger
+
+        config = MultilspyConfig.from_dict({"code_language": "python"})
+        if shutil.which("basedpyright-langserver"):
+            from .basedpyright import BasedPyrightServer
+
+            return BasedPyrightServer(config, MultilspyLogger(), str(root))
+        from multilspy import LanguageServer
+
+        return LanguageServer.create(config, MultilspyLogger(), str(root))
+
+    def _make_multilspy(self, backend: str, root: Path):
+        from multilspy import LanguageServer
+        from multilspy.multilspy_config import MultilspyConfig
+        from multilspy.multilspy_logger import MultilspyLogger
+
+        lang = backend.split(":", 1)[1]
+        config = MultilspyConfig.from_dict({"code_language": lang})
+        return LanguageServer.create(config, MultilspyLogger(), str(root))
+
+    def _make_generic(self, provider: LspProvider, root: Path):
+        from .generic import GenericStdioServer
+
+        return GenericStdioServer.from_provider(provider, root)
+
     def _install_publish_signal(self, server: Any, collector: DiagnosticsCollector) -> None:
         """Layer a wakeup signal over the diagnostics collector's notification
         handler. ``DiagnosticsCollector`` registers a *single* publishDiagnostics
@@ -261,7 +290,7 @@ class LspManager:
     ) -> tuple[Any | None, str | None, str | None]:
         """Return (server, language, error_message). On any problem the server is
         None and error_message is a string to hand back to the model."""
-        language = registry.language_for(path)
+        language = self._registry.language_for(path)
         if language is None:
             return None, None, f"No language server for {path!r} (unsupported file type)."
         if language in self._disabled:
@@ -281,7 +310,7 @@ class LspManager:
             # path below re-spawns a fresh one — the single-flight in
             # _ensure_started still coalesces concurrent callers onto one restart.
             self._evict(language)
-        avail = registry.availability(language)
+        avail = self._registry.availability(language)
         if not avail.available:
             return None, language, f"No {language} language server available; {avail.hint}."
         err = await self._ensure_started(language)
@@ -428,7 +457,7 @@ class LspManager:
         running, start the locally-installed servers (cheap — no auto-downloads)
         and search those. Aggregates results across languages."""
         if not self._servers:
-            for language in sorted(registry.locally_installed_languages()):
+            for language in sorted(self._registry.locally_installed_languages()):
                 if language in self._disabled:
                     continue
                 await self._start_named(language)
@@ -457,18 +486,23 @@ class LspManager:
         await self._ensure_started(language)  # ignore returned error — best-effort
 
     async def diagnostics(self, path: str, *, settle: float = 1.5, deep: bool = False) -> str:
-        # Python's resident server (jedi) only reports syntax errors, so route it
-        # to real external checkers instead — ruff always, plus pyright on a deep
-        # check (see lsp.checks). These are stateless subprocesses: no server
-        # startup, no shared state, so they never block other diagnostics callers
-        # and fan out across sub-agents for free. ``settle`` is unused here (it
-        # paces the LSP push path below, not a subprocess).
-        if registry.language_for(path) == "python":
+        # A provider can declare its diagnostics strategy as "python-checks"
+        # (currently just the bundled python provider) instead of the LSP
+        # server's own resident diagnostics (e.g. jedi only reports syntax
+        # errors) — route those to real external checkers instead: ruff
+        # always, plus pyright on a deep check (see lsp.checks). These are
+        # stateless subprocesses: no server startup, no shared state, so they
+        # never block other diagnostics callers and fan out across sub-agents
+        # for free. ``settle`` is unused here (it paces the LSP push path
+        # below, not a subprocess).
+        language = self._registry.language_for(path)
+        provider = self._registry.provider_for(language) if language else None
+        if provider is not None and provider.diagnostics == "python-checks":
             # The external-checker shortcut must still honor the per-language
             # disable switch — "LSP off for python" means no diagnostics
             # subprocesses either, matching every other operation's gate.
-            if "python" in self._disabled:
-                return "LSP is disabled for python."
+            if language in self._disabled:
+                return f"LSP is disabled for {language}."
             diags = await checks.python_diagnostics(self.root, path, deep=deep)
             return checks.format_checks(path, diags)
         server, language, err = await self._server_for(path)

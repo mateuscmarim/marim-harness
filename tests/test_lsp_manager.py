@@ -4,7 +4,13 @@ from pathlib import Path
 
 import pytest
 
+from marim_harness.lsp.bundled import bundled_lsp_providers
 from marim_harness.lsp.manager import LspManager
+from marim_harness.lsp.provider import LspRegistry
+
+
+def _bundled_reg():
+    return LspRegistry(bundled_lsp_providers())
 
 
 class _FakeServer:
@@ -66,7 +72,7 @@ def anyio_backend():
 def test_format_locations_tolerates_non_string_uri(tmp_path):
     """A misbehaving server can hand back a non-string uri; formatting it must
     not raise AttributeError (uri.startswith) into the tool."""
-    mgr = LspManager(tmp_path)
+    mgr = LspManager(tmp_path, registry=_bundled_reg())
     out = mgr._format_locations(
         "definitions",
         [{"uri": 123, "range": {"start": {"line": 0, "character": 0}}}],
@@ -79,7 +85,7 @@ def _manager(tmp_path, fake_holder):
         srv = _FakeServer(root)
         fake_holder.append(srv)
         return srv
-    return LspManager(tmp_path, server_factory=factory)
+    return LspManager(tmp_path, registry=_bundled_reg(), server_factory=factory)
 
 
 @pytest.mark.anyio
@@ -135,7 +141,7 @@ async def test_request_cancelled_is_retried_once(tmp_path):
         fakes.append(srv)
         return srv
 
-    mgr = LspManager(tmp_path, server_factory=factory)
+    mgr = LspManager(tmp_path, registry=_bundled_reg(), server_factory=factory)
     out = await mgr.find_references("m.py", 1, 1)
     assert "a.py:1:1" in out
     assert _Flaky.attempts == 2
@@ -152,7 +158,10 @@ async def test_request_cancelled_twice_reports_transient(tmp_path):
         async def request_references(self, relpath, line, col):
             raise _CancelledError()
 
-    mgr = LspManager(tmp_path, server_factory=lambda language, root: _AlwaysCancelled(root))
+    mgr = LspManager(
+        tmp_path, registry=_bundled_reg(),
+        server_factory=lambda language, root: _AlwaysCancelled(root),
+    )
     out = await mgr.find_references("m.py", 1, 1)
     assert "cancelled" in out and "try again" in out
     assert "-32800" not in out
@@ -182,7 +191,7 @@ async def test_unsupported_filetype(tmp_path):
 @pytest.mark.anyio
 async def test_disabled_language(tmp_path):
     (tmp_path / "m.py").write_text("x = 1\n")
-    mgr = LspManager(tmp_path, disabled=frozenset({"python"}),
+    mgr = LspManager(tmp_path, registry=_bundled_reg(), disabled=frozenset({"python"}),
                      server_factory=lambda lang, root: None)
     out = await mgr.goto_definition("m.py", 1, 1)
     assert "disabled" in out.lower()
@@ -204,7 +213,7 @@ async def test_diagnostics_honor_disabled_python(tmp_path, monkeypatch):
         return "[]"
 
     monkeypatch.setattr(checks, "_run", spy_run)
-    mgr = LspManager(tmp_path, disabled=frozenset({"python"}),
+    mgr = LspManager(tmp_path, registry=_bundled_reg(), disabled=frozenset({"python"}),
                      server_factory=lambda lang, root: None)
     out = await mgr.diagnostics("m.py")
     assert "disabled" in out.lower()
@@ -269,7 +278,7 @@ async def test_request_timeout_degrades(tmp_path):
             await asyncio.sleep(5)
 
     (tmp_path / "m.py").write_text("x = 1\n")
-    mgr = LspManager(tmp_path, request_timeout=0.05,
+    mgr = LspManager(tmp_path, registry=_bundled_reg(), request_timeout=0.05,
                      server_factory=lambda lang, root: _Slow(tmp_path))
     out = await mgr.goto_definition("m.py", 1, 1)
     assert "timed out" in out.lower()
@@ -297,7 +306,7 @@ async def test_concurrent_same_language_starts_once(tmp_path):
         return srv
 
     (tmp_path / "m.py").write_text("x = 1\n")
-    mgr = LspManager(tmp_path, server_factory=factory)
+    mgr = LspManager(tmp_path, registry=_bundled_reg(), server_factory=factory)
     outs = await asyncio.gather(*[mgr.goto_definition("m.py", 1, 1) for _ in range(6)])
     assert all("target.py" in o for o in outs)
     assert len(fakes) == 1 and fakes[0].started == 1
@@ -311,10 +320,6 @@ async def test_startup_does_not_block_across_languages(tmp_path, monkeypatch):
     import asyncio
 
     from marim_harness.lsp import registry
-
-    monkeypatch.setattr(
-        registry, "availability", lambda lang: registry.Availability(True, "")
-    )
 
     py_in_start = asyncio.Event()  # signals the python startup has begun
     py_release = asyncio.Event()  # set by the test to let the slow start finish
@@ -332,7 +337,12 @@ async def test_startup_does_not_block_across_languages(tmp_path, monkeypatch):
                 await py_release.wait()  # hang the python startup
             yield self
 
-    mgr = LspManager(tmp_path, server_factory=lambda lang, root: _Gated(root, lang))
+    mgr = LspManager(
+        tmp_path, registry=_bundled_reg(), server_factory=lambda lang, root: _Gated(root, lang)
+    )
+    monkeypatch.setattr(
+        mgr._registry, "availability", lambda lang: registry.Availability(True, "")
+    )
     (tmp_path / "m.py").write_text("x = 1\n")
     (tmp_path / "m.ts").write_text("const x = 1\n")
 
@@ -370,7 +380,9 @@ async def test_hover_clamps_huge_docstring(tmp_path):
             return {"contents": {"value": "S" * (_MAX_HOVER_CHARS + 9000)}}
 
     (tmp_path / "m.py").write_text("x = 1\n")
-    mgr = LspManager(tmp_path, server_factory=lambda lang, root: _Huge(tmp_path))
+    mgr = LspManager(
+        tmp_path, registry=_bundled_reg(), server_factory=lambda lang, root: _Huge(tmp_path)
+    )
     hov = await mgr.hover("m.py", 1, 1)
     assert len(hov) <= _MAX_HOVER_CHARS + 100  # cap + short footer
     assert "truncated" in hov
@@ -387,10 +399,6 @@ async def test_start_racing_aclose_leaves_no_registered_server(tmp_path, monkeyp
 
     from marim_harness.lsp import registry
 
-    monkeypatch.setattr(
-        registry, "availability", lambda lang: registry.Availability(True, "")
-    )
-
     in_start = asyncio.Event()
     release = asyncio.Event()  # never set: the start hangs like a real cold start
 
@@ -403,7 +411,12 @@ async def test_start_racing_aclose_leaves_no_registered_server(tmp_path, monkeyp
             yield self  # pragma: no cover — cancelled before it registers
 
     (tmp_path / "m.py").write_text("x = 1\n")
-    mgr = LspManager(tmp_path, server_factory=lambda lang, root: _Cold(tmp_path))
+    mgr = LspManager(
+        tmp_path, registry=_bundled_reg(), server_factory=lambda lang, root: _Cold(tmp_path)
+    )
+    monkeypatch.setattr(
+        mgr._registry, "availability", lambda lang: registry.Availability(True, "")
+    )
 
     start = asyncio.create_task(mgr.goto_definition("m.py", 1, 1))
     await in_start.wait()  # the cold start is in flight
@@ -442,10 +455,6 @@ async def test_dead_server_is_evicted_and_restarted(tmp_path, monkeypatch):
     to the corpse for the rest of the session."""
     from marim_harness.lsp import registry
 
-    monkeypatch.setattr(
-        registry, "availability", lambda lang: registry.Availability(True, "")
-    )
-
     fakes: list = []
 
     class _Mortal(_FakeServer):
@@ -459,7 +468,10 @@ async def test_dead_server_is_evicted_and_restarted(tmp_path, monkeypatch):
         return srv
 
     (tmp_path / "m.py").write_text("x = 1\n")
-    mgr = LspManager(tmp_path, server_factory=factory)
+    mgr = LspManager(tmp_path, registry=_bundled_reg(), server_factory=factory)
+    monkeypatch.setattr(
+        mgr._registry, "availability", lambda lang: registry.Availability(True, "")
+    )
 
     await mgr.goto_definition("m.py", 1, 1)
     assert len(fakes) == 1  # one server started
@@ -516,7 +528,7 @@ async def test_diagnostics_wakes_on_publish_before_settle(tmp_path):
 
     (tmp_path / "x.ts").write_text("let a = 1\n")
     srv = _PublishServerFactory(tmp_path)
-    mgr = LspManager(tmp_path, server_factory=lambda lang, root: srv)
+    mgr = LspManager(tmp_path, registry=_bundled_reg(), server_factory=lambda lang, root: srv)
     # Warm-start the typescript server directly (bypasses the availability probe,
     # which would otherwise gate a cold start in CI without a real tsserver).
     await mgr._start_language("typescript")

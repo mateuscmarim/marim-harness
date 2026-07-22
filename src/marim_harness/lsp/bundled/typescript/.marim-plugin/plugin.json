@@ -1,0 +1,12 @@
+{
+  "name": "lsp-typescript",
+  "description": "TypeScript/JavaScript language server (typescript-language-server).",
+  "lsp": {
+    "language": "typescript",
+    "extensions": [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"],
+    "backend": "multilspy:typescript",
+    "diagnostics": "lsp",
+    "probe": ["typescript-language-server"],
+    "installHint": "install typescript-language-server (npm i -g typescript-language-server typescript)"
+  }
+}

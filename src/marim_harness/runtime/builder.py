@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from pydantic_ai.models import Model
 
     from ..hooks import HookRunner
+    from ..lsp.provider import LspRegistry
     from ..session import SessionManager, SessionStore
     from ..workspace.agents import AgentDef
     from .harness import Harness
@@ -62,6 +63,7 @@ class HarnessBuilder:
         self._command_policy: CommandPolicy | None = None
         self._lsp = False
         self._lsp_tools = False
+        self._lsp_registry: LspRegistry | None = None
         self._mcp_servers: list[object] = []
         self._forge_backend: object | None = None
         self._subagents: list[AgentDef] = []
@@ -110,14 +112,20 @@ class HarnessBuilder:
         self._combined_job_tool = combined
         return self
 
-    def with_lsp(self, *, enabled: bool = True, tools: bool = True) -> HarnessBuilder:
+    def with_lsp(self, *, enabled: bool = True, tools: bool = True,
+                 registry: LspRegistry | None = None) -> HarnessBuilder:
         """Turn the LSP manager on (default) or off; ``tools`` (only meaningful
         when ``enabled``) additionally registers the six navigation tools.
         ``enabled=False`` is the escape hatch the CLI preset needs to honor its
         two-switch config (manager on, tools off, or neither) without reaching
-        into builder privates — ``with_lsp()`` bare still means "on"."""
+        into builder privates — ``with_lsp()`` bare still means "on".
+        ``registry`` supplies the assembled ``LspRegistry`` (bundled + plugin
+        providers); when left ``None`` and LSP ends up enabled, ``build()``
+        defaults it to the bundled-only registry so a bare builder still gets
+        the bundled languages."""
         self._lsp = enabled
         self._lsp_tools = enabled and tools
+        self._lsp_registry = registry
         return self
 
     def with_mcp_server(self, server: object) -> HarnessBuilder:
@@ -385,8 +393,23 @@ class HarnessBuilder:
             combined_job_tool=self._combined_job_tool,
         )
 
+        # Embedding default: a builder that turns LSP on (with_defaults(), or
+        # with_lsp() bare) but never supplies a registry still gets the
+        # bundled languages, so `HarnessBuilder(...).with_defaults().build()`
+        # works out of the box. Bootstrap (the CLI preset) always passes its
+        # own assembled registry via with_lsp(registry=...), so this branch
+        # is embedding-only. Lazy-imported: both modules are pure (no
+        # multilspy), but build() otherwise never touches lsp/ when LSP is off.
+        lsp_registry = self._lsp_registry
+        if lsp_registry is None and self._lsp:
+            from ..lsp.bundled import bundled_lsp_providers
+            from ..lsp.provider import LspRegistry
+
+            lsp_registry = LspRegistry(bundled_lsp_providers())
+
         config_fields: dict[str, Any] = dict(
             lsp_enabled=self._lsp,
+            lsp_registry=lsp_registry,
             forge_enabled=self._forge_backend is not None,
             forge_backend=self._forge_backend,
             global_instructions=self._global_instructions,

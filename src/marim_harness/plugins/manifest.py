@@ -101,6 +101,12 @@ class PluginManifest:
             return v
         return self._resolve(v, "mcp.json")
 
+    def lsp_block(self):
+        """The raw ``lsp`` manifest value (object or list), or None. Not path-
+        resolved here — LSP providers carry a plugin_root and substitute
+        ${MARIM_PLUGIN_ROOT} at collection time (see discovery.plugin_lsp_providers)."""
+        return self.raw.get("lsp")
+
 
 def _read_raw(plugin_dir: Path) -> dict:
     path = Path(plugin_dir) / MANIFEST_DIR / MANIFEST_FILE

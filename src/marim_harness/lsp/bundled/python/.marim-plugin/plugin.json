@@ -1,0 +1,12 @@
+{
+  "name": "lsp-python",
+  "description": "Python language server (basedpyright, jedi fallback) with ruff/pyright diagnostics.",
+  "lsp": {
+    "language": "python",
+    "extensions": [".py"],
+    "backend": "basedpyright",
+    "diagnostics": "python-checks",
+    "probe": ["basedpyright-langserver", "jedi-language-server"],
+    "installHint": "install basedpyright (pip install basedpyright) or jedi-language-server (pip install jedi-language-server)"
+  }
+}

@@ -4,9 +4,10 @@ for marim's existing discovery systems.
 Skills, sub-agents, and instructions are contributed for any *enabled* plugin
 (inert text the model reads) — except that *project-scope* plugins also require
 the project trust gate, since their registry travels with the repo (see
-_enabled_inert). Hooks and MCP servers are contributed only for
-*enabled + trusted* plugins, since they execute code. Project plugins shadow
-global plugins of the same name."""
+_enabled_inert). Hooks, MCP servers, and LSP providers are contributed only for
+*enabled + trusted* plugins, since they all execute code (an LSP provider's
+declarative ``command`` launches a process on connect, same as an MCP server).
+Project plugins shadow global plugins of the same name."""
 
 import json
 import logging
@@ -14,6 +15,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..lsp.provider import LspProvider, parse_lsp_providers
 from ..trust import project_trusted as _project_trusted
 from .manifest import (
     MANIFEST_DIR,
@@ -87,7 +89,7 @@ def _discovery_signature(scope_dirs: list[tuple[str, Path]]) -> tuple:
     """A stat-only fingerprint of both scopes: each scope's ``plugins.json`` and
     every present plugin's ``plugin.json`` (by name/mtime/size). Changes whenever
     the registry or any manifest is touched, so a cache hit skips the json
-    parses. Stat-only by design — it deliberately does *not* read hooks/MCP
+    parses. Stat-only by design — it deliberately does *not* read hooks/MCP/lsp
     sources, so the live-elevation trust guard must keep recomputing those (see
     _linked_elevation_revokes_trust)."""
     sig: list = []
@@ -179,17 +181,19 @@ def _enabled_inert(workspace_root, trust_project: bool | None) -> list[ResolvedP
 
 
 def _linked_elevation_revokes_trust(p: ResolvedPlugin) -> bool:
-    """Whether a trusted *linked* plugin has gained executable surface (hooks/MCP)
-    since trust was granted, so its executable contributions must NOT be honored.
+    """Whether a trusted *linked* plugin has gained executable surface
+    (hooks/MCP/lsp) since trust was granted, so its executable contributions
+    must NOT be honored.
 
     A linked plugin loads from a live, mutable source dir every discovery (unlike
     a copied/git install). install.py records ``executable_at_install`` on the
     source when trust is granted; the git-update path drops trust when an update
-    introduces hooks/MCP, but a linked source can grow them silently with no such
-    gate. We close that gap conservatively here: if the *live* manifest now ships
-    executable parts that weren't present at trust time, treat it as untrusted for
-    executable contributions (hooks/MCP) and warn loudly. Inert contributions
-    (skills/agents/instructions) are unaffected — they don't execute code.
+    introduces hooks/MCP/lsp, but a linked source can grow them silently with no
+    such gate. We close that gap conservatively here: if the *live* manifest now
+    ships executable parts that weren't present at trust time, treat it as
+    untrusted for executable contributions (hooks/MCP/lsp) and warn loudly. Inert
+    contributions (skills/agents/instructions) are unaffected — they don't execute
+    code.
 
     The chosen behavior is "fail safe, don't auto-honor": rather than silently
     re-trusting newly-appeared executable surface, we withhold it until the user
@@ -207,9 +211,9 @@ def _linked_elevation_revokes_trust(p: ResolvedPlugin) -> bool:
     live = has_executable(plugin_bundle_summary(p.manifest))
     if live:
         logger.warning(
-            "linked plugin %r gained executable surface (hooks/MCP) after it was "
-            "trusted; refusing to auto-honor it. Re-confirm trust (reinstall or "
-            "re-trust) to enable its hooks/MCP.",
+            "linked plugin %r gained executable surface (hooks/MCP/lsp) after it "
+            "was trusted; refusing to auto-honor it. Re-confirm trust (reinstall "
+            "or re-trust) to enable its hooks/MCP/lsp.",
             p.name,
         )
         return True
@@ -224,20 +228,20 @@ def _project_scope_untrusted(p: ResolvedPlugin, trust_project: bool) -> bool:
     the repo, so its ``trusted`` bit is whoever-committed-it-controlled — on a
     freshly cloned repo that's the exact supply-chain vector the
     ``MARIM_TRUST_PROJECT_HOOKS`` gate exists to close for ``.marim/hooks.json``
-    and ``.marim/mcp.json``. Executable contributions (hooks/MCP) from project
-    plugins therefore require *both* the per-plugin trust bit *and* the project
-    trust gate. Global plugins are unaffected: they were installed by an explicit
-    user action into the user's own config dir, outside the repo's reach. Inert
-    contributions (skills/agents/instructions) are gated separately, in
-    _enabled_inert — same project gate, but without requiring the per-plugin
+    and ``.marim/mcp.json``. Executable contributions (hooks/MCP/lsp) from
+    project plugins therefore require *both* the per-plugin trust bit *and* the
+    project trust gate. Global plugins are unaffected: they were installed by an
+    explicit user action into the user's own config dir, outside the repo's
+    reach. Inert contributions (skills/agents/instructions) are gated separately,
+    in _enabled_inert — same project gate, but without requiring the per-plugin
     trust bit, since inert text doesn't execute code."""
     if p.scope != "project" or trust_project:
         return False
     if has_executable(plugin_bundle_summary(p.manifest)):
         logger.warning(
-            "project plugin %r bundles hooks/MCP but the project is not trusted; "
-            "withholding them. Set MARIM_TRUST_PROJECT_HOOKS=1 to honor project "
-            "plugin hooks/MCP in this workspace.",
+            "project plugin %r bundles hooks/MCP/lsp but the project is not "
+            "trusted; withholding them. Set MARIM_TRUST_PROJECT_HOOKS=1 to honor "
+            "project plugin hooks/MCP/lsp in this workspace.",
             p.name,
         )
     return True
@@ -397,18 +401,49 @@ def plugin_mcp_specs(workspace_root, *, trust_project: bool = False) -> dict:
     return merged
 
 
+def plugin_lsp_providers(
+    workspace_root, *, trust_project: bool = False
+) -> list[LspProvider]:
+    """LSP providers contributed by enabled+trusted plugins. Follows the exact
+    trust rule as plugin_mcp_specs — an LSP server launches code on connect, so
+    project-scope plugins need both the per-plugin trust bit AND the project
+    trust gate. Third-party providers are declarative only: the bundled-only
+    ``backend``/named-``diagnostics`` keys are dropped by the lenient parse.
+    ``${MARIM_PLUGIN_ROOT}`` is substituted in each provider's command/args."""
+    out: list[LspProvider] = []
+    for p in _enabled_trusted(workspace_root, trust_project=trust_project):
+        block = p.manifest.lsp_block()
+        if block is None:
+            continue
+        block = substitute_root(block, p.root)
+        out.extend(
+            parse_lsp_providers(
+                block, bundled=False, source=p.scope,
+                plugin_root=p.root, strict=False,
+            )
+        )
+    return out
+
+
 def plugin_bundle_summary(manifest: PluginManifest) -> dict:
     """Count what a plugin bundles, for the install-time trust prompt."""
     skills = _count_dirs_with(manifest.skills_dir(), "SKILL.md")
     agents = _count_files(manifest.agents_dir(), ".md")
     hooks = _count_hooks(manifest)
     mcp = _count_mcp(manifest)
-    return {"skills": skills, "agents": agents, "hooks": hooks, "mcpServers": mcp}
+    lsp = _count_lsp(manifest)
+    return {"skills": skills, "agents": agents, "hooks": hooks, "mcpServers": mcp, "lsp": lsp}
 
 
 def has_executable(summary: dict) -> bool:
-    """Whether a bundle summary contains code-executing parts (hooks/MCP)."""
-    return bool(summary.get("hooks")) or bool(summary.get("mcpServers"))
+    """Whether a bundle summary contains code-executing parts (hooks/MCP/lsp) —
+    an LSP provider's declarative ``command`` launches a process on connect,
+    the same risk class as a hook or an MCP server."""
+    return (
+        bool(summary.get("hooks"))
+        or bool(summary.get("mcpServers"))
+        or bool(summary.get("lsp"))
+    )
 
 
 def _count_dirs_with(root: Path, marker: str) -> int:
@@ -435,3 +470,16 @@ def _count_hooks(manifest: PluginManifest) -> int:
 def _count_mcp(manifest: PluginManifest) -> int:
     servers = _resolve_mcp_servers(manifest.mcp_source())
     return len(servers) if servers is not None else 0
+
+
+def _count_lsp(manifest: PluginManifest) -> int:
+    """Count of LSP providers the manifest's ``lsp`` block would parse to.
+    Mirrors plugin_lsp_providers' parsing (lenient: a malformed block yields 0
+    rather than raising) so the install-time trust prompt/gate sees exactly the
+    executable surface that would actually be contributed."""
+    block = manifest.lsp_block()
+    if block is None:
+        return 0
+    return len(
+        parse_lsp_providers(block, bundled=False, source="global", plugin_root=None, strict=False)
+    )

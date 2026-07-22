@@ -5,10 +5,15 @@ from pathlib import Path
 from marim_harness.interfaces.cli import plugin as plugin_cmd
 
 
-def _make_source(src: Path, name: str, *, with_hooks: bool = False):
+def _make_source(src: Path, name: str, *, with_hooks: bool = False, with_lsp: bool = False):
     (src / ".marim-plugin").mkdir(parents=True, exist_ok=True)
+    manifest: dict[str, object] = {"name": name, "version": "1.0.0", "description": "d"}
+    if with_lsp:
+        # A declarative third-party lsp block launches ``command`` on connect —
+        # executable surface in the same risk class as hooks/MCP.
+        manifest["lsp"] = {"language": "go", "extensions": [".go"], "command": "gopls"}
     (src / ".marim-plugin" / "plugin.json").write_text(
-        json.dumps({"name": name, "version": "1.0.0", "description": "d"}), encoding="utf-8"
+        json.dumps(manifest), encoding="utf-8"
     )
     sk = src / "skills" / "demo"
     sk.mkdir(parents=True, exist_ok=True)
@@ -89,6 +94,36 @@ def test_validate(tmp_path, monkeypatch):
     bad = tmp_path / "bad"
     bad.mkdir()
     assert _run(["validate", str(bad)])[0] != 0
+
+
+def test_install_lsp_only_prompts_and_mentions_lsp(tmp_path, monkeypatch):
+    """An lsp-only plugin (no hooks/MCP) launches a process on connect, so it
+    must prompt for trust AND the prompt summary must disclose the LSP surface —
+    otherwise the user is asked to consent to something the message hides."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.chdir(tmp_path)
+    src = tmp_path / "src"
+    _make_source(src, "lsponly", with_lsp=True)
+
+    prompted = {}
+
+    def _decline(_p):
+        prompted["asked"] = True
+        return "n"
+
+    code, out, err = _run(["install", str(src)], input_fn=_decline)
+    assert code == 0, err
+    assert prompted.get("asked") is True  # the gate fired
+    assert "1 LSP servers" in out  # summary discloses the LSP surface
+    # Declined → not trusted.
+    code, out, err = _run(["list", "--json"])
+    rec = {p["name"]: p for p in json.loads(out)}["lsponly"]
+    assert rec["trusted"] is False
+    # The audit commands an admin runs must disclose the LSP surface too.
+    code, out, err = _run(["info", "lsponly"])
+    assert "1 LSP servers" in out, out
+    code, out, err = _run(["validate", str(src)])
+    assert "1 LSP servers" in out, out
 
 
 def test_install_inert_does_not_prompt(tmp_path, monkeypatch):
