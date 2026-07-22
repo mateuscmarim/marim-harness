@@ -17,6 +17,7 @@ from .catalog import (
     fetch_openrouter_models,
     filter_entries,
     model_supports_images,
+    model_supports_thinking,
     parse_google_models,
     parse_models,
 )
@@ -59,6 +60,7 @@ __all__ = [
     "fetch_openrouter_models",
     "filter_entries",
     "model_supports_images",
+    "model_supports_thinking",
     "parse_google_models",
     "parse_models",
     # fs

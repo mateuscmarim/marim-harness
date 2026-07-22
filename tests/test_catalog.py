@@ -366,3 +366,27 @@ async def test_openrouter_strict_without_key_skips_probe(openrouter_stub):
     """No credential to validate: strict still fetches the public catalog."""
     assert await fetch_openrouter_models(None, strict=True) == []
     assert "/key" not in openrouter_stub.paths
+
+
+def test_parse_models_reads_supported_parameters_reasoning():
+    payload = {"data": [
+        {"id": "a/thinks", "name": "Thinks",
+         "supported_parameters": ["reasoning", "tools"]},
+        {"id": "b/plain", "name": "Plain", "supported_parameters": ["tools"]},
+        {"id": "c/unknown", "name": "Unknown"},
+    ]}
+    entries = {e.id: e for e in parse_models(payload)}
+    assert entries["a/thinks"].supports_thinking is True
+    assert entries["b/plain"].supports_thinking is False
+    assert entries["c/unknown"].supports_thinking is None
+
+
+def test_model_supports_thinking_lookup():
+    from marim_harness.workspace.catalog import model_supports_thinking
+
+    payload = {"data": [
+        {"id": "a/thinks", "name": "T", "supported_parameters": ["reasoning"]},
+    ]}
+    entries = parse_models(payload)
+    assert model_supports_thinking(entries, "a/thinks") is True
+    assert model_supports_thinking(entries, "missing") is None

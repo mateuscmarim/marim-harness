@@ -30,6 +30,11 @@ class ModelEntry:
     # source doesn't say. Consumed by config.context_limits to derive the
     # compaction/masking threshold.
     context_window: int | None = None
+    # Whether the model accepts a reasoning-effort setting, per the catalog
+    # (OpenRouter lists "reasoning" in supported_parameters). None when the
+    # source doesn't say. Best-effort UI annotation only — NEVER a gate on
+    # selecting or applying a thinking level (see the design spec §8).
+    supports_thinking: bool | None = None
 
     @property
     def qualified(self) -> str:
@@ -59,9 +64,14 @@ def parse_models(payload: dict) -> list[ModelEntry]:
                 supports_images = "image" in mods
         ctx = row.get("context_length")
         context_window = ctx if isinstance(ctx, int) and ctx > 0 else None
+        params = row.get("supported_parameters")
+        supports_thinking: bool | None = None
+        if isinstance(params, list):
+            supports_thinking = "reasoning" in params
         entries.append(ModelEntry(id=model_id, name=display,
                                   supports_images=supports_images,
-                                  context_window=context_window))
+                                  context_window=context_window,
+                                  supports_thinking=supports_thinking))
     entries.sort(key=lambda e: e.id)
     return entries
 
@@ -257,4 +267,15 @@ def model_supports_images(entries: list[ModelEntry], model_id: str) -> bool | No
     for entry in entries:
         if entry.id == model_id:
             return entry.supports_images
+    return None
+
+
+def model_supports_thinking(entries: list[ModelEntry], model_id: str) -> bool | None:
+    """Whether ``model_id`` accepts a reasoning-effort setting per the catalog;
+    None if the id is not present (capability unknown). Best-effort: a None or
+    False here must NOT prevent a user from choosing a thinking level — it only
+    annotates the picker."""
+    for entry in entries:
+        if entry.id == model_id:
+            return entry.supports_thinking
     return None
