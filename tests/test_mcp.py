@@ -319,6 +319,25 @@ def test_build_sse_server_when_type_sse():
     assert server.id == "events"
 
 
+def test_server_prompts_in_ask_predicate():
+    """The runner decides a spawn's MCP reach up front, so it must be able to
+    ask, per built server, "would this server's calls prompt in ask mode?".
+    That is exactly the untrusted-hook case in make_approval_hook; the flag is
+    stamped where the trust decision is made (build_mcp_servers) and read back
+    through the server's process_tool_call field."""
+    from marim_harness.mcp.config import server_prompts_in_ask
+
+    servers, _ = build_mcp_servers(
+        {"open": {"command": "x"}, "safe": {"command": "x", "trust": True}}
+    )
+    by_id = {s.id: s for s in servers}
+    assert server_prompts_in_ask(by_id["open"]) is True
+    assert server_prompts_in_ask(by_id["safe"]) is False
+    # A hookless toolset (embedder-supplied via with_mcp_server) has no gate at
+    # all — its calls run without prompting, so it must read as non-prompting.
+    assert server_prompts_in_ask(SimpleNamespace(id="bare")) is False
+
+
 def test_build_skips_malformed_spec():
     servers, warnings = build_mcp_servers(
         {"good": {"command": "ok"}, "bad": {"nonsense": True}}

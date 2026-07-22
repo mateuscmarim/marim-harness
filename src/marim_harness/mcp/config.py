@@ -349,7 +349,14 @@ def make_approval_hook(label: str, trusted: bool, *, schema_holder: dict | None 
     ``schema_holder`` (when given) is passed straight through to
     :class:`_SchemaCoercer` — see its docstring for the lazy-load/coerce
     semantics; absent a holder, a fetch error, or an unknown tool, the args
-    pass through untouched, exactly as before."""
+    pass through untouched, exactly as before.
+
+    The returned hook carries a ``prompts_in_ask`` attribute (read back via
+    ``server_prompts_in_ask``): the ``trusted`` decision is captured in this
+    closure and otherwise unobservable, but the sub-agent runner must know it
+    UP FRONT — a spawn's reach is decided at spawn time, and a server whose
+    calls would prompt per-call in ask mode must be withheld from the grant
+    rather than surfacing mid-run prompts inside an approval-less spawn."""
     coercer = _SchemaCoercer(schema_holder)
 
     async def hook(ctx, call_tool, name, args):
@@ -384,7 +391,24 @@ def make_approval_hook(label: str, trusted: bool, *, schema_holder: dict | None 
             )
         return f"Denied: the user rejected {display}."
 
+    # Function attribute, not a wrapper class: the hook must stay a plain
+    # ProcessToolCallback for MCPToolset, and a function attribute is the
+    # smallest honest way to make the captured trust decision observable.
+    hook.prompts_in_ask = not trusted  # pyright: ignore[reportFunctionMemberAccess]
     return hook
+
+
+def server_prompts_in_ask(server) -> bool:
+    """Whether this server's tool calls would raise a per-call user approval
+    prompt in ask mode. True exactly for a config-built server whose
+    ``make_approval_hook`` was built untrusted (the only prompting path);
+    False for a trusted server (its hook runs calls without prompting) and
+    for a hookless toolset (e.g. ``HarnessBuilder.with_mcp_server``), whose
+    calls carry no gate at all and thus never prompt. Pure read — the flag is
+    stamped where the trust decision is made, so this predicate cannot drift
+    from the hook's actual ask-mode behavior."""
+    hook = getattr(server, "process_tool_call", None)
+    return bool(getattr(hook, "prompts_in_ask", False))
 
 
 def build_mcp_servers(specs: dict) -> tuple[list, list[str]]:

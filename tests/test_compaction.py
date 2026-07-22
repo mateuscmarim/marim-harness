@@ -14,12 +14,15 @@ from marim_harness.compaction import (
     MASKED_OBSERVATION,
     SUMMARY_PREFIX,
     CompactionBreaker,
+    _elided_pointer,
     _summarize_prompt,
     compact_history,
     compact_history_with_summary,
+    elided_pointer_path,
     estimate_tokens,
     mask_stale_observations,
     render_transcript,
+    revalidate_elided_pointers,
     summary_text,
     will_compact,
 )
@@ -453,6 +456,135 @@ def test_mask_is_idempotent_over_pointer_placeholders():
     )
     assert n1 == 3 and n2 == 0
     assert [p.parts[0].content for p in twice] == [p.parts[0].content for p in once]
+
+
+def test_mask_persists_model_facing_json_for_structured_returns(tmp_path):
+    # Structured content must be persisted exactly as the model saw it (compact
+    # JSON via model_response_str), not as the Python repr — the pointer
+    # placeholder promises a faithful read_file round-trip.
+    content = {"a": 1, "b": ["x", "y"], "pad": "P" * 300}
+    history = [_tool_return("t1", content), _tool_return("t2", "Z" * 300)]
+
+    def persist(payload: str, tool_name: str) -> str:
+        path = tmp_path / f"{tool_name}.txt"
+        path.write_text(payload)
+        return str(path)
+
+    _, n = mask_stale_observations(history, keep_recent=1, persist=persist)
+    assert n == 1
+    expected = history[0].parts[0].model_response_str()  # what the model read
+    assert (tmp_path / "read_file.txt").read_bytes() == expected.encode()
+    assert '"a":1' in expected and "'a'" not in expected  # JSON, not Python repr
+
+
+def test_mask_threshold_measured_on_model_facing_rendering():
+    # A structured payload whose Python repr crosses min_chars but whose
+    # model-facing JSON does not: the model never paid for the repr's extra
+    # quoting/spacing, so the size gate must measure the JSON.
+    content = {f"k{i}": "v" for i in range(20)}
+    probe = ToolReturnPart(tool_name="t", content=content, tool_call_id="p")
+    assert len(str(content)) >= 200 > len(probe.model_response_str())  # setup
+
+    history = [_tool_return("t1", content), _tool_return("t2", "Z" * 300)]
+    _, masked = mask_stale_observations(history, keep_recent=0, min_chars=200)
+    assert masked == 1  # only the genuinely bulky string return
+
+
+class _Unrenderable:
+    """Pydantic can't serialize this (model_response_str raises), but str() works."""
+
+    def __str__(self) -> str:
+        return "U" * 300
+
+
+def test_mask_unrenderable_content_masks_plain_without_persisting():
+    history = [_tool_return("t1", _Unrenderable()), _tool_return("t2", "Z" * 300)]
+    persisted: list[str] = []
+
+    def persist(payload: str, tool_name: str) -> str:
+        persisted.append(payload)
+        return "/pad/e/001-x.txt"
+
+    masked, n = mask_stale_observations(history, keep_recent=1, persist=persist)
+    assert n == 1  # a render failure never blocks masking
+    assert masked[0].parts[0].content == MASKED_OBSERVATION  # plain, no pointer
+    assert persisted == []  # no unfaithful repr bytes written
+
+
+# --- revalidate_elided_pointers (dangling scratchpad pointers) ----------------
+
+
+def test_elided_pointer_path_round_trips():
+    path = "/pad/elided/001-read_file.txt"
+    assert elided_pointer_path(_elided_pointer(path)) == path
+
+
+def test_elided_pointer_path_none_for_non_pointer_content():
+    assert elided_pointer_path("plain tool output") is None
+    assert elided_pointer_path(MASKED_OBSERVATION) is None
+    assert elided_pointer_path({"a": 1}) is None  # non-str content
+    # Prefix without the read_file suffix is not a well-formed pointer.
+    assert elided_pointer_path(f"{ELIDED_POINTER_PREFIX}/pad/x.txt]") is None
+
+
+def test_revalidate_rewrites_dangling_pointer_to_plain_placeholder():
+    pointer = _elided_pointer("/pad/e/gone.txt")
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="go")]),
+        _tool_return("t1", pointer),
+        ModelResponse(parts=[TextPart(content="done")]),
+    ]
+    new_history, n = revalidate_elided_pointers(history, exists=lambda p: False)
+    assert n == 1
+    part = new_history[1].parts[0]
+    assert part.content == MASKED_OBSERVATION
+    # Pairing identity preserved — only the payload changes.
+    assert part.tool_call_id == "t1" and part.tool_name == "read_file"
+    # Input never mutated.
+    assert history[1].parts[0].content == pointer
+
+
+def test_revalidate_leaves_live_pointer_and_returns_input_unchanged():
+    history = [_tool_return("t1", _elided_pointer("/pad/e/live.txt"))]
+    new_history, n = revalidate_elided_pointers(history, exists=lambda p: True)
+    assert n == 0
+    # Same object back: callers can detect "nothing dangled" without an
+    # equality walk, so no spurious history replacement/persist churn.
+    assert new_history is history
+
+
+def test_revalidate_ignores_non_pointer_masked_and_small_content():
+    history = [
+        _tool_return("t1", "ordinary output"),
+        _tool_return("t2", MASKED_OBSERVATION),
+        _tool_return("t3", {"a": 1}),
+    ]
+    new_history, n = revalidate_elided_pointers(history, exists=lambda p: False)
+    assert n == 0
+    assert new_history is history
+
+
+def test_revalidate_is_idempotent():
+    history = [_tool_return("t1", _elided_pointer("/pad/e/gone.txt"))]
+    once, n1 = revalidate_elided_pointers(history, exists=lambda p: False)
+    twice, n2 = revalidate_elided_pointers(once, exists=lambda p: False)
+    assert n1 == 1 and n2 == 0
+    assert twice is once
+
+
+def test_revalidate_default_predicate_checks_the_filesystem(tmp_path):
+    live = tmp_path / "live.txt"
+    live.write_text("payload")
+    gone = tmp_path / "gone.txt"  # never written
+    history = [
+        _tool_return("t1", _elided_pointer(str(live))),
+        _tool_return("t2", _elided_pointer(str(gone))),
+    ]
+    new_history, n = revalidate_elided_pointers(history)
+    assert n == 1
+    assert new_history[0].parts[0].content == _elided_pointer(str(live))
+    assert new_history[1].parts[0].content == MASKED_OBSERVATION
+
 
 # --- CompactionBreaker (rapid-refill circuit breaker) -------------------------
 

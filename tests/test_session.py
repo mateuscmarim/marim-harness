@@ -8,6 +8,7 @@ from pydantic_ai.messages import (
     BinaryContent,
     ModelRequest,
     ModelResponse,
+    TextPart,
     ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
@@ -15,7 +16,12 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
-from marim_harness.compaction import ELIDED_POINTER_PREFIX, estimate_tokens
+from marim_harness.compaction import (
+    ELIDED_POINTER_PREFIX,
+    MASKED_OBSERVATION,
+    _elided_pointer,
+    estimate_tokens,
+)
 from marim_harness.hooks import events as hook_events
 from marim_harness.hooks.runner import HookRunner, HookVerdict
 from marim_harness.runtime.deps import Deps, WorkspaceConfig
@@ -518,6 +524,59 @@ def test_switch_to_corrupt_session_does_not_clobber_target(tmp_path):
     assert target.path.read_text() == corrupt_bytes  # target file untouched
     reloaded_source, _, _, _, _ = mgr.store(source.session_id).load()
     assert len(reloaded_source) == len(source_history)
+
+
+# ---------------------------------------------------------------------------
+# resume revalidates elided pointers (the scratchpad may not have survived)
+# ---------------------------------------------------------------------------
+
+
+def test_resume_degrades_dangling_elided_pointers(tmp_path: Path):
+    """A session can outlive its /tmp scratchpad (reboot, systemd-tmpfiles aging),
+    dangling the elided-pointer placeholders in its persisted history. Resume must
+    rewrite pointers whose file is gone to the plain masked placeholder (which
+    honestly says "re-run the tool"), leave live pointers untouched, and let the
+    healed history reach disk on the next normal persist."""
+    mgr = _manager(tmp_path)
+    store = mgr.create("s")
+    pad = tmp_path / "pad" / "elided"
+    pad.mkdir(parents=True)
+    live = pad / "001-read_file.txt"
+    live.write_text("payload")
+    gone = pad / "002-run_bash.txt"  # never written — the scratchpad aged out
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="go")]),
+        ModelResponse(parts=[
+            ToolCallPart(tool_name="read_file", args={"path": "a"}, tool_call_id="t1"),
+            ToolCallPart(tool_name="run_bash", args={"cmd": "ls"}, tool_call_id="t2"),
+        ]),
+        ModelRequest(parts=[
+            ToolReturnPart(
+                tool_name="read_file", content=_elided_pointer(str(live)), tool_call_id="t1"
+            ),
+            ToolReturnPart(
+                tool_name="run_bash", content=_elided_pointer(str(gone)), tool_call_id="t2"
+            ),
+        ]),
+        ModelResponse(parts=[TextPart(content="done")]),
+    ]
+    store.save(history, RunUsage())
+
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+    ctrl = SessionController(
+        store, mgr, deps, max_context_tokens=100_000, keep_last_messages=20
+    )
+    ctrl.resume()
+
+    returns = ctrl.history[2].parts
+    assert returns[0].content == _elided_pointer(str(live))  # live pointer survives
+    assert returns[1].content == MASKED_OBSERVATION  # dangling -> honest placeholder
+
+    # The healed history rides the normal persist path to disk — no forced write.
+    ctrl.persist()
+    reloaded, _, _, _, _ = mgr.store(store.session_id).load()
+    assert reloaded[2].parts[1].content == MASKED_OBSERVATION
+    assert reloaded[2].parts[0].content == _elided_pointer(str(live))
 
 
 @pytest.mark.anyio

@@ -28,6 +28,7 @@ from ..compaction import (
     make_summarizer,
     make_titler,
     mask_stale_observations,
+    revalidate_elided_pointers,
 )
 from ..hooks import events as hook_events
 from ..hooks.runner import HookVerdict, base_payload
@@ -372,6 +373,25 @@ class SessionController:
         left store=target but history=previous, and the next ``persist()`` wrote
         the previous session's history over the target's file."""
         history, usage, tasks, prev_duration, jobs = store.load()  # may raise
+        # A session can outlive its /tmp scratchpad (reboot, systemd-tmpfiles
+        # aging), leaving elided-pointer placeholders in the persisted history
+        # that promise a read_file the model can no longer perform. Revalidate
+        # them HERE, at the load seam every resume/switch passes through, and
+        # nowhere else: this is a cache-cold moment — no provider has a warm
+        # prompt cache for a history this process hasn't sent yet — so the
+        # rewrite costs nothing, whereas a per-turn check would rewrite
+        # mid-session and bust the prompt-cache tail on every dangling hit.
+        # Dangling pointers degrade to the plain masked placeholder ("re-run
+        # the tool"). No forced write: revalidate returns the same list when
+        # nothing dangles, and when it does rewrite, the history setter below
+        # bumps history_version, so the healed history rides the next normal
+        # persist to disk.
+        history, n_dangling = revalidate_elided_pointers(history)
+        if n_dangling:
+            logger.debug(
+                "session load: degraded %d dangling elided pointer(s) to the "
+                "plain placeholder (scratchpad file gone)", n_dangling,
+            )
         self.store = store
         self.history = history
         self.usage = usage

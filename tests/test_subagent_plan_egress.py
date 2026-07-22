@@ -82,16 +82,31 @@ def test_net_strip_is_evaluated_at_spawn_time(tmp_path: Path):
 # receives as toolsets.
 
 
-def _live_fake_server(h, name: str = "mddocs"):
+def _live_fake_server(h, name: str = "mddocs", *, hook=None):
     """Install a stand-in MCP server on the harness's manager: carries the
     config name as ``id`` (server_name) and supports the ``.prefixed(name)``
-    compose step granted_toolsets applies (returns itself as the marker)."""
+    compose step granted_toolsets applies (returns itself as the marker).
+    ``hook`` (when given) lands on ``process_tool_call`` exactly where
+    ``build_mcp_servers`` puts the real approval hook, so the ask-mode
+    prompting predicate reads it through the same seam; without it the server
+    is hookless, like an embedder-supplied ``with_mcp_server`` toolset."""
     from types import SimpleNamespace
 
     srv = SimpleNamespace(id=name)
     srv.prefixed = lambda _name: srv
-    h.mcp._live_servers = [srv]
+    if hook is not None:
+        srv.process_tool_call = hook
+    h.mcp._live_servers = h.mcp._live_servers + [srv]
     return srv
+
+
+def _real_hook(name: str, trusted: bool):
+    """The REAL approval hook config-built servers carry — built through
+    ``make_approval_hook`` so these tests exercise the actual prompting-flag
+    stamp, not a hand-faked attribute."""
+    from marim_harness.mcp.config import make_approval_hook
+
+    return make_approval_hook(name, trusted)
 
 
 async def _prep(h, mcp_names):
@@ -172,6 +187,32 @@ async def test_mcp_withholding_is_evaluated_at_spawn_and_resume_time(
 
 
 @pytest.mark.anyio
+async def test_plan_mode_spawn_stamps_mcp_withheld_in_sidecar_meta(tmp_path: Path):
+    """The sidecar meta records that THIS run's MCP grant was withheld, so a
+    resumed card/stats view can show it — purely informational: resume logic
+    must never read this field to decide the grant, it re-evaluates mode live
+    through ``_prepare_spawn``/``_spawn_mcp_grant`` on every resume, exactly
+    like a fresh spawn (see ``_spawn_mcp_grant``'s docstring)."""
+    deps = _make_deps(tmp_path, mode=Mode.plan)
+    h = _make_harness(_text_model(), deps)
+    _live_fake_server(h)
+    prep = await _prep(h, ["mddocs"])
+    assert prep.meta is not None
+    assert prep.meta["mcp_withheld"] is True
+
+
+@pytest.mark.anyio
+async def test_non_plan_mode_spawn_sidecar_meta_has_no_mcp_withheld(tmp_path: Path):
+    """Outside plan mode nothing was withheld, so the sidecar meta says so."""
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    h = _make_harness(_text_model(), deps)
+    _live_fake_server(h)
+    prep = await _prep(h, ["mddocs"])
+    assert prep.meta is not None
+    assert prep.meta["mcp_withheld"] is False
+
+
+@pytest.mark.anyio
 async def test_withheld_note_names_plan_mode(tmp_path: Path):
     """The spawner is told the grant was withheld (mirrors the CLI path's
     not-forwarded note) instead of the servers silently vanishing."""
@@ -181,6 +222,100 @@ async def test_withheld_note_names_plan_mode(tmp_path: Path):
     prep = await _prep(h, ["mddocs"])
     note = h.subagents._withheld_mcp_note(prep)
     assert "plan mode" in note and "withheld" in note
+
+
+# -- ask mode: per-server withholding ------------------------------------------
+# A spawn's reach is decided entirely up front — a sub-agent has no approval
+# round, so a granted server whose calls would PROMPT per-call in ask mode
+# (make_approval_hook, untrusted) would surface mid-run prompts through the
+# main-loop UI mid-spawn. The strict resolution: ask mode withholds exactly the
+# prompting servers from the grant; trusted/hookless (auto-approved) servers
+# stay granted.
+
+
+@pytest.mark.anyio
+async def test_ask_mode_withholds_prompting_server(tmp_path: Path):
+    """An untrusted config-built server prompts per-call in ask mode, so an
+    ask-mode spawn must not be granted it — withheld like plan mode, and NOT
+    reported as unknown (it exists; it is withheld by mode)."""
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+    h = _make_harness(_text_model(), deps)
+    _live_fake_server(h, hook=_real_hook("mddocs", trusted=False))
+    prep = await _prep(h, ["mddocs"])
+    assert prep.granted == []
+    assert prep.unknown == []
+    assert prep.mcp_withheld is True
+    assert prep.meta is not None and prep.meta["mcp_withheld"] is True
+
+
+@pytest.mark.anyio
+async def test_ask_mode_keeps_trusted_server(tmp_path: Path):
+    """A trusted server's calls run without prompting in ask mode, so its
+    up-front grant raises no mid-run prompt — it stays granted."""
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+    h = _make_harness(_text_model(), deps)
+    srv = _live_fake_server(h, hook=_real_hook("mddocs", trusted=True))
+    prep = await _prep(h, ["mddocs"])
+    assert prep.granted == [srv]
+    assert prep.mcp_withheld is False
+
+
+@pytest.mark.anyio
+async def test_ask_mode_filters_grant_per_server(tmp_path: Path):
+    """Withholding is per-server, not all-or-nothing: a mixed request keeps the
+    trusted server and drops only the prompting one, and the note names
+    exactly the dropped server."""
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+    h = _make_harness(_text_model(), deps)
+    ok = _live_fake_server(h, "docs", hook=_real_hook("docs", trusted=True))
+    _live_fake_server(h, "prompty", hook=_real_hook("prompty", trusted=False))
+    prep = await _prep(h, ["docs", "prompty"])
+    assert prep.granted == [ok]
+    assert prep.mcp_withheld is True
+    note = h.subagents._withheld_mcp_note(prep)
+    assert "prompty" in note and "docs" not in note.replace("prompty", "")
+    assert "approval" in note and "ask" in note
+
+
+@pytest.mark.anyio
+async def test_auto_mode_grants_prompting_server(tmp_path: Path):
+    """auto mode auto-approves every MCP call, so even an untrusted server's
+    grant raises no prompt — the full grant is unchanged."""
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    h = _make_harness(_text_model(), deps)
+    srv = _live_fake_server(h, hook=_real_hook("mddocs", trusted=False))
+    prep = await _prep(h, ["mddocs"])
+    assert prep.granted == [srv]
+    assert prep.mcp_withheld is False
+
+
+@pytest.mark.anyio
+async def test_ask_withholding_is_evaluated_at_spawn_and_resume_time(
+    tmp_path: Path,
+):
+    """Same snapshot funnel as the plan withhold: resume re-evaluates the mode
+    live through _prepare_spawn/_spawn_mcp_grant, so a spawn interrupted in
+    auto mode and resumed under ask mode comes back WITHOUT its prompting
+    server (and gets it back once the mode allows)."""
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    h = _make_harness(_text_model(), deps)
+    srv = _live_fake_server(h, hook=_real_hook("mddocs", trusted=False))
+    prep = await _prep(h, ["mddocs"])
+    assert prep.granted == [srv]
+    deps.workspace.mode = Mode.ask
+    prep = await h.subagents._prepare_spawn(
+        "explore", "look around", ["mddocs"], None, None, None, None, "s1",
+        debug=False, t0=0.0, resumed=True,
+    )
+    assert not isinstance(prep, str)
+    assert prep.granted == [] and prep.mcp_withheld is True
+    deps.workspace.mode = Mode.auto
+    prep = await h.subagents._prepare_spawn(
+        "explore", "look around", ["mddocs"], None, None, None, None, "s1",
+        debug=False, t0=0.0, resumed=True,
+    )
+    assert not isinstance(prep, str)
+    assert prep.granted == [srv] and prep.mcp_withheld is False
 
 
 # -- claude-cli backend --------------------------------------------------------
@@ -283,7 +418,16 @@ async def test_cli_spawn_never_receives_marim_mcp_config(
         tmp_path, monkeypatch, Mode.plan, mcp_names=["mddocs"]
     )
     assert not any("mcp" in k.lower() for k in kwargs)
-    assert not any("mcp" in str(v).lower() for v in kwargs.values())
+    # Every kwarg except the two free-text ones (prompt/system_prompt) is
+    # structured (tool lists, model id, flags): sweep only those for an
+    # MCP-shaped value. Excluding the free-text kwargs avoids a false
+    # positive if a task or system prompt legitimately mentions "MCP" as
+    # English text, while still pinning that no MCP config crosses into
+    # ClaudeCliRunner.run.
+    structured = {
+        k: v for k, v in kwargs.items() if k not in {"prompt", "system_prompt"}
+    }
+    assert not any("mcp" in str(v).lower() for v in structured.values())
     assert "not forwarded" in out and "mddocs" in out
 
 

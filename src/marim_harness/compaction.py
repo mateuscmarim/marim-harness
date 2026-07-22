@@ -14,6 +14,7 @@ Two strategies share the same head/tail split:
 
 import dataclasses
 import logging
+import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -284,6 +285,83 @@ def _is_masked(content) -> bool:
     )
 
 
+# The suffix _elided_pointer appends after the path; also the parse anchor for
+# elided_pointer_path. A path containing this exact string would truncate the
+# parse, but persist_elided generates the paths (scratchpad + counter + slug),
+# so the em-dash phrase can never legitimately appear inside one.
+_ELIDED_POINTER_SUFFIX = " — read_file"
+
+
+def elided_pointer_path(content) -> str | None:
+    """The scratchpad path inside an elided-pointer placeholder, or None.
+
+    Inverse of :func:`_elided_pointer`: parses the path between
+    :data:`ELIDED_POINTER_PREFIX` and the `` — read_file`` suffix. Anything that
+    isn't a well-formed pointer string (plain content, :data:`MASKED_OBSERVATION`,
+    structured returns, a prefix with no suffix) yields None."""
+    if not isinstance(content, str) or not content.startswith(ELIDED_POINTER_PREFIX):
+        return None
+    body = content[len(ELIDED_POINTER_PREFIX):]
+    path, sep, _ = body.partition(_ELIDED_POINTER_SUFFIX)
+    return path if sep else None
+
+
+def _revalidate_parts(parts, exists: Callable[[str], bool]) -> tuple[list | None, int]:
+    """Rewrite dangling pointer returns within one message's parts.
+
+    Returns ``(new_parts, rewritten)`` — ``new_parts`` is None when nothing
+    dangled, so the caller can skip rebuilding the message."""
+    new_parts: list | None = None
+    rewritten = 0
+    for pidx, part in enumerate(parts):
+        if not isinstance(part, ToolReturnPart):
+            continue
+        path = elided_pointer_path(part.content)
+        if path is None or exists(path):
+            continue
+        if new_parts is None:
+            new_parts = list(parts)
+        new_parts[pidx] = dataclasses.replace(part, content=MASKED_OBSERVATION)
+        rewritten += 1
+    return new_parts, rewritten
+
+
+def revalidate_elided_pointers(
+    history: list, exists: Callable[[str], bool] = os.path.exists
+) -> tuple[list, int]:
+    """Degrade elided-pointer placeholders whose backing file no longer exists.
+
+    A pointer placeholder promises the model it can ``read_file`` the elided
+    payload back — but the scratchpad lives under /tmp, so a session can outlive
+    it (reboot, systemd-tmpfiles aging). This scans ``history`` for
+    ``ToolReturnPart``s whose content is a pointer, checks the pointed-at path
+    via ``exists`` (injectable for tests; defaults to the real filesystem), and
+    rewrites dangling ones to plain :data:`MASKED_OBSERVATION`, which honestly
+    tells the model to re-run the tool instead. Live pointers and every other
+    part are left untouched.
+
+    Same contract as :func:`mask_stale_observations`: never mutates the input
+    (changed messages are rebuilt via ``replace``), idempotent (the plain
+    placeholder parses as no pointer), and returns ``(new_history, rewritten)``.
+    One deliberate difference: when nothing dangles the SAME ``history`` object
+    comes back, so callers can ``is``-check for change and skip a history
+    replacement (and the version bump / persist it would trigger)."""
+    new_history: list | None = None
+    total = 0
+    for idx, message in enumerate(history):
+        parts = getattr(message, "parts", None)
+        if not parts:
+            continue
+        new_parts, rewritten = _revalidate_parts(parts, exists)
+        if new_parts is None:
+            continue
+        if new_history is None:
+            new_history = list(history)
+        new_history[idx] = dataclasses.replace(message, parts=new_parts)
+        total += rewritten
+    return (history, 0) if new_history is None else (new_history, total)
+
+
 def _count_recent_parts(history: list, keep_recent: int) -> set[tuple[int, int]]:
     """Identify which ToolReturnParts should be kept (first pass: newest-first counting)."""
     seen = 0
@@ -311,12 +389,27 @@ def _mask_part(
     """Determine the replacement content for a part, or None if it should not be masked."""
     if _is_masked(part.content):
         return None
-    if len(str(part.content)) < min_chars:
+    # Measure and persist the *model-facing* rendering, not the Python repr: for a
+    # structured return str() yields `{'a': 1}` while the model actually read compact
+    # JSON (`{"a":1}`). model_response_str() is pydantic-ai's exact wire rendering, so
+    # the size gate charges what the context actually pays and the scratchpad copy is
+    # byte-for-byte what the model saw — the pointer placeholder's read_file round-trip
+    # stays faithful.
+    try:
+        rendered: str | None = part.model_response_str()
+    except Exception:
+        # Exotic content (e.g. multimodal/binary objects) pydantic can't serialize.
+        # Same best-effort contract as persist: never block masking. There are no
+        # faithful bytes to save, so fall back to the repr for the size gate and to
+        # the plain placeholder (no pointer) below.
+        rendered = None
+    size = len(rendered) if rendered is not None else len(str(part.content))
+    if size < min_chars:
         return None
     replacement = MASKED_OBSERVATION
-    if persist is not None:
+    if persist is not None and rendered is not None:
         try:
-            path = persist(str(part.content), part.tool_name)
+            path = persist(rendered, part.tool_name)
         except Exception:
             path = None
         if path:
@@ -349,8 +442,12 @@ def mask_stale_observations(
 
     When ``persist`` is given, it is called with ``(content, tool_name)`` and should
     write the payload somewhere recoverable, returning the path (used in a pointer
-    placeholder) or ``None`` (falls back to plain placeholder). Persist is best-effort:
-    a ``None``/failure never blocks masking.
+    placeholder) or ``None`` (falls back to plain placeholder). The payload handed to
+    ``persist`` is the part's ``model_response_str()`` — byte-for-byte what the model
+    originally read (compact JSON for structured returns, the string itself for str
+    content) — and ``min_chars`` is measured on that same rendering. Persist is
+    best-effort: a ``None``/failure never blocks masking, and content that cannot be
+    rendered at all is masked with the plain placeholder instead of a pointer.
     """
     # First pass: identify which parts should be kept (newest-first counting).
     parts_to_keep = _count_recent_parts(history, keep_recent)

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from pydantic_ai import CombinedToolset, DeferredLoadingToolset
 
-from .config import persist_server_enabled
+from .config import persist_server_enabled, server_prompts_in_ask
 
 logger = logging.getLogger(__name__)
 
@@ -63,14 +63,16 @@ class McpManager:
         # to persist_server_enabled below on every disable_server/enable_server
         # call, explicitly, never omitted. The invariant this upholds: the
         # trust decision used to WRITE mcp config must be the SAME one used to
-        # LOAD it (mcp.config.load_mcp_config's own trust_project). Both the
-        # CLI preset (bootstrap.build_harness, via HarnessConfig.mcp_trust_project)
-        # and an embedder composing HarnessBuilder directly resolve trust once,
-        # up front, and thread that single value into both load and this
-        # manager — so persist can't independently re-derive it from the env
-        # (persist_server_enabled's own env fallback only fires when its
-        # trust_project kwarg is left None, which this class never does) and
-        # drift from whatever load actually used.
+        # LOAD it (mcp.config.load_mcp_config's own trust_project). The CLI
+        # preset (bootstrap.build_harness) wires this from
+        # cfg.trust_project_hooks, the very value it already passes to
+        # load_mcp_config; an embedder composing HarnessBuilder directly has no
+        # project-file loading path at all (with_mcp_server takes ready-built
+        # toolsets — load_mcp_config is bootstrap-only), so False (untrusted)
+        # is the correct default here too — matching load_mcp_config's own
+        # default and keeping persist from independently re-deriving trust from
+        # the env (persist_server_enabled's own env fallback only fires when
+        # its trust_project kwarg is left None, which this class never does).
         self.trust_project: bool = trust_project
 
     @staticmethod
@@ -182,6 +184,16 @@ class McpManager:
             else:
                 granted.append(server)
         return granted, unknown
+
+    def ask_prompting_names(self, names: list[str] | None) -> list[str]:
+        """Of the resolvable requested server names, those whose tool calls
+        would prompt the user per-call in ask mode (``server_prompts_in_ask``).
+        Unknown/disabled names are excluded — they resolve to no server at all,
+        so there is nothing to withhold and the caller's unknown-servers note
+        already covers them. Backs the sub-agent runner's ask-mode grant
+        filtering, where reach is decided up front."""
+        granted, _ = self.granted_servers(names)
+        return [self.server_name(s) for s in granted if server_prompts_in_ask(s)]
 
     async def _tool_count(self, servers: list) -> int:
         """Best-effort total tool count across ``servers`` (each best-effort: a
