@@ -198,8 +198,8 @@ decorates the picker, never disables a level.
   `supported_parameters` array (`"reasoning"` ∈ it ⇒ `True`) in `parse_models`
   (39-66). Helper `model_supports_thinking(entries, id)` mirroring
   `model_supports_images` (254-260).
-- Live fallback: `provider.model_profile(model_id).get('supports_thinking')`
-  (marim already calls `provider.model_profile` in `config/openrouter_cost.py:203`).
+- Live fallback (valid, but **deferred from v1**): `provider.model_profile(model_id).get('supports_thinking')`
+  — `ModelProfile` is a `TypedDict(total=False)` declaring `supports_thinking: bool`, so `.get(...)` is a real API (marim already calls `provider.model_profile` in `config/openrouter_cost.py:203`). Deferred only to avoid threading a provider handle into the TUI picker; the catalog signal covers the annotate-only requirement. Restore this fallback if a provider without catalog coverage needs annotation.
 - **Absence of data ⇒ no annotation** (never cry wolf). Annotate only on a
   definite negative, e.g. "· may be unsupported by <model>".
 
