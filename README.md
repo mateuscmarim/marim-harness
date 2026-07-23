@@ -5,6 +5,9 @@ A terminal coding agent built on [Pydantic AI](https://ai.pydantic.dev/) and
 and runs commands in a workspace, with a live TUI for interactive work and a
 headless mode for one-shot prompts and scripting.
 
+![marim fixing a bug with two parallel sub-agents: fan-out cards, an edit
+approval, and a verification run](docs/assets/demo.gif)
+
 ## Features
 
 - **Interactive TUI** — streaming responses, tool-call cards, a live token
@@ -29,6 +32,28 @@ headless mode for one-shot prompts and scripting.
 - **Embeddable** — `HarnessBuilder` composes the same agent loop as a library,
   with explicit config and no env reads; see [`docs/embedding.md`](docs/embedding.md).
 
+## Why marim?
+
+There are plenty of terminal coding agents. marim's angle:
+
+- **Embeddable first.** The same turn loop that powers the TUI is a library:
+  `HarnessBuilder` composes it with an explicit model, your own tools, and no
+  env reads — build your own agent product on top of it
+  ([`docs/embedding.md`](docs/embedding.md), [`docs/sdk/`](docs/sdk/README.md)).
+- **Any model, including free ones.** OpenRouter, Google, any local
+  OpenAI-compatible server (Ollama, LM Studio) — or delegate turns to Claude
+  Code on a Claude subscription via the `claude-cli` provider. No vendor
+  lock-in, no required API key.
+- **Real editor-grade context.** Language-server integration (Python,
+  TypeScript, C++, Java bundled; more via plugins) gives the agent go-to-
+  definition, references, and diagnostics-on-edit — not just grep.
+- **Structured delegation.** Sub-agents with granted tool reach and model
+  tiers (cheap/med/high), plus sandboxed model-authored workflows for
+  deterministic fan-out.
+- **A trust model that takes running untrusted repos seriously.** Approval
+  modes, a command policy, and project-local hooks/MCP gated behind an
+  explicit opt-in (see [`SECURITY.md`](SECURITY.md)).
+
 ## Install
 
 ```bash
@@ -46,6 +71,23 @@ The `marim serve` HTTP daemon (REST + SSE) lives in the optional `serve` extra
 (`pip install -e '.[serve]'`, or `.[tui,serve]` for both). `./install.sh`
 installs both `tui` and `serve` by default; pass `--no-tui` and/or `--no-serve`
 to skip either.
+
+### Quick start (no API key required)
+
+Point marim at any local OpenAI-compatible server — Ollama or LM Studio work
+out of the box:
+
+```bash
+# .env (see .env.example for all options)
+MARIM_PROVIDER=local
+MARIM_BASE_URL=http://localhost:11434/v1   # Ollama (LM Studio: :1234)
+MARIM_API_KEY=local
+```
+
+Then just run `marim` — the model picker discovers models from the server's
+`/v1/models` endpoint. With an `OPENROUTER_API_KEY` set instead, marim
+defaults to OpenRouter; a Claude Pro/Max subscription works via
+`MARIM_PROVIDER=claude-cli` (delegates turns to the `claude` CLI).
 
 ## Usage
 
@@ -232,6 +274,10 @@ balloon tip — no extra dependencies. Notifications are best-effort: a missing
 daemon or a failed call is silently ignored and never interrupts the agent.
 
 ## Development
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for setup, conventions, and the PR
+checklist, and [`docs/architecture.md`](docs/architecture.md) for a map of the
+codebase. Changes are tracked in [`CHANGELOG.md`](CHANGELOG.md).
 
 ```bash
 uv run pytest        # run the test suite
