@@ -30,8 +30,8 @@ from ..runtime.permissions import Mode
 from ..session import SessionManager
 from .auth import token_matches
 from .host import HostClosed, TurnQueueFull
-from .schema import AskAnswerIn, MessageIn, SessionIn, SteerIn, WorkspaceIn
-from .supervisor import SessionSupervisor
+from .schema import AskAnswerIn, MessageIn, SessionIn, SetModelIn, SteerIn, WorkspaceIn
+from .supervisor import SessionBusy, SessionSupervisor
 from .workspaces import WorkspaceRegistry
 
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -294,6 +294,27 @@ async def post_steer(request: Request) -> Response:
     return JSONResponse({"ok": True})
 
 
+async def set_session_model(request: Request) -> Response:
+    denied = _unauthorized(request)
+    if denied:
+        return denied
+    record = _workspace(request)
+    if record is None:
+        return _error(404, "not_found", "unknown workspace")
+    session_id = request.path_params["sid"]
+    if not _session_exists(record, session_id):
+        return _error(404, "not_found", "unknown session")
+    try:
+        body = await _json_body(request, SetModelIn)
+    except _BadBody as exc:
+        return _error(400, "bad_request", str(exc))
+    try:
+        _supervisor(request).set_model(record, session_id, body.model)
+    except SessionBusy:
+        return _error(409, "busy", "cannot switch models while a turn is running")
+    return JSONResponse({"ok": True, "model": body.model})
+
+
 async def list_asks(request: Request) -> Response:
     denied = _unauthorized(request)
     if denied:
@@ -462,6 +483,7 @@ def create_app(
         Route(f"{base}/messages", post_message, methods=["POST"]),
         Route(f"{base}/interrupt", post_interrupt, methods=["POST"]),
         Route(f"{base}/steer", post_steer, methods=["POST"]),
+        Route(f"{base}/model", set_session_model, methods=["POST"]),
         Route(f"{base}/asks", list_asks, methods=["GET"]),
         Route(f"{base}/asks/{{aid}}", answer_ask, methods=["POST"]),
         WebSocketRoute(f"{base}/ws", session_ws),

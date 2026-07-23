@@ -63,6 +63,10 @@ class SteerIn(BaseModel):
     text: str
 
 
+class SetModelIn(BaseModel):
+    model: str
+
+
 class AskAnswerIn(BaseModel):
     """POST answer for a parked ask. Approvals use approve/reason; ask_user
     questions use answers (or cancel)."""

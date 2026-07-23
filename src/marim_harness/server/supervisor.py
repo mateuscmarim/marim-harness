@@ -19,6 +19,7 @@ from pathlib import Path
 
 from ..runtime.harness import Harness
 from ..runtime.permissions import Mode
+from ..session import SessionManager
 from .bus import EventBus
 from .host import SessionHost
 from .workspaces import WorkspaceRecord
@@ -28,6 +29,10 @@ logger = logging.getLogger(__name__)
 HarnessFactory = Callable[[Path, str, "Mode | None"], Awaitable[Harness]]
 
 _EVICT_POLL_CEILING_SECONDS = 60.0
+
+
+class SessionBusy(Exception):
+    """Raised by set_model when a live host has a turn running."""
 
 
 async def default_harness_factory(
@@ -74,6 +79,20 @@ class SessionSupervisor:
 
     def set_mode(self, ws_id: str, session_id: str, mode: Mode) -> None:
         self._modes[(ws_id, session_id)] = mode
+
+    def set_model(self, record: WorkspaceRecord, session_id: str, model_id: str) -> None:
+        """Apply a model to a session. A loaded host switches live (rebuild +
+        persist) unless it is busy, in which case SessionBusy is raised so the
+        API can reject with 409. An idle session persists straight to its store."""
+        host = self._hosts.get((record.id, session_id))
+        if host is not None:
+            if host.busy:
+                raise SessionBusy(session_id)
+            host.harness.set_model(model_id)
+            return
+        store = SessionManager(Path(record.path)).store(session_id)
+        store.model = model_id
+        store.save_meta()
 
     def peek(self, ws_id: str, session_id: str) -> SessionHost | None:
         return self._hosts.get((ws_id, session_id))
