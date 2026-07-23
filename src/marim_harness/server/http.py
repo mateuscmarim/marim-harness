@@ -216,9 +216,9 @@ def _effective_model(host, info_model: str | None) -> str:
     even when the header was never written); else the persisted header; else
     the configured default, resolved the same way bootstrap.py does — no
     Harness build required."""
-    if host is not None:
+    if host is not None and host.harness.model_id:
         return host.harness.model_id
-    if info_model is not None:
+    if info_model:
         return info_model
     configs, default_provider = detect_active_providers()
     return f"{default_provider}:{configs[default_provider].model or ''}"

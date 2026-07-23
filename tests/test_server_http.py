@@ -516,6 +516,33 @@ def test_effective_model_resolves_configured_default(monkeypatch):
     assert _effective_model(None, None) == "claude-cli:sonnet"
 
 
+def test_effective_model_falls_through_when_host_model_id_blank(monkeypatch):
+    from types import SimpleNamespace
+
+    from marim_harness.config.model import ModelConfig
+    from marim_harness.server.http import _effective_model
+
+    cfg = ModelConfig(provider="claude-cli", model="sonnet")
+    monkeypatch.setattr(
+        "marim_harness.server.http.detect_active_providers",
+        lambda: ({"claude-cli": cfg}, "claude-cli"),
+    )
+    host = SimpleNamespace(harness=SimpleNamespace(model_id=None))
+    assert _effective_model(host, None) == "claude-cli:sonnet"
+
+
+def test_effective_model_falls_through_when_header_blank(monkeypatch):
+    from marim_harness.config.model import ModelConfig
+    from marim_harness.server.http import _effective_model
+
+    cfg = ModelConfig(provider="claude-cli", model="sonnet")
+    monkeypatch.setattr(
+        "marim_harness.server.http.detect_active_providers",
+        lambda: ({"claude-cli": cfg}, "claude-cli"),
+    )
+    assert _effective_model(None, "") == "claude-cli:sonnet"
+
+
 def test_get_session_reports_default_when_header_null(client, monkeypatch):
     from marim_harness.config.model import ModelConfig
 
