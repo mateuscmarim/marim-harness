@@ -210,3 +210,88 @@ async def test_host_for_waits_for_concurrent_close_before_rebuilding(tmp_path):
     # (second_build_returned would land near t=0.01-0.03, long before
     # aclose_done at t=0.1).
     assert timestamps["second_build_returned"] >= timestamps["aclose_done"]
+
+
+async def test_host_for_falls_back_to_persisted_mode(tmp_path):
+    """A daemon restart empties the in-memory mode cache; host_for must
+    recover the mode written on the session file header instead of silently
+    reverting the session to the configured default."""
+    from pydantic_ai.usage import RunUsage
+
+    from marim_harness.session.store import SessionManager
+
+    record = _record(tmp_path)
+    store = SessionManager(Path(record.path)).store("s1")
+    store.mode = "plan"
+    store.save([], RunUsage())
+
+    created: list = []
+    sup = SessionSupervisor(_factory(created))  # fresh supervisor: cache cold
+    await sup.host_for(record, "s1")
+    assert created[0][2] is Mode.plan
+    await sup.aclose()
+
+
+async def test_host_for_ignores_invalid_persisted_mode(tmp_path):
+    from pydantic_ai.usage import RunUsage
+
+    from marim_harness.session.store import SessionManager
+
+    record = _record(tmp_path)
+    store = SessionManager(Path(record.path)).store("s1")
+    store.mode = "yolo"  # hand-edited / future-version file
+    store.save([], RunUsage())
+
+    created: list = []
+    sup = SessionSupervisor(_factory(created))
+    await sup.host_for(record, "s1")
+    assert created[0][2] is None  # falls back to the configured default
+    await sup.aclose()
+
+
+async def test_in_memory_mode_wins_over_persisted(tmp_path):
+    from pydantic_ai.usage import RunUsage
+
+    from marim_harness.session.store import SessionManager
+
+    record = _record(tmp_path)
+    store = SessionManager(Path(record.path)).store("s1")
+    store.mode = "plan"
+    store.save([], RunUsage())
+
+    created: list = []
+    sup = SessionSupervisor(_factory(created))
+    sup.set_mode("ws", "s1", Mode.auto)
+    await sup.host_for(record, "s1")
+    assert created[0][2] is Mode.auto
+    await sup.aclose()
+
+
+async def test_busy_sessions_empty_for_idle_hosts(tmp_path):
+    sup = SessionSupervisor(_factory([]))
+    record = _record(tmp_path)
+    await sup.host_for(record, "s1")
+    assert sup.busy_sessions("ws") == []  # a live but idle host is not busy
+    assert sup.busy_sessions("other") == []
+    await sup.aclose()
+
+
+async def test_close_workspace_reclaims_all_state(tmp_path):
+    created: list = []
+    sup = SessionSupervisor(_factory(created))
+    record = _record(tmp_path)
+    host = await sup.host_for(record, "s1")
+    sup.bus_for("ws", "s1")
+    sup.set_mode("ws", "s2", Mode.auto)  # mode-only entry, no live host
+    sup.bus_for("other", "s9")  # a different workspace must be untouched
+
+    await sup.close_workspace("ws")
+
+    assert sup.peek("ws", "s1") is None
+    assert sup.bus_peek("ws", "s1") is None  # forgotten, not merely evicted
+    assert host.harness is not None  # closed cleanly, not corrupted
+    # A rebuilt host after the wipe sees no cached mode for s2.
+    await sup.host_for(record, "s2")
+    assert created[-1][1:] == ("s2", None)
+    assert sup.bus_peek("other", "s9") is not None
+    await sup.aclose()

@@ -15,7 +15,7 @@ what exists today:
   token counter, inline approval / ask-user / plan panels, sub-agents screen,
   settings, model picker, themes.
 - **Headless mode**: one-shot prompts with `text`, `json`, or `stream-json`
-  output; `marim serve` HTTP daemon (REST + SSE) in the `[serve]` extra.
+  output; `marim serve` HTTP daemon (REST + WebSocket) in the `[serve]` extra.
 - **Providers**: OpenRouter (default), any local OpenAI-compatible server
   (Ollama, LM Studio), Google Gemini, and a `claude-cli` provider that
   delegates turns to Claude Code on a Claude subscription.

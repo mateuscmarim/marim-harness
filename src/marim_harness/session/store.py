@@ -151,6 +151,7 @@ class SessionInfo:
     model: str | None = None
     advisor_model: str | None = None
     thinking: str | None = None
+    mode: str | None = None
 
 
 class SessionStore:
@@ -161,7 +162,8 @@ class SessionStore:
     def __init__(self, path, workspace_root, session_id: str, name: str,
                  auto_named: bool = False, model: str | None = None,
                  advisor_model: str | None = None,
-                 thinking: str | None = None) -> None:
+                 thinking: str | None = None,
+                 mode: str | None = None) -> None:
         self.path = Path(path)
         self.workspace_root = Path(workspace_root).resolve()
         self.session_id = session_id
@@ -178,6 +180,11 @@ class SessionStore:
         # — including "off" as an explicit disable — or None: unset, inherit
         # MARIM_THINKING).
         self.thinking = thinking
+        # The approval mode this session was created with (a Mode value —
+        # "auto"/"ask"/"plan" — or None: use the configured default). Written
+        # by the serve daemon so a session's mode survives a restart; the TUI
+        # neither sets nor reads it (its mode is a live, per-launch toggle).
+        self.mode = mode
 
     def save(self, history: list, usage: RunUsage,
              tasks: list | None = None,
@@ -191,6 +198,7 @@ class SessionStore:
             "model": self.model,
             "advisor_model": self.advisor_model,
             "thinking": self.thinking,
+            "mode": self.mode,
             "workspace": str(self.workspace_root),
             "updated": _now(),
             "duration_seconds": duration_seconds,
@@ -254,6 +262,7 @@ class SessionStore:
             data["model"] = self.model
             data["advisor_model"] = self.advisor_model
             data["thinking"] = self.thinking
+            data["mode"] = self.mode
             atomic_write_text(self.path, json.dumps(data))
 
     def load(self) -> tuple[list, RunUsage, list, float | None, list]:
@@ -367,6 +376,7 @@ class SessionManager:
                     model=data.get("model"),
                     advisor_model=data.get("advisor_model"),
                     thinking=data.get("thinking"),
+                    mode=data.get("mode"),
                 )
             )
         infos.sort(key=lambda info: info.updated, reverse=True)
@@ -389,11 +399,12 @@ class SessionManager:
         model = meta.get("model")
         advisor_model = meta.get("advisor_model")
         thinking = meta.get("thinking")
+        mode = meta.get("mode")
         self._reserved.add(session_id)
         return SessionStore(
             path, self.workspace_root, session_id, name,
             auto_named=auto_named, model=model, advisor_model=advisor_model,
-            thinking=thinking,
+            thinking=thinking, mode=mode,
         )
 
     def create(self, name: str | None = None) -> SessionStore:

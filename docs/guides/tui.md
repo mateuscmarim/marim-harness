@@ -67,7 +67,8 @@ Fields are separated by `·`, left to right:
 | `ctrl+r` | Run the next queued message (resumes a paused queue) |
 | `ctrl+o` | Reveal all tool output in full (expand groups, uncap diffs); press again to restore the default view |
 | `ctrl+x` | Toggle the sub-agents screen |
-| `ctrl+p` | Open the command palette (change theme, show keys, quit) |
+| `ctrl+p` | Open the plan screen (the current plan's summary and checklist; a hint when no plan exists yet) |
+| `ctrl+shift+p` | Open Textual's command palette (change theme, show keys, quit) — needs a terminal with the extended keyboard protocol (e.g. Kitty); elsewhere the terminal can't report the combination |
 | `ctrl+v` | Attach a copied image from the clipboard (see Images) |
 | `ctrl+c` | Quit — requires a second press within 2 seconds to confirm |
 | `/` | Open the slash-command menu — `up`/`down` to move, `tab` to complete, `esc` to dismiss |

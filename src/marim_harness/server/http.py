@@ -111,12 +111,26 @@ async def delete_workspace(request: Request) -> Response:
     if denied:
         return denied
     purge = request.query_params.get("purge") == "true"
+    ws_id = request.path_params["ws"]
+    supervisor = _supervisor(request)
+    # Same refusal (and the same benign check-then-act window) as per-session
+    # DELETE: a turn that starts between this check and the teardown below is
+    # aborted by close_workspace, exactly as delete_session's close would.
+    if supervisor.busy_sessions(ws_id):
+        return _error(
+            409, "busy",
+            "workspace has sessions with running turns; interrupt them first",
+        )
     try:
-        _registry(request).delete(request.path_params["ws"], purge=purge)
+        _registry(request).delete(ws_id, purge=purge)
     except KeyError:
         return _error(404, "not_found", "unknown workspace")
     except ValueError as exc:
         return _error(400, "bad_request", str(exc))
+    # The registry record is gone; reclaim every live host, bus, and cached
+    # mode for the workspace so nothing keeps streaming from (or holding open)
+    # a deleted — possibly purged — directory.
+    await supervisor.close_workspace(ws_id)
     return JSONResponse({"deleted": True})
 
 
@@ -157,6 +171,11 @@ async def create_session(request: Request) -> Response:
     if body.mode is not None and body.mode not in (m.value for m in Mode):
         return _error(400, "bad_request", f"unknown mode: {body.mode}")
     store = SessionManager(Path(record.path)).create(body.name)
+    # Persist the chosen mode on the session header (set before the initial
+    # save below so it lands in the same write): the supervisor's in-memory
+    # copy dies with the daemon, and host_for re-reads this field after a
+    # restart or idle eviction.
+    store.mode = body.mode
     # An immediate empty save makes the session file exist, so list/history/
     # message endpoints see it before its first turn.
     store.save([], RunUsage())

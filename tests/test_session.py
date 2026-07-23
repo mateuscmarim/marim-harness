@@ -433,6 +433,23 @@ def test_model_persists_and_recovers(tmp_path: Path):
     assert mgr.store(store.session_id).model == "openai/gpt-5.2"
 
 
+def test_mode_persists_and_recovers(tmp_path: Path):
+    """The serve daemon writes a session's approval mode on the header so it
+    survives daemon restarts; it must round-trip through save/store/list."""
+    mgr = _manager(tmp_path)
+    store = mgr.create()
+    assert store.mode is None  # unset -> the configured default applies
+    store.mode = "auto"
+    store.save(_history(), RunUsage())
+    assert mgr.store(store.session_id).mode == "auto"
+    assert mgr.list()[0].mode == "auto"
+    # save_meta patches the header without touching messages — mode included.
+    reopened = mgr.store(store.session_id)
+    reopened.mode = "plan"
+    reopened.save_meta()
+    assert mgr.store(store.session_id).mode == "plan"
+
+
 def test_latest_model_returns_most_recent(tmp_path: Path):
     mgr = _manager(tmp_path)
     _write_raw(
