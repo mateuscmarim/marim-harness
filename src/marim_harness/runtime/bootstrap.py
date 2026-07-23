@@ -216,6 +216,6 @@ def build_harness(
     # The claude-cli provider needs late-bound hooks (live approval mode, the real
     # workspace/worktree cwd, the TUI tool-card side-channel). Bind them now; the
     # activity side-channel stays None until the TUI calls bind_ui.
-    harness._wire_cli_model(harness.current_model)
+    harness.wire_cli_model(harness.current_model)
 
     return harness

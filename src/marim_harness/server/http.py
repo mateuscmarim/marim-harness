@@ -12,6 +12,7 @@ import base64
 import contextlib
 import json
 import re
+import time
 from dataclasses import asdict
 from pathlib import Path
 
@@ -23,13 +24,14 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from ..config import MultiModelSource
 from ..images import image_cache_root, media_type_for_path
 from ..runtime.permissions import Mode
 from ..session import SessionManager
 from .auth import token_matches
 from .host import HostClosed, TurnQueueFull
-from .schema import AskAnswerIn, MessageIn, SessionIn, SteerIn, WorkspaceIn
-from .supervisor import SessionSupervisor
+from .schema import AskAnswerIn, MessageIn, SessionIn, SetModelIn, SteerIn, WorkspaceIn
+from .supervisor import SessionBusy, SessionSupervisor
 from .workspaces import WorkspaceRegistry
 
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -157,6 +159,26 @@ async def list_sessions(request: Request) -> Response:
     return JSONResponse({"sessions": sessions})
 
 
+_MODELS_TTL_SECONDS = 60.0
+
+
+async def list_models(request: Request) -> Response:
+    denied = _unauthorized(request)
+    if denied:
+        return denied
+    # Short in-process TTL cache: list_models fetches live provider catalogs, so
+    # cache the assembled list briefly to keep repeated picker opens snappy.
+    cache = request.app.state.models_cache
+    now = time.monotonic()
+    if cache["at"] is None or now - cache["at"] > _MODELS_TTL_SECONDS:
+        entries = await MultiModelSource.from_env().list_models()
+        cache["data"] = [
+            {"id": e.qualified, "name": e.name, "provider": e.provider} for e in entries
+        ]
+        cache["at"] = now
+    return JSONResponse({"models": cache["data"]})
+
+
 async def create_session(request: Request) -> Response:
     denied = _unauthorized(request)
     if denied:
@@ -171,6 +193,8 @@ async def create_session(request: Request) -> Response:
     if body.mode is not None and body.mode not in (m.value for m in Mode):
         return _error(400, "bad_request", f"unknown mode: {body.mode}")
     store = SessionManager(Path(record.path)).create(body.name)
+    if body.model is not None:
+        store.model = body.model
     # Persist the chosen mode on the session header (set before the initial
     # save below so it lands in the same write): the supervisor's in-memory
     # copy dies with the daemon, and host_for re-reads this field after a
@@ -287,6 +311,27 @@ async def post_steer(request: Request) -> Response:
         return _error(409, "not_running", "no running turn to steer")
     host.steer(body.text)
     return JSONResponse({"ok": True})
+
+
+async def set_session_model(request: Request) -> Response:
+    denied = _unauthorized(request)
+    if denied:
+        return denied
+    record = _workspace(request)
+    if record is None:
+        return _error(404, "not_found", "unknown workspace")
+    session_id = request.path_params["sid"]
+    if not _session_exists(record, session_id):
+        return _error(404, "not_found", "unknown session")
+    try:
+        body = await _json_body(request, SetModelIn)
+    except _BadBody as exc:
+        return _error(400, "bad_request", str(exc))
+    try:
+        _supervisor(request).set_model(record, session_id, body.model)
+    except SessionBusy:
+        return _error(409, "busy", "cannot switch models while a turn is running")
+    return JSONResponse({"ok": True, "model": body.model})
 
 
 async def list_asks(request: Request) -> Response:
@@ -446,6 +491,7 @@ def create_app(
     base = "/v1/workspaces/{ws}/sessions/{sid}"
     routes = [
         Route("/v1/health", health, methods=["GET"]),
+        Route("/v1/models", list_models, methods=["GET"]),
         Route("/v1/workspaces", list_workspaces, methods=["GET"]),
         Route("/v1/workspaces", create_workspace, methods=["POST"]),
         Route("/v1/workspaces/{ws}", delete_workspace, methods=["DELETE"]),
@@ -456,6 +502,7 @@ def create_app(
         Route(f"{base}/messages", post_message, methods=["POST"]),
         Route(f"{base}/interrupt", post_interrupt, methods=["POST"]),
         Route(f"{base}/steer", post_steer, methods=["POST"]),
+        Route(f"{base}/model", set_session_model, methods=["POST"]),
         Route(f"{base}/asks", list_asks, methods=["GET"]),
         Route(f"{base}/asks/{{aid}}", answer_ask, methods=["POST"]),
         WebSocketRoute(f"{base}/ws", session_ws),
@@ -477,4 +524,5 @@ def create_app(
     app.state.registry = registry
     app.state.supervisor = supervisor
     app.state.token = token
+    app.state.models_cache = {"at": None, "data": []}
     return app

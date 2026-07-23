@@ -307,11 +307,58 @@ async def test_run_background_subagent_counts_and_persists_usage(tmp_path: Path)
 
 
 @pytest.mark.anyio
+async def test_bg_spawn_skips_force_persist_during_approval_round(tmp_path: Path):
+    """A detached background spawn finishing WHILE the main turn is parked in an
+    approval round must NOT force-persist: the session's in-memory history is
+    dirty then (ends on an unanswered, deferred ToolCallPart), and writing it
+    would leave an unresumable session on disk. The runner reads the shared
+    approval-round latch and defers the write; the spend still lands via the
+    controller's next persist because usage is read live."""
+    from pydantic_ai.models.test import TestModel
+
+    from marim_harness.session import SessionManager
+
+    deps = _make_deps(tmp_path)
+    store = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data").create()
+    h = Harness(
+        model=TestModel(call_tools=[], custom_output_text="BG"),
+        provider=BuiltinToolProvider(), deps=deps, instructions="x", store=store,
+    )
+    persists = {"n": 0}
+    real_persist = h.session.persist
+
+    def counting_persist(*a, **k):
+        persists["n"] += 1
+        return real_persist(*a, **k)
+
+    h.session.persist = counting_persist
+
+    # Simulate the main turn being parked in an approval round: history is dirty,
+    # latch is raised. The background spawn finalize must see it and skip.
+    deps.approval_round_active = True
+    await h.subagents.run_background("explore", "scan the repo")
+    assert persists["n"] == 0, "bg spawn force-persisted dirty history mid-approval"
+
+    # Lower the latch (the round ended) — a subsequent background spawn persists
+    # normally again, proving the skip is scoped to the approval window only.
+    deps.approval_round_active = False
+    await h.subagents.run_background("explore", "scan again")
+    assert persists["n"] == 1, "bg spawn must persist once the approval round ends"
+
+
+@pytest.mark.anyio
 async def test_run_background_subagent_unknown_type(tmp_path: Path):
+    """A background spawn that fails pre-flight (here: unknown type) RAISES a
+    _SpawnPreflightError rather than returning the error as a fake report. In
+    production the coroutine is the body of a registered job, so the raise is
+    what makes the JobRegistry settle the job ``failed`` instead of ``done`` —
+    see runner._preflight_failure / finding #7c."""
+    from marim_harness.subagents.runner import _SpawnPreflightError
+
     deps = _make_deps(tmp_path)
     h = _make_harness(_text_model(), deps)
-    out = await h.subagents.run_background("ghost", "do it")
-    assert "No sub-agent type 'ghost'" in out
+    with pytest.raises(_SpawnPreflightError, match="No sub-agent type 'ghost'"):
+        await h.subagents.run_background("ghost", "do it")
 
 
 @pytest.mark.anyio

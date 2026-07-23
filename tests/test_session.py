@@ -303,7 +303,9 @@ def test_dir_is_workspace_specific(tmp_path: Path):
 def test_create_slugifies_name(tmp_path: Path):
     mgr = _manager(tmp_path)
     store = mgr.create("Fix the Parser!")
-    assert store.session_id == "fix-the-parser"
+    # The id keeps the readable slug as a prefix but carries a short random token
+    # (see below) so concurrent same-name creates can't collide.
+    assert store.session_id.startswith("fix-the-parser-")
     assert store.name == "Fix the Parser!"
 
 
@@ -312,6 +314,28 @@ def test_create_makes_unique_ids(tmp_path: Path):
     a = mgr.create("dup")
     b = mgr.create("dup")  # same name, even before either is saved
     assert a.session_id != b.session_id
+
+
+def test_create_named_ids_survive_cross_process_collision(tmp_path: Path):
+    """Two SEPARATE managers (distinct processes) create a same-named session
+    before either's file exists — each _reserved set is in-memory, so only the
+    random token in the id keeps them from clobbering each other's JSON,
+    checkpoints, transcripts, and git refs."""
+    a = _manager(tmp_path).create("Same Name")
+    b = _manager(tmp_path).create("Same Name")
+    assert a.session_id != b.session_id
+    assert a.session_id.startswith("same-name-")
+    assert b.session_id.startswith("same-name-")
+
+
+def test_create_distinct_non_ascii_names_get_distinct_ids(tmp_path: Path):
+    """All-non-ASCII titles slugify to the same empty base ("session"); the token
+    keeps two genuinely different such sessions from collapsing to one id."""
+    a = _manager(tmp_path).create("日本語")
+    b = _manager(tmp_path).create("中文")
+    assert a.session_id != b.session_id
+    assert a.session_id.startswith("session-")
+    assert b.session_id.startswith("session-")
 
 
 def test_list_sorted_by_recency(tmp_path: Path):
@@ -1472,3 +1496,137 @@ def test_delete_removes_scratchpad_dir(tmp_path, monkeypatch):
     manager.delete(store.session_id)
     # the whole per-session dir (the scratchpad's parent) goes with it
     assert not scratch.parent.exists()
+
+
+# ---------------------------------------------------------------------------
+# persist / reset / compaction data-integrity regressions
+# ---------------------------------------------------------------------------
+
+
+def test_persist_snapshots_tasks_and_jobs_with_history(tmp_path):
+    """persist must freeze tasks/jobs at the point it snapshots the history, not
+    read them live while the (possibly slow, or abandoned-then-resumed) write is
+    in flight — otherwise a writer could pair the history it captured with
+    tasks/jobs a later turn has since mutated. Mutating the live registries DURING
+    the write must not change what lands on disk."""
+    mgr = _manager(tmp_path)
+    store = mgr.create("gen")
+    deps = _make_deps(mgr.workspace_root, mode=Mode.ask)
+    ctrl = SessionController(store, mgr, deps, 100_000, 20)
+    ctrl.history = _history()
+    deps.tasks.load([{"text": "t0", "status": "pending"}])
+
+    real_save = store.save
+
+    def racing_save(history, usage, tasks=None, duration_seconds=None, jobs=None):
+        # A concurrent turn mutates the live registries mid-write. A correct
+        # persist already snapshotted them, so the payload handed to save reflects
+        # the pre-write generation, not this mutation.
+        deps.tasks.load([{"text": "t1", "status": "done"}])
+        return real_save(history, usage, tasks, duration_seconds=duration_seconds, jobs=jobs)
+
+    store.save = racing_save  # type: ignore[method-assign]
+    ctrl.persist(force=True)
+
+    _, _, tasks, _, _ = mgr.store(store.session_id).load()
+    assert [t["text"] for t in tasks] == ["t0"]
+
+
+def test_reset_purges_subagent_image_and_scratchpad_sidecars(tmp_path, monkeypatch):
+    """/clear (reset) must remove the per-id sidecars that store.clear() leaves
+    behind: a running-status transcript sidecar would otherwise resurrect as a
+    phantom "interrupted spawn" card when the emptied session is resumed, and
+    stale cached images / scratchpad files linger under the still-live id."""
+    monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path / "imgcache"))
+    scratch_base = tmp_path / "scratch-base"
+    monkeypatch.setattr(
+        "marim_harness.workspace.scratchpad.scratchpad_base", lambda: scratch_base
+    )
+    from marim_harness.session.transcripts import TranscriptStore
+    from marim_harness.workspace.scratchpad import ensure_scratchpad
+
+    mgr = _manager(tmp_path)
+    store = mgr.create("live")
+    store.save(_history(), RunUsage())
+    sid = store.session_id
+    deps = _make_deps(mgr.workspace_root, mode=Mode.ask)
+    ctrl = SessionController(store, mgr, deps, 100_000, 20)
+
+    TranscriptStore(store.path, sid).write(
+        "call-1", _history(), cap=10_000,
+        meta={"stream_id": "call-1", "status": "running"},
+    )
+    subdir = mgr.dir / f"{sid}.subagents"
+    img = tmp_path / "imgcache" / sid
+    img.mkdir(parents=True)
+    (img / "a.png").write_bytes(b"x")
+    scratch = ensure_scratchpad(mgr.workspace_root, sid)
+    assert subdir.exists() and img.exists() and scratch is not None and scratch.is_dir()
+
+    ctrl.reset()
+
+    assert not subdir.exists()   # no phantom running-spawn card on resume
+    assert not img.exists()
+    assert not scratch.parent.exists()
+
+
+@pytest.mark.anyio
+async def test_restructuring_compaction_invalidates_before_persist(tmp_path):
+    """A compaction that RESTRUCTURES the history (message count changes, so
+    absolute checkpoint indices move) must fire on_history_restructured BEFORE the
+    compacted history is persisted — the crash-safety ordering that keeps the
+    checkpoint sidecar from ever indexing a history the persist is about to
+    shorten. The controller wires this to CheckpointManager.invalidate."""
+    mgr = _manager(tmp_path)
+    store = mgr.create("order")
+    deps = _make_deps(mgr.workspace_root, mode=Mode.ask)
+    ctrl = SessionController(store, mgr, deps, max_context_tokens=1, keep_last_messages=1)
+    ctrl.history = [
+        ModelRequest(parts=[UserPromptPart(content="x" * 5000)]),
+        ModelRequest(parts=[UserPromptPart(content="y" * 5000)]),
+        ModelRequest(parts=[UserPromptPart(content="z" * 5000)]),
+    ]
+    order: list[str] = []
+    ctrl.on_history_restructured = lambda: order.append("invalidate")
+    real_persist = ctrl.persist
+
+    def recording_persist(*a, **k):
+        order.append("persist")
+        return real_persist(*a, **k)
+
+    ctrl.persist = recording_persist  # type: ignore[method-assign]
+
+    before = len(ctrl.history)
+    assert await ctrl.maybe_compact() is True
+    assert len(ctrl.history) != before          # the history was restructured
+    assert order[0] == "invalidate"             # invalidate strictly precedes
+    assert order.index("invalidate") < order.index("persist")
+
+
+@pytest.mark.anyio
+async def test_mask_only_compaction_does_not_invalidate(tmp_path):
+    """A mask-only (micro) compaction leaves the message count unchanged, so every
+    checkpoint index stays valid — on_history_restructured must NOT fire (firing
+    would needlessly destroy the user's rewind points)."""
+    mgr = _manager(tmp_path)
+    store = mgr.create("mask")
+    deps = _make_deps(mgr.workspace_root, mode=Mode.ask)
+    # Threshold sits ABOVE the masked size but BELOW the pre-mask size, so the
+    # entry gate trips, stage-1 masking gets under threshold, and stage-2
+    # summarize (which WOULD restructure) is skipped.
+    ctrl = SessionController(
+        store, mgr, deps, max_context_tokens=200, keep_last_messages=20,
+        mask_observations=True, mask_keep_recent=0, mask_min_chars=1,
+    )
+    ctrl.history = [
+        ModelRequest(parts=[UserPromptPart(content="do a thing")]),
+        ModelResponse(parts=[ToolCallPart(tool_name="read_file", args={}, tool_call_id="c1")]),
+        ModelRequest(parts=[ToolReturnPart(
+            tool_name="read_file", content="X" * 4000, tool_call_id="c1")]),
+    ]
+    fired: list[str] = []
+    ctrl.on_history_restructured = lambda: fired.append("x")
+    before = len(ctrl.history)
+    assert await ctrl.maybe_compact() is True
+    assert len(ctrl.history) == before  # masked in place, count unchanged
+    assert fired == []                  # so no checkpoint invalidation

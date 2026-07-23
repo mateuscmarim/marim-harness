@@ -9,12 +9,14 @@ from pathlib import Path
 import pytest
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.function import FunctionModel
+from pydantic_ai.usage import RunUsage
 
 from marim_harness.runtime.deps import Deps, UIHooks, WorkspaceConfig
 from marim_harness.runtime.harness import Harness
 from marim_harness.runtime.permissions import Mode
 from marim_harness.server.supervisor import SessionSupervisor
 from marim_harness.server.workspaces import WorkspaceRecord
+from marim_harness.session import SessionManager
 from marim_harness.tools.provider import BuiltinToolProvider
 
 pytestmark = pytest.mark.anyio
@@ -85,6 +87,21 @@ async def test_set_mode_reaches_factory(tmp_path):
     await sup.host_for(record, "s1")
     assert created[0][2] is Mode.plan
     await sup.aclose()
+
+
+async def test_set_model_persists_when_idle(tmp_path):
+    """No live host for the session (idle) -> set_model persists straight to
+    the on-disk session store instead of touching a harness."""
+    record = _record(tmp_path)
+    manager = SessionManager(Path(record.path))
+    store = manager.create("s1")
+    store.save([], RunUsage())
+    sid = store.session_id
+
+    sup = SessionSupervisor(_factory([]))
+    sup.set_model(record, sid, "claude-cli:opus")
+
+    assert manager.store(sid).model == "claude-cli:opus"
 
 
 async def test_bus_survives_eviction(tmp_path):

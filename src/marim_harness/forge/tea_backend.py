@@ -13,7 +13,7 @@ import contextlib
 import json
 import os
 import shutil
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
@@ -24,17 +24,12 @@ from .models import CiRun, CiStatus, ForgeError, PullRequest, normalize_ci
 PR_FIELDS = "index,title,state,author,head,base,mergeable,url,updated,ci"
 
 
-def _list_prs_args(state: str, limit: int) -> list[str]:
-    return ["pr", "list", "--state", state, "--limit", str(limit),
-            "-o", "json", "--fields", PR_FIELDS]
-
-
 def _list_prs_page_args(state: str, page: int) -> list[str]:
-    """Same shape as ``_list_prs_args`` but with a fixed page size and an
-    explicit ``--page`` (1-indexed; ``tea pulls list`` supports it, confirmed
-    against the installed tea CLI's ``--help``). Used only by ``_find_pr``'s
-    paging scan below, which needs a page-offset flag rather than a growing
-    ``--limit`` — see ``_PAGE_SIZE``'s comment for why."""
+    """The field-rich ``pr list`` with a fixed page size and an explicit
+    ``--page`` (1-indexed; ``tea pulls list`` supports it, confirmed against the
+    installed tea CLI's ``--help``). The only argv builder for reads: every PR
+    fetch pages through ``_walk_pr_pages`` with a page-offset flag rather than a
+    growing ``--limit`` — see ``_PAGE_SIZE``'s comment for why."""
     return ["pr", "list", "--state", state, "--limit", str(_PAGE_SIZE), "--page", str(page),
             "-o", "json", "--fields", PR_FIELDS]
 
@@ -183,30 +178,54 @@ class TeaBackend:
     def __init__(self, root: Path) -> None:
         self._root = root
 
-    async def list_prs(self, state: str, limit: int) -> list[PullRequest]:
-        raw = await _run_tea(_list_prs_args(state, limit), self._root)
-        return [_map_pr(o) for o in _loads_dict_list(raw, "pull requests")]
-
-    async def _find_pr(
-        self, state: str, match: Callable[[PullRequest], bool]
-    ) -> PullRequest | None:
-        """First PR satisfying ``match``, paging past the newest page. tea's
-        field-rich ``pr list`` is the only endpoint carrying ``ci``/``mergeable``
-        (``tea pr <n>`` has a ci-less shape and is deliberately avoided — see the
-        module header), so we walk ``--page`` at a fixed ``--limit`` until the
-        target is found or an empty page proves the list exhausted. This keeps
-        an old PR (e.g. #5 in a repo with hundreds) findable instead of falsely
-        'missing', and stays correct however the server clamps the per-page
-        size (see ``_PAGE_SIZE``'s comment)."""
+    async def _walk_pr_pages(self, state: str) -> AsyncIterator[list[PullRequest]]:
+        """Yield successive pages of PRs in ``state``, newest-first, stopping at
+        the first empty page. tea's field-rich ``pr list`` is the only endpoint
+        carrying ``ci``/``mergeable`` (``tea pr <n>`` has a ci-less shape and is
+        deliberately avoided — see the module header), so every read walks
+        ``--page`` at a fixed ``--limit``. Terminating on an *empty* page (not a
+        short one) is what keeps this correct however the server clamps the
+        per-page size — see ``_PAGE_SIZE``'s comment. ``_MAX_PAGES`` bounds a
+        pathological server that never empties."""
         for page in range(1, _MAX_PAGES + 1):
             raw = await _run_tea(_list_prs_page_args(state, page), self._root)
             prs = [_map_pr(o) for o in _loads_dict_list(raw, "pull requests")]
             if not prs:
-                return None  # empty page: we've walked past the end of the list
+                return  # empty page: we've walked past the end of the list
+            yield prs
+
+    async def list_prs(self, state: str, limit: int) -> list[PullRequest]:
+        """Newest ``limit`` PRs in ``state``. Pages past Gitea's server-side
+        per-page clamp (``api.MAX_RESPONSE_ITEMS``, ~50) so a caller asking for
+        more than one page's worth actually gets them: a single ``--limit`` query
+        is silently capped at ~50 regardless of what it asks for (see
+        ``_PAGE_SIZE``). Stops once ``limit`` rows are collected or the list is
+        exhausted."""
+        collected: list[PullRequest] = []
+        async for prs in self._walk_pr_pages(state):
+            collected.extend(prs)
+            if len(collected) >= limit:
+                break
+        return collected[:limit]
+
+    async def _find_pr(
+        self, state: str, match: Callable[[PullRequest], bool]
+    ) -> PullRequest | None:
+        """First PR satisfying ``match``, paging past the newest page. Keeps an
+        old PR (e.g. #5 in a repo with hundreds) findable instead of falsely
+        'missing'."""
+        async for prs in self._walk_pr_pages(state):
             found = next((p for p in prs if match(p)), None)
             if found is not None:
                 return found
-        return None  # gave up after _MAX_PAGES pages without an empty page
+        return None  # exhausted (or gave up after _MAX_PAGES on a non-emptying server)
+
+    async def find_open_pr_for_branch(self, branch: str) -> PullRequest | None:
+        """The open PR whose head is ``branch``, or ``None`` — the duplicate-PR
+        guard ``create_pr`` relies on. Pages through every open PR (see
+        ``_find_pr``) so an open PR older than the newest page is still found and
+        a duplicate isn't opened over it."""
+        return await self._find_pr("open", lambda p: p.head == branch)
 
     async def view_pr(
         self, number: int | None, branch: str | None

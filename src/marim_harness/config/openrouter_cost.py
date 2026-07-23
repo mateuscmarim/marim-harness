@@ -93,16 +93,15 @@ def _with_cost(response, mapped: RequestUsage) -> RequestUsage:
     return mapped
 
 
-def _make_cost_classes():
-    """Build the ``_CostStreamedResponse``/``_CostOpenRouterModel`` subclasses.
+def _scrub_text_event(event, carry: str):
+    """Scrub orphan MiniMax tag literals from one already-split stream event.
 
-    Hoisted out of ``build_openrouter_model`` (rather than left as nested
-    classes) purely to keep that factory's McCabe count low — nested
-    class bodies fold their branches into the enclosing function for ruff's
-    C901 count. The classes still need pydantic-ai's OpenRouter types, which
-    are imported lazily by the caller, so they're built inside this factory
-    (called once, at import-adjacent construction time) rather than declared
-    at module scope directly."""
+    Threads ``carry`` (a held trailing partial tag) through and returns
+    ``(possibly-replaced event, new carry)``. Only text-start / text-delta
+    events carry content to scrub; anything else passes through untouched.
+    Lives at module scope (rather than inside ``_make_cost_classes``) so its
+    isinstance branches don't fold into that factory's McCabe count — and so it
+    can be unit-tested directly."""
     import dataclasses
 
     from pydantic_ai.messages import (
@@ -111,12 +110,28 @@ def _make_cost_classes():
         TextPart,
         TextPartDelta,
     )
-    from pydantic_ai.models.openrouter import (
-        OpenRouterModel,
-        OpenRouterStreamedResponse,
-    )
 
-    class _CostStreamedResponse(OpenRouterStreamedResponse):
+    if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
+        clean, carry = scrub_orphan_thinking_tags(event.part.content, carry)
+        event = dataclasses.replace(event, part=dataclasses.replace(event.part, content=clean))
+    elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
+        clean, carry = scrub_orphan_thinking_tags(event.delta.content_delta or "", carry)
+        event = dataclasses.replace(
+            event, delta=dataclasses.replace(event.delta, content_delta=clean)
+        )
+    return event, carry
+
+
+def _make_streamed_cls(base):
+    """Build the cost-capturing ``OpenRouterStreamedResponse`` subclass.
+
+    Split out of ``_make_cost_classes`` so each factory keeps its McCabe count
+    low — a nested class's method bodies fold their branches into the enclosing
+    function for ruff's C901 count, so one factory holding both classes trips
+    the ceiling. ``base`` is pydantic-ai's ``OpenRouterStreamedResponse``,
+    imported lazily by the caller."""
+
+    class _CostStreamedResponse(base):
         # Subclass the OpenRouter streamed response (not the plain OpenAI one)
         # so super()._map_usage still maps cache_read/cache_write tokens.
         def _map_usage(self, response) -> RequestUsage:
@@ -133,27 +148,42 @@ def _make_cost_classes():
                 return
             carry = getattr(self, "_mm_carry", "")
             for event in super()._map_text_delta(choice):
-                if isinstance(event, PartStartEvent) and isinstance(
-                    event.part, TextPart
-                ):
-                    clean, carry = scrub_orphan_thinking_tags(event.part.content, carry)
-                    event = dataclasses.replace(
-                        event, part=dataclasses.replace(event.part, content=clean)
-                    )
-                elif isinstance(event, PartDeltaEvent) and isinstance(
-                    event.delta, TextPartDelta
-                ):
-                    clean, carry = scrub_orphan_thinking_tags(
-                        event.delta.content_delta or "", carry
-                    )
-                    event = dataclasses.replace(
-                        event,
-                        delta=dataclasses.replace(event.delta, content_delta=clean),
-                    )
+                event, carry = _scrub_text_event(event, carry)
                 yield event
             self._mm_carry = carry
 
-    class _CostOpenRouterModel(OpenRouterModel):
+        def _flush_orphan_carry(self) -> Iterator[ModelResponseStreamEvent]:
+            # Re-emit any held partial-tag text at end-of-stream. scrub_orphan_
+            # thinking_tags holds back a trailing proper-prefix of a tag (a lone
+            # ``<`` or ``<mm:th``) in case the tag completes on the next delta. When
+            # the stream ends it never will, so that text is real content — emit it
+            # as plain text (no thinking_tags, or the parts manager would hold it
+            # back again) instead of silently dropping the final characters.
+            carry = getattr(self, "_mm_carry", "")
+            if not carry:
+                return
+            self._mm_carry = ""
+            yield from self._parts_manager.handle_text_delta(
+                vendor_part_id="content", content=carry
+            )
+
+        async def _get_event_iterator(self):
+            async for event in super()._get_event_iterator():
+                yield event
+            for event in self._flush_orphan_carry():
+                yield event
+
+    return _CostStreamedResponse
+
+
+def _make_model_cls(base, streamed_base, streamed_cls):
+    """Build the cost-capturing ``OpenRouterModel`` subclass. Split out of
+    ``_make_cost_classes`` for the same C901 reason as ``_make_streamed_cls``.
+    ``base``/``streamed_base`` are pydantic-ai's ``OpenRouterModel`` and
+    ``OpenRouterStreamedResponse``; ``streamed_cls`` is the streamed subclass
+    the live response instance is retyped to."""
+
+    class _CostOpenRouterModel(base):
         # Non-streaming path (e.g. the summarizer/titler agents).
         def _map_usage(self, response) -> RequestUsage:
             return _with_cost(response, super()._map_usage(response))
@@ -165,12 +195,31 @@ def _make_cost_classes():
         @asynccontextmanager
         async def request_stream(self, *args, **kwargs):
             async with super().request_stream(*args, **kwargs) as stream:
-                if isinstance(stream, OpenRouterStreamedResponse):
+                if isinstance(stream, streamed_base):
                     with suppress(TypeError):  # layout mismatch on some pydantic-ai build
-                        stream.__class__ = _CostStreamedResponse
+                        stream.__class__ = streamed_cls
                 yield stream
 
     return _CostOpenRouterModel
+
+
+def _make_cost_classes():
+    """Build the ``_CostStreamedResponse``/``_CostOpenRouterModel`` subclasses.
+
+    Hoisted out of ``build_openrouter_model`` (rather than left as nested
+    classes) purely to keep that factory's McCabe count low. The classes need
+    pydantic-ai's OpenRouter types, which are imported lazily here (called once,
+    at import-adjacent construction time) rather than at module scope. The two
+    subclasses are themselves built by dedicated sub-factories so no single
+    function's McCabe count folds in both class bodies at once."""
+    from pydantic_ai.models.openrouter import (
+        OpenRouterModel,
+        OpenRouterStreamedResponse,
+    )
+
+    streamed_cls = _make_streamed_cls(OpenRouterStreamedResponse)
+    model_cls = _make_model_cls(OpenRouterModel, OpenRouterStreamedResponse, streamed_cls)
+    return model_cls, streamed_cls
 
 
 def build_openrouter_model(model_id: str, api_key: str | None):
@@ -189,7 +238,7 @@ def build_openrouter_model(model_id: str, api_key: str | None):
     from pydantic_ai.profiles import merge_profile
     from pydantic_ai.providers.openrouter import OpenRouterProvider
 
-    _CostOpenRouterModel = _make_cost_classes()
+    _CostOpenRouterModel, _ = _make_cost_classes()
 
     provider = OpenRouterProvider(api_key=api_key)
     # MiniMax's native thinking tags aren't the OpenRouter profile default, so

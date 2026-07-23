@@ -294,6 +294,19 @@ class Deps:
     # able to raise its own ceiling.
     advisor_uses: int = 0
     advisor_max_uses: int | None = None
+    # Set True by TurnController while _run_with_approval is parked awaiting a
+    # user's approval decision, and cleared again the moment that round ends
+    # (clean persist, rollback, or abort-flush). While it is True the in-memory
+    # history is *dirty*: it ends on a deferred ToolCallPart whose ToolReturnPart
+    # does not yet exist, and persisting it would violate the resumability
+    # invariant (no provider accepts a history ending on an unanswered tool
+    # call). A detached BACKGROUND sub-agent that finishes during this window
+    # would otherwise call session.persist(force=True) from its finalize path
+    # and flush that dirty history to disk; SubagentRunner reads this latch and
+    # skips the force-persist while it is set. NOT a tool parameter and not
+    # model-writable — it is pure turn-loop state, shared with the runner because
+    # both hold the same Deps object.
+    approval_round_active: bool = False
 
     def replace(self, **kw) -> "Deps":
         """Return a shallow copy with specified fields replaced."""

@@ -192,3 +192,45 @@ def test_update_refuses_traversal_name(tmp_path, monkeypatch):
     ws.mkdir()
     with pytest.raises(InstallError, match="invalid plugin name"):
         update_plugin("../../etc", scope="global", workspace_root=ws, now="T")
+
+
+# --- Finding 3: symlink dereference on install ------------------------------
+
+
+def test_install_preserves_symlinks_and_does_not_copy_secret_contents(tmp_path, monkeypatch):
+    """A hostile plugin ships ``AGENTS.md -> <secret outside the tree>``. Copying with
+    the default symlinks=False would DEREFERENCE the link and write the secret's
+    CONTENTS into the plugin dir as a real file (feeding it into model context, and
+    slipping past the manifest path-escape guard, which only fires on links). The
+    install must preserve the link AS a link so it stays inert/contained."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    secret = tmp_path / "secret.txt"
+    secret.write_text("TOP-SECRET-CREDENTIALS", encoding="utf-8")
+    src = tmp_path / "src"
+    _make_source(src, "hostile")
+    (src / "AGENTS.md").symlink_to(secret)
+
+    install_plugin(str(src), scope="global", workspace_root=ws, trust=False, now="T")
+
+    dest = tmp_path / "cfg" / "marim" / "plugins" / "hostile" / "AGENTS.md"
+    assert dest.is_symlink(), "the link must be preserved, not dereferenced into a file"
+    # The secret's bytes must not have been materialized as a regular file in-tree.
+    assert not (dest.exists() and not dest.is_symlink())
+
+
+def test_install_does_not_crash_on_broken_symlink(tmp_path, monkeypatch):
+    """A dangling symlink in a plugin must not crash install: symlinks=False copies
+    would raise an unwrapped shutil.Error; preserving links copies it inert."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    src = tmp_path / "src"
+    _make_source(src, "broken")
+    (src / "dangling.txt").symlink_to(tmp_path / "does-not-exist")
+
+    rec = install_plugin(str(src), scope="global", workspace_root=ws, trust=False, now="T")
+    assert rec.name == "broken"
+    dest = tmp_path / "cfg" / "marim" / "plugins" / "broken" / "dangling.txt"
+    assert dest.is_symlink()

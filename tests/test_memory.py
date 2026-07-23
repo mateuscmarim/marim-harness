@@ -27,7 +27,22 @@ def test_slugify_normalizes():
     assert memory._slugify("Build uses uv!") == "build-uses-uv"
     assert memory._slugify("  Multiple   Spaces  ") == "multiple-spaces"
     assert memory._slugify("CamelCase/path") == "camelcase-path"
-    assert memory._slugify("") == "memory"
+    # An empty / all-non-ASCII title no longer collapses to a shared "memory"
+    # constant: it falls back to a per-title hash so two such memories don't
+    # overwrite one another (see test_slugify_empty_fallback_is_per_title).
+    assert memory._slugify("").startswith("memory-")
+
+
+def test_slugify_empty_fallback_is_per_title():
+    """A title with no ASCII letters/digits slugifies to a deterministic,
+    title-specific ``memory-<hash>`` — NOT one shared "memory" file. Distinct
+    non-ASCII titles get distinct slugs (so neither overwrites the other), while
+    the SAME title always resolves to the same slug (so recall still finds it)."""
+    a = memory._slugify("日本語")
+    b = memory._slugify("中文")
+    assert a.startswith("memory-") and b.startswith("memory-")
+    assert a != b                              # distinct titles -> distinct files
+    assert a == memory._slugify("日本語")       # deterministic per title
 
 
 def test_slugify_transliterates_accents():
@@ -453,3 +468,71 @@ def test_save_memory_fails_soft_on_corrupt_index(tmp_path: Path):
         sc, name="y", description="d", mem_type="project", body="b", title="Y"
     )
     assert result is None
+
+
+def test_save_memory_collision_does_not_overwrite_other_entry(tmp_path: Path):
+    """Two DIFFERENT titles that slugify alike ("Foo Bar" vs "foo bar" -> both
+    "foo-bar") must not clobber each other: the second gets a suffixed slug, so
+    both files exist and both index lines survive. Before the fix the second save
+    overwrote the first's file AND replaced its index line (silent memory loss)."""
+    sc = memory.project_scope(tmp_path)
+    p1 = memory.save_memory(
+        sc, name="Foo Bar", description="first fact", mem_type="project",
+        body="body one", title="Foo Bar",
+    )
+    p2 = memory.save_memory(
+        sc, name="foo bar", description="second fact", mem_type="project",
+        body="body two", title="foo bar",
+    )
+    assert p1 is not None and p2 is not None
+    assert p1 != p2                       # distinct files, no overwrite
+    assert p1.name == "foo-bar.md"        # first writer keeps the clean slug
+    assert p2.name == "foo-bar-2.md"      # collision loser gets a suffix
+    assert "body one" in p1.read_text()
+    assert "body two" in p2.read_text()
+    index = (sc.root / "MEMORY.md").read_text()
+    assert "(foo-bar.md)" in index and "(foo-bar-2.md)" in index  # both entries kept
+
+
+def test_save_memory_resave_reuses_slug_not_a_new_suffix(tmp_path: Path):
+    """Re-saving the SAME title must update in place (reuse its slug), never
+    allocate a new suffixed slug each time."""
+    sc = memory.project_scope(tmp_path)
+    first = memory.save_memory(
+        sc, name="Build tool", description="v1", mem_type="project",
+        body="b1", title="Build tool",
+    )
+    again = memory.save_memory(
+        sc, name="Build tool", description="v2", mem_type="project",
+        body="b2", title="Build tool",
+    )
+    assert first == again == sc.root / "build-tool.md"
+    index = (sc.root / "MEMORY.md").read_text()
+    assert index.count("build-tool.md") == 1  # one entry, updated in place
+    assert "v2" in index
+
+
+def test_save_memory_title_with_link_syntax_still_upserts(tmp_path: Path):
+    """A title containing ``](`` used to forge a second link on the index line,
+    so _ENTRY_LINK_RE captured the wrong slug and the upsert dedup misfired,
+    accumulating duplicates. The title is sanitized into the line now, so a
+    re-save updates the one entry in place."""
+    tricky = "see [x](y.md) note"
+    sc = memory.project_scope(tmp_path)
+    memory.save_memory(
+        sc, name=tricky, description="first", mem_type="project",
+        body="b1", title=tricky,
+    )
+    memory.save_memory(
+        sc, name=tricky, description="second", mem_type="project",
+        body="b2", title=tricky,
+    )
+    index = (sc.root / "MEMORY.md").read_text()
+    slug = memory._slugify(tricky)
+    # exactly one entry for this memory, and its OWN link is the only ](…md) on it
+    assert index.count(f"({slug}.md)") == 1
+    assert "](y.md)" not in index       # the forged second link was defused
+    assert "second" in index            # updated in place, not duplicated
+    lines = [ln for ln in index.splitlines() if f"({slug}.md)" in ln]
+    assert len(lines) == 1
+    assert memory._ENTRY_LINK_RE.match(lines[0]).group("slug") == slug

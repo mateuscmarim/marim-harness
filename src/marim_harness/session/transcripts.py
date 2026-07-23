@@ -11,6 +11,7 @@ tool_call_id."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -29,9 +30,18 @@ _UNSAFE = re.compile(r"[^a-zA-Z0-9_.-]")
 
 
 def _safe(stream_id: str) -> str:
-    """A filesystem-safe filename stem for a tool_call_id (same sanitization rule
-    as the TUI's pane_id), prefixed to guarantee a non-empty, letter-leading name."""
-    return "t-" + _UNSAFE.sub("-", stream_id or "none")
+    """A filesystem-safe, INJECTIVE filename stem for a tool_call_id, prefixed to
+    guarantee a non-empty, letter-leading name.
+
+    The readable prefix (the sanitized id) is not injective on its own — distinct
+    ids that differ only in unsafe characters collapse together (``a/b`` and
+    ``a b`` both sanitize to ``a-b``), so one spawn's sidecar would silently
+    overwrite another's. Appending a short hash of the TRUE id restores
+    injectivity: distinct ids always yield distinct stems, while the prefix stays
+    human-scannable in the directory listing."""
+    raw = stream_id or "none"
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+    return "t-" + _UNSAFE.sub("-", raw) + "-" + digest
 
 
 class TranscriptStore:

@@ -3,7 +3,12 @@ from collections.abc import Awaitable, Callable
 from enum import Enum
 from pathlib import Path
 
-from pydantic_ai import DeferredToolRequests, DeferredToolResults, ToolDenied
+from pydantic_ai import (
+    DeferredToolRequests,
+    DeferredToolResults,
+    ToolApproved,
+    ToolDenied,
+)
 from pydantic_ai.tools import DeferredToolApprovalResult
 
 from ..read_only_commands import is_read_only
@@ -38,29 +43,55 @@ def _bash_command(call: object) -> str:
     return str(_call_args(call).get("command", ""))
 
 
-def _is_scratchpad_write(call: object, root: Path, scratchpad: Path) -> bool:
-    """True when this approval call is a write_file/edit_file whose target
-    resolves inside the scratchpad. Mirrors the tool layer's own resolution
-    order (_safe_write in tools/impl/fs.py): the workspace root is tried
-    first, so a relative path — which always lands in the workspace — can
-    never be mistaken for a scratchpad write; only a path the workspace
-    guard rejects may qualify. Resolution chases symlinks and ``..``, so the
-    check is on the real target, not a string prefix."""
+def _scratchpad_write_target(call: object, root: Path, scratchpad: Path) -> Path | None:
+    """The resolved canonical target of a write_file/edit_file call when it lands
+    inside the scratchpad, else ``None``. Mirrors the tool layer's own resolution
+    order (_safe_write in tools/impl/fs.py): the workspace root is tried first, so
+    a relative path — which always lands in the workspace — can never be mistaken
+    for a scratchpad write; only a path the workspace guard rejects may qualify.
+    Resolution chases symlinks and ``..``, so the decision — and the returned
+    target — are the real file, not a string prefix."""
     if getattr(call, "tool_name", None) not in ("write_file", "edit_file"):
-        return False
+        return None
     path = str(_call_args(call).get("path", ""))
     if not path:
-        return False
+        return None
     try:
         resolve_in_workspace(root, path)
-        return False  # a workspace write: normal gating applies
+        return None  # a workspace write: normal gating applies
     except WorkspaceError:
         pass
     try:
-        resolve_in_workspace(scratchpad, path)
+        return resolve_in_workspace(scratchpad, path)
     except WorkspaceError:
-        return False
-    return True
+        return None
+
+
+def _scratchpad_approval(
+    call: object, workspace_root: Path | None, scratchpad: Path | None
+) -> ToolApproved | None:
+    """The ask-mode scratchpad auto-approval, or ``None`` when the call isn't a
+    scratchpad write (so the caller falls through to normal gating).
+
+    Crucially, the returned ``ToolApproved`` PINS the resolved canonical target
+    via ``override_args`` instead of a bare ``True``. Between this approval and
+    the tool actually opening the file there is a TOCTOU window: the original
+    ``path`` may name a symlink under the scratchpad, and an attacker who can
+    write there could repoint it after we bless it, redirecting the write out of
+    the scratchpad. Handing the executor the already-resolved absolute path (not
+    the symlink name) closes that specific swap — the tool writes the exact file
+    we approved, not whatever the name later points to. (Residual: fully defeating
+    a swap of a *parent component* of the resolved path needs an ``O_NOFOLLOW``
+    open in the tool executor — tools/impl/fs.py — which this layer can't reach.)
+    """
+    if workspace_root is None or scratchpad is None:
+        return None
+    target = _scratchpad_write_target(call, workspace_root, scratchpad)
+    if target is None:
+        return None
+    args = dict(_call_args(call))
+    args["path"] = str(target)
+    return ToolApproved(override_args=args)
 
 
 def _plan_decision(call: object) -> "bool | ToolDenied":
@@ -106,25 +137,24 @@ async def resolve_approvals(
     """
     results = DeferredToolResults()
     for call in requests.approvals:
+        # Scratchpad writes are pre-blessed in ask mode — the directory exists
+        # precisely so intermediate work doesn't prompt (the instructions block
+        # advertises exactly that). bash never qualifies: a command's filesystem
+        # reach can't be cheaply proven to stay inside the scratchpad. The
+        # approval pins the resolved path (see _scratchpad_approval) rather than a
+        # bare True. Computed once per call so the elif chain reads a value.
+        scratch_ok = (
+            _scratchpad_approval(call, workspace_root, scratchpad)
+            if mode is Mode.ask
+            else None
+        )
         if mode is Mode.auto:
             results.approvals[call.tool_call_id] = True
         elif mode is Mode.plan:
             results.approvals[call.tool_call_id] = _plan_decision(call)
-        elif (
-            mode is Mode.ask
-            and scratchpad is not None
-            and workspace_root is not None
-            and _is_scratchpad_write(call, workspace_root, scratchpad)
-        ):
-            # Scratchpad writes are pre-blessed in ask mode — the directory
-            # exists precisely so intermediate work doesn't prompt (the
-            # instructions block advertises exactly that). bash never
-            # qualifies: a command's filesystem reach can't be cheaply
-            # proven to stay inside the scratchpad. The `mode is Mode.ask`
-            # conjunct is redundant today (auto/plan are already handled above,
-            # so only ask reaches this branch) but pins the bypass explicitly —
-            # a future Mode member added here must not silently inherit it.
-            results.approvals[call.tool_call_id] = True
+        elif scratch_ok is not None:
+            # ask mode + a scratchpad write: the resolved-path-pinned approval.
+            results.approvals[call.tool_call_id] = scratch_ok
         elif request_approval is None:
             results.approvals[call.tool_call_id] = ToolDenied(
                 "no approver available; denied"

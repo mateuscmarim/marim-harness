@@ -219,6 +219,108 @@ def test_request_usage_folds_cache_and_cost():
     assert u.details[COST_DETAIL_KEY] == 250_000
 
 
+def test_request_usage_cost_rounds_not_truncates():
+    # Sub-micro-USD conversion must round (matching openrouter_cost) rather than
+    # int()-truncate, or a fractional micro-USD is silently floored away.
+    from marim_harness.usage import COST_DETAIL_KEY
+
+    u = request_usage_from_cli({"input_tokens": 1, "output_tokens": 1}, total_cost_usd=0.0000007)
+    # 0.0000007 * 1_000_000 == 0.7 -> round() == 1 (int() truncation would give 0).
+    assert u.details[COST_DETAIL_KEY] == 1
+    u2 = request_usage_from_cli(
+        {"input_tokens": 1, "output_tokens": 1}, total_cost_usd=0.123456789
+    )
+    assert u2.details[COST_DETAIL_KEY] == 123457  # 123456.789 rounded
+
+
+@pytest.mark.anyio
+async def test_response_timestamp_is_per_request_not_construction():
+    # All ModelResponses from one instance must NOT share a construction-time
+    # timestamp — each is stamped at request time, so a multi-turn history doesn't
+    # carry identical, stale timestamps.
+    import asyncio
+    from datetime import datetime, timezone
+
+    model = ClaudeCliModel("sonnet")
+    t_after_construction = datetime.now(tz=timezone.utc)
+    await asyncio.sleep(0.02)
+    model.spawn = _fake_objs(
+        [
+            _INIT,
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}},
+            _result("hi"),
+        ]
+    )
+    from pydantic_ai.models import ModelRequestParameters
+
+    resp = await model.request(_user("hi"), None, ModelRequestParameters())
+    # Stamped after construction (past the sleep), proving it isn't the shared
+    # construction-time value (which would predate t_after_construction).
+    assert resp.timestamp > t_after_construction
+
+
+@pytest.mark.anyio
+async def test_stream_abandon_closes_child_deterministically():
+    # A turn abandoned mid-stream (consumer breaks; the child `claude` is still
+    # running and no `result` has arrived) must close the spawn generator on
+    # context-manager exit — running its process-kill finally — rather than
+    # leaking the child until nondeterministic GC.
+    import asyncio
+
+    model = ClaudeCliModel("sonnet")
+    closed = asyncio.Event()
+
+    async def _spawn(argv, cwd):
+        try:
+            yield _INIT
+            yield {"type": "assistant", "message": {"content": [{"type": "text", "text": "x"}]}}
+            await asyncio.sleep(3600)  # child still running; no result event ever
+        finally:
+            closed.set()
+
+    model.spawn = _spawn
+    from pydantic_ai.models import ModelRequestParameters
+
+    async with model.request_stream(_user("hi"), None, ModelRequestParameters()) as stream:
+        async for _ev in stream:
+            break  # abandon the turn after the first surfaced event
+
+    # Exiting the context manager closed the spawn generator (spawn was suspended
+    # at a yield, not on the await stack), so cleanup ran without waiting for GC.
+    assert closed.is_set()
+
+
+@pytest.mark.anyio
+async def test_request_closes_child_on_consumer_cancel():
+    # The non-streaming request() path also closes the spawn generator on
+    # cancellation, so a Ctrl-C mid-turn kills the child promptly.
+    import asyncio
+
+    model = ClaudeCliModel("sonnet")
+    started = asyncio.Event()
+    closed = asyncio.Event()
+
+    async def _spawn(argv, cwd):
+        try:
+            yield _INIT
+            started.set()
+            await asyncio.sleep(3600)
+        finally:
+            closed.set()
+
+    model.spawn = _spawn
+    from pydantic_ai.models import ModelRequestParameters
+
+    task = asyncio.ensure_future(
+        model.request(_user("hi"), None, ModelRequestParameters())
+    )
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.wait_for(closed.wait(), timeout=1.0)
+
+
 def test_format_activity_line_summarizes_common_tools():
     assert format_activity_line("Read", {"file_path": "a/b.py"}) == "▸ Read a/b.py"
     assert format_activity_line("Bash", {"command": "ls -la"}) == "▸ Bash ls -la"

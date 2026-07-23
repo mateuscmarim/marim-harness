@@ -22,8 +22,16 @@ class _Ctx:
         self.deps = _Deps(_WS(root))
 
 
+# Real Gitea clamps a page to ~api.MAX_RESPONSE_ITEMS (default 50) regardless of
+# what --limit asks for; the stub models that so a `list_prs(limit>50)` scan can
+# never see past the newest page (the bug the paged find in the backend fixes).
+_SERVER_PAGE_CAP = 50
+
+
 class StubBackend:
-    """In-memory ForgeBackend — no CLI. Configured per test."""
+    """In-memory ForgeBackend — no CLI. Configured per test. ``list_prs`` models
+    Gitea's server-side per-page clamp; ``find_open_pr_for_branch`` walks every
+    open PR the way a real paged backend does."""
 
     def __init__(self, prs=(), status=None, existing=None, created=None):
         self._prs = list(prs)
@@ -33,9 +41,16 @@ class StubBackend:
         self.created_args = None
 
     async def list_prs(self, state, limit):
-        if state == "all":
-            return self._prs[:limit]
-        return [p for p in self._prs if p.state == state][:limit]
+        rows = self._prs if state == "all" else [p for p in self._prs if p.state == state]
+        # Faithful clamp: at most _SERVER_PAGE_CAP rows come back however large
+        # `limit` is — a caller that only has list_prs can't page past the newest
+        # window, so a scan built on it misses an older PR.
+        return rows[: min(limit, _SERVER_PAGE_CAP)]
+
+    async def find_open_pr_for_branch(self, branch):
+        # A real backend pages through *all* open PRs, so an old one is still
+        # found; the stub scans its full list to model that.
+        return next((p for p in self._prs if p.state == "open" and p.head == branch), None)
 
     async def view_pr(self, number, branch):
         return self._existing
@@ -156,8 +171,11 @@ async def test_list_prs_tool_surfaces_malformed_tea_json(monkeypatch, tmp_path):
 
 @pytest.mark.anyio
 async def test_create_pr_dup_check_pages_past_first_fifty(monkeypatch, tmp_path):
-    # Finding 2: an existing open PR for the branch sits beyond the newest 50, so
-    # the duplicate check must page to find it instead of opening a duplicate.
+    # An existing open PR for the branch sits beyond the newest 50. The stub's
+    # list_prs clamps at _SERVER_PAGE_CAP (real Gitea behaviour), so the old
+    # grow-the-limit scan built on list_prs would miss #5 and open a duplicate —
+    # this must FAIL against that. The backend's paged find_open_pr_for_branch
+    # walks every open PR, so #5 is found and no duplicate is created.
     monkeypatch.setattr(ft, "current_branch", _aret("feature/old"))
     monkeypatch.setattr(ft, "branch_pushed", _aret(True))
     prs = [

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import stat
 import sys
@@ -5,7 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from marim_harness.subagents.cli_backend import ClaudeCliRunner, CliRunError, build_cli_argv
+from marim_harness.subagents.cli_backend import (
+    ClaudeCliRunner,
+    CliRunError,
+    build_cli_argv,
+    synth_usage,
+)
+from marim_harness.usage import COST_DETAIL_KEY
 
 
 def test_build_cli_argv_resume_and_no_system():
@@ -175,3 +182,76 @@ async def test_run_raises_when_stream_ends_without_result(tmp_path):
         )
     assert "no result" in str(exc.value)
     assert "some diagnostic noise" in str(exc.value)
+
+
+def test_synth_usage_rounds_micro_usd():
+    # round(), not int(): a billed 1.001 USD is 1000999.9999999999 as a float, so
+    # int() truncates to 1000999 — one micro-USD short — while round() gives the
+    # exact 1001000, matching config/openrouter_cost.py's rounding.
+    assert int(1.001 * 1_000_000) == 1000999  # pins the truncation the fix avoids
+    usage = synth_usage({"input_tokens": 1, "output_tokens": 1}, 1, total_cost_usd=1.001)
+    assert usage.details[COST_DETAIL_KEY] == 1001000
+
+
+# A fake claude that emits a valid result to stdout, then backgrounds a daemon
+# which inherits our stderr (fd 2) and outlives us — so the parent's stderr pipe
+# never reaches EOF even after we exit. stdout/stdin are redirected away from the
+# daemon so ONLY stderr stays held (otherwise stdout wouldn't EOF either). This
+# reproduces the `nohup … &` hang the bounded drain must survive.
+_STREAM_STDERR_HELD = '''#!{python}
+import json, sys, subprocess
+subprocess.Popen(
+    [{python!r}, "-c", "import time; time.sleep(30)"],
+    stdout=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+)
+sys.stdout.write(json.dumps({{"type": "result", "subtype": "success",
+    "result": "done", "num_turns": 1,
+    "usage": {{"input_tokens": 1, "output_tokens": 1}}}}) + "\\n")
+sys.stdout.flush()
+'''
+
+
+@pytest.mark.anyio
+async def test_run_returns_when_stderr_never_eofs(tmp_path):
+    # Regression: a spawn whose stderr is held open by a backgrounded daemon
+    # past the child's own exit must NOT hang run() forever (pinning the runner's
+    # concurrency slot). The bounded stderr drain kills the group on expiry and
+    # returns with the captured result. asyncio.wait_for is the guard: if run()
+    # hung, it would raise TimeoutError instead of returning "done".
+    runner = ClaudeCliRunner(None, None)
+    result = await asyncio.wait_for(
+        runner.run(
+            binary=_script(tmp_path, _STREAM_STDERR_HELD), prompt="task",
+            system_prompt="sys", cwd=str(tmp_path), allow_gated=False,
+            allowed_tools=[], model=None, stream_id="sg-cli",
+        ),
+        timeout=15,
+    )
+    assert result.output == "done"
+
+
+# A fake claude emitting an NDJSON line far larger than asyncio's 64 KiB readline
+# buffer cap — the exact crash _iter_ndjson_lines was written to prevent.
+_STREAM_HUGE_LINE = '''#!{python}
+import json, sys
+big = "x" * (70 * 1024)
+sys.stdout.write(json.dumps({{"type": "assistant", "message": {{"content": [
+    {{"type": "text", "text": big}}]}}}}) + "\\n")
+sys.stdout.write(json.dumps({{"type": "result", "subtype": "success",
+    "result": big, "num_turns": 1, "usage": {{}}}}) + "\\n")
+'''
+
+
+@pytest.mark.anyio
+async def test_run_parses_ndjson_line_over_64kib(tmp_path):
+    # Regression for _iter_ndjson_lines: a >64 KiB line (a tool_result carrying a
+    # large file's contents) must be parsed whole, not truncated or crashed. A
+    # revert to `readline()`/`async for line in stream` would raise ValueError
+    # ("chunk is longer than limit") on the real StreamReader here.
+    runner = ClaudeCliRunner(None, None)
+    result = await runner.run(
+        binary=_script(tmp_path, _STREAM_HUGE_LINE), prompt="task",
+        system_prompt="sys", cwd=str(tmp_path), allow_gated=False,
+        allowed_tools=[], model=None, stream_id="sg-cli",
+    )
+    assert result.output == "x" * (70 * 1024)

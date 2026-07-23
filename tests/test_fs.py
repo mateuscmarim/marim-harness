@@ -141,6 +141,46 @@ def test_write_file_no_temp_left_behind(tmp_path: Path):
     assert [p.name for p in tmp_path.iterdir()] == ["a.txt"]
 
 
+def test_reject_symlinked_path_component_blocks_parent_symlink(tmp_path: Path):
+    """A resolved write target whose parent has become a symlink (a TOCTOU swap
+    after _safe_write validated the path) must be refused, not followed."""
+    base = Path(os.path.realpath(tmp_path))  # collapse any symlinked /tmp
+    realdir = base / "real"
+    realdir.mkdir()
+    link = base / "link"
+    link.symlink_to(realdir, target_is_directory=True)
+    # p names the file THROUGH the symlink; realpath collapses link→real, so the
+    # guard sees the mismatch (p is no longer symlink-free) and refuses.
+    with pytest.raises(ModelRetry, match="symbolic link"):
+        fs._reject_symlinked_path_component(link / "f.txt")
+
+
+def test_reject_symlinked_path_component_allows_canonical(tmp_path: Path):
+    """A genuinely canonical (symlink-free) target passes the guard untouched."""
+    base = Path(os.path.realpath(tmp_path))
+    realdir = base / "real"
+    realdir.mkdir()
+    fs._reject_symlinked_path_component(realdir / "f.txt")  # must not raise
+
+
+def test_write_file_refuses_symlinked_parent(tmp_path: Path, monkeypatch):
+    """End-to-end: if the resolved write path passes through a symlinked parent at
+    write time, write_file refuses and writes nothing through the link — the
+    executor's O_NOFOLLOW-equivalent TOCTOU guard."""
+    base = Path(os.path.realpath(tmp_path))
+    realdir = base / "real"
+    realdir.mkdir()
+    link = base / "link"
+    link.symlink_to(realdir, target_is_directory=True)
+    target = link / "f.txt"
+    # Simulate a parent-component swap landing after _safe_write resolved: the
+    # executor receives a path that now traverses a symlink.
+    monkeypatch.setattr(fs, "_safe_write", lambda *a, **k: target)
+    with pytest.raises(ModelRetry, match="symbolic link"):
+        fs.write_file(tmp_path, "whatever.txt", "data")
+    assert not (realdir / "f.txt").exists()
+
+
 def test_edit_file_preserves_executable_bit(tmp_path: Path):
     """edit_file writes atomically via a temp-file swap; it must NOT clobber the
     target's permission bits (an os.replace of a 0600 temp would strip +x from a
@@ -181,6 +221,44 @@ def test_edit_file_rejects_non_utf8_file(tmp_path: Path):
         fs.edit_file(tmp_path, "latin1.txt", [_edit("foo", "bar")])
     # The original bytes are untouched — no partial/corrupting write happened.
     assert p.read_bytes() == b"caf\xe9 foo"
+
+
+def test_edit_file_preserves_crlf_line_endings(tmp_path: Path):
+    """Finding 1: editing a CRLF (Windows) file must keep CRLF. read_file
+    normalizes to LF, so the model only ever sees/edits LF; if edit_file wrote LF
+    back it would silently rewrite every line of a CRLF file — a whole-file
+    mutation invisible to the model. Only the intended line may change."""
+    p = tmp_path / "crlf.txt"
+    p.write_bytes(b"alpha\r\nbeta\r\ngamma\r\n")
+    fs.edit_file(tmp_path, "crlf.txt", [_edit("beta", "BETA")])
+    # Every terminator stays CRLF; only 'beta' -> 'BETA' changed.
+    assert p.read_bytes() == b"alpha\r\nBETA\r\ngamma\r\n"
+
+
+def test_edit_file_keeps_lf_line_endings(tmp_path: Path):
+    """The LF counterpart: an LF file must stay LF (no CR introduced)."""
+    p = tmp_path / "lf.txt"
+    p.write_bytes(b"alpha\nbeta\ngamma\n")
+    fs.edit_file(tmp_path, "lf.txt", [_edit("beta", "BETA")])
+    assert p.read_bytes() == b"alpha\nBETA\ngamma\n"
+
+
+def test_read_file_reports_binary_instead_of_mojibake(tmp_path: Path):
+    """Finding 2: a binary file (NUL byte in the head) must return a clean
+    notice, like grep's sniff — not decoded-with-replacement mojibake."""
+    p = tmp_path / "blob.bin"
+    p.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\xff\xfe")
+    out = fs.read_file(tmp_path, "blob.bin")
+    assert "binary file" in out
+    assert "�" not in out  # no replacement-char mojibake
+
+
+def test_read_file_text_with_high_bytes_not_flagged_binary(tmp_path: Path):
+    """A UTF-8 text file with non-ASCII bytes (no NUL) is not binary — it still
+    decodes and displays normally."""
+    (tmp_path / "u.txt").write_text("café résumé\n", encoding="utf-8")
+    out = fs.read_file(tmp_path, "u.txt")
+    assert "café" in out and "binary file" not in out
 
 
 def test_edit_file_multiple_matches_raises(tmp_path: Path):

@@ -46,6 +46,7 @@ class WorkspaceIn(BaseModel):
 class SessionIn(BaseModel):
     name: str | None = None
     mode: str | None = None  # "auto" | "ask" | "plan"; None -> configured default
+    model: str | None = None
 
 
 class Attachment(BaseModel):
@@ -60,6 +61,10 @@ class MessageIn(BaseModel):
 
 class SteerIn(BaseModel):
     text: str
+
+
+class SetModelIn(BaseModel):
+    model: str
 
 
 class AskAnswerIn(BaseModel):

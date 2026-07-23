@@ -286,6 +286,29 @@ def test_steer_requires_running_turn(client):
     test_client.post(f"{base}/interrupt", headers=AUTH)
 
 
+def test_set_model_on_idle_session_persists(client):
+    test_client, tmp_path = client
+    ws_id, sid, _ = _setup_workspace_and_session(test_client, tmp_path)
+    base = f"/v1/workspaces/{ws_id}/sessions/{sid}"
+    resp = test_client.post(f"{base}/model", headers=AUTH, json={"model": "claude-cli:opus"})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "model": "claude-cli:opus"}
+    detail = test_client.get(base, headers=AUTH).json()
+    assert detail["session"]["model"] == "claude-cli:opus"
+
+
+def test_set_model_rejected_while_running(client):
+    test_client, tmp_path = client
+    ws_id, sid, _ = _setup_workspace_and_session(test_client, tmp_path)
+    base = f"/v1/workspaces/{ws_id}/sessions/{sid}"
+    # Park a turn on an approval -> host is busy (status != idle).
+    test_client.post(f"{base}/messages", headers=AUTH, json={"prompt": "edit it"})
+    _poll(test_client, base, lambda s: s["status"] == "waiting_ask")
+    refused = test_client.post(f"{base}/model", headers=AUTH, json={"model": "claude-cli:opus"})
+    assert refused.status_code == 409
+    test_client.post(f"{base}/interrupt", headers=AUTH)
+
+
 def test_unknown_workspace_and_session_404(client):
     test_client, _ = client
     assert test_client.get("/v1/workspaces/nope/sessions", headers=AUTH).status_code == 404
@@ -423,6 +446,47 @@ def test_session_image_traversal_encoded(client):
     assert response.status_code == 404
     # This case reaches the handler, so we get the JSON envelope.
     assert response.json()["error"]["code"] == "not_found"
+
+
+def test_list_models_returns_qualified_entries(client, monkeypatch):
+    test_client, _ = client
+    from marim_harness.workspace import ModelEntry
+
+    class _FakeSource:
+        async def list_models(self):
+            return [
+                ModelEntry(id="anthropic/claude-sonnet-4-6", name="Claude Sonnet 4.6",
+                           provider="openrouter"),
+                ModelEntry(id="sonnet", name="sonnet", provider="claude-cli"),
+            ]
+
+    monkeypatch.setattr(
+        "marim_harness.server.http.MultiModelSource.from_env",
+        classmethod(lambda cls: _FakeSource()),
+    )
+    unauth = test_client.get("/v1/models")
+    assert unauth.status_code == 401
+    body = test_client.get("/v1/models", headers=AUTH).json()
+    ids = {m["id"] for m in body["models"]}
+    assert "openrouter:anthropic/claude-sonnet-4-6" in ids
+    assert "claude-cli:sonnet" in ids
+    entry = next(m for m in body["models"] if m["id"] == "claude-cli:sonnet")
+    assert entry["name"] == "sonnet"
+    assert entry["provider"] == "claude-cli"
+
+
+def test_create_session_with_model_persists(client):
+    test_client, tmp_path = client
+    project = tmp_path / "proj"
+    project.mkdir(exist_ok=True)
+    ws = test_client.post("/v1/workspaces", headers=AUTH,
+                          json={"name": "proj", "path": str(project)}).json()
+    created = test_client.post(f"/v1/workspaces/{ws['id']}/sessions", headers=AUTH,
+                               json={"name": "run1", "model": "claude-cli:opus"})
+    assert created.status_code == 201
+    sid = created.json()["id"]
+    detail = test_client.get(f"/v1/workspaces/{ws['id']}/sessions/{sid}", headers=AUTH).json()
+    assert detail["session"]["model"] == "claude-cli:opus"
 
 
 def test_session_mode_persisted_and_listed(client):

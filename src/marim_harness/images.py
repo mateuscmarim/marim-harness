@@ -8,6 +8,7 @@ import base64
 import hashlib
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -112,15 +113,37 @@ def _read_windows() -> tuple[bytes, str] | None:
 def read_clipboard_image() -> tuple[bytes, str] | None:
     """The image currently on the OS clipboard as (bytes, media_type), or None
     when there is none or no platform helper is available."""
+    # Check macOS first: a Mac running XQuartz exports DISPLAY, which would
+    # otherwise route to the x11/xclip branch and never try pngpaste.
+    if sys.platform == "darwin":
+        return _read_macos()
     if os.environ.get("WAYLAND_DISPLAY"):
         return _read_wayland()
     if os.environ.get("DISPLAY"):
         return _read_x11()
-    if sys.platform == "darwin":
-        return _read_macos()
     if sys.platform == "win32":
         return _read_windows()
     return None
+
+
+# Anything outside this set (notably the path separators `/` and `\` and any
+# other punctuation) is replaced so a session id can only ever be a single,
+# non-escaping path segment.
+_UNSAFE_SEGMENT_CHARS = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _safe_session_segment(session_id: str) -> str:
+    """A session id reduced to a single safe path segment for the image cache.
+
+    ``session_id`` reaches the disk cache as ``<root>/<session_id>/<sha>.<ext>``,
+    so an id containing ``../`` (or absolute path chars) would let a crafted
+    session escape the cache root. We replace every path separator / unusual
+    character and neutralize the ``.``/``..`` traversal segments, keeping normal
+    uuid-style ids unchanged."""
+    seg = _UNSAFE_SEGMENT_CHARS.sub("_", session_id)
+    if seg in ("", ".", ".."):
+        return "_"
+    return seg
 
 
 def image_cache_root() -> Path:
@@ -145,7 +168,7 @@ def store_image(session_id: str, data: bytes, media_type: str) -> CachedImage:
     """Cache image bytes under <root>/<session_id>/<sha256>.<ext>. Idempotent:
     identical bytes map to the same path and are not rewritten."""
     sha = hashlib.sha256(data).hexdigest()
-    out = image_cache_root() / session_id / f"{sha}.{media_ext(media_type)}"
+    out = image_cache_root() / _safe_session_segment(session_id) / f"{sha}.{media_ext(media_type)}"
     if not out.exists():
         out.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_bytes(out, data)
@@ -236,7 +259,7 @@ def rehydrate_images(messages: list[dict], session_id: str) -> list[dict]:
                 continue
             sha = data[len(_REF_PREFIX):]
             ext = media_ext(item.get("media_type", "image/png"))
-            path = image_cache_root() / session_id / f"{sha}.{ext}"
+            path = image_cache_root() / _safe_session_segment(session_id) / f"{sha}.{ext}"
             try:
                 # mutate item in place on success; replace with placeholder on OSError
                 raw = path.read_bytes()

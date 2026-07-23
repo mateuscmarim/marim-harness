@@ -153,3 +153,49 @@ def test_read_clipboard_image_windows_missing_helper(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(images.shutil, "which", lambda n: None)
     assert images.read_clipboard_image() is None
+
+
+def test_macos_with_display_set_still_uses_pngpaste(monkeypatch):
+    # A Mac running XQuartz exports DISPLAY; clipboard reads must still route to
+    # pngpaste (macOS), never fall through to the x11/xclip branch.
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    seen: list[str] = []
+
+    def fake_which(n):
+        seen.append(n)
+        return "/usr/bin/pngpaste" if n == "pngpaste" else None
+
+    monkeypatch.setattr(images.shutil, "which", fake_which)
+    monkeypatch.setattr(
+        images.subprocess,
+        "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=b"\x89PNGmac"),
+    )
+    assert images.read_clipboard_image() == (b"\x89PNGmac", "image/png")
+    assert "xclip" not in seen  # never routed to the x11 helper
+
+
+def test_store_image_sanitizes_traversal_session_id(tmp_path, monkeypatch):
+    # A session id containing `../` must not let the cache write escape the root.
+    monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path))
+    cached = images.store_image("../../etc/evil", b"payload", "image/png")
+    root = tmp_path.resolve()
+    assert cached.path.resolve().is_relative_to(root)  # stayed inside the cache root
+    # The id collapsed to a single, separator-free segment directly under the root,
+    # so the `../` can't walk out (a bare directory named ".._.._etc_evil" is inert).
+    assert cached.path.parent.parent.resolve() == root
+    assert "/" not in cached.path.parent.name and "\\" not in cached.path.parent.name
+
+
+def test_traversal_session_id_round_trips(tmp_path, monkeypatch):
+    # The sanitized segment is applied consistently, so externalize/rehydrate still
+    # round-trips for an unusual session id.
+    monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path))
+    raw_bytes = b"\x89PNGpayload"
+    b64 = base64.b64encode(raw_bytes).decode()
+    msgs = _binary_message(b64)
+    out = images.externalize_images(msgs, "../weird/id")
+    back = images.rehydrate_images(out, "../weird/id")
+    assert back[0]["parts"][0]["content"][1]["data"] == b64

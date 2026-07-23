@@ -557,6 +557,23 @@ async def test_workflow_start_and_done_hooks_fire_on_success(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_raising_announce_callbacks_do_not_fail_or_lose_the_result(tmp_path):
+    """A raising render callback (on_workflow_start/on_workflow_done) is a UI
+    bug, not a script failure — same posture as log(). It must neither fail the
+    workflow nor, on the success path, lose the already-computed result."""
+    eng, deps = _engine(tmp_path, _echo_spawn)
+
+    def boom(*a, **kw):
+        raise RuntimeError("render bug")
+
+    deps.ui.on_workflow_start = boom
+    deps.ui.on_workflow_done = boom
+    out = await eng.run('# sweep\n"the result"', None, "tcR")
+    # The result survived both raising callbacks (not swallowed, not an error).
+    assert out == '"the result"'
+
+
+@pytest.mark.anyio
 async def test_on_workflow_done_fires_failed_on_script_raise(tmp_path):
     eng, deps = _engine(tmp_path, _echo_spawn)
     events = []

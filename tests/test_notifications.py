@@ -244,6 +244,59 @@ def test_osascript_body_cannot_break_out_of_string():
     assert "do shell script" in body_segment
 
 
+def test_notify_send_body_escapes_pango_markup():
+    """notify-send parses the body as Pango markup, so a body with ``<``/``&``/
+    ``<b>`` must be escaped or it renders mangled / is dropped — model-influenced
+    text must never escape its data slot."""
+    n = Notifier(NotificationConfig(enabled=True, events={"turn_complete"}))
+    n._platform = "linux"
+    with patch("marim_harness.notifications.shutil.which", return_value="/usr/bin/notify-send"), \
+         patch("marim_harness.notifications.subprocess.run") as mock_run:
+        n.send("Title", "a < b & <b>bold</b>", EVENT_TURN_COMPLETE)
+        argv = mock_run.call_args[0][0]
+        body = argv[-1]
+    assert body == "a &lt; b &amp; &lt;b&gt;bold&lt;/b&gt;"
+
+
+def test_powershell_missing_binary_is_silent():
+    """The Windows backend must guard on ``shutil.which`` like the others: a
+    missing powershell is 'nothing to run', not a FileNotFoundError."""
+    n = Notifier(NotificationConfig(enabled=True, events={"turn_complete"}))
+    n._platform = "win32"
+    with patch("marim_harness.notifications.shutil.which", return_value=None), \
+         patch("marim_harness.notifications.subprocess.run") as mock_run:
+        n.send("Title", "Body", EVENT_TURN_COMPLETE)  # must not raise
+    mock_run.assert_not_called()  # guarded before any spawn attempt
+
+
+def test_powershell_present_builds_command():
+    n = Notifier(NotificationConfig(enabled=True, events={"turn_complete"}))
+    n._platform = "win32"
+    with patch("marim_harness.notifications.shutil.which", return_value="C:/powershell.exe"), \
+         patch("marim_harness.notifications.subprocess.run") as mock_run:
+        n.send("Title", "Body", EVENT_TURN_COMPLETE)
+        mock_run.assert_called_once()
+        assert mock_run.call_args[0][0][0] == "powershell"
+
+
+def test_no_backend_does_not_stamp_coalesce_timestamp():
+    """When nothing actually fires (missing binary), the coalesce timestamp must
+    not be recorded — otherwise a later send is wrongly suppressed once a daemon
+    appears. Mirrors the rollback the exception path already does."""
+    n = Notifier(NotificationConfig(enabled=True, events={"turn_complete"}))
+    n._platform = "linux"
+    with patch("marim_harness.notifications.shutil.which", return_value=None):
+        n.send("t", "b", EVENT_TURN_COMPLETE)
+    assert EVENT_TURN_COMPLETE not in n._last_fired
+
+
+def test_unknown_platform_does_not_stamp_coalesce_timestamp():
+    n = Notifier(NotificationConfig(enabled=True, events={"turn_complete"}))
+    n._platform = "weirdos"
+    n.send("t", "b", EVENT_TURN_COMPLETE)
+    assert EVENT_TURN_COMPLETE not in n._last_fired
+
+
 # ---------------------------------------------------------------------------
 # Config integration
 # ---------------------------------------------------------------------------

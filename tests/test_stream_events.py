@@ -54,6 +54,31 @@ def test_tool_result_event():
     assert obj["content"] == "foo"
 
 
+def test_tool_result_structured_content_is_json_not_repr():
+    # A structured (list/dict) tool return must be serialized as JSON, not str()-ified
+    # into a Python repr (single-quoted, unparseable) that leaks into the event stream.
+    import json
+
+    event = FunctionToolResultEvent(
+        part=ToolReturnPart(
+            tool_name="grep", content=[{"path": "a.py"}, {"path": "b.py"}], tool_call_id="t2"
+        )
+    )
+    obj = event_to_dict(event)
+    assert obj is not None
+    # Valid JSON round-trips; the old str() output "[{'path': 'a.py'}, ...]" would not.
+    assert json.loads(obj["content"]) == [{"path": "a.py"}, {"path": "b.py"}]
+    assert "'" not in obj["content"]
+
+
+def test_tool_result_plain_string_content_preserved():
+    # Plain-string content is passed through untouched (no JSON quoting).
+    event = FunctionToolResultEvent(
+        part=ToolReturnPart(tool_name="read_file", content="PORT = 8080", tool_call_id="t1")
+    )
+    assert event_to_dict(event)["content"] == "PORT = 8080"
+
+
 def test_unmapped_event_returns_none():
     class Unknown:
         pass

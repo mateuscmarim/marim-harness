@@ -10,6 +10,7 @@ the ``remember`` tool and the ``/remember`` command, so the file format lives in
 one place. Nothing here ever raises into a turn — dirs are created on demand.
 """
 
+import hashlib
 import logging
 import re
 import unicodedata
@@ -29,8 +30,10 @@ _VALID_TYPES = ("user", "feedback", "project", "reference")
 # also fire on a *different* entry whose hook text happens to mention
 # ``slug.md`` (e.g. "see [link](auth.md)"), hitting the wrong line. Shared by
 # the upsert (refresh-in-place) and delete (drop-the-line) paths so the two
-# can't disagree about what "this entry's line" means.
-_ENTRY_LINK_RE = re.compile(r"^- \[.*?\]\((?P<slug>[^)]+)\.md\)")
+# can't disagree about what "this entry's line" means. The title is captured too
+# so save-time slug allocation can tell whose entry a slug belongs to; titles are
+# sanitized on write (_index_title) so the FIRST `](…md)` is always the real link.
+_ENTRY_LINK_RE = re.compile(r"^- \[(?P<title>[^\]]*)\]\((?P<slug>[^)]+)\.md\)")
 
 # ``[[name]]`` wikilinks inside a memory body. Names may be titles or slugs
 # (annotate_links slugifies either way); brackets inside brackets are not
@@ -67,13 +70,77 @@ def _single_line(text: str) -> str:
 
 
 def _slugify(name: str) -> str:
-    """Reduce a title to a filesystem-safe ASCII slug, falling back to ``memory``.
-    Accents are transliterated (``usuário`` -> ``usuario``) so accented and
-    unaccented spellings collapse to the same slug."""
+    """Reduce a title to a filesystem-safe ASCII slug, falling back to a
+    per-title hash. Accents are transliterated (``usuário`` -> ``usuario``) so
+    accented and unaccented spellings collapse to the same slug.
+
+    The fallback is ``memory-<hash>``, NOT a bare constant: a title with no ASCII
+    letters or digits at all (all-CJK/emoji) slugifies to empty, so a shared
+    ``"memory"`` constant would map EVERY such title to one file — a second
+    non-ASCII memory silently overwrites the first and replaces its index line.
+    The hash is derived from the title and is deterministic, so read_memory /
+    delete_memory (which re-slugify the same name) still resolve to the file."""
     decomposed = unicodedata.normalize("NFKD", name or "")
     ascii_only = decomposed.encode("ascii", "ignore").decode("ascii")
     slug = re.sub(r"[^a-z0-9]+", "-", ascii_only.lower()).strip("-")
-    return slug or "memory"
+    if slug:
+        return slug
+    return f"memory-{hashlib.sha256((name or '').encode('utf-8')).hexdigest()[:8]}"
+
+
+def _index_title(title: str) -> str:
+    """Sanitize a title for the one-line index entry: collapse to a single line
+    and strip markdown link punctuation ``[]()``.
+
+    A title containing ``](`` — e.g. a pasted ``see [x](y.md)`` — would forge a
+    second ``](slug.md)`` link on the entry line, so ``_ENTRY_LINK_RE`` (which
+    anchors on the FIRST such link) captures the wrong slug and the upsert/delete
+    dedup misfires, silently accumulating duplicate lines for the same memory.
+    Removing the brackets leaves the entry's own link as the only one present."""
+    return _single_line(re.sub(r"[\[\]()]", "", title or ""))
+
+
+def _index_entries(scope: MemoryScope) -> list[tuple[str, str]]:
+    """``(title, slug)`` for every entry in ``MEMORY.md``, in file order.
+    Best-effort: an absent/unreadable index yields ``[]`` (never raises)."""
+    path = scope.root / _INDEX_FILE
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return []
+    entries: list[tuple[str, str]] = []
+    for raw in lines:
+        m = _ENTRY_LINK_RE.match(raw)
+        if m:
+            entries.append((m.group("title").strip(), m.group("slug")))
+    return entries
+
+
+def _allocate_slug(scope: MemoryScope, *, name: str, title: str) -> str:
+    """The slug ``title`` should be saved under, disambiguating collisions.
+
+    Re-saving an existing title reuses that entry's slug (so the write updates in
+    place). Otherwise the base is ``_slugify(name)``; if the base is already
+    claimed by a DIFFERENT title's entry — two distinct titles that slugify alike,
+    e.g. ``"Foo Bar"`` vs ``"foo bar"`` — step to ``base-2``, ``base-3``, … so the
+    newcomer neither overwrites the incumbent's ``<slug>.md`` nor replaces its
+    index line. The first writer keeps the clean base slug; the collision loser is
+    reachable by the suffixed slug shown in the index (``recall`` takes a slug).
+    (Residual: read_memory/delete_memory re-slugify a bare title to the base, so a
+    loser is not reachable by its title — only by its index slug.)"""
+    wanted = _index_title(title)
+    entries = _index_entries(scope)
+    for etitle, eslug in entries:
+        if etitle == wanted:
+            return eslug
+    base = _slugify(name)
+    taken = {eslug for _, eslug in entries}
+    if base not in taken:
+        return base
+    n = 2
+    while f"{base}-{n}" in taken:
+        n += 1
+    return f"{base}-{n}"
 
 
 def load_index(scope: MemoryScope) -> str | None:
@@ -120,7 +187,9 @@ def _upsert_index_line(scope: MemoryScope, *, slug: str, title: str, hook: str) 
     """Add or refresh the one-line pointer for ``slug`` in ``MEMORY.md``,
     preserving every other line and never duplicating an entry."""
     path = scope.root / _INDEX_FILE
-    line = f"- [{title}]({slug}.md) — {hook}"
+    # Sanitize the title into the link so a ``](`` in it can't forge a second
+    # link and defeat the slug-keyed dedup below (see _index_title).
+    line = f"- [{_index_title(title)}]({slug}.md) — {hook}"
 
     # Serialize the read+modify+write of the shared index with a best-effort
     # advisory lock: two concurrent save_memory calls each read the old index,
@@ -161,7 +230,10 @@ def save_memory(
     style (log and return a caller-checkable "didn't work" value instead of
     propagating). The caller (the ``remember`` tool) is expected to turn a
     ``None`` into an actionable message rather than crash the model's turn."""
-    slug = _slugify(name)
+    # Allocate a collision-safe slug (see _allocate_slug) rather than the bare
+    # _slugify: two distinct titles that slugify alike must not clobber one
+    # another's file and index line. Re-saving the same title reuses its slug.
+    slug = _allocate_slug(scope, name=name, title=title)
     # Clamp the single-line fields before they reach the frontmatter / index; the
     # body keeps its newlines.
     description = _single_line(description)
