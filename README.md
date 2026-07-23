@@ -5,6 +5,9 @@ A terminal coding agent built on [Pydantic AI](https://ai.pydantic.dev/) and
 and runs commands in a workspace, with a live TUI for interactive work and a
 headless mode for one-shot prompts and scripting.
 
+![marim fixing a bug with two parallel sub-agents: fan-out cards, an edit
+approval, and a verification run](docs/assets/demo.gif)
+
 ## Features
 
 - **Interactive TUI** — streaming responses, tool-call cards, a live token
