@@ -12,6 +12,7 @@ import base64
 import contextlib
 import json
 import re
+import time
 from dataclasses import asdict
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from ..config import MultiModelSource
 from ..images import image_cache_root, media_type_for_path
 from ..runtime.permissions import Mode
 from ..session import SessionManager
@@ -141,6 +143,26 @@ async def list_sessions(request: Request) -> Response:
             "pending_asks": host.pending_asks() if host else [],
         })
     return JSONResponse({"sessions": sessions})
+
+
+_MODELS_TTL_SECONDS = 60.0
+
+
+async def list_models(request: Request) -> Response:
+    denied = _unauthorized(request)
+    if denied:
+        return denied
+    # Short in-process TTL cache: list_models fetches live provider catalogs, so
+    # cache the assembled list briefly to keep repeated picker opens snappy.
+    cache = request.app.state.models_cache
+    now = time.monotonic()
+    if cache["at"] is None or now - cache["at"] > _MODELS_TTL_SECONDS:
+        entries = await MultiModelSource.from_env().list_models()
+        cache["data"] = [
+            {"id": e.qualified, "name": e.name, "provider": e.provider} for e in entries
+        ]
+        cache["at"] = now
+    return JSONResponse({"models": cache["data"]})
 
 
 async def create_session(request: Request) -> Response:
@@ -427,6 +449,7 @@ def create_app(
     base = "/v1/workspaces/{ws}/sessions/{sid}"
     routes = [
         Route("/v1/health", health, methods=["GET"]),
+        Route("/v1/models", list_models, methods=["GET"]),
         Route("/v1/workspaces", list_workspaces, methods=["GET"]),
         Route("/v1/workspaces", create_workspace, methods=["POST"]),
         Route("/v1/workspaces/{ws}", delete_workspace, methods=["DELETE"]),
@@ -458,4 +481,5 @@ def create_app(
     app.state.registry = registry
     app.state.supervisor = supervisor
     app.state.token = token
+    app.state.models_cache = {"at": None, "data": []}
     return app

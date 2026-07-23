@@ -423,3 +423,30 @@ def test_session_image_traversal_encoded(client):
     assert response.status_code == 404
     # This case reaches the handler, so we get the JSON envelope.
     assert response.json()["error"]["code"] == "not_found"
+
+
+def test_list_models_returns_qualified_entries(client, monkeypatch):
+    test_client, _ = client
+    from marim_harness.workspace import ModelEntry
+
+    class _FakeSource:
+        async def list_models(self):
+            return [
+                ModelEntry(id="anthropic/claude-sonnet-4-6", name="Claude Sonnet 4.6",
+                           provider="openrouter"),
+                ModelEntry(id="sonnet", name="sonnet", provider="claude-cli"),
+            ]
+
+    monkeypatch.setattr(
+        "marim_harness.server.http.MultiModelSource.from_env",
+        classmethod(lambda cls: _FakeSource()),
+    )
+    unauth = test_client.get("/v1/models")
+    assert unauth.status_code == 401
+    body = test_client.get("/v1/models", headers=AUTH).json()
+    ids = {m["id"] for m in body["models"]}
+    assert "openrouter:anthropic/claude-sonnet-4-6" in ids
+    assert "claude-cli:sonnet" in ids
+    entry = next(m for m in body["models"] if m["id"] == "claude-cli:sonnet")
+    assert entry["name"] == "sonnet"
+    assert entry["provider"] == "claude-cli"
