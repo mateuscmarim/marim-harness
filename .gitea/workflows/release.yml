@@ -1,0 +1,55 @@
+name: Release
+
+# Publish to PyPI when a version tag is pushed. Cut a release with:
+#   git tag v0.1.0 && git push origin v0.1.0
+# Requires a repository secret PYPI_API_TOKEN (a PyPI API token scoped to the
+# marim-harness project). Trusted publishing (OIDC) isn't available from a
+# self-hosted Gitea, so a token it is.
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Install uv via the official script rather than a marketplace action, so
+      # the job doesn't depend on the Gitea runner mirroring third-party actions.
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Sync dependencies
+        run: uv sync --python 3.12
+
+      # Re-run the full check sequence on the tagged commit — a tag can point
+      # anywhere, so don't assume a green CI run already covered it.
+      - name: Lint (ruff)
+        run: uv run ruff check src tests
+
+      - name: Type-check (pyright)
+        run: uv run pyright
+
+      - name: Test (pytest)
+        run: uv run pytest
+
+      # Refuse to publish a version that doesn't match the tag — catches the
+      # classic "tagged v0.2.0 but pyproject still says 0.1.0" mistake.
+      - name: Check tag matches project version
+        run: |
+          version=$(uv run python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$version" != "$tag" ]; then
+            echo "pyproject version ($version) != tag ($tag)" >&2
+            exit 1
+          fi
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      - name: Publish to PyPI
+        run: uv publish --token "${{ secrets.PYPI_API_TOKEN }}"
