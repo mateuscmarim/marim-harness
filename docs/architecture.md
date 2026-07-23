@@ -8,9 +8,18 @@ know before changing the core. For hands-on embedding docs see
 
 The dependency flow is:
 
-```
-__main__ → interfaces/cli/router → default_cmd
-        → runtime/bootstrap.py (build_harness) → Harness
+```mermaid
+flowchart TD
+    main["__main__"] --> router["interfaces/cli/router"]
+    router --> sub["sessions / config / models / mcp / serve<br/>(lazily imported)"]
+    router --> dc["default_cmd"]
+    dc -->|"interactive"| tui["interfaces/tui"]
+    dc -->|"-p / piped stdin"| headless["headless one-shot"]
+    tui --> bh["runtime/bootstrap.py — build_harness<br/>(env config, workspace scanning)"]
+    headless --> bh
+    bh --> builder["runtime/builder.py — HarnessBuilder<br/>(explicit composition, no MARIM_* reads)"]
+    embed["embedders (your code)"] --> builder
+    builder --> harness["Harness"]
 ```
 
 The two front-ends — the Textual TUI and the headless one-shot mode — both go
@@ -36,8 +45,30 @@ from leaking through `__init__` at import time.
 
 ## The core turn loop
 
-`Harness.run_turn` → `_run_with_approval` is the heart of the system. Key
-invariants encoded there (read the docstrings before touching):
+`Harness.run_turn` → `_run_with_approval` is the heart of the system:
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant H as Harness.run_turn
+    participant A as Pydantic AI Agent
+    participant P as resolve_approvals (Mode)
+    U->>H: prompt
+    H->>H: _assemble_prompt (turn-context envelope)
+    loop until final text output
+        H->>A: run(history + prompt)
+        A-->>H: str or DeferredToolRequests
+        opt gated tools deferred
+            H->>P: deferred batch
+            P-->>H: approvals / denials
+            Note over H,A: continue the run with the results
+        end
+    end
+    H->>H: persist history, refresh resumable baseline
+    H-->>U: final message
+```
+
+Key invariants encoded there (read the docstrings before touching):
 
 - **Approval rounds.** The agent's `output_type` is
   `[str, DeferredToolRequests]`. Gated tools (`write_file`, `edit_file`,
@@ -68,6 +99,14 @@ unavoidable late binding: `Deps` and `HarnessServices` form a reference
 cycle — `TurnHooks` and the sub-agent runners hold `deps`, while tools reach
 back through `ctx.deps.services`. `build_services` performs that single
 binding.
+
+```mermaid
+flowchart LR
+    bc["build_collaborators"] -->|"builds in dependency order"| D["Deps"]
+    bc --> S["HarnessServices"]
+    S -->|"TurnHooks / sub-agent runners hold deps"| D
+    D -.->|"ctx.deps.services — late-bound once by build_services"| S
+```
 
 `Deps` is the `RunContext` payload threaded through every tool. All UI-facing
 collaboration is **optional callbacks** that headless leaves as `None` (each

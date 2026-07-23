@@ -67,7 +67,7 @@ The interactive TUI lives in the optional `tui` extra; a bare
 installs the dev group, which includes textual, so a development checkout
 always has the full TUI.
 
-The `marim serve` HTTP daemon (REST + SSE) lives in the optional `serve` extra
+The `marim serve` HTTP daemon (REST + WebSocket) lives in the optional `serve` extra
 (`pip install -e '.[serve]'`, or `.[tui,serve]` for both). `./install.sh`
 installs both `tui` and `serve` by default; pass `--no-tui` and/or `--no-serve`
 to skip either.
@@ -116,7 +116,7 @@ snapshot of the working tree. Rewind with:
 Rewinding truncates the conversation to that point and, in a git workspace,
 restores tracked and untracked files to their snapshot — files created after the
 checkpoint are removed. The pre-rewind state is itself saved to
-`refs/marim/checkpoints/_pre_restore`, so the most recent rewind is
+`refs/marim/checkpoints/<session-id>/_pre_restore`, so the most recent rewind is
 recoverable (this is a single slot — only the last rewind's pre-restore
 state is retained).
 
