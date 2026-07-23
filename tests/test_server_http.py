@@ -489,6 +489,74 @@ def test_create_session_with_model_persists(client):
     assert detail["session"]["model"] == "claude-cli:opus"
 
 
+def test_effective_model_prefers_loaded_host():
+    from types import SimpleNamespace
+
+    from marim_harness.server.http import _effective_model
+
+    host = SimpleNamespace(harness=SimpleNamespace(model_id="openrouter:x/y"))
+    assert _effective_model(host, "claude-cli:opus") == "openrouter:x/y"
+
+
+def test_effective_model_falls_back_to_header():
+    from marim_harness.server.http import _effective_model
+
+    assert _effective_model(None, "claude-cli:opus") == "claude-cli:opus"
+
+
+def test_effective_model_resolves_configured_default(monkeypatch):
+    from marim_harness.config.model import ModelConfig
+    from marim_harness.server.http import _effective_model
+
+    cfg = ModelConfig(provider="claude-cli", model="sonnet")
+    monkeypatch.setattr(
+        "marim_harness.server.http.detect_active_providers",
+        lambda: ({"claude-cli": cfg}, "claude-cli"),
+    )
+    assert _effective_model(None, None) == "claude-cli:sonnet"
+
+
+def test_get_session_reports_default_when_header_null(client, monkeypatch):
+    from marim_harness.config.model import ModelConfig
+
+    cfg = ModelConfig(provider="claude-cli", model="sonnet")
+    monkeypatch.setattr(
+        "marim_harness.server.http.detect_active_providers",
+        lambda: ({"claude-cli": cfg}, "claude-cli"),
+    )
+    test_client, tmp_path = client
+    project = tmp_path / "proj"
+    project.mkdir(exist_ok=True)
+    ws = test_client.post("/v1/workspaces", headers=AUTH,
+                          json={"name": "proj", "path": str(project)}).json()
+    created = test_client.post(f"/v1/workspaces/{ws['id']}/sessions", headers=AUTH,
+                               json={"name": "run1"})
+    sid = created.json()["id"]
+    detail = test_client.get(f"/v1/workspaces/{ws['id']}/sessions/{sid}",
+                             headers=AUTH).json()
+    assert detail["session"]["model"] == "claude-cli:sonnet"
+
+
+def test_list_sessions_reports_effective_model(client, monkeypatch):
+    from marim_harness.config.model import ModelConfig
+
+    cfg = ModelConfig(provider="claude-cli", model="sonnet")
+    monkeypatch.setattr(
+        "marim_harness.server.http.detect_active_providers",
+        lambda: ({"claude-cli": cfg}, "claude-cli"),
+    )
+    test_client, tmp_path = client
+    project = tmp_path / "proj"
+    project.mkdir(exist_ok=True)
+    ws = test_client.post("/v1/workspaces", headers=AUTH,
+                          json={"name": "proj", "path": str(project)}).json()
+    test_client.post(f"/v1/workspaces/{ws['id']}/sessions", headers=AUTH,
+                     json={"name": "run1"})
+    rows = test_client.get(f"/v1/workspaces/{ws['id']}/sessions",
+                           headers=AUTH).json()["sessions"]
+    assert rows[0]["model"] == "claude-cli:sonnet"
+
+
 def test_session_mode_persisted_and_listed(client):
     """The mode chosen at session creation lands on the session file header
     (so it survives daemon restarts — see the supervisor tests for the
