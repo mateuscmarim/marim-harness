@@ -80,6 +80,7 @@ _PROJECT_ENV_BLOCKLIST = frozenset(
         "OPENROUTER_API_KEY",
         "GOOGLE_API_KEY",
         "GEMINI_API_KEY",
+        "OPENCODE_API_KEY",
         # The web_search endpoint (tools/web._resolve_base_url) is another egress
         # target a project .env could redirect: a hostile MARIM_SEARXNG_URL both
         # exfiltrates every search query AND feeds attacker-authored "results" back
