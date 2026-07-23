@@ -1,8 +1,12 @@
 [project]
 name = "marim-harness"
-version = "0.1.0"
+version = "0.1.0.post1"
 description = "An embeddable coding-agent harness on Pydantic AI, with a Textual TUI and headless mode"
-readme = "README.md"
+# The readme is dynamic: hatch-fancy-pypi-readme rewrites the repo README's
+# relative links/images to absolute forge URLs at build time, so the PyPI page
+# renders them (PyPI has no base URL for relative references) while the
+# in-repo README keeps relative links that work when browsing the forge.
+dynamic = ["readme"]
 authors = [{ name = "Mateus Coutinho Marim", email = "mateus@marim.dev" }]
 license = { file = "LICENSE" }
 keywords = ["agent", "llm", "tui", "coding-assistant", "pydantic-ai", "textual"]
@@ -85,8 +89,25 @@ dev = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-fancy-pypi-readme"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata.hooks.fancy-pypi-readme]
+content-type = "text/markdown"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
+path = "README.md"
+
+# Images first (raw file URL), then remaining relative links (source view URL).
+# Both patterns skip targets that are already absolute (http/https) or
+# in-page anchors (#...).
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '!\[([^\]]*)\]\((?!https?://)([^)]+)\)'
+replacement = '![\1](https://git.marim.dev/mateuscmarim/marim-harness/raw/branch/master/\2)'
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '(?<!!)\[([^\]]*)\]\((?!https?://|#)([^)]+)\)'
+replacement = '[\1](https://git.marim.dev/mateuscmarim/marim-harness/src/branch/master/\2)'
 
 [tool.pytest.ini_options]
 addopts = "-q --cov=marim_harness --cov-report=term-missing --cov-report=xml --cov-fail-under=90"
