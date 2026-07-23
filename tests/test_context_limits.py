@@ -14,13 +14,24 @@ from types import SimpleNamespace
 import pytest
 
 from marim_harness.config.context_limits import (
+    _PROVIDER_PREFIXES,
     DEFAULT_THRESHOLD,
     ContextLimits,
     _bare_id,
     build_context_limits,
     parse_budget_overrides,
 )
+from marim_harness.config.model import KNOWN_PROVIDERS
 from marim_harness.workspace.catalog import ModelEntry
+
+
+def test_provider_prefixes_mirrors_known_providers():
+    """_PROVIDER_PREFIXES is a hand-maintained mirror of KNOWN_PROVIDERS (not
+    imported: config/model.py pulls in catalog/notification machinery and this
+    module must stay light). A provider added to one and not the other means
+    _bare_id() silently fails to strip its qualifier — this test is the
+    tripwire for the next provider."""
+    assert _PROVIDER_PREFIXES == KNOWN_PROVIDERS
 
 
 def test_parse_budget_overrides_patterns_and_unbudgeted_forms():

@@ -47,10 +47,10 @@ There are plenty of terminal coding agents. marim's angle:
   full-featured harness already built on it — and [Pydantic AI
   Harness](https://pydantic.dev/docs/ai/harness/) capabilities plug straight
   in via `with_capability()`.
-- **Any model, including free ones.** OpenRouter, Google, any local
-  OpenAI-compatible server (Ollama, LM Studio) — or delegate turns to Claude
-  Code on a Claude subscription via the `claude-cli` provider. No vendor
-  lock-in, no required API key.
+- **Any model, including free ones.** OpenRouter, Google, OpenCode Zen (free
+  models available), any local OpenAI-compatible server (Ollama, LM Studio) —
+  or delegate turns to Claude Code on a Claude subscription via the
+  `claude-cli` provider. No vendor lock-in, no required API key.
 - **Real editor-grade context.** Language-server integration (Python,
   TypeScript, C++, Java bundled; more via plugins) gives the agent go-to-
   definition, references, and diagnostics-on-edit — not just grep.
@@ -177,10 +177,11 @@ from the environment — they are never written to session files or logs.**
 
 | Variable | Purpose |
 | --- | --- |
-| `MARIM_PROVIDER` | `openrouter` (default), `google`, or `local` |
+| `MARIM_PROVIDER` | `openrouter` (default), `google`, `local`, `claude-cli`, or `zen` |
 | `MARIM_MODEL` | Model id override |
 | `MARIM_BASE_URL` | Base URL for the `local` provider |
 | `OPENROUTER_API_KEY` | API key for OpenRouter |
+| `OPENCODE_API_KEY` | API key for OpenCode Zen |
 | `GOOGLE_API_KEY` / `GEMINI_API_KEY` | API key for the Google provider |
 | `MARIM_API_KEY` | Generic API key fallback |
 | `MARIM_MAX_CONTEXT_TOKENS` | Context budget before compaction |

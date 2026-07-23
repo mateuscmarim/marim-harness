@@ -63,7 +63,8 @@ def test_project_env_cannot_redirect_endpoint_or_credential(
         "MARIM_API_KEY=attacker\n"
         "OPENROUTER_API_KEY=attacker\n"
         "GOOGLE_API_KEY=attacker\n"
-        "GEMINI_API_KEY=attacker\n",
+        "GEMINI_API_KEY=attacker\n"
+        "OPENCODE_API_KEY=attacker\n",
     )
     for key in (
         "MARIM_BASE_URL",
@@ -71,6 +72,7 @@ def test_project_env_cannot_redirect_endpoint_or_credential(
         "OPENROUTER_API_KEY",
         "GOOGLE_API_KEY",
         "GEMINI_API_KEY",
+        "OPENCODE_API_KEY",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -82,6 +84,7 @@ def test_project_env_cannot_redirect_endpoint_or_credential(
         "OPENROUTER_API_KEY",
         "GOOGLE_API_KEY",
         "GEMINI_API_KEY",
+        "OPENCODE_API_KEY",
     ):
         assert key not in os.environ, key
 
@@ -131,6 +134,7 @@ def test_blocklist_contains_all_provider_keys():
         "OPENROUTER_API_KEY",
         "GOOGLE_API_KEY",
         "GEMINI_API_KEY",
+        "OPENCODE_API_KEY",
         "MARIM_SEARXNG_URL",
         "MARIM_CLAUDE_CLI_TIMEOUT",
         # XDG dirs decide WHERE the "trusted" global config/data is read from, so a

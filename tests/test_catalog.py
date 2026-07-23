@@ -15,6 +15,7 @@ from marim_harness.workspace.catalog import (
     fetch_openrouter_models,
     parse_google_models,
     parse_lmstudio_models,
+    parse_zen_models,
 )
 
 
@@ -390,3 +391,36 @@ def test_model_supports_thinking_lookup():
     entries = parse_models(payload)
     assert model_supports_thinking(entries, "a/thinks") is True
     assert model_supports_thinking(entries, "missing") is None
+
+
+def test_parse_zen_models_filters_non_openai_families():
+    payload = {"data": [
+        {"id": "mimo-v2.5-free", "object": "model"},
+        {"id": "big-pickle", "object": "model"},
+        {"id": "claude-sonnet-5", "object": "model"},
+        {"id": "gemini-3.5-flash", "object": "model"},
+        {"id": "gpt-5.5", "object": "model"},
+    ]}
+    entries = parse_zen_models(payload)
+    ids = [e.id for e in entries]
+    assert ids == ["big-pickle", "gpt-5.5", "mimo-v2.5-free"]  # sorted, filtered
+
+
+def test_parse_zen_models_tolerates_malformed_payloads():
+    assert parse_zen_models({}) == []
+    assert parse_zen_models({"data": "nope"}) == []
+
+
+@pytest.mark.anyio
+async def test_fetch_zen_models_strict_raises_on_connection_refused(monkeypatch):
+    # Mirror test_fetch_openrouter_models_strict_raises_on_connection_refused
+    # (test_catalog.py ~L101): point the module URL constant at a dead port.
+    monkeypatch.setattr(catalog, "_ZEN_MODELS_URL", "http://127.0.0.1:9/x")
+    with pytest.raises(Exception):  # noqa: B017 - real connection-refused, class varies
+        await catalog.fetch_zen_models("sk-x", strict=True)
+
+
+@pytest.mark.anyio
+async def test_fetch_zen_models_non_strict_returns_empty(monkeypatch):
+    monkeypatch.setattr(catalog, "_ZEN_MODELS_URL", "http://127.0.0.1:9/x")
+    assert await catalog.fetch_zen_models("sk-x") == []

@@ -12,6 +12,7 @@ from ..workspace.catalog import (
     fetch_google_models,
     fetch_local_models,
     fetch_openrouter_models,
+    fetch_zen_models,
 )
 
 logger = logging.getLogger(__name__)
@@ -21,11 +22,15 @@ _DEFAULT_LOCAL_MODEL = "qwen2.5-coder"
 _DEFAULT_GOOGLE_MODEL = "gemini-2.5-flash"
 # None ⇒ let the claude CLI use its own configured default model.
 _DEFAULT_CLAUDE_CLI_MODEL: str | None = None
+_DEFAULT_ZEN_MODEL = "mimo-v2.5-free"
+# OpenCode Zen's OpenAI-compatible endpoint root. Fixed, not MARIM_BASE_URL —
+# that env belongs to the `local` provider and both can be active at once.
+_ZEN_BASE_URL = "https://opencode.ai/zen/v1"
 
 # Every provider load_config knows how to wire. An unknown value falls through to
 # the OpenRouter branch (the historical default), but we warn first so a typo
 # like MARIM_PROVIDER=azure doesn't masquerade as a confusing "missing API key".
-KNOWN_PROVIDERS = frozenset({"openrouter", "local", "google", "claude-cli"})
+KNOWN_PROVIDERS = frozenset({"openrouter", "local", "google", "claude-cli", "zen"})
 
 
 def parse_qualified(
@@ -121,7 +126,7 @@ class SubagentConfig:
 
 @dataclass
 class ModelConfig:
-    provider: str  # "openrouter" | "local" | "google" | "claude-cli"
+    provider: str  # "openrouter" | "local" | "google" | "claude-cli" | "zen"
     model: str | None  # None ⇒ claude-cli uses its own configured default
     base_url: str | None = None
     api_key: str | None = None
@@ -331,6 +336,14 @@ def _provider_config(provider: str, common: dict[str, Any]) -> ModelConfig:
             api_key=os.getenv("MARIM_API_KEY", "local"),
             **common,
         )
+    if provider == "zen":
+        return ModelConfig(
+            provider="zen",
+            model=os.getenv("MARIM_MODEL", _DEFAULT_ZEN_MODEL),
+            base_url=_ZEN_BASE_URL,
+            api_key=os.getenv("OPENCODE_API_KEY") or os.getenv("MARIM_API_KEY"),
+            **common,
+        )
     if provider == "google":
         return ModelConfig(
             provider="google",
@@ -372,6 +385,8 @@ def _provider_has_creds(provider: str) -> bool:
         return bool(os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
     if provider == "local":
         return bool(os.getenv("MARIM_BASE_URL"))
+    if provider == "zen":
+        return bool(os.getenv("OPENCODE_API_KEY"))
     if provider == "claude-cli":
         return _claude_cli_available()
     return False
@@ -463,8 +478,8 @@ def build_model(cfg: ModelConfig):
     from pydantic_ai.models.openai import OpenAIChatModel
     from pydantic_ai.providers.openai import OpenAIProvider
 
-    if cfg.provider == "local":
-        assert cfg.model is not None  # local always has a model id
+    if cfg.provider in ("local", "zen"):
+        assert cfg.model is not None  # local/zen always have a model id
         provider = OpenAIProvider(base_url=cfg.base_url, api_key=cfg.api_key)
         return OpenAIChatModel(cfg.model, provider=provider)
 
@@ -524,6 +539,8 @@ class ModelSource:
             return await fetch_google_models(self.cfg.api_key, strict=strict)
         if self.cfg.provider == "local":
             return await fetch_local_models(self.cfg.base_url, self.cfg.api_key, strict=strict)
+        if self.cfg.provider == "zen":
+            return await fetch_zen_models(self.cfg.api_key, strict=strict)
         if self.cfg.provider == "claude-cli":
             return [
                 ModelEntry(id="sonnet", name="sonnet", provider="claude-cli"),

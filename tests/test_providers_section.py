@@ -45,7 +45,7 @@ def test_short_error_first_line_truncated():
 def test_provider_specs_env_keys():
     specs = {s.name: s for s in PROVIDER_SPECS}
     assert [s.name for s in PROVIDER_SPECS] == [
-        "openrouter", "google", "local", "claude-cli"]
+        "openrouter", "google", "zen", "local", "claude-cli"]
     assert specs["openrouter"].write_key == "OPENROUTER_API_KEY"
     assert specs["openrouter"].drop_keys == ("OPENROUTER_API_KEY",)
     # google always WRITES GOOGLE_API_KEY but reads/drops both env names.
@@ -53,6 +53,12 @@ def test_provider_specs_env_keys():
     assert specs["google"].key_fallbacks == ("GEMINI_API_KEY",)
     assert set(specs["google"].read_keys) == {"GOOGLE_API_KEY", "GEMINI_API_KEY"}
     assert set(specs["google"].drop_keys) == {"GOOGLE_API_KEY", "GEMINI_API_KEY"}
+    # zen: one canonical key env, fixed endpoint (no base URL row).
+    assert specs["zen"].write_key == "OPENCODE_API_KEY"
+    assert specs["zen"].key_fallbacks == ()
+    assert specs["zen"].read_keys == ("OPENCODE_API_KEY",)
+    assert specs["zen"].drop_keys == ("OPENCODE_API_KEY",)
+    assert specs["zen"].base_url_key is None
     # local is configured by its base URL; removal clears URL + key together.
     assert specs["local"].base_url_key == "MARIM_BASE_URL"
     assert specs["local"].read_keys == ("MARIM_BASE_URL",)
@@ -103,7 +109,7 @@ class _PaneHost(App):
 async def test_pane_mounts_all_cards_without_writing_env(
     isolated_env, monkeypatch, tmp_path
 ):
-    """Mounting paints all four cards and must not write .env (mount-time
+    """Mounting paints all five cards and must not write .env (mount-time
     widget events are gated, like the settings screen's _ready flag)."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setenv("MARIM_PROVIDER", "openrouter")
@@ -111,7 +117,7 @@ async def test_pane_mounts_all_cards_without_writing_env(
     async with app.run_test(size=(120, 45)) as pilot:
         await pilot.pause()
         pane = app.query_one(ProvidersPane)
-        for name in ("openrouter", "google", "local", "claude-cli"):
+        for name in ("openrouter", "google", "zen", "local", "claude-cli"):
             assert pane.query_one(f"#prov-card-{name}") is not None
         # Key inputs are password fields that start empty.
         key = pane.query_one("#prov-key-openrouter", Input)

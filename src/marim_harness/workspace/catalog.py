@@ -1,6 +1,6 @@
-"""Model catalogs for OpenRouter and Google/Gemini: fetch the list of
-available models so the picker can offer them, plus pure helpers to parse
-and filter that list."""
+"""Model catalogs for OpenRouter, Google/Gemini, and OpenCode Zen: fetch the
+list of available models so the picker can offer them, plus pure helpers to
+parse and filter that list."""
 
 import logging
 from dataclasses import dataclass
@@ -12,6 +12,12 @@ _OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 # so strict verification probes it to get a real verdict on the credential.
 _OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
 _GOOGLE_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+_ZEN_MODELS_URL = "https://opencode.ai/zen/v1/models"
+# Zen serves three API shapes under one roof; marim's zen provider speaks only
+# the OpenAI-compatible one, so ids Zen routes to the Anthropic/Google shapes
+# are filtered out of the catalog — the picker must not offer a model the
+# provider's chat/completions path can't actually drive.
+_ZEN_EXCLUDED_PREFIXES = ("claude-", "gemini-")
 
 
 @dataclass(frozen=True)
@@ -200,6 +206,41 @@ async def fetch_local_models(
         if strict:
             raise
         logger.warning("failed to fetch local model catalog from %s: %s", url, exc)
+        return []
+
+
+def parse_zen_models(payload: dict) -> list[ModelEntry]:
+    """Turn Zen's ``/models`` response (standard OpenAI list shape, id-only —
+    no pricing/context metadata) into sorted entries, dropping ids that route
+    to non-OpenAI endpoint shapes (see _ZEN_EXCLUDED_PREFIXES)."""
+    return [
+        e for e in parse_models(payload)
+        if not e.id.startswith(_ZEN_EXCLUDED_PREFIXES)
+    ]
+
+
+async def fetch_zen_models(
+    api_key: str | None = None, timeout: float = 10.0, *, strict: bool = False
+) -> list[ModelEntry]:
+    """Fetch the OpenCode Zen catalog. Returns ``[]`` on any failure so the
+    picker degrades to free-text entry, unless ``strict=True`` (verification
+    needs the real error), in which case the exception is re-raised. Note:
+    ``/models`` is public, so strict mode verifies *connectivity*, not the
+    key — Zen has no known key-validation endpoint (unlike OpenRouter's
+    ``/key``); a bad key surfaces at first chat request instead. httpx is
+    imported lazily to keep the import chain light."""
+    import httpx
+
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(_ZEN_MODELS_URL, headers=headers)
+            response.raise_for_status()
+            return parse_zen_models(response.json())
+    except Exception as exc:
+        if strict:
+            raise
+        logger.warning("failed to fetch OpenCode Zen model catalog: %s", exc)
         return []
 
 
