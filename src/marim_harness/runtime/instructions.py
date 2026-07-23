@@ -97,7 +97,8 @@ _PROACTIVE_MEMORY_POLICY = (
 
 _ON_REQUEST_MEMORY_POLICY = (
     "Save to memory only when the user explicitly asks (e.g. 'remember that…' "
-    "or /remember). Do not save proactively."
+    "or /remember). Do not save proactively. Even then, skip anything the repo "
+    "already records (git history, AGENTS.md, code structure)."
 )
 
 

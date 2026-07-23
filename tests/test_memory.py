@@ -378,10 +378,24 @@ def test_annotate_links_footer_distinguishes_saved_from_unwritten(tmp_path: Path
     _save(sc, "auth-flow")
     body = "Uses [[auth-flow]]; see also [[token-rotation]]."
     out = memory.annotate_links(sc, body)
-    assert out.startswith(body)
-    footer = out[len(body):]
+    # The join is on the rstripped body (no trailing newline here, so this is a
+    # no-op, but it documents the contract exercised for real by the next test).
+    assert out.startswith(body.rstrip("\n"))
+    footer = out[len(body.rstrip("\n")) :]
     assert "saved: auth-flow" in footer
     assert "not yet written: token-rotation" in footer
+
+
+def test_annotate_links_footer_trims_trailing_body_newline(tmp_path: Path):
+    """read_memory bodies end in a trailing newline; joining on the raw body
+    would land the footer after three newlines. annotate_links must rstrip the
+    body first so the footer follows exactly one blank line."""
+    sc = memory.project_scope(tmp_path)
+    _save(sc, "auth-flow")
+    out = memory.annotate_links(sc, "Uses [[auth-flow]].\n")
+    assert out == (
+        "Uses [[auth-flow]].\n\nLinked memories — saved: auth-flow. Read saved ones with recall."
+    )
 
 
 def test_annotate_links_no_links_returns_body_unchanged(tmp_path: Path):
@@ -396,3 +410,46 @@ def test_annotate_links_resolves_title_style_links_via_slug(tmp_path: Path):
     _save(sc, "Auth flow")
     out = memory.annotate_links(sc, "see [[Auth flow]]")
     assert "saved: Auth flow" in out
+
+
+def test_extract_links_accents_and_odd_characters():
+    """Extraction is verbatim, not slugified — accents and punctuation inside
+    a [[name]] link pass through untouched."""
+    body = "[[Café notes]] and [[weird!@# name]]"
+    assert memory.extract_links(body) == ["Café notes", "weird!@# name"]
+
+
+def test_annotate_links_survives_slug_longer_than_name_max(tmp_path: Path):
+    """Path.is_file() re-raises OSErrors other than "doesn't exist" — a slug
+    over NAME_MAX (255 bytes) raises OSError(ENAMETOOLONG) on Python 3.10/3.12
+    instead of returning False. Per the module contract nothing here raises
+    into a turn, so recall of a body with an oversized [[...]] link must not
+    crash; the link is simply reported as not yet written."""
+    sc = memory.project_scope(tmp_path)
+    long_link = "a" * 300
+    body = f"See [[{long_link}]] for details."
+    out = memory.annotate_links(sc, body)
+    assert f"not yet written: {long_link}" in out
+
+
+def test_delete_memory_fails_soft_on_corrupt_index(tmp_path: Path):
+    """A human-corrupted non-UTF-8 MEMORY.md must not raise UnicodeDecodeError
+    into the turn; delete_memory's except clause must match load_index's
+    existing (OSError, UnicodeDecodeError) fail-soft handling."""
+    sc = memory.project_scope(tmp_path)
+    _save(sc, "x")
+    (sc.root / "MEMORY.md").write_bytes(b"\xff\xfe")
+    assert memory.delete_memory(sc, "x") is False
+
+
+def test_save_memory_fails_soft_on_corrupt_index(tmp_path: Path):
+    """Same gap, pre-existing in save_memory: _upsert_index_line's read_text
+    can hit the same corrupt index, so save_memory must fail soft (return
+    None) rather than propagate UnicodeDecodeError."""
+    sc = memory.project_scope(tmp_path)
+    _save(sc, "x")
+    (sc.root / "MEMORY.md").write_bytes(b"\xff\xfe")
+    result = memory.save_memory(
+        sc, name="y", description="d", mem_type="project", body="b", title="Y"
+    )
+    assert result is None

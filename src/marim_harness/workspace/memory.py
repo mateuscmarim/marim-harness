@@ -172,7 +172,11 @@ def save_memory(
         scope.root.mkdir(parents=True, exist_ok=True)
         atomic_write_text(path, f"{frontmatter}\n{body.strip()}\n")
         _upsert_index_line(scope, slug=slug, title=title, hook=description)
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
+        # UnicodeDecodeError: _upsert_index_line's read_text can hit a
+        # human-corrupted non-UTF-8 MEMORY.md; load_index/read_memory already
+        # treat that as fail-soft, so save_memory must match rather than
+        # raise into the turn.
         logger.debug("failed to save memory %s (%s): %s", path, scope.name, exc)
         return None
     logger.debug("saved memory %s (%s)", path, scope.name)
@@ -210,7 +214,11 @@ def delete_memory(scope: MemoryScope, name: str) -> bool:
             return False
         path.unlink()
         _remove_index_line(scope, slug=slug)
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
+        # UnicodeDecodeError: _remove_index_line's read_text can hit a
+        # human-corrupted non-UTF-8 MEMORY.md; load_index/read_memory already
+        # treat that as fail-soft, so delete_memory must match rather than
+        # raise into the turn.
         logger.debug("failed to delete memory %s (%s): %s", path, scope.name, exc)
         return False
     logger.debug("deleted memory %s (%s)", path, scope.name)
@@ -228,6 +236,19 @@ def extract_links(body: str) -> list[str]:
     return list(seen)
 
 
+def _link_saved(scope: MemoryScope, target: str) -> bool:
+    """Whether ``target`` (a wikilink name) has a saved ``<slug>.md`` file.
+    ``Path.is_file()`` re-raises OSErrors that aren't "doesn't exist" (ENOTDIR,
+    EBADF, ELOOP, and notably ENAMETOOLONG — a slug over NAME_MAX, e.g. from a
+    very long ``[[...]]`` link, raises on Python 3.10/3.12). Per the module
+    contract nothing here raises into a turn, so an unresolvable check is just
+    treated as "not saved" rather than propagating."""
+    try:
+        return (scope.root / f"{_slugify(target)}.md").is_file()
+    except OSError:
+        return False
+
+
 def annotate_links(scope: MemoryScope, body: str) -> str:
     """Return ``body``, plus — when it contains ``[[name]]`` links — a one-line
     footer telling the model which linked memories are saved and which are still
@@ -237,11 +258,12 @@ def annotate_links(scope: MemoryScope, body: str) -> str:
     links = extract_links(body)
     if not links:
         return body
-    saved = [t for t in links if (scope.root / f"{_slugify(t)}.md").is_file()]
+    saved = [t for t in links if _link_saved(scope, t)]
     unwritten = [t for t in links if t not in saved]
     parts = []
     if saved:
         parts.append("saved: " + ", ".join(saved))
     if unwritten:
         parts.append("not yet written: " + ", ".join(unwritten))
-    return body + "\n\nLinked memories — " + "; ".join(parts) + ". Read saved ones with recall."
+    footer = "\n\nLinked memories — " + "; ".join(parts) + ". Read saved ones with recall."
+    return body.rstrip("\n") + footer

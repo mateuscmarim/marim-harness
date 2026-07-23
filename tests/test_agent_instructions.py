@@ -41,10 +41,15 @@ async def test_project_instructions_injected_and_dynamic(
         instructions="BASE PROMPT",
     )
 
-    # No AGENTS.md yet -> only the base prompt reaches the model.
+    # No AGENTS.md yet -> only the base prompt reaches the model. Assert on the
+    # project-instructions block's own header rather than the bare "AGENTS.md"
+    # substring: the always-on memory policy text also names AGENTS.md (as an
+    # example of repo-recorded facts not worth duplicating in memory), so a
+    # bare substring check would false-fail independent of whether a project
+    # instructions file exists.
     await harness.run_turn("hi")
     assert "BASE PROMPT" in captured["instructions"]
-    assert "AGENTS.md" not in captured["instructions"]
+    assert "Project-specific instructions:" not in captured["instructions"]
 
     # Adding the file changes what the very next turn sees (dynamic reload).
     (tmp_path / "AGENTS.md").write_text("Always write docstrings.")
