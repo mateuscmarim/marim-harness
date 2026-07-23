@@ -1065,3 +1065,23 @@ def test_zen_creds_detection(monkeypatch):
     # same pattern as openrouter's MARIM_API_KEY fallback).
     monkeypatch.setenv("MARIM_API_KEY", "sk-generic")
     assert not _provider_has_creds("zen")
+
+
+@pytest.mark.anyio
+async def test_model_source_list_models_routes_zen(monkeypatch):
+    from marim_harness.config import model as model_module
+    from marim_harness.config.model import ModelConfig, ModelSource
+    from marim_harness.workspace import catalog
+
+    async def fake_fetch(api_key=None, timeout=10.0, *, strict=False):
+        assert api_key == "sk-zen-test"
+        return [catalog.ModelEntry(id="mimo-v2.5-free", name="mimo-v2.5-free")]
+
+    # model.py imports the *name* fetch_zen_models, so it must be patched on
+    # marim_harness.config.model (where ModelSource.list_models looks it up),
+    # not on catalog (which model.py's local binding no longer refers back to).
+    monkeypatch.setattr(model_module, "fetch_zen_models", fake_fetch)
+    src = ModelSource(ModelConfig(provider="zen", model="mimo-v2.5-free",
+                                  api_key="sk-zen-test"))
+    entries = await src.list_models()
+    assert [e.id for e in entries] == ["mimo-v2.5-free"]

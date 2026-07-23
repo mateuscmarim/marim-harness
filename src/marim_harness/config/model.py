@@ -12,6 +12,7 @@ from ..workspace.catalog import (
     fetch_google_models,
     fetch_local_models,
     fetch_openrouter_models,
+    fetch_zen_models,
 )
 
 logger = logging.getLogger(__name__)
@@ -538,6 +539,8 @@ class ModelSource:
             return await fetch_google_models(self.cfg.api_key, strict=strict)
         if self.cfg.provider == "local":
             return await fetch_local_models(self.cfg.base_url, self.cfg.api_key, strict=strict)
+        if self.cfg.provider == "zen":
+            return await fetch_zen_models(self.cfg.api_key, strict=strict)
         if self.cfg.provider == "claude-cli":
             return [
                 ModelEntry(id="sonnet", name="sonnet", provider="claude-cli"),
