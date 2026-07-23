@@ -290,7 +290,8 @@ daemon or a failed call is silently ignored and never interrupts the agent.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for setup, conventions, and the PR
 checklist, and [`docs/architecture.md`](docs/architecture.md) for a map of the
-codebase. Changes are tracked in [`CHANGELOG.md`](CHANGELOG.md).
+codebase. Changes are tracked in [`CHANGELOG.md`](CHANGELOG.md); where the
+project is headed lives in [`ROADMAP.md`](ROADMAP.md).
 
 ```bash
 uv run pytest        # run the test suite
