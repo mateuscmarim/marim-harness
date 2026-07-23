@@ -44,6 +44,30 @@ Model API keys follow pydantic-ai's own per-provider env-var convention
 (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …) — marim never reads its own
 `MARIM_*`/`.env` config on this path; that's a CLI-only concern.
 
+### `with_capability(capability)`
+
+Attaches a pydantic-ai `AbstractCapability` to the underlying agent — the
+seam for [Pydantic AI Harness](https://pydantic.dev/docs/ai/harness/)
+modules or your own capability classes. marim's built-in capabilities (the
+history sanitizers and MCP discovered-instructions injection) always run
+first; your capabilities follow in the order you chained them.
+
+```python
+from pydantic_ai_harness.planning import Planning
+
+harness = (
+    HarnessBuilder(workspace=Path("."), model="anthropic:claude-sonnet-4-6")
+    .with_capability(Planning())   # the agent gains Planning's write_plan tool
+    .build()
+)
+```
+
+Note the reach trade-off: a capability that ships its own tools (file access,
+shell, code execution) attaches those tools *as-is* — they ride pydantic-ai's
+plain tool path, not marim's approval gating or `CommandPolicy`. Prefer
+marim's own groups (`with_bash`, `with_defaults`) where they overlap, and
+reserve capabilities for what marim doesn't provide.
+
 ### `with_advisor(model, *, max_tokens=2048, max_uses=None)`
 
 Gives the main agent an `advisor` tool: calling it forwards the full

@@ -266,6 +266,13 @@ class JobRegistry:
                 raise  # the waiter itself was cancelled — propagate
         except Exception as exc:
             logger.debug("wait for job %s: %s (already settled)", job_id, exc)
+        # The done-callback that settles the job runs *after* the await returns
+        # — and on 3.12+ ``asyncio.wait_for`` on an already-done task doesn't
+        # yield to the event loop at all, so the callback may still be queued.
+        # Yield until the status is terminal before reading it, mirroring the
+        # recheck loop in :meth:`await_settled`.
+        while job.status == "running" and job.task.done():
+            await asyncio.sleep(0)
         # Job finished (or was already settled) — mark as wake-consumed.
         self._wake_consumed.add(job_id)
         return job.result if job.result is not None else f"({job.status})"

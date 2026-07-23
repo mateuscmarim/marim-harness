@@ -44,7 +44,9 @@ There are plenty of terminal coding agents. marim's angle:
   env reads — build your own agent product on top of it
   ([`docs/embedding.md`](docs/embedding.md), [`docs/sdk/`](docs/sdk/README.md)).
   If you're using [Pydantic AI](https://ai.pydantic.dev/), this is a
-  full-featured harness already built on it.
+  full-featured harness already built on it — and [Pydantic AI
+  Harness](https://pydantic.dev/docs/ai/harness/) capabilities plug straight
+  in via `with_capability()`.
 - **Any model, including free ones.** OpenRouter, Google, any local
   OpenAI-compatible server (Ollama, LM Studio) — or delegate turns to Claude
   Code on a Claude subscription via the `claude-cli` provider. No vendor

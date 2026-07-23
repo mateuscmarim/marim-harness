@@ -69,3 +69,29 @@ async def test_in_memory_session_round_trips(tmp_path: Path):
     first = await harness.run_turn("one")
     second = await harness.run_turn("two")
     assert first != second            # second turn saw a longer history
+
+
+async def test_with_capability_attaches_after_builtins(tmp_path: Path):
+    """An embedder capability (here a plain ProcessHistory, the same shape a
+    pydantic-ai-harness module has) runs on every model request of a
+    builder-built Harness. This is the with_capability seam end-to-end: the
+    processor sees the history both on the initial request and on the
+    post-tool-call continuation."""
+    from pydantic_ai.capabilities import ProcessHistory
+
+    seen: list[int] = []
+
+    def observe(messages):
+        seen.append(len(messages))
+        return messages
+
+    harness = (
+        HarnessBuilder(workspace=tmp_path,
+                        model=_scripted(("list_dir", {"path": "."})))
+        .with_capability(ProcessHistory(observe))
+        .build()
+    )
+    out = await harness.run_turn("what's here?")
+    assert out == "all done"
+    # Once for the initial request, once for the tool-return continuation.
+    assert len(seen) == 2

@@ -65,6 +65,7 @@ class HarnessBuilder:
         self._lsp_tools = False
         self._lsp_registry: LspRegistry | None = None
         self._mcp_servers: list[object] = []
+        self._capabilities: list[object] = []
         self._forge_backend: object | None = None
         self._subagents: list[AgentDef] = []
         self._custom_tools: list[tuple[Callable, bool]] = []
@@ -132,6 +133,16 @@ class HarnessBuilder:
         """``server`` is a ready pydantic-ai MCP server/toolset object; marim
         JSON specs are a CLI concern (bootstrap converts them before this)."""
         self._mcp_servers.append(server)
+        return self
+
+    def with_capability(self, capability: object) -> HarnessBuilder:
+        """``capability`` is a ready pydantic-ai ``AbstractCapability`` instance
+        — e.g. one of pydantic-ai-harness's modules, or your own. It is
+        attached to the Agent after marim's built-in capabilities (the history
+        sanitizers and MCP discovered-instructions injection), so built-ins see
+        the raw history first. Chain the call to attach several; order among
+        your own capabilities is preserved."""
+        self._capabilities.append(capability)
         return self
 
     def with_forge(self, backend: object) -> HarnessBuilder:
@@ -427,6 +438,7 @@ class HarnessBuilder:
             groups=groups,
             extra_agents=tuple(self._subagents),
             mcp_servers=list(self._mcp_servers),
+            capabilities=list(self._capabilities),
             store=store,
             manager=manager,
             summarizer=make_summarizer(model),
