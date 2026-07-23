@@ -8,6 +8,10 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+- New `zen` provider: OpenCode Zen (opencode's model gateway) via its
+  OpenAI-compatible endpoint — `MARIM_PROVIDER=zen` + `OPENCODE_API_KEY`,
+  default model `mimo-v2.5-free` (free tier). Catalog, settings card, and
+  qualified `zen:<model>` ids included.
 - `HarnessBuilder.with_capability(...)`: attach pydantic-ai
   `AbstractCapability` instances (e.g. Pydantic AI Harness modules) to the
   embedded agent, after marim's built-in capabilities.
