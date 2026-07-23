@@ -15,11 +15,13 @@ from .catalog import (
     fetch_google_models,
     fetch_local_models,
     fetch_openrouter_models,
+    fetch_zen_models,
     filter_entries,
     model_supports_images,
     model_supports_thinking,
     parse_google_models,
     parse_models,
+    parse_zen_models,
 )
 from .fs import WorkspaceError, resolve_in_workspace
 from .memory import (
@@ -58,11 +60,13 @@ __all__ = [
     "fetch_google_models",
     "fetch_local_models",
     "fetch_openrouter_models",
+    "fetch_zen_models",
     "filter_entries",
     "model_supports_images",
     "model_supports_thinking",
     "parse_google_models",
     "parse_models",
+    "parse_zen_models",
     # fs
     "WorkspaceError",
     "resolve_in_workspace",

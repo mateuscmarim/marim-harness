@@ -177,10 +177,11 @@ from the environment — they are never written to session files or logs.**
 
 | Variable | Purpose |
 | --- | --- |
-| `MARIM_PROVIDER` | `openrouter` (default), `google`, `local`, or `zen` |
+| `MARIM_PROVIDER` | `openrouter` (default), `google`, `local`, `claude-cli`, or `zen` |
 | `MARIM_MODEL` | Model id override |
 | `MARIM_BASE_URL` | Base URL for the `local` provider |
 | `OPENROUTER_API_KEY` | API key for OpenRouter |
+| `OPENCODE_API_KEY` | API key for OpenCode Zen |
 | `GOOGLE_API_KEY` / `GEMINI_API_KEY` | API key for the Google provider |
 | `MARIM_API_KEY` | Generic API key fallback |
 | `MARIM_MAX_CONTEXT_TOKENS` | Context budget before compaction |
