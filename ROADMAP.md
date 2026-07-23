@@ -26,6 +26,12 @@ Feedback on any of this is welcome — open an issue.
   [github.com/mateuscmarim/marim-harness](https://github.com/mateuscmarim/marim-harness)
   is a mirror. Define how issues and PRs opened there get triaged and landed,
   and automate the mirror sync.
+- **`marim import claude`** — one command that finds an existing Claude Code
+  setup and carries it over: project memory, hooks configuration, skills,
+  MCP servers, `AGENTS.md`/`CLAUDE.md`. marim's formats deliberately mirror
+  Claude Code's so user investment stays portable; an importer makes that
+  promise checkable — any format drift shows up as an import gap, not as a
+  surprise on switching day.
 - **`gh` forge backend** — the forge tools (list/view/check out PRs, CI
   status) currently ship a `tea`/Gitea backend behind a forge-agnostic
   protocol; a GitHub backend via the `gh` CLI is the obvious drop-in.
