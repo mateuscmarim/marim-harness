@@ -195,3 +195,16 @@ def test_forget_is_not_grantable_to_subagents():
     assert "forget" not in SUBAGENT_TOOLS
     # But it IS part of the builder's memory composition group.
     assert "forget" in TOOL_GROUPS["memory"]
+
+
+def test_recall_appends_link_footer(tmp_path: Path):
+    from marim_harness.workspace import memory
+
+    sc = memory.project_scope(tmp_path)
+    memory.save_memory(sc, name="deploy", description="d", mem_type="project",
+                       body="After [[build]] run the deploy.", title="deploy")
+    agent = _agent()
+    model, captured = _call_recall({"name": "deploy", "scope": "project"})
+    with agent.override(model=model):
+        agent.run_sync("recall", deps=_make_deps(tmp_path, mode=Mode.ask))
+    assert "not yet written: build" in captured["ret"]

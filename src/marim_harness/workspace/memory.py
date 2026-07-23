@@ -32,6 +32,11 @@ _VALID_TYPES = ("user", "feedback", "project", "reference")
 # can't disagree about what "this entry's line" means.
 _ENTRY_LINK_RE = re.compile(r"^- \[.*?\]\((?P<slug>[^)]+)\.md\)")
 
+# ``[[name]]`` wikilinks inside a memory body. Names may be titles or slugs
+# (annotate_links slugifies either way); brackets inside brackets are not
+# supported — the convention is flat links, mirroring Claude Code's memory.
+_WIKILINK_RE = re.compile(r"\[\[([^\[\]]+?)\]\]")
+
 
 @dataclass(frozen=True)
 class MemoryScope:
@@ -210,3 +215,33 @@ def delete_memory(scope: MemoryScope, name: str) -> bool:
         return False
     logger.debug("deleted memory %s (%s)", path, scope.name)
     return True
+
+
+def extract_links(body: str) -> list[str]:
+    """The distinct ``[[name]]`` wikilink targets in a memory body, in first-
+    appearance order (whitespace-trimmed; empty links skipped)."""
+    seen: dict[str, None] = {}
+    for m in _WIKILINK_RE.finditer(body or ""):
+        target = m.group(1).strip()
+        if target:
+            seen.setdefault(target, None)
+    return list(seen)
+
+
+def annotate_links(scope: MemoryScope, body: str) -> str:
+    """Return ``body``, plus — when it contains ``[[name]]`` links — a one-line
+    footer telling the model which linked memories are saved and which are still
+    unwritten. Existence is checked by slugifying each link and testing for its
+    ``<slug>.md`` file (not the index, which could be stale). A dangling link is
+    not an error: per the convention it marks a fact worth writing later."""
+    links = extract_links(body)
+    if not links:
+        return body
+    saved = [t for t in links if (scope.root / f"{_slugify(t)}.md").is_file()]
+    unwritten = [t for t in links if t not in saved]
+    parts = []
+    if saved:
+        parts.append("saved: " + ", ".join(saved))
+    if unwritten:
+        parts.append("not yet written: " + ", ".join(unwritten))
+    return body + "\n\nLinked memories — " + "; ".join(parts) + ". Read saved ones with recall."

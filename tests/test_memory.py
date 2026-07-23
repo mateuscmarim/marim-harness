@@ -357,3 +357,42 @@ def test_delete_memory_fails_soft_on_unwritable_dir(tmp_path: Path):
         assert memory.delete_memory(sc, "x") is False
     finally:
         sc.root.chmod(0o700)
+
+
+def test_extract_links_basic_order_and_dedup():
+    body = "See [[auth-flow]] and [[tokens]]; [[auth-flow]] again."
+    assert memory.extract_links(body) == ["auth-flow", "tokens"]
+
+
+def test_extract_links_none():
+    assert memory.extract_links("no links here [not one](x.md)") == []
+    assert memory.extract_links("") == []
+
+
+def test_extract_links_strips_and_skips_empty():
+    assert memory.extract_links("[[ padded name ]] and [[]]") == ["padded name"]
+
+
+def test_annotate_links_footer_distinguishes_saved_from_unwritten(tmp_path: Path):
+    sc = memory.project_scope(tmp_path)
+    _save(sc, "auth-flow")
+    body = "Uses [[auth-flow]]; see also [[token-rotation]]."
+    out = memory.annotate_links(sc, body)
+    assert out.startswith(body)
+    footer = out[len(body):]
+    assert "saved: auth-flow" in footer
+    assert "not yet written: token-rotation" in footer
+
+
+def test_annotate_links_no_links_returns_body_unchanged(tmp_path: Path):
+    sc = memory.project_scope(tmp_path)
+    assert memory.annotate_links(sc, "plain body") == "plain body"
+
+
+def test_annotate_links_resolves_title_style_links_via_slug(tmp_path: Path):
+    """A link written as the memory's TITLE ("Auth flow") must match the
+    slug-named file (auth-flow.md) — existence is checked by slugifying."""
+    sc = memory.project_scope(tmp_path)
+    _save(sc, "Auth flow")
+    out = memory.annotate_links(sc, "see [[Auth flow]]")
+    assert "saved: Auth flow" in out

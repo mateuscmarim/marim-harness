@@ -5,6 +5,7 @@ from pydantic_ai import RunContext
 from ..runtime.deps import Deps
 from ..workspace.memory import (
     MemoryScope,
+    annotate_links,
     delete_memory,
     global_scope,
     project_scope,
@@ -35,7 +36,9 @@ def remember(
     turns and sessions. Make `description` self-contained: it's the only
     line shown in the always-loaded index, so put the actual fact in it
     ("User's name is Mateus Coutinho Marim"), not a label ("the user's
-    name"). `body` is the full detail. Use `scope="global"` for facts
+    name"). `body` is the full detail; link related memories in it with
+    [[name]] — link liberally, and a [[name]] with no saved memory yet
+    is fine (it marks a fact worth writing later, not an error). Use `scope="global"` for facts
     about the user that hold in every workspace, `scope="project"`
     (default) for facts about this codebase. `type` is one of user,
     feedback, project, reference. Before saving, check the memory index
@@ -66,7 +69,7 @@ def recall(
     detail you need, recall it before answering. Memory files are not
     reachable through read_file — always use this."""
     sc = resolve_scope(ctx, "global" if scope == "global" else "project")
-    return read_memory(sc, name)
+    return annotate_links(sc, read_memory(sc, name))
 
 
 def forget(
