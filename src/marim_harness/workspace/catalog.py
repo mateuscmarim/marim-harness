@@ -3,6 +3,7 @@ list of available models so the picker can offer them, plus pure helpers to
 parse and filter that list."""
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -320,3 +321,34 @@ def model_supports_thinking(entries: list[ModelEntry], model_id: str) -> bool | 
         if entry.id == model_id:
             return entry.supports_thinking
     return None
+
+
+def make_supports_images(
+    list_models: Callable[[], Awaitable[list[ModelEntry]]],
+) -> Callable[[str], Awaitable[bool | None]]:
+    """A per-call vision gate over a lazily-fetched, one-shot-cached catalog.
+
+    The first call fetches the catalog once; success and failure are both
+    cached for the life of the closure (a transient startup failure degrades
+    the whole session to "unknown" — acceptable, because unknown is treated
+    optimistically by the reader and never blocks). Never raises. A rare
+    concurrent first call may skip the fetch and return None once — also
+    just an optimistic send, not worth a lock.
+    """
+    entries: list[ModelEntry] | None = None
+    attempted = False
+
+    async def supports(model_id: str) -> bool | None:
+        nonlocal entries, attempted
+        if not attempted:
+            attempted = True
+            try:
+                entries = await list_models()
+            except Exception:
+                logger.debug("vision-gate catalog fetch failed", exc_info=True)
+                entries = None
+        if entries is None:
+            return None
+        return model_supports_images(entries, model_id)
+
+    return supports

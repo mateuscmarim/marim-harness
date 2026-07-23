@@ -6,6 +6,7 @@ from marim_harness.workspace import (
     ModelEntry,
     catalog,
     filter_entries,
+    make_supports_images,
     model_supports_images,
     parse_models,
 )
@@ -424,3 +425,35 @@ async def test_fetch_zen_models_strict_raises_on_connection_refused(monkeypatch)
 async def test_fetch_zen_models_non_strict_returns_empty(monkeypatch):
     monkeypatch.setattr(catalog, "_ZEN_MODELS_URL", "http://127.0.0.1:9/x")
     assert await catalog.fetch_zen_models("sk-x") == []
+
+
+@pytest.mark.anyio
+async def test_make_supports_images_gates_and_caches():
+    calls = []
+
+    async def list_models():
+        calls.append(1)
+        return [
+            ModelEntry(id="m1", name="M1", supports_images=True),
+            ModelEntry(id="m2", name="M2", supports_images=False),
+        ]
+
+    gate = make_supports_images(list_models)
+    assert await gate("m1") is True
+    assert await gate("m2") is False
+    assert await gate("unknown") is None
+    assert len(calls) == 1  # one-shot cache: a single catalog fetch
+
+
+@pytest.mark.anyio
+async def test_make_supports_images_fetch_failure_is_unknown():
+    calls = []
+
+    async def list_models():
+        calls.append(1)
+        raise RuntimeError("network down")
+
+    gate = make_supports_images(list_models)
+    assert await gate("m1") is None
+    assert await gate("m1") is None
+    assert len(calls) == 1  # failure is cached too — no per-read refetch storm
