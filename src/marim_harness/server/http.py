@@ -24,7 +24,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from ..config import MultiModelSource
+from ..config import MultiModelSource, detect_active_providers
 from ..images import image_cache_root, media_type_for_path
 from ..runtime.permissions import Mode
 from ..session import SessionManager
@@ -151,8 +151,10 @@ async def list_sessions(request: Request) -> Response:
     sessions = []
     for info in infos:
         host = supervisor.peek(record.id, info.id)
+        row = asdict(info)
+        row["model"] = _effective_model(host, info.model)
         sessions.append({
-            **asdict(info),
+            **row,
             "status": host.status if host else "idle",
             "pending_asks": host.pending_asks() if host else [],
         })
@@ -208,6 +210,20 @@ async def create_session(request: Request) -> Response:
     return JSONResponse({"id": store.session_id, "name": store.name}, status_code=201)
 
 
+def _effective_model(host, info_model: str | None) -> str:
+    """The model a session is actually running, never None. A loaded host is
+    authoritative (reflects a live set_model and the resolved config default
+    even when the header was never written); else the persisted header; else
+    the configured default, resolved the same way bootstrap.py does — no
+    Harness build required."""
+    if host is not None and host.harness.model_id:
+        return host.harness.model_id
+    if info_model:
+        return info_model
+    configs, default_provider = detect_active_providers()
+    return f"{default_provider}:{configs[default_provider].model or ''}"
+
+
 async def get_session(request: Request) -> Response:
     denied = _unauthorized(request)
     if denied:
@@ -221,8 +237,10 @@ async def get_session(request: Request) -> Response:
     if info is None:
         return _error(404, "not_found", "unknown session")
     host = _supervisor(request).peek(record.id, session_id)
+    session_dict = asdict(info)
+    session_dict["model"] = _effective_model(host, info.model)
     return JSONResponse({
-        "session": asdict(info),
+        "session": session_dict,
         "status": host.status if host else "idle",
         "queued": host.queued if host else 0,
         "pending_asks": host.pending_asks() if host else [],
