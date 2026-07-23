@@ -5,6 +5,8 @@ server's per-session event bus. Keeping it shared means an app consuming
 ``marim -p --output-format stream-json`` and one consuming ``marim serve``'s
 WebSocket stream see the same event vocabulary."""
 
+import json
+
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
@@ -15,6 +17,19 @@ from pydantic_ai.messages import (
     ThinkingPart,
     ThinkingPartDelta,
 )
+
+
+def _jsonify_tool_content(content) -> str:
+    """Serialize tool-return content for the JSON event stream. A plain string is
+    passed through untouched; structured content (a list/dict of content blocks)
+    is JSON-encoded — with a ``str`` fallback for anything non-serializable — so
+    consumers get valid JSON instead of a Python ``repr`` (single-quoted, unparseable)."""
+    if isinstance(content, str):
+        return content
+    try:
+        return json.dumps(content, default=str)
+    except (TypeError, ValueError):
+        return str(content)
 
 
 def event_to_dict(event) -> dict | None:
@@ -39,6 +54,6 @@ def event_to_dict(event) -> dict | None:
         return {
             "type": "tool_result",
             "id": event.tool_call_id,
-            "content": str(getattr(event.part, "content", "")),
+            "content": _jsonify_tool_content(getattr(event.part, "content", "")),
         }
     return None

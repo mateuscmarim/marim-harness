@@ -390,6 +390,35 @@ def test_clear_job_context_drops_pending_shell_results(tmp_path):
     assert harness.turn_controller._pending_shell_results == []
 
 
+def test_clear_job_context_drops_pending_error_note_and_hook_context(tmp_path):
+    """A conversation-context change (/clear, /new, /switch) must also drop the
+    prior turn's one-shot error note and any unconsumed SessionStart hook
+    context — both prepend onto the NEXT prompt, so leaving them set would splice
+    a dead conversation's note into a fresh or switched-in one."""
+    from pydantic_ai.models.test import TestModel
+
+    deps = _make_deps(tmp_path)
+    harness = Harness(
+        TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="t"
+    )
+    tc = harness.turn_controller
+    tc._pending_error_note = "Note: your previous turn did not complete."
+    tc.apply_session_start_context("stale startup context")
+    harness._clear_job_context()
+    assert tc._pending_error_note is None
+    assert tc._pending_hook_context is None
+
+
+def test_clear_pending_context_method(tmp_path):
+    """clear_pending_context nulls both the error note and the hook context."""
+    tc = _make_tc(_ok_model(), tmp_path)
+    tc._pending_error_note = "boom"
+    tc._pending_hook_context = "ctx"
+    tc.clear_pending_context()
+    assert tc._pending_error_note is None
+    assert tc._pending_hook_context is None
+
+
 @pytest.mark.anyio
 async def test_clear_pending_shell_results_empties_queue(tmp_path):
     """/clear and session switches drop queued ! results — the next turn of a
@@ -407,9 +436,14 @@ async def test_clear_pending_shell_results_empties_queue(tmp_path):
 
 
 def _spy_invalidate(tc) -> list[bool]:
-    """Record calls to the checkpoint invalidation without touching real git."""
+    """Record calls to the checkpoint invalidation without touching real git.
+
+    Repoint the ``on_history_restructured`` seam at the spy too: the controller
+    captured the real bound method into the seam at construction time, so a spy
+    installed only on ``checkpoints`` would never be reached via the seam."""
     calls: list[bool] = []
     tc.checkpoints.invalidate_after_compaction = lambda: calls.append(True)  # type: ignore[method-assign]
+    tc.session.on_history_restructured = tc.checkpoints.invalidate_after_compaction
     return calls
 
 
@@ -417,13 +451,21 @@ def _fake_compact(tc, *, new_len: int | None):
     """Stub ``session.maybe_compact`` to report success and optionally rewrite
     ``session.history`` to ``new_len`` messages (simulating a summary stage).
     ``new_len=None`` leaves the length untouched — the micro-only case.
-    Returns a dict recording the trigger/instructions it was called with."""
+    Returns a dict recording the trigger/instructions it was called with.
+
+    Real ``maybe_compact`` fires ``on_history_restructured`` (which the
+    controller wires to checkpoint invalidation) precisely when the message
+    count changes; the stub replicates that so these tests exercise the wired
+    seam rather than the removed post-return invalidate."""
     seen: dict = {}
 
     async def fake(*, force=False, trigger="auto", instructions=None):
         seen.update(force=force, trigger=trigger, instructions=instructions)
+        before = len(tc.session.history)
         if new_len is not None:
             tc.session.history = [object() for _ in range(new_len)]
+        if len(tc.session.history) != before and tc.session.on_history_restructured is not None:
+            tc.session.on_history_restructured()
         return True
 
     tc.session.maybe_compact = fake  # type: ignore[method-assign]
@@ -481,6 +523,16 @@ async def test_manual_compact_keeps_checkpoints_when_micro_only(tmp_path):
     _fake_compact(tc, new_len=None)
     assert await tc.manual_compact() is True
     assert invalidated == []
+
+
+def test_controller_wires_restructure_seam_to_checkpoint_invalidation(tmp_path):
+    """The controller must hand its CheckpointManager's invalidator to the
+    session as ``on_history_restructured`` — that is what moves invalidation to
+    BEFORE the compacted-history persist (crash-safety). If this wiring is
+    dropped, a restructuring compaction persists first and invalidates never/late,
+    so a crash between the writes leaves stale checkpoints."""
+    tc = _make_tc(_ok_model(), tmp_path)
+    assert tc.session.on_history_restructured == tc.checkpoints.invalidate_after_compaction
 
 
 @pytest.mark.anyio

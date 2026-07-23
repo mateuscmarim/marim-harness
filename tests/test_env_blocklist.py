@@ -187,6 +187,75 @@ def test_project_env_cannot_redirect_trusted_config_via_xdg(
     assert "OPENROUTER_API_KEY" not in os.environ
 
 
+def test_project_env_cannot_inject_process_control_vars(isolated_env, monkeypatch, tmp_path):
+    """The core allowlist finding: a cloned untrusted repo's .env must not be able
+    to set generic subprocess-injection vars (LD_PRELOAD / NODE_OPTIONS / PYTHONPATH
+    / PATH / GIT_SSH_COMMAND / BASH_ENV / ENV), which a denylist can't enumerate and
+    which would grant code execution in every process marim spawns. A legitimate
+    documented key (MARIM_MODEL) in the SAME .env must still be applied."""
+    _setup(
+        tmp_path,
+        monkeypatch,
+        "LD_PRELOAD=/proj/evil.so\n"
+        "NODE_OPTIONS=--require /proj/evil.js\n"
+        "PYTHONPATH=/proj/evil\n"
+        "PYTHONSTARTUP=/proj/evil.py\n"
+        "PATH=/proj/evil/bin\n"
+        "GIT_SSH_COMMAND=/proj/evil.sh\n"
+        "BASH_ENV=/proj/evil.sh\n"
+        "ENV=/proj/evil.sh\n"
+        "MARIM_MODEL=ok-model\n",
+    )
+    for key in (
+        "LD_PRELOAD",
+        "NODE_OPTIONS",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "GIT_SSH_COMMAND",
+        "BASH_ENV",
+        "ENV",
+        "MARIM_MODEL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    # PATH is normally set in the shell env; capture it so we can prove the project
+    # .env did NOT override it (setdefault would no-op, but assert the value is ours).
+    real_path = os.environ.get("PATH", "")
+
+    load_environment()
+
+    for key in (
+        "LD_PRELOAD",
+        "NODE_OPTIONS",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "GIT_SSH_COMMAND",
+        "BASH_ENV",
+        "ENV",
+    ):
+        assert key not in os.environ, key
+    # PATH must never carry the project .env's injected value.
+    assert os.environ.get("PATH", "") == real_path
+    assert "/proj/evil/bin" not in os.environ.get("PATH", "")
+    # The documented, non-security MARIM_ key IS still honored from the project .env.
+    assert os.environ["MARIM_MODEL"] == "ok-model"
+
+
+def test_project_key_allowed_predicate():
+    """Unit-level coverage of the pure allowlist predicate: marim-owned prefixes
+    pass, process-control vars fail, blocklisted keys fail even under an allowed
+    prefix."""
+    from marim_harness.config.env import _project_key_allowed
+
+    assert _project_key_allowed("MARIM_MODEL")
+    assert _project_key_allowed("OPENROUTER_SITE_URL")  # allowed prefix, not blocklisted
+    assert not _project_key_allowed("LD_PRELOAD")
+    assert not _project_key_allowed("PATH")
+    assert not _project_key_allowed("NODE_OPTIONS")
+    # Blocklist wins even under an allowed prefix.
+    assert not _project_key_allowed("MARIM_TRUST_PROJECT_HOOKS")
+    assert not _project_key_allowed("OPENROUTER_API_KEY")
+
+
 def test_project_env_cannot_weaken_cli_timeout(isolated_env, monkeypatch, tmp_path):
     # A huge MARIM_CLAUDE_CLI_TIMEOUT would blunt the wall-clock ceiling that stops a
     # hung claude-cli from holding a concurrency slot; a project .env must not set it.

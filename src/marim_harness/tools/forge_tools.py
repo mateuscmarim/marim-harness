@@ -34,30 +34,6 @@ async def _forge_call(coro: Awaitable[_T]) -> _T | str:
         return f"Forge error: {exc}"
 
 
-# Starting page size for the duplicate-PR scan. The backend only exposes
-# ``list_prs(state, limit)``, so we grow the limit and re-query rather than scan
-# a fixed newest-50: an old open PR beyond that window must still be found, or
-# ``create_pr`` opens a duplicate.
-_DUP_PAGE_SIZE = 50
-
-
-async def _find_open_pr_for_branch(
-    backend: ForgeBackend, branch: str
-) -> PullRequest | None:
-    """Find an open PR whose head is ``branch``, paging past the newest page so
-    an older open PR can't slip the duplicate check. Grows the limit and
-    re-queries until the branch is found or a short page proves exhaustion."""
-    limit = _DUP_PAGE_SIZE
-    while True:
-        prs = await backend.list_prs("open", limit)
-        existing = next((p for p in prs if p.head == branch), None)
-        if existing is not None:
-            return existing
-        if len(prs) < limit:
-            return None
-        limit *= 2
-
-
 async def _list_prs(
     backend: ForgeBackend, ctx: RunContext[Deps], state: str = "open", limit: int = 30
 ) -> str:
@@ -123,7 +99,10 @@ async def _create_pr(
         return f"Branch '{branch}' is not pushed. Run: git push -u origin {branch}"
 
     async def _open() -> str | PullRequest:
-        existing = await _find_open_pr_for_branch(backend, branch)
+        # The backend pages past Gitea's ~50-item server clamp so an open PR
+        # older than the newest page is still found — otherwise create_pr would
+        # open a duplicate over it.
+        existing = await backend.find_open_pr_for_branch(branch)
         if existing is not None:
             return (f"An open PR already exists for '{branch}': "
                     f"#{existing.number} {existing.url}")

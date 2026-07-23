@@ -528,6 +528,52 @@ async def test_wait_cancelled_waiter_propagates_and_leaves_wake_unconsumed():
 
 
 @pytest.mark.anyio
+async def test_cancel_caller_cancelled_propagates():
+    """A turn abort landing while the agent's cancel-job tool sits inside
+    cancel() (awaiting the job task it just cancelled) must propagate out of
+    cancel(), mirroring wait()/await_settled()'s disambiguation — otherwise the
+    abort is silently swallowed and the turn keeps running one more step."""
+    reg = JobRegistry()
+    proceed = asyncio.Event()
+
+    async def _stubborn() -> str:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # Slow to finish cancelling: hold (shielded) until the test releases
+            # us, so cancel()'s `await job.task` stays parked and the caller can
+            # itself be cancelled while the job task is not yet done.
+            await asyncio.shield(proceed.wait())
+            raise
+        return "never"
+
+    jid = reg.register("agent", "a", _stubborn())
+    await asyncio.sleep(0)  # let the job task start and block on the inner wait
+    canceller = asyncio.ensure_future(reg.cancel(jid))
+    await asyncio.sleep(0)  # cancel() calls task.cancel() and reaches await job.task
+    await asyncio.sleep(0)  # job task enters its except and parks on `proceed`
+
+    canceller.cancel()  # the turn abort lands while cancel() awaits the job task
+    with pytest.raises(asyncio.CancelledError):
+        await canceller
+
+    proceed.set()  # release the stubborn task so it settles and doesn't leak
+    await _settled(reg)
+
+
+@pytest.mark.anyio
+async def test_cancel_suppresses_the_jobs_own_cancellation():
+    """The ordinary path: cancel() suppresses the CancelledError raised by the
+    job task it cancelled and settles the job cancelled — the caller's own turn
+    is unaffected."""
+    reg = JobRegistry()
+    jid = reg.register("agent", "a", _sleep_then("never", 5))
+    msg = await reg.cancel(jid)
+    assert "cancelled" in msg.lower()
+    assert reg.get(jid).status == "cancelled"
+
+
+@pytest.mark.anyio
 async def test_wait_returns_normally_when_job_itself_is_cancelled():
     reg = JobRegistry()
     ev = asyncio.Event()

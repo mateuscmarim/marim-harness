@@ -18,11 +18,12 @@ RUNS_JSON = """[
 ]"""
 
 
-def test_list_prs_args_includes_fields_and_json():
-    args = tb._list_prs_args("open", 30)
+def test_list_prs_page_args_includes_fields_page_and_json():
+    args = tb._list_prs_page_args("open", 2)
     assert args[:2] == ["pr", "list"]
     assert "--state" in args and "open" in args
-    assert "--limit" in args and "30" in args
+    assert "--limit" in args and str(tb._PAGE_SIZE) in args  # fixed page size
+    assert "--page" in args and "2" in args  # explicit page offset
     assert "-o" in args and "json" in args
     assert "--fields" in args and tb.PR_FIELDS in args
     assert all(isinstance(a, str) for a in args)  # argv list, injection guard
@@ -126,8 +127,11 @@ def test_tea_available_true_when_path_and_config(monkeypatch, tmp_path):
 
 @pytest.mark.anyio
 async def test_backend_list_prs_maps(monkeypatch):
+    # list_prs pages to termination, so the fake must return an empty page after
+    # the first (a naive always-non-empty fake would loop to _MAX_PAGES).
     async def fake_run(args, cwd, timeout=20.0):
-        return PR_JSON
+        page = int(args[args.index("--page") + 1])
+        return PR_JSON if page == 1 else "[]"
     monkeypatch.setattr(tb, "_run_tea", fake_run)
     prs = await tb.TeaBackend(Path(".")).list_prs("all", 30)
     assert len(prs) == 1 and prs[0].number == 51
@@ -333,3 +337,38 @@ async def test_find_pr_stops_at_max_pages_when_server_never_empties(monkeypatch)
     pr = await tb.TeaBackend(Path(".")).view_pr(999999, None)  # never present
     assert pr is None
     assert len(calls) == tb._MAX_PAGES
+
+
+@pytest.mark.anyio
+async def test_find_open_pr_for_branch_finds_old_open_pr_beyond_first_page(monkeypatch):
+    # The duplicate-PR guard: an open PR whose head is the branch sits on page 2
+    # (rows 51-100). A single --limit query would be clamped to 50 and miss it;
+    # the paged find walks to page 2 and returns it.
+    rows = _pr_rows(range(100, 0, -1))  # #100..#1 newest-first; head b<i>
+    monkeypatch.setattr(tb, "_run_tea", _paging_run(rows, cap=50))
+    pr = await tb.TeaBackend(Path(".")).find_open_pr_for_branch("b1")
+    assert pr is not None and pr.number == 1
+    absent = await tb.TeaBackend(Path(".")).find_open_pr_for_branch("no-such-branch")
+    assert absent is None
+
+
+@pytest.mark.anyio
+async def test_list_prs_pages_past_server_clamp(monkeypatch):
+    # A caller asking for more than one page's worth (limit=80) must actually get
+    # them despite the server clamping each page to 50 — list_prs pages until it
+    # has `limit` rows.
+    rows = _pr_rows(range(100, 0, -1))
+    monkeypatch.setattr(tb, "_run_tea", _paging_run(rows, cap=50))
+    prs = await tb.TeaBackend(Path(".")).list_prs("all", 80)
+    assert len(prs) == 80
+    assert [p.number for p in prs] == list(range(100, 20, -1))  # newest 80
+
+
+@pytest.mark.anyio
+async def test_list_prs_stops_when_list_exhausted(monkeypatch):
+    # Fewer PRs than requested: list_prs returns them all and terminates on the
+    # empty page rather than looping.
+    rows = _pr_rows(range(30, 0, -1))
+    monkeypatch.setattr(tb, "_run_tea", _paging_run(rows, cap=50))
+    prs = await tb.TeaBackend(Path(".")).list_prs("all", 80)
+    assert len(prs) == 30

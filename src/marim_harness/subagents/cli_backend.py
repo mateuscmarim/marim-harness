@@ -267,7 +267,11 @@ def synth_usage(
     u = cli_usage or {}
     details: dict = {}
     if total_cost_usd is not None:
-        details[COST_DETAIL_KEY] = int(total_cost_usd * 1_000_000)
+        # round(), not int(): truncation loses up to a full microdollar and
+        # amplifies float artifacts (a billed 1.001 → 1000999.9999999999 →
+        # int() 1000999, one micro-USD short). This matches the other accounting
+        # path, config/openrouter_cost.py, which also round()s to micro-USD.
+        details[COST_DETAIL_KEY] = round(total_cost_usd * 1_000_000)
     uncached_in = int(u.get("input_tokens", 0) or 0)
     cache_read = int(u.get("cache_read_input_tokens", 0) or 0)
     cache_write = int(u.get("cache_creation_input_tokens", 0) or 0)
@@ -427,6 +431,18 @@ def _flatten_tool_result(content) -> str:
         )
     return "" if content is None else str(content)
 
+
+# Grace window for the post-loop stderr drain and the final process reap. Once
+# stdout has EOF'd (the child exited), a well-behaved process's stderr closes
+# essentially immediately, so this is generous. It exists to bound the ONE case
+# that would otherwise hang forever: a spawn whose Bash tool backgrounded a
+# daemon (`nohup … &`) that inherited the child's stderr — `claude` exits and
+# stdout EOFs, but the daemon holds stderr's write end open so it never EOFs. An
+# unbounded `await stderr_task` there pins the run (and its concurrency slot)
+# forever, violating this module's own invariant. On expiry we SIGKILL the group
+# (which reaps the daemon too — a bare `&`/nohup child stays in the group) and
+# proceed with whatever stderr was collected.
+_POST_LOOP_GRACE = 2.0
 
 _READ_CHUNK = 65536
 
@@ -589,7 +605,11 @@ class ClaudeCliRunner:
                 snapshot = translator.transcript()
                 if len(snapshot) != state.last_ckpt_len:
                     checkpoint(snapshot, state.session_id)
-            stderr_bytes = await stderr_task if stderr_task is not None else b""
+            # Bounded, not `await stderr_task`: a backgrounded daemon that
+            # inherited the child's stderr would never let this EOF — see
+            # _POST_LOOP_GRACE. _drain_stderr kills the group on expiry, so this
+            # can't hang the run.
+            stderr_bytes = await self._drain_stderr(stderr_task, proc)
             stderr_task = None  # consumed — don't cancel it in finally
             return await self._finalize(state, stderr_bytes, proc, translator, demux)
         finally:
@@ -683,17 +703,48 @@ class ClaudeCliRunner:
             if self._on_event is not None and stream_id:
                 await self._on_event(stream_id, event, None)
 
+    async def _drain_stderr(self, stderr_task, proc) -> bytes:
+        """Collect the child's stderr, bounded by a short grace window. Returns
+        whatever was read; on expiry SIGKILLs the process group (releasing a
+        daemon that inherited stderr and never EOF'd it — see _POST_LOOP_GRACE)
+        and returns empty. Bounding this is the crux of the concurrency-slot
+        invariant: an unbounded ``await stderr_task`` hangs run() forever when a
+        `nohup … &` child holds the write end past the child's own exit."""
+        if stderr_task is None:
+            return b""
+        try:
+            return await asyncio.wait_for(stderr_task, _POST_LOOP_GRACE)
+        except (TimeoutError, asyncio.TimeoutError):
+            # wait_for already cancelled the read; kill the group so the daemon
+            # holding stderr dies with it, then proceed with no stderr.
+            _kill_process_group(proc)
+            return b""
+
+    async def _reap(self, proc) -> int | None:
+        """Wait for the child to exit, bounded so a wedged process can't hang
+        run() on ``proc.wait()``: a first short grace, then a SIGKILL of the
+        group and one more grace. Returns the exit code, or None if it never
+        reaped (the finally block's own kill/wait is the last resort)."""
+        for kill_first in (False, True):
+            if kill_first:
+                _kill_process_group(proc)
+            try:
+                return await asyncio.wait_for(proc.wait(), _POST_LOOP_GRACE)
+            except (TimeoutError, asyncio.TimeoutError):
+                continue
+        return None
+
     async def _finalize(
         self, state: _RunState, stderr_bytes: bytes, proc,
         translator: CliStreamTranslator, demux: CliSubagentDemux,
     ) -> CliResult:
-        """The post-loop drain: wait for the process's exit code, raise
+        """The post-loop drain: wait (bounded) for the process's exit code, raise
         CliRunError when the stream never produced a result event, else build
         the finished CliResult. Called from `run` only after the
         `stderr_task = None` "consumed" handshake has already run in that
         frame — see the comment there — so this never touches `stderr_task`
         itself."""
-        code = await proc.wait()
+        code = await self._reap(proc)
         if not state.results:
             detail = stderr_bytes.decode("utf-8", "replace").strip() or f"exit code {code}"
             raise CliRunError(f"claude produced no result ({detail})")

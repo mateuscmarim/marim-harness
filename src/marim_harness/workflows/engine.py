@@ -361,13 +361,28 @@ class WorkflowEngine:
 
     def _announce_start(self, tool_call_id: str, title: str) -> None:
         cb = getattr(self.deps.ui, "on_workflow_start", None)
-        if cb is not None:
+        if cb is None:
+            return
+        # Guard the render callback exactly as log() is guarded (its threadsafe
+        # hop deflects a raise into the loop's exception handler): a raising UI
+        # callback is a render bug, not a script failure, and must not kill a
+        # workflow whose real work succeeded.
+        try:
             cb(tool_call_id, title)
+        except Exception:
+            logger.warning("workflow start callback raised; ignoring", exc_info=True)
 
     def _announce_done(self, tool_call_id: str, outcome: str, *, failed: bool) -> None:
         cb = getattr(self.deps.ui, "on_workflow_done", None)
-        if cb is not None:
+        if cb is None:
+            return
+        # Same guard as _announce_start. On the SUCCESS path this also protects
+        # the already-computed result: a raising done-callback must not lose the
+        # `shaped` value run() is about to return.
+        try:
             cb(tool_call_id, outcome, failed)
+        except Exception:
+            logger.warning("workflow done callback raised; ignoring", exc_info=True)
 
     # -- teardown & result shaping -------------------------------------------
 

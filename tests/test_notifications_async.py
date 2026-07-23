@@ -88,6 +88,22 @@ async def test_send_async_unknown_platform_is_noop():
     ) as mock_exec:
         await n.send_async("t", "b", EVENT_TURN_COMPLETE)
     mock_exec.assert_not_called()
+    # Nothing fired, so the coalesce timestamp must be rolled back.
+    assert EVENT_TURN_COMPLETE not in n._last_fired
+
+
+@pytest.mark.anyio
+async def test_send_async_missing_binary_rolls_back_timestamp():
+    n = Notifier(NotificationConfig(enabled=True, events={"turn_complete"}))
+    n._platform = "linux"
+    with patch(
+        "marim_harness.notifications.shutil.which", return_value=None
+    ), patch(
+        "marim_harness.notifications.asyncio.create_subprocess_exec"
+    ) as mock_exec:
+        await n.send_async("t", "b", EVENT_TURN_COMPLETE)
+    mock_exec.assert_not_called()
+    assert EVENT_TURN_COMPLETE not in n._last_fired
 
 
 # ---------------------------------------------------------------------------

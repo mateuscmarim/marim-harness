@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from ..atomic_io import file_lock
 from .discovery import (
     _resolve_hooks_entries,
     _resolve_mcp_servers,
@@ -28,6 +29,7 @@ from .state import (
     load_state,
     project_plugins_dir,
     save_state,
+    state_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -141,7 +143,17 @@ def _materialize(src_dir: Path, dest: Path, *, link: bool) -> None:
     if link:
         dest.symlink_to(src_dir.resolve(), target_is_directory=True)
     else:
-        shutil.copytree(src_dir, dest)
+        # symlinks=True copies links AS links rather than dereferencing them. With
+        # the default (False), copytree would read through a hostile plugin's
+        # symlink and copy the TARGET's bytes into the plugin dir — e.g.
+        # ``AGENTS.md -> ~/.aws/credentials`` would materialize the secret's
+        # contents as a real file inside the plugin, feeding it into model context
+        # (the manifest path-escape guard only fires on links, which a dereferenced
+        # copy no longer is). It would also raise an unwrapped shutil.Error on a
+        # broken link. Preserving links keeps them inert: a link that escapes the
+        # plugin root is caught by PluginManifest._resolve at read time, and a
+        # dangling link is simply copied as a dangling link (no crash).
+        shutil.copytree(src_dir, dest, symlinks=True)
 
 
 def install_plugin(
@@ -152,11 +164,14 @@ def install_plugin(
     trust: bool,
     link: bool = False,
     name_override: str | None = None,
+    ref: str | None = None,
     now: str,
     _force_git: bool = False,
 ) -> InstalledPlugin:
     """Install ``source`` (a local dir or git URL) into ``scope``. Returns the
-    written registry record."""
+    written registry record. ``ref`` pins a git source at a branch/tag/commit at
+    install time (recorded on the source record so ``update_plugin`` re-fetches
+    that same ref); ignored for local/linked sources."""
     target_root = scope_dir(scope, workspace_root)
     use_git = _force_git or is_git_source(source)
 
@@ -166,7 +181,7 @@ def install_plugin(
             if link:
                 raise InstallError("--link is only valid for local sources")
             staging = Path(tmp) / "clone"
-            source_record = _clone_git(source, staging, ref=None)
+            source_record = _clone_git(source, staging, ref=ref)
         else:
             staging = Path(source)
             if not staging.is_dir():
@@ -212,20 +227,27 @@ def install_plugin(
         linked=is_linked,
         installed_at=now,
     )
-    state = load_state(target_root)
-    state[name] = record
-    save_state(target_root, state)
+    # Serialize the registry read-modify-write: two concurrent installs/updates
+    # each load the full registry, add their own entry, and write it back, so
+    # without a lock the second writer's save clobbers the first's new record.
+    # The advisory lock (on a plugins.json.lock sidecar) makes the load+save one
+    # critical section across processes.
+    with file_lock(state_path(target_root)):
+        state = load_state(target_root)
+        state[name] = record
+        save_state(target_root, state)
     return record
 
 
 def _mutate(name: str, scope: str, workspace_root, fn) -> bool:
     target_root = scope_dir(scope, workspace_root)
-    state = load_state(target_root)
-    rec = state.get(name)
-    if rec is None:
-        return False
-    fn(rec)
-    save_state(target_root, state)
+    with file_lock(state_path(target_root)):
+        state = load_state(target_root)
+        rec = state.get(name)
+        if rec is None:
+            return False
+        fn(rec)
+        save_state(target_root, state)
     return True
 
 
@@ -249,30 +271,36 @@ def remove_plugin(name: str, *, scope: str, workspace_root) -> bool:
     if not valid_plugin_name(name):
         return False
     target_root = scope_dir(scope, workspace_root)
-    state = load_state(target_root)
-    if name not in state:
-        return False
-    dest = target_root / name
-    if dest.is_symlink() or dest.is_file():
-        dest.unlink()
-    elif dest.exists():
-        shutil.rmtree(dest)
-    del state[name]
-    save_state(target_root, state)
+    with file_lock(state_path(target_root)):  # serialize the registry RMW (see _mutate)
+        state = load_state(target_root)
+        if name not in state:
+            return False
+        dest = target_root / name
+        if dest.is_symlink() or dest.is_file():
+            dest.unlink()
+        elif dest.exists():
+            shutil.rmtree(dest)
+        del state[name]
+        save_state(target_root, state)
     return True
 
 
-def executable_surface_fingerprint(hooks: dict | None, mcp_servers: dict | None) -> str:
+def executable_surface_fingerprint(
+    hooks: dict | None, mcp_servers: dict | None, lsp=None
+) -> str:
     """Canonical, stable fingerprint of a plugin's executable surface: its hook
-    entries (commands, args, env, event wiring) and MCP server specs (commands,
-    args, env, urls). Pure — takes the already-resolved dicts, returns their
-    canonical JSON. ``None`` and ``{}`` both mean "no surface" and fingerprint
-    equal; any content change (not just presence) changes the fingerprint.
+    entries (commands, args, env, event wiring), MCP server specs (commands,
+    args, env, urls), AND its ``lsp`` block (a declarative ``command``/``args``
+    that launches a process on connect — the same code-execution risk class as a
+    hook or MCP server, so a changed lsp command must flip the fingerprint and
+    drop trust). Pure — takes the already-resolved values, returns their
+    canonical JSON. ``None``/``{}`` all mean "no surface" and fingerprint equal;
+    any content change (not just presence) changes the fingerprint.
 
-    The dicts are compared UNSUBSTITUTED (``${MARIM_PLUGIN_ROOT}`` intact), so
+    The values are compared UNSUBSTITUTED (``${MARIM_PLUGIN_ROOT}`` intact), so
     the fingerprint is independent of where the plugin happens to sit on disk —
     a staging clone and the installed copy of the same content compare equal."""
-    payload = {"hooks": hooks or {}, "mcpServers": mcp_servers or {}}
+    payload = {"hooks": hooks or {}, "mcpServers": mcp_servers or {}, "lsp": lsp or {}}
     return json.dumps(payload, sort_keys=True, default=str)
 
 
@@ -284,10 +312,14 @@ def _surface_fingerprint(plugin_dir: Path) -> str:
     try:
         manifest = load_manifest(plugin_dir)
     except ManifestError:
-        return executable_surface_fingerprint(None, None)
+        return executable_surface_fingerprint(None, None, None)
     return executable_surface_fingerprint(
         _resolve_hooks_entries(manifest.hooks_source()),
         _resolve_mcp_servers(manifest.mcp_source()),
+        # The raw, unsubstituted lsp block (object or list) — so an update that
+        # ADDS or CHANGES a declarative lsp command flips the surface and drops
+        # trust, closing the hole where an lsp-only change kept trusted=True.
+        manifest.lsp_block(),
     )
 
 
@@ -299,44 +331,51 @@ def update_plugin(name: str, *, scope: str, workspace_root, now: str) -> Install
     if not valid_plugin_name(name):
         raise InstallError(f"invalid plugin name: {name!r}")
     target_root = scope_dir(scope, workspace_root)
-    state = load_state(target_root)
-    rec = state.get(name)
-    if rec is None:
-        raise InstallError(f"plugin not installed: {name}")
-    if rec.source.get("type") != "git":
-        raise InstallError(f"{name} was not installed from git; reinstall to update")
-    url = rec.source["url"]
-    ref = rec.source.get("ref")
-    dest = target_root / name
-    # Fingerprint the executable surface of the version on disk *before* we
-    # overwrite it, to compare against the incoming clone's below.
-    surface_before = _surface_fingerprint(dest)
-    with tempfile.TemporaryDirectory() as tmp:
-        staging = Path(tmp) / "clone"
-        source_record = _clone_git(url, staging, ref=ref)
-        manifest = _validated_manifest(staging)
-        now_executable = has_executable(plugin_bundle_summary(manifest))
-        surface_after = _surface_fingerprint(staging)
-        _materialize(staging, dest, link=False)
-    rec.version = manifest.version
-    rec.source = source_record
-    rec.installed_at = now
-    # Trust guard: an update whose executable surface CONTENT changed must not
-    # keep running under the old grant. Presence-elevation alone (inert ->
-    # executable, the old check) left a hole: an upstream that already shipped
-    # one benign hook could swap that hook's command for anything in a later tag
-    # and it ran trusted with no re-prompt — the exact residual risk documented
-    # for linked plugins (discovery._linked_elevation_revokes_trust), unguarded
-    # here. Comparing fingerprints of hooks + MCP specs closes it: elevation is
-    # a subset (empty != non-empty), and a byte-identical surface preserves
-    # trust — the user's grant covered exactly this content. On a change,
-    # recompute trust the way install would: inert -> auto-trusted, executable
-    # -> must be explicitly re-granted. Residual gap: the fingerprint only
-    # covers the hooks/MCP config, not the bytes of any script it references,
-    # so a config-identical update that rewrites the body of e.g.
-    # ${MARIM_PLUGIN_ROOT}/run.sh (path/args unchanged in hooks.json) keeps
-    # trust with no re-prompt.
-    if surface_after != surface_before:
-        rec.trusted = not now_executable
-    save_state(target_root, state)
+    # Hold the registry lock across the whole update (load..save, clone included)
+    # so a concurrent install/update can't clobber this record's rewrite — the
+    # same RMW serialization install_plugin uses. The lock is advisory/best-effort
+    # (see atomic_io.file_lock); a git clone inside it is acceptable since
+    # concurrent updates of one scope's registry are rare and serializing them is
+    # exactly the intent.
+    with file_lock(state_path(target_root)):
+        state = load_state(target_root)
+        rec = state.get(name)
+        if rec is None:
+            raise InstallError(f"plugin not installed: {name}")
+        if rec.source.get("type") != "git":
+            raise InstallError(f"{name} was not installed from git; reinstall to update")
+        url = rec.source["url"]
+        ref = rec.source.get("ref")
+        dest = target_root / name
+        # Fingerprint the executable surface of the version on disk *before* we
+        # overwrite it, to compare against the incoming clone's below.
+        surface_before = _surface_fingerprint(dest)
+        with tempfile.TemporaryDirectory() as tmp:
+            staging = Path(tmp) / "clone"
+            source_record = _clone_git(url, staging, ref=ref)
+            manifest = _validated_manifest(staging)
+            now_executable = has_executable(plugin_bundle_summary(manifest))
+            surface_after = _surface_fingerprint(staging)
+            _materialize(staging, dest, link=False)
+        rec.version = manifest.version
+        rec.source = source_record
+        rec.installed_at = now
+        # Trust guard: an update whose executable surface CONTENT changed must not
+        # keep running under the old grant. Presence-elevation alone (inert ->
+        # executable, the old check) left a hole: an upstream that already shipped
+        # one benign hook could swap that hook's command for anything in a later tag
+        # and it ran trusted with no re-prompt — the exact residual risk documented
+        # for linked plugins (discovery._linked_elevation_revokes_trust), unguarded
+        # here. Comparing fingerprints of hooks + MCP + lsp specs closes it:
+        # elevation is a subset (empty != non-empty), and a byte-identical surface
+        # preserves trust — the user's grant covered exactly this content. On a
+        # change, recompute trust the way install would: inert -> auto-trusted,
+        # executable -> must be explicitly re-granted. Residual gap: the fingerprint
+        # only covers the hooks/MCP/lsp config, not the bytes of any script it
+        # references, so a config-identical update that rewrites the body of e.g.
+        # ${MARIM_PLUGIN_ROOT}/run.sh (path/args unchanged in hooks.json) keeps
+        # trust with no re-prompt.
+        if surface_after != surface_before:
+            rec.trusted = not now_executable
+        save_state(target_root, state)
     return rec

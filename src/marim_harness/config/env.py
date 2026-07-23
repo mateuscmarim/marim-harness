@@ -107,13 +107,43 @@ _PROJECT_ENV_BLOCKLIST = frozenset(
 )
 
 
+# Allowlist of key PREFIXES a project-local .env may set. The blocklist above is a
+# denylist and cannot enumerate the open-ended set of generic process-control vars
+# a subprocess inherits — LD_PRELOAD, NODE_OPTIONS, PYTHONPATH, PYTHONSTARTUP, PATH,
+# GIT_SSH_COMMAND, BASH_ENV, ENV, … — any of which turns a cloned untrusted repo's
+# .env into code execution in every process marim spawns (git checkpoints, hooks,
+# LSP, global MCP). A denylist that misses one is a foothold, so the project .env is
+# gated by this ALLOWLIST instead: only keys under a documented, marim-owned prefix
+# are ever applied from a project file. The dangerous proxy vars match no prefix here
+# and are silently dropped. The blocklist still runs first, so a security-relevant
+# MARIM_*/provider key (e.g. MARIM_TRUST_PROJECT_HOOKS) is rejected even though its
+# prefix is allowed. This gate applies ONLY to the project .env — the real shell env
+# and the trusted global config are unaffected.
+_PROJECT_ENV_ALLOWED_PREFIXES = (
+    "MARIM_",
+    "OPENROUTER_",
+    "GOOGLE_",
+    "GEMINI_",
+)
+
+
+def _project_key_allowed(key: str) -> bool:
+    """Whether a project-.env ``key`` may be applied: it must sit under a documented
+    marim-owned prefix (allowlist) AND not be a blocklisted security key. Pure."""
+    if key in _PROJECT_ENV_BLOCKLIST:
+        return False
+    return key.startswith(_PROJECT_ENV_ALLOWED_PREFIXES)
+
+
 def load_environment() -> None:
     """Populate the environment for a run. Loads the project-local .env (cwd and
     parents) first, then the global config as a fallback. An already-set variable
     is never overridden, so precedence is: real shell env, then the project .env,
-    then the global config — except for the security keys in
-    ``_PROJECT_ENV_BLOCKLIST``, which the project .env is not allowed to set at
-    all (those come only from the shell env or the trusted global config)."""
+    then the global config — except that the project .env is applied through an
+    ALLOWLIST (``_project_key_allowed``): only documented marim-owned keys that are
+    not blocklisted are honored from a project file, so a cloned untrusted repo can
+    never smuggle a process-control var (LD_PRELOAD/NODE_OPTIONS/PYTHONPATH/…) into
+    the subprocesses marim spawns. The global config is trusted and unfiltered."""
     from dotenv import dotenv_values, find_dotenv, load_dotenv
 
     project = find_dotenv(usecwd=True)  # project-local, if any
@@ -128,7 +158,7 @@ def load_environment() -> None:
             logger.warning("Ignoring unreadable project .env at %s: %s", project, exc)
             project_values = {}
         for key, value in project_values.items():
-            if value is None or key in _PROJECT_ENV_BLOCKLIST:
+            if value is None or not _project_key_allowed(key):
                 continue
             os.environ.setdefault(key, value)  # shell env still wins
     load_dotenv(global_config_path())  # global fallback (may set blocked keys)

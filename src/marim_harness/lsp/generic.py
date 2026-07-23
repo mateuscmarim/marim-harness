@@ -18,6 +18,7 @@ import asyncio
 import logging
 import os
 import pathlib
+import shlex
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -30,6 +31,33 @@ from multilspy.multilspy_config import MultilspyConfig
 from multilspy.multilspy_logger import MultilspyLogger
 
 from .provider import LspProvider
+
+# Substrings that mark an env var as a credential/secret. A declarative third-party
+# LSP server is plugin-authored code launched on connect; forwarding marim's full
+# process env would hand it every API key/token the harness holds. We scrub any var
+# whose NAME contains one of these before merging in the provider's own (explicitly
+# declared, plugin-authored) env — matching the trust posture that a third-party
+# server gets no ambient credentials it wasn't explicitly given.
+_SENSITIVE_ENV_MARKERS = (
+    "API_KEY",
+    "APIKEY",
+    "SECRET",
+    "TOKEN",
+    "PASSWORD",
+    "PASSWD",
+    "CREDENTIAL",
+    "PRIVATE_KEY",
+)
+
+
+def _scrub_sensitive_env(environ: dict[str, str]) -> dict[str, str]:
+    """Return a copy of ``environ`` with obviously-sensitive keys (API keys, tokens,
+    secrets, passwords) dropped. Pure — name-substring match, case-insensitive."""
+    return {
+        k: v
+        for k, v in environ.items()
+        if not any(marker in k.upper() for marker in _SENSITIVE_ENV_MARKERS)
+    }
 
 
 class GenericStdioServer(LanguageServer):
@@ -45,8 +73,12 @@ class GenericStdioServer(LanguageServer):
         language_id: str,
         env: dict[str, str] | None = None,
     ):
+        # Scrub credentials from the inherited env before merging the provider's
+        # own declared env (which may legitimately re-add a var the server needs).
         launch = ProcessLaunchInfo(
-            cmd=cmd, cwd=repository_root_path, env={**os.environ, **(env or {})}
+            cmd=cmd,
+            cwd=repository_root_path,
+            env={**_scrub_sensitive_env(dict(os.environ)), **(env or {})},
         )
         super().__init__(config, logger_, repository_root_path, launch, language_id)
         self._launch_cmd = cmd  # exposed for tests / debugging
@@ -54,7 +86,12 @@ class GenericStdioServer(LanguageServer):
     @classmethod
     def from_provider(cls, provider: LspProvider, root: Path) -> GenericStdioServer:
         assert provider.command is not None  # declarative providers only
-        cmd = " ".join([provider.command, *provider.args]).strip()
+        # ``command`` is a shell string (it may itself carry inline args, e.g.
+        # "python -m pyls"; provider parsing takes command.split()[0] as the probe
+        # binary), but ``args`` are DISCRETE tokens — a naive " ".join would let an
+        # arg containing a space be re-split by the shell into two args. shlex.join
+        # quotes each arg so one with embedded spaces survives as a single token.
+        cmd = " ".join([provider.command, shlex.join(provider.args)]).strip()
         config = MultilspyConfig.from_dict({"code_language": provider.language})
         return cls(
             config,

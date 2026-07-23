@@ -24,7 +24,7 @@ import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -179,7 +179,9 @@ def request_usage_from_cli(
     u = cli_usage or {}
     details: dict = {}
     if total_cost_usd is not None:
-        details[COST_DETAIL_KEY] = int(total_cost_usd * 1_000_000)
+        # round(), not int() truncation, so the micro-USD conversion matches
+        # openrouter_cost.read_cost_micro_usd and a sub-cent cost isn't floored away.
+        details[COST_DETAIL_KEY] = round(total_cost_usd * 1_000_000)
     cache_read = int(u.get("cache_read_input_tokens", 0) or 0)
     cache_write = int(u.get("cache_creation_input_tokens", 0) or 0)
     uncached_in = int(u.get("input_tokens", 0) or 0)
@@ -395,7 +397,7 @@ def _result_done_chunk(
     )
 
 
-async def consume_cli_stream(objs: AsyncIterator[dict]) -> AsyncIterator:
+async def consume_cli_stream(objs: AsyncIterator[dict]) -> AsyncGenerator:
     """Turn parsed stream-json objects into structured chunks then one or more
     ``DoneChunk``s.
 
@@ -557,7 +559,7 @@ def _no_result_message(done: DoneChunk | None) -> str:
 _STDERR_TAIL_CHARS = 2000
 
 
-async def spawn_cli_objects(argv: list[str], cwd: str) -> AsyncIterator[dict]:
+async def spawn_cli_objects(argv: list[str], cwd: str) -> AsyncGenerator[dict]:
     """Spawn ``claude`` and yield each stream-json line as a parsed dict. Reaps the
     child on exit; drains stderr to avoid a pipe-buffer deadlock. Non-JSON noise is
     skipped. This is the only I/O seam — tests replace it via ``model.spawn``.
@@ -641,7 +643,6 @@ class ClaudeCliModel(Model):
         # root, exactly like ``mode_getter``. Spawning in the process cwd (".") would
         # make Claude read/edit the WRONG directory — destructively so under --worktree.
         self.cwd: str = "."
-        self._ts = datetime.now(tz=timezone.utc)
 
     def ephemeral_clone(self, *, cwd: str) -> ClaudeCliModel:
         """A stateless, read-only copy for one-shot aux agents (titler/summarizer).
@@ -706,13 +707,21 @@ class ClaudeCliModel(Model):
         argv = self._argv(messages)
         done: DoneChunk | None = None
         parts: list[str] = []  # assistant prose + folded ▸ tool lines (no UI here)
-        async for chunk in consume_cli_stream(self.spawn(argv, self.cwd)):
-            if isinstance(chunk, DoneChunk):
-                done = chunk
-                continue
-            segment = fold_chunk_text(chunk, leading=not parts)
-            if segment:
-                parts.append(segment)
+        # Hold the spawn generator so we can aclose() it deterministically. Its
+        # finally kills the child `claude` process; without an explicit aclose on
+        # consumer cancellation (Ctrl-C mid-turn) that kill would be deferred to
+        # nondeterministic GC, leaking a live subprocess until then.
+        objs = self.spawn(argv, self.cwd)
+        try:
+            async for chunk in consume_cli_stream(objs):
+                if isinstance(chunk, DoneChunk):
+                    done = chunk
+                    continue
+                segment = fold_chunk_text(chunk, leading=not parts)
+                if segment:
+                    parts.append(segment)
+        finally:
+            await objs.aclose()
         if done is None or not done.complete:
             raise CliModelError(_no_result_message(done))
         if done.session_id and not self.ephemeral:
@@ -720,7 +729,10 @@ class ClaudeCliModel(Model):
         return ModelResponse(
             parts=[TextPart(content="".join(parts))],
             model_name=self.model_name,
-            timestamp=self._ts,
+            # Stamp each response with the current time — not a shared
+            # construction-time value — so a multi-turn history doesn't carry
+            # identical, stale timestamps across every ModelResponse.
+            timestamp=datetime.now(tz=timezone.utc),
             usage=done.usage,
             provider_name="claude-cli",
         )
@@ -734,11 +746,14 @@ class ClaudeCliModel(Model):
         run_context=None,
     ) -> AsyncGenerator[StreamedResponse]:
         argv = self._argv(messages)
+        objs = self.spawn(argv, self.cwd)
         stream = ClaudeCliStreamedResponse(
             model_request_parameters=model_request_parameters,
-            _objs=self.spawn(argv, self.cwd),
+            _objs=objs,
             _model_id=self.model_name,
-            _ts=self._ts,
+            # Per-response timestamp (see request()): stamped when the stream is
+            # opened, not once at model construction.
+            _ts=datetime.now(tz=timezone.utc),
             _set_session=(
                 None if self.ephemeral else lambda sid: setattr(self, "session_id", sid)
             ),
@@ -746,7 +761,14 @@ class ClaudeCliModel(Model):
             _on_subagent=self.on_subagent,
             _on_subagent_model=self.on_subagent_model,
         )
-        yield stream
+        try:
+            yield stream
+        finally:
+            # Deterministically kill the child `claude` on any exit path — normal
+            # completion, error, or Ctrl-C mid-turn. Closing the spawn generator
+            # runs spawn_cli_objects' finally (the process-group kill); leaving it
+            # to GC would let an abandoned turn's subprocess linger.
+            await objs.aclose()
 
 
 class _TextFolder:
@@ -873,15 +895,20 @@ class ClaudeCliStreamedResponse(StreamedResponse):
         folder = _TextFolder(self._parts_manager, self._on_activity)
 
         done: DoneChunk | None = None
-        async for chunk in consume_cli_stream(objs):
-            if isinstance(chunk, TextChunk):
-                async for ev in folder.emit_text(chunk.delta):
-                    yield ev
-            elif isinstance(chunk, (ToolUseChunk, ToolResultChunk)):
-                async for ev in folder.emit_tool(chunk):
-                    yield ev
-            elif isinstance(chunk, DoneChunk):
-                done = chunk  # last one wins (multi-result runs)
+        # aclosing() so an abandoned/cancelled consumer finalizes the chunk
+        # pipeline (and, transitively, the demux wrapper) rather than leaking it to
+        # GC. The child process itself is killed by request_stream's finally, which
+        # closes the underlying spawn generator (self._objs).
+        async with aclosing(consume_cli_stream(objs)) as stream:
+            async for chunk in stream:
+                if isinstance(chunk, TextChunk):
+                    async for ev in folder.emit_text(chunk.delta):
+                        yield ev
+                elif isinstance(chunk, (ToolUseChunk, ToolResultChunk)):
+                    async for ev in folder.emit_tool(chunk):
+                        yield ev
+                elif isinstance(chunk, DoneChunk):
+                    done = chunk  # last one wins (multi-result runs)
         self._finalize_done(done)
 
     @property

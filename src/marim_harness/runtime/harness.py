@@ -614,7 +614,7 @@ class Harness:
         self.deps.ui.on_subagent_usage = on_subagent_usage
         self.deps.ui.on_cli_activity = on_cli_activity
         self.deps.ui.on_ttft = on_ttft
-        self._wire_cli_model(self.current_model)
+        self.wire_cli_model(self.current_model)
         self.deps.ui.on_mode_change = on_mode_change
         self.deps.ui.on_present_plan = on_present_plan
         self.deps.ui.on_workflow_spawn = on_workflow_spawn
@@ -641,14 +641,19 @@ class Harness:
         return count
 
     def _clear_job_context(self) -> None:
-        """Drop finished-job history, any re-stashed jobs digest, and any
-        queued `!` passthrough results when the conversation context changes
-        (/clear, /new, /switch): they belong to a conversation that's no
-        longer active. Running jobs are process-scoped and deliberately kept
-        (see JobRegistry.clear_history)."""
+        """Drop finished-job history, any re-stashed jobs digest, queued `!`
+        passthrough results, and the prior turn's one-shot error note / unconsumed
+        hook context when the conversation context changes (/clear, /new,
+        /switch): they belong to a conversation that's no longer active. Running
+        jobs are process-scoped and deliberately kept (see
+        JobRegistry.clear_history). The error-note / hook-context clear closes a
+        leak where a failed turn's note (or a departing session's SessionStart
+        context) would prepend itself onto the first prompt of a different
+        conversation."""
         self.deps.jobs.clear_history()
         self.turn_controller.clear_pending_jobs_digest()
         self.turn_controller.clear_pending_shell_results()
+        self.turn_controller.clear_pending_context()
 
     def reset(self) -> None:
         self.session.reset()
@@ -677,8 +682,27 @@ class Harness:
         # switch (the old order) wiped the freshly imported history, leaving
         # finish_replayed_cards' settled join empty and — worse — making the next
         # persist write jobs=[] back over the file, erasing it for good.
+        #
+        # But switch_session can RAISE (SessionLoadError: a corrupt/missing store):
+        # the controller then stays on the OUTGOING session, yet we've already
+        # wiped its job history. The next persist would write jobs=[] over the
+        # still-active session's file — the very permanent loss the ordering above
+        # guards against, reintroduced through the error path. Snapshot the
+        # outgoing history first and restore it if the load fails, so a failed
+        # switch is a true no-op for the session we never actually left.
+        saved_jobs = self.deps.jobs.export_settled()
         self._clear_job_context()
-        count = self.session.switch_session(session_id)
+        try:
+            count = self.session.switch_session(session_id)
+        except Exception:
+            # Load failed — we're still on the outgoing session. Put its job
+            # history back (import_history reloads it as read-only history, the
+            # same shape a persist reads) so the next persist doesn't erase the
+            # file. The digest / `!` / error-note buffers stay cleared: they are
+            # transient per-turn state, not persisted conversation history, so a
+            # failed switch dropping them is harmless.
+            self.deps.jobs.import_history(saved_jobs)
+            raise
         self.checkpoints.reload()
         self._apply_saved_model()
         self._apply_saved_advisor()
@@ -714,13 +738,15 @@ class Harness:
         # Re-wire the late-bound hooks if the new model is a ClaudeCliModel, so
         # switching TO this provider at runtime honors live /mode, the workspace
         # cwd, and the TUI tool-card side-channel.
-        self._wire_cli_model(model)
+        self.wire_cli_model(model)
 
-    def _wire_cli_model(self, model: Model) -> None:
+    def wire_cli_model(self, model: Model) -> None:
         """Bind the late-bound hooks a ``ClaudeCliModel`` needs — live approval
         mode, the real workspace (or worktree) cwd, the TUI tool-card side-channel,
         and the sub-agents-screen side-channels for Claude's own Agent/Task spawns.
-        A no-op for every other provider's model."""
+        A no-op for every other provider's model. Public because ``bootstrap``
+        (the CLI preset) binds it once after build, before any UI attaches — the
+        internal set_model/bind_ui callers use it too."""
         from ..config.claude_cli_model import ClaudeCliModel
 
         if isinstance(model, ClaudeCliModel):

@@ -183,3 +183,61 @@ def test_estimate_cost_propagates_programming_errors(monkeypatch):
     u = RunUsage(input_tokens=1000, output_tokens=100)
     with pytest.raises(TypeError):
         estimate_cost(u, "claude-sonnet-4-6")
+
+
+def test_estimate_cost_propagates_attribute_error(monkeypatch):
+    """AttributeError is the classic renamed-attribute symptom of a genai-prices
+    API change — it must surface, not be swallowed into a silent None that looks
+    identical to an unpriced model."""
+    import genai_prices
+
+    def boom(*a, **k):
+        raise AttributeError("'Usage' object has no attribute 'input_tokens'")
+
+    monkeypatch.setattr(genai_prices, "calc_price", boom)
+    u = RunUsage(input_tokens=1000, output_tokens=100)
+    with pytest.raises(AttributeError):
+        estimate_cost(u, "claude-sonnet-4-6")
+
+
+def test_estimate_cost_colon_qualifier_passes_provider_hint(monkeypatch):
+    """A colon-qualified id must price *via* its leading provider segment: the
+    provider is the price hint the docstring promises, not discarded. Capture the
+    call to prove provider_id flows through as 'google', not None."""
+    from types import SimpleNamespace
+
+    import genai_prices
+
+    captured = {}
+
+    def fake_calc_price(usage, *, model_ref, provider_id):
+        captured["model_ref"] = model_ref
+        captured["provider_id"] = provider_id
+        return SimpleNamespace(total_price=0.001)
+
+    monkeypatch.setattr(genai_prices, "calc_price", fake_calc_price)
+    u = RunUsage(input_tokens=100, output_tokens=100)
+    assert estimate_cost(u, "google:gemini-2.5-flash") == 0.001
+    assert captured["provider_id"] == "google"
+    assert captured["model_ref"] == "gemini-2.5-flash"
+
+
+def test_estimate_cost_colon_then_slash_slash_wins_as_provider(monkeypatch):
+    """For an "openrouter:anthropic/model" id the '/'-provider (the real upstream
+    provider) overrides the colon segment, so the hint is 'anthropic'."""
+    from types import SimpleNamespace
+
+    import genai_prices
+
+    captured = {}
+
+    def fake_calc_price(usage, *, model_ref, provider_id):
+        captured["model_ref"] = model_ref
+        captured["provider_id"] = provider_id
+        return SimpleNamespace(total_price=0.002)
+
+    monkeypatch.setattr(genai_prices, "calc_price", fake_calc_price)
+    u = RunUsage(input_tokens=100, output_tokens=100)
+    estimate_cost(u, "openrouter:anthropic/claude-sonnet-4-6")
+    assert captured["provider_id"] == "anthropic"
+    assert captured["model_ref"] == "claude-sonnet-4-6"

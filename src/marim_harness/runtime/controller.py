@@ -283,6 +283,13 @@ class TurnController:
         self.agent = agent
         self.session = session
         self.checkpoints = checkpoints
+        # Wire the crash-safety seam: a restructuring compaction must invalidate
+        # stale checkpoints BEFORE it persists the shortened history (otherwise a
+        # process death between the two writes leaves the sidecar pointing into a
+        # history that no longer exists). SessionController.maybe_compact fires
+        # this callback at that exact point; the controller owns the
+        # CheckpointManager, so it supplies the invalidator here.
+        session.on_history_restructured = checkpoints.invalidate_after_compaction
         self.hooks = hooks
         self.mcp = mcp
         self.deps = deps
@@ -354,6 +361,19 @@ class TurnController:
         """Drop any re-stashed jobs digest (conversation context changed)."""
         self._pending_jobs_digest = None
 
+    def clear_pending_context(self) -> None:
+        """Drop the one-shot prompt injections that belong to the departing
+        conversation: the prior turn's actionable error note and any
+        SessionStart/UserPromptSubmit-injected hook context not yet consumed.
+        Called on /clear, /new, and session switch for the same reason as the
+        jobs digest and `!` shell results — both are prepended to the NEXT
+        prompt, so leaving them set would splice a stale error note (or another
+        session's hook context) into a freshly cleared or switched-in
+        conversation. The jobs digest and shell results have their own clears;
+        this covers the remaining two per-turn stash fields."""
+        self._pending_error_note = None
+        self._pending_hook_context = None
+
     def clear_pending_shell_results(self) -> None:
         """Drop queued `!` passthrough results (conversation context changed).
         Called on /clear, /new, and session switch for the same reason the jobs
@@ -415,25 +435,16 @@ class TurnController:
         # the mid-turn overflow retry instead loses this turn's rewind point — a
         # missing checkpoint beats a corrupting one.)
         #
-        # But invalidation must be stage-aware: a stage-1-only ("micro")
-        # compaction replaces ToolReturnPart content in place and moves no message
-        # boundary, so the stored absolute history_len indices stay valid and the
-        # checkpoints remain rewindable. Since micro-only is now the frequent case,
-        # invalidating then would needlessly destroy the user's rewind history.
-        # Detect restructuring by whether the message count changed — the summary
-        # stage collapses a prefix into a single summary message (count shrinks),
-        # while a pure mask leaves the count untouched. One summary edge leaves
-        # the count unchanged (tail_start == 2: a 1-message middle replaced by
-        # the 1-message summary); skipping invalidation there is benign — the
-        # tail keeps the same objects at the same indices, so every stored
-        # history_len still lands on a valid boundary.
-        before = len(self.session.history)
-        compacted = await self.session.maybe_compact(
+        # The invalidation itself is stage-aware and crash-safe, and now lives
+        # INSIDE session.maybe_compact via the on_history_restructured seam wired
+        # in __init__: it fires only when the message count changed (a restructure,
+        # not a mask-only micro compaction) and BEFORE the compacted history is
+        # persisted, so a crash between the two writes can't leave the sidecar
+        # indexing a history the persist is about to shorten. This wrapper stays as
+        # the single funnel; it no longer invalidates after the fact.
+        return await self.session.maybe_compact(
             force=force, trigger=trigger, instructions=instructions
         )
-        if compacted and len(self.session.history) != before:
-            self.checkpoints.invalidate_after_compaction()
-        return compacted
 
     async def _ensure_session_baseline(self) -> None:
         """Write the session file once, at turn start, if it doesn't exist yet.
@@ -751,6 +762,12 @@ class TurnController:
         # a hung write) doesn't block the re-raise — the session is
         # best-effort by design.
         await self._flush_resumable(captured, resumable)
+        # The flush wrote a repaired, resumable history — the dirty-history
+        # latch (if this failure struck mid-approval-round) no longer applies.
+        # Reached only on the terminal re-raise path; the CONTENTION/COMPACTED
+        # retries returned earlier and deliberately leave the latch as-is (a
+        # contention retry keeps the same dirty continuation history in flight).
+        self.deps.approval_round_active = False
         # Stash an actionable note (None for infra/render/cancel) to
         # prepend to the next turn's prompt.
         self._pending_error_note = _actionable_error_note(exc)
@@ -813,6 +830,12 @@ class TurnController:
             )
         except BaseException:
             self.session.history = resumable
+            # The in-memory history is the clean baseline again — drop the
+            # dirty-history latch so a concurrent background force-persist is no
+            # longer suppressed. Cleared before the write (unlike the success
+            # path) because history is *already* the clean `resumable` here; the
+            # persist below only mirrors it to disk.
+            self.deps.approval_round_active = False
             # Offload the rollback write off the event loop (like the
             # failure path above). Safe even when the exception in flight
             # is a cancel: `resumable` is the last *cleanly persisted*
@@ -944,6 +967,15 @@ class TurnController:
                 # failure during approval would otherwise leave the session
                 # ending in a dangling tool_use — unresumable. Roll back to the
                 # last clean state if the approval round is interrupted.
+                # Raise the shared dirty-history latch: from here until the round
+                # ends (clean persist below, rollback in _resolve_approval_round,
+                # or flush in _handle_run_failure) the in-memory history is
+                # dirty, and a detached background sub-agent finishing in this
+                # window must NOT force-persist it (SubagentRunner reads the
+                # latch and skips). It stays raised across the continuation run
+                # too — that run's request is what finally answers these calls,
+                # so the history is dirty for its whole duration.
+                self.deps.approval_round_active = True
                 deferred_results = await self._resolve_approval_round(
                     result.output, resumable
                 )
@@ -957,6 +989,11 @@ class TurnController:
             # jobs operate on isolated histories, and rewind/reset are between-turn
             # user actions. The worker therefore serializes a stable snapshot.
             await asyncio.to_thread(self.session.persist)
+            # The history on disk is clean again — drop the dirty-history latch so
+            # a background sub-agent's force-persist is no longer suppressed. Clear
+            # it after (not before) the persist so there is no instant where the
+            # latch reads False while the in-memory history is still the dirty one.
+            self.deps.approval_round_active = False
             # This round completed cleanly and is persisted — it becomes the new
             # rollback baseline for any subsequent round.
             resumable = list(self.session.history)
@@ -977,6 +1014,11 @@ class TurnController:
         # Fresh per-turn advisor budget: the cap is per TURN, but Deps is
         # session-lived, so the counter must be re-zeroed as each turn starts.
         self.deps.advisor_uses = 0
+        # Defensive: a turn always begins with a clean, persisted history, so the
+        # dirty-history latch must be down. Every normal exit already clears it;
+        # this guards against an exotic exit path leaving it stuck True and
+        # suppressing background persists into the next turn.
+        self.deps.approval_round_active = False
         await self._maybe_compact()
         # Self-heal a session left mid-exchange by an earlier aborted turn or a
         # flaky model, BEFORE snapshotting this turn's rewind point. Two distinct

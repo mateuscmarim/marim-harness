@@ -43,6 +43,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--link", action="store_true", help="Symlink a local source instead of copying."
     )
     inst.add_argument("--name", default=None, help="Override the installed name.")
+    inst.add_argument(
+        "--ref", default=None, metavar="REF",
+        help="Pin a git source at a branch, tag, or commit SHA (ignored for local sources).",
+    )
 
     lst = sub.add_parser("list", help="List installed plugins.")
     lst.add_argument("--json", action="store_true")
@@ -107,6 +111,7 @@ def _cmd_install(args, *, ws, out, err, input_fn, now_fn) -> int:
             trust=trust,
             link=args.link,
             name_override=args.name,
+            ref=args.ref,
             now=now_fn(),
         )
     except InstallError as exc:

@@ -149,8 +149,13 @@ class GitSnapshotter:
                 and clean_head == self._last_clean_head
                 and self._last_commit is not None
             ):
-                self._run("update-ref", ref, self._last_commit)
-                return self._last_commit
+                reused = self._reuse_last_commit(ref)
+                if reused is not None:
+                    return reused
+                # Fast path failed (the cached commit was pruned/corrupt, so
+                # update-ref errored). The fingerprint is now stale; it has been
+                # cleared, so fall through to the full capture below instead of
+                # letting the outer handler return None and go dead for the turn.
             with _temp_index() as idx:
                 env = {**os.environ, "GIT_INDEX_FILE": idx}
                 # Stage the whole working tree (tracked + untracked, honoring
@@ -180,6 +185,28 @@ class GitSnapshotter:
             return commit
         except subprocess.CalledProcessError as exc:
             logger.debug("checkpoint capture failed: %s", exc.stderr or exc)
+            return None
+
+    def _reuse_last_commit(self, ref: str) -> str | None:
+        """Re-point ``ref`` at the cached fast-path commit, returning it on
+        success. Returns None — after clearing the now-untrustworthy fingerprint —
+        when update-ref fails, which happens if that cached commit was pruned or
+        the object store was rewritten out from under us (``git gc``, a manual
+        prune, a repack). Without the clear, every subsequent clean capture at
+        this HEAD would keep matching the same dead fingerprint and keep returning
+        None, silently disabling checkpoints for the rest of the session; clearing
+        it lets the caller fall through to a full, self-healing capture."""
+        commit = self._last_commit
+        if commit is None:  # caller already guards this; narrows for the type checker
+            return None
+        try:
+            self._run("update-ref", ref, commit)
+            return commit
+        except subprocess.CalledProcessError as exc:
+            logger.debug("checkpoint fast-path reuse failed, forcing full capture: %s",
+                         exc.stderr or exc)
+            self._last_clean_head = None
+            self._last_commit = None
             return None
 
     def _stage_tracked_ignored(self, env: dict[str, str]) -> None:

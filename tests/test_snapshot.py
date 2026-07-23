@@ -371,3 +371,101 @@ def test_capture_restore_act_on_linked_worktree(tmp_path: Path):
     assert (wt / "a.txt").read_text() == "wt-before\n"
     # The main worktree must be completely untouched.
     assert (main / "a.txt").read_text() == main_before
+
+
+# ---------------------------------------------------------------------------
+# Clean-HEAD fast-path reuse + its guards (fingerprint, skip-worktree)
+# ---------------------------------------------------------------------------
+
+
+def test_clean_head_reflects_working_tree_state(tmp_path: Path):
+    """_clean_head returns HEAD's sha for a clean tree (content pinned by HEAD)
+    and None for a dirty tree (content not pinned) — the gate that decides
+    whether the fast path may reuse a prior snapshot."""
+    repo = _init_repo(tmp_path)
+    snap = GitSnapshotter(repo)
+    head = _git(repo, "rev-parse", "HEAD")
+    assert snap._clean_head() == head
+    (repo / "a.txt").write_text("dirty\n")
+    assert snap._clean_head() is None
+
+
+def test_index_hides_changes_detects_skip_worktree_and_assume_unchanged(tmp_path: Path):
+    """_index_hides_changes flags the skip-worktree / assume-unchanged bits, which
+    suppress a file's on-disk change from `git status` — so a clean status would
+    NOT imply the tree equals HEAD, and the fast path must be refused."""
+    repo = _init_repo(tmp_path)
+    snap = GitSnapshotter(repo)
+    assert snap._index_hides_changes() is False
+
+    _git(repo, "update-index", "--skip-worktree", "a.txt")
+    assert snap._index_hides_changes() is True
+    assert snap._clean_head() is None  # bit set -> _clean_head refuses to arm reuse
+
+    _git(repo, "update-index", "--no-skip-worktree", "a.txt")
+    _git(repo, "update-index", "--assume-unchanged", "a.txt")
+    assert snap._index_hides_changes() is True
+
+
+def test_capture_fast_path_reuses_commit_on_clean_repeat(tmp_path: Path):
+    """Two clean captures at the same HEAD have byte-identical content, so the
+    second re-points its ref at the first's commit instead of restaging the tree."""
+    repo = _init_repo(tmp_path)
+    snap = GitSnapshotter(repo)
+    c1 = snap.capture("refs/marim/checkpoints/s/0", "cp0")
+    c2 = snap.capture("refs/marim/checkpoints/s/1", "cp1")
+    assert c1 and c1 == c2  # reused, not re-captured
+    # Both refs resolve to the shared commit, keeping it reachable.
+    assert _git(repo, "rev-parse", "refs/marim/checkpoints/s/1") == c1
+
+
+def test_capture_fast_path_recovers_when_cached_commit_pruned(tmp_path: Path):
+    """If the cached fast-path commit is pruned out from under us (gc/repack),
+    update-ref fails — capture must clear the stale fingerprint and fall through
+    to a full capture, returning a fresh commit rather than None (which would go
+    silently dead: checkpoints/file-rewind disabled for the rest of the session)."""
+    repo = _init_repo(tmp_path)
+    snap = GitSnapshotter(repo)
+    c1 = snap.capture("refs/marim/checkpoints/s/0", "cp0")
+    assert c1
+    # A second clean capture at the same HEAD would reuse c1. Simulate that cached
+    # commit having been pruned by pointing the fingerprint at a missing object.
+    # (A well-formed but nonexistent sha — not the all-zero null OID, which git
+    # treats specially — so update-ref genuinely fails.)
+    snap._last_commit = "1" * 40
+    c2 = snap.capture("refs/marim/checkpoints/s/1", "cp1")
+    assert c2 is not None and c2 != "1" * 40  # a real, fresh full capture
+    assert _git(repo, "rev-parse", "refs/marim/checkpoints/s/1") == c2
+    # The fingerprint was rearmed by the healing full capture.
+    assert snap._last_commit == c2
+
+
+def test_dirty_capture_disables_fast_path_reuse(tmp_path: Path):
+    """A dirty capture must NOT arm the clean fast-path fingerprint: its content
+    isn't pinned by HEAD alone, so a later capture can't be allowed to reuse it."""
+    repo = _init_repo(tmp_path)
+    snap = GitSnapshotter(repo)
+    c_clean = snap.capture("refs/marim/checkpoints/s/0", "cp0")
+    assert snap._last_clean_head is not None and snap._last_commit == c_clean
+
+    (repo / "a.txt").write_text("dirty\n")
+    c_dirty = snap.capture("refs/marim/checkpoints/s/1", "cp1")
+    assert c_dirty and c_dirty != c_clean
+    assert snap._last_clean_head is None  # reuse disarmed
+
+
+def test_skip_worktree_change_forces_full_capture_with_live_content(tmp_path: Path):
+    """A skip-worktree file hides its on-disk change from `git status`, so a clean
+    status would wrongly imply the tree equals HEAD. The guard must force a full
+    capture that stages the file's LIVE content, never reuse a stale prior commit —
+    otherwise a rewind would silently restore old data."""
+    repo = _init_repo(tmp_path)
+    snap = GitSnapshotter(repo)
+    c1 = snap.capture("refs/marim/checkpoints/s/0", "cp0")  # arms the fast path
+    assert c1
+
+    _git(repo, "update-index", "--skip-worktree", "a.txt")
+    (repo / "a.txt").write_text("secretly changed\n")
+    c2 = snap.capture("refs/marim/checkpoints/s/1", "cp1")
+    assert c2 and c2 != c1  # not reused: a fresh full capture
+    assert _git(repo, "show", f"{c2}:a.txt") == "secretly changed"  # _git strips

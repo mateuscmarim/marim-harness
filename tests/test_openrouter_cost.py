@@ -96,3 +96,33 @@ def test_scrub_leaves_ordinary_text_untouched():
         "if a < b and c > d",
         "",
     )
+
+
+def test_stream_end_flushes_held_tag_prefix_carry():
+    # A stream whose final delta ends in a tag-prefix char (a lone `<` held back in
+    # case a tag completes on the next chunk) must re-emit that held text when the
+    # stream ends — otherwise the trailing characters are silently dropped.
+    from pydantic_ai.messages import PartDeltaEvent, PartStartEvent
+    from pydantic_ai.models import ModelRequestParameters
+
+    from marim_harness.config.openrouter_cost import _make_cost_classes
+
+    _model_cls, streamed_cls = _make_cost_classes()
+    inst = object.__new__(streamed_cls)
+    inst.model_request_parameters = ModelRequestParameters()
+    # scrub_orphan_thinking_tags would hold "answer <" -> ("answer ", "<").
+    inst._mm_carry = "<"
+
+    events = list(inst._flush_orphan_carry())
+
+    def _event_text(e) -> str:
+        if isinstance(e, PartStartEvent):
+            return getattr(e.part, "content", "") or ""
+        if isinstance(e, PartDeltaEvent):
+            return getattr(e.delta, "content_delta", "") or ""
+        return ""
+
+    assert "".join(_event_text(e) for e in events) == "<"
+    # Carry is cleared so a second flush is a no-op (no duplicate emission).
+    assert inst._mm_carry == ""
+    assert list(inst._flush_orphan_carry()) == []

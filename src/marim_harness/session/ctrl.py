@@ -189,6 +189,17 @@ class SessionController:
         self._segment_start: float = 0.0
         self.on_compact: Callable[[int, int], None] | None = None
         self.on_compact_start: Callable[[], None] | None = None
+        # Fired right BEFORE the compacted history is persisted, but only when a
+        # compaction stage RESTRUCTURED the history (its message count changed, so
+        # absolute message indices moved). The TurnController wires this to
+        # CheckpointManager.invalidate_after_compaction so the checkpoint sidecar
+        # is rewritten before the shorter history hits disk — a crash between the
+        # two writes then can't leave checkpoints indexing a history that no longer
+        # exists. A mask-only (micro) compaction leaves the count unchanged and
+        # every index valid, so it does NOT fire (invalidating would needlessly
+        # destroy the user's rewind history). Left None by default (embedders /
+        # tests without checkpoints), and inert until the controller wires it.
+        self.on_history_restructured: Callable[[], None] | None = None
         self.on_rename: Callable[[str, str], None] | None = None
         # The in-flight background autoname, if any (see schedule_autoname).
         # Doubles as the strong reference that keeps the task alive.
@@ -300,10 +311,21 @@ class SessionController:
                 # appends new messages, never mutates ones already in the
                 # list.
                 history_snapshot = list(self.history)
+                # Snapshot tasks and jobs at the SAME point as the history, into
+                # locals, rather than reading them live as save() arguments. The
+                # three must describe one generation: an abandoned/orphaned writer
+                # (see above) that read tasks/jobs live at save time could pair the
+                # history it froze here with tasks/jobs a LATER turn has since
+                # mutated, writing an internally inconsistent snapshot (history
+                # missing work that its task/job list already reflects). Capturing
+                # them adjacently keeps the trio consistent to the same degree the
+                # history snapshot already is.
+                tasks_snapshot = self.deps.tasks.to_payload()
+                jobs_snapshot = self.deps.jobs.export_settled()
                 self.store.save(
-                    history_snapshot, self.usage, self.deps.tasks.to_payload(),
+                    history_snapshot, self.usage, tasks_snapshot,
                     duration_seconds=self.duration_seconds + elapsed,
-                    jobs=self.deps.jobs.export_settled(),
+                    jobs=jobs_snapshot,
                 )
                 self._last_persisted_version = version
 
@@ -463,11 +485,38 @@ class SessionController:
         self.deps.tasks.clear()
         if self.store is not None:
             self.store.clear()
+            self._purge_session_sidecars(self.store)
         # /clear (TUI reset_conversation -> Harness.reset -> here) does not go
         # through _load_active_store, so it must reset the breaker itself — a
         # cleared conversation must always start with a closed breaker.
         self.breaker.reset()
         self._breaker_noticed = False
+
+    def _purge_session_sidecars(self, store: SessionStore) -> None:
+        """Remove the per-id sidecars that ``store.clear()`` leaves behind on a
+        /clear: the sub-agent transcript dir, the image cache dir, and the
+        scratchpad dir — all keyed by the (still-live) session id.
+
+        Without this, a transcript sidecar still stamped ``status="running"`` (a
+        spawn interrupted before /clear) resurrects as a phantom "interrupted
+        spawn" card when the now-empty session is resumed, and stale cached images
+        linger. This mirrors ``SessionManager.delete``'s cleanup but keeps the
+        session id and its JSON path alive (a following turn re-saves it) — it does
+        NOT touch checkpoint refs, which the harness clears on its own /clear path.
+        Best-effort: a missing artifact never blocks the clear."""
+        import shutil
+
+        from ..images import image_cache_root
+        from ..workspace.scratchpad import scratchpad_root
+        from .transcripts import TranscriptStore
+
+        sid = store.session_id
+        TranscriptStore(store.path, sid).delete_all()
+        shutil.rmtree(image_cache_root() / sid, ignore_errors=True)
+        shutil.rmtree(
+            scratchpad_root(self.deps.workspace.root, sid).parent,
+            ignore_errors=True,
+        )
 
     def new_session(self, name: str | None = None, model_id: str | None = None) -> None:
         if self.manager is None:
@@ -726,6 +775,17 @@ class SessionController:
             # prompt cache for nothing). Drop it — the estimate governs until
             # the next real request reports usage.
             self.last_input_tokens = None
+            # Invalidate checkpoints BEFORE persisting when the history was
+            # restructured (message count changed → absolute indices moved). This
+            # ordering is the crash-safety guarantee: if the process dies between
+            # the two writes, the checkpoint sidecar is already gone/consistent
+            # rather than left pointing into a history that the persist below is
+            # about to shorten. A mask-only compaction preserves the count, so its
+            # indices stay valid and we must NOT invalidate (that would throw away
+            # the user's rewind points for nothing). The controller owns the
+            # CheckpointManager and wires on_history_restructured.
+            if len(self.history) != before and self.on_history_restructured is not None:
+                self.on_history_restructured()
             # Persist the compacted history now: the post-turn compaction runs
             # after the turn's own persist, so without this the smaller history
             # lives only in memory until the next turn — a process death

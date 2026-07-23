@@ -97,6 +97,16 @@ def _resolve_spawn_model_id(
     return tiers.model_for(name)
 
 
+class _SpawnPreflightError(RuntimeError):
+    """A background spawn failed before its run lifecycle even started (worktree
+    open or sub-agent build). A foreground spawn returns such an error as a
+    string so a sibling fan-out survives, but a *background* spawn has no caller
+    to read that string — the JobRegistry does, and a plain return settles the
+    job ``done`` with the error text masquerading as its result. Raising this
+    instead settles the job ``failed``, symmetric with a mid-run background
+    crash (which already re-raises)."""
+
+
 @dataclass(frozen=True)
 class _SpawnPrep:
     """Shared state returned by ``_prepare_spawn``: the built sub-agent and all
@@ -543,7 +553,28 @@ class SubagentRunner:
             # history_version, which a background completion never bumps, so an
             # unforced persist would be silently skipped (losing the spend and the
             # settled-jobs history entry).
-            self.session.persist(force=True)
+            #
+            # BUT NOT while the main turn is parked in an approval round: at that
+            # instant the session's in-memory history is dirty — it ends on a
+            # deferred ToolCallPart whose ToolReturnPart doesn't exist yet — and a
+            # force=True persist writes exactly that unresumable history to disk
+            # (every provider rejects a history ending on an unanswered tool call
+            # on the next request). We skip the write here; nothing is lost that
+            # matters: this spawn's spend is already folded into
+            # ``self.session.usage`` above and its settled-job entry lives in the
+            # JobRegistry, and the controller reads BOTH live at its next persist
+            # (the clean one after the approval round, or the rollback/flush on an
+            # aborted round). The only casualty is off-turn spend on a hard *kill*
+            # during the approval wait — the accepted lesser evil versus flushing
+            # a history no session could resume from.
+            if self.deps.approval_round_active:
+                logger.debug(
+                    "background spawn finished during an approval round; deferring "
+                    "its force-persist so the dirty in-memory history is not "
+                    "written (the controller's next persist banks the spend/jobs)"
+                )
+            else:
+                self.session.persist(force=True)
             self._bg_seq += 1
             spill_ref = f"bg-{self._bg_seq}"
         else:
@@ -604,11 +635,18 @@ class SubagentRunner:
                 self._log_spawn_timing(name, *timing, failed=True)
             if iso:
                 iso.teardown_after_failure(resumed=resumed)
-            if background:
-                # A background crash propagates to the job registry (marks it
-                # failed) rather than being contained — no turn to protect.
-                raise
+            # Fire SubagentStop on failure for BOTH modes, symmetric with success
+            # (_finalize_spawn always fires it). A background crash used to skip
+            # the hook entirely, so observers (and the transcript of hook events)
+            # saw a foreground failure stop but never a background one — an
+            # asymmetry no hook author could account for. Fire it first, then let
+            # the mode decide disposition: a background crash re-raises to the job
+            # registry (which marks the job failed — no turn to protect), a
+            # foreground crash is contained as an error string so a sibling
+            # fan-out spawn survives its neighbor.
             await self.hooks.subagent_stop(name, stop_task, f"error: {exc}")
+            if background:
+                raise
             return self._contain_failure(name, exc)
         except BaseException:
             if iso:
@@ -661,7 +699,7 @@ class SubagentRunner:
         if isolation == "worktree":
             iso, err = self._open_worktree(stream_id)
             if err is not None:
-                return err
+                return self._preflight_failure(err, background)
         work_root = iso.path if iso else None
         # CLI-backed agents run an external `claude` process instead of the
         # in-process Pydantic AI loop, so they skip the native build+MCP prepare.
@@ -693,10 +731,21 @@ class SubagentRunner:
             output_schema=output_schema, tier=tier, thinking=thinking,
         )
         if isinstance(prep, str):
-            return prep
+            return self._preflight_failure(prep, background)
         return await self._execute_native_spawn(
             type, task, stream_id, max_output_chars, prep, background=background,
         )
+
+    def _preflight_failure(self, err: str, background: bool) -> str:
+        """Disposition for a pre-flight failure (worktree open / sub-agent build)
+        that struck before the run lifecycle. A foreground spawn returns the
+        error string to its caller (a sibling fan-out survives its neighbor); a
+        background spawn raises so the JobRegistry settles the job ``failed``
+        rather than ``done`` with the error as a fake result. See
+        ``_SpawnPreflightError``."""
+        if background:
+            raise _SpawnPreflightError(err)
+        return err
 
     async def _prepare_spawn(
         self, type: str, task: str, mcp_names: list[str] | None,
@@ -716,7 +765,26 @@ class SubagentRunner:
         a fresh spawn discards branch and checkout, a resumed spawn keeps the branch
         (it holds the interrupted run's committed work). This method owns that
         teardown so the branch distinction can't be lost — see the build-failure arm."""
-        mask_trigger = await self._mask_trigger_for(model)
+        # Resolve the model the spawn will ACTUALLY run on before anything that
+        # depends on it. The masking trigger sizes its token budget/window from
+        # the spawn's model window (MaskingPolicy.trigger_for), so it must see the
+        # tier-resolved model — a read-only fan-out routed to a small cheap model
+        # otherwise gets the main model's much larger window and masks far too
+        # late (or never), letting the cheap model overflow. spawn_defn is
+        # resolved once here and reused for the model report and thinking report
+        # below (and, on the CLI/non-defn paths, falls back to a discovery walk).
+        spawn_defn = defn if defn is not None else self._resolve_agent(type)
+        resolved_model = (
+            _resolve_spawn_model_id(
+                override_tier=tier, slug=model, spec_tier=spawn_defn.tier,
+                read_only=not (spawn_defn.tools & GATED_TOOLS), tiers=self._tiers,
+            )
+            if spawn_defn is not None
+            else None
+        )
+        # None ⇒ inherit the session model; _mask_trigger_for then falls back to
+        # it, so pass resolved_model straight through in both cases.
+        mask_trigger = await self._mask_trigger_for(resolved_model)
         meta: dict | None = None
         checkpoint = None
         if stream_id:
@@ -727,11 +795,21 @@ class SubagentRunner:
             # status. parent_id is deliberately absent — the runner doesn't know
             # its caller's stream, so a synthesized interrupted card renders
             # top-level.
+            #
+            # output_schema/tier/thinking are recorded so a resume reproduces the
+            # SAME run shape: without them a resumed spawn dropped its structured-
+            # output enforcement, tier-based model routing, and reasoning effort,
+            # silently continuing as a plain default-effort spawn. output_schema
+            # is the already-resolved schema (a plain JSON dict or None — the
+            # prompt-contract path stored None and its contract already rides in
+            # ``task`` above), so it re-feeds _prepare_spawn directly on resume.
             meta = {
                 "stream_id": stream_id, "type": type, "task": task,
                 "model": model, "mcp": mcp_names, "depth": depth,
                 "max_output_chars": max_output_chars,
                 "isolation": iso.branch if iso else None,
+                "output_schema": output_schema, "tier": tier,
+                "thinking": thinking,
                 "status": "running",
             }
 
@@ -760,19 +838,11 @@ class SubagentRunner:
         # carry at most a raw ``model=`` slug — never the tier-resolved model. So a
         # tier-routed spawn (or any spec/tool-reach default) renders with the MAIN
         # model as a fallback, misreporting the model it actually runs on. Report the
-        # resolved model to the UI relabel callback (the same seam claude-cli uses)
-        # and stamp it into the sidecar meta, so both the live card and a resumed
-        # card name the real model. ``None`` means "inherit main", which the existing
-        # fallback already shows correctly — so only override when a model was chosen.
-        spawn_defn = defn if defn is not None else self._resolve_agent(type)
-        resolved_model = (
-            _resolve_spawn_model_id(
-                override_tier=tier, slug=model, spec_tier=spawn_defn.tier,
-                read_only=not (spawn_defn.tools & GATED_TOOLS), tiers=self._tiers,
-            )
-            if spawn_defn is not None
-            else None
-        )
+        # resolved model (computed up top, alongside the masking trigger) to the UI
+        # relabel callback (the same seam claude-cli uses) and stamp it into the
+        # sidecar meta, so both the live card and a resumed card name the real model.
+        # ``None`` means "inherit main", which the existing fallback already shows
+        # correctly — so only override when a model was chosen.
         if resolved_model is not None:
             if meta is not None:
                 meta["model"] = resolved_model
@@ -1053,10 +1123,11 @@ class SubagentRunner:
         its events to that card live — identical to a foreground spawn (Phase 2);
         with no ``stream_id`` (headless) it streams nothing and the job's result is
         its final report, surfaced when the agent pulls it. Any unknown-server note
-        rides along on that report. ``max_output_chars`` applies only as a soft
-        instruction here (the report is pulled later via the jobs API, which has no
-        spill hook), so a background report is not hard-capped, with the over-budget
-        remainder spilled to a workspace file the same way a foreground one is.
+        rides along on that report. ``max_output_chars`` is enforced the same way as
+        a foreground spawn: it is a soft instruction to the sub-agent AND a hard
+        post-cap — an over-budget report is truncated and the remainder spilled to a
+        workspace file (keyed ``bg-N`` rather than the foreground ``stream_id``,
+        since a detached run has no stream id), so the pulled report stays bounded.
         ``model`` optionally overrides the model this spawn runs on.
         ``isolation="worktree"`` runs it in its own git worktree, committing its
         changes to a branch named in the report. ``caller_depth`` is the nesting
@@ -1138,11 +1209,26 @@ class SubagentRunner:
                 iso, err = SpawnWorktree.reopen(self.deps.workspace.root, branch)
                 if err is not None:
                     return None, err
+            # Resolve the agent definition ONCE here and thread it into
+            # _prepare_spawn (which reuses it for both model resolution and
+            # build()), so the resume path doesn't pay the discovery filesystem
+            # walk twice — matching the fresh-spawn path, which resolves it in
+            # _execute_spawn. The claude-cli backend was already peeled off above,
+            # so this is always a native definition.
+            defn = self._resolve_agent(type_)
+            # Rehydrate the run-shape knobs (output_schema/tier/thinking) the
+            # original spawn recorded, so the resumed run enforces the same
+            # schema, routes to the same tier model, and thinks at the same
+            # effort. ``.get`` defaults keep a pre-envelope sidecar (recorded
+            # before these keys existed) resuming as a plain spawn rather than
+            # KeyError-ing.
             prep = await self._prepare_spawn(
                 type_, task, meta.get("mcp"), meta.get("max_output_chars"),
                 meta.get("model"), iso, iso.path if iso else None, stream_id,
                 debug=logger.isEnabledFor(logging.DEBUG), t0=time.perf_counter(),
-                depth=int(meta.get("depth") or 1), resumed=True,
+                depth=int(meta.get("depth") or 1), resumed=True, defn=defn,
+                output_schema=meta.get("output_schema"), tier=meta.get("tier"),
+                thinking=meta.get("thinking"),
             )
             if isinstance(prep, str):
                 # _prepare_spawn already tore down the checkout on build failure and,

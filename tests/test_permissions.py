@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pytest
+from pydantic_ai import ToolApproved
 
 from marim_harness.runtime.permissions import Mode, resolve_approvals
 
@@ -197,7 +199,12 @@ async def test_ask_mode_auto_approves_scratchpad_write(tmp_path):
     results = await resolve_approvals(
         reqs, Mode.ask, never, workspace_root=ws, scratchpad=scratch
     )
-    assert results.approvals["c1"] is True
+    # Approved without prompting, and the approval PINS the resolved canonical
+    # path via override_args (TOCTOU hardening) rather than a bare True.
+    approval = results.approvals["c1"]
+    assert isinstance(approval, ToolApproved)
+    assert approval.override_args is not None
+    assert Path(approval.override_args["path"]) == (scratch / "n.txt").resolve()
 
 
 @pytest.mark.anyio
@@ -277,7 +284,40 @@ async def test_scratchpad_write_approved_even_without_approver(tmp_path):
     results = await resolve_approvals(
         reqs, Mode.ask, None, workspace_root=ws, scratchpad=scratch
     )
-    assert results.approvals["c1"] is True
+    approval = results.approvals["c1"]
+    assert isinstance(approval, ToolApproved)
+    assert Path(approval.override_args["path"]) == (scratch / "n.txt").resolve()
+
+
+@pytest.mark.anyio
+async def test_scratchpad_symlink_write_approval_pins_resolved_target(tmp_path):
+    """TOCTOU hardening: when the write targets a symlink INSIDE the scratchpad,
+    the approval must pin the symlink's *resolved* target (so the executor writes
+    that exact file), not echo the symlink name (which an attacker could repoint
+    between approval and open)."""
+    ws = tmp_path / "ws"
+    scratch = tmp_path / "scratch"
+    ws.mkdir()
+    scratch.mkdir()
+    real = scratch / "real.txt"
+    real.write_text("x")
+    link = scratch / "link.txt"
+    link.symlink_to(real)
+    reqs = FakeRequests(
+        approvals=[FakeCall("c1", "write_file", {"path": str(link)})]
+    )
+
+    async def never(_call):  # pragma: no cover - must not prompt for scratchpad
+        raise AssertionError("scratchpad write must not prompt")
+
+    results = await resolve_approvals(
+        reqs, Mode.ask, never, workspace_root=ws, scratchpad=scratch
+    )
+    approval = results.approvals["c1"]
+    assert isinstance(approval, ToolApproved)
+    # The pinned path is the resolved real file, not the symlink that was passed.
+    assert Path(approval.override_args["path"]) == real.resolve()
+    assert Path(approval.override_args["path"]) != link
 
 
 @pytest.mark.anyio

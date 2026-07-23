@@ -109,12 +109,14 @@ def estimate_cost(usage: RunUsage, model_ref: str | None) -> float | None:
         return None
     provider_id: str | None = None
     ref = model_ref
-    # Strip a leading provider: qualifier (model ids contain no colon, per the
-    # multi-provider id scheme) so colon-qualified ids like
-    # "google:gemini-2.5-flash" price correctly; an OpenRouter-style
-    # "openrouter:anthropic/claude-..." then still splits on '/' below.
+    # Capture a leading provider: qualifier as the provider hint (model ids
+    # contain no colon, per the multi-provider id scheme) so colon-qualified ids
+    # like "google:gemini-2.5-flash" price via their provider — the segment is the
+    # hint, not discarded. An OpenRouter-style "openrouter:anthropic/claude-..."
+    # then still splits on '/' below, which overrides the hint with the real
+    # upstream provider ("anthropic").
     if ":" in ref:
-        ref = ref.split(":", 1)[1]
+        provider_id, ref = ref.split(":", 1)
     if "/" in ref:
         provider_id, ref = ref.split("/", 1)
     try:
@@ -128,10 +130,11 @@ def estimate_cost(usage: RunUsage, model_ref: str | None) -> float | None:
         )
         calc = calc_price(priced, model_ref=ref, provider_id=provider_id)
         return float(calc.total_price)
-    except (ImportError, LookupError, ValueError, KeyError, AttributeError):
+    except (ImportError, LookupError, ValueError, KeyError):
         # Expected, recoverable misses: genai-prices not installed (ImportError),
         # the model/provider not in the price table (LookupError — what calc_price
-        # raises for an unknown id), or a malformed price entry. Anything else
-        # (a TypeError from an API change, say) is a real bug and must surface,
-        # not masquerade as an unpriced model.
+        # raises for an unknown id), or a malformed price entry. Anything else must
+        # surface, not masquerade as an unpriced model — including AttributeError,
+        # the classic renamed-attribute symptom of a genai-prices API change (a
+        # TypeError from a changed signature is the same class of bug).
         return None

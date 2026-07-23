@@ -55,3 +55,41 @@ async def test_switch_roundtrip_keeps_incoming_jobs_history(tmp_path: Path):
     harness.session.persist(force=True)
     persisted = json.loads(a_path.read_text())["jobs"]
     assert any(e.get("stream_id") == "sg-seed" for e in persisted)
+
+
+@pytest.mark.anyio
+async def test_failed_switch_restores_outgoing_jobs_history(tmp_path: Path):
+    """A /switch whose load RAISES leaves us on the outgoing session — but the
+    outgoing job context was already cleared before the load was attempted. The
+    history must be restored so the next persist doesn't write jobs=[] over the
+    still-active session's file (permanent loss)."""
+    ws = tmp_path / "ws"
+    manager = SessionManager(ws, base_dir=tmp_path / "data")
+    store_a = manager.create("A")
+    a_path = store_a.path
+    harness = Harness(
+        TestModel(call_tools=[]), BuiltinToolProvider(), _make_deps(ws),
+        instructions="t", store=store_a, manager=manager,
+    )
+    harness.deps.jobs.import_history([_ENTRY])
+    harness.session.persist(force=True)
+
+    # Create B, then corrupt its file so loading it raises SessionLoadError.
+    store_b = manager.create("B")
+    b_id = store_b.session_id
+    store_b.path.write_text("{ this is not valid json ")
+
+    # Switching to the corrupt B raises out of the session controller; the
+    # harness must re-raise after restoring A's job history.
+    with pytest.raises(Exception):  # noqa: B017 - any load failure exercises the path
+        harness.switch_session(b_id)
+
+    # A's history survived the failed switch...
+    assert any(j.stream_id == "sg-seed" for j in harness.deps.jobs.history), (
+        "outgoing job history was lost on a failed switch"
+    )
+    # ...and a persist to A's still-active file keeps the entry rather than
+    # erasing it.
+    harness.session.persist(force=True)
+    persisted = json.loads(a_path.read_text())["jobs"]
+    assert any(e.get("stream_id") == "sg-seed" for e in persisted)

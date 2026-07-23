@@ -657,6 +657,71 @@ async def test_failed_continuation_after_approval_persists_resumable(tmp_path):
     assert not _has_unanswered_tool_calls(harness.session.history)
 
 
+async def test_approval_round_latch_raised_during_wait_then_lowered(tmp_path):
+    """The approval-round latch (deps.approval_round_active) must be TRUE while the
+    turn is parked awaiting the user's approval decision — that is exactly the
+    window during which the in-memory history is dirty and a background spawn must
+    not force-persist — and FALSE again once the round resolves and the clean
+    continuation persists."""
+    (tmp_path / "a.txt").write_text("foo")
+
+    # Call 1 emits the gated edit_file (deferred for approval); the continuation
+    # call after the approved edit emits plain text so the turn terminates.
+    calls = {"n": 0}
+
+    def fn(messages, info):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return ModelResponse(parts=[ToolCallPart(
+                tool_name="edit_file",
+                args={"path": "a.txt",
+                      "edits": [{"old_string": "foo", "new_string": "bar"}]},
+            )])
+        return ModelResponse(parts=[TextPart(content="done")])
+
+    seen = {}
+
+    async def approve(_call):
+        # Sampled at the moment the turn is parked awaiting approval.
+        seen["during"] = deps.approval_round_active
+        return True
+
+    deps = _make_deps(tmp_path, mode=Mode.ask, request_approval=approve)
+    harness = _harness(FunctionModel(fn), deps)
+
+    assert deps.approval_round_active is False  # down before the turn
+    out = await harness.run_turn("change foo to bar")
+    assert out == "done"
+    assert seen["during"] is True, "latch must be raised while awaiting approval"
+    assert deps.approval_round_active is False, "latch must be lowered after the round"
+
+
+async def test_approval_round_latch_lowered_on_rollback(tmp_path):
+    """When the approval wait is interrupted (the approver raises/cancels), the
+    round rolls back to the clean baseline — and the latch must come back down so
+    a later background spawn isn't permanently blocked from persisting."""
+    import asyncio
+
+    (tmp_path / "a.txt").write_text("foo")
+
+    def fn(messages, info):
+        return ModelResponse(parts=[ToolCallPart(
+            tool_name="edit_file",
+            args={"path": "a.txt",
+                  "edits": [{"old_string": "foo", "new_string": "bar"}]},
+        )])
+
+    async def boom(_call):
+        raise asyncio.CancelledError
+
+    deps = _make_deps(tmp_path, mode=Mode.ask, request_approval=boom)
+    harness = _harness(FunctionModel(fn), deps)
+
+    with pytest.raises(asyncio.CancelledError):
+        await harness.run_turn("change foo to bar")
+    assert deps.approval_round_active is False, "latch must be lowered after rollback"
+
+
 async def test_rollback_persist_failure_does_not_mask_cancel(tmp_path):
     """Ctrl-C during the approval wait cancels the turn; the rollback persist
     that follows is best-effort. If it hits a disk error, the ORIGINAL

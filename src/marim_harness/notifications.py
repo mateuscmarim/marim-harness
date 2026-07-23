@@ -61,6 +61,17 @@ def parse_events(raw: str) -> set[str]:
     return parts & set(ALL_EVENTS) or set(DEFAULT_EVENTS)
 
 
+def _escape_pango(text: str) -> str:
+    """Escape Pango-markup metacharacters in notify-send body text.
+
+    GNOME (and other freedesktop notifiers) parse the body as Pango markup, so a
+    literal ``<``, ``&``, or ``<b>`` would render mangled or be dropped entirely —
+    the module contract is that model-influenced text never escapes its data slot.
+    ``&`` is escaped first so the ampersands introduced by the ``<``/``>`` rules
+    aren't double-escaped."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _escape_applescript(text: str) -> str:
     """Escape ``text`` for splicing into an AppleScript double-quoted string
     literal. Backslashes are doubled BEFORE quotes are escaped so an input
@@ -140,12 +151,18 @@ class Notifier:
         if not self._should_fire(event_type):
             return
         try:
-            self._dispatch(title, body)
+            fired = self._dispatch(title, body)
         except Exception as exc:  # never let notifications break a turn
             # _should_fire already recorded the timestamp on a fire; roll it back
             # so a later retry isn't suppressed.
             self._last_fired.pop(event_type, None)
             logger.debug("notification failed (%s): %s", event_type, exc)
+            return
+        if not fired:
+            # No backend actually ran (unknown platform / missing binary). Nothing
+            # fired, so roll back the timestamp too — otherwise the coalesce window
+            # would wrongly suppress a later send once a daemon/binary appears.
+            self._last_fired.pop(event_type, None)
 
     async def send_async(self, title: str, body: str, event_type: str) -> None:
         """Non-blocking counterpart to :meth:`send` for the event loop. Spawns the
@@ -155,6 +172,9 @@ class Notifier:
             return
         spec = self._command_for(title, body)
         if spec is None:
+            # Nothing fired: roll back the timestamp _should_fire recorded so a
+            # later send isn't suppressed by a coalesce window that never notified.
+            self._last_fired.pop(event_type, None)
             return  # unknown platform or missing binary — nothing to run
         argv, stdin = spec
         try:
@@ -169,10 +189,13 @@ class Notifier:
             self._last_fired.pop(event_type, None)
             logger.debug("async notification failed (%s): %s", event_type, exc)
 
-    def _dispatch(self, title: str, body: str) -> None:
+    def _dispatch(self, title: str, body: str) -> bool:
+        """Run the platform notifier. Returns True if a command was actually
+        spawned, False when there's nothing to run (unknown platform / missing
+        binary) so the caller can roll back the coalesce timestamp."""
         spec = self._command_for(title, body)
         if spec is None:
-            return  # unknown platform or missing binary
+            return False  # unknown platform or missing binary
         argv, stdin = spec
         subprocess.run(
             argv,
@@ -181,6 +204,7 @@ class Notifier:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+        return True
 
     def _command_for(self, title: str, body: str) -> tuple[list[str], bytes | None] | None:
         """Build the ``(argv, stdin_bytes)`` for the current platform's notifier,
@@ -202,7 +226,9 @@ class Notifier:
             return None
         # ``--`` terminates option parsing so a title/body starting with ``-``
         # (model-influenced text) is treated as a positional arg, never a flag.
-        return ["notify-send", "--app-name=marim", "--", title, body], None
+        # The body is Pango-escaped because notify-send parses it as markup (the
+        # summary/title is not markup-parsed, so it stays literal).
+        return ["notify-send", "--app-name=marim", "--", title, _escape_pango(body)], None
 
     @staticmethod
     def _osascript_cmd(title: str, body: str) -> tuple[list[str], bytes | None] | None:
@@ -224,6 +250,11 @@ class Notifier:
 
     @staticmethod
     def _powershell_cmd(title: str, body: str) -> tuple[list[str], bytes | None] | None:
+        # Cheap guard consistent with the notify-send/osascript backends: a missing
+        # powershell is "nothing to run" (return None), not a FileNotFoundError that
+        # the broad except has to swallow.
+        if shutil.which("powershell") is None:
+            return None
         # Use the BurntToast-free fallback: a balloon tip via the system tray.
         # This avoids any module install; works on Windows 10/11 PowerShell 5+.
         # Pass the script on stdin to avoid shell interpretation.

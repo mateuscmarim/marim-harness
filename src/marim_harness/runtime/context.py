@@ -14,6 +14,7 @@ existing call sites/tests that import them from there."""
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 
 from ..tasks import Task, render_tasks
@@ -25,30 +26,57 @@ from .errors import provider_error_status
 # envelope gives that boundary a stable marker so a resumed session can show
 # only what the user typed (matching the live TUI, which mounts the typed text
 # before injection happens). Plain turns carry no envelope and are unchanged.
-_TURN_CONTEXT_OPEN = "<turn-context>"
+#
+# The opening tag carries the exact character length of the user-typed suffix
+# (`<turn-context len="N">`). Recovery then slices the last N characters —
+# unambiguous no matter what either side contains. The older marker-only format
+# (`<turn-context>`, no length) recovered the suffix by searching for the
+# closing separator, which is ambiguous from BOTH ends: injected context may
+# echo the marker (so a first-match search leaks part of the envelope), and the
+# user's OWN typed text may contain `</turn-context>\n\n` (so a last-match
+# search truncates the typed text to whatever follows their marker). The length
+# prefix removes the guess entirely. `strip_turn_context` still understands the
+# old format for sessions persisted before this change.
 _TURN_CONTEXT_CLOSE = "</turn-context>"
 _TURN_CONTEXT_SEP = f"{_TURN_CONTEXT_CLOSE}\n\n"
+# v1 (legacy) open marker, kept only for reading old persisted sessions.
+_TURN_CONTEXT_OPEN_V1 = "<turn-context>"
+# v2 open tag with the typed-suffix length; the group captures N.
+_TURN_CONTEXT_OPEN_V2_RE = re.compile(r'^<turn-context len="(\d+)">')
 
 
 def wrap_turn_context(injected: str, typed: str) -> str:
     """Wrap ``injected`` context in the turn-context envelope and append the
-    user's ``typed`` prompt after it. Inverse of :func:`strip_turn_context`."""
-    return f"{_TURN_CONTEXT_OPEN}\n{injected}\n{_TURN_CONTEXT_SEP}{typed}"
+    user's ``typed`` prompt after it. Inverse of :func:`strip_turn_context`.
+
+    The opening tag records ``len(typed)`` so the recovery can slice the typed
+    suffix by length rather than by searching for the separator — robust even
+    when ``typed`` (or ``injected``) itself contains the ``</turn-context>``
+    marker."""
+    return (
+        f'<turn-context len="{len(typed)}">\n{injected}\n{_TURN_CONTEXT_SEP}{typed}'
+    )
 
 
 def strip_turn_context(content: str) -> str:
     """Return only the user-typed portion of a persisted prompt, dropping any
     leading turn-context envelope that :meth:`Harness.run_turn` prepended. A
     prompt with no envelope is returned unchanged."""
-    if not content.startswith(_TURN_CONTEXT_OPEN):
+    m = _TURN_CONTEXT_OPEN_V2_RE.match(content)
+    if m is not None:
+        # v2: the tag states the typed length exactly. Slice the last N chars —
+        # `content[-0:]` would wrongly return the whole string, so an empty
+        # typed suffix (N == 0, e.g. a background-digest-only turn) short-circuits.
+        n = int(m.group(1))
+        return content[len(content) - n:] if n else ""
+    if not content.startswith(_TURN_CONTEXT_OPEN_V1):
         return content
-    # Anchor on the LAST separator, not the first. The forward contract
-    # (`wrap_turn_context`) makes the user-typed text the suffix after the final
-    # `</turn-context>\n\n` (note `_assemble_prompt` asserts the prompt ends with
-    # `typed`). Injected context can legitimately contain the marker itself —
-    # e.g. a SessionStart hook that echoes a prior turn's persisted prompt — so a
-    # `find` (first occurrence) would stop inside the envelope and leak part of
-    # it back as "typed". `rfind` recovers the true suffix regardless.
+    # v1 (legacy) fallback: no length was recorded, so anchor on the LAST
+    # separator. The forward contract made the typed text the suffix after the
+    # final `</turn-context>\n\n`; injected context could echo the marker, so a
+    # first-match search would stop inside the envelope. `rfind` recovers the
+    # suffix in the common case (it is still fooled by a marker in the typed
+    # text — exactly the ambiguity the v2 length prefix fixes going forward).
     idx = content.rfind(_TURN_CONTEXT_SEP)
     if idx == -1:
         return content

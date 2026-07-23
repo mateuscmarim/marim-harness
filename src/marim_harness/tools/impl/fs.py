@@ -35,6 +35,12 @@ _DEFAULT_READ_LIMIT = 500
 _MAX_LINE_CHARS = 2_000
 _MAX_READ_CHARS = 100_000
 
+# A NUL byte in the first chunk of a file marks it binary (grep skips it,
+# read_file refuses to display it). This bounds how much we sniff before
+# deciding — a real text file rarely hides its first NUL past 8 KB, and a binary
+# blob trips the check without our reading the whole thing.
+_BINARY_SNIFF_BYTES = 8192
+
 # Directories that are almost always noise: tree lists them without expanding;
 # grep skips them entirely (the dominant cost of searching a large repo is
 # descending into .git/node_modules/.venv rather than the real source).
@@ -181,6 +187,19 @@ def _footer(offset: int, last: int, total: int, windowed: bool, clipped: bool) -
     return f"\n\n[{'; '.join(notes)}]"
 
 
+def _looks_binary(p: Path) -> bool:
+    """True if ``p``'s first chunk contains a NUL byte — the same binary sniff
+    grep uses (``_read_text_for_grep``). read_file decodes with errors="replace",
+    so without this guard a binary file would come back as replacement-char
+    mojibake; instead the caller returns a clean notice. An unreadable file is
+    not "binary" (let the normal read path raise its own error)."""
+    try:
+        with open(p, "rb") as fh:
+            return b"\x00" in fh.read(_BINARY_SNIFF_BYTES)
+    except OSError:
+        return False
+
+
 def read_file(
     root: Path,
     path: str,
@@ -199,6 +218,9 @@ def read_file(
     the whole file (or a line was clipped), a ``[…]`` footer says so, so the
     reader knows to page on with ``offset``/``limit``.
 
+    A binary file (detected by a NUL byte in its first chunk, like grep) is not
+    decoded — it returns a short "binary file" notice instead of mojibake.
+
     ``extra_read_roots`` are additional directories a path may resolve into besides
     the workspace (read-only) — used to let reads reach skill directories that live
     outside the workspace."""
@@ -209,6 +231,8 @@ def read_file(
     p = _safe_read(root, path, extra_read_roots)
     if not p.is_file():
         raise ModelRetry(f"not a file: {path}")
+    if _looks_binary(p):
+        return f"{path}: binary file, cannot display."
     # Mark the file seen for the read-before-edit guard. Fingerprinted now,
     # regardless of which window is returned: the agent has observed this file,
     # which is what edit_file/write_file require — they don't demand the exact
@@ -230,6 +254,31 @@ def read_file(
     return body + _footer(offset, last, total, windowed, clipped)
 
 
+def _reject_symlinked_path_component(p: Path) -> None:
+    """Re-validate, at write time, that no component of the already-resolved
+    write target has *become* a symlink since ``_safe_write`` resolved it.
+
+    ``_safe_write`` returns a canonical, symlink-free path and confirms it stays
+    inside an approved root — but that check and the write below are two separate
+    syscalls. In the window between them a same-uid process could swap a parent
+    directory of the resolved path for a symlink pointing outside the root (a
+    scratchpad approval was pinned to the resolved target in the permission
+    layer, so this is the remaining redirect vector). Because ``p`` is already
+    canonical, ``realpath(p)`` must equal ``p`` unless some component is now a
+    symlink; if it differs, a swap happened after resolution — refuse rather than
+    write through it. This is the O_NOFOLLOW-equivalent guard for the executor:
+    it rejects an escaping parent-component swap without penalizing legitimate
+    in-root symlinks (those were already collapsed by the initial resolve). The
+    residual sub-microsecond window between this check and the ``os.replace``
+    below is inherent to any non-``openat``-walk approach and is same-uid only —
+    a process that can win that race can already write the file directly."""
+    if Path(os.path.realpath(p)) != p:
+        raise ModelRetry(
+            f"{p.name}: a directory in the write path changed to a symbolic link "
+            f"after the path was validated; refusing to write through it."
+        )
+
+
 def _atomic_write_preserving_mode(p: Path, content: str) -> None:
     """Write ``content`` to ``p`` atomically, keeping the file's permission bits.
 
@@ -240,6 +289,7 @@ def _atomic_write_preserving_mode(p: Path, content: str) -> None:
     overwrite, and fall back to the umask default for a new file. The brief window
     where the mode isn't yet restored is acceptable: the *content* swap is atomic,
     which is the property that matters."""
+    _reject_symlinked_path_component(p)
     try:
         original = stat.S_IMODE(p.stat().st_mode)
     except FileNotFoundError:
@@ -316,6 +366,38 @@ def _apply_edit(text: str, edit: Edit, path: str, index: int) -> str:
     return text.replace(edit.old_string, edit.new_string)
 
 
+def _read_for_edit(p: Path) -> tuple[str, str]:
+    """Read ``p`` as UTF-8 for editing, returning ``(text, newline)``.
+
+    ``text`` is normalized to LF so a model's LF-only ``old_string`` matches
+    regardless of the file's on-disk convention (read_file normalizes too, so
+    that's the only view the model ever has). ``newline`` is the file's original
+    terminator (``"\\r\\n"`` or ``"\\n"``), restored on write-back so an edit to
+    a CRLF (Windows) file keeps CRLF instead of being silently rewritten to LF
+    across every line — a whole-file mutation the model never requested and can't
+    see. We open with ``newline=""`` (not ``read_text``, whose ``newline`` kwarg
+    only exists on 3.13+) so the raw terminators stay visible for the sniff.
+
+    Strict UTF-8: unlike read_file (display-only, errors="replace"), edit_file
+    reads-modifies-writes, so a lossy decode would round-trip the undecodable
+    bytes back as U+FFFD and corrupt regions the edit never touched — a
+    UnicodeDecodeError propagates for the caller to refuse."""
+    with p.open(encoding="utf-8", newline="") as fh:
+        raw = fh.read()
+    newline = "\r\n" if "\r\n" in raw else "\n"
+    text = raw.replace("\r\n", "\n").replace("\r", "\n") if "\r" in raw else raw
+    return text, newline
+
+
+def _restore_newlines(text: str, newline: str) -> str:
+    """Translate the LF-normalized ``text`` back to the file's original
+    terminator before write-back so a CRLF file keeps CRLF. The translation
+    lives here because ``atomic_write_text`` opens in text mode with the platform
+    default ``newline`` (LF on the Linux hosts marim targets) and we don't own
+    atomic_io. A no-op for LF files (the common case)."""
+    return text.replace("\n", newline) if newline != "\n" else text
+
+
 def edit_file(
     root: Path,
     path: str,
@@ -324,7 +406,8 @@ def edit_file(
     extra_write_roots: tuple[Path, ...] = (),
 ) -> str:
     """Apply a list of edits to one file, in order and all-or-nothing. Each edit
-    sees the result of the previous one; the file is written only if all succeed."""
+    sees the result of the previous one; the file is written only if all succeed.
+    The file's existing line endings are preserved (a CRLF file stays CRLF)."""
     if not edits:
         raise ModelRetry("no edits given: pass at least one {old_string, new_string}.")
     p = _safe_write(root, path, extra_write_roots)
@@ -333,17 +416,15 @@ def edit_file(
     # Editing always modifies existing content, so the read-before-edit guard
     # always applies (unlike write_file, which exempts brand-new files).
     _require_read_before_write(ledger, p, path)
-    # Strict decode: unlike read_file (display-only, errors="replace"), edit_file
-    # reads-modifies-writes, so a lossy decode would round-trip the undecodable
-    # bytes back as U+FFFD and corrupt regions the edit never touched. Refuse
-    # instead, with clear feedback.
     try:
-        text = p.read_text(encoding="utf-8")
+        text, newline = _read_for_edit(p)
     except UnicodeDecodeError:
         raise ModelRetry(f"can't edit {path}: not a UTF-8 text file.") from None
     for i, edit in enumerate(edits, 1):
         text = _apply_edit(text, edit, path, i)
-    _atomic_write_preserving_mode(p, text)  # all-or-nothing on disk too — see write_file
+    # all-or-nothing on disk too — see write_file. _restore_newlines re-applies
+    # the file's original terminator so only the intended lines change.
+    _atomic_write_preserving_mode(p, _restore_newlines(text, newline))
     # Refresh the fingerprint so a follow-up edit this turn isn't seen as stale.
     if ledger is not None:
         ledger.record(p)
@@ -456,13 +537,6 @@ def glob_files(root: Path, pattern: str) -> str:
         "\n".join(matches), kind="glob", key=pattern,
         workspace_root=root, capped=capped,
     )
-
-
-# A NUL byte in the first chunk of a file marks it binary (grep skips it). This
-# bounds how much we sniff before deciding — a real text file rarely hides its
-# first NUL past 8 KB, and a binary blob trips the check without our reading the
-# whole thing (see ``_read_text_for_grep``).
-_BINARY_SNIFF_BYTES = 8192
 
 
 def _read_text_for_grep(path: Path) -> str | None:

@@ -173,6 +173,30 @@ def test_workspace_flag_rejects_missing_dir(tmp_path, monkeypatch):
     assert "not a directory" in err
 
 
+def test_install_ref_flag_pins_git_source(tmp_path, monkeypatch):
+    """--ref is threaded to install_plugin so a git source can be pinned at a
+    branch/tag/commit; the flag defaults to None when omitted."""
+    captured = {}
+
+    class _Rec:
+        name = "demo"
+        version = "1.0.0"
+        trusted = False
+
+    def _fake_install(source, **kw):
+        captured.update(kw)
+        return _Rec()
+
+    monkeypatch.setattr(plugin_cmd, "install_plugin", _fake_install)
+    code, out, err = _run(["install", "https://example.com/x.git", "--ref", "v2.1"])
+    assert code == 0, err
+    assert captured["ref"] == "v2.1"
+
+    captured.clear()
+    _run(["install", "https://example.com/x.git"])
+    assert captured["ref"] is None
+
+
 def test_install_executable_accept_trust(tmp_path, monkeypatch):
     """Verify that accepting the trust prompt marks an executable plugin as trusted."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))

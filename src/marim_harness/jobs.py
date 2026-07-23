@@ -21,7 +21,6 @@ by *pulling* (``job_output`` / ``wait_for_job``); nothing wakes a turn on its ow
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import re
 from collections.abc import Awaitable, Callable
@@ -349,8 +348,28 @@ class JobRegistry:
             job.kill()
         if job.task is not None:
             job.task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await job.task
+            try:
+                # shield, mirroring wait()/await_settled(): awaiting job.task
+                # BARE would let the *caller* (the agent's cancel-job tool) being
+                # cancelled by a turn abort propagate INTO job.task — Task.cancel
+                # cancels the future its awaiter is blocked on — so job.task would
+                # read cancelled either way and the disambiguation below couldn't
+                # tell the two apart. The shield keeps our own cancellation off
+                # job.task (which we already cancelled explicitly above), so its
+                # state cleanly distinguishes the two cases.
+                await asyncio.shield(job.task)
+            except asyncio.CancelledError:
+                # Ambiguous by construction: CancelledError arrives both when the
+                # job task we cancelled finishes and when *we* were cancelled by
+                # a turn abort mid-await. The job task's own state disambiguates:
+                # if it isn't done-and-cancelled, the CancelledError is ours and
+                # must propagate — cancellation delivery is one-shot, so
+                # swallowing it here would let the turn keep running one more
+                # step with the abort silently lost.
+                if not job.task.cancelled():
+                    raise
+            except Exception as exc:
+                logger.debug("cancel job %s: %s (already settled)", job_id, exc)
         # A task cancelled before it began running never hits the wrapper's
         # except, so settle here; _settle is a no-op if it already landed.
         self._settle(job, "cancelled")

@@ -75,10 +75,30 @@ def test_v1_bare_list_still_reads_and_has_no_meta(tmp_path):
     ts = TranscriptStore(tmp_path / "s.json", "sid")
     ts.write("sg1", _msgs_v2(), 2000)               # no meta → v1 bare list on disk
     import json
-    raw = json.loads((ts._dir / "t-sg1.json").read_text())
+    files = list(ts._dir.glob("*.json"))
+    assert len(files) == 1
+    raw = json.loads(files[0].read_text())
     assert isinstance(raw, list)                 # on-disk format unchanged for v1
     assert ts.read("sg1") is not None
     assert ts.read_meta("sg1") is None
+
+
+def test_safe_filename_is_injective(tmp_path):
+    """Distinct stream_ids that sanitize to the same readable stem must still map
+    to distinct sidecar files — the appended hash of the true id guarantees it.
+    Without it, ``a/b`` and ``a b`` both collapse to ``t-a-b.json`` and one
+    spawn's transcript silently overwrites the other's."""
+    from marim_harness.session.transcripts import _safe
+
+    assert _safe("a/b") != _safe("a b")  # sanitized stems alone would collide
+    ts = TranscriptStore(tmp_path / "s.json", "sid")
+    ts.write("a/b", _msgs_v2(), 2000, meta=_meta("a/b"))
+    ts.write("a b", _msgs_v2(), 2000, meta=_meta("a b"))
+    files = list(ts._dir.glob("*.json"))
+    assert len(files) == 2  # two files, neither clobbered the other
+    assert ts.read("a/b") is not None
+    assert ts.read("a b") is not None
+    assert set(ts.scan_meta()) == {"a/b", "a b"}
 
 
 def test_scan_meta_maps_stream_ids_and_skips_junk(tmp_path):

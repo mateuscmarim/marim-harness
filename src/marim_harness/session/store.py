@@ -415,7 +415,15 @@ class SessionManager:
         The new session inherits the model from the most recent session when
         available, so the user doesn't have to re-select it every time."""
         if name:
-            base_slug = _slugify(name)
+            # Append a short random token for the same reason the unnamed path
+            # does (see below): a bare ``_slugify(name)`` collides when two
+            # processes create a same-named session before either's file exists
+            # (both _reserved sets are in-memory), and they then clobber each
+            # other's session JSON, checkpoints, transcripts, image cache, and git
+            # refs. The token also breaks the all-non-ASCII collapse — every such
+            # name slugifies to the bare "session" fallback, so distinct titles
+            # would otherwise share one id — while the display name stays verbatim.
+            base_slug = f"{_slugify(name)}-{secrets.token_hex(3)}"
             display = name
             auto = False
         else:
