@@ -199,3 +199,41 @@ def test_traversal_session_id_round_trips(tmp_path, monkeypatch):
     out = images.externalize_images(msgs, "../weird/id")
     back = images.rehydrate_images(out, "../weird/id")
     assert back[0]["parts"][0]["content"][1]["data"] == b64
+
+
+def _tool_return_message(content):
+    return [{"parts": [{"part_kind": "tool-return", "tool_name": "read_file",
+                        "tool_call_id": "t1", "content": content}]}]
+
+
+def _binary_item(data):
+    return {"kind": "binary", "data": data, "media_type": "image/png",
+            "identifier": "x", "vendor_metadata": None}
+
+
+def test_externalize_tool_return_scalar_binary_round_trips(tmp_path, monkeypatch):
+    monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path))
+    b64 = base64.urlsafe_b64encode(b"\x89PNGtoolreturn").decode()
+    msgs = _tool_return_message(_binary_item(b64))
+    out = images.externalize_images(msgs, "sess")
+    item = out[0]["parts"][0]["content"]
+    assert item["data"].startswith("marim-image-cache://")
+    back = images.rehydrate_images(out, "sess")
+    assert back[0]["parts"][0]["content"]["data"] == b64
+
+
+def test_externalize_tool_return_list_binary_round_trips(tmp_path, monkeypatch):
+    monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path))
+    b64 = base64.urlsafe_b64encode(b"\x89PNGinlist").decode()
+    msgs = _tool_return_message(["note", _binary_item(b64)])
+    out = images.externalize_images(msgs, "sess")
+    assert out[0]["parts"][0]["content"][1]["data"].startswith("marim-image-cache://")
+    back = images.rehydrate_images(out, "sess")
+    assert back[0]["parts"][0]["content"][1]["data"] == b64
+
+
+def test_rehydrate_tool_return_missing_cache_degrades(tmp_path, monkeypatch):
+    monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path))
+    msgs = _tool_return_message(_binary_item("marim-image-cache://deadbeef"))
+    back = images.rehydrate_images(msgs, "sess")
+    assert back[0]["parts"][0]["content"] == "[image unavailable]"

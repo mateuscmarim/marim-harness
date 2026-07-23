@@ -12,8 +12,10 @@ import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from .atomic_io import atomic_write_bytes
 
@@ -211,18 +213,34 @@ def detect_image_path(text: str) -> Path | None:
 _REF_PREFIX = "marim-image-cache://"
 
 
-def _iter_user_content(messages: list[dict]):
-    """Yield each user-prompt content list so callers can edit binary items
-    in place."""
+def _iter_binary_slots(
+    messages: list[dict],
+) -> Iterator[tuple[list[dict], int] | tuple[dict, Literal["content"]]]:
+    """Yield ``(container, key)`` pairs where ``container[key]`` is a binary
+    content item — inside user-prompt content lists and tool-return parts
+    (whose content may be a scalar binary or a list containing one). Yielding
+    the slot rather than the item lets rehydrate replace an unavailable image
+    with a text placeholder in place."""
     for msg in messages:
         if not isinstance(msg, dict):
             continue
         for part in msg.get("parts", []) or []:
-            if not isinstance(part, dict) or part.get("part_kind") != "user-prompt":
+            if not isinstance(part, dict):
+                continue
+            kind = part.get("part_kind")
+            if kind not in ("user-prompt", "tool-return"):
                 continue
             content = part.get("content")
             if isinstance(content, list):
-                yield content
+                for i, item in enumerate(content):
+                    if isinstance(item, dict) and item.get("kind") == "binary":
+                        yield content, i
+            elif (
+                kind == "tool-return"
+                and isinstance(content, dict)
+                and content.get("kind") == "binary"
+            ):
+                yield part, "content"
 
 
 # pydantic_ai serializes BinaryContent.data as URL-safe base64 ("-"/"_"), so the
@@ -230,41 +248,37 @@ def _iter_user_content(messages: list[dict]):
 # drops the URL-safe chars and corrupts the image, which the model then rejects as
 # "Multimodal data is corrupted" on every resumed turn.
 def externalize_images(messages: list[dict], session_id: str) -> list[dict]:
-    """Replace inline base64 in binary user-content with cache references."""
-    for content in _iter_user_content(messages):
-        for item in content:
-            if not (isinstance(item, dict) and item.get("kind") == "binary"):
-                continue
-            data = item.get("data")
-            if not isinstance(data, str) or data.startswith(_REF_PREFIX):
-                continue
-            try:
-                raw = base64.urlsafe_b64decode(data)
-            except (ValueError, TypeError):
-                continue
-            cached = store_image(session_id, raw, item.get("media_type", "image/png"))
-            item["data"] = f"{_REF_PREFIX}{cached.sha}"
+    """Replace inline base64 in binary user/tool-return content with cache refs."""
+    for container, key in _iter_binary_slots(messages):
+        item = container[key]  # type: ignore
+        data = item.get("data")
+        if not isinstance(data, str) or data.startswith(_REF_PREFIX):
+            continue
+        try:
+            raw = base64.urlsafe_b64decode(data)
+        except (ValueError, TypeError):
+            continue
+        cached = store_image(session_id, raw, item.get("media_type", "image/png"))
+        item["data"] = f"{_REF_PREFIX}{cached.sha}"
     return messages
 
 
 def rehydrate_images(messages: list[dict], session_id: str) -> list[dict]:
     """Restore base64 from cache references; missing files degrade to a text
     placeholder so the session still loads."""
-    for content in _iter_user_content(messages):
-        for i, item in enumerate(content):
-            if not (isinstance(item, dict) and item.get("kind") == "binary"):
-                continue
-            data = item.get("data")
-            if not (isinstance(data, str) and data.startswith(_REF_PREFIX)):
-                continue
-            sha = data[len(_REF_PREFIX):]
-            ext = media_ext(item.get("media_type", "image/png"))
-            path = image_cache_root() / _safe_session_segment(session_id) / f"{sha}.{ext}"
-            try:
-                # mutate item in place on success; replace with placeholder on OSError
-                raw = path.read_bytes()
-            except OSError:
-                content[i] = "[image unavailable]"
-                continue
-            item["data"] = base64.urlsafe_b64encode(raw).decode()
+    for container, key in _iter_binary_slots(messages):
+        item = container[key]  # type: ignore
+        data = item.get("data")
+        if not (isinstance(data, str) and data.startswith(_REF_PREFIX)):
+            continue
+        sha = data[len(_REF_PREFIX):]
+        ext = media_ext(item.get("media_type", "image/png"))
+        path = image_cache_root() / _safe_session_segment(session_id) / f"{sha}.{ext}"
+        try:
+            # mutate item in place on success; replace with placeholder on OSError
+            raw = path.read_bytes()
+        except OSError:
+            container[key] = "[image unavailable]"  # type: ignore
+            continue
+        item["data"] = base64.urlsafe_b64encode(raw).decode()
     return messages
