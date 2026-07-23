@@ -146,6 +146,13 @@ def _register_action_tools(agent: HarnessAgent, g: ToolGroups) -> None:
     if g.net:
         agent.tool(requires_approval=True)(net_tools.web_search)
         agent.tool(requires_approval=True)(net_tools.fetch_url)
+    # forget is the memory group's one gated tool: deletion is the only
+    # irreversible memory operation, so while remember/recall register
+    # ungated in _register_read_tools, forget routes through
+    # resolve_approvals like write/edit/bash — auto runs it un-prompted,
+    # ask prompts per call, plan denies it.
+    if g.memory:
+        agent.tool(requires_approval=True)(memory_tools.forget)
     if g.tasks:
         agent.tool(planning_tools.update_tasks)
         agent.tool(planning_tools.ask_user)

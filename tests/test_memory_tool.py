@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
@@ -145,3 +146,52 @@ def test_remember_is_not_an_approval_gated_tool(tmp_path: Path):
     with agent.override(model=_call_remember(args)):
         agent.run_sync("go", deps=_make_deps(tmp_path, mode=Mode.ask))
     assert (tmp_path / ".marim" / "memory" / "x.md").exists()
+
+
+def test_forget_deletes_memory_and_index_line(tmp_path: Path):
+    from marim_harness.tools.memory_tools import forget
+    from marim_harness.workspace import memory
+
+    sc = memory.project_scope(tmp_path)
+    memory.save_memory(sc, name="Build tool", description="d",
+                       mem_type="project", body="b", title="Build tool")
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(workspace=SimpleNamespace(memory_root=None, root=tmp_path))
+    )
+    result = forget(ctx, name="Build tool")
+    assert "deleted" in result.lower()
+    assert not (sc.root / "build-tool.md").exists()
+    assert "build-tool.md" not in (sc.root / "MEMORY.md").read_text()
+
+
+def test_forget_missing_memory_returns_notice(tmp_path: Path):
+    from marim_harness.tools.memory_tools import forget
+
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(workspace=SimpleNamespace(memory_root=None, root=tmp_path))
+    )
+    result = forget(ctx, name="never-saved")
+    assert "no project memory" in result.lower()
+
+
+def test_forget_requires_approval():
+    """Pins requires_approval=True on the registration itself (provider.py) —
+    deletion is the one irreversible memory operation, so unlike remember/recall
+    it must route through resolve_approvals (ask prompts, plan denies)."""
+    agent = _agent()
+    tool = agent._function_toolset.tools["forget"]
+    assert tool.requires_approval is True
+
+
+def test_forget_scope_is_constrained_to_two_values():
+    schema = _tool_schema("forget")
+    scope = schema["properties"]["scope"]
+    assert scope.get("enum") == ["project", "global"]
+
+
+def test_forget_is_not_grantable_to_subagents():
+    from marim_harness.tools.names import SUBAGENT_TOOLS, TOOL_GROUPS
+
+    assert "forget" not in SUBAGENT_TOOLS
+    # But it IS part of the builder's memory composition group.
+    assert "forget" in TOOL_GROUPS["memory"]

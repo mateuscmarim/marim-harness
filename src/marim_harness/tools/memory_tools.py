@@ -3,7 +3,14 @@ from typing import Literal
 from pydantic_ai import RunContext
 
 from ..runtime.deps import Deps
-from ..workspace.memory import MemoryScope, global_scope, project_scope, read_memory, save_memory
+from ..workspace.memory import (
+    MemoryScope,
+    delete_memory,
+    global_scope,
+    project_scope,
+    read_memory,
+    save_memory,
+)
 
 
 def resolve_scope(ctx: RunContext[Deps], which: str) -> MemoryScope:
@@ -60,3 +67,22 @@ def recall(
     reachable through read_file — always use this."""
     sc = resolve_scope(ctx, "global" if scope == "global" else "project")
     return read_memory(sc, name)
+
+
+def forget(
+    ctx: RunContext[Deps], name: str,
+    scope: Literal["project", "global"] = "project",
+) -> str:
+    """Permanently delete a saved memory by `name` (its title or slug, as
+    shown in the memory index). Use only when a memory is wrong or
+    obsolete; to correct or refresh a fact, prefer remember with the
+    same title, which updates the entry in place. `scope` is "project"
+    (default) or "global". Check the memory index first so you delete
+    the entry you mean — deletion cannot be undone."""
+    sc = resolve_scope(ctx, "global" if scope == "global" else "project")
+    if delete_memory(sc, name):
+        return f"Deleted {sc.name} memory {name!r}."
+    return (
+        f"No {sc.name} memory named {name!r} to delete "
+        "(check the memory index; or its directory is not writable)."
+    )
