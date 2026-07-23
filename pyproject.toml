@@ -1,8 +1,12 @@
 [project]
 name = "marim-harness"
-version = "0.1.0"
+version = "0.1.0.post1"
 description = "An embeddable coding-agent harness on Pydantic AI, with a Textual TUI and headless mode"
-readme = "README.md"
+# The readme is dynamic: hatch-fancy-pypi-readme rewrites the repo README's
+# relative links/images to absolute forge URLs at build time, so the PyPI page
+# renders them (PyPI has no base URL for relative references) while the
+# in-repo README keeps relative links that work when browsing the forge.
+dynamic = ["readme"]
 authors = [{ name = "Mateus Coutinho Marim", email = "mateus@marim.dev" }]
 license = { file = "LICENSE" }
 keywords = ["agent", "llm", "tui", "coding-assistant", "pydantic-ai", "textual"]
@@ -52,8 +56,11 @@ workflows = ["pydantic-monty>=0.0.18,<0.1", "jsonschema>=4"]
 # Optional because it's a per-machine tool choice, not a library dependency.
 lsp-python = ["basedpyright>=1.13"]
 
+# The public home is the GitHub mirror — the Gitea origin is private, so
+# PyPI-facing URLs must point at github.com or they 404 for visitors.
 [project.urls]
-Repository = "https://git.marim.dev/mateuscmarim/marim-harness"
+Repository = "https://github.com/mateuscmarim/marim-harness"
+Changelog = "https://github.com/mateuscmarim/marim-harness/blob/master/CHANGELOG.md"
 
 [project.scripts]
 marim = "marim_harness.__main__:main"
@@ -85,8 +92,25 @@ dev = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-fancy-pypi-readme"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata.hooks.fancy-pypi-readme]
+content-type = "text/markdown"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
+path = "README.md"
+
+# Images first (raw file URL), then remaining relative links (source view URL).
+# Both patterns skip targets that are already absolute (http/https) or
+# in-page anchors (#...).
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '!\[([^\]]*)\]\((?!https?://)([^)]+)\)'
+replacement = '![\1](https://raw.githubusercontent.com/mateuscmarim/marim-harness/master/\2)'
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '(?<!!)\[([^\]]*)\]\((?!https?://|#)([^)]+)\)'
+replacement = '[\1](https://github.com/mateuscmarim/marim-harness/blob/master/\2)'
 
 [tool.pytest.ini_options]
 addopts = "-q --cov=marim_harness --cov-report=term-missing --cov-report=xml --cov-fail-under=90"

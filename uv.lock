@@ -1088,7 +1088,7 @@ wheels = [
 
 [[package]]
 name = "marim-harness"
-version = "0.1.0"
+version = "0.1.0.post1"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },

@@ -8,8 +8,15 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
-Everything so far — `0.1.0` will be the first tagged release. Highlights of
-what exists today:
+## [0.1.0.post1] - 2026-07-23
+
+- Packaging only: the PyPI project page now renders the README's relative
+  links and the demo GIF as absolute forge URLs (rewritten at build time via
+  `hatch-fancy-pypi-readme`). No code changes.
+
+## [0.1.0] - 2026-07-23
+
+The first tagged release. Highlights of what exists today:
 
 - **Interactive TUI** (Textual): streaming responses, tool-call cards, live
   token counter, inline approval / ask-user / plan panels, sub-agents screen,
