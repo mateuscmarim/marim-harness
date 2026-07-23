@@ -38,13 +38,15 @@ def remember(
     ("User's name is Mateus Coutinho Marim"), not a label ("the user's
     name"). `body` is the full detail; link related memories in it with
     [[name]] — link liberally, and a [[name]] with no saved memory yet
-    is fine (it marks a fact worth writing later, not an error). Use `scope="global"` for facts
-    about the user that hold in every workspace, `scope="project"`
-    (default) for facts about this codebase. `type` is one of user,
-    feedback, project, reference. Before saving, check the memory index
-    and reuse the same title to update an existing entry rather than
-    adding a duplicate. No approval is needed — this only writes inside
-    marim's own memory directory."""
+    is fine (it marks a fact worth writing later, not an error). Use
+    absolute dates, never relative ones ("2026-07-22", not "today").
+    Don't save what the repo already records — git history, AGENTS.md,
+    code structure. Use `scope="global"` for facts about the user that
+    hold in every workspace, `scope="project"` (default) for facts about
+    this codebase. `type` is one of user, feedback, project, reference.
+    Before saving, check the memory index and reuse the same title to
+    update an existing entry rather than adding a duplicate. No approval
+    is needed — this only writes inside marim's own memory directory."""
     sc = resolve_scope(ctx, "global" if scope == "global" else "project")
     path = save_memory(
         sc, name=title, description=description,
@@ -67,7 +69,9 @@ def recall(
     as shown in the memory index). `scope` is "project" (default) or
     "global". When an index hook looks relevant to the task but lacks the
     detail you need, recall it before answering. Memory files are not
-    reachable through read_file — always use this."""
+    reachable through read_file — always use this. Memories reflect when
+    they were written — verify a file, flag, or function a memory names
+    still exists before acting on it."""
     sc = resolve_scope(ctx, "global" if scope == "global" else "project")
     return annotate_links(sc, read_memory(sc, name))
 
