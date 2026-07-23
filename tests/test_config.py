@@ -1025,3 +1025,43 @@ def test_thinking_env_unknown_value_is_none(monkeypatch):
     monkeypatch.setenv("MARIM_THINKING", "ultra")
     cfg = load_config()
     assert cfg.thinking_level is None
+
+
+def test_load_config_zen(monkeypatch):
+    monkeypatch.setenv("MARIM_PROVIDER", "zen")
+    monkeypatch.setenv("OPENCODE_API_KEY", "sk-zen-test")
+    monkeypatch.delenv("MARIM_MODEL", raising=False)
+    monkeypatch.delenv("MARIM_API_KEY", raising=False)
+    cfg = load_config()
+    assert cfg.provider == "zen"
+    assert cfg.model == "mimo-v2.5-free"
+    assert cfg.base_url == "https://opencode.ai/zen/v1"
+    assert cfg.api_key == "sk-zen-test"
+
+
+def test_load_config_zen_key_falls_back_to_marim_api_key(monkeypatch):
+    monkeypatch.setenv("MARIM_PROVIDER", "zen")
+    monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
+    monkeypatch.setenv("MARIM_API_KEY", "sk-generic")
+    cfg = load_config()
+    assert cfg.api_key == "sk-generic"
+
+
+def test_load_config_zen_model_override(monkeypatch):
+    monkeypatch.setenv("MARIM_PROVIDER", "zen")
+    monkeypatch.setenv("OPENCODE_API_KEY", "sk-zen-test")
+    monkeypatch.setenv("MARIM_MODEL", "big-pickle")
+    cfg = load_config()
+    assert cfg.model == "big-pickle"
+
+
+def test_zen_creds_detection(monkeypatch):
+    from marim_harness.config.model import _provider_has_creds
+
+    monkeypatch.setenv("OPENCODE_API_KEY", "sk-zen-test")
+    assert _provider_has_creds("zen")
+    monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
+    # MARIM_API_KEY alone does NOT activate zen (fallback credential only,
+    # same pattern as openrouter's MARIM_API_KEY fallback).
+    monkeypatch.setenv("MARIM_API_KEY", "sk-generic")
+    assert not _provider_has_creds("zen")
