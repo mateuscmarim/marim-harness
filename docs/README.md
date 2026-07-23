@@ -1,5 +1,18 @@
 # Documentation
 
+## Guides
+
+- [`guides/tui.md`](guides/tui.md) — the interactive TUI: slash commands,
+  key bindings, approvals, the sub-agents screen, settings.
+
+## Reference
+
+- [`reference/configuration.md`](reference/configuration.md) — every
+  `MARIM_*` environment variable, with defaults and formats. CI enforces
+  completeness (`tests/test_docs_reference.py`).
+- [`reference/serve-api.md`](reference/serve-api.md) — the `marim serve`
+  HTTP daemon: REST endpoints, streaming, auth, lifecycle.
+
 ## For users and embedders
 
 - [`architecture.md`](architecture.md) — how the codebase is put together and
