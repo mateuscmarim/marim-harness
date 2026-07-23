@@ -68,6 +68,8 @@ def estimate_tokens(history: list[ModelMessage]) -> int:
                         images += 1
                     elif item is not None:
                         chars += len(str(item))
+            elif isinstance(content, BinaryContent):
+                images += 1
             elif content is not None:
                 chars += len(str(content))
             args = getattr(part, "args", None)
@@ -389,6 +391,15 @@ def _mask_part(
     """Determine the replacement content for a part, or None if it should not be masked."""
     if _is_masked(part.content):
         return None
+    content = part.content
+    if isinstance(content, BinaryContent) or (
+        isinstance(content, list) and any(isinstance(c, BinaryContent) for c in content)
+    ):
+        # An image observation is always large in effective tokens and has no
+        # faithful text rendering to persist — mask it outright with the plain
+        # placeholder. The original file is still on disk; a fresh read_file
+        # brings it back if the model needs it again.
+        return MASKED_OBSERVATION
     # Measure and persist the *model-facing* rendering, not the Python repr: for a
     # structured return str() yields `{'a': 1}` while the model actually read compact
     # JSON (`{"a":1}`). model_response_str() is pydantic-ai's exact wire rendering, so
@@ -508,16 +519,21 @@ def render_transcript(messages: list, max_part_chars: int = 2000) -> str:
                     f"({_clip(part.args, max_part_chars)})"
                 )
             elif isinstance(part, ToolReturnPart):
-                lines.append(
-                    f"Tool {part.tool_name} returned: "
-                    f"{_clip(part.content, max_part_chars)}"
-                )
+                lines.append(_render_tool_return(part, max_part_chars))
     return "\n".join(lines)
 
 
 def _clip(value, limit: int) -> str:
     text = str(value)
     return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _render_tool_return(part: ToolReturnPart, max_part_chars: int) -> str:
+    """Render a ToolReturnPart as a transcript line, with BinaryContent as a placeholder."""
+    content: object = part.content
+    if isinstance(content, BinaryContent):
+        content = f"[image {content.media_type}]"
+    return f"Tool {part.tool_name} returned: {_clip(content, max_part_chars)}"
 
 
 # Marks the synthetic message that replaces a compacted middle. The TUI keys off

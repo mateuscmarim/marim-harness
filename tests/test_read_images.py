@@ -79,3 +79,13 @@ async def test_ctx_without_model_attr_stays_optimistic(tmp_path):
     ctx.deps.services = HarnessServices(supports_images=gate)
     out = await fs_tools.read_file(ctx, "shot.png")
     assert isinstance(out, BinaryContent)
+
+
+def test_tool_result_text_renders_image_placeholder():
+    from marim_harness.interfaces.tui.stream_render import tool_result_text
+
+    img = BinaryContent(data=b"x" * 2048, media_type="image/png")
+    assert tool_result_text(img) == "[image image/png, 2 KB]"
+    assert tool_result_text([img, "note"]) == "[image image/png, 2 KB] note"
+    assert tool_result_text("plain") == "plain"
+    assert tool_result_text(None) == "None"
