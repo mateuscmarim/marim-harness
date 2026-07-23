@@ -93,6 +93,12 @@ _WELCOME = (
 
 class HarnessApp(App):
     CSS_PATH = "styles.tcss"
+    # Textual binds its command palette to ctrl+p with priority, which would
+    # shadow the plain show_plan binding below and make the plan screen
+    # unreachable by key. Move the palette off to ctrl+shift+p (distinct only
+    # on terminals with the extended keyboard protocol — elsewhere the palette
+    # simply has no key, which is the right trade: the plan screen is ours).
+    COMMAND_PALETTE_BINDING = "ctrl+shift+p"
     BINDINGS = [
         ("ctrl+t", "cycle_mode", "Cycle mode"),
         ("ctrl+o", "toggle_outputs", "Show all output"),

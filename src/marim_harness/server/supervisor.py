@@ -1,15 +1,17 @@
 """Registry of live SessionHosts, one per (workspace, session).
 
 Hosts are created lazily on the first prompt and evicted after sitting idle
-(no running turn, nothing queued, no SSE subscriber) — the harness is torn
-down cleanly and the session stays resumable from disk. Buses are keyed
-separately and OUTLIVE hosts: an SSE client can stay attached (or resume with
-Last-Event-ID) across an eviction, and a live subscriber blocks eviction so a
-watching client never sees its stream silently reset.
+(no running turn, nothing queued, no WebSocket subscriber) — the harness is
+torn down cleanly and the session stays resumable from disk. Buses are keyed
+separately and OUTLIVE hosts: a WebSocket client can stay attached (or resume
+with ``?after_seq``) across an eviction, and a live subscriber blocks eviction
+so a watching client never sees its stream silently reset.
 
-``set_mode`` is in-memory only: a mode chosen at session creation survives
-until the daemon restarts, after which the configured default applies
-(documented v1 limitation — the session file doesn't persist a mode)."""
+``set_mode`` is the in-memory fast path for a session's approval mode; the
+durable copy lives on the session file header (``SessionStore.mode``, written
+by the create-session route). ``host_for`` falls back to the persisted value
+when the in-memory entry is gone, so a chosen mode survives daemon restarts
+and idle evictions alike."""
 
 import asyncio
 import contextlib
@@ -19,7 +21,7 @@ from pathlib import Path
 
 from ..runtime.harness import Harness
 from ..runtime.permissions import Mode
-from ..session import SessionManager
+from ..session.store import SessionManager
 from .bus import EventBus
 from .host import SessionHost
 from .workspaces import WorkspaceRecord
@@ -33,6 +35,19 @@ _EVICT_POLL_CEILING_SECONDS = 60.0
 
 class SessionBusy(Exception):
     """Raised by set_model when a live host has a turn running."""
+
+
+def _persisted_mode(workspace: Path, session_id: str) -> Mode | None:
+    """The approval mode saved on the session file header, if any and still a
+    valid Mode value (a file edited by hand or written by a future version may
+    hold anything — an unknown value falls back to None, i.e. the default)."""
+    raw = SessionManager(workspace).store(session_id).mode
+    if raw is None:
+        return None
+    try:
+        return Mode(raw)
+    except ValueError:
+        return None
 
 
 async def default_harness_factory(
@@ -78,6 +93,10 @@ class SessionSupervisor:
         return self._buses.get((ws_id, session_id))
 
     def set_mode(self, ws_id: str, session_id: str, mode: Mode) -> None:
+        """Cache a session's approval mode for the next host build. In-memory
+        only — durability is the create-session route's job (it writes the mode
+        onto the session file header, which host_for reads when this cache is
+        cold)."""
         self._modes[(ws_id, session_id)] = mode
 
     def set_model(self, record: WorkspaceRecord, session_id: str, model_id: str) -> None:
@@ -105,7 +124,14 @@ class SessionSupervisor:
             if host is not None:
                 host.touch()
                 return host
-            harness = await self._factory(Path(record.path), session_id, self._modes.get(key))
+            mode = self._modes.get(key)
+            if mode is None:
+                # Cache cold (daemon restarted, or the entry was never set):
+                # recover the mode persisted on the session file, so a session
+                # created with e.g. mode=auto doesn't silently revert to the
+                # configured default after a restart.
+                mode = _persisted_mode(Path(record.path), session_id)
+            harness = await self._factory(Path(record.path), session_id, mode)
             host = SessionHost(harness, self.bus_for(*key))
             self._hosts[key] = host
             return host
@@ -119,6 +145,32 @@ class SessionSupervisor:
                 return False
             await host.aclose()
             return True
+
+    def busy_sessions(self, ws_id: str) -> list[str]:
+        """Session ids in this workspace whose host is mid-turn right now.
+        Used by workspace DELETE to refuse (409) rather than yank a harness
+        out from under a running turn."""
+        return sorted(
+            sid for (wid, sid), host in self._hosts.items()
+            if wid == ws_id and host.busy
+        )
+
+    async def close_workspace(self, ws_id: str) -> None:
+        """Tear down every host and reclaim all per-session state (buses,
+        locks, modes) for a workspace that has been deleted from the registry —
+        delete_session's close_host + forget, applied workspace-wide. Session
+        keys may exist in any of the maps without a live host (evicted host
+        with a lingering bus, a mode set before the first prompt), so the sweep
+        unions all of them."""
+        keys = {
+            key
+            for source in (self._hosts, self._buses, self._locks, self._modes)
+            for key in source
+            if key[0] == ws_id
+        }
+        for key in keys:
+            await self.close_host(*key)
+            self.forget(*key)
 
     def forget(self, ws_id: str, session_id: str) -> None:
         """Fully reclaim all state for a session that has been permanently

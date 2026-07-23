@@ -4128,3 +4128,40 @@ async def test_workflow_card_lifecycle_and_child_nesting(tmp_path: Path):
         # card map is per-session too and must not leak stale widgets across.
         app.stream.reset()
         assert app.stream.workflow_cards == {}
+
+
+@pytest.mark.anyio
+async def test_ctrl_p_opens_plan_screen_not_command_palette(tmp_path: Path):
+    """Regression: Textual binds its command palette to ctrl+p with priority,
+    which shadowed the app's plain show_plan binding — the plan screen was
+    unreachable by key. HarnessApp moves the palette to ctrl+shift+p, so
+    ctrl+p must reach action_show_plan."""
+    from textual.command import CommandPalette
+
+    from marim_harness.interfaces.tui.plan_screen import PlanScreen
+    from marim_harness.runtime.deps import CurrentPlan
+
+    assert HarnessApp.COMMAND_PALETTE_BINDING == "ctrl+shift+p"
+    app = _app(tmp_path)
+    app.harness.deps.plan = CurrentPlan(
+        summary="Refactor the parser.", steps=["tokenize", "test"], path=None
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        assert isinstance(app.screen, PlanScreen)
+        assert not app.query(CommandPalette)
+
+
+@pytest.mark.anyio
+async def test_ctrl_p_without_plan_flashes_hint(tmp_path: Path):
+    from marim_harness.interfaces.tui.plan_screen import PlanScreen
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        assert not isinstance(app.screen, PlanScreen)
+        assert any("No plan yet" in n.message for n in app._notifications)

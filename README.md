@@ -1,12 +1,20 @@
 # marim-harness
 
-A terminal coding agent built on [Pydantic AI](https://ai.pydantic.dev/) and
-[Textual](https://textual.textualize.io/). It reads, searches, and edits files
-and runs commands in a workspace, with a live TUI for interactive work and a
-headless mode for one-shot prompts and scripting.
+A coding agent for your terminal — and an embeddable harness for building
+your own. Built on [Pydantic AI](https://ai.pydantic.dev/) and
+[Textual](https://textual.textualize.io/), it reads, searches, and edits files
+and runs commands in a workspace, with a live TUI for interactive work, a
+headless mode for one-shot prompts and scripting, and a library API
+(`HarnessBuilder`) that composes the same turn loop — approval gating,
+resumable sessions, sub-agents, MCP/LSP — into your own agent product.
+
+![marim fixing a bug with two parallel sub-agents: fan-out cards, an edit
+approval, and a verification run](docs/assets/demo.gif)
 
 ## Features
 
+- **Embeddable** — `HarnessBuilder` composes the same agent loop as a library,
+  with explicit config and no env reads; see [`docs/embedding.md`](docs/embedding.md).
 - **Interactive TUI** — streaming responses, tool-call cards, a live token
   counter, and an approval flow for gated actions.
 - **Headless mode** — run a single turn and print the result (`text`, `json`,
@@ -26,8 +34,36 @@ headless mode for one-shot prompts and scripting.
   results are pulled back into the conversation.
 - **Checkpoints & rewind** — restore the conversation and files to any prior
   turn; snapshots honor `.gitignore` and work gracefully outside git.
-- **Embeddable** — `HarnessBuilder` composes the same agent loop as a library,
-  with explicit config and no env reads; see [`docs/embedding.md`](docs/embedding.md).
+
+## Why marim?
+
+There are plenty of terminal coding agents. marim's angle:
+
+- **Embeddable first.** The same turn loop that powers the TUI is a library:
+  `HarnessBuilder` composes it with an explicit model, your own tools, and no
+  env reads — build your own agent product on top of it
+  ([`docs/embedding.md`](docs/embedding.md), [`docs/sdk/`](docs/sdk/README.md)).
+  If you're using [Pydantic AI](https://ai.pydantic.dev/), this is a
+  full-featured harness already built on it.
+- **Any model, including free ones.** OpenRouter, Google, any local
+  OpenAI-compatible server (Ollama, LM Studio) — or delegate turns to Claude
+  Code on a Claude subscription via the `claude-cli` provider. No vendor
+  lock-in, no required API key.
+- **Real editor-grade context.** Language-server integration (Python,
+  TypeScript, C++, Java bundled; more via plugins) gives the agent go-to-
+  definition, references, and diagnostics-on-edit — not just grep.
+- **Structured delegation.** Sub-agents with granted tool reach and model
+  tiers (cheap/med/high), plus sandboxed model-authored workflows for
+  deterministic fan-out.
+- **A trust model that takes running untrusted repos seriously.** Approval
+  modes, a command policy, and project-local hooks/MCP gated behind an
+  explicit opt-in (see [`SECURITY.md`](SECURITY.md)).
+- **A codebase built to be read.** The invariants that make an agent loop
+  survive real use — histories that never persist an unanswered tool call,
+  approval rounds, the collaborator graph — are documented where they live and
+  covered by ~3,400 tests (93% coverage and lint/type/complexity gates
+  enforced in CI, docs included). Start at
+  [`docs/architecture.md`](docs/architecture.md).
 
 ## Install
 
@@ -42,10 +78,27 @@ The interactive TUI lives in the optional `tui` extra; a bare
 installs the dev group, which includes textual, so a development checkout
 always has the full TUI.
 
-The `marim serve` HTTP daemon (REST + SSE) lives in the optional `serve` extra
+The `marim serve` HTTP daemon (REST + WebSocket) lives in the optional `serve` extra
 (`pip install -e '.[serve]'`, or `.[tui,serve]` for both). `./install.sh`
 installs both `tui` and `serve` by default; pass `--no-tui` and/or `--no-serve`
 to skip either.
+
+### Quick start (no API key required)
+
+Point marim at any local OpenAI-compatible server — Ollama or LM Studio work
+out of the box:
+
+```bash
+# .env (see .env.example for all options)
+MARIM_PROVIDER=local
+MARIM_BASE_URL=http://localhost:11434/v1   # Ollama (LM Studio: :1234)
+MARIM_API_KEY=local
+```
+
+Then just run `marim` — the model picker discovers models from the server's
+`/v1/models` endpoint. With an `OPENROUTER_API_KEY` set instead, marim
+defaults to OpenRouter; a Claude Pro/Max subscription works via
+`MARIM_PROVIDER=claude-cli` (delegates turns to the `claude` CLI).
 
 ## Usage
 
@@ -74,7 +127,7 @@ snapshot of the working tree. Rewind with:
 Rewinding truncates the conversation to that point and, in a git workspace,
 restores tracked and untracked files to their snapshot — files created after the
 checkpoint are removed. The pre-rewind state is itself saved to
-`refs/marim/checkpoints/_pre_restore`, so the most recent rewind is
+`refs/marim/checkpoints/<session-id>/_pre_restore`, so the most recent rewind is
 recoverable (this is a single slot — only the last rewind's pre-restore
 state is retained).
 
@@ -232,6 +285,10 @@ balloon tip — no extra dependencies. Notifications are best-effort: a missing
 daemon or a failed call is silently ignored and never interrupts the agent.
 
 ## Development
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for setup, conventions, and the PR
+checklist, and [`docs/architecture.md`](docs/architecture.md) for a map of the
+codebase. Changes are tracked in [`CHANGELOG.md`](CHANGELOG.md).
 
 ```bash
 uv run pytest        # run the test suite

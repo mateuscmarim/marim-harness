@@ -1,4 +1,4 @@
-"""``marim serve`` — run marim as a long-lived HTTP daemon (REST + SSE).
+"""``marim serve`` — run marim as a long-lived HTTP daemon (REST + WebSocket).
 
 Binds 127.0.0.1 by default; expose it via a reverse proxy or tailscale and
 authenticate with the bearer token printed at startup (persisted 0600 under
@@ -19,7 +19,8 @@ def _default_state_dir() -> Path:
 def main(argv: list[str], *, out=sys.stdout, err=sys.stderr) -> int:
     parser = argparse.ArgumentParser(
         prog="marim serve",
-        description="Run the marim HTTP server daemon (sessions over REST + SSE).",
+        description="Run the marim HTTP server daemon "
+                    "(sessions over REST + WebSocket).",
     )
     parser.add_argument("--host", default="127.0.0.1",
                         help="bind address (default: 127.0.0.1)")

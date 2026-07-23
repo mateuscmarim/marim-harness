@@ -3,7 +3,7 @@
 One mapping, two consumers: the headless CLI's ``stream-json`` output and the
 server's per-session event bus. Keeping it shared means an app consuming
 ``marim -p --output-format stream-json`` and one consuming ``marim serve``'s
-SSE stream see the same event vocabulary."""
+WebSocket stream see the same event vocabulary."""
 
 from pydantic_ai.messages import (
     FunctionToolCallEvent,

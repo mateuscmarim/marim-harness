@@ -487,3 +487,41 @@ def test_create_session_with_model_persists(client):
     sid = created.json()["id"]
     detail = test_client.get(f"/v1/workspaces/{ws['id']}/sessions/{sid}", headers=AUTH).json()
     assert detail["session"]["model"] == "claude-cli:opus"
+
+
+def test_session_mode_persisted_and_listed(client):
+    """The mode chosen at session creation lands on the session file header
+    (so it survives daemon restarts — see the supervisor tests for the
+    read-back path) and surfaces in list responses."""
+    test_client, tmp_path = client
+    ws_id, sid, project = _setup_workspace_and_session(test_client, tmp_path,
+                                                       mode="plan")
+    rows = test_client.get(f"/v1/workspaces/{ws_id}/sessions",
+                           headers=AUTH).json()["sessions"]
+    assert {r["id"]: r["mode"] for r in rows}[sid] == "plan"
+
+    from marim_harness.session.store import SessionManager
+
+    assert SessionManager(project).store(sid).mode == "plan"
+
+
+def test_delete_workspace_refuses_while_running_then_cleans_up(client):
+    """Workspace DELETE mirrors per-session DELETE: 409 while any session in
+    it has a running turn; on success the workspace (and its live state) is
+    gone."""
+    test_client, tmp_path = client
+    ws_id, sid, _ = _setup_workspace_and_session(test_client, tmp_path)
+    base = f"/v1/workspaces/{ws_id}/sessions/{sid}"
+    test_client.post(f"{base}/messages", headers=AUTH, json={"prompt": "edit it"})
+    _poll(test_client, base, lambda s: s["status"] == "waiting_ask")
+
+    refused = test_client.delete(f"/v1/workspaces/{ws_id}", headers=AUTH)
+    assert refused.status_code == 409
+    assert refused.json()["error"]["code"] == "busy"
+
+    test_client.post(f"{base}/interrupt", headers=AUTH)
+    _poll(test_client, base, lambda s: s["status"] == "idle")
+    assert test_client.delete(f"/v1/workspaces/{ws_id}",
+                              headers=AUTH).json()["deleted"] is True
+    assert test_client.get(f"/v1/workspaces/{ws_id}/sessions",
+                           headers=AUTH).status_code == 404

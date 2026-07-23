@@ -2,13 +2,13 @@
 and queue-based subscriptions.
 
 The bus outlives any single SessionHost (the supervisor keys buses separately
-from hosts) so an SSE client can attach, disconnect, and resume with
-Last-Event-ID across host evictions within the daemon's lifetime.
+from hosts) so a WebSocket client can attach, disconnect, and resume with
+``?after_seq=<seq>`` across host evictions within the daemon's lifetime.
 
-Subscription is a queue handle, not an async generator: the SSE writer wraps
-each read in ``asyncio.wait_for`` to emit keepalive comments, and cancelling a
-suspended async-generator ``__anext__`` would kill the generator — a plain
-``Queue.get`` just retries."""
+Subscription is a queue handle, not an async generator: a consumer may wrap
+each read in a timeout (``next_event(timeout=...)`` returns None on expiry so
+it can emit a heartbeat and retry), and cancelling a suspended async-generator
+``__anext__`` would kill the generator — a plain ``Queue.get`` just retries."""
 
 import asyncio
 from collections import deque
