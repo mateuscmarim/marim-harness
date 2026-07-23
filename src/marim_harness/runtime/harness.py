@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from pydantic_ai import Agent, DeferredToolRequests
-from pydantic_ai.capabilities import ProcessHistory
+from pydantic_ai.capabilities import AbstractCapability, ProcessHistory
 from pydantic_ai.settings import ModelSettings
 
 from ..advisor import ADVISOR_OFF, make_advisor
@@ -119,6 +119,12 @@ class HarnessConfig:
     proactive_memory: bool = False
     mcp_servers: list[object] = field(default_factory=list)
     mcp_disabled: set | None = None
+    # Extra pydantic-ai capabilities (AbstractCapability instances — e.g. from
+    # pydantic-ai-harness, or your own) appended to the Agent AFTER marim's
+    # built-ins, so the built-in history sanitizers always run first. Typed
+    # `object` like forge_backend/mcp_servers to keep this dataclass's imports
+    # light; build_collaborators casts at the single use site.
+    capabilities: list[object] = field(default_factory=list)
     # The project-trust decision McpManager threads into every disable_server/
     # enable_server persist call (mcp.manager.McpManager.trust_project). It
     # must be the SAME decision ``load_mcp_config`` was built with — mismatched
@@ -353,10 +359,14 @@ def build_collaborators(
         #  - DiscoveredInstructionsCapability injects discovered servers' usage
         #    instructions into cacheable history so they are prefix-cached and not
         #    re-sent as dynamic instructions on every request.
+        # Embedder capabilities (cfg.capabilities) come last: the built-in
+        # sanitizers above must see the raw history before any third-party
+        # capability (e.g. a pydantic-ai-harness module) transforms it.
         capabilities=[
             ProcessHistory(_drop_nameless_tool_calls),
             ProcessHistory(suggest_unknown_tool_retry),
             DiscoveredInstructionsCapability(mcp),
+            *cast("list[AbstractCapability]", cfg.capabilities),
         ],
     )
     provider.register(agent)

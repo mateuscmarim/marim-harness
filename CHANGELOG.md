@@ -8,6 +8,10 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+- `HarnessBuilder.with_capability(...)`: attach pydantic-ai
+  `AbstractCapability` instances (e.g. Pydantic AI Harness modules) to the
+  embedded agent, after marim's built-in capabilities.
+
 ## [0.1.0.post1] - 2026-07-23
 
 - Packaging only: the PyPI project page now renders the README's relative
