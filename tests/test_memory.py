@@ -299,3 +299,61 @@ def test_round_trip_index_lists_saved_memory(tmp_path, monkeypatch, scope_name):
     index = memory.load_index(sc)
     assert index is not None
     assert "note-one.md" in index
+
+
+def _save(sc, name: str, hook: str = "d", body: str = "b") -> None:
+    memory.save_memory(
+        sc, name=name, description=hook, mem_type="project", body=body, title=name
+    )
+
+
+def test_delete_memory_removes_file_and_index_line(tmp_path: Path):
+    sc = memory.project_scope(tmp_path)
+    _save(sc, "Build tool")
+    _save(sc, "Other fact")
+    assert memory.delete_memory(sc, "Build tool") is True
+    assert not (sc.root / "build-tool.md").exists()
+    index = (sc.root / "MEMORY.md").read_text()
+    assert "build-tool.md" not in index
+    # The other entry's line survives untouched.
+    assert "other-fact.md" in index
+
+
+def test_delete_memory_resolves_title_or_slug(tmp_path: Path):
+    sc = memory.project_scope(tmp_path)
+    _save(sc, "Usuário favorito")
+    # Title and slug both slugify to the same stored filename.
+    assert memory.delete_memory(sc, "usuario-favorito") is True
+    assert not (sc.root / "usuario-favorito.md").exists()
+
+
+def test_delete_memory_missing_returns_false(tmp_path: Path):
+    sc = memory.project_scope(tmp_path)
+    assert memory.delete_memory(sc, "never-saved") is False
+
+
+def test_delete_memory_spares_entry_whose_hook_links_to_it(tmp_path: Path):
+    """Deleting `auth` must not clobber a DIFFERENT entry whose hook text
+    mentions `auth.md` — matching is by the line's own link target."""
+    sc = memory.project_scope(tmp_path)
+    _save(sc, "auth")
+    _save(sc, "tokens", hook="see [link](auth.md) for details")
+    assert memory.delete_memory(sc, "auth") is True
+    index = (sc.root / "MEMORY.md").read_text()
+    assert "tokens.md" in index
+    assert "see [link](auth.md)" in index  # hook untouched
+
+
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="root ignores mode bits; chmod cannot provoke the failure"
+)
+def test_delete_memory_fails_soft_on_unwritable_dir(tmp_path: Path):
+    """Module contract: nothing raises into a turn. An index that can't be
+    rewritten (read-only dir) must log + return False, not propagate OSError."""
+    sc = memory.project_scope(tmp_path)
+    _save(sc, "x")
+    sc.root.chmod(0o500)
+    try:
+        assert memory.delete_memory(sc, "x") is False
+    finally:
+        sc.root.chmod(0o700)

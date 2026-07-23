@@ -24,6 +24,14 @@ logger = logging.getLogger(__name__)
 _INDEX_FILE = "MEMORY.md"
 _VALID_TYPES = ("user", "feedback", "project", "reference")
 
+# Matches an index entry by its OWN link target — the first `](…md)` of an index
+# line — never by bare substring. A plain ``"](slug.md)" in raw`` test would
+# also fire on a *different* entry whose hook text happens to mention
+# ``slug.md`` (e.g. "see [link](auth.md)"), hitting the wrong line. Shared by
+# the upsert (refresh-in-place) and delete (drop-the-line) paths so the two
+# can't disagree about what "this entry's line" means.
+_ENTRY_LINK_RE = re.compile(r"^- \[.*?\]\((?P<slug>[^)]+)\.md\)")
+
 
 @dataclass(frozen=True)
 class MemoryScope:
@@ -108,11 +116,6 @@ def _upsert_index_line(scope: MemoryScope, *, slug: str, title: str, hook: str) 
     preserving every other line and never duplicating an entry."""
     path = scope.root / _INDEX_FILE
     line = f"- [{title}]({slug}.md) — {hook}"
-    # Match this entry by its OWN link target — the first `](…md)` of an index
-    # line — not by a bare substring. A plain ``"](slug.md)" in raw`` test would
-    # also fire on a *different* entry whose hook text happens to mention
-    # ``slug.md`` (e.g. "see [link](auth.md)"), clobbering the wrong line.
-    entry_link = re.compile(r"^- \[.*?\]\((?P<slug>[^)]+)\.md\)")
 
     # Serialize the read+modify+write of the shared index with a best-effort
     # advisory lock: two concurrent save_memory calls each read the old index,
@@ -122,7 +125,7 @@ def _upsert_index_line(scope: MemoryScope, *, slug: str, title: str, hook: str) 
         existing = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
         new_lines, replaced = [], False
         for raw in existing:
-            m = entry_link.match(raw)
+            m = _ENTRY_LINK_RE.match(raw)
             if m and m.group("slug") == slug:
                 new_lines.append(line)
                 replaced = True
@@ -169,3 +172,41 @@ def save_memory(
         return None
     logger.debug("saved memory %s (%s)", path, scope.name)
     return path
+
+
+def _remove_index_line(scope: MemoryScope, *, slug: str) -> None:
+    """Drop ``slug``'s pointer from ``MEMORY.md``, preserving every other line.
+    Same advisory-lock + atomic-write discipline as ``_upsert_index_line`` so a
+    concurrent save can't resurrect the deleted entry's line or lose its own."""
+    path = scope.root / _INDEX_FILE
+    with file_lock(path):
+        if not path.exists():
+            return
+        kept = []
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            m = _ENTRY_LINK_RE.match(raw)
+            if m and m.group("slug") == slug:
+                continue
+            kept.append(raw)
+        text = "\n".join(kept)
+        atomic_write_text(path, text + "\n" if text else "")
+
+
+def delete_memory(scope: MemoryScope, name: str) -> bool:
+    """Delete the memory named ``name`` (title or slug — both slugify to the
+    stored filename) and drop its index line. Returns True when the file
+    existed and was removed, False when there was nothing to delete or the
+    delete failed. Per the module docstring, nothing raises into a turn: OSErrors
+    are logged and folded into False, matching save_memory's fail-soft style."""
+    slug = _slugify(name)
+    path = scope.root / f"{slug}.md"
+    try:
+        if not path.is_file():
+            return False
+        path.unlink()
+        _remove_index_line(scope, slug=slug)
+    except OSError as exc:
+        logger.debug("failed to delete memory %s (%s): %s", path, scope.name, exc)
+        return False
+    logger.debug("deleted memory %s (%s)", path, scope.name)
+    return True
