@@ -179,6 +179,8 @@ async def create_session(request: Request) -> Response:
     if body.mode is not None and body.mode not in (m.value for m in Mode):
         return _error(400, "bad_request", f"unknown mode: {body.mode}")
     store = SessionManager(Path(record.path)).create(body.name)
+    if body.model is not None:
+        store.model = body.model
     # An immediate empty save makes the session file exist, so list/history/
     # message endpoints see it before its first turn.
     store.save([], RunUsage())

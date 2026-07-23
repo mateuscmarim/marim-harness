@@ -450,3 +450,17 @@ def test_list_models_returns_qualified_entries(client, monkeypatch):
     entry = next(m for m in body["models"] if m["id"] == "claude-cli:sonnet")
     assert entry["name"] == "sonnet"
     assert entry["provider"] == "claude-cli"
+
+
+def test_create_session_with_model_persists(client):
+    test_client, tmp_path = client
+    project = tmp_path / "proj"
+    project.mkdir(exist_ok=True)
+    ws = test_client.post("/v1/workspaces", headers=AUTH,
+                          json={"name": "proj", "path": str(project)}).json()
+    created = test_client.post(f"/v1/workspaces/{ws['id']}/sessions", headers=AUTH,
+                               json={"name": "run1", "model": "claude-cli:opus"})
+    assert created.status_code == 201
+    sid = created.json()["id"]
+    detail = test_client.get(f"/v1/workspaces/{ws['id']}/sessions/{sid}", headers=AUTH).json()
+    assert detail["session"]["model"] == "claude-cli:opus"
