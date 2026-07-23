@@ -40,6 +40,7 @@ from ..tools.forge_tools import build_forge_toolset, forge_toolsets
 from ..tools.impl.suggest import suggest_unknown_tool_retry
 from ..tools.names import SUBAGENT_MAX_DEPTH
 from ..tools.provider import ToolGroups, ToolProvider
+from ..workspace.catalog import make_supports_images
 from ..workspace.scratchpad import ensure_scratchpad
 from ..workspace.snapshot import GitSnapshotter
 from .context import (
@@ -255,6 +256,7 @@ def build_services(
     get_session_id: Callable[[], str | None] | None = None,
     get_scratchpad: Callable[[], Path | None] | None = None,
     run_workflow: WorkflowRunner | None = None,
+    supports_images: Callable[[str], Awaitable[bool | None]] | None = None,
 ) -> HarnessServices:
     """Assemble the Harness-wired collaborator container and install it on
     ``deps``. Centralises the one late binding the deps<->services cycle
@@ -270,6 +272,7 @@ def build_services(
         get_session_id=get_session_id,
         get_scratchpad=get_scratchpad,
         run_workflow=run_workflow,
+        supports_images=supports_images,
     )
     deps.services = services
     return services
@@ -466,6 +469,14 @@ def build_collaborators(
     # The run_workflow tool's engine. Guarded build: disabled by config, or
     # pydantic-monty simply not installed (the [workflows] extra).
     workflow_engine = _build_workflow_engine(cfg, deps, subagents)
+    # Vision gate for read_file image returns: catalog-backed when a model
+    # source is composed (CLI path), None for explicit-model embedders
+    # (HarnessBuilder) — where unknown capability sends images optimistically.
+    supports_images = (
+        make_supports_images(cfg.model_source.list_models)
+        if cfg.model_source is not None
+        else None
+    )
     # One cohesive late binding for the collaborator cycle: TurnHooks and the
     # sub-agent runners hold this deps object, and tools reach them back
     # through ctx.deps.services.
@@ -479,6 +490,7 @@ def build_collaborators(
         get_session_id=lambda: session.store.session_id if session.store is not None else None,
         get_scratchpad=get_scratchpad,
         run_workflow=workflow_engine.run if workflow_engine is not None else None,
+        supports_images=supports_images,
     )
     return Collaborators(
         agent=agent, mcp=mcp, lsp=lsp, session=session,

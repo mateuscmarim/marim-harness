@@ -58,7 +58,13 @@ def test_build_services_populates_and_assigns(tmp_path):
         async def resume_spawn(self, *a, **k): ...
 
     subs = _Subs()
-    services = build_services(deps, lsp=lsp, turn_hooks=turn_hooks, subagents=subs)
+
+    async def fake_gate(model_id: str):
+        return True
+
+    services = build_services(
+        deps, lsp=lsp, turn_hooks=turn_hooks, subagents=subs, supports_images=fake_gate
+    )
 
     assert isinstance(services, HarnessServices)
     assert services.lsp is lsp
@@ -72,6 +78,7 @@ def test_build_services_populates_and_assigns(tmp_path):
     assert services.resume_subagent == subs.resume_spawn
     # The container is also installed on deps (the late binding).
     assert deps.services is services
+    assert services.supports_images is fake_gate
 
 
 def test_uihooks_has_optional_on_mode_change():
@@ -114,3 +121,9 @@ def test_build_services_threads_get_session_id(tmp_path):
     )
     assert services.get_session_id is not None
     assert services.get_session_id() == "sess-XYZ"
+
+
+def test_harness_services_supports_images_defaults_none():
+    from marim_harness.runtime.deps import HarnessServices
+
+    assert HarnessServices().supports_images is None
