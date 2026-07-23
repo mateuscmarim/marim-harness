@@ -103,7 +103,7 @@ async def test_edit_tool_reaches_scratchpad_after_read(tmp_path):
     (scratch / "note.txt").write_text("hello")
     ctx = _ctx(ws, scratch)
     # read first: the ReadLedger guard applies to scratchpad files too.
-    fs_tools.read_file(ctx, str(scratch / "note.txt"))
+    await fs_tools.read_file(ctx, str(scratch / "note.txt"))
     await edit_tools.edit_file(
         ctx,
         str(scratch / "note.txt"),
@@ -112,13 +112,14 @@ async def test_edit_tool_reaches_scratchpad_after_read(tmp_path):
     assert (scratch / "note.txt").read_text() == "goodbye"
 
 
-def test_read_tool_reaches_scratchpad(tmp_path):
+@pytest.mark.anyio
+async def test_read_tool_reaches_scratchpad(tmp_path):
     ws = tmp_path / "ws"
     scratch = tmp_path / "scratch"
     ws.mkdir()
     scratch.mkdir()
     (scratch / "data.txt").write_text("payload")
-    out = fs_tools.read_file(_ctx(ws, scratch), str(scratch / "data.txt"))
+    out = await fs_tools.read_file(_ctx(ws, scratch), str(scratch / "data.txt"))
     assert "payload" in out
 
 

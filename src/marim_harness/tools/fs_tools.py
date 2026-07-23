@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Literal
 
 from pydantic_ai import ModelRetry, RunContext
+from pydantic_ai.messages import BinaryContent
 
 from ..runtime.deps import Deps
 from ..workspace.skills import discover_skills
@@ -20,15 +21,19 @@ def scratch_roots(ctx: RunContext[Deps]) -> tuple[Path, ...]:
     return (p,) if p is not None else ()
 
 
-def read_file(
+async def read_file(
     ctx: RunContext[Deps], path: str, offset: int = 1, limit: int | None = None
-) -> str:
-    """Read a text file. `path` is relative to the workspace root.
+) -> str | BinaryContent:
+    """Read a file. `path` is relative to the workspace root.
 
-    For large files, read a window instead of the whole thing: `offset` is the
-    1-based line to start at and `limit` caps the line count. Prefer locating
+    For large text files, read a window instead of the whole thing: `offset` is
+    the 1-based line to start at and `limit` caps the line count. Prefer locating
     what you need first (with `grep`/`tree`) and reading a targeted range — a
     read with no `limit` is capped and will tell you how to page on.
+
+    Image files (png/jpg/webp/gif, up to 5 MB) are returned as viewable images
+    on models that accept image input; `offset`/`limit` don't apply to them.
+    Other binary files cannot be displayed.
 
     Skill directories (which may live outside the workspace) are also readable by
     their absolute path, so a skill's bundled files can be read this way too.
@@ -39,10 +44,31 @@ def read_file(
     # skill lives outside the workspace (discover_skills is cached per workspace).
     skills = discover_skills(ctx.deps.workspace.root, dirs=ctx.deps.workspace.skill_dirs)
     skill_roots = tuple(s.root for s in skills)
-    return fs.read_file(
+    out = fs.read_file(
         ctx.deps.workspace.root, path, offset=offset, limit=limit,
         extra_read_roots=skill_roots + scratch_roots(ctx), ledger=ctx.deps.reads,
     )
+    if isinstance(out, str):
+        return out
+    data, media_type = out
+    if await _model_accepts_images(ctx) is False:
+        return f"{path}: image file — the current model does not accept image input."
+    return BinaryContent(data=data, media_type=media_type)
+
+
+async def _model_accepts_images(ctx: RunContext[Deps]) -> bool | None:
+    """Catalog verdict for the *current* agent's model (main loop or sub-agent —
+    each RunContext carries its own model). Only an explicit False downgrades an
+    image read; None (no catalog composed, fetch failed, model unlisted, or no
+    model name on the context) stays optimistic, mirroring the thinking-level
+    rule that best-effort detection never blocks."""
+    gate = ctx.deps.services.supports_images
+    if gate is None:
+        return None
+    model_name = getattr(getattr(ctx, "model", None), "model_name", None)
+    if not model_name:
+        return None
+    return await gate(model_name)
 
 
 def glob(ctx: RunContext[Deps], pattern: str) -> str:
