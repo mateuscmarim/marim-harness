@@ -172,7 +172,7 @@ project `.env`, so a cloned repo cannot self-trust.
 | --- | --- | --- |
 | `MARIM_SUBAGENT_CONCURRENCY` | `8` | Max spawns running their model loop at once. `0` (or negative) = unbounded. |
 | `MARIM_SUBAGENT_REQUEST_LIMIT` | `50` | Positive int. Max model requests one sub-agent run may make before it is aborted. |
-| `MARIM_SUBAGENT_TRANSCRIPT_CAP` | `2000` | Positive int. Persisted transcript size per spawn, in messages. |
+| `MARIM_SUBAGENT_TRANSCRIPT_CAP` | `2000` | Positive int. Per-part character cap on persisted spawn transcripts (tool results are truncated to this many characters). |
 | `MARIM_SUBAGENT_TIER_CHEAP` | unset (inherit main) | Model for the `cheap` tier, qualified `provider:model_id`. |
 | `MARIM_SUBAGENT_TIER_MED` | unset (inherit main) | Model for the `med` tier. |
 | `MARIM_SUBAGENT_TIER_HIGH` | unset (inherit main) | Model for the `high` tier. |
