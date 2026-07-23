@@ -1,15 +1,20 @@
 # marim-harness
 
-A terminal coding agent built on [Pydantic AI](https://ai.pydantic.dev/) and
-[Textual](https://textual.textualize.io/). It reads, searches, and edits files
-and runs commands in a workspace, with a live TUI for interactive work and a
-headless mode for one-shot prompts and scripting.
+A coding agent for your terminal — and an embeddable harness for building
+your own. Built on [Pydantic AI](https://ai.pydantic.dev/) and
+[Textual](https://textual.textualize.io/), it reads, searches, and edits files
+and runs commands in a workspace, with a live TUI for interactive work, a
+headless mode for one-shot prompts and scripting, and a library API
+(`HarnessBuilder`) that composes the same turn loop — approval gating,
+resumable sessions, sub-agents, MCP/LSP — into your own agent product.
 
 ![marim fixing a bug with two parallel sub-agents: fan-out cards, an edit
 approval, and a verification run](docs/assets/demo.gif)
 
 ## Features
 
+- **Embeddable** — `HarnessBuilder` composes the same agent loop as a library,
+  with explicit config and no env reads; see [`docs/embedding.md`](docs/embedding.md).
 - **Interactive TUI** — streaming responses, tool-call cards, a live token
   counter, and an approval flow for gated actions.
 - **Headless mode** — run a single turn and print the result (`text`, `json`,
@@ -29,8 +34,6 @@ approval, and a verification run](docs/assets/demo.gif)
   results are pulled back into the conversation.
 - **Checkpoints & rewind** — restore the conversation and files to any prior
   turn; snapshots honor `.gitignore` and work gracefully outside git.
-- **Embeddable** — `HarnessBuilder` composes the same agent loop as a library,
-  with explicit config and no env reads; see [`docs/embedding.md`](docs/embedding.md).
 
 ## Why marim?
 
@@ -40,6 +43,8 @@ There are plenty of terminal coding agents. marim's angle:
   `HarnessBuilder` composes it with an explicit model, your own tools, and no
   env reads — build your own agent product on top of it
   ([`docs/embedding.md`](docs/embedding.md), [`docs/sdk/`](docs/sdk/README.md)).
+  If you're using [Pydantic AI](https://ai.pydantic.dev/), this is a
+  full-featured harness already built on it.
 - **Any model, including free ones.** OpenRouter, Google, any local
   OpenAI-compatible server (Ollama, LM Studio) — or delegate turns to Claude
   Code on a Claude subscription via the `claude-cli` provider. No vendor
@@ -53,6 +58,12 @@ There are plenty of terminal coding agents. marim's angle:
 - **A trust model that takes running untrusted repos seriously.** Approval
   modes, a command policy, and project-local hooks/MCP gated behind an
   explicit opt-in (see [`SECURITY.md`](SECURITY.md)).
+- **A codebase built to be read.** The invariants that make an agent loop
+  survive real use — histories that never persist an unanswered tool call,
+  approval rounds, the collaborator graph — are documented where they live and
+  covered by ~3,400 tests (93% coverage and lint/type/complexity gates
+  enforced in CI, docs included). Start at
+  [`docs/architecture.md`](docs/architecture.md).
 
 ## Install
 

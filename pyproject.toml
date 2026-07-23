@@ -1,7 +1,7 @@
 [project]
 name = "marim-harness"
 version = "0.1.0"
-description = "A terminal coding agent on Pydantic AI + Textual"
+description = "An embeddable coding-agent harness on Pydantic AI, with a Textual TUI and headless mode"
 readme = "README.md"
 authors = [{ name = "Mateus Coutinho Marim", email = "mateus@marim.dev" }]
 license = { file = "LICENSE" }
