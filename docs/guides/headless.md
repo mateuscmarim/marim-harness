@@ -109,7 +109,7 @@ model isn't priced).
 ### `stream-json`
 
 Newline-delimited JSON (NDJSON): streaming events as they happen, then a
-terminal line. The event vocabulary is shared with `marim serve`'s SSE
+terminal line. The event vocabulary is shared with `marim serve`'s WebSocket
 stream, so a consumer of either sees the same shapes:
 
 ```json
@@ -300,8 +300,8 @@ full picture. Plugins are managed with `marim plugin` — see
 ### `marim serve`
 
 `marim serve [--host] [--port] [--workspaces-root] [--idle-ttl]` runs marim
-as a long-lived HTTP daemon exposing sessions over REST plus an SSE event
-stream (the same event shapes as `--output-format stream-json`). It binds
+as a long-lived HTTP daemon exposing sessions over REST plus a WebSocket
+event stream (the same event shapes as `--output-format stream-json`). It binds
 `127.0.0.1:8642` by default, authenticates with a bearer token persisted
 under the server state dir (the token file's path is printed at startup),
 and requires the `serve` extra (`pip install 'marim-harness[serve]'`). See the

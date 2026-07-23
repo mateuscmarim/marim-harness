@@ -147,11 +147,12 @@ Request body (`WorkspaceIn`):
 Query: `?purge=true` also removes the directory from disk — allowed only for
 `managed` workspaces (`400` otherwise). `404` for an unknown id.
 
-`200`: `{"deleted": true}`
+Refuses while any session in the workspace has a running turn: `409 busy`
+("interrupt them first"). On success every live host, event bus, and cached
+mode for the workspace is torn down, so nothing keeps streaming from the
+deleted (possibly purged) directory.
 
-Note: deleting a workspace does not check for running sessions in it
-(only per-session DELETE does). Verify before relying on this in
-multi-client setups.
+`200`: `{"deleted": true}`
 
 ## Sessions
 
@@ -179,6 +180,7 @@ blocked on an unanswered ask).
       "model": "anthropic/claude-sonnet-4-6",
       "advisor_model": null,
       "thinking": null,
+      "mode": "ask",
       "status": "idle",
       "pending_asks": []
     }
@@ -200,9 +202,9 @@ Request body (`SessionIn`, both fields optional):
 
 - `mode` — `"auto"`, `"ask"`, or `"plan"`; omitted/`null` means the
   configured default. Unknown values return `400`.
-- The mode is held in memory only: it survives until the daemon restarts,
-  after which the configured default applies again (documented v1
-  limitation — the session file doesn't persist a mode).
+- The mode is persisted on the session file header, so it survives daemon
+  restarts and idle evictions; it also appears as `"mode"` in session
+  list/detail responses.
 
 `201`: `{"id": "<session-id>", "name": "<name>"}`
 
@@ -217,7 +219,7 @@ message endpoints see it before its first turn.
 {
   "session": {"id": "...", "name": "...", "updated": "...", "message_count": 0,
               "tokens": 0, "duration_seconds": null, "model": null,
-              "advisor_model": null, "thinking": null},
+              "advisor_model": null, "thinking": null, "mode": null},
   "status": "idle",
   "queued": 0,
   "pending_asks": []
@@ -426,10 +428,8 @@ Authorization: Bearer <token>
 - `seq` is monotonic per session and is the resume cursor.
 - The stream is server→client only; clients send nothing (received frames are
   used solely to detect disconnect).
-
-Note: docstrings in the codebase mention SSE, but as of this writing the only
-streaming transport wired into the route table is this WebSocket — there is
-no `text/event-stream` endpoint.
+- This WebSocket is the only streaming transport — there is no
+  `text/event-stream` (SSE) endpoint.
 
 ### Resume and gaps
 
