@@ -90,12 +90,15 @@ _MEMORY_INDEX_CACHE: dict = {}
 _PROACTIVE_MEMORY_POLICY = (
     "Proactive memory is ON — save durable user preferences, feedback, and "
     "project conventions with remember. Skip recoverable info, one-off details, "
-    "and secrets. Update existing entries over adding duplicates."
+    "secrets, and anything the repo already records (git history, AGENTS.md, "
+    "code structure). Update existing entries over adding duplicates; forget "
+    "entries that turn out to be wrong."
 )
 
 _ON_REQUEST_MEMORY_POLICY = (
     "Save to memory only when the user explicitly asks (e.g. 'remember that…' "
-    "or /remember). Do not save proactively."
+    "or /remember). Do not save proactively. Even then, skip anything the repo "
+    "already records (git history, AGENTS.md, code structure)."
 )
 
 

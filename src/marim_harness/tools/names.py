@@ -47,7 +47,7 @@ TOOL_GROUPS: dict[str, frozenset[str]] = {
     "files_write": frozenset({"write_file", "edit_file"}),
     "bash": frozenset({"bash"}),
     "net": NET_TOOLS,
-    "memory": frozenset({"remember", "recall"}),
+    "memory": frozenset({"remember", "recall", "forget"}),
     "skills": frozenset({"activate_skill", "read_skill_file"}),
     "tasks": frozenset({"update_tasks", "ask_user", "present_plan"}),
     "jobs": frozenset({"jobs", "job_output", "wait_for_job", "cancel_job", "job"}),

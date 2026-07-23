@@ -207,3 +207,10 @@ def test_humanize_tool_maps_known_and_titlecases_unknown():
 
 def test_clip_middle_noop_when_short():
     assert _clip_middle("short", 30) == "short"
+
+
+def test_forget_global_scope_badge():
+    s = summarize("forget", {"name": "my-fact", "scope": "global"})
+    assert s.label == "Forget"
+    assert s.target == "my-fact"
+    assert s.badges == ("global",)

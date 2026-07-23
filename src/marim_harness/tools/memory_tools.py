@@ -3,7 +3,15 @@ from typing import Literal
 from pydantic_ai import RunContext
 
 from ..runtime.deps import Deps
-from ..workspace.memory import MemoryScope, global_scope, project_scope, read_memory, save_memory
+from ..workspace.memory import (
+    MemoryScope,
+    annotate_links,
+    delete_memory,
+    global_scope,
+    project_scope,
+    read_memory,
+    save_memory,
+)
 
 
 def resolve_scope(ctx: RunContext[Deps], which: str) -> MemoryScope:
@@ -28,13 +36,17 @@ def remember(
     turns and sessions. Make `description` self-contained: it's the only
     line shown in the always-loaded index, so put the actual fact in it
     ("User's name is Mateus Coutinho Marim"), not a label ("the user's
-    name"). `body` is the full detail. Use `scope="global"` for facts
-    about the user that hold in every workspace, `scope="project"`
-    (default) for facts about this codebase. `type` is one of user,
-    feedback, project, reference. Before saving, check the memory index
-    and reuse the same title to update an existing entry rather than
-    adding a duplicate. No approval is needed — this only writes inside
-    marim's own memory directory."""
+    name"). `body` is the full detail; link related memories in it with
+    [[name]] — link liberally, and a [[name]] with no saved memory yet
+    is fine (it marks a fact worth writing later, not an error). Use
+    absolute dates, never relative ones ("2026-07-22", not "today").
+    Don't save what the repo already records — git history, AGENTS.md,
+    code structure. Use `scope="global"` for facts about the user that
+    hold in every workspace, `scope="project"` (default) for facts about
+    this codebase. `type` is one of user, feedback, project, reference.
+    Before saving, check the memory index and reuse the same title to
+    update an existing entry rather than adding a duplicate. No approval
+    is needed — this only writes inside marim's own memory directory."""
     sc = resolve_scope(ctx, "global" if scope == "global" else "project")
     path = save_memory(
         sc, name=title, description=description,
@@ -57,6 +69,27 @@ def recall(
     as shown in the memory index). `scope` is "project" (default) or
     "global". When an index hook looks relevant to the task but lacks the
     detail you need, recall it before answering. Memory files are not
-    reachable through read_file — always use this."""
+    reachable through read_file — always use this. Memories reflect when
+    they were written — verify a file, flag, or function a memory names
+    still exists before acting on it."""
     sc = resolve_scope(ctx, "global" if scope == "global" else "project")
-    return read_memory(sc, name)
+    return annotate_links(sc, read_memory(sc, name))
+
+
+def forget(
+    ctx: RunContext[Deps], name: str,
+    scope: Literal["project", "global"] = "project",
+) -> str:
+    """Permanently delete a saved memory by `name` (its title or slug, as
+    shown in the memory index). Use only when a memory is wrong or
+    obsolete; to correct or refresh a fact, prefer remember with the
+    same title, which updates the entry in place. `scope` is "project"
+    (default) or "global". Check the memory index first so you delete
+    the entry you mean — deletion cannot be undone."""
+    sc = resolve_scope(ctx, "global" if scope == "global" else "project")
+    if delete_memory(sc, name):
+        return f"Deleted {sc.name} memory {name!r}."
+    return (
+        f"No {sc.name} memory named {name!r} to delete "
+        "(check the memory index; or its directory is not writable)."
+    )
