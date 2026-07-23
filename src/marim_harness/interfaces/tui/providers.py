@@ -1,5 +1,5 @@
-"""The settings screen's Providers section: stacked cards for the four built-in
-providers (openrouter / google / local / claude-cli), a default-provider radio,
+"""The settings screen's Providers section: stacked cards for the five built-in
+providers (openrouter / google / zen / local / claude-cli), a default-provider radio,
 live apply, implicit verification, and key removal.
 
 Credentials save to the GLOBAL .env only (a project .env may not set these keys
@@ -60,6 +60,14 @@ PROVIDER_SPECS: tuple[ProviderSpec, ...] = (
         key_fallbacks=("GEMINI_API_KEY",),
         read_keys=("GOOGLE_API_KEY", "GEMINI_API_KEY"),
         drop_keys=("GOOGLE_API_KEY", "GEMINI_API_KEY"),
+    ),
+    # zen (OpenCode Zen): one canonical key env, no base URL (fixed endpoint).
+    ProviderSpec(
+        "zen",
+        write_key="OPENCODE_API_KEY",
+        key_fallbacks=(),
+        read_keys=("OPENCODE_API_KEY",),
+        drop_keys=("OPENCODE_API_KEY",),
     ),
     # local is marked configured by its base URL (matching _provider_has_creds);
     # removal clears URL + key together — a leftover key alone is meaningless.
