@@ -93,6 +93,40 @@ def _advise_prompt(transcript: str) -> str:
     )
 
 
+async def consult(
+    model: Model, messages: list, *, max_tokens: int = 2048
+) -> str:
+    """One advisor consultation: render the transcript, run a tool-free
+    one-shot agent on ``model``, return advice text with a usage trailer.
+
+    The shared core between marim's own advisor (``make_advisor``) and the
+    exported ``marim_harness.capabilities.Advisor`` pydantic-ai capability —
+    keep it free of marim runtime concerns (no Deps, no services, no model
+    resolution). Every failure path returns a short actionable string, never
+    raises (the errors-as-text contract in the module docstring)."""
+    agent = Agent(
+        model,
+        instructions=_ADVISOR_INSTRUCTIONS,
+        model_settings=ModelSettings(max_tokens=max_tokens),
+    )
+    last_error: Exception | None = None
+    for clip in _CLIP_ATTEMPTS:
+        try:
+            result = await agent.run(
+                _advise_prompt(render_transcript(messages, max_part_chars=clip))
+            )
+        except Exception as exc:
+            last_error = exc
+            continue
+        usage = result.usage
+        return (
+            f"{result.output}\n\n"
+            f"[advisor usage: {usage.input_tokens or 0} in, "
+            f"{usage.output_tokens or 0} out tokens]"
+        )
+    return f"Advisor unavailable: {last_error}. Continue without advice."
+
+
 def make_advisor(
     build_model: Callable[[str], Model],
     get_model_id: Callable[[], str | None],
@@ -125,26 +159,6 @@ def make_advisor(
                 f"Advisor unavailable: can't build model {model_id!r}: {exc}. "
                 "Continue without advice."
             )
-        agent = Agent(
-            model,
-            instructions=_ADVISOR_INSTRUCTIONS,
-            model_settings=ModelSettings(max_tokens=max_tokens),
-        )
-        last_error: Exception | None = None
-        for clip in _CLIP_ATTEMPTS:
-            try:
-                result = await agent.run(
-                    _advise_prompt(render_transcript(messages, max_part_chars=clip))
-                )
-            except Exception as exc:
-                last_error = exc
-                continue
-            usage = result.usage
-            return (
-                f"{result.output}\n\n"
-                f"[advisor usage: {usage.input_tokens or 0} in, "
-                f"{usage.output_tokens or 0} out tokens]"
-            )
-        return f"Advisor unavailable: {last_error}. Continue without advice."
+        return await consult(model, messages, max_tokens=max_tokens)
 
     return advise

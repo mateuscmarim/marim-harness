@@ -68,6 +68,9 @@ plain tool path, not marim's approval gating or `CommandPolicy`. Prefer
 marim's own groups (`with_bash`, `with_defaults`) where they overlap, and
 reserve capabilities for what marim doesn't provide.
 
+marim also ships its own capabilities to attach here — see
+[Exported capabilities](sdk/capabilities.md).
+
 ### `with_advisor(model, *, max_tokens=2048, max_uses=None)`
 
 Gives the main agent an `advisor` tool: calling it forwards the full
