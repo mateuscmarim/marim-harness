@@ -133,11 +133,11 @@ async def test_unresolvable_model_returns_text_not_raise():
 
 
 @pytest.mark.anyio
-async def test_defer_loading_hides_the_tool_until_loaded():
+async def test_defer_loading_marks_the_tool_deferred_until_loaded():
     seen = {}
 
     def capture(messages, info):
-        seen.setdefault("tools", [t.name for t in info.function_tools])
+        seen.setdefault("defs", {t.name: t for t in info.function_tools})
         return ModelResponse(parts=[TextPart("ok")])
 
     agent = Agent(
@@ -147,7 +147,7 @@ async def test_defer_loading_hides_the_tool_until_loaded():
         ],
     )
     await agent.run("hi")
-    # defer_loading=True makes the tool deferred and adds a load_capability tool
-    assert any("load_capability" in name for name in seen["tools"])
-    # The advisor tool is still available via load_capability when needed
-    assert "advisor" in seen["tools"]
+    # defer_loading=True marks the advisor ToolDefinition itself as deferred...
+    assert seen["defs"]["advisor"].defer_loading is True
+    # ...and adds a load_capability tool to bring it in when needed
+    assert any("load_capability" in name for name in seen["defs"])
