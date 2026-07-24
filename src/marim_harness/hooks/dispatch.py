@@ -16,6 +16,7 @@ from pydantic_ai.messages import (
     RetryPromptPart,
 )
 
+from ..binary_safe import has_binary_content, render_binary_safe
 from . import events as hook_events
 from .runner import base_payload
 
@@ -153,12 +154,19 @@ class TurnHooks:
                     error=part.model_response(),
                 )
             else:
+                # render_binary_safe (not str()) — a read_file image return puts a
+                # BinaryContent (or a list containing one) on `part.content`, and a
+                # bare str() would embed the full base64 body (up to ~20MB) into
+                # every hook script's stdin payload. Gated on has_binary_content so
+                # non-binary list returns keep their historical str() payload format.
+                content = getattr(part, "content", "")
                 await self.deps.hooks.dispatch(
                     hook_events.POST_TOOL_USE,
                     self._payload(
                         hook_events.POST_TOOL_USE,
                         tool_name=getattr(part, "tool_name", ""),
                         tool_input=tool_input,
-                        tool_response=str(getattr(part, "content", "")),
+                        tool_response=render_binary_safe(content)
+                        if has_binary_content(content) else str(content),
                     ),
                 )

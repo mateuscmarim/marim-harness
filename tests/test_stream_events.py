@@ -2,6 +2,7 @@
 stream-json and the server's event bus)."""
 
 from pydantic_ai.messages import (
+    BinaryContent,
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     PartDeltaEvent,
@@ -77,6 +78,35 @@ def test_tool_result_plain_string_content_preserved():
         part=ToolReturnPart(tool_name="read_file", content="PORT = 8080", tool_call_id="t1")
     )
     assert event_to_dict(event)["content"] == "PORT = 8080"
+
+
+def test_tool_result_scalar_binary_content_is_placeholder_not_bytes():
+    # A read_file image return must not dump str(BinaryContent) (the full base64
+    # body, up to ~20MB) into the headless/WebSocket JSON event stream.
+    img = BinaryContent(data=b"x" * 4096, media_type="image/png")
+    event = FunctionToolResultEvent(
+        part=ToolReturnPart(tool_name="read_file", content=img, tool_call_id="t3")
+    )
+    obj = event_to_dict(event)
+    assert obj is not None
+    assert obj["content"] == "[image image/png, 4 KB]"
+    assert "x" * 100 not in obj["content"]
+
+
+def test_tool_result_list_with_binary_content_is_placeholder_not_bytes():
+    # Same guard for a list of content blocks (e.g. an MCP tool returning mixed
+    # text + image content) — the binary item must not reach json.dumps(default=str).
+    img = BinaryContent(data=b"y" * 4096, media_type="image/jpeg")
+    event = FunctionToolResultEvent(
+        part=ToolReturnPart(
+            tool_name="mcp_tool", content=["caption", img], tool_call_id="t4"
+        )
+    )
+    obj = event_to_dict(event)
+    assert obj is not None
+    assert "[image image/jpeg, 4 KB]" in obj["content"]
+    assert "caption" in obj["content"]
+    assert "y" * 100 not in obj["content"]
 
 
 def test_unmapped_event_returns_none():

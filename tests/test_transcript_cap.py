@@ -40,3 +40,24 @@ def test_cap_handles_non_string_content():
                           tool_call_id="t", timestamp=datetime.now(tz=timezone.utc))
     out = cap_transcript([ModelRequest(parts=[part])], cap=100)
     assert "truncated" in str(out[0].parts[0].content)
+
+
+def test_cap_leaves_binary_tool_returns_intact():
+    """A binary tool return (a read_file image) must pass through untouched:
+    the generic non-string branch would str() it — a bytes repr ~2.5x the
+    image size — clipping it to garbage AND bloating the checkpoint. Size for
+    binary content is the sidecar externalization's job, not the cap's."""
+    from pydantic_ai.messages import BinaryContent, ToolReturnPart
+
+    img = BinaryContent(data=b"\x89PNG\r\n\x1a\n" + b"p" * 4096, media_type="image/png")
+    msg = ModelRequest(parts=[
+        ToolReturnPart(tool_name="read_file", content=img, tool_call_id="c1"),
+    ])
+    out = cap_transcript([msg], cap=100)
+    assert out[0].parts[0].content is img
+    # A list return carrying a binary item is protected the same way.
+    lst = ModelRequest(parts=[
+        ToolReturnPart(tool_name="read_file", content=[img, "note"], tool_call_id="c2"),
+    ])
+    out = cap_transcript([lst], cap=100)
+    assert out[0].parts[0].content == [img, "note"]

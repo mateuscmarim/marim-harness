@@ -160,6 +160,13 @@ class HarnessServices:
     # and both the tool's prepare hook and the steering-instructions closure
     # read it per request, so tool schema and prompt toggle together.
     advise: AdviseFn | None = None
+    # Whether a model accepts image input, per the provider catalog. Async: the
+    # first call may fetch the catalog (one-shot cached — see
+    # workspace/catalog.make_supports_images). Keyed by the model's unqualified
+    # id (``ctx.model.model_name``), so the same gate serves the main loop and
+    # sub-agents on tiered models. None ⇒ no catalog source composed; readers
+    # treat capability as unknown and stay optimistic.
+    supports_images: Callable[[str], Awaitable[bool | None]] | None = None
 
 
 @dataclass

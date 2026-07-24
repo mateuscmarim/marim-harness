@@ -18,14 +18,23 @@ from pydantic_ai.messages import (
     ThinkingPartDelta,
 )
 
+from .binary_safe import has_binary_content, render_binary_safe
+
 
 def _jsonify_tool_content(content) -> str:
     """Serialize tool-return content for the JSON event stream. A plain string is
-    passed through untouched; structured content (a list/dict of content blocks)
-    is JSON-encoded — with a ``str`` fallback for anything non-serializable — so
-    consumers get valid JSON instead of a Python ``repr`` (single-quoted, unparseable)."""
+    passed through untouched; a read_file image return (BinaryContent, scalar or
+    inside a list) is routed through the shared binary-safe placeholder — headless
+    stream-json and the WebSocket serve clients would otherwise get
+    ``json.dumps(default=str)``'s dump of the full base64 body (up to ~20MB) per
+    image read. Anything else (structured content — a list/dict of content
+    blocks) is JSON-encoded — with a ``str`` fallback for anything non-
+    serializable — so consumers get valid JSON instead of a Python ``repr``
+    (single-quoted, unparseable)."""
     if isinstance(content, str):
         return content
+    if has_binary_content(content):
+        return render_binary_safe(content)
     try:
         return json.dumps(content, default=str)
     except (TypeError, ValueError):

@@ -4,12 +4,14 @@ import os
 import re
 import stat
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic import BaseModel
 from pydantic_ai import ModelRetry
 
 from ...atomic_io import atomic_write_text
+from ...images import media_type_for_path
 from ...workspace.fs import ReadLedger, WorkspaceError, resolve_in_workspace
 from .offload import MAX_OUTPUT_CHARS, offload_if_large
 
@@ -187,6 +189,65 @@ def _footer(offset: int, last: int, total: int, windowed: bool, clipped: bool) -
     return f"\n\n[{'; '.join(notes)}]"
 
 
+# Provider image-size ceilings sit around 5 MB (Anthropic's documented limit);
+# larger files come back as a text notice rather than a doomed upload.
+_MAX_IMAGE_BYTES = 5 * 1024 * 1024
+
+# Format signatures for the image types read_file will send to a model. A file
+# is only treated as an image when its header matches its extension's magic —
+# extension alone would send a text file named ``diagram.png`` (or a 0-byte
+# ``.png``) as image/png, and a provider that rejects corrupt image data 400s
+# the whole request, failing the turn. WebP is checked separately: its magic is
+# split (``RIFF`` at 0, ``WEBP`` at 8, chunk size in between).
+_IMAGE_MAGIC: dict[str, tuple[bytes, ...]] = {
+    "image/png": (b"\x89PNG\r\n\x1a\n",),
+    "image/jpeg": (b"\xff\xd8\xff",),
+    "image/gif": (b"GIF87a", b"GIF89a"),
+}
+
+
+def _sniffs_as_image(p: Path, media_type: str) -> bool:
+    """True when ``p``'s header bytes match the format its extension claims.
+    A mismatch (or unreadable file) is not an image — the caller falls through
+    to the normal text/binary path, so a mislabeled text file still reads as
+    text and a truncated/corrupt image gets the binary notice instead of a
+    doomed upload."""
+    try:
+        with open(p, "rb") as fh:
+            head = fh.read(12)
+    except OSError:
+        return False
+    if media_type == "image/webp":
+        return len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP"
+    return any(head.startswith(sig) for sig in _IMAGE_MAGIC.get(media_type, ()))
+
+
+@dataclass(frozen=True)
+class ImageRead:
+    """A successful image read: the bytes to send, their media type, and the
+    resolved path for the caller to record in the read ledger. Recording is
+    deliberately NOT done here — the tool layer's vision gate may still
+    downgrade this read to a text notice, and a downgraded read (like the
+    over-cap one) must not satisfy the read-before-edit guard."""
+
+    data: bytes
+    media_type: str
+    resolved: Path
+
+
+def _read_image(p: Path, path: str, media_type: str) -> "str | ImageRead":
+    """An ``ImageRead`` for a model-visible image, or a text notice when the
+    file exceeds the size cap."""
+    size = p.stat().st_size
+    if size > _MAX_IMAGE_BYTES:
+        cap_mb = _MAX_IMAGE_BYTES // (1024 * 1024)
+        return (
+            f"{path}: image is {size / (1024 * 1024):.1f} MB — over the "
+            f"{cap_mb} MB limit for model-visible images."
+        )
+    return ImageRead(data=p.read_bytes(), media_type=media_type, resolved=p)
+
+
 def _looks_binary(p: Path) -> bool:
     """True if ``p``'s first chunk contains a NUL byte — the same binary sniff
     grep uses (``_read_text_for_grep``). read_file decodes with errors="replace",
@@ -207,7 +268,7 @@ def read_file(
     limit: int | None = None,
     extra_read_roots: tuple[Path, ...] = (),
     ledger: ReadLedger | None = None,
-) -> str:
+) -> "str | ImageRead":
     """Read a text file relative to the workspace root, returning numbered lines.
 
     ``offset`` is the 1-based line to start at; ``limit`` caps how many lines are
@@ -217,6 +278,11 @@ def read_file(
     has emitted ``_MAX_READ_CHARS`` worth of text. When the returned window isn't
     the whole file (or a line was clipped), a ``[…]`` footer says so, so the
     reader knows to page on with ``offset``/``limit``.
+
+    An image file (png/jpg/webp/gif — by extension AND header magic) under the
+    5 MB cap returns an ``ImageRead`` instead of text; the tool layer wraps it
+    as model-visible image content and records the read ledger once its vision
+    gate lets the image through.
 
     A binary file (detected by a NUL byte in its first chunk, like grep) is not
     decoded — it returns a short "binary file" notice instead of mojibake.
@@ -231,6 +297,15 @@ def read_file(
     p = _safe_read(root, path, extra_read_roots)
     if not p.is_file():
         raise ModelRetry(f"not a file: {path}")
+    # An image is returned as raw bytes for the tool layer to wrap as
+    # model-visible content (spec 2026-07-23-read-images-design). Checked
+    # before the binary sniff: a valid image is binary, but not "cannot
+    # display". offset/limit don't apply to images. A file whose header
+    # doesn't match its extension's magic is NOT an image — it falls through
+    # to the normal path, so a text file named diagram.png reads as text.
+    media_type = media_type_for_path(p)
+    if media_type is not None and _sniffs_as_image(p, media_type):
+        return _read_image(p, path, media_type)
     if _looks_binary(p):
         return f"{path}: binary file, cannot display."
     # Mark the file seen for the read-before-edit guard. Fingerprinted now,

@@ -8,6 +8,20 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+- Image reads hardened (follow-ups to the `read_file` image support below):
+  files are now recognized by header magic, not extension alone — a text file
+  named `diagram.png` reads as text and a corrupt/0-byte image gets a notice
+  instead of failing the whole turn on a provider 400; a vision-gate-blocked
+  read no longer counts as "file observed" for the read-before-edit guard;
+  and sub-agent transcript sidecars externalize image bytes to the image
+  cache instead of re-serializing inline base64 before every model request.
+- `read_file` now returns image files (png/jpg/webp/gif, up to 5 MB) as
+  model-visible images on vision-capable models — screenshots and diagrams can
+  be inspected directly, including by sub-agents (gated per spawn's own model).
+  Catalog-gated: a model the catalog marks text-only gets a text notice
+  instead; unknown capability sends the image optimistically. Image tool
+  results are cached content-addressed on disk (not inlined into session
+  files) and masked like any other stale observation.
 - New `zen` provider: OpenCode Zen (opencode's model gateway) via its
   OpenAI-compatible endpoint — `MARIM_PROVIDER=zen` + `OPENCODE_API_KEY`,
   default model `mimo-v2.5-free` (free tier). Catalog, settings card, and
