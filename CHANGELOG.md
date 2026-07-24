@@ -29,6 +29,10 @@ pre-1.0, minor versions may contain breaking changes.
 - `HarnessBuilder.with_capability(...)`: attach pydantic-ai
   `AbstractCapability` instances (e.g. Pydantic AI Harness modules) to the
   embedded agent, after marim's built-in capabilities.
+- `marim_harness.capabilities.Advisor` — marim's advisor exported as a
+  standard pydantic-ai capability, attachable to any pydantic-ai agent (or
+  via `HarnessBuilder.with_capability`). Marim's own advisor now shares the
+  same consult core, so the two cannot drift.
 
 ## [0.1.0.post1] - 2026-07-23
 

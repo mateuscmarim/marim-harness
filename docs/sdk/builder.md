@@ -85,7 +85,9 @@ Details per method:
   built-in capabilities; repeatable, order preserved. Tools a capability
   ships ride pydantic-ai's plain tool path — *not* marim's approval gating
   or `CommandPolicy` — so prefer marim's own groups where they overlap. See
-  [Embedding](../embedding.md#with_capabilitycapability).
+  [Embedding](../embedding.md#with_capabilitycapability). marim's own
+  exported capabilities (like `Advisor`) are listed in
+  [Exported capabilities](capabilities.md).
 - **`with_tool(fn, requires_approval=False)`** — registers a custom tool on
   the exact same path as the built-ins. See [Custom tools](custom-tools.md).
 - **`with_instructions(extra=None, replace=None)`** — `replace` swaps the
