@@ -1,6 +1,9 @@
+from pathlib import Path
+
 from marim_harness.interfaces.tui.widgets.tool_summary import (
     ToolSummary,
     _clip_middle,
+    _raw_target,
     humanize_tool,
     summarize,
 )
@@ -214,3 +217,37 @@ def test_forget_global_scope_badge():
     assert s.label == "Forget"
     assert s.target == "my-fact"
     assert s.badges == ("global",)
+
+
+def test_raw_target_strips_workspace_root_for_file_tools():
+    root = Path("/home/user/project")
+    path = str(root / "src" / "app.py")
+    assert _raw_target("read_file", {"path": path}, workspace_root=root) == "src/app.py"
+    assert _raw_target("write_file", {"path": path}, workspace_root=root) == "src/app.py"
+    assert _raw_target("edit_file", {"path": path}, workspace_root=root) == "src/app.py"
+    assert _raw_target("tree", {"path": path}, workspace_root=root) == "src/app.py"
+
+
+def test_raw_target_leaves_paths_outside_workspace_absolute():
+    root = Path("/home/user/project")
+    outside = "/etc/hosts"
+    assert _raw_target("read_file", {"path": outside}, workspace_root=root) == outside
+
+
+def test_raw_target_without_workspace_root_stays_absolute():
+    path = "/home/user/project/src/app.py"
+    assert _raw_target("read_file", {"path": path}) == path
+
+
+def test_raw_target_only_strips_file_path_tools():
+    # bash/grep/web_search/fetch_url targets are never workspace-relative paths,
+    # so they must pass through untouched even when a workspace_root is given.
+    root = Path("/home/user/project")
+    cmd = f"cat {root / 'src' / 'app.py'}"
+    assert _raw_target("bash", {"command": cmd}, workspace_root=root) == cmd
+
+
+def test_summarize_read_file_shows_workspace_relative_path():
+    root = Path("/home/user/project")
+    s = summarize("read_file", {"path": str(root / "src" / "app.py")}, workspace_root=root)
+    assert s.target == "src/app.py"

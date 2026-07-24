@@ -10,9 +10,22 @@ grep). Unknown tools fall back to a title-cased name + their first meaningful ar
 so nothing ever degrades to raw ``key=value`` repr."""
 
 from dataclasses import dataclass
+from pathlib import Path
 
 # Default cap for the main tool-row target; the sub-agent card passes a tighter cap.
 _PREVIEW_CAP = 100
+
+# File-path tools whose target is stripped to a workspace-relative path for display
+# (the wire format / args stay absolute — this is display-only).
+_WORKSPACE_PATH_TOOLS = ("read_file", "write_file", "edit_file", "tree")
+
+
+def _strip_workspace(path: str, root: Path) -> str:
+    """Show workspace-relative path when the path is inside the workspace."""
+    try:
+        return str(Path(path).relative_to(root))
+    except ValueError:
+        return path
 
 # Friendly verbs; unknown tools title-case their raw name (spawn_agent → "Spawn Agent").
 _TOOL_LABELS = {
@@ -100,7 +113,14 @@ def _bash_description(args: dict) -> str:
     return d.strip() if isinstance(d, str) else ""
 
 
-def _raw_target(tool_name: str, args: dict) -> str:
+def _raw_target(tool_name: str, args: dict, *, workspace_root: Path | None = None) -> str:
+    target = _raw_target_value(tool_name, args)
+    if workspace_root is not None and target and tool_name in _WORKSPACE_PATH_TOOLS:
+        target = _strip_workspace(target, workspace_root)
+    return target
+
+
+def _raw_target_value(tool_name: str, args: dict) -> str:
     if tool_name == "update_tasks":
         return _task_digest(args.get("todos"))
     if tool_name == "bash":
@@ -171,8 +191,10 @@ def _badges(tool_name: str, args: dict) -> tuple[str, ...]:
     return tuple(out)
 
 
-def summarize(tool_name: str, args: dict, *, cap: int = _PREVIEW_CAP) -> ToolSummary:
-    raw = _raw_target(tool_name, args)
+def summarize(
+    tool_name: str, args: dict, *, cap: int = _PREVIEW_CAP, workspace_root: Path | None = None
+) -> ToolSummary:
+    raw = _raw_target(tool_name, args, workspace_root=workspace_root)
     # A bash *command*'s tail is informative (``… | tail -1``) → middle-clip. A
     # bash *description* is prose → head-clip (like every other target). Pick by
     # which one _raw_target actually surfaced.

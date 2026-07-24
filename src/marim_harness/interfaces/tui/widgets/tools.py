@@ -150,7 +150,7 @@ class ToolCallWidget(Collapsible):
         if self.tool_name == "ask_user":
             return self._ask_user_summary()
         glyph, gstyle = self._glyph()
-        s = summarize(self.tool_name, self.args)
+        s = summarize(self.tool_name, self.args, workspace_root=self._workspace_root)
         target = s.target
         # edit_file appends a +N -M line stat to its path (the diff is the body).
         if self.tool_name == "edit_file":
