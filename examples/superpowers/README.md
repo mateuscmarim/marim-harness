@@ -34,7 +34,7 @@ exit-0 stdout verbatim — no JSON envelope). The original CC hooks are not wire
 
 ## Provenance & updating
 
-Vendored from obra/superpowers **v6.1.1**. The skills carry no marim edits, so an
+Vendored from obra/superpowers **v6.2.0**. The skills carry no marim edits, so an
 update is mechanical — replace `skills/` and `LICENSE` from a newer upstream tree
 and bump the manifest version, keeping the marim hook and manifest. The
 [`update-from-upstream.sh`](./update-from-upstream.sh) script does exactly that:

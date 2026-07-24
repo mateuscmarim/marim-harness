@@ -1,7 +1,7 @@
 {
   "name": "superpowers",
   "description": "Core skills library (TDD, debugging, brainstorming, collaboration patterns). marim adaptation of obra/superpowers: its skills plus a marim-native SessionStart hook injecting the using-superpowers skill. The original Claude Code hooks are excluded.",
-  "version": "6.1.1",
+  "version": "6.2.0",
   "author": {
     "name": "Jesse Vincent",
     "email": "jesse@fsck.com"
