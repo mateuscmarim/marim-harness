@@ -696,5 +696,21 @@ def test_render_transcript_image_tool_return_is_placeholder():
         ToolReturnPart(tool_name="read_file", content=img, tool_call_id="t1"),
     ])]
     out = render_transcript(history)
-    assert "[image image/png]" in out
+    # Unified with the shared binary-safe placeholder format (media type + KB),
+    # the same one hooks/dispatch.py and stream_events.py now render.
+    assert "[image image/png, 1 KB]" in out
+    assert "PNGbytes" not in out
+
+
+def test_render_transcript_list_content_with_binary_is_placeholder():
+    # A list-content tool return (e.g. an MCP tool returning mixed text + image
+    # blocks) must not fall through to _clip(str(list)), which would dump the
+    # BinaryContent's repr (raw bytes) into the advisor-facing transcript.
+    img = BinaryContent(data=b"\x89PNGbytes", media_type="image/png")
+    history = [ModelRequest(parts=[
+        ToolReturnPart(tool_name="mcp_tool", content=["caption", img], tool_call_id="t2"),
+    ])]
+    out = render_transcript(history)
+    assert "[image image/png, 1 KB]" in out
+    assert "caption" in out
     assert "PNGbytes" not in out

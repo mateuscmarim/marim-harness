@@ -11,7 +11,6 @@ from dataclasses import dataclass, field
 from typing import cast
 
 from pydantic_ai.messages import (
-    BinaryContent,
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     PartDeltaEvent,
@@ -24,6 +23,7 @@ from pydantic_ai.messages import (
 from textual.containers import VerticalScroll
 from textual.widget import Widget
 
+from ...binary_safe import render_binary_safe
 from ...usage import resolve_cost
 from .subagents import SubAgentDetailHost, SubAgentPane, SubAgentWidget
 from .widgets import (
@@ -78,15 +78,13 @@ def status_from_part(part) -> str:
 
 
 def tool_result_text(content: object) -> str:
-    """Display text for a tool-return content value. A binary (image) return
-    renders as a compact placeholder — str(BinaryContent) would dump the raw
-    bytes repr into the transcript."""
-    if isinstance(content, BinaryContent):
-        kb = max(1, len(content.data) // 1024)
-        return f"[image {content.media_type}, {kb} KB]"
-    if isinstance(content, (list, tuple)):
-        return " ".join(tool_result_text(item) for item in content)
-    return str(content)
+    """Display text for a tool-return content value. Delegates to the shared
+    binary-safe renderer (``binary_safe.render_binary_safe``) so a binary (image)
+    return renders as the same compact placeholder here as it does in hook
+    payloads, the JSON event stream, and the advisor transcript — one source of
+    truth for the format, kept under this name since other code/tests reference
+    it."""
+    return render_binary_safe(content)
 
 
 # Prefixes of the strings a failed foreground spawn *returns* (it contains its

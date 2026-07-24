@@ -30,6 +30,8 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
+from .binary_safe import has_binary_content, render_binary_safe
+
 logger = logging.getLogger(__name__)
 
 _CHARS_PER_TOKEN = 4
@@ -529,10 +531,15 @@ def _clip(value, limit: int) -> str:
 
 
 def _render_tool_return(part: ToolReturnPart, max_part_chars: int) -> str:
-    """Render a ToolReturnPart as a transcript line, with BinaryContent as a placeholder."""
+    """Render a ToolReturnPart as a transcript line, with BinaryContent — scalar OR
+    inside a list (an MCP tool can return mixed text/image content blocks) —
+    rendered as the shared binary-safe placeholder. The advisor sees this
+    transcript over the wire, so a raw BinaryContent repr (its base64 body) must
+    never reach it; only the non-binary path clips through the normal ``_clip``
+    text budget."""
     content: object = part.content
-    if isinstance(content, BinaryContent):
-        content = f"[image {content.media_type}]"
+    if has_binary_content(content):
+        return f"Tool {part.tool_name} returned: {render_binary_safe(content)}"
     return f"Tool {part.tool_name} returned: {_clip(content, max_part_chars)}"
 
 

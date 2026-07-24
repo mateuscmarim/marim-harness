@@ -509,6 +509,37 @@ async def test_tool_success_fires_post_tool_use_not_failure(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_post_tool_use_binary_content_uses_placeholder_not_bytes(tmp_path):
+    """A read_file image return is a ToolReturnPart whose content is a
+    BinaryContent. The PostToolUse payload written to a hook script's stdin must
+    carry the compact placeholder, never str(BinaryContent) — which would dump
+    the full base64 body (up to ~20MB) onto every hook's stdin."""
+    from pydantic_ai.messages import BinaryContent
+
+    out = tmp_path / "hits.jsonl"
+    cmd = _capture_script(tmp_path, "img.sh", out)
+    deps = Deps(
+        workspace=WorkspaceConfig(root=tmp_path, mode=Mode.auto),
+        hooks=HookRunner(
+            {hook_events.POST_TOOL_USE: [{"hooks": [{"type": "command", "command": cmd}]}]}
+        ),
+    )
+    harness = _make_harness(_edit_then_done_model(), deps)
+    await harness.session_start("startup")
+    img = BinaryContent(data=b"\x89PNG" + b"p" * 5000, media_type="image/png")
+    ev = FunctionToolResultEvent(
+        part=ToolReturnPart(tool_name="read_file", content=img, tool_call_id="tc3")
+    )
+    await harness.hooks.tool_event(ev, {"tc3": {"path": "shot.png"}})
+    hits = _read_hits(out)
+    assert len(hits) == 1
+    response = hits[0]["tool_response"]
+    assert response == "[image image/png, 4 KB]"
+    assert "PNG" not in response
+    assert "p" * 100 not in response  # the raw byte payload never leaks in
+
+
+@pytest.mark.anyio
 async def test_task_completed_dispatch_payload(tmp_path):
     out = tmp_path / "hits.jsonl"
     cmd = _capture_script(tmp_path, "tc.sh", out)
