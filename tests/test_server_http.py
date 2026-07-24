@@ -638,3 +638,12 @@ def test_jobs_requires_auth_and_valid_session(client):
                            headers=AUTH).status_code == 404
     assert test_client.get(f"/v1/workspaces/{ws_id}/sessions/nope/jobs",
                            headers=AUTH).status_code == 404
+
+
+def test_job_detail_404_for_unknown_id(client):
+    test_client, tmp_path = client
+    ws_id, sid, _ = _setup_workspace_and_session(test_client, tmp_path)
+    # No live host on an idle session -> unknown job.
+    resp = test_client.get(f"/v1/workspaces/{ws_id}/sessions/{sid}/jobs/job-99", headers=AUTH)
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "job_not_found"

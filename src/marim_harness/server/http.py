@@ -389,6 +389,35 @@ async def list_jobs(request: Request) -> Response:
     return JSONResponse({"jobs": dtos})
 
 
+async def get_job(request: Request) -> Response:
+    denied = _unauthorized(request)
+    if denied:
+        return denied
+    record = _workspace(request)
+    if record is None:
+        return _error(404, "not_found", "unknown workspace")
+    session_id = request.path_params["sid"]
+    if not _session_exists(record, session_id):
+        return _error(404, "not_found", "unknown session")
+    job_id = request.path_params["job_id"]
+    host = _supervisor(request).peek(record.id, session_id)
+    if host is None:
+        return _error(404, "job_not_found", "unknown job")
+    registry = host.harness.deps.jobs
+    job = registry.get(job_id)
+    if job is not None:
+        result = registry.output(job_id)
+    else:
+        job = next((j for j in registry.history if j.id == job_id), None)
+        if job is None:
+            return _error(404, "job_not_found", "unknown job")
+        result = job.result or ""
+    meta = None
+    if job.kind == "agent" and job.stream_id:
+        meta = _spawn_meta_reader(record, session_id)(job.stream_id)
+    return JSONResponse(jobs_view.detail_dto(job, result, meta))
+
+
 async def list_asks(request: Request) -> Response:
     denied = _unauthorized(request)
     if denied:
@@ -561,6 +590,7 @@ def create_app(
         Route(f"{base}/asks", list_asks, methods=["GET"]),
         Route(f"{base}/asks/{{aid}}", answer_ask, methods=["POST"]),
         Route(f"{base}/jobs", list_jobs, methods=["GET"]),
+        Route(f"{base}/jobs/{{job_id}}", get_job, methods=["GET"]),
         WebSocketRoute(f"{base}/ws", session_ws),
         Route(f"{base}/history", get_history, methods=["GET"]),
         Route(f"{base}/images/{{sha}}", get_session_image, methods=["GET"]),
