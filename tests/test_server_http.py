@@ -29,6 +29,7 @@ than importing them from tests/conftest.py — bare `from conftest import ...`
 does not resolve in this repo (tests/__init__.py makes the project root, not
 tests/, the sys.path entry; verified with ModuleNotFoundError)."""
 
+import asyncio
 import json as _json
 import threading
 import time
@@ -138,6 +139,51 @@ def client(tmp_path, monkeypatch):
     port = server.servers[0].sockets[0].getsockname()[1]
     with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=30.0) as test_client:
         yield test_client, tmp_path
+    server.should_exit = True
+    thread.join(timeout=10.0)
+
+
+@pytest.fixture()
+def client_with_supervisor(tmp_path, monkeypatch):
+    """Sibling of ``client`` that ALSO yields the live ``SessionSupervisor``
+    and the background event loop the uvicorn thread runs on.
+
+    A new fixture rather than extending ``client``'s yield tuple: ``client``
+    is consumed by every other test in this file via ``test_client, tmp_path
+    = client`` unpacking, so widening its tuple would ripple through every
+    caller. This duplicates the small amount of server-bootstrap plumbing
+    instead, keeping those tests untouched.
+
+    The loop matters because ``JobRegistry.register``/``wait`` are only safe
+    to call while *that* event loop is current (``register`` schedules the
+    coroutine via ``asyncio.ensure_future``, which binds to whatever loop is
+    running); tests that want to seed jobs directly on a live host's registry
+    must marshal onto it with ``asyncio.run_coroutine_threadsafe``."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
+    loop_holder: dict[str, asyncio.AbstractEventLoop] = {}
+
+    async def factory(workspace: Path, session_id: str, mode):
+        from marim_harness.session import SessionManager
+
+        loop_holder["loop"] = asyncio.get_running_loop()
+        manager = SessionManager(workspace)
+        store = manager.store(session_id)
+        deps = _make_deps(workspace, mode=mode or Mode.ask)
+        return _make_harness(_edit_model(), deps, store=store, manager=manager)
+
+    registry = WorkspaceRegistry(tmp_path / "state" / "workspaces.json", tmp_path / "managed")
+    supervisor = SessionSupervisor(factory, idle_ttl=3600.0)
+    app = create_app(registry=registry, supervisor=supervisor, token=TOKEN)
+
+    config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    while not server.started:
+        time.sleep(0.01)
+    port = server.servers[0].sockets[0].getsockname()[1]
+    with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=30.0) as test_client:
+        yield test_client, tmp_path, supervisor, loop_holder
     server.should_exit = True
     thread.join(timeout=10.0)
 
@@ -647,3 +693,130 @@ def test_job_detail_404_for_unknown_id(client):
     resp = test_client.get(f"/v1/workspaces/{ws_id}/sessions/{sid}/jobs/job-99", headers=AUTH)
     assert resp.status_code == 404
     assert resp.json()["error"]["code"] == "job_not_found"
+
+
+async def _register_and_settle_two_jobs(registry):
+    """Register one bash job and one agent job directly on a live host's
+    ``JobRegistry`` and block until both are settled. Must run ON the
+    registry's own event loop (see ``client_with_supervisor``) because
+    ``register()`` schedules its coroutine via ``asyncio.ensure_future``,
+    which binds to whichever loop is current when it's called.
+
+    The ``asyncio.sleep`` between the two registrations guarantees the agent
+    job's ``finished_at`` sorts strictly after the bash job's, so the list
+    endpoint's settled-by-finished_at-desc ordering is deterministic rather
+    than a same-microsecond coin flip."""
+
+    async def _const(value: str) -> str:
+        return value
+
+    bash_id = registry.register(
+        "bash", "run the test suite",
+        _const("full bash output line one\nfull bash output line two\n"),
+        prompt="echo hi",
+    )
+    await registry.wait(bash_id)
+    await asyncio.sleep(0.01)
+    agent_id = registry.register(
+        "agent", "explore: investigate the widget",
+        _const("the agent's full synthesized result"),
+        stream_id="tc-1", prompt="do the thing",
+    )
+    await registry.wait(agent_id)
+    return bash_id, agent_id
+
+
+def test_jobs_list_and_detail_for_live_bash_and_agent_jobs(client_with_supervisor):
+    """Consolidated live-host coverage for BOTH job routes and BOTH job kinds:
+    a real host (mounted by driving a turn to a parked approval, answering
+    it, and polling back to idle) with a settled bash job and a settled agent
+    job registered directly on its JobRegistry.
+
+    Asserts: the list route returns both jobs, settled-desc ordered, with the
+    agent row carrying real usage/tool_count/duration_secs read off a v2
+    transcript sidecar and the bash row leaving those null; the detail route
+    returns the exact prompt and the exact, full result for each job kind —
+    the assertion that guards jobs_view.detail_dto's positional-arg assembly
+    (job, result, meta), which a keyword-arg-only unit test can't catch."""
+    test_client, tmp_path, supervisor, loop_holder = client_with_supervisor
+    ws_id, sid, project = _setup_workspace_and_session(test_client, tmp_path)
+    base = f"/v1/workspaces/{ws_id}/sessions/{sid}"
+
+    # Drive one real turn so a host mounts, then let it settle back to idle —
+    # `peek` only returns non-None with a live host, and idle_ttl (3600s) is
+    # large enough that it stays mounted for the rest of this test.
+    test_client.post(f"{base}/messages", headers=AUTH, json={"prompt": "edit it"})
+    state = _poll(test_client, base, lambda s: s["status"] == "waiting_ask")
+    [ask] = state["pending_asks"]
+    test_client.post(f"{base}/asks/{ask['id']}", headers=AUTH, json={"approve": True})
+    _poll(test_client, base, lambda s: s["status"] == "idle")
+
+    host = supervisor.peek(ws_id, sid)
+    assert host is not None, "expected a live host after a turn settled back to idle"
+    registry = host.harness.deps.jobs
+
+    loop = loop_holder["loop"]
+    bash_id, agent_id = asyncio.run_coroutine_threadsafe(
+        _register_and_settle_two_jobs(registry), loop
+    ).result(timeout=5.0)
+
+    # Write a real v2 transcript sidecar for the agent job's stream_id so
+    # job_to_dto's meta enrichment reads real usage/tool_count/duration off
+    # disk, exactly as a completed sub-agent spawn would leave behind.
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    from marim_harness.session import SessionManager, TranscriptStore
+
+    store = SessionManager(project).store(sid)
+    transcripts = TranscriptStore(store.path, store.session_id)
+    transcripts.write(
+        "tc-1", [ModelRequest(parts=[UserPromptPart(content="investigate the widget")])],
+        cap=2000,
+        meta={"usage": {"input": 111, "output": 222}, "tool_count": 4, "duration": 7.5,
+              "type": "explore", "task": "investigate the widget", "status": "done"},
+    )
+
+    # --- GET .../jobs (list): both jobs, settled-desc ordered, meta only on
+    # the agent row. ---
+    listed = test_client.get(f"{base}/jobs", headers=AUTH)
+    assert listed.status_code == 200
+    rows = listed.json()["jobs"]
+    ids = [r["id"] for r in rows]
+    assert set(ids) == {bash_id, agent_id}
+    # Both settled -> sorted by finished_at descending; the agent job settled
+    # strictly later (see the sleep in the register helper), so it sorts first.
+    assert ids == [agent_id, bash_id]
+
+    by_id = {r["id"]: r for r in rows}
+    agent_row = by_id[agent_id]
+    assert agent_row["kind"] == "agent"
+    assert agent_row["usage"] == {"input": 111, "output": 222}
+    assert agent_row["tool_count"] == 4
+    assert agent_row["duration_secs"] == 7.5
+
+    bash_row = by_id[bash_id]
+    assert bash_row["kind"] == "bash"
+    assert bash_row["usage"] is None
+    assert bash_row["tool_count"] is None
+    assert bash_row["duration_secs"] is None
+
+    # --- GET .../jobs/{job_id} (detail): exact prompt + exact full result,
+    # for EACH kind. This guards detail_dto(job, result, meta) positional
+    # assembly in http.py. ---
+    bash_detail = test_client.get(f"{base}/jobs/{bash_id}", headers=AUTH)
+    assert bash_detail.status_code == 200
+    bash_body = bash_detail.json()
+    assert bash_body["prompt"] == "echo hi"
+    assert bash_body["result"] == "full bash output line one\nfull bash output line two\n"
+    assert bash_body["kind"] == "bash"
+    assert bash_body["usage"] is None
+
+    agent_detail = test_client.get(f"{base}/jobs/{agent_id}", headers=AUTH)
+    assert agent_detail.status_code == 200
+    agent_body = agent_detail.json()
+    assert agent_body["prompt"] == "do the thing"
+    assert agent_body["result"] == "the agent's full synthesized result"
+    assert agent_body["kind"] == "agent"
+    assert agent_body["usage"] == {"input": 111, "output": 222}
+    assert agent_body["tool_count"] == 4
+    assert agent_body["duration_secs"] == 7.5
