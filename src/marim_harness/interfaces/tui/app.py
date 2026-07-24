@@ -13,6 +13,7 @@ from textual.widgets import Footer, Header, Static
 from ...jobs import JobRegistry
 from ...runtime.errors import format_provider_error
 from ...runtime.harness import Harness
+from ...runtime.wake import WakeController
 from ...usage import resolve_cost
 from ..history import PromptHistory
 from ..prefs import load_theme, save_theme
@@ -41,7 +42,6 @@ from .stream_render import StreamRenderer
 from .subagents import SubAgentsScreen, SubAgentsView
 from .themes import MARIM_THEMES
 from .thinking_picker import ThinkingPickerModal
-from .wake import WakeController
 from .widgets import (
     AssistantMessage,
     CommandAutocomplete,

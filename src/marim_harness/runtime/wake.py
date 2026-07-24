@@ -1,4 +1,5 @@
-"""Autonomous wake-on-completion policy for the interactive TUI.
+"""Autonomous wake-on-completion policy, shared by the interactive TUI and the
+serve-mode SessionHost.
 
 When a background job finishes while the turn worker is idle, the TUI fires one
 digest-only turn so the agent reacts without waiting for the user. This object

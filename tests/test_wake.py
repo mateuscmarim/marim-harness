@@ -1,6 +1,6 @@
 """Unit tests for the TUI autonomous-wake policy. Pure — no App, no Textual."""
 
-from marim_harness.interfaces.tui.wake import WakeController
+from marim_harness.runtime.wake import WakeController
 
 _READY = dict(enabled=True, turn_busy=False, has_finished_pending=True, all_jobs_settled=True)
 
