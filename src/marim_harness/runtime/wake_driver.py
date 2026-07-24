@@ -62,3 +62,10 @@ class WakeDriver:
     def note_user_turn(self) -> None:
         """Reset the depth chain — call when a user-initiated turn is submitted."""
         self._controller.reset()
+
+    @property
+    def controller(self) -> WakeController:
+        """Read-only access to the wrapped policy (depth counter and cap) for
+        introspection and tests. The driver's effect surface stays maybe_wake /
+        note_user_turn; this only exposes the already-tested policy for reads."""
+        return self._controller

@@ -14,6 +14,7 @@ from ...jobs import JobRegistry
 from ...runtime.errors import format_provider_error
 from ...runtime.harness import Harness
 from ...runtime.wake import WakeController
+from ...runtime.wake_driver import WakeDriver
 from ...usage import resolve_cost
 from ..history import PromptHistory
 from ..prefs import load_theme, save_theme
@@ -173,7 +174,14 @@ class HarnessApp(App):
         self.autonomous_wake = harness.autonomous_wake
         # Bounds the wake→spawn→wake chain and owns the should-wake decision; the
         # App keeps the public autonomous_wake toggle and the wake's side effects.
-        self._wake = WakeController(harness.wake_depth_cap)
+        self._wake = WakeDriver(
+            WakeController(harness.wake_depth_cap),
+            is_enabled=lambda: self.autonomous_wake,
+            turn_busy=lambda: self.turn_busy,
+            has_finished_pending=self.jobs.has_finished_pending,
+            all_jobs_settled=lambda: not self.jobs.any_running(),
+            enqueue_digest_turn=self._mount_wake_turn,
+        )
         # Dedup tracker: pings each finished job exactly once, independent of
         # the autonomous-wake path.
         self._job_notifier = FinishedJobNotifier()
@@ -420,24 +428,17 @@ class HarnessApp(App):
             )
 
     def _maybe_wake(self) -> None:
-        """Fire one digest-only autonomous turn iff a background job has finished
-        and nothing is blocking. Guards (all must hold): wake enabled, the turn
-        worker is idle, the depth cap is not yet reached, and there is a pending
-        finished-job digest. The digest itself is consumed later inside the turn
-        by ``_assemble_prompt('')`` -> ``take_finished_digest()`` — this predicate
-        only peeks, so a queued digest survives until a turn actually runs."""
+        """Fire one digest-only autonomous turn iff a background job finished and
+        nothing is blocking. The decision + depth bookkeeping live in the shared
+        WakeDriver; this method only supplies the is-running mount guard."""
         if not self.is_running:
             return  # firing during teardown would race the unmount
-        if not self._wake.should_wake(
-            enabled=self.autonomous_wake,
-            turn_busy=self.turn_busy,
-            has_finished_pending=self.jobs.has_finished_pending(),
-            all_jobs_settled=not self.jobs.any_running(),
-        ):
-            return
-        self._wake.record_auto_turn()
-        # Mounted synchronously (we may be in a sync on_change callback), mirroring
-        # _on_compact / _on_rename.
+        self._wake.maybe_wake()
+
+    def _mount_wake_turn(self) -> None:
+        """The wake effect the driver invokes: post the resume notice and spawn the
+        digest-only turn worker. Mounted synchronously (we may be in a sync
+        on_change callback), mirroring _on_compact / _on_rename."""
         self._append_log(NoticeMessage("⏰ Resumed — background job(s) finished"))
         self._turn_worker = self.run_worker(self._run_turn(""), exclusive=True)
 
@@ -522,7 +523,7 @@ class HarnessApp(App):
         error there is no worker, so the latch must drop or the UI wedges."""
         self._turn_starting = True
         try:
-            self._wake.reset()
+            self._wake.note_user_turn()
             log = self.query_one("#log", VerticalScroll)
             await log.mount(UserMessage(text))
             self.stream.current_assistant = None

@@ -3203,7 +3203,7 @@ async def test_wake_fires_autonomous_turn_when_job_finishes_idle(tmp_path: Path)
         await app.harness.deps.jobs.wait(job_id)  # completion fires on_change
         await pilot.pause()
         assert len(started) == 1  # one autonomous turn started
-        assert app._wake.depth == 1
+        assert app._wake.controller.depth == 1
         assert any("Resumed" in str(n.render()) for n in app.query(NoticeMessage))
 
 
@@ -3231,8 +3231,8 @@ async def test_wake_stops_at_depth_cap(tmp_path: Path):
     app.run_worker = lambda c, *a, **k: (started.append(c), c.close())  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
-        for _ in range(app._wake.depth_cap):  # drive the chain up to the cap
-            app._wake.record_auto_turn()
+        for _ in range(app._wake.controller.depth_cap):  # drive the chain up to the cap
+            app._wake.controller.record_auto_turn()
         job_id = app.harness.deps.jobs.register("agent", "explore: x", _done("R"))
         await app.harness.deps.jobs.wait(job_id)
         await pilot.pause()
@@ -3262,10 +3262,10 @@ async def test_user_turn_resets_auto_depth(tmp_path: Path):
     app.run_worker = lambda c, *a, **k: (c.close() if hasattr(c, "close") else None)  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._wake.record_auto_turn()
-        app._wake.record_auto_turn()
+        app._wake.controller.record_auto_turn()
+        app._wake.controller.record_auto_turn()
         await _submit(app, "do something")  # a user-initiated turn
-        assert app._wake.depth == 0
+        assert app._wake.controller.depth == 0
 
 
 @pytest.mark.anyio
