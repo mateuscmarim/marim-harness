@@ -540,6 +540,31 @@ async def test_post_tool_use_binary_content_uses_placeholder_not_bytes(tmp_path)
 
 
 @pytest.mark.anyio
+async def test_post_tool_use_non_binary_list_keeps_str_format(tmp_path):
+    """A list-valued tool return with no binary content (e.g. an MCP tool's text
+    blocks) must keep the historical str(list) payload format — the binary-safe
+    rendering only kicks in when a BinaryContent is actually present."""
+    out = tmp_path / "hits.jsonl"
+    cmd = _capture_script(tmp_path, "lst.sh", out)
+    deps = Deps(
+        workspace=WorkspaceConfig(root=tmp_path, mode=Mode.auto),
+        hooks=HookRunner(
+            {hook_events.POST_TOOL_USE: [{"hooks": [{"type": "command", "command": cmd}]}]}
+        ),
+    )
+    harness = _make_harness(_edit_then_done_model(), deps)
+    await harness.session_start("startup")
+    content = [{"type": "text", "text": "hello"}, {"type": "text", "text": "world"}]
+    ev = FunctionToolResultEvent(
+        part=ToolReturnPart(tool_name="mcp_tool", content=content, tool_call_id="tc4")
+    )
+    await harness.hooks.tool_event(ev, {"tc4": {}})
+    hits = _read_hits(out)
+    assert len(hits) == 1
+    assert hits[0]["tool_response"] == str(content)
+
+
+@pytest.mark.anyio
 async def test_task_completed_dispatch_payload(tmp_path):
     out = tmp_path / "hits.jsonl"
     cmd = _capture_script(tmp_path, "tc.sh", out)
