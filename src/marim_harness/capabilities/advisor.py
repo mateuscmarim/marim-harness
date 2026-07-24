@@ -72,6 +72,21 @@ class Advisor(AbstractCapability[Any]):
         self._uses = 0
         self._resolved: Model | None = None
 
+    async def for_run(self, ctx: RunContext[Any]) -> Advisor:
+        # Fresh instance per run so max_uses is a per-run cap (mirrors
+        # marim's per-turn cap). The resolved model is carried over — it is
+        # stateless — so a string slug is only resolved once per process.
+        fresh = Advisor(
+            self.model,
+            max_uses=self.max_uses,
+            max_tokens=self.max_tokens,
+            id=self.id,
+            description=self.description,
+            defer_loading=self.defer_loading,
+        )
+        fresh._resolved = self._resolved
+        return fresh
+
     def _resolve_model(self) -> Model:
         # Lazy + cached: a string slug is only resolved (and only needs
         # credentials) when the tool is first called, per the design spec.

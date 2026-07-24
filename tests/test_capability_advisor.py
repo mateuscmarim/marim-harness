@@ -67,3 +67,87 @@ async def test_advisor_tool_round_trip_with_usage_trailer():
     assert "Check edge cases first." in ret.content
     assert "[advisor usage:" in ret.content
     assert result.output == "done"
+
+
+def _consult_twice_main():
+    """A main model that calls the advisor tool until it has two returns."""
+
+    def fn(messages, info):
+        returns = [
+            p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)
+        ]
+        if len(returns) < 2:
+            return ModelResponse(parts=[ToolCallPart("advisor", {})])
+        return ModelResponse(parts=[TextPart("done")])
+
+    return FunctionModel(fn)
+
+
+@pytest.mark.anyio
+async def test_max_uses_caps_consultations_within_a_run():
+    calls = {"n": 0}
+
+    def advisor_model(messages, info):
+        calls["n"] += 1
+        return ModelResponse(parts=[TextPart("advice")])
+
+    agent = Agent(
+        _consult_twice_main(),
+        capabilities=[Advisor(model=FunctionModel(advisor_model), max_uses=1)],
+    )
+    result = await agent.run("go")
+    assert calls["n"] == 1  # second consult refused before reaching the model
+    first, second = _advisor_tool_returns(result)
+    assert "advice" in first.content
+    assert "max_uses=1" in second.content
+    assert "Continue without advice" in second.content
+
+
+@pytest.mark.anyio
+async def test_max_uses_resets_on_the_next_run():
+    calls = {"n": 0}
+
+    def advisor_model(messages, info):
+        calls["n"] += 1
+        return ModelResponse(parts=[TextPart("advice")])
+
+    agent = Agent(
+        _consult_once_main(),
+        capabilities=[Advisor(model=FunctionModel(advisor_model), max_uses=1)],
+    )
+    await agent.run("first")
+    await agent.run("second")
+    assert calls["n"] == 2  # for_run gave the second run a fresh counter
+
+
+@pytest.mark.anyio
+async def test_unresolvable_model_returns_text_not_raise():
+    agent = Agent(
+        _consult_once_main(),
+        capabilities=[Advisor(model="not-a-provider:not-a-model")],
+    )
+    result = await agent.run("go")
+    (ret,) = _advisor_tool_returns(result)
+    assert "Advisor unavailable" in ret.content
+    assert result.output == "done"  # the run completed
+
+
+@pytest.mark.anyio
+async def test_defer_loading_hides_the_tool_until_loaded():
+    seen = {}
+
+    def capture(messages, info):
+        seen.setdefault("tools", [t.name for t in info.function_tools])
+        return ModelResponse(parts=[TextPart("ok")])
+
+    agent = Agent(
+        FunctionModel(capture),
+        capabilities=[
+            Advisor(model=_advisor_returns("x"), id="advisor", defer_loading=True)
+        ],
+    )
+    await agent.run("hi")
+    # defer_loading=True makes the tool deferred and adds a load_capability tool
+    assert any("load_capability" in name for name in seen["tools"])
+    # The advisor tool is still available via load_capability when needed
+    assert "advisor" in seen["tools"]
