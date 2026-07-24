@@ -8,6 +8,13 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+- `read_file` now returns image files (png/jpg/webp/gif, up to 5 MB) as
+  model-visible images on vision-capable models — screenshots and diagrams can
+  be inspected directly, including by sub-agents (gated per spawn's own model).
+  Catalog-gated: a model the catalog marks text-only gets a text notice
+  instead; unknown capability sends the image optimistically. Image tool
+  results are cached content-addressed on disk (not inlined into session
+  files) and masked like any other stale observation.
 - New `zen` provider: OpenCode Zen (opencode's model gateway) via its
   OpenAI-compatible endpoint — `MARIM_PROVIDER=zen` + `OPENCODE_API_KEY`,
   default model `mimo-v2.5-free` (free tier). Catalog, settings card, and

@@ -23,6 +23,7 @@ from pydantic_ai.messages import (
 from textual.containers import VerticalScroll
 from textual.widget import Widget
 
+from ...binary_safe import render_binary_safe
 from ...usage import resolve_cost
 from .subagents import SubAgentDetailHost, SubAgentPane, SubAgentWidget
 from .widgets import (
@@ -74,6 +75,16 @@ def status_from_part(part) -> str:
     if getattr(part, "part_kind", None) == "retry-prompt":
         return "failed"
     return "done"
+
+
+def tool_result_text(content: object) -> str:
+    """Display text for a tool-return content value. Delegates to the shared
+    binary-safe renderer (``binary_safe.render_binary_safe``) so a binary (image)
+    return renders as the same compact placeholder here as it does in hook
+    payloads, the JSON event stream, and the advisor transcript — one source of
+    truth for the format, kept under this name since other code/tests reference
+    it."""
+    return render_binary_safe(content)
 
 
 # Prefixes of the strings a failed foreground spawn *returns* (it contains its
@@ -1042,7 +1053,7 @@ class StreamRenderer:
     async def _on_tool_result(self, event: FunctionToolResultEvent, sink: "_StreamSink") -> None:
         widget = self.tool_widgets.get(event.tool_call_id)
         if widget is not None:
-            content = str(getattr(event.part, "content", ""))
+            content = tool_result_text(getattr(event.part, "content", ""))
             if isinstance(widget, SubAgentWidget) and self.note_detached_spawn(
                 content, widget, self.app.harness.deps.jobs
             ):

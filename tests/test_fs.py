@@ -898,3 +898,61 @@ class TestExtraWriteRoots:
             (scratch,),
         )
         assert (scratch / "note.txt").read_text() == "goodbye world"
+
+
+def test_read_file_returns_image_bytes_and_media_type(tmp_path: Path):
+    raw = b"\x89PNG\r\n\x1a\nfakepixels"
+    (tmp_path / "shot.png").write_bytes(raw)
+    out = fs.read_file(tmp_path, "shot.png")
+    assert out == (raw, "image/png")
+
+
+def test_read_file_image_ignores_offset_and_limit(tmp_path: Path):
+    raw = b"\x89PNG\r\n\x1a\nfakepixels"
+    (tmp_path / "shot.png").write_bytes(raw)
+    out = fs.read_file(tmp_path, "shot.png", offset=1, limit=5)
+    assert out == (raw, "image/png")
+
+
+def test_read_file_image_over_cap_returns_notice(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(fs, "_MAX_IMAGE_BYTES", 10)
+    (tmp_path / "big.jpg").write_bytes(b"x" * 11)
+    out = fs.read_file(tmp_path, "big.jpg")
+    assert isinstance(out, str)
+    assert "model-visible images" in out
+
+
+def test_read_file_image_records_read_ledger(tmp_path: Path):
+    class _Ledger:
+        def __init__(self):
+            self.paths = []
+
+        def record(self, p):
+            self.paths.append(p)
+
+    (tmp_path / "shot.png").write_bytes(b"\x89PNGdata")
+    ledger = _Ledger()
+    fs.read_file(tmp_path, "shot.png", ledger=ledger)
+    assert ledger.paths and ledger.paths[0].name == "shot.png"
+
+
+def test_read_file_over_cap_image_not_recorded_in_ledger(tmp_path: Path, monkeypatch):
+    class _Ledger:
+        def __init__(self):
+            self.paths = []
+
+        def record(self, p):
+            self.paths.append(p)
+
+    monkeypatch.setattr(fs, "_MAX_IMAGE_BYTES", 10)
+    (tmp_path / "big.png").write_bytes(b"x" * 11)
+    ledger = _Ledger()
+    fs.read_file(tmp_path, "big.png", ledger=ledger)
+    assert ledger.paths == []
+
+
+def test_read_file_non_image_binary_still_refuses(tmp_path: Path):
+    (tmp_path / "blob.dat").write_bytes(b"\x00\x01\x02")
+    out = fs.read_file(tmp_path, "blob.dat")
+    assert isinstance(out, str)
+    assert "binary file" in out

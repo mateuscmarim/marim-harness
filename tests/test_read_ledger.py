@@ -192,7 +192,7 @@ async def test_provider_edit_requires_prior_read(tmp_path: Path):
     assert "read" in str(exc.value).lower()
 
     # After reading through the same ctx, the edit goes through.
-    fs_tools.read_file(ctx, "m.py")
+    await fs_tools.read_file(ctx, "m.py")
     out = await edit_tools.edit_file(ctx, "m.py", [_edit("x = 1", "y = 2")])
     assert "edited m.py" in out
     assert (tmp_path / "m.py").read_text() == "y = 2\n"

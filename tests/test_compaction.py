@@ -1,5 +1,6 @@
 import pytest
 from pydantic_ai.messages import (
+    BinaryContent,
     ModelRequest,
     ModelResponse,
     TextPart,
@@ -664,3 +665,52 @@ async def test_compact_with_summary_threads_instructions_to_summarizer():
         history, max_tokens=10, summarizer=summarizer, instructions="keep the tests"
     )
     assert received == ["keep the tests"]
+
+
+def test_estimate_tokens_counts_scalar_image_tool_return_flat():
+    img = BinaryContent(data=b"x" * 100_000, media_type="image/png")
+    msg = ModelRequest(parts=[
+        ToolReturnPart(tool_name="read_file", content=img, tool_call_id="t1"),
+    ])
+    tokens = estimate_tokens([msg])
+    assert tokens < 100_000 // 4  # flat image cost, not the bytes-repr length
+    assert tokens >= 1500
+
+
+def test_mask_replaces_image_tool_return_regardless_of_min_chars():
+    img = BinaryContent(data=b"\x89PNG" + b"p" * 10, media_type="image/png")
+    history = [
+        ModelRequest(parts=[
+            ToolReturnPart(tool_name="read_file", content=img, tool_call_id="t1"),
+        ]),
+        ModelRequest(parts=[UserPromptPart(content="next turn")]),
+    ]
+    masked, count = mask_stale_observations(history, keep_recent=0, min_chars=10_000)
+    assert count == 1
+    assert masked[0].parts[0].content == MASKED_OBSERVATION
+
+
+def test_render_transcript_image_tool_return_is_placeholder():
+    img = BinaryContent(data=b"\x89PNGbytes", media_type="image/png")
+    history = [ModelRequest(parts=[
+        ToolReturnPart(tool_name="read_file", content=img, tool_call_id="t1"),
+    ])]
+    out = render_transcript(history)
+    # Unified with the shared binary-safe placeholder format (media type + KB),
+    # the same one hooks/dispatch.py and stream_events.py now render.
+    assert "[image image/png, 1 KB]" in out
+    assert "PNGbytes" not in out
+
+
+def test_render_transcript_list_content_with_binary_is_placeholder():
+    # A list-content tool return (e.g. an MCP tool returning mixed text + image
+    # blocks) must not fall through to _clip(str(list)), which would dump the
+    # BinaryContent's repr (raw bytes) into the advisor-facing transcript.
+    img = BinaryContent(data=b"\x89PNGbytes", media_type="image/png")
+    history = [ModelRequest(parts=[
+        ToolReturnPart(tool_name="mcp_tool", content=["caption", img], tool_call_id="t2"),
+    ])]
+    out = render_transcript(history)
+    assert "[image image/png, 1 KB]" in out
+    assert "caption" in out
+    assert "PNGbytes" not in out

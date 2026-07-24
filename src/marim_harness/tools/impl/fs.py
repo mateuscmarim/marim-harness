@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from pydantic_ai import ModelRetry
 
 from ...atomic_io import atomic_write_text
+from ...images import media_type_for_path
 from ...workspace.fs import ReadLedger, WorkspaceError, resolve_in_workspace
 from .offload import MAX_OUTPUT_CHARS, offload_if_large
 
@@ -187,6 +188,28 @@ def _footer(offset: int, last: int, total: int, windowed: bool, clipped: bool) -
     return f"\n\n[{'; '.join(notes)}]"
 
 
+# Provider image-size ceilings sit around 5 MB (Anthropic's documented limit);
+# larger files come back as a text notice rather than a doomed upload.
+_MAX_IMAGE_BYTES = 5 * 1024 * 1024
+
+
+def _read_image(p: Path, path: str, media_type: str, ledger: "ReadLedger | None"):
+    """Image bytes + media type for a model-visible image read, or a text
+    notice when the file exceeds the size cap. The ledger is recorded only on
+    a successful read — an over-cap notice means the agent has not observed
+    the content, so it must not satisfy the read-before-edit guard."""
+    size = p.stat().st_size
+    if size > _MAX_IMAGE_BYTES:
+        cap_mb = _MAX_IMAGE_BYTES // (1024 * 1024)
+        return (
+            f"{path}: image is {size / (1024 * 1024):.1f} MB — over the "
+            f"{cap_mb} MB limit for model-visible images."
+        )
+    if ledger is not None:
+        ledger.record(p)
+    return p.read_bytes(), media_type
+
+
 def _looks_binary(p: Path) -> bool:
     """True if ``p``'s first chunk contains a NUL byte — the same binary sniff
     grep uses (``_read_text_for_grep``). read_file decodes with errors="replace",
@@ -207,7 +230,7 @@ def read_file(
     limit: int | None = None,
     extra_read_roots: tuple[Path, ...] = (),
     ledger: ReadLedger | None = None,
-) -> str:
+) -> "str | tuple[bytes, str]":
     """Read a text file relative to the workspace root, returning numbered lines.
 
     ``offset`` is the 1-based line to start at; ``limit`` caps how many lines are
@@ -217,6 +240,10 @@ def read_file(
     has emitted ``_MAX_READ_CHARS`` worth of text. When the returned window isn't
     the whole file (or a line was clipped), a ``[…]`` footer says so, so the
     reader knows to page on with ``offset``/``limit``.
+
+    An image file (png/jpg/webp/gif) under the 5 MB cap returns
+    ``(bytes, media_type)`` instead of text; the tool layer wraps it as
+    model-visible image content.
 
     A binary file (detected by a NUL byte in its first chunk, like grep) is not
     decoded — it returns a short "binary file" notice instead of mojibake.
@@ -231,6 +258,13 @@ def read_file(
     p = _safe_read(root, path, extra_read_roots)
     if not p.is_file():
         raise ModelRetry(f"not a file: {path}")
+    # An image is returned as raw bytes for the tool layer to wrap as
+    # model-visible content (spec 2026-07-23-read-images-design). Checked
+    # before the binary sniff: a valid image is binary, but not "cannot
+    # display". offset/limit don't apply to images.
+    media_type = media_type_for_path(p)
+    if media_type is not None:
+        return _read_image(p, path, media_type, ledger)
     if _looks_binary(p):
         return f"{path}: binary file, cannot display."
     # Mark the file seen for the read-before-edit guard. Fingerprinted now,

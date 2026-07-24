@@ -9,7 +9,7 @@ from textual.widgets import Static
 
 from ...compaction import summary_text
 from ...runtime.harness import strip_turn_context
-from .stream_render import status_from_part, subagent_failed
+from .stream_render import status_from_part, subagent_failed, tool_result_text
 from .subagents import SubAgentDetailHost, SubAgentWidget
 from .widgets import (
     AssistantMessage,
@@ -108,7 +108,7 @@ class SessionView:
         """ToolReturnPart arm of ``_replay_parts``."""
         widget = tool_widgets.get(part.tool_call_id)
         if widget is not None:
-            content = str(part.content)
+            content = tool_result_text(part.content)
             if isinstance(widget, SubAgentWidget):
                 from .stream_render import _detached_job_id
 
