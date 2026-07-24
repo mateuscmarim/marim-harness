@@ -7,6 +7,7 @@ import pytest
 from pydantic_ai import ModelRetry
 
 from marim_harness.tools.impl import fs
+from marim_harness.workspace.fs import ReadLedger
 
 
 def test_read_file_adds_line_numbers(tmp_path: Path):
@@ -900,29 +901,41 @@ class TestExtraWriteRoots:
         assert (scratch / "note.txt").read_text() == "goodbye world"
 
 
-def test_read_file_returns_image_bytes_and_media_type(tmp_path: Path):
-    raw = b"\x89PNG\r\n\x1a\nfakepixels"
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+JPEG_MAGIC = b"\xff\xd8\xff"
+
+
+def test_read_file_returns_image_read(tmp_path: Path):
+    raw = PNG_MAGIC + b"fakepixels"
     (tmp_path / "shot.png").write_bytes(raw)
     out = fs.read_file(tmp_path, "shot.png")
-    assert out == (raw, "image/png")
+    assert isinstance(out, fs.ImageRead)
+    assert out.data == raw
+    assert out.media_type == "image/png"
+    assert out.resolved.name == "shot.png"
 
 
 def test_read_file_image_ignores_offset_and_limit(tmp_path: Path):
-    raw = b"\x89PNG\r\n\x1a\nfakepixels"
+    raw = PNG_MAGIC + b"fakepixels"
     (tmp_path / "shot.png").write_bytes(raw)
     out = fs.read_file(tmp_path, "shot.png", offset=1, limit=5)
-    assert out == (raw, "image/png")
+    assert isinstance(out, fs.ImageRead)
+    assert out.data == raw
 
 
 def test_read_file_image_over_cap_returns_notice(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(fs, "_MAX_IMAGE_BYTES", 10)
-    (tmp_path / "big.jpg").write_bytes(b"x" * 11)
+    (tmp_path / "big.jpg").write_bytes(JPEG_MAGIC + b"x" * 20)
     out = fs.read_file(tmp_path, "big.jpg")
     assert isinstance(out, str)
     assert "model-visible images" in out
 
 
-def test_read_file_image_records_read_ledger(tmp_path: Path):
+def test_read_file_image_does_not_record_ledger_in_impl(tmp_path: Path):
+    """Image-read ledger recording is deferred to the tool layer — the vision
+    gate there may still downgrade the read to a notice, and a downgraded read
+    must not satisfy the read-before-edit guard (same rule as over-cap)."""
+
     class _Ledger:
         def __init__(self):
             self.paths = []
@@ -930,24 +943,10 @@ def test_read_file_image_records_read_ledger(tmp_path: Path):
         def record(self, p):
             self.paths.append(p)
 
-    (tmp_path / "shot.png").write_bytes(b"\x89PNGdata")
+    (tmp_path / "shot.png").write_bytes(PNG_MAGIC + b"data")
     ledger = _Ledger()
-    fs.read_file(tmp_path, "shot.png", ledger=ledger)
-    assert ledger.paths and ledger.paths[0].name == "shot.png"
-
-
-def test_read_file_over_cap_image_not_recorded_in_ledger(tmp_path: Path, monkeypatch):
-    class _Ledger:
-        def __init__(self):
-            self.paths = []
-
-        def record(self, p):
-            self.paths.append(p)
-
-    monkeypatch.setattr(fs, "_MAX_IMAGE_BYTES", 10)
-    (tmp_path / "big.png").write_bytes(b"x" * 11)
-    ledger = _Ledger()
-    fs.read_file(tmp_path, "big.png", ledger=ledger)
+    out = fs.read_file(tmp_path, "shot.png", ledger=ledger)
+    assert isinstance(out, fs.ImageRead)
     assert ledger.paths == []
 
 
@@ -956,3 +955,46 @@ def test_read_file_non_image_binary_still_refuses(tmp_path: Path):
     out = fs.read_file(tmp_path, "blob.dat")
     assert isinstance(out, str)
     assert "binary file" in out
+
+
+def test_read_file_text_named_png_reads_as_text(tmp_path: Path):
+    """Extension alone must not make an image: a text file named .png fails
+    the magic sniff and falls through to the normal text path — recorded in
+    the ledger like any text read."""
+    (tmp_path / "diagram.png").write_text("not really an image\n")
+    led = ReadLedger()
+    out = fs.read_file(tmp_path, "diagram.png", ledger=led)
+    assert isinstance(out, str)
+    assert "not really an image" in out
+    assert led.staleness((tmp_path / "diagram.png").resolve()) is None
+
+
+def test_read_file_empty_png_is_not_sent_as_image(tmp_path: Path):
+    (tmp_path / "zero.png").write_bytes(b"")
+    out = fs.read_file(tmp_path, "zero.png")
+    assert not isinstance(out, fs.ImageRead)
+
+
+def test_read_file_corrupt_binary_png_gets_binary_notice(tmp_path: Path):
+    (tmp_path / "junk.png").write_bytes(b"\x00\x01\x02garbage")
+    out = fs.read_file(tmp_path, "junk.png")
+    assert isinstance(out, str)
+    assert "binary file" in out
+
+
+def test_read_file_webp_split_magic_sniffs(tmp_path: Path):
+    good = b"RIFF\x24\x00\x00\x00WEBPVP8 payload"
+    (tmp_path / "ok.webp").write_bytes(good)
+    out = fs.read_file(tmp_path, "ok.webp")
+    assert isinstance(out, fs.ImageRead)
+    assert out.media_type == "image/webp"
+    # RIFF without the WEBP fourcc (e.g. a .wav renamed .webp) is not an image.
+    (tmp_path / "bad.webp").write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt payload")
+    assert not isinstance(fs.read_file(tmp_path, "bad.webp"), fs.ImageRead)
+
+
+def test_read_file_gif_magic_sniffs(tmp_path: Path):
+    (tmp_path / "a.gif").write_bytes(b"GIF89a" + b"\x01" * 10)
+    out = fs.read_file(tmp_path, "a.gif")
+    assert isinstance(out, fs.ImageRead)
+    assert out.media_type == "image/gif"

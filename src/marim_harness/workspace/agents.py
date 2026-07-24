@@ -458,6 +458,8 @@ def cap_transcript(messages: list, cap: int, *, cap_reasoning: bool = False) -> 
     # pydantic_ai there would cost ~1s on every `marim --help`/config command.
     from pydantic_ai.messages import TextPart, ThinkingPart, ToolReturnPart
 
+    from ..binary_safe import has_binary_content
+
     def _clip(text: str) -> str:
         marker = f"\n…(truncated, {len(text)} chars)"
         return text[: max(0, cap - len(marker))] + marker
@@ -473,6 +475,14 @@ def cap_transcript(messages: list, cap: int, *, cap_reasoning: bool = False) -> 
         new_parts = []
         for part in parts:
             if isinstance(part, cappable):
+                # A binary tool return (a read_file image) passes through
+                # untouched: str() on it would bake a bytes repr — ~2.5x the
+                # image size — into the part and destroy the image. Its size
+                # is handled downstream instead: the sidecar write
+                # externalizes the bytes to the content-addressed image cache.
+                if isinstance(part, ToolReturnPart) and has_binary_content(part.content):
+                    new_parts.append(part)
+                    continue
                 text = part.content if isinstance(part.content, str) else str(part.content)
                 if len(text) > cap:
                     if isinstance(part, ThinkingPart):

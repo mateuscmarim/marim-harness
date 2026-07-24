@@ -128,3 +128,49 @@ def test_has_transcript_true_for_v1_and_v2_false_for_missing(tmp_path):
     assert ts.has_transcript("sg-v1")
     assert ts.has_transcript("sg-v2")
     assert not ts.has_transcript("sg-none")
+
+
+# ---------------------------------------------------------------------------
+# image externalization: sidecars must not carry inline base64
+# ---------------------------------------------------------------------------
+
+
+def _img_msgs():
+    from pydantic_ai.messages import BinaryContent, ToolReturnPart
+
+    img = BinaryContent(data=b"\x89PNG\r\n\x1a\n" + b"p" * 4096, media_type="image/png")
+    return [ModelRequest(parts=[
+        ToolReturnPart(tool_name="read_file", content=img, tool_call_id="c9"),
+    ])]
+
+
+def test_write_externalizes_image_bytes_to_cache(tmp_path, monkeypatch):
+    """The mid-run checkpoint rewrites a spawn's sidecar before every model
+    request — an inline base64 image body there would be re-serialized each
+    time. The sidecar must hold a cache ref instead, and read() must
+    rehydrate it back to real bytes."""
+    monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path / "cache"))
+    ts = TranscriptStore(tmp_path / "s.json", "sid")
+    ts.write("sg-img", _img_msgs(), 2000, meta=_meta("sg-img"))
+    files = list((tmp_path / "sid.subagents").glob("*.json"))
+    assert len(files) == 1
+    raw = files[0].read_text()
+    assert "marim-image-cache://" in raw
+    assert "p" * 100 not in raw          # no trace of the base64 body
+    loaded = ts.read("sg-img")
+    assert loaded is not None
+    content = loaded[0].parts[0].content
+    assert content.data == b"\x89PNG\r\n\x1a\n" + b"p" * 4096
+    assert content.media_type == "image/png"
+
+
+def test_read_degrades_missing_cached_image_to_placeholder(tmp_path, monkeypatch):
+    import shutil as _shutil
+
+    monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path / "cache"))
+    ts = TranscriptStore(tmp_path / "s.json", "sid")
+    ts.write("sg-img", _img_msgs(), 2000, meta=_meta("sg-img"))
+    _shutil.rmtree(tmp_path / "cache")
+    loaded = ts.read("sg-img")
+    assert loaded is not None
+    assert loaded[0].parts[0].content == "[image unavailable]"

@@ -15,7 +15,7 @@ import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any
 
 from .atomic_io import atomic_write_bytes
 
@@ -213,14 +213,31 @@ def detect_image_path(text: str) -> Path | None:
 _REF_PREFIX = "marim-image-cache://"
 
 
-def _iter_binary_slots(
-    messages: list[dict],
-) -> Iterator[tuple[list[dict], int] | tuple[dict, Literal["content"]]]:
-    """Yield ``(container, key)`` pairs where ``container[key]`` is a binary
-    content item — inside user-prompt content lists and tool-return parts
-    (whose content may be a scalar binary or a list containing one). Yielding
-    the slot rather than the item lets rehydrate replace an unavailable image
-    with a text placeholder in place."""
+@dataclass(frozen=True)
+class _BinarySlot:
+    """One binary content item addressed as ``container[key]``, so a caller can
+    both mutate the item in place (swap base64 for a cache ref) and replace the
+    whole slot (rehydrate degrades an unavailable image to a text placeholder).
+    The two concrete shapes — a content list indexed by ``int``, and a
+    tool-return part dict at the literal key ``"content"`` — share no useful
+    static type, so the fields stay ``Any`` on purpose; ``_iter_binary_slots``
+    is the sole constructor site and the type boundary."""
+
+    container: Any
+    key: Any
+
+    @property
+    def item(self) -> dict:
+        return self.container[self.key]
+
+    def replace(self, value: str) -> None:
+        self.container[self.key] = value
+
+
+def _iter_binary_slots(messages: list[Any]) -> Iterator[_BinarySlot]:
+    """Yield a ``_BinarySlot`` for every binary content item — inside
+    user-prompt content lists and tool-return parts (whose content may be a
+    scalar binary or a list containing one)."""
     for msg in messages:
         if not isinstance(msg, dict):
             continue
@@ -234,23 +251,23 @@ def _iter_binary_slots(
             if isinstance(content, list):
                 for i, item in enumerate(content):
                     if isinstance(item, dict) and item.get("kind") == "binary":
-                        yield content, i
+                        yield _BinarySlot(content, i)
             elif (
                 kind == "tool-return"
                 and isinstance(content, dict)
                 and content.get("kind") == "binary"
             ):
-                yield part, "content"
+                yield _BinarySlot(part, "content")
 
 
 # pydantic_ai serializes BinaryContent.data as URL-safe base64 ("-"/"_"), so the
 # cache round-trip must use the same alphabet. Standard base64 ("+"/"/") silently
 # drops the URL-safe chars and corrupts the image, which the model then rejects as
 # "Multimodal data is corrupted" on every resumed turn.
-def externalize_images(messages: list[dict], session_id: str) -> list[dict]:
+def externalize_images(messages: list[Any], session_id: str) -> list[Any]:
     """Replace inline base64 in binary user/tool-return content with cache refs."""
-    for container, key in _iter_binary_slots(messages):
-        item = container[key]  # type: ignore
+    for slot in _iter_binary_slots(messages):
+        item = slot.item
         data = item.get("data")
         if not isinstance(data, str) or data.startswith(_REF_PREFIX):
             continue
@@ -263,11 +280,11 @@ def externalize_images(messages: list[dict], session_id: str) -> list[dict]:
     return messages
 
 
-def rehydrate_images(messages: list[dict], session_id: str) -> list[dict]:
+def rehydrate_images(messages: list[Any], session_id: str) -> list[Any]:
     """Restore base64 from cache references; missing files degrade to a text
     placeholder so the session still loads."""
-    for container, key in _iter_binary_slots(messages):
-        item = container[key]  # type: ignore
+    for slot in _iter_binary_slots(messages):
+        item = slot.item
         data = item.get("data")
         if not (isinstance(data, str) and data.startswith(_REF_PREFIX)):
             continue
@@ -278,7 +295,7 @@ def rehydrate_images(messages: list[dict], session_id: str) -> list[dict]:
             # mutate item in place on success; replace with placeholder on OSError
             raw = path.read_bytes()
         except OSError:
-            container[key] = "[image unavailable]"  # type: ignore
+            slot.replace("[image unavailable]")
             continue
         item["data"] = base64.urlsafe_b64encode(raw).decode()
     return messages
