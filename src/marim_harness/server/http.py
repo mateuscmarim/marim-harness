@@ -27,7 +27,8 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from ..config import MultiModelSource, detect_active_providers
 from ..images import image_cache_root, media_type_for_path
 from ..runtime.permissions import Mode
-from ..session import SessionManager
+from ..session import SessionManager, TranscriptStore
+from . import jobs_view
 from .auth import token_matches
 from .host import HostClosed, TurnQueueFull
 from .schema import AskAnswerIn, MessageIn, SessionIn, SetModelIn, SteerIn, WorkspaceIn
@@ -352,6 +353,42 @@ async def set_session_model(request: Request) -> Response:
     return JSONResponse({"ok": True, "model": body.model})
 
 
+def _spawn_meta_reader(record, session_id: str):
+    """A ``stream_id -> meta | None`` closure over the session's persisted
+    sidecar store. Rebuilt per request (cheap) so it always targets the session
+    on disk, the same pattern SpawnTranscripts uses."""
+    store = SessionManager(Path(record.path)).store(session_id)
+    transcripts = TranscriptStore(store.path, store.session_id)
+
+    def read(stream_id: str):
+        try:
+            return transcripts.read_meta(stream_id)
+        except (OSError, ValueError):
+            return None
+
+    return read
+
+
+async def list_jobs(request: Request) -> Response:
+    denied = _unauthorized(request)
+    if denied:
+        return denied
+    record = _workspace(request)
+    if record is None:
+        return _error(404, "not_found", "unknown workspace")
+    session_id = request.path_params["sid"]
+    if not _session_exists(record, session_id):
+        return _error(404, "not_found", "unknown session")
+    host = _supervisor(request).peek(record.id, session_id)
+    if host is None:
+        return JSONResponse({"jobs": []})
+    registry = host.harness.deps.jobs
+    dtos = jobs_view.assemble(
+        registry.list(), registry.history, _spawn_meta_reader(record, session_id)
+    )
+    return JSONResponse({"jobs": dtos})
+
+
 async def list_asks(request: Request) -> Response:
     denied = _unauthorized(request)
     if denied:
@@ -523,6 +560,7 @@ def create_app(
         Route(f"{base}/model", set_session_model, methods=["POST"]),
         Route(f"{base}/asks", list_asks, methods=["GET"]),
         Route(f"{base}/asks/{{aid}}", answer_ask, methods=["POST"]),
+        Route(f"{base}/jobs", list_jobs, methods=["GET"]),
         WebSocketRoute(f"{base}/ws", session_ws),
         Route(f"{base}/history", get_history, methods=["GET"]),
         Route(f"{base}/images/{{sha}}", get_session_image, methods=["GET"]),

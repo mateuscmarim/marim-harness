@@ -620,3 +620,21 @@ def test_delete_workspace_refuses_while_running_then_cleans_up(client):
                               headers=AUTH).json()["deleted"] is True
     assert test_client.get(f"/v1/workspaces/{ws_id}/sessions",
                            headers=AUTH).status_code == 404
+
+
+def test_jobs_empty_for_idle_session(client):
+    test_client, tmp_path = client
+    ws_id, sid, _ = _setup_workspace_and_session(test_client, tmp_path)
+    resp = test_client.get(f"/v1/workspaces/{ws_id}/sessions/{sid}/jobs", headers=AUTH)
+    assert resp.status_code == 200
+    assert resp.json() == {"jobs": []}
+
+
+def test_jobs_requires_auth_and_valid_session(client):
+    test_client, tmp_path = client
+    ws_id, sid, _ = _setup_workspace_and_session(test_client, tmp_path)
+    assert test_client.get(f"/v1/workspaces/{ws_id}/sessions/{sid}/jobs").status_code == 401
+    assert test_client.get(f"/v1/workspaces/nope/sessions/{sid}/jobs",
+                           headers=AUTH).status_code == 404
+    assert test_client.get(f"/v1/workspaces/{ws_id}/sessions/nope/jobs",
+                           headers=AUTH).status_code == 404
