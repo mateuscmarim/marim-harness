@@ -265,5 +265,6 @@ class CliSpawnOrchestrator:
                 transcript_prefix=prior,
             ),
             stream_id=stream_id,
+            prompt=task,
         )
         return job_id, f"Resumed as {job_id}."

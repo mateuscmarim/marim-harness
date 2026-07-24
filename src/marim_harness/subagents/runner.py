@@ -1245,6 +1245,7 @@ class SubagentRunner:
                     background=True, history=history,
                 ),
                 stream_id=stream_id,
+                prompt=task,
             )
             return job_id, f"Resumed as {job_id}."
         finally:

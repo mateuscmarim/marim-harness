@@ -739,7 +739,9 @@ async def test_register_stamps_started_at_and_prompt():
     job_id = reg.register("bash", "echo hi", _work(), prompt="echo hi")
     job = reg.get(job_id)
     assert job.prompt == "echo hi"
-    assert job.started_at is not None and job.started_at.endswith("+00:00") or "T" in job.started_at
+    assert job.started_at is not None
+    assert "T" in job.started_at
+    assert job.started_at.endswith("+00:00")
 
 
 def test_export_settled_includes_prompt():
