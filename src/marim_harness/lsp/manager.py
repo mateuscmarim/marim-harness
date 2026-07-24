@@ -185,7 +185,7 @@ class LspManager:
                 timeout=self._start_timeout,
             )
         except Exception as exc:  # noqa: BLE001 — degrade to a message
-            logger.debug("failed to start %s server: %s", language, exc)
+            logger.warning("failed to start %s server: %s", language, exc, exc_info=True)
             return f"Could not start the {language} language server: {exc}"
         if self._closed:
             # Lost the race with aclose(): our server entered ``_stack`` but the
@@ -283,7 +283,7 @@ class LspManager:
         try:
             on_notification("textDocument/publishDiagnostics", _handler)
         except Exception as exc:  # noqa: BLE001 — degrade to the settle ceiling
-            logger.debug("failed to install diagnostics wakeup: %s", exc)
+            logger.debug("failed to install diagnostics wakeup: %s", exc, exc_info=True)
 
     async def _server_for(
         self, path: str
@@ -348,7 +348,7 @@ class LspManager:
         try:
             await self._stack.aclose()
         except Exception as exc:  # noqa: BLE001
-            logger.debug("error during LSP shutdown: %s", exc)
+            logger.debug("error during LSP shutdown: %s", exc, exc_info=True)
         self._servers.clear()
         self._collectors.clear()
 
@@ -373,9 +373,9 @@ class LspManager:
                 cancelled = getattr(exc, "code", None) == _REQUEST_CANCELLED
                 if cancelled and not retried:
                     retried = True
-                    logger.debug("%s cancelled by server; retrying once", what)
+                    logger.debug("%s cancelled by server; retrying once", what, exc_info=True)
                     continue
-                logger.debug("%s failed: %s", what, exc)
+                logger.debug("%s failed: %s", what, exc, exc_info=True)
                 if cancelled:
                     return None, (
                         f"{what}: the language server cancelled the request "

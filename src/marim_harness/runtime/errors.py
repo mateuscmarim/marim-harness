@@ -77,7 +77,7 @@ def _find_api_error(exc: BaseException):
     so we have to look past the outermost exception."""
     try:
         from openai import APIError
-    except Exception:  # openai not importable for some reason — nothing to do
+    except ImportError:  # openai not installed or unavailable
         return None
     return _find_in_chain(exc, APIError)
 
@@ -181,7 +181,7 @@ def _find_model_http_error(exc: BaseException):
     layer, so we look past the outermost exception (mirrors ``_find_api_error``)."""
     try:
         from pydantic_ai.exceptions import ModelHTTPError
-    except Exception:  # pydantic_ai not importable — nothing to classify
+    except ImportError:  # pydantic_ai not installed or unavailable
         return None
     return _find_in_chain(exc, ModelHTTPError)
 

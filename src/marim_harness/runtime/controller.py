@@ -486,10 +486,10 @@ class TurnController:
             # dropping the shutdown signal on the floor.
             logger.debug("resumable flush cancelled", exc_info=True)
             raise
-        except Exception:
+        except Exception as exc:
             # Ordinary failure or the 0.25s deadline (asyncio.TimeoutError is an
             # Exception). Best-effort: never mask the original exception.
-            logger.debug("resumable flush failed or timed out", exc_info=True)
+            logger.debug("resumable flush failed or timed out: %s", exc, exc_info=True)
 
     async def _assemble_prompt(self, typed: str) -> str:
         """Build the turn's prompt from what the user ``typed``, prepending any
@@ -783,8 +783,8 @@ class TurnController:
                 ),
                 timeout=0.25,
             )
-        except Exception:
-            logger.debug("failed to dump provider error", exc_info=True)
+        except Exception as dump_exc:
+            logger.debug("failed to dump provider error: %s", dump_exc, exc_info=True)
         # Reaching here with an overflow error means recovery failed
         # (nothing droppable — the classic first-turn case — or the
         # one retry above already overflowed again, or it was a dirty
@@ -819,8 +819,10 @@ class TurnController:
                 await self.hooks.notification(
                     "approval_needed", "Approval needed", names
                 )
-            except Exception:  # noqa: BLE001 — a notification must never crash a turn
-                logger.warning("approval-needed notification hook failed", exc_info=True)
+            except Exception as exc:  # noqa: BLE001 — a notification must never crash a turn
+                logger.warning(
+                    "approval-needed notification hook failed: %s", exc, exc_info=True
+                )
         try:
             get_scratchpad = self.deps.services.get_scratchpad
             deferred_results = await resolve_approvals(
@@ -850,9 +852,9 @@ class TurnController:
             # rollback write still propagates.
             try:
                 await asyncio.to_thread(self.session.persist)
-            except Exception:
+            except Exception as persist_exc:
                 logger.warning(
-                    "approval rollback persist failed", exc_info=True
+                    "approval rollback persist failed: %s", persist_exc, exc_info=True
                 )
             raise
         return deferred_results
@@ -865,8 +867,8 @@ class TurnController:
         # approval notification above.
         try:
             await self.hooks.stop()
-        except Exception:  # noqa: BLE001 — a Stop hook must never crash a completed turn
-            logger.warning("stop hook failed", exc_info=True)
+        except Exception as exc:  # noqa: BLE001 — a Stop hook must never crash a completed turn
+            logger.warning("stop hook failed: %s", exc, exc_info=True)
         # Autoname is *scheduled*, not awaited: it's a full titler LLM
         # round-trip producing cosmetic metadata, so the turn (and the TUI's
         # busy state / queued-prompt drain behind it) must not block on it.

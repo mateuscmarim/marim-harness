@@ -16,6 +16,7 @@ turn (see the design spec's error-handling section).
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
@@ -27,6 +28,8 @@ from .session.ctrl import aux_model_for
 
 if TYPE_CHECKING:
     from pydantic_ai.models import Model
+
+logger = logging.getLogger(__name__)
 
 # (messages) -> advice text. The advisor tool passes the in-flight run history
 # (ctx.messages); errors come back as text.
@@ -116,6 +119,7 @@ async def consult(
                 _advise_prompt(render_transcript(messages, max_part_chars=clip))
             )
         except Exception as exc:
+            logger.debug("advisor consult attempt failed: %s", exc, exc_info=True)
             last_error = exc
             continue
         usage = result.usage
@@ -155,6 +159,7 @@ def make_advisor(
             # the same guard the summarizer/titler get.
             model = aux_model_for(build_model(model_id), cwd=cwd)
         except Exception as exc:
+            logger.debug("advisor model build failed: %s", exc, exc_info=True)
             return (
                 f"Advisor unavailable: can't build model {model_id!r}: {exc}. "
                 "Continue without advice."

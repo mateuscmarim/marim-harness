@@ -148,7 +148,7 @@ async def fetch_google_models(
     except Exception as exc:
         if strict:
             raise
-        logger.warning("failed to fetch Google model catalog: %s", exc)
+        logger.warning("failed to fetch Google model catalog: %s", exc, exc_info=True)
         return []
 
 
@@ -177,7 +177,7 @@ async def fetch_openrouter_models(
     except Exception as exc:
         if strict:
             raise
-        logger.warning("failed to fetch OpenRouter model catalog: %s", exc)
+        logger.warning("failed to fetch OpenRouter model catalog: %s", exc, exc_info=True)
         return []
 
 
@@ -206,7 +206,7 @@ async def fetch_local_models(
     except Exception as exc:
         if strict:
             raise
-        logger.warning("failed to fetch local model catalog from %s: %s", url, exc)
+        logger.warning("failed to fetch local model catalog from %s: %s", url, exc, exc_info=True)
         return []
 
 
@@ -241,7 +241,7 @@ async def fetch_zen_models(
     except Exception as exc:
         if strict:
             raise
-        logger.warning("failed to fetch OpenCode Zen model catalog: %s", exc)
+        logger.warning("failed to fetch OpenCode Zen model catalog: %s", exc, exc_info=True)
         return []
 
 
@@ -299,7 +299,7 @@ async def fetch_lmstudio_windows(
             response.raise_for_status()
             return parse_lmstudio_models(response.json())
     except Exception as exc:
-        logger.warning("failed to fetch LM Studio windows from %s: %s", url, exc)
+        logger.warning("failed to fetch LM Studio windows from %s: %s", url, exc, exc_info=True)
         return {}
 
 
@@ -353,8 +353,8 @@ def make_supports_images(
             attempted = True
             try:
                 entries = await list_models()
-            except Exception:
-                logger.debug("vision-gate catalog fetch failed", exc_info=True)
+            except Exception as exc:
+                logger.debug("vision-gate catalog fetch failed: %s", exc, exc_info=True)
                 entries = None
         if entries is None:
             return None

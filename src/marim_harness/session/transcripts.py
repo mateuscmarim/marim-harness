@@ -95,7 +95,7 @@ class TranscriptStore:
             self._dir.mkdir(parents=True, exist_ok=True)
             atomic_write_text(self._file(stream_id), json.dumps(payload))
         except Exception as exc:  # noqa: BLE001 - persistence is best-effort
-            logger.warning("Failed to write sub-agent transcript %s: %s", stream_id, exc)
+            logger.warning("Failed to write sub-agent transcript %s: %s", stream_id, exc, exc_info=True)
 
     def read(self, stream_id: str) -> list | None:
         path = self._file(stream_id)
@@ -110,7 +110,7 @@ class TranscriptStore:
             raw = rehydrate_images(raw, self._session_id)
             return list(ModelMessagesTypeAdapter.validate_python(raw))
         except Exception as exc:  # noqa: BLE001 - a corrupt sidecar must not crash resume
-            logger.warning("Failed to read sub-agent transcript %s: %s", stream_id, exc)
+            logger.warning("Failed to read sub-agent transcript %s: %s", stream_id, exc, exc_info=True)
             return None
 
     def has_transcript(self, stream_id: str) -> bool:
@@ -129,7 +129,7 @@ class TranscriptStore:
         try:
             raw = json.loads(path.read_text())
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Failed to read sidecar meta %s: %s", stream_id, exc)
+            logger.warning("Failed to read sidecar meta %s: %s", stream_id, exc, exc_info=True)
             return None
         if isinstance(raw, dict) and isinstance(raw.get("meta"), dict):
             return raw["meta"]
@@ -147,7 +147,7 @@ class TranscriptStore:
             try:
                 raw = json.loads(path.read_text())
             except Exception as exc:  # noqa: BLE001
-                logger.warning("Skipping unreadable sidecar %s: %s", path, exc)
+                logger.warning("Skipping unreadable sidecar %s: %s", path, exc, exc_info=True)
                 continue
             if not isinstance(raw, dict):
                 continue

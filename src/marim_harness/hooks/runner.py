@@ -195,7 +195,7 @@ async def _run_entry(entry: object, event: str, payload: dict, subject: str) -> 
         try:
             out = await _run_one(str(command), payload, timeout)
         except Exception as exc:
-            logger.warning("hook %r failed: %s", command, exc)
+            logger.warning("hook %r failed: %s", command, exc, exc_info=True)
             out = None  # belt-and-suspenders: a hook never breaks a turn
         if out and event in INJECTING_EVENTS:
             ctx = _extract_context(out)
@@ -253,7 +253,7 @@ class HookRunner:
                         str(command), payload, spec.get("timeout", _DEFAULT_TIMEOUT)
                     )
                 except Exception as exc:
-                    logger.warning("hook %r failed: %s", command, exc)
+                    logger.warning("hook %r failed: %s", command, exc, exc_info=True)
                     continue
                 if v.blocked and not verdict.blocked:
                     verdict = v

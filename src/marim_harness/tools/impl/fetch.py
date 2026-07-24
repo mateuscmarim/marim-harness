@@ -319,7 +319,8 @@ async def _stream_body(
         try:
             await exc.response.aread()
             detail = exc.response.text.strip()
-        except Exception:  # noqa: BLE001 — best-effort; never mask the HTTP error
+        except Exception as exc:  # noqa: BLE001 — best-effort; never mask the HTTP error
+            logger.debug("best-effort error body read failed", exc_info=True)
             detail = ""
         if detail:
             snippet = detail[:_ERROR_BODY_CHARS]
@@ -345,7 +346,7 @@ async def _render_body(raw: bytes, content_type: str, encoding: str | None) -> s
         try:
             return await asyncio.to_thread(_json_pretty, text)
         except Exception as exc:
-            logger.debug("JSON pretty-print failed, returning raw text: %s", exc)
+            logger.debug("JSON pretty-print failed, returning raw text: %s", exc, exc_info=True)
             return text
     # Plain text, markdown, SVG, etc.
     return text

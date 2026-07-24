@@ -156,7 +156,7 @@ class Notifier:
             # _should_fire already recorded the timestamp on a fire; roll it back
             # so a later retry isn't suppressed.
             self._last_fired.pop(event_type, None)
-            logger.debug("notification failed (%s): %s", event_type, exc)
+            logger.debug("notification failed (%s): %s", event_type, exc, exc_info=True)
             return
         if not fired:
             # No backend actually ran (unknown platform / missing binary). Nothing
@@ -187,7 +187,7 @@ class Notifier:
             await proc.communicate(stdin)
         except Exception as exc:  # never let notifications break a turn
             self._last_fired.pop(event_type, None)
-            logger.debug("async notification failed (%s): %s", event_type, exc)
+            logger.debug("async notification failed (%s): %s", event_type, exc, exc_info=True)
 
     def _dispatch(self, title: str, body: str) -> bool:
         """Run the platform notifier. Returns True if a command was actually

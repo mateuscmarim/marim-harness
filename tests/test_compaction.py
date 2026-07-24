@@ -512,6 +512,41 @@ def test_mask_unrenderable_content_masks_plain_without_persisting():
     assert persisted == []  # no unfaithful repr bytes written
 
 
+class _ValueErrorContent:
+    """Content whose model_response_str() raises ValueError, not TypeError."""
+
+    def model_response_str(self) -> str:
+        raise ValueError("invalid serialization value")
+
+
+def test_mask_value_error_from_render_also_falls_back():
+    """A ValueError from model_response_str (e.g. pydantic serializer rejecting
+    an invalid value) must be caught the same way as TypeError, never blocking
+    the masking pass."""
+    # Build a part whose model_response_str raises ValueError directly,
+    # bypassing pydantic's own serialization.  We monkey-patch the method on
+    # the instance to keep the test isolated.
+    real_part = ToolReturnPart(
+        tool_name="read_file",
+        content="X" * 300,
+        tool_call_id="v1",
+    )
+    original_mrs = real_part.model_response_str
+    real_part.model_response_str = lambda: (_ for _ in ()).throw(ValueError("boom"))  # type: ignore[assignment]
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="go")]),
+        ModelRequest(parts=[real_part]),
+        ModelRequest(parts=[ToolReturnPart(
+            tool_name="read_file", content="Y" * 300, tool_call_id="v2",
+        )]),
+    ]
+    masked, n = mask_stale_observations(history, keep_recent=1)
+    assert n == 1
+    assert masked[1].parts[0].content == MASKED_OBSERVATION
+    # Restore for any subsequent tests that might reuse the object.
+    real_part.model_response_str = original_mrs  # type: ignore[assignment]
+
+
 # --- revalidate_elided_pointers (dangling scratchpad pointers) ----------------
 
 

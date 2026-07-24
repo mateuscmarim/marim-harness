@@ -272,7 +272,9 @@ class JobRegistry:
             if not job.task.cancelled():
                 raise  # the waiter itself was cancelled — propagate
         except Exception as exc:
-            logger.debug("wait for job %s: %s (already settled)", job_id, exc)
+            logger.debug(
+                "wait for job %s: %s (already settled)", job_id, exc, exc_info=True
+            )
         # The done-callback that settles the job runs *after* the await returns
         # — and on 3.12+ ``asyncio.wait_for`` on an already-done task doesn't
         # yield to the event loop at all, so the callback may still be queued.
@@ -383,7 +385,9 @@ class JobRegistry:
                 if not job.task.cancelled():
                     raise
             except Exception as exc:
-                logger.debug("cancel job %s: %s (already settled)", job_id, exc)
+                logger.debug(
+                    "cancel job %s: %s (already settled)", job_id, exc, exc_info=True
+                )
         # A task cancelled before it began running never hits the wrapper's
         # except, so settle here; _settle is a no-op if it already landed.
         self._settle(job, "cancelled")

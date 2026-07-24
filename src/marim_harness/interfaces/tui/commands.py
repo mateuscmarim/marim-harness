@@ -8,6 +8,7 @@ being sent to the model.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -21,6 +22,8 @@ from .themes import THEME_NAMES
 if TYPE_CHECKING:
     from ...session.store import SessionInfo
     from .app import HarnessApp
+
+logger = logging.getLogger(__name__)
 
 Handler = Callable[["HarnessApp", str], Awaitable[None]]
 
@@ -83,18 +86,20 @@ async def _cmd_compact(app: HarnessApp, arg: str) -> None:
             # (UI mid-teardown) the notice must not strand.
             app.clear_compacting_notice()
             await app.post_system(f"Compaction failed: {exc}")
+            logger.warning("compaction failed", exc_info=True)
         finally:
             app.compact_busy = False
 
     app.compact_busy = True
     try:
         app.run_worker(run(), group="compact", exclusive=True, exit_on_error=False)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
         # run_worker itself can raise mid-teardown (the hazard start_system_turn
         # guards the same way). If the worker never starts, its finally never
         # runs — without this reset the latched flag would wedge submits and
         # the session commands permanently.
         app.compact_busy = False
+        logger.debug("run_worker failed to start compaction worker", exc_info=True)
         raise
 
 

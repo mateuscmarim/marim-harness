@@ -606,7 +606,7 @@ class MultiModelSource:
             try:
                 entries = await source.list_models()
             except Exception as exc:  # noqa: BLE001 - one provider's failure must not sink the rest
-                logger.warning("model catalog for %s failed: %s", provider, exc)
+                logger.debug("model catalog for %s failed: %s", provider, exc, exc_info=True)
                 return []
             return [replace(e, provider=provider) for e in entries]
 

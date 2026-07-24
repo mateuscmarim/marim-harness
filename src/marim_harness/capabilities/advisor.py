@@ -16,6 +16,7 @@ reject the duplicate at run time."""
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,6 +26,8 @@ from pydantic_ai.models import Model, infer_model
 from pydantic_ai.toolsets import FunctionToolset
 
 from ..advisor import ADVISOR_GUIDANCE, consult
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(init=False)
@@ -129,6 +132,7 @@ class Advisor(AbstractCapability[Any]):
             except Exception as exc:
                 # Errors-as-text: a broken advisor degrades the advice,
                 # never the run.
+                logger.debug("advisor model build failed: %s", exc, exc_info=True)
                 return (
                     f"Advisor unavailable: can't build model {self.model!r}: "
                     f"{exc}. Continue without advice."

@@ -38,7 +38,7 @@ class DiagnosticsCollector:
             on_notification("textDocument/publishDiagnostics", self.feed)
             self.enabled = True
         except Exception as exc:  # noqa: BLE001 — degrade, never crash a session
-            logger.debug("failed to register diagnostics handler: %s", exc)
+            logger.debug("failed to register diagnostics handler: %s", exc, exc_info=True)
 
     def feed(self, *args) -> None:
         """Absorb one ``textDocument/publishDiagnostics`` notification, stashing its

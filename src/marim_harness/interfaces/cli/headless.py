@@ -24,16 +24,16 @@ def _safe(fn: Callable[[], _T]) -> None:
     the exit code the caller relies on."""
     try:
         fn()
-    except Exception:  # noqa: BLE001 - cleanup is best-effort
-        logger.warning("Ignoring error during headless cleanup.", exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
+        logger.warning("Ignoring error during headless cleanup: %s", exc, exc_info=True)
 
 
 async def _safe_async(fn: Callable[[], Awaitable[_T]]) -> None:
     """Async counterpart to ``_safe`` for awaitable teardown steps."""
     try:
         await fn()
-    except Exception:  # noqa: BLE001 - cleanup is best-effort
-        logger.warning("Ignoring error during headless cleanup.", exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
+        logger.warning("Ignoring error during headless cleanup: %s", exc, exc_info=True)
 
 
 def _notify(harness: Harness, title: str, body: str, event_type: str) -> None:
@@ -106,6 +106,7 @@ async def run_headless(
         detail = format_provider_error(exc) or f"{type(exc).__name__}: {exc}"
         print(detail, file=err)
         _notify(harness, "Turn error", detail, "error")
+        logger.warning("headless turn failed: %s", exc, exc_info=True)
         # stream-json consumers parse NDJSON and need a terminal line even on
         # failure, otherwise a crashed turn looks like a truncated stream.
         if output_format == "stream-json":

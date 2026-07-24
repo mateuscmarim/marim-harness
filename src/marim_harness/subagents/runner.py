@@ -631,6 +631,7 @@ class SubagentRunner:
             async with self._slot():
                 run = await run_fn()
         except Exception as exc:  # noqa: BLE001
+            logger.warning("sub-agent %r spawn failed: %s", name, exc, exc_info=True)
             if timing is not None:
                 self._log_spawn_timing(name, *timing, failed=True)
             if iso:

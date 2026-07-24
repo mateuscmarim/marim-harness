@@ -1,3 +1,4 @@
+import logging
 import time
 from asyncio import CancelledError
 
@@ -58,6 +59,8 @@ from .widgets import (
     format_cost,
     human_tokens,
 )
+
+logger = logging.getLogger(__name__)
 
 _BANNER = (
     " ███╗   ███╗ █████╗ ██████╗ ██╗███╗   ███╗\n"
@@ -348,7 +351,7 @@ class HarnessApp(App):
                 self._driver.write(osc_title("marim-harness"))
                 self._driver.write(f"\r\n{summary}\r\n")
                 self._driver.flush()
-            except Exception:
+            except OSError:
                 pass
         await self.jobs.cancel_all()
         await self.harness.session_end("exit")
@@ -560,9 +563,10 @@ class HarnessApp(App):
         try:
             self.stream.current_assistant = None
             self._turn_worker = self.run_worker(self._run_turn(prompt), exclusive=True)
-        except Exception:  # noqa: BLE001 — a failed spawn must not wedge the UI
+        except Exception as exc:  # noqa: BLE001 — a failed spawn must not wedge the UI
             self._turn_worker = None
             self.log.error("failed to start system turn")
+            logger.warning("failed to start system turn: %s", exc, exc_info=True)
             self._append_log(
                 NoticeMessage("Couldn't start the command — please try again.")
             )
@@ -607,6 +611,7 @@ class HarnessApp(App):
         except Exception as exc:
             self._queue.paused = True
             self._append_log(ErrorMessage(f"failed to start next turn: {exc}"))
+            logger.warning("failed to start next turn", exc_info=True)
 
     def _render_queue(self) -> None:
         """Repaint the queue panel from the current queue."""
@@ -874,7 +879,8 @@ class HarnessApp(App):
     async def _refresh_vision_caps(self, fetch) -> None:
         try:
             entries = await fetch()
-        except Exception:
+        except Exception as exc:
+            logger.debug("failed to refresh vision capabilities: %s", exc, exc_info=True)
             return  # unknown stays unknown; never blocks submit
         self._vision_caps = {e.qualified: e.supports_images for e in entries}
 
@@ -1173,6 +1179,7 @@ class HarnessApp(App):
             await self.post_system(format_transcript_block(command, output))
         except Exception as exc:  # keep the session alive on any render failure
             self._append_log(ErrorMessage(f"! {command}: {type(exc).__name__}: {exc}"))
+            logger.warning("failed to render shell passthrough output", exc_info=True)
 
     async def _run_turn(
         self, text: str, attachments: list[tuple[bytes, str]] | None = None
@@ -1205,6 +1212,7 @@ class HarnessApp(App):
             detail = format_provider_error(exc) or f"{type(exc).__name__}: {exc}"
             self._append_log(ErrorMessage(detail))
             self._notify("Turn error", detail, "error")
+            logger.warning("turn failed", exc_info=True)
         finally:
             self._turn_worker = None
             self.status.set_busy(False)

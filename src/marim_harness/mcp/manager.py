@@ -106,8 +106,10 @@ class McpManager:
             return None
         try:
             return list(await lister())
-        except Exception:  # noqa: BLE001 - one server's failure must not sink the rest
-            logger.debug("tool listing failed for %s", self.server_name(server), exc_info=True)
+        except Exception as exc:  # noqa: BLE001 - one server's failure must not sink the rest
+            logger.debug(
+                "tool listing failed for %s: %s", self.server_name(server), exc, exc_info=True
+            )
             return None
 
     async def _tools_per_server(self) -> dict[str, list]:
@@ -245,6 +247,7 @@ class McpManager:
         try:
             await self._mcp_stack.enter_async_context(server)
         except Exception as exc:
+            logger.debug("MCP server connect failed: %s", exc, exc_info=True)
             return str(exc)
         self._live_servers.append(server)
         return None
@@ -321,7 +324,7 @@ class McpManager:
             if self._mcp_stack is not None:
                 await self._mcp_stack.aclose()
         except Exception as exc:
-            logger.debug("error during MCP shutdown: %s", exc)
+            logger.debug("error during MCP shutdown: %s", exc, exc_info=True)
         finally:
             self._mcp_stack = None
             self._live_servers = []

@@ -184,7 +184,7 @@ class WorkflowEngine:
             monty.type_check(_VALIDATION_PREFIX)
         except MontyTypingError as exc:
             return f"Workflow script failed validation (nothing was executed):\n{exc}"
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
             # type_check can raise RuntimeError when its own infrastructure
             # fails. Validation is a cheap pre-flight, not the authority —
             # never let its breakage block a script the interpreter could run.
@@ -369,8 +369,8 @@ class WorkflowEngine:
         # workflow whose real work succeeded.
         try:
             cb(tool_call_id, title)
-        except Exception:
-            logger.warning("workflow start callback raised; ignoring", exc_info=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("workflow start callback raised; ignoring: %s", exc, exc_info=True)
 
     def _announce_done(self, tool_call_id: str, outcome: str, *, failed: bool) -> None:
         cb = getattr(self.deps.ui, "on_workflow_done", None)
@@ -381,8 +381,8 @@ class WorkflowEngine:
         # `shaped` value run() is about to return.
         try:
             cb(tool_call_id, outcome, failed)
-        except Exception:
-            logger.warning("workflow done callback raised; ignoring", exc_info=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("workflow done callback raised; ignoring: %s", exc, exc_info=True)
 
     # -- teardown & result shaping -------------------------------------------
 

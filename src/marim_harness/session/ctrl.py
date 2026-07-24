@@ -822,7 +822,7 @@ class SessionController:
         try:
             title = await self.titler(history)
         except Exception as exc:
-            logger.warning("autoname titler failed: %s", exc)
+            logger.warning("autoname titler failed: %s", exc, exc_info=True)
             return
         if not title:
             return

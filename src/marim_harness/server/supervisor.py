@@ -193,7 +193,7 @@ class SessionSupervisor:
             await asyncio.sleep(interval)
             try:
                 await self.evict_idle()
-            except Exception:  # noqa: BLE001 - the sweep must never die
+            except Exception as exc:  # noqa: BLE001 - the sweep must never die
                 logger.warning("idle-eviction sweep failed", exc_info=True)
 
     async def evict_idle(self) -> None:

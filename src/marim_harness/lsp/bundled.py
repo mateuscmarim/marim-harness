@@ -48,5 +48,5 @@ def bundled_lsp_providers() -> list[LspProvider]:
                 )
             )
         except Exception as exc:  # noqa: BLE001 — bad bundled manifest ⇒ skip
-            logger.warning("invalid bundled lsp plugin at %s: %s", d, exc)
+            logger.warning("invalid bundled lsp plugin at %s: %s", d, exc, exc_info=True)
     return out

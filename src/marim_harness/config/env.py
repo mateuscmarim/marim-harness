@@ -156,7 +156,9 @@ def load_environment() -> None:
         try:
             project_values = dotenv_values(project)
         except Exception as exc:  # noqa: BLE001 - any parse failure is non-fatal
-            logger.warning("Ignoring unreadable project .env at %s: %s", project, exc)
+            logger.warning(
+                "Ignoring unreadable project .env at %s: %s", project, exc, exc_info=True
+            )
             project_values = {}
         for key, value in project_values.items():
             if value is None or not _project_key_allowed(key):

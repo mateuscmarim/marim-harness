@@ -191,7 +191,7 @@ class ContextLimits:
         try:
             await discovery
         except Exception as exc:  # noqa: BLE001 — discovery is best-effort
-            logger.warning("context-window discovery failed: %s", exc)
+            logger.warning("context-window discovery failed: %s", exc, exc_info=True)
         return self.threshold(model_id)
 
     async def _discover(self, generation: int) -> None:

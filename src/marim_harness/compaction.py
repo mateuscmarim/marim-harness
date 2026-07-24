@@ -410,8 +410,11 @@ def _mask_part(
     # stays faithful.
     try:
         rendered: str | None = part.model_response_str()
-    except Exception:
+    except (TypeError, ValueError):
         # Exotic content (e.g. multimodal/binary objects) pydantic can't serialize.
+        # TypeError — pydantic serializer rejects the type (e.g. a non-JSON object).
+        # ValueError — pydantic/JSON serializer raises for an invalid value.  Both
+        # are subclasses of Exception; narrowing avoids swallowing unrelated bugs.
         # Same best-effort contract as persist: never block masking. There are no
         # faithful bytes to save, so fall back to the repr for the size gate and to
         # the plain placeholder (no pointer) below.
@@ -423,7 +426,8 @@ def _mask_part(
     if persist is not None and rendered is not None:
         try:
             path = persist(rendered, part.tool_name)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("failed to persist masked observation: %s", exc, exc_info=True)
             path = None
         if path:
             replacement = _elided_pointer(path)
@@ -598,7 +602,9 @@ async def compact_history_with_summary(
     try:
         summary = await summarizer(middle, instructions)
     except Exception as exc:
-        logger.warning("compaction summarizer failed, falling back to truncation: %s", exc)
+        logger.warning(
+            "compaction summarizer failed, falling back to truncation: %s", exc, exc_info=True
+        )
         summary = None
 
     if summary:

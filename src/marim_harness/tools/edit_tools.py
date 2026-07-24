@@ -53,7 +53,7 @@ async def _with_diagnostics(ctx: RunContext[Deps], path: str, result: str) -> st
     try:
         report = await ctx.deps.services.lsp.diagnostics(path, settle=0.8)
     except Exception as exc:  # noqa: BLE001 — diagnostics must never fail an edit
-        logger.debug("diagnostics fetch failed for %s: %s", path, exc)
+        logger.debug("diagnostics fetch failed for %s: %s", path, exc, exc_info=True)
         return result
     if not report or not _DIAGNOSTIC_LINE.search(report):
         return result

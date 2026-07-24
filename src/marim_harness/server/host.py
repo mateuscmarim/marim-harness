@@ -310,7 +310,7 @@ class SessionHost:
             raise
         except Exception as exc:  # surface, don't crash the worker
             detail = format_provider_error(exc) or f"{type(exc).__name__}: {exc}"
-            logger.warning("turn %s failed: %s", turn_id, detail)
+            logger.warning("turn %s failed: %s", turn_id, detail, exc_info=True)
             self.bus.publish("turn.error", {"turn_id": turn_id, "error": detail})
             return
         self.bus.publish(
@@ -341,13 +341,13 @@ class SessionHost:
                 result = step()
                 if asyncio.iscoroutine(result):
                     await result
-            except Exception:  # noqa: BLE001 - teardown is best-effort
-                logger.warning("host teardown step %s failed", label, exc_info=True)
+            except Exception as exc:  # noqa: BLE001 - teardown is best-effort
+                logger.warning("host teardown step %s failed: %s", label, exc, exc_info=True)
         for label, coro_fn in (
             ("session_end", lambda: self.harness.session_end("exit")),
             ("aclose", self.harness.aclose),
         ):
             try:
                 await coro_fn()
-            except Exception:  # noqa: BLE001 - teardown is best-effort
-                logger.warning("host teardown step %s failed", label, exc_info=True)
+            except Exception as exc:  # noqa: BLE001 - teardown is best-effort
+                logger.warning("host teardown step %s failed: %s", label, exc, exc_info=True)

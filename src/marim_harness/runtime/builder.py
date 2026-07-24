@@ -12,9 +12,12 @@ whole composition at once and raises ``BuilderError`` listing every problem.
 from __future__ import annotations
 
 import dataclasses
+import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from pydantic_ai.models import Model
@@ -256,6 +259,7 @@ class HarnessBuilder:
             try:
                 model = infer_model(model)
             except Exception as exc:  # pydantic-ai raises various types here
+                logger.debug("model %r failed to resolve: %s", self._model, exc, exc_info=True)
                 problems.append(f"model {self._model!r} is not resolvable: {exc}")
         return model
 

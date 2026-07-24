@@ -127,7 +127,7 @@ class TurnHooks:
             try:
                 tool_input = event.part.args_as_dict()
             except Exception as exc:
-                logger.debug("failed to parse tool args: %s", exc)
+                logger.debug("failed to parse tool args: %s", exc, exc_info=True)
                 tool_input = {}
             # Stash input so the paired PostToolUse event can include it.
             if call_inputs is not None:

@@ -25,6 +25,7 @@ toolsets stay the single lifecycle/introspection handle here.
 """
 
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -41,6 +42,8 @@ from ..runtime.permissions import Mode
 from ..tools.impl.coerce import coerce_by_schema
 from ..tools.impl.offload import _INLINE_CHAR_LIMIT, offload_if_large
 from ..trust import project_trusted
+
+logger = logging.getLogger(__name__)
 
 
 def _bound_tool_result(result, *, label: str, name: str, args: dict | None,
@@ -310,7 +313,8 @@ class _SchemaCoercer:
         if not self._loaded:
             try:
                 tools = await server.list_tools()
-            except Exception:  # noqa: BLE001 - best-effort: fall back to uncoerced dispatch
+            except Exception as exc:  # noqa: BLE001 - best-effort: fall back to uncoerced dispatch
+                logger.debug("failed to load MCP tool schemas: %s", exc, exc_info=True)
                 return None
             for tool in tools:
                 nm = getattr(tool, "name", None)
