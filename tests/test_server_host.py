@@ -210,3 +210,63 @@ async def test_steer_buffers_and_publishes(tmp_path):
     assert harness.take_buffered_steers() == [("also check b.txt", None)]
     assert any(e.type == "steer.accepted" for e in events)
     await host.aclose()
+
+
+async def _settling_job(host, *, label="explore: probe", result="job result"):
+    """Register a background job on the host that finishes immediately, so its
+    settle drives the on_jobs_changed -> maybe_wake path."""
+    async def work():
+        return result
+    return host.harness.deps.jobs.register("agent", label, work())
+
+
+async def test_settled_job_wakes_idle_session_with_autonomous_trigger(tmp_path):
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    host = SessionHost(_make_harness(_text_only_model(), deps), EventBus())
+    events = _spy(host.bus)
+    await _settling_job(host)
+    started = await _drain_until(events, "turn.started")
+    assert started.data["trigger"] == "autonomous"
+    assert started.data["prompt"] == ""
+    await _drain_until(events, "turn.finished")
+    await _wait_for(lambda: host.status == "idle")
+    await host.aclose()
+
+
+async def test_user_turn_carries_user_trigger(tmp_path):
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    host = SessionHost(_make_harness(_text_only_model(), deps), EventBus())
+    events = _spy(host.bus)
+    host.submit("hi")
+    started = await _drain_until(events, "turn.started")
+    assert started.data["trigger"] == "user"
+    await _wait_for(lambda: host.status == "idle")
+    await host.aclose()
+
+
+async def test_job_settled_mid_turn_wakes_after_turn_ends(tmp_path):
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    release = asyncio.Event()
+
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content="done")])
+
+    async def stream_fn(messages, info):
+        await release.wait()
+        yield "done"
+
+    host = SessionHost(_make_harness(FunctionModel(fn, stream_function=stream_fn), deps),
+                       EventBus())
+    events = _spy(host.bus)
+    host.submit("do work")                       # user turn starts, blocks
+    await _drain_until(events, "turn.started")    # (the user turn)
+    await _settling_job(host)                     # settles WHILE the turn is busy
+    await asyncio.sleep(0.05)
+    assert [e for e in events
+            if e.type == "turn.started" and e.data.get("trigger") == "autonomous"] == []
+    release.set()                                 # let the user turn finish
+    await _wait_for(lambda: any(
+        e.type == "turn.started" and e.data.get("trigger") == "autonomous"
+        for e in events))
+    await _wait_for(lambda: host.status == "idle")
+    await host.aclose()

@@ -25,6 +25,8 @@ from pydantic_ai import ToolDenied
 from ..ask_user import Question
 from ..runtime.errors import format_provider_error
 from ..runtime.harness import Harness
+from ..runtime.wake import WakeController
+from ..runtime.wake_driver import WakeDriver
 from ..stream_events import event_to_dict
 from ..usage import usage_summary
 from .bus import EventBus
@@ -65,7 +67,7 @@ class SessionHost:
     def __init__(self, harness: Harness, bus: EventBus, *, queue_limit: int = 8) -> None:
         self.harness = harness
         self.bus = bus
-        self._queue: asyncio.Queue[tuple[str, str, list | None]] = asyncio.Queue(
+        self._queue: asyncio.Queue[tuple[str, str, list | None, str]] = asyncio.Queue(
             maxsize=queue_limit
         )
         self._pending: dict[str, PendingAsk] = {}
@@ -73,12 +75,24 @@ class SessionHost:
         self._closing = False
         loop = asyncio.get_running_loop()
         self._idle_since = loop.time()
+        jobs = harness.deps.jobs
+        self._wake = WakeDriver(
+            WakeController(harness.wake_depth_cap),
+            is_enabled=lambda: harness.autonomous_wake,
+            # "a turn is in flight" — NOT status == "running": a turn parked on an
+            # ask reports "waiting_ask" while its task is still live, and a wake
+            # turn must not queue behind it.
+            turn_busy=lambda: self.status != "idle",
+            has_finished_pending=jobs.has_finished_pending,
+            all_jobs_settled=lambda: not jobs.any_running(),
+            enqueue_digest_turn=self._enqueue_autonomous_turn,
+        )
         harness.bind_ui(
             request_approval=self._request_approval,
             ask_user=self._ask_user,
             on_subagent_event=self._on_subagent_event,
             on_tasks_changed=lambda: self._publish("tasks.changed", {}),
-            on_jobs_changed=lambda: self._publish("jobs.changed", {}),
+            on_jobs_changed=self._on_jobs_changed,
             on_rename=lambda old, new: self._publish(
                 "session.renamed", {"from": old, "to": new}
             ),
@@ -117,11 +131,20 @@ class SessionHost:
         if self._closing:
             raise HostClosed()
         turn_id = secrets.token_hex(8)
+        self._wake.note_user_turn()  # a user turn resets the autonomous-wake chain
         try:
-            self._queue.put_nowait((turn_id, prompt, attachments))
+            self._queue.put_nowait((turn_id, prompt, attachments, "user"))
         except asyncio.QueueFull:
             raise TurnQueueFull() from None
         return turn_id
+
+    def _enqueue_autonomous_turn(self) -> None:
+        """Queue one digest-only turn (empty prompt) marked autonomous. Best-effort:
+        a full queue drops the wake rather than raising into a job callback — the
+        pending digest survives and a later trigger can still fire it."""
+        turn_id = secrets.token_hex(8)
+        with contextlib.suppress(asyncio.QueueFull):
+            self._queue.put_nowait((turn_id, "", None, "autonomous"))
 
     def interrupt(self) -> bool:
         """Cancel the running turn. Returns False when nothing is running."""
@@ -208,6 +231,13 @@ class SessionHost:
         if obj is not None:
             self.bus.publish("subagent.event", {"stream_id": stream_id, "event": obj})
 
+    def _on_jobs_changed(self) -> None:
+        """A job launched or settled. Poke the jobs view, then let the wake driver
+        decide whether a completion warrants an autonomous digest turn (trigger 1
+        of 2 — the other is the turn-end check in _worker_loop)."""
+        self._publish("jobs.changed", {})
+        self._wake.maybe_wake()
+
     def _publish_status(self) -> None:
         self.bus.publish("session.status", {"status": self.status})
 
@@ -220,9 +250,9 @@ class SessionHost:
     # ------------------------------------------------------------- turns --
     async def _worker_loop(self) -> None:
         while True:
-            turn_id, prompt, attachments = await self._queue.get()
+            turn_id, prompt, attachments, trigger = await self._queue.get()
             self._turn_task = asyncio.get_running_loop().create_task(
-                self._run_one_turn(turn_id, prompt, attachments)
+                self._run_one_turn(turn_id, prompt, attachments, trigger)
             )
             try:
                 await self._turn_task
@@ -235,6 +265,12 @@ class SessionHost:
                 self._cancel_pending("interrupted")
                 self._idle_since = asyncio.get_running_loop().time()
                 self._publish_status()
+                # Trigger 2: a job that settled while this turn was busy left a
+                # pending digest the settle-time check had to skip. Re-check now
+                # that the worker is idle. Guard on _closing so teardown never
+                # enqueues a turn into a worker being cancelled.
+                if not self._closing:
+                    self._wake.maybe_wake()
 
     def _cancel_pending(self, reason: str) -> None:
         """Clear asks left behind by an interrupted turn (a clean turn leaves
@@ -245,8 +281,12 @@ class SessionHost:
             self.bus.publish("ask.resolved", {"id": ask.id, "cancelled": True, "reason": reason})
         self._pending.clear()
 
-    async def _run_one_turn(self, turn_id: str, prompt: str, attachments) -> None:
-        self.bus.publish("turn.started", {"turn_id": turn_id, "prompt": prompt})
+    async def _run_one_turn(
+        self, turn_id: str, prompt: str, attachments, trigger: str = "user"
+    ) -> None:
+        self.bus.publish(
+            "turn.started", {"turn_id": turn_id, "prompt": prompt, "trigger": trigger}
+        )
         self._publish_status()
 
         async def handler(ctx, events):
