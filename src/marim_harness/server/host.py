@@ -236,7 +236,11 @@ class SessionHost:
         decide whether a completion warrants an autonomous digest turn (trigger 1
         of 2 — the other is the turn-end check in _worker_loop)."""
         self._publish("jobs.changed", {})
-        self._wake.maybe_wake()
+        # Symmetry with the turn-end trigger: never enqueue a wake into a worker
+        # being torn down. Keep publishing jobs.changed so a late settle still
+        # updates the jobs view.
+        if not self._closing:
+            self._wake.maybe_wake()
 
     def _publish_status(self) -> None:
         self.bus.publish("session.status", {"status": self.status})

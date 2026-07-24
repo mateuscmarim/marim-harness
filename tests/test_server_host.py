@@ -230,6 +230,25 @@ async def test_settled_job_wakes_idle_session_with_autonomous_trigger(tmp_path):
     assert started.data["prompt"] == ""
     await _drain_until(events, "turn.finished")
     await _wait_for(lambda: host.status == "idle")
+    autonomous_starts = [
+        e for e in events
+        if e.type == "turn.started" and e.data.get("trigger") == "autonomous"
+    ]
+    assert len(autonomous_starts) == 1  # turn-end trigger must not double-fire
+    await host.aclose()
+
+
+async def test_wake_disabled_in_serve_does_not_fire(tmp_path):
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    host = SessionHost(_make_harness(_text_only_model(), deps), EventBus())
+    host.harness.autonomous_wake = False  # runtime toggle; is_enabled reads it live
+    events = _spy(host.bus)
+    await _settling_job(host)
+    await _wait_for(lambda: not host.harness.deps.jobs.any_running())
+    await asyncio.sleep(0.05)  # give any erroneous wake a chance to enqueue
+    assert [e for e in events
+            if e.type == "turn.started" and e.data.get("trigger") == "autonomous"] == []
+    await _wait_for(lambda: host.status == "idle")
     await host.aclose()
 
 
