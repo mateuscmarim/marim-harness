@@ -54,3 +54,7 @@ node_modules/
 # specs/plan.md output dir). Scaffold, not marim source — the workflow itself
 # lives in the examples/playwright plugin. Ignored wholesale.
 /specs/
+
+# Superpowers SDD scratch — ledgers, task briefs/reports, review packages.
+# Working state for the current dev branch, not source. Ignored wholesale.
+/.superpowers/
