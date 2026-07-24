@@ -67,6 +67,9 @@ def test_note_user_turn_resets_the_chain():
     driver, fired = _driver()
     for _ in range(3):
         driver.maybe_wake()
+    assert fired == [1, 1, 1]
     assert driver.maybe_wake() is False  # at cap
+    assert fired == [1, 1, 1]            # capped call did not enqueue
     driver.note_user_turn()
     assert driver.maybe_wake() is True   # chain reset -> wakes again
+    assert fired == [1, 1, 1, 1]         # reset re-enabled the enqueue effect
