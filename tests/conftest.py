@@ -1,4 +1,5 @@
 import json as _json_capture
+import os
 import stat as _stat_capture
 from pathlib import Path
 
@@ -103,6 +104,32 @@ def _isolated_data(tmp_path_factory, monkeypatch):
     real XDG path set their own ``XDG_DATA_HOME`` in the body, which overrides."""
     data = tmp_path_factory.mktemp("xdg-data")
     monkeypatch.setenv("XDG_DATA_HOME", str(data))
+
+
+# Provider credential envs marim_harness reads that aren't MARIM_-prefixed (see
+# config/model.py's _provider_config/_provider_has_creds).
+_PROVIDER_CRED_ENVS = ("OPENROUTER_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY", "OPENCODE_API_KEY")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_provider_env(request, monkeypatch):
+    """Clear every MARIM_* config var and known provider credential var before each
+    test, suite-wide, so a developer's real shell/.env (provider keys, LSP toggles,
+    tier routing, context budget, etc., loaded for their own interactive use of
+    marim) never leaks into config-parsing tests. Individual tests opt back in via
+    their own monkeypatch.setenv calls, which run after this fixture.
+
+    Skipped for ``live`` tests: those intentionally read real credentials
+    straight from the environment and already gate on their presence via
+    ``skipif(not os.getenv(...))``, which is decided at collection time — clearing
+    the var here would turn "skipped, no key" into a spurious KeyError instead."""
+    if request.node.get_closest_marker("live") is not None:
+        return
+    for key in list(os.environ):
+        if key.startswith("MARIM_"):
+            monkeypatch.delenv(key, raising=False)
+    for key in _PROVIDER_CRED_ENVS:
+        monkeypatch.delenv(key, raising=False)
 
 
 # Suites whose tests exercise project-local ``.marim/skills`` / ``.marim/agents``.

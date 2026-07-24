@@ -231,18 +231,22 @@ def _context_budget_env() -> int:
     (window-only) — not an invalid one to be replaced by the default."""
     global _budget_deprecation_warned
 
-    def _parse(raw: str) -> int | None:
+    def _parse(name: str, raw: str) -> int | None:
         try:
             value = int(raw)
         except ValueError:
+            logger.debug("Ignoring invalid %s=%r (not an integer); using default.", name, raw)
             return None
         # A negative budget is garbage and must fail CLOSED (the default cap),
         # not open (0 = unbudgeted ⇒ MORE spend): only an explicit 0 uncaps.
-        return value if value >= 0 else None
+        if value < 0:
+            logger.debug("Ignoring invalid %s=%r (must be non-negative); using default.", name, raw)
+            return None
+        return value
 
     raw = os.getenv("MARIM_CONTEXT_BUDGET")
     if raw is not None:
-        value = _parse(raw)
+        value = _parse("MARIM_CONTEXT_BUDGET", raw)
         if value is not None:
             return value
     elif os.getenv("MARIM_MAX_CONTEXT_TOKENS") is not None:
@@ -252,7 +256,7 @@ def _context_budget_env() -> int:
                 "MARIM_MAX_CONTEXT_TOKENS is deprecated; rename it to "
                 "MARIM_CONTEXT_BUDGET (same meaning: the global context budget)."
             )
-        value = _parse(os.environ["MARIM_MAX_CONTEXT_TOKENS"])
+        value = _parse("MARIM_MAX_CONTEXT_TOKENS", os.environ["MARIM_MAX_CONTEXT_TOKENS"])
         if value is not None:
             return value
     return 100_000

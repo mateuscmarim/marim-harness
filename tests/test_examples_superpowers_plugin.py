@@ -30,7 +30,7 @@ EXPECTED_SKILLS = {
 def test_manifest_loads():
     m = load_manifest(PLUGIN_ROOT)
     assert m.name == "superpowers"
-    assert m.version == "6.1.1"
+    assert m.version == "6.2.0"
 
 
 def test_session_start_hook_uses_marim_native_script():
