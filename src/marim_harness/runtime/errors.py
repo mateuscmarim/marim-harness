@@ -151,6 +151,15 @@ _TRANSIENT_PHRASES = (
     "unavailable",
 )
 
+_STREAMING_ERROR_PHRASES = (
+    "streaming",
+    "stream",
+    "incomplete response",
+    "connection reset",
+    "broken pipe",
+)
+
+
 # A transient HTTP status (502/503/504) named *in prose* — e.g. "upstream
 # returned 503" or "HTTP 502 Bad Gateway". Matched with a regex rather than a
 # bare substring so we don't misread an unrelated number that happens to contain
@@ -173,6 +182,19 @@ def _text_signals_transient(haystack: str) -> bool:
     if any(phrase in haystack for phrase in _TRANSIENT_PHRASES):
         return True
     return _TRANSIENT_STATUS_RE.search(haystack) is not None
+
+
+def _is_streaming_api_error(exc: BaseException) -> bool:
+    """True when ``exc`` is an ``openai.APIError`` whose message identifies a
+    streaming disconnect — always transient, worth retrying."""
+    api = _find_api_error(exc)
+    if api is None:
+        return False
+    # Streaming errors have no HTTP status — they're connection-layer failures.
+    if getattr(api, "status_code", None) is not None:
+        return False
+    haystack = str(api).lower()
+    return any(phrase in haystack for phrase in _STREAMING_ERROR_PHRASES)
 
 
 def _find_model_http_error(exc: BaseException):
@@ -236,15 +258,18 @@ def _body_signals_transient(body) -> bool:
 
 def is_transient_model_error(exc: BaseException) -> bool:
     """True when ``exc`` is a model/provider error worth retrying — a gateway or
-    server hiccup, a request timeout, or a rate limit — rather than a permanent
-    client error (malformed request, auth, not-found).
+    server hiccup, a request timeout, a rate limit, or a streaming disconnect —
+    rather than a permanent client error (malformed request, auth, not-found).
 
     Reads the status off a pydantic-ai ``ModelHTTPError``. OpenRouter overloads 400
     as a passthrough for upstream provider failures, so a 400/422 is inspected: a
     nested transient upstream status or a transient phrase in its body counts as
-    transient; an otherwise-genuine bad request does not. A non-HTTP exception (no
-    ``ModelHTTPError`` in the chain) is treated as permanent — better to fail fast
-    than hammer on something we can't positively identify as a transient blip."""
+    transient; an otherwise-genuine bad request does not. Streaming errors (bare
+    ``openai.APIError`` with no HTTP status) are detected by message phrase and
+    always treated as transient."""
+    # Streaming errors: bare openai.APIError with no HTTP status.
+    if _is_streaming_api_error(exc):
+        return True
     api = _find_model_http_error(exc)
     if api is None:
         return False

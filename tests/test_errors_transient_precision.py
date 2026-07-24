@@ -8,6 +8,7 @@ canonical reason phrase) and a standalone digit token, while distinctive phrases
 ("timed out", "overloaded", ...) still match as before.
 """
 
+import pytest
 from pydantic_ai.exceptions import ModelHTTPError
 
 from marim_harness.runtime.errors import is_transient_model_error
@@ -53,3 +54,54 @@ def test_distinctive_phrase_still_transient():
         "metadata": {"raw": "the model is currently overloaded, please try again"},
     }
     assert is_transient_model_error(_http_error(400, body)) is True
+
+
+# --- Streaming error detection ---
+
+
+def _make_api_error(message: str, status_code: int | None = None):
+    """Create an openai.APIError-like exception for testing.
+
+    We need a real openai.APIError subclass so _find_api_error() finds it.
+    """
+    try:
+        from openai import APIError
+    except ImportError:
+        pytest.skip("openai not installed")
+
+    err = APIError(message=message, request=None, body=None)
+    err.status_code = status_code
+    return err
+
+
+def test_streaming_response_failed_is_transient():
+    """A streaming disconnect (no HTTP status) should be retryable."""
+    exc = _make_api_error("Streaming response failed")
+    assert is_transient_model_error(exc) is True
+
+
+def test_broken_pipe_is_transient():
+    exc = _make_api_error("Connection broken: broken pipe")
+    assert is_transient_model_error(exc) is True
+
+
+def test_connection_reset_is_transient():
+    exc = _make_api_error("Connection reset by peer")
+    assert is_transient_model_error(exc) is True
+
+
+def test_stream_error_without_status_is_transient():
+    exc = _make_api_error("stream error: incomplete read")
+    assert is_transient_model_error(exc) is True
+
+
+def test_api_error_with_status_is_not_streaming():
+    """An APIError WITH an HTTP status should not be classified as streaming."""
+    exc = _make_api_error("Bad request", status_code=400)
+    assert is_transient_model_error(exc) is False
+
+
+def test_unrelated_api_error_is_not_transient():
+    """An APIError without streaming keywords should not be transient."""
+    exc = _make_api_error("Invalid authentication token")
+    assert is_transient_model_error(exc) is False
