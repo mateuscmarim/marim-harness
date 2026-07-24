@@ -91,6 +91,10 @@ class Job:
     stream_id: str | None = None
     # UTC ISO stamp set at settle time; rides into the persisted history.
     finished_at: str | None = None
+    # UTC ISO stamp set at register time (running jobs only; not persisted).
+    started_at: str | None = None
+    # The spawn input: the sub-agent task prompt (agent) or the command (bash).
+    prompt: str | None = None
     task: asyncio.Task | None = field(default=None, repr=False)
     kill: Callable[[], None] | None = field(default=None, repr=False)
     output_fn: Callable[[], str] | None = field(default=None, repr=False)
@@ -168,12 +172,15 @@ class JobRegistry:
         kill: Callable[[], None] | None = None,
         output_fn: Callable[[], str] | None = None,
         stream_id: str | None = None,
+        prompt: str | None = None,
     ) -> str:
         """Schedule ``coro`` as a background job and return its id. The coroutine's
         return value becomes the job's result; an exception marks it failed; being
         cancelled marks it cancelled. Fires ``on_change`` on launch and finish."""
         job = Job(id=self._next_id(), kind=kind, label=label,
-                  kill=kill, output_fn=output_fn, stream_id=stream_id)
+                  kill=kill, output_fn=output_fn, stream_id=stream_id,
+                  prompt=prompt,
+                  started_at=datetime.now(timezone.utc).isoformat())
 
         # Drive the caller's coroutine directly as the task and settle from a
         # done-callback. A wrapper coroutine that merely `await`s ``coro`` would,
@@ -436,7 +443,8 @@ class JobRegistry:
         def entry(j: Job) -> dict:
             return {"id": j.id, "kind": j.kind, "label": j.label,
                     "status": j.status, "result_tail": _result_tail(j.result),
-                    "stream_id": j.stream_id, "finished_at": j.finished_at}
+                    "stream_id": j.stream_id, "finished_at": j.finished_at,
+                    "prompt": j.prompt}
 
         settled = [entry(j) for j in self._jobs.values() if j.status != "running"]
         prior = [entry(j) for j in self.history]
@@ -450,7 +458,8 @@ class JobRegistry:
             Job(id=str(e.get("id", "?")), kind=str(e.get("kind", "agent")),
                 label=str(e.get("label", "")), status=_validated_status(e.get("status")),
                 result=e.get("result_tail") or None,
-                stream_id=e.get("stream_id"), finished_at=e.get("finished_at"))
+                stream_id=e.get("stream_id"), finished_at=e.get("finished_at"),
+                prompt=e.get("prompt"))
             for e in entries
             if isinstance(e, dict)
         ]

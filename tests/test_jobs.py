@@ -725,3 +725,31 @@ def test_import_history_is_not_live():
     assert not reg.has_finished_pending()    # never enters the digest
     reg.clear_history()
     assert reg.history == []
+
+
+@pytest.mark.anyio
+async def test_register_stamps_started_at_and_prompt():
+    from marim_harness.jobs import JobRegistry
+
+    reg = JobRegistry()
+
+    async def _work():
+        return "ok"
+
+    job_id = reg.register("bash", "echo hi", _work(), prompt="echo hi")
+    job = reg.get(job_id)
+    assert job.prompt == "echo hi"
+    assert job.started_at is not None and job.started_at.endswith("+00:00") or "T" in job.started_at
+
+
+def test_export_settled_includes_prompt():
+    from marim_harness.jobs import Job, JobRegistry
+
+    reg = JobRegistry()
+    reg.history = [
+        Job(id="job-1", kind="agent", label="explore: x", status="done",
+            result="done", stream_id="s1", finished_at="2026-07-23T00:00:00+00:00",
+            prompt="the task prompt")
+    ]
+    entry = reg.export_settled()[0]
+    assert entry["prompt"] == "the task prompt"

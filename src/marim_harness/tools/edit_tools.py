@@ -134,7 +134,8 @@ async def bash(
     if background:
         bp = await shell.start_bash(ctx.deps.workspace.root, command)
         job_id = ctx.deps.jobs.register(
-            "bash", command, bp.wait(), kill=bp.kill, output_fn=bp.output
+            "bash", command, bp.wait(), kill=bp.kill, output_fn=bp.output,
+            prompt=command,
         )
         return f"Started {job_id} (bash) — {command[:60]}"
     timeout_s = _resolve_bash_timeout_seconds(timeout)

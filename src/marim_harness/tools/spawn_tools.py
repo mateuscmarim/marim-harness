@@ -201,6 +201,7 @@ async def _spawn_background(
             _run_after(ctx.deps.jobs, after_ids, task, _start_inner, state),
             output_fn=_waiting_output,
             stream_id=ctx.tool_call_id or None,
+            prompt=task,
         )
     else:
         job_id = ctx.deps.jobs.register(
@@ -210,6 +211,7 @@ async def _spawn_background(
                 ctx.tool_call_id or "", ctx.deps.subagent_depth, tier, thinking,
             ),
             stream_id=ctx.tool_call_id or None,
+            prompt=task,
         )
     if auto_detached:
         return _detach_handoff(job_id)
