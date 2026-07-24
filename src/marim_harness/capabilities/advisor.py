@@ -74,8 +74,13 @@ class Advisor(AbstractCapability[Any]):
 
     async def for_run(self, ctx: RunContext[Any]) -> Advisor:
         # Fresh instance per run so max_uses is a per-run cap (mirrors
-        # marim's per-turn cap). The resolved model is carried over — it is
-        # stateless — so a string slug is only resolved once per process.
+        # marim's per-turn cap). This clone never writes back to the
+        # prototype (self), so a string slug is actually re-resolved via
+        # infer_model once per RUN, not once per process — deliberately:
+        # that's what lets a slug that failed to resolve on an earlier run
+        # retry on the next one. Carrying `_resolved` forward here only
+        # matters when the prototype was constructed with an already-built
+        # Model instance, which is genuinely stateless to reuse.
         fresh = Advisor(
             self.model,
             max_uses=self.max_uses,
@@ -128,6 +133,9 @@ class Advisor(AbstractCapability[Any]):
                     f"Advisor unavailable: can't build model {self.model!r}: "
                     f"{exc}. Continue without advice."
                 )
+            # Increment before awaiting consult: an attempt counts as a use
+            # even if the consultation itself fails, so max_uses bounds
+            # attempts, not successes.
             self._uses += 1
             return await consult(model, list(ctx.messages), max_tokens=self.max_tokens)
 

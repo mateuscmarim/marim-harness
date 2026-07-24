@@ -4,7 +4,9 @@ marim exports parts of itself as standard
 [pydantic-ai capabilities](https://ai.pydantic.dev/) so they can be used with
 **any** pydantic-ai agent — no marim harness required. They live under
 `marim_harness.capabilities` and depend only on pydantic-ai plus marim's pure
-helpers, never on marim's runtime.
+helpers — no functional dependency on marim's runtime (they never touch
+`Deps`, services, or TUI objects), even though importing the package
+transitively loads some of those runtime modules.
 
 ## Advisor
 
@@ -44,13 +46,21 @@ model degrades the advice ("Advisor unavailable: … Continue without
 advice."), never the run.
 
 Because `model` is a plain string, the capability also works in
-`Agent.from_file` YAML specs:
+`Agent.from_file` YAML specs. pydantic-ai only auto-resolves its own
+built-in capability names, though — a custom capability like `Advisor` must
+be passed explicitly via `custom_capability_types`, or loading raises
+`ValueError: Capability 'Advisor' is not in the provided
+custom_capability_types`:
 
 ```yaml
 model: anthropic:claude-sonnet-4-6
 capabilities:
   - Advisor:
       model: openai:gpt-5.2
+```
+
+```python
+agent = Agent.from_file("agent.yaml", custom_capability_types=[Advisor])
 ```
 
 ### With the marim harness
