@@ -58,6 +58,7 @@ from marim_harness import (
 | --- | --- |
 | [Getting started](getting-started.md) | Install, quickstart, models & API keys, bare-build defaults |
 | [Builder reference](builder.md) | Every `with_*` method, `build()` validation, `BuilderError` |
+| [Exported capabilities](capabilities.md) | pydantic-ai capabilities marim ships (`Advisor`), usable with any pydantic-ai agent |
 | [Turns, modes & approval](turns.md) | `run_turn`, the approval loop, `Mode` semantics, `bind_ui`, streaming |
 | [Custom tools](custom-tools.md) | Tool signature, gating, collision rules, the import gotchas |
 | [Sub-agents](subagents.md) | `AgentDef`, grants, the depth ceiling |

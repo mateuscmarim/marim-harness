@@ -10,6 +10,7 @@ from marim_harness.advisor import (
     ADVISOR_GUIDANCE,
     ADVISOR_OFF,
     _advise_prompt,
+    consult,
     make_advisor,
 )
 
@@ -92,3 +93,20 @@ async def test_run_failure_twice_returns_error_string():
     out = await advise([])
     assert out.startswith("Advisor unavailable")
     assert "boom" in out
+
+
+@pytest.mark.anyio
+async def test_consult_returns_advice_with_usage_trailer():
+    out = await consult(TestModel(custom_output_text="Do X first."), [])
+    assert out.startswith("Do X first.")
+    assert "[advisor usage:" in out
+
+
+@pytest.mark.anyio
+async def test_consult_failure_twice_returns_error_string():
+    def always_broken(messages, info):
+        raise RuntimeError("boom")
+
+    out = await consult(FunctionModel(always_broken), [])
+    assert out.startswith("Advisor unavailable:")
+    assert "Continue without advice" in out
