@@ -305,7 +305,16 @@ async def fetch_lmstudio_windows(
 
 def model_supports_images(entries: list[ModelEntry], model_id: str) -> bool | None:
     """Whether ``model_id`` accepts image input per the catalog; None if the id
-    is not present (capability unknown)."""
+    is not present (capability unknown).
+
+    Known caveat: the composed catalog concatenates every provider's entries,
+    and both ``entry.id`` and the ``model_id`` the vision gate passes in
+    (``ctx.model.model_name``) are *bare* ids with no provider prefix. If two
+    providers list the same bare id, the first provider's entry wins here and
+    can misreport the other's capability. The worst case is mild — a spurious
+    "no image input" notice, or one doomed upload the provider rejects — and
+    real cross-provider id collisions are rare, so first-wins is accepted
+    rather than threading provider identity through the gate."""
     for entry in entries:
         if entry.id == model_id:
             return entry.supports_images

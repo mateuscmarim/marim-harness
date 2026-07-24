@@ -50,10 +50,14 @@ async def read_file(
     )
     if isinstance(out, str):
         return out
-    data, media_type = out
     if await _model_accepts_images(ctx) is False:
         return f"{path}: image file — the current model does not accept image input."
-    return BinaryContent(data=data, media_type=media_type)
+    # Record the read only now that the image actually reaches the model. A
+    # gate-blocked read returned just the notice above, so — exactly like the
+    # over-cap path inside the impl — it must not satisfy the read-before-edit
+    # guard: the agent never observed the content.
+    ctx.deps.reads.record(out.resolved)
+    return BinaryContent(data=out.data, media_type=out.media_type)
 
 
 async def _model_accepts_images(ctx: RunContext[Deps]) -> bool | None:

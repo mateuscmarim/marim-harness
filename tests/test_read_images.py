@@ -81,6 +81,29 @@ async def test_ctx_without_model_attr_stays_optimistic(tmp_path):
     assert isinstance(out, BinaryContent)
 
 
+async def test_gate_blocked_image_read_does_not_mark_read_ledger(tmp_path):
+    """A gate-blocked image read returns only a notice — the model never saw
+    the content, so (like the over-cap path) it must not satisfy the
+    read-before-edit guard."""
+
+    async def gate(model_id):
+        return False
+
+    (tmp_path / "shot.png").write_bytes(PNG)
+    ctx = _ctx(tmp_path, gate=gate)
+    out = await fs_tools.read_file(ctx, "shot.png")
+    assert isinstance(out, str)
+    assert ctx.deps.reads.staleness((tmp_path / "shot.png").resolve()) == "unread"
+
+
+async def test_delivered_image_read_marks_read_ledger(tmp_path):
+    (tmp_path / "shot.png").write_bytes(PNG)
+    ctx = _ctx(tmp_path)
+    out = await fs_tools.read_file(ctx, "shot.png")
+    assert isinstance(out, BinaryContent)
+    assert ctx.deps.reads.staleness((tmp_path / "shot.png").resolve()) is None
+
+
 def test_tool_result_text_renders_image_placeholder():
     from marim_harness.interfaces.tui.stream_render import tool_result_text
 

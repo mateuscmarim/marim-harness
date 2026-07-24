@@ -22,6 +22,7 @@ from pathlib import Path
 from pydantic_ai.messages import ModelMessagesTypeAdapter
 
 from ..atomic_io import atomic_write_text
+from ..images import externalize_images, rehydrate_images
 from ..workspace import cap_transcript
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,10 @@ class TranscriptStore:
 
     def __init__(self, session_path, session_id: str) -> None:
         self._dir = Path(session_path).parent / f"{session_id}.subagents"
+        # Keyed the same as the parent session's own image externalization, so
+        # an image that appears in both the session JSON and a spawn's sidecar
+        # dedupes to one content-addressed cache file.
+        self._session_id = session_id
 
     def _file(self, stream_id: str) -> Path:
         return self._dir / f"{_safe(stream_id)}.json"
@@ -74,6 +79,12 @@ class TranscriptStore:
         try:
             capped = cap_transcript(messages, cap, cap_reasoning=cap_reasoning)
             msgs = ModelMessagesTypeAdapter.dump_python(capped, mode="json")
+            # Swap inline base64 for cache refs, exactly like the session JSON
+            # (session/store.py): a 5 MB image read would otherwise write ~6.7 MB
+            # of base64 here, and the mid-run checkpoint rewrites this file
+            # before EVERY model request of the spawn. Safe to mutate: dump_python
+            # produced fresh dicts, so the live run's messages are untouched.
+            msgs = externalize_images(msgs, self._session_id)
             if meta is None:
                 payload = msgs
             else:
@@ -94,6 +105,9 @@ class TranscriptStore:
             raw = json.loads(path.read_text())
             if isinstance(raw, dict):  # v2 envelope; a bare list is a v1 file
                 raw = raw.get("messages", [])
+            # A missing cache file degrades that one image to a placeholder
+            # string (never a read failure) — same contract as session load.
+            raw = rehydrate_images(raw, self._session_id)
             return list(ModelMessagesTypeAdapter.validate_python(raw))
         except Exception as exc:  # noqa: BLE001 - a corrupt sidecar must not crash resume
             logger.warning("Failed to read sub-agent transcript %s: %s", stream_id, exc)
