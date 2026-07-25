@@ -2,6 +2,7 @@ from pydantic_ai import RunContext
 
 from ..runtime.deps import Deps
 from ..workspace.skills import find_skill, read_bundled_file, read_skill_body
+from .fs_tools import offload_dir
 from .impl.offload import offload_if_large
 
 
@@ -21,7 +22,7 @@ def activate_skill(ctx: RunContext[Deps], name: str) -> str:
     # header stay inline so the agent can still navigate even when the body offloads.
     body = offload_if_large(
         read_skill_body(skill), kind="skill", key=str(skill.root),
-        workspace_root=ctx.deps.workspace.root,
+        offload_dir=offload_dir(ctx),
     )
     return (
         f"Skill directory: {skill.root}\n"
@@ -45,5 +46,5 @@ def read_skill_file(ctx: RunContext[Deps], name: str, path: str) -> str:
     # file with a preview + read_file pointer instead of being inlined whole.
     return offload_if_large(
         read_bundled_file(skill, path), kind="skill-file", key=f"{skill.root}\0{path}",
-        workspace_root=ctx.deps.workspace.root,
+        offload_dir=offload_dir(ctx),
     )

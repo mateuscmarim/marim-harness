@@ -17,6 +17,10 @@ from .offload import MAX_OUTPUT_CHARS, offload_if_large
 
 # Capture the process umask once at import time so we never need to manipulate
 # os.umask() at runtime — that API is process-global and not thread-safe.
+# The subdirectory under a workspace root where offloaded files are stored when
+# no explicit offload_dir is given (legacy fallback, pre-scratchpad behavior).
+_LEGACY_OFFLOAD_DIR = Path(".marim") / "output"
+
 _DEFAULT_UMASK: int = os.umask(0o022)
 os.umask(_DEFAULT_UMASK)
 
@@ -507,7 +511,8 @@ def edit_file(
     return f"edited {path} ({n} edit{'s' if n != 1 else ''})"
 
 
-def tree(root: Path, path: str = ".", depth: int = 2) -> str:
+def tree(root: Path, path: str = ".", depth: int = 2,
+         offload_dir: Path | None = None) -> str:
     """Render an indented directory tree rooted at ``path``, descending up to
     ``depth`` levels. Dirs sort first (with a trailing slash); known-noise dirs
     are listed but not expanded. Large trees are offloaded to a file."""
@@ -520,7 +525,7 @@ def tree(root: Path, path: str = ".", depth: int = 2) -> str:
         return "(empty)"
     return offload_if_large(
         "\n".join(lines), kind="tree", key=f"{path}\0{depth}",
-        workspace_root=root, capped=capped,
+        offload_dir=offload_dir or root / _LEGACY_OFFLOAD_DIR, capped=capped,
     )
 
 
@@ -566,7 +571,8 @@ def _walk_tree(directory: Path, depth: int, level: int, lines: list[str]) -> boo
     return _recurse(directory, level)
 
 
-def glob_files(root: Path, pattern: str) -> str:
+def glob_files(root: Path, pattern: str,
+               offload_dir: Path | None = None) -> str:
     """List files under the workspace matching a glob pattern. Large match lists
     are offloaded to a file (handle + preview) instead of flooding the response."""
     try:
@@ -610,7 +616,7 @@ def glob_files(root: Path, pattern: str) -> str:
     matches.sort()
     return offload_if_large(
         "\n".join(matches), kind="glob", key=pattern,
-        workspace_root=root, capped=capped,
+        offload_dir=offload_dir or root / _LEGACY_OFFLOAD_DIR, capped=capped,
     )
 
 
@@ -888,6 +894,7 @@ def grep(
     before_context: int = 0,
     after_context: int = 0,
     multiline: bool = False,
+    offload_dir: Path | None = None,
 ) -> str:
     """Search file contents for a regex. ``output_mode`` picks the shape:
     ``content`` → ``relpath:line:text`` hits (context lines, when requested, use a
@@ -939,4 +946,8 @@ def grep(
         f"{pattern}\0{path or ''}\0{output_mode}\0{glob or ''}\0{file_type or ''}\0"
         f"{head_limit!r}\0{int(case_insensitive)}\0{before}\0{after}\0{int(multiline)}"
     )
-    return offload_if_large(body, kind="grep", key=key, workspace_root=root, capped=col.capped)
+    return offload_if_large(
+        body, kind="grep", key=key,
+        offload_dir=offload_dir or root / _LEGACY_OFFLOAD_DIR,
+        capped=col.capped,
+    )

@@ -21,6 +21,23 @@ def scratch_roots(ctx: RunContext[Deps]) -> tuple[Path, ...]:
     return (p,) if p is not None else ()
 
 
+def offload_dir(ctx: RunContext[Deps]) -> Path:
+    """The best directory for offloading large tool output.
+
+    Prefers the session scratchpad (session-scoped, auto-cleaned, outside the
+    workspace tree) over the workspace-rooted ``.marim/output/`` (legacy fallback
+    for headless or scratchpad-disabled runs). The scratchpad path is fetched
+    live per call so it tracks session switches; when unavailable, falls back to
+    the workspace's offload directory.
+    """
+    getter = ctx.deps.services.get_scratchpad
+    if getter is not None:
+        scratchpad = getter()
+        if scratchpad is not None:
+            return scratchpad
+    return ctx.deps.workspace.root / ".marim" / "output"
+
+
 async def read_file(
     ctx: RunContext[Deps], path: str, offset: int = 1, limit: int | None = None
 ) -> str | BinaryContent:
@@ -77,13 +94,15 @@ async def _model_accepts_images(ctx: RunContext[Deps]) -> bool | None:
 
 def glob(ctx: RunContext[Deps], pattern: str) -> str:
     """List files matching a glob pattern (e.g. `**/*.py`)."""
-    return fs.glob_files(ctx.deps.workspace.root, pattern)
+    return fs.glob_files(ctx.deps.workspace.root, pattern,
+                         offload_dir=offload_dir(ctx))
 
 
 def tree(ctx: RunContext[Deps], path: str = ".", depth: int = 2) -> str:
     """Show a directory tree. `depth=1` lists one level (like ls); higher
     descends further. Noise dirs (.git, node_modules, …) aren't expanded."""
-    return fs.tree(ctx.deps.workspace.root, path, depth)
+    return fs.tree(ctx.deps.workspace.root, path, depth,
+                   offload_dir=offload_dir(ctx))
 
 
 def _grep_int_flag(key: str, val: object) -> int:
@@ -154,4 +173,5 @@ def grep(
         before_context=before,
         after_context=after,
         multiline=multiline,
+        offload_dir=offload_dir(ctx),
     )

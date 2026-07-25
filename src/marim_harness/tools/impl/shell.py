@@ -8,6 +8,10 @@ from pathlib import Path
 
 from .offload import MAX_OUTPUT_CHARS, offload_if_large
 
+# The subdirectory under a workspace root where offloaded files are stored when
+# no explicit offload_dir is given (legacy fallback, pre-scratchpad behavior).
+_LEGACY_OFFLOAD_DIR = Path(".marim") / "output"
+
 _DEFAULT_TIMEOUT = 30
 _DEFAULT_MAX_OUTPUT = 20_000
 # Format the elided-middle marker the same way _truncate_middle does, so the live
@@ -189,6 +193,7 @@ async def run_bash(
     command: str,
     timeout: int = _DEFAULT_TIMEOUT,
     stdin_data: bytes | None = None,
+    offload_dir: Path | None = None,
 ) -> str:
     """Run a shell command in the workspace root, capturing combined output.
 
@@ -284,8 +289,11 @@ async def run_bash(
     # offload *namespace*: offload_if_large writes under `workspace_root/.marim/
     # output/`, so two different roots already land in physically different
     # directories and can't collide regardless of what's in `key`.
-    return offload_if_large(body, kind="bash", key=key,
-                            workspace_root=root, capped=dropped > 0)
+    return offload_if_large(
+        body, kind="bash", key=key,
+        offload_dir=offload_dir or root / _LEGACY_OFFLOAD_DIR,
+        capped=dropped > 0,
+    )
 
 
 class BashProcess:
@@ -295,11 +303,12 @@ class BashProcess:
     :meth:`kill` terminates the whole process group so children die too."""
 
     def __init__(self, proc: asyncio.subprocess.Process, max_output: int,
-                 root: Path, command: str) -> None:
+                 root: Path, command: str, offload_dir: Path | None = None) -> None:
         self._proc = proc
         self._max_output = max_output
         self._root = root
         self._command = command
+        self._offload_dir = offload_dir
         # Bound memory while the background command runs (see _BoundedOutput): a
         # detached flood must not grow the buffer without limit before wait() caps it.
         self._buffer = _BoundedOutput(MAX_OUTPUT_CHARS)
@@ -367,12 +376,16 @@ class BashProcess:
             text = head + tail
             capped = False
         body = f"exit {self._proc.returncode}\n{text}"
-        return offload_if_large(body, kind="bash", key=self._command,
-                                workspace_root=self._root, capped=capped)
+        return offload_if_large(
+            body, kind="bash", key=self._command,
+            offload_dir=self._offload_dir or self._root / _LEGACY_OFFLOAD_DIR,
+            capped=capped,
+        )
 
 
 async def start_bash(
-    root: Path, command: str, max_output: int = _DEFAULT_MAX_OUTPUT
+    root: Path, command: str, max_output: int = _DEFAULT_MAX_OUTPUT,
+    offload_dir: Path | None = None,
 ) -> BashProcess:
     """Launch a shell command detached (no timeout) and return a BashProcess to
     stream, wait on, or kill. Runs in its own session so the whole tree can be
@@ -384,4 +397,4 @@ async def start_bash(
         stderr=asyncio.subprocess.STDOUT,
         start_new_session=True,
     )
-    return BashProcess(proc, max_output, root, command)
+    return BashProcess(proc, max_output, root, command, offload_dir=offload_dir)
