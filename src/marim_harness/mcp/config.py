@@ -373,7 +373,11 @@ def make_approval_hook(label: str, trusted: bool, *, schema_holder: dict | None 
         mode = getattr(ws, "mode", None) if ws is not None else None
         getter = getattr(getattr(deps, "services", None), "get_scratchpad", None)
         scratchpad = getter() if getter is not None else None
-        offld = scratchpad if scratchpad is not None else root
+        from ..tools.impl.offload import LEGACY_OFFLOAD_DIR
+        offld = (
+            scratchpad if scratchpad is not None
+            else (root / LEGACY_OFFLOAD_DIR if root is not None else None)
+        )
         if mode is Mode.plan:
             return f"Denied: {display} is blocked in read-only plan mode."
         # Decode any stringified structured arg before the server (and the approval
