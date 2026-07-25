@@ -61,7 +61,7 @@ non-positive values and fall back to the default (exceptions are noted).
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MARIM_PROVIDER` | `openrouter` | Default provider: `openrouter`, `local`, `google`, `zen`, or `claude-cli`. |
+| `MARIM_PROVIDER` | `openrouter` | Default provider: `openrouter`, `local`, `google`, `zen`, `zen-go`, or `claude-cli`. |
 | `MARIM_MODEL` | per provider, see below | Model id on the default provider. Sent to the provider verbatim. |
 | `MARIM_BASE_URL` | `http://localhost:11434/v1` | Base URL for the `local` provider (any OpenAI-compatible server). |
 | `MARIM_API_KEY` | `local` (local provider) | Generic API key: used by `local`, and as a last-resort fallback for `openrouter`, `google`, `zen`, and `zen-go`. |
@@ -81,9 +81,9 @@ id like `local:qwen2.5-coder` addresses any active provider.
 
 `MARIM_MODEL` defaults per provider: `anthropic/claude-sonnet-4-6`
 (openrouter), `qwen2.5-coder` (local), `gemini-2.5-flash` (google),
-`mimo-v2.5-free` (zen), and *unset* for `claude-cli` (the CLI uses its own
-configured default). The value is passed to the provider verbatim — marim
-does not validate or rewrite it.
+`mimo-v2.5-free` (zen), `glm-5.2` (zen-go), and *unset* for `claude-cli`
+(the CLI uses its own configured default). The value is passed to the
+provider verbatim — marim does not validate or rewrite it.
 
 The `zen` provider talks to [OpenCode Zen](https://opencode.ai/auth)'s
 OpenAI-compatible gateway at a fixed `https://opencode.ai/zen/v1` (not
