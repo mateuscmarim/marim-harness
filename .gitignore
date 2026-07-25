@@ -30,7 +30,7 @@ node_modules/
 .DS_Store
 *.swp
 
-# marim's per-project working dir: offloaded fetch bodies, sub-agent/output
+# marim's per-project working dir: plugin configs, session-local state,
 # spill, the last-provider-error payload, and generated test reports — all local
 # scratch. Ignored wholesale; commit a specific file with a negation (e.g.
 # `!.marim/mcp.json`) if a project ever needs to track project-local config.

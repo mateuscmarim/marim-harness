@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 
 def _bound_tool_result(result, *, label: str, name: str, args: dict | None,
-                       workspace_root: Path | None):
+                       offload_dir: Path | None):
     """Bound an MCP tool result so a huge server response can't flood context.
 
     MCP results are an open union (``str | BinaryContent | dict | list | …``).
@@ -83,7 +83,7 @@ def _bound_tool_result(result, *, label: str, name: str, args: dict | None,
     key = f"{label}/{name}\0{arg_key}"
     if isinstance(result, str):
         return offload_if_large(
-            result, kind="mcp", key=key, workspace_root=workspace_root
+            result, kind="mcp", key=key, offload_dir=offload_dir
         )
     # Don't touch binary payloads — they aren't a text flood and must reach the
     # model intact. Import lazily so this module stays cheap to import.
@@ -98,7 +98,7 @@ def _bound_tool_result(result, *, label: str, name: str, args: dict | None,
             return result  # can't measure safely — leave the structure intact
         if len(serialized) > _INLINE_CHAR_LIMIT:
             return offload_if_large(
-                serialized, kind="mcp", key=key, workspace_root=workspace_root,
+                serialized, kind="mcp", key=key, offload_dir=offload_dir,
             )
     return result
 
@@ -366,11 +366,14 @@ def make_approval_hook(label: str, trusted: bool, *, schema_holder: dict | None 
     async def hook(ctx, call_tool, name, args):
         deps = ctx.deps
         display = f"{label}_{name}"
-        # Read the workspace root at call time, like mode/request_approval below,
-        # so a large result can be offloaded under the project rather than inline.
+        # Resolve the offload directory: prefer the session scratchpad (session-
+        # scoped, auto-cleaned) over the workspace root's legacy .marim/output/.
         ws = getattr(deps, "workspace", None)
         root = getattr(ws, "root", None) if ws is not None else None
         mode = getattr(ws, "mode", None) if ws is not None else None
+        getter = getattr(getattr(deps, "services", None), "get_scratchpad", None)
+        scratchpad = getter() if getter is not None else None
+        offld = scratchpad if scratchpad is not None else root
         if mode is Mode.plan:
             return f"Denied: {display} is blocked in read-only plan mode."
         # Decode any stringified structured arg before the server (and the approval
@@ -380,7 +383,7 @@ def make_approval_hook(label: str, trusted: bool, *, schema_holder: dict | None 
         if mode is Mode.auto or trusted:
             result = await call_tool(name, args)
             return _bound_tool_result(
-                result, label=label, name=name, args=args, workspace_root=root
+                result, label=label, name=name, args=args, offload_dir=offld
             )
         # ask mode against an untrusted server: prompt the user.
         ui = getattr(deps, "ui", None)
@@ -391,7 +394,7 @@ def make_approval_hook(label: str, trusted: bool, *, schema_holder: dict | None 
         if decision is True:
             result = await call_tool(name, args)
             return _bound_tool_result(
-                result, label=label, name=name, args=args, workspace_root=root
+                result, label=label, name=name, args=args, offload_dir=offld
             )
         return f"Denied: the user rejected {display}."
 
