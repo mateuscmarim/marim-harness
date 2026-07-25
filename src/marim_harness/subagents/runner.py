@@ -513,10 +513,25 @@ class SubagentRunner:
         the full report is spilled to a workspace file and the main agent gets a
         within-budget head + pointer; otherwise the report passes through. The
         cap is lossless — nothing is discarded, only relocated."""
-        rel = f".marim/subagent-output/{ref}.md"
-        text, spill = cap_subagent_output(output, max_output_chars, rel)
+        # Prefer the session scratchpad (session-scoped, auto-cleaned) over
+        # the workspace-rooted `.marim/subagent-output/` fallback.
+        scratchpad = None
+        getter = self.deps.services.get_scratchpad
+        if getter is not None:
+            scratchpad = getter()
+        if scratchpad is not None:
+            spill_path = str(scratchpad / "subagent-output" / f"{ref}.md")
+        else:
+            spill_path = f".marim/subagent-output/{ref}.md"
+        text, spill = cap_subagent_output(output, max_output_chars, spill_path)
         if spill is not None:
-            fs.write_file(self.deps.workspace.root, rel, spill)
+            if scratchpad is not None:
+                d = scratchpad / "subagent-output"
+                d.mkdir(parents=True, exist_ok=True)
+                from ..atomic_io import atomic_write_text
+                atomic_write_text(d / f"{ref}.md", spill, durable=False)
+            else:
+                fs.write_file(self.deps.workspace.root, spill_path, spill)
         return text
 
     async def _finalize_spawn(

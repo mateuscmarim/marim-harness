@@ -409,7 +409,17 @@ class WorkflowEngine:
                            _DRAIN_SECS)
 
     def _shape(self, value: object, tool_call_id: str, printed: str = "") -> str:
-        rel = f".marim/workflow-output/{tool_call_id or 'workflow'}.json"
+        name = tool_call_id or "workflow"
+        # Prefer the session scratchpad (session-scoped, auto-cleaned) over
+        # the workspace-rooted `.marim/workflow-output/` fallback.
+        scratchpad = None
+        getter = self.deps.services.get_scratchpad
+        if getter is not None:
+            scratchpad = getter()
+        if scratchpad is not None:
+            spill_path = str(scratchpad / "workflow-output" / f"{name}.json")
+        else:
+            spill_path = f".marim/workflow-output/{name}.json"
         # A None final value with printed output is almost always a script
         # that ended on print(result) instead of a bare `result` expression.
         # The payload -- possibly the product of several expensive sub-agent
@@ -417,9 +427,15 @@ class WorkflowEngine:
         # note) rather than an error that would make the model re-run the
         # whole workflow just to fix its last line.
         if value is None and printed.strip():
-            text, spill = cap_subagent_output(printed, MAX_RESULT_CHARS, rel)
+            text, spill = cap_subagent_output(printed, MAX_RESULT_CHARS, spill_path)
             if spill is not None:
-                fs.write_file(self.deps.workspace.root, rel, spill)
+                if scratchpad is not None:
+                    d = scratchpad / "workflow-output"
+                    d.mkdir(parents=True, exist_ok=True)
+                    from ..atomic_io import atomic_write_text
+                    atomic_write_text(d / f"{name}.json", spill, durable=False)
+                else:
+                    fs.write_file(self.deps.workspace.root, spill_path, spill)
             return (
                 "Note: the workflow's final expression was None -- the tool "
                 "returns the script's LAST EXPRESSION, so end the script with "
@@ -427,9 +443,15 @@ class WorkflowEngine:
                 "script's printed output instead:\n\n" + text
             )
         try:
-            text, spill = shape_result(value, MAX_RESULT_CHARS, rel)
+            text, spill = shape_result(value, MAX_RESULT_CHARS, spill_path)
         except WorkflowResultError as exc:
             return f"Workflow completed but its result was unusable: {exc}"
         if spill is not None:
-            fs.write_file(self.deps.workspace.root, rel, spill)
+            if scratchpad is not None:
+                d = scratchpad / "workflow-output"
+                d.mkdir(parents=True, exist_ok=True)
+                from ..atomic_io import atomic_write_text
+                atomic_write_text(d / f"{name}.json", spill, durable=False)
+            else:
+                fs.write_file(self.deps.workspace.root, spill_path, spill)
         return text
