@@ -3,8 +3,8 @@
 
 A tool builds its full result (bounded by ``MAX_OUTPUT_CHARS``) and passes it
 through :func:`offload_if_large`: small results return inline unchanged; large
-ones are written under ``.marim/output/`` and replaced by a handle + preview the
-agent can page with ``read_file``/``grep``. Mirrors ``fetch``'s offload pattern."""
+ones are written to a caller-provided directory and replaced by a handle +
+preview the agent can page with ``read_file``/``grep``."""
 
 import hashlib
 from pathlib import Path
