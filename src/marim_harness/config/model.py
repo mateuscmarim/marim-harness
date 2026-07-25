@@ -26,11 +26,19 @@ _DEFAULT_ZEN_MODEL = "mimo-v2.5-free"
 # OpenCode Zen's OpenAI-compatible endpoint root. Fixed, not MARIM_BASE_URL —
 # that env belongs to the `local` provider and both can be active at once.
 _ZEN_BASE_URL = "https://opencode.ai/zen/v1"
+_DEFAULT_ZEN_GO_MODEL = "glm-5.2"
+# OpenCode Go: Zen's flat-rate subscription plan. Same account and the same
+# OPENCODE_API_KEY, but a separate OpenAI-compatible endpoint whose catalog is
+# open coding models only — the subscription changes billing (flat monthly with
+# usage windows), not the protocol.
+_ZEN_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
 
 # Every provider load_config knows how to wire. An unknown value falls through to
 # the OpenRouter branch (the historical default), but we warn first so a typo
 # like MARIM_PROVIDER=azure doesn't masquerade as a confusing "missing API key".
-KNOWN_PROVIDERS = frozenset({"openrouter", "local", "google", "claude-cli", "zen"})
+KNOWN_PROVIDERS = frozenset({
+    "openrouter", "local", "google", "claude-cli", "zen", "zen-go"
+})
 
 
 def parse_qualified(
@@ -126,7 +134,7 @@ class SubagentConfig:
 
 @dataclass
 class ModelConfig:
-    provider: str  # "openrouter" | "local" | "google" | "claude-cli" | "zen"
+    provider: str  # "openrouter" | "local" | "google" | "claude-cli" | "zen" | "zen-go"
     model: str | None  # None ⇒ claude-cli uses its own configured default
     base_url: str | None = None
     api_key: str | None = None
@@ -344,6 +352,14 @@ def _provider_config(provider: str, common: dict[str, Any]) -> ModelConfig:
             api_key=os.getenv("OPENCODE_API_KEY") or os.getenv("MARIM_API_KEY"),
             **common,
         )
+    if provider == "zen-go":
+        return ModelConfig(
+            provider="zen-go",
+            model=os.getenv("MARIM_MODEL", _DEFAULT_ZEN_GO_MODEL),
+            base_url=_ZEN_GO_BASE_URL,
+            api_key=os.getenv("OPENCODE_API_KEY") or os.getenv("MARIM_API_KEY"),
+            **common,
+        )
     if provider == "google":
         return ModelConfig(
             provider="google",
@@ -385,7 +401,10 @@ def _provider_has_creds(provider: str) -> bool:
         return bool(os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
     if provider == "local":
         return bool(os.getenv("MARIM_BASE_URL"))
-    if provider == "zen":
+    if provider in ("zen", "zen-go"):
+        # One Zen-account key covers both plans; a key without a Go
+        # subscription shows zen-go as active and fails clearly (402/403,
+        # surfaced by _actionable_error_note) at first request.
         return bool(os.getenv("OPENCODE_API_KEY"))
     if provider == "claude-cli":
         return _claude_cli_available()
@@ -478,8 +497,8 @@ def build_model(cfg: ModelConfig):
     from pydantic_ai.models.openai import OpenAIChatModel
     from pydantic_ai.providers.openai import OpenAIProvider
 
-    if cfg.provider in ("local", "zen"):
-        assert cfg.model is not None  # local/zen always have a model id
+    if cfg.provider in ("local", "zen", "zen-go"):
+        assert cfg.model is not None  # these providers always have a model id
         provider = OpenAIProvider(base_url=cfg.base_url, api_key=cfg.api_key)
         return OpenAIChatModel(cfg.model, provider=provider)
 
@@ -541,6 +560,9 @@ class ModelSource:
             return await fetch_local_models(self.cfg.base_url, self.cfg.api_key, strict=strict)
         if self.cfg.provider == "zen":
             return await fetch_zen_models(self.cfg.api_key, strict=strict)
+        if self.cfg.provider == "zen-go":
+            return await fetch_zen_models(
+                self.cfg.api_key, strict=strict, url=_ZEN_GO_BASE_URL + "/models")
         if self.cfg.provider == "claude-cli":
             return [
                 ModelEntry(id="sonnet", name="sonnet", provider="claude-cli"),

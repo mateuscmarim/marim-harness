@@ -1085,3 +1085,58 @@ async def test_model_source_list_models_routes_zen(monkeypatch):
                                   api_key="sk-zen-test"))
     entries = await src.list_models()
     assert [e.id for e in entries] == ["mimo-v2.5-free"]
+
+
+def test_load_config_zen_go(monkeypatch):
+    monkeypatch.setenv("MARIM_PROVIDER", "zen-go")
+    monkeypatch.setenv("OPENCODE_API_KEY", "sk-zen-test")
+    monkeypatch.delenv("MARIM_MODEL", raising=False)
+    monkeypatch.delenv("MARIM_API_KEY", raising=False)
+    cfg = load_config()
+    assert cfg.provider == "zen-go"
+    assert cfg.model == "glm-5.2"
+    assert cfg.base_url == "https://opencode.ai/zen/go/v1"
+    assert cfg.api_key == "sk-zen-test"
+
+
+def test_zen_go_shares_the_zen_credential(monkeypatch):
+    """One OPENCODE_API_KEY activates BOTH plans (design decision: shared key,
+    always active — an unsubscribed key fails clearly at first request)."""
+    from marim_harness.config.model import _provider_has_creds, detect_active_providers
+
+    monkeypatch.setenv("OPENCODE_API_KEY", "sk-zen-test")
+    assert _provider_has_creds("zen-go")
+    configs, _default = detect_active_providers()
+    assert "zen" in configs and "zen-go" in configs
+
+    monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
+    monkeypatch.setenv("MARIM_API_KEY", "sk-generic")
+    # MARIM_API_KEY alone does NOT activate zen-go (fallback credential only).
+    assert not _provider_has_creds("zen-go")
+
+
+def test_parse_qualified_routes_zen_go():
+    from marim_harness.config.model import parse_qualified
+
+    active = {"zen", "zen-go", "openrouter"}
+    assert parse_qualified("zen-go:glm-5.2", active, "openrouter") == (
+        "zen-go", "glm-5.2")
+
+
+@pytest.mark.anyio
+async def test_model_source_list_models_routes_zen_go(monkeypatch):
+    from marim_harness.config import model as model_module
+    from marim_harness.config.model import ModelConfig, ModelSource
+    from marim_harness.workspace import catalog
+
+    async def fake_fetch(api_key=None, timeout=10.0, *, strict=False, url=None):
+        assert api_key == "sk-zen-test"
+        assert url == "https://opencode.ai/zen/go/v1/models"
+        return [catalog.ModelEntry(id="glm-5.2", name="glm-5.2")]
+
+    # model.py imports the *name* fetch_zen_models, so patch it there.
+    monkeypatch.setattr(model_module, "fetch_zen_models", fake_fetch)
+    src = ModelSource(ModelConfig(provider="zen-go", model="glm-5.2",
+                                  api_key="sk-zen-test"))
+    entries = await src.list_models()
+    assert [e.id for e in entries] == ["glm-5.2"]
