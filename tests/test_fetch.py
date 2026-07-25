@@ -489,9 +489,9 @@ async def test_fetch_offload_handle_has_title_and_saved_path(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_fetch_offload_path_is_workspace_relative(tmp_path):
-    """The path in the handle must be relative to the workspace root so the agent
-    can hand it straight to read_file/grep (which are workspace-sandboxed)."""
+async def test_fetch_offload_handle_shows_absolute_path(tmp_path):
+    """The path in the handle must be absolute so the agent can hand it straight
+    to read_file/grep regardless of the offload directory's location."""
     paras = "".join(
         f"<p>Filler paragraph {i} with enough text to grow.</p>" for i in range(4000)
     )
