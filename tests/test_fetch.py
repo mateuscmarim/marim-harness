@@ -374,11 +374,11 @@ async def test_fetch_aborts_when_content_length_exceeds_limit(tmp_path):
     )
 
     with _patch_client(resp):
-        result = await fetch_url("https://example.com/huge", workspace_root=tmp_path)
+        result = await fetch_url("https://example.com/huge", offload_dir=tmp_path)
 
     assert "aborted" in result.lower()
     assert "ignored" not in result  # body was never read
-    assert not (tmp_path / ".marim" / "fetch").exists()
+    assert not list(tmp_path.glob("fetch-*.md"))
 
 
 @pytest.mark.anyio
@@ -438,12 +438,13 @@ async def test_fetch_small_page_with_workspace_returned_inline(tmp_path):
     resp = _mock_response(text=html, content_type="text/html")
 
     with _patch_client(resp):
-        result = await fetch_url("https://example.com/small", workspace_root=tmp_path)
+        result = await fetch_url("https://example.com/small", offload_dir=tmp_path)
 
     assert "# Small" in result
     assert "Just a little content." in result
     # Nothing offloaded.
-    assert not (tmp_path / ".marim" / "fetch").exists()
+    # Nothing offloaded — no fetch-*.md files in the offload dir.
+    assert not list(tmp_path.glob("fetch-*.md"))
 
 
 @pytest.mark.anyio
@@ -458,17 +459,17 @@ async def test_fetch_large_page_offloaded_to_file(tmp_path):
     resp = _mock_response(text=html, content_type="text/html")
 
     with _patch_client(resp):
-        result = await fetch_url("https://example.com/big-doc", workspace_root=tmp_path)
+        result = await fetch_url("https://example.com/big-doc", offload_dir=tmp_path)
 
-    # The handle points at a workspace-relative path under .marim/fetch/.
-    assert ".marim/fetch/" in result
+    # The handle points at the offload dir.
+    assert "saved to" in result
     # Preview shows the start...
     assert "Paragraph number 0 " in result
     # ...but NOT the whole body (last paragraph must not be inline).
     assert "Paragraph number 3999" not in result
 
     # The full content lives on disk and is readable.
-    files = list((tmp_path / ".marim" / "fetch").glob("*.md"))
+    files = list(tmp_path.glob("fetch-*.md"))
     assert len(files) == 1
     full = files[0].read_text()
     assert "Paragraph number 0 " in full
@@ -476,15 +477,14 @@ async def test_fetch_large_page_offloaded_to_file(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_fetch_offload_handle_has_title_and_saved_path(tmp_path, monkeypatch):
+async def test_fetch_offload_handle_has_title_and_saved_path(tmp_path):
     from marim_harness.tools.impl import fetch
-    monkeypatch.setattr(fetch, "_INLINE_CHAR_LIMIT", 20)
     body = "# My Title\n" + "\n".join(f"para {i}" for i in range(50))
     out = fetch._offload(body, "https://example.com/x", tmp_path)
     assert out.startswith("# My Title")
     assert "Fetched https://example.com/x" in out
     assert "saved to" in out
-    saved = list((tmp_path / ".marim" / "fetch").glob("*.md"))
+    saved = list(tmp_path.glob("fetch-*.md"))
     assert len(saved) == 1 and saved[0].read_text() == body
 
 
@@ -499,12 +499,12 @@ async def test_fetch_offload_path_is_workspace_relative(tmp_path):
     resp = _mock_response(text=html, content_type="text/html")
 
     with _patch_client(resp):
-        result = await fetch_url("https://example.com/big", workspace_root=tmp_path)
+        result = await fetch_url("https://example.com/big", offload_dir=tmp_path)
 
-    files = list((tmp_path / ".marim" / "fetch").glob("*.md"))
-    rel = files[0].relative_to(tmp_path).as_posix()
-    assert rel in result
-    assert str(tmp_path) not in result  # no absolute path leaks
+    files = list(tmp_path.glob("fetch-*.md"))
+    assert len(files) == 1
+    assert str(tmp_path) in result  # absolute path of offload dir shown
+    assert files[0].as_posix() in result
 
 
 # ---------------------------------------------------------------------------

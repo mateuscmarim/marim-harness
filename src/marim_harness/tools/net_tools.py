@@ -1,6 +1,7 @@
 from pydantic_ai import RunContext
 
 from ..runtime.deps import Deps
+from .fs_tools import offload_dir
 from .impl import fetch, web
 
 
@@ -19,7 +20,7 @@ async def fetch_url(
     under the workspace and you get a handle + preview back — read_file/grep that
     path to page through it — so it doesn't flood context."""
     return await fetch.fetch_url(
-        url, prompt=prompt, workspace_root=ctx.deps.workspace.root
+        url, prompt=prompt, offload_dir=offload_dir(ctx)
     )
 
 

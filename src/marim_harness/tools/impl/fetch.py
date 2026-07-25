@@ -39,13 +39,11 @@ _MAX_BYTES = 5_000_000  # 5 MB
 # this, bail with a clear error rather than streaming a fragment of something
 # absurd. Servers that omit Content-Length still get capped by _MAX_BYTES.
 _MAX_DOWNLOAD = 25_000_000  # 25 MB
-# When a workspace is available, a result larger than this is written to a file
-# and the agent gets a handle + preview instead of the whole body inline — so a
-# big page can't flood the turn's context. (read_file/grep can then page the
-# file.) ~50k chars ≈ ~12k tokens; small results stay inline, no round-trip.
+# When an offload directory is available, a result larger than this is written to
+# a file and the agent gets a handle + preview instead of the whole body inline
+# — so a big page can't flood the turn's context. (read_file/grep can then page
+# the file.) ~50k chars ≈ ~12k tokens; small results stay inline, no round-trip.
 _INLINE_CHAR_LIMIT = 50_000
-# Where offloaded fetch bodies live, relative to the workspace root. Gitignored.
-_FETCH_DIR = (".marim", "fetch")
 _ALLOWED_SCHEMES = frozenset({"http", "https"})
 # A leading "<scheme>://" — the only shape we treat as a real scheme. A bare
 # "host:port/path" has no "//" after the colon, so it isn't mistaken for a
@@ -233,22 +231,22 @@ def _title_of(body: str, url: str) -> str:
     return url
 
 
-def _offload(body: str, url: str, workspace_root: Path) -> str:
-    """Write *body* to a gitignored file under the workspace and return a handle
-    (title, source, size, relative path) plus a short preview, so the agent can
+def _offload(body: str, url: str, offload_dir: Path) -> str:
+    """Write *body* to a file under *offload_dir* and return a handle
+    (title, source, size, path) plus a short preview, so the agent can
     page the rest with read_file/grep instead of taking the whole body inline."""
     from .offload import _PREVIEW_LINES as _PL
     from .offload import write_preview_file
 
     digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
-    rel = Path(*_FETCH_DIR, f"{digest}.md")
-    rel_posix, preview, n_lines = write_preview_file(body, rel=rel,
-                                                     workspace_root=workspace_root)
+    filename = f"fetch-{digest}.md"
+    abs_path, preview, n_lines = write_preview_file(
+        body, filename=filename, offload_dir=offload_dir)
     return (
         f"# {_title_of(body, url)}\n"
         f"Fetched {url}\n\n"
         f"⚠️ Large page ({len(body):,} chars, {n_lines:,} lines) — full content "
-        f"saved to `{rel_posix}`. Read more with read_file (it paginates) or grep "
+        f"saved to `{abs_path}`. Read more with read_file (it paginates) or grep "
         f"that path for what you need.\n\n"
         f"--- preview (first {min(_PL, n_lines)} lines) ---\n"
         f"{preview}"
@@ -357,7 +355,7 @@ async def fetch_url(
     *,
     prompt: str | None = None,
     timeout: int = _TIMEOUT,
-    workspace_root: Path | None = None,
+    offload_dir: Path | None = None,
 ) -> str:
     """Fetch *url* and return its body as Markdown.
 
@@ -366,11 +364,11 @@ async def fetch_url(
     does **not** alter the fetch itself).  *timeout* caps the request in
     seconds (default 30).
 
-    If *workspace_root* is given and the body exceeds ``_INLINE_CHAR_LIMIT``,
-    the full content is written to a gitignored file under the workspace and a
+    If *offload_dir* is given and the body exceeds ``_INLINE_CHAR_LIMIT``,
+    the full content is written to a file under that directory and a
     handle + preview is returned instead of the whole body — so a large page
-    can't flood the turn's context. Small bodies (and any call without a
-    workspace) are returned inline as before.
+    can't flood the turn's context. Small bodies (and any call without an
+    offload directory) are returned inline as before.
 
     Returns a Markdown-formatted string, or an error message on failure.
     """
@@ -400,7 +398,7 @@ async def fetch_url(
         return "Fetch succeeded but the page was empty."
 
     # --- offload large bodies so they don't flood context ---
-    if workspace_root is not None and len(body) > _INLINE_CHAR_LIMIT:
-        return _offload(body, target, workspace_root)
+    if offload_dir is not None and len(body) > _INLINE_CHAR_LIMIT:
+        return _offload(body, target, offload_dir)
 
     return body
