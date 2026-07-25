@@ -48,7 +48,7 @@ There are plenty of terminal coding agents. marim's angle:
   Harness](https://pydantic.dev/docs/ai/harness/) capabilities plug straight
   in via `with_capability()`.
 - **Any model, including free ones.** OpenRouter, Google, OpenCode Zen (free
-  models available), any local OpenAI-compatible server (Ollama, LM Studio) —
+  models available) and its flat-rate Go plan, any local OpenAI-compatible server (Ollama, LM Studio) —
   or delegate turns to Claude Code on a Claude subscription via the
   `claude-cli` provider. No vendor lock-in, no required API key.
 - **Real editor-grade context.** Language-server integration (Python,
@@ -181,7 +181,7 @@ from the environment — they are never written to session files or logs.**
 | `MARIM_MODEL` | Model id override |
 | `MARIM_BASE_URL` | Base URL for the `local` provider |
 | `OPENROUTER_API_KEY` | API key for OpenRouter |
-| `OPENCODE_API_KEY` | API key for OpenCode Zen |
+| `OPENCODE_API_KEY` | API key for OpenCode Zen / Go |
 | `GOOGLE_API_KEY` / `GEMINI_API_KEY` | API key for the Google provider |
 | `MARIM_API_KEY` | Generic API key fallback |
 | `MARIM_MAX_CONTEXT_TOKENS` | Context budget before compaction |
