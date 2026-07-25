@@ -11,6 +11,10 @@ from pathlib import Path
 
 from ...atomic_io import atomic_write_text
 
+# Legacy offload directory under the workspace root, used as a fallback when no
+# scratchpad is available. Single source of truth — fs.py and shell.py import it.
+LEGACY_OFFLOAD_DIR = Path(".marim") / "output"
+
 
 def get_offload_dir(
     workspace_root: Path | None, scratchpad: Path | None

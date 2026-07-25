@@ -6,11 +6,7 @@ import signal
 from collections import deque
 from pathlib import Path
 
-from .offload import MAX_OUTPUT_CHARS, offload_if_large
-
-# The subdirectory under a workspace root where offloaded files are stored when
-# no explicit offload_dir is given (legacy fallback, pre-scratchpad behavior).
-_LEGACY_OFFLOAD_DIR = Path(".marim") / "output"
+from .offload import LEGACY_OFFLOAD_DIR, MAX_OUTPUT_CHARS, offload_if_large
 
 _DEFAULT_TIMEOUT = 30
 _DEFAULT_MAX_OUTPUT = 20_000
@@ -291,7 +287,7 @@ async def run_bash(
     # directories and can't collide regardless of what's in `key`.
     return offload_if_large(
         body, kind="bash", key=key,
-        offload_dir=offload_dir or root / _LEGACY_OFFLOAD_DIR,
+        offload_dir=offload_dir or root / LEGACY_OFFLOAD_DIR,
         capped=dropped > 0,
     )
 
@@ -378,7 +374,7 @@ class BashProcess:
         body = f"exit {self._proc.returncode}\n{text}"
         return offload_if_large(
             body, kind="bash", key=self._command,
-            offload_dir=self._offload_dir or self._root / _LEGACY_OFFLOAD_DIR,
+            offload_dir=self._offload_dir or self._root / LEGACY_OFFLOAD_DIR,
             capped=capped,
         )
 

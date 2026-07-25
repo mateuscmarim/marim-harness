@@ -13,14 +13,10 @@ from pydantic_ai import ModelRetry
 from ...atomic_io import atomic_write_text
 from ...images import media_type_for_path
 from ...workspace.fs import ReadLedger, WorkspaceError, resolve_in_workspace
-from .offload import MAX_OUTPUT_CHARS, offload_if_large
+from .offload import LEGACY_OFFLOAD_DIR, MAX_OUTPUT_CHARS, offload_if_large
 
 # Capture the process umask once at import time so we never need to manipulate
 # os.umask() at runtime — that API is process-global and not thread-safe.
-# The subdirectory under a workspace root where offloaded files are stored when
-# no explicit offload_dir is given (legacy fallback, pre-scratchpad behavior).
-_LEGACY_OFFLOAD_DIR = Path(".marim") / "output"
-
 _DEFAULT_UMASK: int = os.umask(0o022)
 os.umask(_DEFAULT_UMASK)
 
@@ -525,7 +521,7 @@ def tree(root: Path, path: str = ".", depth: int = 2,
         return "(empty)"
     return offload_if_large(
         "\n".join(lines), kind="tree", key=f"{path}\0{depth}",
-        offload_dir=offload_dir or root / _LEGACY_OFFLOAD_DIR, capped=capped,
+        offload_dir=offload_dir or root / LEGACY_OFFLOAD_DIR, capped=capped,
     )
 
 
@@ -616,7 +612,7 @@ def glob_files(root: Path, pattern: str,
     matches.sort()
     return offload_if_large(
         "\n".join(matches), kind="glob", key=pattern,
-        offload_dir=offload_dir or root / _LEGACY_OFFLOAD_DIR, capped=capped,
+        offload_dir=offload_dir or root / LEGACY_OFFLOAD_DIR, capped=capped,
     )
 
 
@@ -948,6 +944,6 @@ def grep(
     )
     return offload_if_large(
         body, kind="grep", key=key,
-        offload_dir=offload_dir or root / _LEGACY_OFFLOAD_DIR,
+        offload_dir=offload_dir or root / LEGACY_OFFLOAD_DIR,
         capped=col.capped,
     )
