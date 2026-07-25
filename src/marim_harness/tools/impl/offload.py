@@ -11,6 +11,20 @@ from pathlib import Path
 
 from ...atomic_io import atomic_write_text
 
+
+def get_offload_dir(
+    workspace_root: Path | None, scratchpad: Path | None
+) -> Path | None:
+    """Return the best directory for offloading large tool output.
+
+    Prefer the session scratchpad (session-scoped, auto-cleaned) over the
+    workspace-rooted `.marim/output/` (persists across sessions). Returns
+    None when neither is available, which degrades offloading to clipping.
+    """
+    if scratchpad is not None:
+        return scratchpad
+    return workspace_root
+
 _INLINE_CHAR_LIMIT = 25_000      # at/below this, return inline (~6k tokens)
 # Measured in characters (~bytes for ASCII); producers stop collecting here and callers may offload.
 MAX_OUTPUT_CHARS = 5_000_000
@@ -21,7 +35,6 @@ _PREVIEW_LINES = 40
 # to prevent. Cap the preview's total width too — the full content is in the file
 # regardless, so the preview only has to orient the reader.
 _PREVIEW_CHARS = 2_000
-_OUTPUT_DIR = (".marim", "output")
 
 
 def _make_preview(lines: list[str]) -> str:
@@ -34,17 +47,10 @@ def _make_preview(lines: list[str]) -> str:
 
 
 def _write_handle(content: str, *, kind: str, key: str,
-                  workspace_root: Path, capped: bool) -> str:
+                  offload_dir: Path, capped: bool) -> str:
     digest = hashlib.sha256(f"{kind}\0{key}".encode()).hexdigest()[:16]
-    rel = Path(*_OUTPUT_DIR, f"{kind}-{digest}.txt")
-    dest = workspace_root / rel
+    dest = offload_dir / f"{kind}-{digest}.txt"
     dest.parent.mkdir(parents=True, exist_ok=True)
-    # Route through atomic_write_text: the dest is sha-derived, so two concurrent
-    # offloads of the same (kind,key) target the *same* filename — a direct
-    # write_text would let them clobber each other's partial bytes. The atomic
-    # swap (unique temp → os.replace) is exactly what that layer exists to prevent.
-    # These spills are regenerable (re-run the tool), so skip the durability
-    # fsyncs + stale-temp sweep — the atomic rename is all we need here.
     atomic_write_text(dest, content, durable=False)
     lines = content.splitlines()
     preview = _make_preview(lines)
@@ -54,7 +60,7 @@ def _write_handle(content: str, *, kind: str, key: str,
     )
     return (
         f"⚠️ Large {kind} result ({len(content):,} chars, {len(lines):,} lines) — "
-        f"full output saved to `{rel.as_posix()}`. Read more with read_file "
+        f"full output saved to `{dest.as_posix()}`. Read more with read_file "
         f"(it paginates) or grep that path.\n"
         f"{cap_note}"
         f"--- preview (first {min(_PREVIEW_LINES, len(lines))} lines) ---\n"
@@ -62,31 +68,30 @@ def _write_handle(content: str, *, kind: str, key: str,
     )
 
 
-def write_preview_file(content: str, *, rel: Path, workspace_root: Path) -> tuple[str, str, int]:
-    """Write *content* to ``workspace_root/rel`` and return (rel_posix, preview,
-    line_count) for the caller to format into a handle."""
-    dest = workspace_root / rel
+def write_preview_file(content: str, *, filename: str,
+                       offload_dir: Path) -> tuple[str, str, int]:
+    """Write *content* to ``offload_dir/filename`` and return (absolute_path,
+    preview, line_count) for the caller to format into a handle."""
+    dest = offload_dir / filename
     dest.parent.mkdir(parents=True, exist_ok=True)
-    # Atomic swap so concurrent writers to the same sha-derived path can't race on
-    # the shared filename (see _write_handle for the same reasoning). Regenerable
-    # spill (also used by fetch bodies), so durable=False skips the fsyncs + sweep.
     atomic_write_text(dest, content, durable=False)
     lines = content.splitlines()
     preview = _make_preview(lines)
-    return rel.as_posix(), preview, len(lines)
+    return dest.as_posix(), preview, len(lines)
 
 
 def offload_if_large(content: str, *, kind: str, key: str,
-                     workspace_root: Path | None, capped: bool = False) -> str:
+                     offload_dir: Path | None, capped: bool = False) -> str:
     """Return ``content`` inline when small; otherwise offload to a file and
-    return a handle + preview. With no workspace (or on write failure), clip to
-    the inline limit instead, so a large result can never flood context."""
+    return a handle + preview. With no offload directory (or on write failure),
+    clip to the inline limit instead, so a large result can never flood
+    context."""
     if len(content) <= _INLINE_CHAR_LIMIT:
         return content
-    if workspace_root is not None:
+    if offload_dir is not None:
         try:
             return _write_handle(content, kind=kind, key=key,
-                                 workspace_root=workspace_root, capped=capped)
+                                 offload_dir=offload_dir, capped=capped)
         except OSError:
             pass
     clipped = content[:_INLINE_CHAR_LIMIT]
