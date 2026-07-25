@@ -93,7 +93,7 @@ async def _cmd_compact(app: HarnessApp, arg: str) -> None:
     app.compact_busy = True
     try:
         app.run_worker(run(), group="compact", exclusive=True, exit_on_error=False)
-    except Exception as exc:  # noqa: BLE001
+    except Exception:  # noqa: BLE001,F841
         # run_worker itself can raise mid-teardown (the hazard start_system_turn
         # guards the same way). If the worker never starts, its finally never
         # runs — without this reset the latched flag would wedge submits and

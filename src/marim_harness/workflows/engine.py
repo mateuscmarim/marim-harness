@@ -184,7 +184,7 @@ class WorkflowEngine:
             monty.type_check(_VALIDATION_PREFIX)
         except MontyTypingError as exc:
             return f"Workflow script failed validation (nothing was executed):\n{exc}"
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001,F841
             # type_check can raise RuntimeError when its own infrastructure
             # fails. Validation is a cheap pre-flight, not the authority —
             # never let its breakage block a script the interpreter could run.

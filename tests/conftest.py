@@ -108,7 +108,11 @@ def _isolated_data(tmp_path_factory, monkeypatch):
 
 # Provider credential envs marim_harness reads that aren't MARIM_-prefixed (see
 # config/model.py's _provider_config/_provider_has_creds).
-_PROVIDER_CRED_ENVS = ("OPENROUTER_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY", "OPENCODE_API_KEY")
+# OPENROUTER_API_KEY is excluded: live tests gate on it via module-level
+# ``pytestmark = [skipif(not os.getenv("OPENROUTER_API_KEY"), ...)]`` which
+# evaluates at *import* time; clearing it here would turn a collected test into
+# a spurious KeyError/ RuntimeError instead of a clean skip.
+_PROVIDER_CRED_ENVS = ("GOOGLE_API_KEY", "GEMINI_API_KEY", "OPENCODE_API_KEY")
 
 
 @pytest.fixture(autouse=True)
@@ -123,8 +127,6 @@ def _isolated_provider_env(request, monkeypatch):
     straight from the environment and already gate on their presence via
     ``skipif(not os.getenv(...))``, which is decided at collection time — clearing
     the var here would turn "skipped, no key" into a spurious KeyError instead."""
-    if request.node.get_closest_marker("live") is not None:
-        return
     for key in list(os.environ):
         if key.startswith("MARIM_"):
             monkeypatch.delenv(key, raising=False)

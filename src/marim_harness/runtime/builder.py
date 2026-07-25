@@ -17,6 +17,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from ..command_policy import CommandPolicy
+from ..tools.provider import BuiltinToolProvider
+from .permissions import Mode
+
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
@@ -27,10 +31,6 @@ if TYPE_CHECKING:
     from ..session import SessionManager, SessionStore
     from ..workspace.agents import AgentDef
     from .harness import Harness
-
-from ..command_policy import CommandPolicy
-from ..tools.provider import BuiltinToolProvider
-from .permissions import Mode
 
 
 class BuilderError(ValueError):

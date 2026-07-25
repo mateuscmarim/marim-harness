@@ -716,7 +716,7 @@ class Harness:
         self._clear_job_context()
         try:
             count = self.session.switch_session(session_id)
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001,F841
             # Load failed — we're still on the outgoing session. Put its job
             # history back (import_history reloads it as read-only history, the
             # same shape a persist reads) so the next persist doesn't erase the
