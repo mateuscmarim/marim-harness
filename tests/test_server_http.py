@@ -820,3 +820,24 @@ def test_jobs_list_and_detail_for_live_bash_and_agent_jobs(client_with_superviso
     assert agent_body["usage"] == {"input": 111, "output": 222}
     assert agent_body["tool_count"] == 4
     assert agent_body["duration_secs"] == 7.5
+
+
+def test_get_cache_control_headers(client):
+    test_client, tmp_path = client
+    ws_id, sid, _ = _setup_workspace_and_session(test_client, tmp_path)
+    base = f"/v1/workspaces/{ws_id}/sessions/{sid}"
+
+    cases = [
+        ("/v1/health", None, "no-cache"),
+        ("/v1/models", AUTH, "max-age=300"),
+        ("/v1/workspaces", AUTH, "max-age=60"),
+        (f"/v1/workspaces/{ws_id}/sessions", AUTH, "max-age=60"),
+        (base, AUTH, "max-age=30"),
+        (f"{base}/history", AUTH, "max-age=10"),
+        (f"{base}/asks", AUTH, "no-cache"),
+        (f"{base}/jobs", AUTH, "max-age=30"),
+    ]
+    for path, headers, expected in cases:
+        response = test_client.get(path, headers=headers or {})
+        assert response.status_code == 200, path
+        assert response.headers.get("cache-control") == expected, path

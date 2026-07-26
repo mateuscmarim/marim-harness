@@ -42,6 +42,14 @@ def _error(status: int, code: str, message: str) -> JSONResponse:
     return JSONResponse({"error": {"code": code, "message": message}}, status_code=status)
 
 
+def _cached_json(content, cache_control: str, status_code: int = 200) -> JSONResponse:
+    return JSONResponse(
+        content,
+        status_code=status_code,
+        headers={"cache-control": cache_control},
+    )
+
+
 def _unauthorized(request: Request) -> JSONResponse | None:
     """None when the request carries a valid bearer token; the 401 otherwise."""
     token = request.app.state.token
@@ -80,7 +88,7 @@ class _BadBody(Exception):
 
 
 async def health(request: Request) -> Response:
-    return JSONResponse({"status": "ok"})
+    return _cached_json({"status": "ok"}, "no-cache")
 
 
 async def list_workspaces(request: Request) -> Response:
@@ -88,7 +96,7 @@ async def list_workspaces(request: Request) -> Response:
     if denied:
         return denied
     records = [r.as_dict() for r in _registry(request).list()]
-    return JSONResponse({"workspaces": records})
+    return _cached_json({"workspaces": records}, "max-age=60")
 
 
 async def create_workspace(request: Request) -> Response:
@@ -159,7 +167,7 @@ async def list_sessions(request: Request) -> Response:
             "status": host.status if host else "idle",
             "pending_asks": host.pending_asks() if host else [],
         })
-    return JSONResponse({"sessions": sessions})
+    return _cached_json({"sessions": sessions}, "max-age=60")
 
 
 _MODELS_TTL_SECONDS = 60.0
@@ -179,7 +187,7 @@ async def list_models(request: Request) -> Response:
             {"id": e.qualified, "name": e.name, "provider": e.provider} for e in entries
         ]
         cache["at"] = now
-    return JSONResponse({"models": cache["data"]})
+    return _cached_json({"models": cache["data"]}, "max-age=300")
 
 
 async def create_session(request: Request) -> Response:
@@ -240,12 +248,12 @@ async def get_session(request: Request) -> Response:
     host = _supervisor(request).peek(record.id, session_id)
     session_dict = asdict(info)
     session_dict["model"] = _effective_model(host, info.model)
-    return JSONResponse({
+    return _cached_json({
         "session": session_dict,
         "status": host.status if host else "idle",
         "queued": host.queued if host else 0,
         "pending_asks": host.pending_asks() if host else [],
-    })
+    }, "max-age=30")
 
 
 async def delete_session(request: Request) -> Response:
@@ -381,12 +389,12 @@ async def list_jobs(request: Request) -> Response:
         return _error(404, "not_found", "unknown session")
     host = _supervisor(request).peek(record.id, session_id)
     if host is None:
-        return JSONResponse({"jobs": []})
+        return _cached_json({"jobs": []}, "max-age=30")
     registry = host.harness.deps.jobs
     dtos = jobs_view.assemble(
         registry.list(), registry.history, _spawn_meta_reader(record, session_id)
     )
-    return JSONResponse({"jobs": dtos})
+    return _cached_json({"jobs": dtos}, "max-age=30")
 
 
 async def get_job(request: Request) -> Response:
@@ -415,7 +423,7 @@ async def get_job(request: Request) -> Response:
     meta = None
     if job.kind == "agent" and job.stream_id:
         meta = _spawn_meta_reader(record, session_id)(job.stream_id)
-    return JSONResponse(jobs_view.detail_dto(job, result, meta))
+    return _cached_json(jobs_view.detail_dto(job, result, meta), "max-age=30")
 
 
 async def list_asks(request: Request) -> Response:
@@ -426,7 +434,10 @@ async def list_asks(request: Request) -> Response:
     if record is None:
         return _error(404, "not_found", "unknown workspace")
     host = _supervisor(request).peek(record.id, request.path_params["sid"])
-    return JSONResponse({"asks": host.pending_asks() if host else []})
+    return _cached_json(
+        {"asks": host.pending_asks() if host else []},
+        "no-cache",
+    )
 
 
 async def answer_ask(request: Request) -> Response:
@@ -532,7 +543,7 @@ async def get_history(request: Request) -> Response:
     # messages) from an in-flight tail (seq > history_seq, not yet persisted).
     bus = _supervisor(request).bus_peek(record.id, session_id)
     history_seq = bus.history_seq if bus is not None else 0
-    return JSONResponse({
+    return _cached_json({
         "id": data.get("id"),
         "name": data.get("name"),
         "model": data.get("model"),
@@ -540,7 +551,7 @@ async def get_history(request: Request) -> Response:
         "offset": offset,
         "history_seq": history_seq,
         "messages": messages[offset:offset + limit],
-    })
+    }, "max-age=10")
 
 
 async def get_session_image(request: Request) -> Response:
