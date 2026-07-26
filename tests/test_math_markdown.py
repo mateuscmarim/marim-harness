@@ -39,3 +39,85 @@ def test_latex_to_unicode_returns_none_without_flatlatex(monkeypatch):
     # degrade, never crash.
     monkeypatch.setattr(math_markdown, "flatlatex", None)
     assert latex_to_unicode(r"x^2") is None
+
+
+def _parse(text: str):
+    factory = math_markdown.math_parser_factory()
+    assert factory is not None, "factory must be available in the test env"
+    return factory().parse(text)
+
+
+def _text_contents(tokens) -> list[str]:
+    """Flatten to the text/fence token contents a reader would see."""
+    out: list[str] = []
+    for tok in tokens:
+        if tok.type in ("text", "fence", "code_inline"):
+            out.append(tok.content)
+        if tok.children:
+            out.extend(_text_contents(tok.children))
+    return out
+
+
+def test_inline_dollar_math_converts():
+    texts = _text_contents(_parse("Energy: $E = mc^2$ done"))
+    assert "E = mc²" in texts
+    assert "Energy: " in texts  # surrounding prose intact
+
+
+def test_display_dollar_math_converts_to_paragraph():
+    tokens = _parse("$$\n\\frac{a}{b}\n$$")
+    assert [t.type for t in tokens] == ["paragraph_open", "inline", "paragraph_close"]
+    assert "a/b" in _text_contents(tokens)
+
+
+def test_backslash_paren_inline_converts():
+    texts = _text_contents(_parse(r"so \(\alpha^2 + \beta_1\) holds"))
+    assert "α² + β₁" in texts
+
+
+def test_backslash_bracket_block_converts():
+    assert "x²" in _text_contents(_parse("\\[\nx^2\n\\]"))
+    assert "x²" in _text_contents(_parse(r"\[ x^2 \]"))  # single-line form
+
+
+def test_double_dollar_inline_converts():
+    assert "yᵢ" in _text_contents(_parse("foo $$y_i$$ bar"))
+
+
+def test_currency_stays_literal():
+    texts = _text_contents(_parse("it costs $5 and $10 total"))
+    assert texts == ["it costs $5 and $10 total"]
+
+
+def test_code_fence_and_inline_code_untouched():
+    assert _text_contents(_parse("```\n$E=mc^2$\n```")) == ["$E=mc^2$\n"]
+    assert "echo $HOME" in _text_contents(_parse("run `echo $HOME` now"))
+
+
+def test_unparsable_math_falls_back_to_literal_span_with_delimiters():
+    class _Raising:
+        def convert(self, src: str) -> str:
+            raise ValueError("boom")
+
+    # Force the cached converter to fail so the rewrite rule takes the
+    # literal-fallback path; delimiters must be restored around the span.
+    import unittest.mock as mock
+
+    with mock.patch.object(math_markdown, "_converter", _Raising()):
+        texts = _text_contents(_parse(r"before $\frac{$ after"))
+    assert any(r"$\frac{$" in t for t in texts)
+
+
+def test_factory_none_when_gate_off(monkeypatch):
+    monkeypatch.setenv("MARIM_TUI_MATH", "0")
+    assert math_markdown.math_parser_factory() is None
+
+
+def test_factory_none_without_flatlatex(monkeypatch):
+    monkeypatch.setattr(math_markdown, "flatlatex", None)
+    assert math_markdown.math_parser_factory() is None
+
+
+def test_factory_on_by_default(monkeypatch):
+    monkeypatch.delenv("MARIM_TUI_MATH", raising=False)
+    assert math_markdown.math_parser_factory() is not None
