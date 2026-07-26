@@ -108,3 +108,43 @@ def test_get_offload_dir_falls_back_to_workspace(tmp_path):
 
 def test_get_offload_dir_returns_none_when_both_none():
     assert offload.get_offload_dir(None, None) is None
+
+
+# --- offload-handle envelope (spec 2026-07-26) --------------------------------
+
+
+def test_find_offload_paths_extracts_backticked_path():
+    text = "blah ⚠️ Large bash result — full output saved to `/tmp/pad/bash-abc.txt`. Read more"
+    assert offload.find_offload_paths(text) == ["/tmp/pad/bash-abc.txt"]
+
+
+def test_find_offload_paths_none_on_plain_text():
+    assert offload.find_offload_paths("ordinary output, nothing offloaded") == []
+    # An elided-pointer placeholder is NOT a handle.
+    assert offload.find_offload_paths(
+        "[output elided to save context; full content at /pad/x — read_file it if still needed]"
+    ) == []
+
+
+def test_write_handle_matches_envelope(tmp_path: Path, monkeypatch):
+    """Tripwire: a copy edit to _write_handle that breaks the envelope fails here."""
+    monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 10)
+    result = offload.offload_if_large(
+        "line\n" * 50, kind="bash", key="k1", offload_dir=tmp_path
+    )
+    paths = offload.find_offload_paths(result)
+    assert len(paths) == 1
+    p = Path(paths[0])
+    assert p.is_absolute() and p.exists()
+    assert p.read_text() == "line\n" * 50
+
+
+def test_fetch_offload_matches_envelope(tmp_path: Path):
+    """Tripwire: fetch's handle copy stays on the shared envelope."""
+    from marim_harness.tools.impl.fetch import _offload
+
+    handle = _offload("# Title\n" + "body\n" * 100, "https://example.com/page", tmp_path)
+    paths = offload.find_offload_paths(handle)
+    assert len(paths) == 1
+    p = Path(paths[0])
+    assert p.is_absolute() and p.exists()

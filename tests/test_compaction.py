@@ -27,6 +27,7 @@ from marim_harness.compaction import (
     summary_text,
     will_compact,
 )
+from marim_harness.tools.impl.offload import OFFLOAD_GONE_NOTE
 
 
 def test_summary_text_extracts_body_from_summary_message():
@@ -749,3 +750,68 @@ def test_render_transcript_list_content_with_binary_is_placeholder():
     assert "[image image/png, 1 KB]" in out
     assert "caption" in out
     assert "PNGbytes" not in out
+
+
+# --- revalidate: offload handles (spec 2026-07-26) ----------------------------
+
+
+def _handle(path: str) -> str:
+    """A realistic offload handle as _write_handle renders it."""
+    return (
+        "⚠️ Large bash result (30,000 chars, 200 lines) — full output "
+        f"saved to `{path}`. Read more with read_file (it paginates) or "
+        "grep that path.\n--- preview (first 40 lines) ---\nline one\nline two"
+    )
+
+
+def test_revalidate_annotates_dangling_handle_and_keeps_preview():
+    h = _handle("/pad/bash-abc.txt")
+    history = [_tool_return("t1", h)]
+    new_history, n = revalidate_elided_pointers(history, exists=lambda p: False)
+    assert n == 1
+    content = new_history[0].parts[0].content
+    # Appended, not replaced: the preview survives.
+    assert content == h + OFFLOAD_GONE_NOTE
+    assert "line one" in content
+    # Input never mutated.
+    assert history[0].parts[0].content == h
+
+
+def test_revalidate_leaves_live_handle_untouched():
+    history = [_tool_return("t1", _handle("/pad/bash-live.txt"))]
+    new_history, n = revalidate_elided_pointers(history, exists=lambda p: True)
+    assert n == 0
+    assert new_history is history
+
+
+def test_revalidate_handle_note_is_idempotent():
+    history = [_tool_return("t1", _handle("/pad/gone.txt"))]
+    once, n1 = revalidate_elided_pointers(history, exists=lambda p: False)
+    twice, n2 = revalidate_elided_pointers(once, exists=lambda p: False)
+    assert n1 == 1 and n2 == 0
+    assert twice is once
+
+
+def test_revalidate_resolves_relative_handle_against_base(tmp_path):
+    # Legacy histories can hold workspace-relative handles; base resolves them.
+    live_rel = ".marim/output/live.txt"
+    (tmp_path / ".marim" / "output").mkdir(parents=True)
+    (tmp_path / live_rel).write_text("payload")
+    history = [
+        _tool_return("t1", _handle(live_rel)),
+        _tool_return("t2", _handle(".marim/output/gone.txt")),
+    ]
+    new_history, n = revalidate_elided_pointers(history, base=tmp_path)
+    assert n == 1
+    assert new_history[0].parts[0].content == history[0].parts[0].content
+    assert new_history[1].parts[0].content.endswith(OFFLOAD_GONE_NOTE)
+
+
+def test_revalidate_mixed_pointer_and_handle_counts_both():
+    pointer = _elided_pointer("/pad/e/gone.txt")
+    h = _handle("/pad/bash-gone.txt")
+    history = [_tool_return("t1", pointer), _tool_return("t2", h)]
+    new_history, n = revalidate_elided_pointers(history, exists=lambda p: False)
+    assert n == 2
+    assert new_history[0].parts[0].content == MASKED_OBSERVATION  # replaced
+    assert new_history[1].parts[0].content == h + OFFLOAD_GONE_NOTE  # annotated

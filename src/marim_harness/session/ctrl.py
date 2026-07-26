@@ -427,11 +427,16 @@ class SessionController:
         # nothing dangles, and when it does rewrite, the history setter below
         # bumps history_version, so the healed history rides the next normal
         # persist to disk.
-        history, n_dangling = revalidate_elided_pointers(history)
+        # Dangling offload HANDLES instead get a gone-note appended (their
+        # inline preview is worth keeping); base resolves legacy relative
+        # handle paths against the workspace root.
+        history, n_dangling = revalidate_elided_pointers(
+            history, base=self.deps.workspace.root
+        )
         if n_dangling:
             logger.debug(
-                "session load: degraded %d dangling elided pointer(s) to the "
-                "plain placeholder (scratchpad file gone)", n_dangling,
+                "session load: rewrote %d dangling scratchpad reference(s) "
+                "(elided pointers masked, offload handles annotated)", n_dangling,
             )
         self.store = store
         self.history = history
