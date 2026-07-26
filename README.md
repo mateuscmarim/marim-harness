@@ -70,21 +70,40 @@ There are plenty of terminal coding agents. marim's angle:
 
 ## Install
 
+From [PyPI](https://pypi.org/project/marim-harness/) — headless mode only:
+
 ```bash
-uv sync            # or: pip install -e '.[tui]'
+uv tool install marim-harness          # or: pipx install marim-harness
 ```
 
-This exposes the `marim` (and `marim-harness`) console scripts.
+With the interactive TUI:
 
-The interactive TUI lives in the optional `tui` extra; a bare
-`pip install marim-harness` is headless-only (`marim -p "..."`). `uv sync`
-installs the dev group, which includes textual, so a development checkout
-always has the full TUI.
+```bash
+uv tool install 'marim-harness[tui]'
+```
 
-The `marim serve` HTTP daemon (REST + WebSocket) lives in the optional `serve` extra
-(`pip install -e '.[serve]'`, or `.[tui,serve]` for both). `./install.sh`
-installs both `tui` and `serve` by default; pass `--no-tui` and/or `--no-serve`
-to skip either.
+With the HTTP daemon (REST + WebSocket):
+
+```bash
+uv tool install 'marim-harness[serve]'
+```
+
+Everything:
+
+```bash
+uv tool install 'marim-harness[tui,serve]'
+```
+
+For **development** (editable install with test/lint deps and the full TUI):
+
+```bash
+uv sync
+```
+
+This exposes the `marim` (and `marim-harness`) console scripts. A bare
+`pip install marim-harness` (without extras) is headless-only (`marim -p "..."`).
+`./install.sh` is a convenience script that installs both `tui` and `serve` by
+default; pass `--no-tui` and/or `--no-serve` to skip either.
 
 ### Quick start (no API key required)
 
