@@ -50,7 +50,11 @@ _PREVIEW_CHARS = 2_000
 # natural copy around the core phrase — tripwire tests in test_offload.py /
 # test_subagent_tool.py pin each one to the regex, so a wording edit that
 # breaks the envelope fails a named test instead of silently disabling
-# revalidation.
+# revalidation. Known false positive, priced into the phrase-matching design:
+# an inline tool return that merely *contains* a handle-shaped string (e.g. a
+# read of a test file with a literal handle in it) gets the gone-note appended
+# at next load once that path fails exists() — benign, since the note is
+# append-only and idempotent.
 OFFLOAD_HANDLE_RE = re.compile(r"saved to `([^`\n]+)`")
 
 # Appended (never replacing — the inline preview is real information) to a
