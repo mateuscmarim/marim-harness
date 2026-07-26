@@ -43,7 +43,10 @@ dependencies = [
 [project.optional-dependencies]
 # The interactive TUI. A bare install is headless-only (`marim -p`); the `marim`
 # interactive launch prints an install hint when textual is absent.
-tui = ["textual>=0.80"]
+# flatlatex renders LaTeX math spans in replies as Unicode (see
+# interfaces/tui/math_markdown.py); TUI-only because only the live TUI view
+# transliterates — persisted transcripts keep raw LaTeX.
+tui = ["textual>=0.80", "flatlatex>=0.15"]
 # The `marim serve` HTTP daemon (REST + SSE). Bare installs print an install
 # hint when starlette/uvicorn are absent.
 serve = ["starlette>=0.40", "uvicorn>=0.30"]
@@ -76,6 +79,9 @@ dev = [
     # The TUI tests (Textual Pilot) need textual even though it moved to the
     # optional `tui` extra, so plain `uv sync` keeps developing/CI working.
     "textual>=0.80",
+    # The math-rendering tests need flatlatex even though it lives in the
+    # optional `tui` extra, so plain `uv sync` keeps developing/CI working.
+    "flatlatex>=0.15",
     # Fail a hung test (a stuck Pilot app, a deadlocked worker) instead of
     # stalling the whole CI leg until the runner's job timeout.
     "pytest-timeout>=2",

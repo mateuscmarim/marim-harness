@@ -653,6 +653,18 @@ client = [
 ]
 
 [[package]]
+name = "flatlatex"
+version = "0.15"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "regex" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/33/7e/31f7ea4843fa7ed12c46a4e96e2d425b873f4bdb90463e32a0c9f163a3ec/flatlatex-0.15.tar.gz", hash = "sha256:5170e1bcd4fccb52bdbdff300b14b68730483bc46f6a2a89f7ae2bb024e4d139", size = 15418, upload-time = "2021-11-30T23:02:59.227Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6c/72/25f517ff2536ad23349aad429126badc07324333de7b287bfe97dba2988f/flatlatex-0.15-py3-none-any.whl", hash = "sha256:4cf3ed9c1b837935fd79468ddbb25ac561325467a3a9dc050805b297eb0b25c6", size = 23338, upload-time = "2021-11-30T23:02:57.591Z" },
+]
+
+[[package]]
 name = "genai-prices"
 version = "0.0.71"
 source = { registry = "https://pypi.org/simple" }
@@ -1110,6 +1122,7 @@ serve = [
     { name = "uvicorn" },
 ]
 tui = [
+    { name = "flatlatex" },
     { name = "textual" },
 ]
 workflows = [
@@ -1120,6 +1133,7 @@ workflows = [
 [package.dev-dependencies]
 dev = [
     { name = "anyio" },
+    { name = "flatlatex" },
     { name = "jsonschema" },
     { name = "pydantic-monty" },
     { name = "pyright" },
@@ -1136,6 +1150,7 @@ dev = [
 requires-dist = [
     { name = "basedpyright", marker = "extra == 'lsp-python'", specifier = ">=1.13" },
     { name = "beautifulsoup4", specifier = ">=4.12" },
+    { name = "flatlatex", marker = "extra == 'tui'", specifier = ">=0.15" },
     { name = "genai-prices", specifier = ">=0.0.70" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "jsonschema", marker = "extra == 'workflows'", specifier = ">=4" },
@@ -1154,6 +1169,7 @@ provides-extras = ["tui", "serve", "workflows", "lsp-python"]
 [package.metadata.requires-dev]
 dev = [
     { name = "anyio", specifier = ">=4" },
+    { name = "flatlatex", specifier = ">=0.15" },
     { name = "jsonschema", specifier = ">=4" },
     { name = "pydantic-monty", specifier = ">=0.0.18,<0.1" },
     { name = "pyright", specifier = ">=1.1.390" },
