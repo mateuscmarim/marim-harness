@@ -227,6 +227,11 @@ class ProvidersPane(Vertical):
                 yield Static(
                     "(auth handled by the claude CLI itself)", classes="prov-note"
                 )
+            elif name == "zen-go":
+                yield Static(
+                    "Same key as zen — removing it deconfigures both.",
+                    classes="prov-note",
+                )
 
     def on_mount(self) -> None:
         for spec in PROVIDER_SPECS:
@@ -352,11 +357,35 @@ class ProvidersPane(Vertical):
             return False
         return True
 
+    def _sibling_specs(self, spec: ProviderSpec) -> list[ProviderSpec]:
+        """Other specs whose read_keys/drop_keys overlap this spec's — i.e.
+        they're actually configured by the SAME underlying env var(s). zen and
+        zen-go are the only pair today (one Zen-account OPENCODE_API_KEY covers
+        both plans), but this is computed from the specs, not hard-coded to
+        that pair, so any future shared-key provider picks up the same
+        cross-card repaint for free."""
+        keys = set(spec.read_keys) | set(spec.drop_keys)
+        if not keys:
+            return []
+        return [
+            other
+            for other in PROVIDER_SPECS
+            if other.name != spec.name
+            and keys & (set(other.read_keys) | set(other.drop_keys))
+        ]
+
     def _after_change(self, spec: ProviderSpec, *, verify: bool = False) -> None:
         self._refresh_sources()
         self._paint_card(spec)
         if verify:
             self._start_verify(spec.name)
+        # A shared-key sibling reads the exact same env var(s) as the card
+        # that just changed, so its configured/verdict state changed too —
+        # without this, saving (or removing) the key on one of zen/zen-go
+        # leaves the other stuck showing stale status text (and, on remove, a
+        # live remove button for credentials that no longer exist).
+        for sibling in self._sibling_specs(spec):
+            self._paint_card(sibling)
 
     def _refresh_sources(self) -> None:
         if isinstance(self._model_source, MultiModelSource):
@@ -438,9 +467,13 @@ class ProvidersPane(Vertical):
         # A stale ✓ verdict belongs to the removed credentials: drop the
         # cached one AND cancel any verify still in flight — a surviving
         # worker would otherwise land its verdict on the now-unconfigured
-        # card and re-populate the cache this pop just cleared.
-        self.workers.cancel_group(self, f"verify-{name}")
-        self._verify_results.pop(name, None)
+        # card and re-populate the cache this pop just cleared. This must
+        # also cover shared-key siblings (zen/zen-go): the drop_keys call
+        # above already deconfigured them too, so their cached verdict /
+        # in-flight verify is just as stale as this card's.
+        for target in (spec, *self._sibling_specs(spec)):
+            self.workers.cancel_group(self, f"verify-{target.name}")
+            self._verify_results.pop(target.name, None)
         if spec.base_url_key is not None:
             self.query_one(f"#prov-url-{name}", Input).value = ""
         self._status(f"✓ removed {name} credentials")

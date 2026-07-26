@@ -433,6 +433,83 @@ async def test_remove_local_drops_url_and_key_and_clears_input(
 
 
 @pytest.mark.anyio
+async def test_zen_key_commit_repaints_zen_go_sibling_card(
+    isolated_env, monkeypatch, tmp_path
+):
+    """zen and zen-go share OPENCODE_API_KEY: saving the key via the zen card
+    must also flip the zen-go card to 'configured' (and show its remove
+    button) — not just repaint the card that was actually edited."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
+    app = _PaneHost()
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        pane = app.query_one(ProvidersPane)
+        assert "not configured" in str(
+            pane.query_one("#prov-status-zen-go", Static).render()
+        )
+        assert pane.query_one("#prov-remove-zen-go", Button).display is False
+        inp = pane.query_one("#prov-key-zen", Input)
+        inp.value = "zen-key-12345678"
+        pane._commit("prov-key-zen")
+        await pilot.pause()
+        assert os.environ.get("OPENCODE_API_KEY") == "zen-key-12345678"
+        # zen-go's card, though untouched directly, must now read configured.
+        assert "configured" in str(
+            pane.query_one("#prov-status-zen-go", Static).render()
+        )
+        assert "not configured" not in str(
+            pane.query_one("#prov-status-zen-go", Static).render()
+        )
+        assert pane.query_one("#prov-remove-zen-go", Button).display is True
+        assert pane.query_one("#prov-key-zen-go", Input).placeholder == (
+            "configured · …5678 — type to replace"
+        )
+
+
+@pytest.mark.anyio
+async def test_remove_via_zen_go_card_unconfigures_zen_and_clears_cache(
+    isolated_env, monkeypatch, tmp_path
+):
+    """Removing the shared key via the zen-go card must repaint the zen card
+    back to 'not configured' and purge zen's cached verify verdict — a stale
+    ✓ on the sibling card with a live remove button would be a lie."""
+    from marim_harness.config import save_env_settings
+    from marim_harness.interfaces.tui.providers import _SPECS
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    save_env_settings({"OPENCODE_API_KEY": "zen-key-12345678"})
+    app = _PaneHost()
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        pane = app.query_one(ProvidersPane)
+        # Pretend zen has an earned verify verdict cached, as it would after
+        # on_show's initial sweep verified it.
+        pane._verify_results["zen"] = "✓ connected · 3 models"
+        pane._paint_card(_SPECS["zen"])
+        assert pane.query_one("#prov-remove-zen", Button).display is True
+        pane._remove("zen-go")
+        await pilot.pause()
+        assert os.environ.get("OPENCODE_API_KEY") is None
+        zen_badge = str(pane.query_one("#prov-status-zen", Static).render())
+        assert "not configured" in zen_badge
+        assert "connected" not in zen_badge
+        assert "zen" not in pane._verify_results
+        assert pane.query_one("#prov-remove-zen", Button).display is False
+
+
+@pytest.mark.anyio
+async def test_zen_go_card_has_shared_key_note(isolated_env, monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    app = _PaneHost()
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        pane = app.query_one(ProvidersPane)
+        note = pane.query_one("#prov-card-zen-go .prov-note", Static)
+        assert "zen" in str(note.render()).lower()
+
+
+@pytest.mark.anyio
 async def test_remove_via_real_button_click(isolated_env, monkeypatch, tmp_path):
     """End-to-end through the real Textual event: clicking the remove button
     fires Button.Pressed -> on_button_pressed, not a direct _remove call."""
