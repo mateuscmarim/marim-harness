@@ -1,6 +1,6 @@
 [project]
 name = "marim-harness"
-version = "0.1.0.post1"
+version = "0.2.0"
 description = "An embeddable coding-agent harness on Pydantic AI, with a Textual TUI and headless mode"
 # The readme is dynamic: hatch-fancy-pypi-readme rewrites the repo README's
 # relative links/images to absolute forge URLs at build time, so the PyPI page

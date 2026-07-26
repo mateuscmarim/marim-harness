@@ -6,8 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/) —
 pre-1.0, minor versions may contain breaking changes.
 
-## [Unreleased]
+## [0.2.0] - 2026-07-26
 
+- `marim serve`: sessions can switch models — `GET /v1/models` lists the
+  catalog, session create accepts a `model`, and
+  `POST /v1/sessions/{sid}/model` switches an existing session (409 while a
+  turn is running). Session payloads report the *effective* model, never null.
+- `marim serve`: background jobs are visible over HTTP —
+  `GET /v1/sessions/{sid}/jobs` returns the job snapshot and
+  `GET /v1/sessions/{sid}/jobs/{job_id}` the detail (prompt + result), with
+  `started_at` stamped on each job.
+- Autonomous wake now works in serve mode: the wake policy moved into a shared
+  `WakeDriver` orchestrator used by both the TUI and the HTTP daemon, so a
+  scheduled wake fires exactly once per trigger in either front-end.
+- `marim serve`: safe GET endpoints send explicit `Cache-Control` headers
+  (session reads are `no-cache`, so clients never act on a stale snapshot).
+- TUI tool summaries show workspace-relative paths instead of absolute ones —
+  `src/app.py` rather than the full `/home/...` prefix.
+- Error handling hardened across the codebase: streaming errors are classified
+  transient and retried like other infra failures, and a sweep across 32
+  modules replaced broad exception swallowing with precise handling.
+- New bundled `marim-docs` skill: navigating marim-harness's own documentation
+  (guides, reference, architecture) from inside a session.
+- Large tool-output spills (sub-agent reports, workflow results, fetched
+  bodies) now land in the session scratchpad instead of `.marim/output/`
+  inside the workspace — intermediate files no longer clutter the project;
+  the legacy directory is still read as a fallback.
 - Resumed sessions now revalidate offloaded-output references at load: a
   handle whose scratchpad file was cleaned up (reboot, tmpfiles aging) gets
   an explicit "file no longer exists — re-run the tool" note appended, with
