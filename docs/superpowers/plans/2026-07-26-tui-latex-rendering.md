@@ -22,6 +22,7 @@
 
 **Verified facts** (prototyped 2026-07-26, don't re-litigate):
 - `flatlatex.converter(keep_spaces=True).convert(r"\alpha^2 + \sqrt{\beta_1}")` == `"α² + √(β₁)"`; `r"\frac{a}{b}"` == `"a/b"`; `r"\frac{"` raises `LatexSyntaxError`. Converter init ≈ 0.3 ms; no macro-state leak between `convert` calls.
+- The `_BOUNDED_OP` cleanup regex was prototyped against live flatlatex output: `"(∫₀)¹ x² dx"` → `"∫₀¹ x² dx"`, `"(∫₀)^∞f"` → `"∫₀^∞f"`, `"(∑ᵢ₌₁)ⁿ xᵢ"` → `"∑ᵢ₌₁ⁿ xᵢ"`, and `"(a₁)²"` is (correctly) untouched.
 - `dollarmath_plugin(md, allow_space=False, double_inline=True)`: rejects `$5 and $10` (whitespace before closer), emits `math_inline` (markup `"$"`), `math_inline_double` (markup `"$$"`), `math_block` (markup `"$$"`).
 - Textual 8.2.7 `Markdown.__init__` accepts `parser_factory: Callable[[], MarkdownIt] | None`; `None` → it builds `MarkdownIt("gfm-like")` itself, so our factory must start from the same base.
 - `tests/conftest.py` provides a global `anyio_backend` fixture; `@pytest.mark.anyio` works in new test files.
@@ -88,6 +89,21 @@ def test_latex_to_unicode_converts_fractions():
     assert latex_to_unicode(r"\frac{a}{b}") == "a/b"
 
 
+def test_latex_to_unicode_unwraps_bounded_big_operators():
+    # flatlatex parenthesizes a sub-scripted big operator before applying the
+    # superscript — "(∫₀)¹" — which reads worse than it needs to. The seam
+    # strips those parens for big operators only.
+    assert latex_to_unicode(r"\int_0^1 x^2 dx") == "∫₀¹ x² dx"
+    assert latex_to_unicode(r"\sum_{i=1}^{n} x_i") == "∑ᵢ₌₁ⁿ xᵢ"
+    # The superscript may also be a caret form when no Unicode char exists.
+    assert latex_to_unicode(r"\int_0^\infty f") == "∫₀^∞f"
+
+
+def test_latex_to_unicode_keeps_ordinary_parenthesized_powers():
+    # "(a_1)^2" is real grouping, not a bounded operator — must survive.
+    assert latex_to_unicode(r"(a_1)^2") == "(a₁)²"
+
+
 def test_latex_to_unicode_returns_none_on_unparsable_input():
     # Unbalanced brace: flatlatex raises LatexSyntaxError; the seam maps any
     # failure to None so callers can fall back to the literal span.
@@ -137,6 +153,7 @@ output keep the lossless raw LaTeX.
 from __future__ import annotations
 
 import os
+import re
 
 try:
     import flatlatex
@@ -153,6 +170,18 @@ _TRUTHY = {"1", "true", "on", "yes"}
 # each re-parse of the still-open block while a reply streams.
 _converter = None
 
+# flatlatex parenthesizes a big operator carrying both bounds — ``\int_0^1``
+# becomes ``(∫₀)¹`` — which reads worse than the plain ``∫₀¹``. Strip those
+# parens when (and only when) the group is a big operator plus subscripts and a
+# superscript follows: ordinary grouping like ``(a₁)²`` has no big operator and
+# never matches.
+_SUBSCRIPTS = "₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₐₑₒₓₔₕₖₗₘₙₚₛₜᵢᵣᵤᵥᵦᵧᵨᵩᵪ"
+_SUPERSCRIPTS = "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿⁱ"
+_BIG_OPS = "∫∬∭∮∯∰∑∏⋀⋁⋂⋃"
+_BOUNDED_OP = re.compile(
+    f"\\(([{_BIG_OPS}][{_SUBSCRIPTS}]+)\\)(?=\\^|[{_SUPERSCRIPTS}])"
+)
+
 
 def latex_to_unicode(src: str) -> str | None:
     """Transliterate the LaTeX math ``src`` (delimiters already stripped) to a
@@ -166,7 +195,7 @@ def latex_to_unicode(src: str) -> str | None:
             # keep_spaces preserves the source's spacing (``α² + √(β₁)`` rather
             # than flatlatex's default tight ``α²+√(β₁)``).
             _converter = flatlatex.converter(keep_spaces=True)
-        return _converter.convert(src)
+        return _BOUNDED_OP.sub(r"\1", _converter.convert(src))
     except Exception:
         # flatlatex raises LatexSyntaxError on malformed input, but any failure
         # whatsoever must degrade to the literal span, so catch broadly.
@@ -176,7 +205,7 @@ def latex_to_unicode(src: str) -> str | None:
 - [ ] **Step 6: Run tests to verify they pass**
 
 Run: `uv run pytest --no-cov tests/test_math_markdown.py -v`
-Expected: 4 PASS.
+Expected: 6 PASS.
 
 - [ ] **Step 7: Lint and type-check**
 
@@ -292,7 +321,7 @@ def test_factory_on_by_default(monkeypatch):
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest --no-cov tests/test_math_markdown.py -v`
-Expected: Task 1's 4 tests PASS; the new ones FAIL with `AttributeError: ... has no attribute 'math_parser_factory'`.
+Expected: Task 1's 6 tests PASS; the new ones FAIL with `AttributeError: ... has no attribute 'math_parser_factory'`.
 
 - [ ] **Step 3: Implement the parser factory**
 
@@ -475,7 +504,7 @@ def _block_math_paragraph(tok: Token) -> list[Token]:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest --no-cov tests/test_math_markdown.py -v`
-Expected: all PASS (4 from Task 1 + 12 new).
+Expected: all PASS (6 from Task 1 + 12 new).
 
 - [ ] **Step 5: Lint and type-check**
 

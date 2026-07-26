@@ -59,7 +59,10 @@ Three concerns in one file:
    lazily-created, module-cached `flatlatex.converter()`. Any exception returns
    the original span verbatim **including its delimiters**, so a failed
    conversion is byte-identical to today's output. flatlatex is referenced only
-   here, so the library is swappable behind this one function.
+   here, so the library is swappable behind this one function. The seam also
+   post-processes one flatlatex quirk: a big operator carrying both bounds is
+   parenthesized (`\int_0^1` → `(∫₀)¹`); a regex strips those parens for big
+   operators only (`∫₀¹`), never touching real grouping like `(a₁)²`.
 
 2. **Two markdown-it rules** for the backslash delimiters (dollarmath covers
    only `$`/`$$`):
