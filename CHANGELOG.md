@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/) —
 pre-1.0, minor versions may contain breaking changes.
 
+## [Unreleased]
+
+- The TUI renders LaTeX math in replies (`$..$`, `$$..$$`, `\(..\)`, `\[..\]`)
+  as Unicode approximations (`α² + √(β₁)`, `(-b±√(b²-4ac))/(2a)`) on every
+  prose surface, including sub-agent transcripts. Streaming-safe by design
+  (the parser converts a span once its closer arrives), falls back to literal
+  LaTeX on anything unparsable, `MARIM_TUI_MATH=0` disables. flatlatex joins
+  the `[tui]` extra.
+
 ## [0.2.0] - 2026-07-26
 
 - `marim serve`: sessions can switch models — `GET /v1/models` lists the

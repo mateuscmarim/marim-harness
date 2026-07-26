@@ -15,6 +15,8 @@ from textual.containers import Vertical
 from textual.content import Content
 from textual.widgets import Collapsible, Markdown, Static
 
+from ..math_markdown import math_parser_factory
+
 
 class UserMessage(Static):
     def __init__(self, text: str) -> None:
@@ -246,7 +248,10 @@ class AssistantMessage(Markdown):
         self._inflight = None
         # Latch so finalize()'s stream-end pass runs at most once.
         self._finalized = False
-        super().__init__("")
+        # Math-aware parser (LaTeX -> Unicode; see math_markdown.py). None when
+        # MARIM_TUI_MATH=0 or flatlatex is absent — Textual then builds its
+        # stock parser, byte-identical to pre-math behavior.
+        super().__init__("", parser_factory=math_parser_factory())
 
     def _bounded_source(self) -> str:
         """The source to hand a one-shot render: the full buffer when it's small
