@@ -428,6 +428,43 @@ async def test_fetch_zen_models_non_strict_returns_empty(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_fetch_zen_models_honors_url_override(monkeypatch):
+    """The zen-go provider reuses this fetcher pointed at the Go catalog; the
+    url kwarg must reach the GET (and default resolution must stay call-time —
+    the connection-refused tests above monkeypatch _ZEN_MODELS_URL)."""
+    import httpx
+
+    captured: dict = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"data": [{"id": "glm-5.2", "object": "model"}]}
+
+    class FakeClient:
+        def __init__(self, timeout):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url, headers=None):
+            captured["url"] = url
+            return FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+    entries = await catalog.fetch_zen_models(
+        "sk-x", url="https://opencode.ai/zen/go/v1/models")
+    assert captured["url"] == "https://opencode.ai/zen/go/v1/models"
+    assert [e.id for e in entries] == ["glm-5.2"]
+
+
+@pytest.mark.anyio
 async def test_make_supports_images_gates_and_caches():
     calls = []
 

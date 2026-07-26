@@ -61,12 +61,12 @@ non-positive values and fall back to the default (exceptions are noted).
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MARIM_PROVIDER` | `openrouter` | Default provider: `openrouter`, `local`, `google`, `zen`, or `claude-cli`. |
+| `MARIM_PROVIDER` | `openrouter` | Default provider: `openrouter`, `local`, `google`, `zen`, `zen-go`, or `claude-cli`. |
 | `MARIM_MODEL` | per provider, see below | Model id on the default provider. Sent to the provider verbatim. |
 | `MARIM_BASE_URL` | `http://localhost:11434/v1` | Base URL for the `local` provider (any OpenAI-compatible server). |
-| `MARIM_API_KEY` | `local` (local provider) | Generic API key: used by `local`, and as a last-resort fallback for `openrouter`, `google`, and `zen`. |
+| `MARIM_API_KEY` | `local` (local provider) | Generic API key: used by `local`, and as a last-resort fallback for `openrouter`, `google`, `zen`, and `zen-go`. |
 | `OPENROUTER_API_KEY` | unset | OpenRouter API key (preferred over `MARIM_API_KEY`). |
-| `OPENCODE_API_KEY` | unset | OpenCode Zen API key (preferred over `MARIM_API_KEY`). Get one at <https://opencode.ai/auth>. |
+| `OPENCODE_API_KEY` | unset | OpenCode Zen API key, shared by the `zen` and `zen-go` providers (preferred over `MARIM_API_KEY`). Get one at <https://opencode.ai/auth>. |
 | `GOOGLE_API_KEY` | unset | Google (Gemini) API key. |
 | `GEMINI_API_KEY` | unset | Alternative Google key; checked after `GOOGLE_API_KEY`, before `MARIM_API_KEY`. |
 | `MARIM_CLAUDE_CLI_BIN` | `claude` (resolved on PATH) | Claude Code executable to launch for the `claude-cli` provider and `backend: claude-cli` spawns. |
@@ -81,9 +81,9 @@ id like `local:qwen2.5-coder` addresses any active provider.
 
 `MARIM_MODEL` defaults per provider: `anthropic/claude-sonnet-4-6`
 (openrouter), `qwen2.5-coder` (local), `gemini-2.5-flash` (google),
-`mimo-v2.5-free` (zen), and *unset* for `claude-cli` (the CLI uses its own
-configured default). The value is passed to the provider verbatim — marim
-does not validate or rewrite it.
+`mimo-v2.5-free` (zen), `glm-5.2` (zen-go), and *unset* for `claude-cli`
+(the CLI uses its own configured default). The value is passed to the
+provider verbatim — marim does not validate or rewrite it.
 
 The `zen` provider talks to [OpenCode Zen](https://opencode.ai/auth)'s
 OpenAI-compatible gateway at a fixed `https://opencode.ai/zen/v1` (not
@@ -94,6 +94,15 @@ Google endpoint shapes marim's zen provider doesn't speak. Free-tier models
 carry a `-free` suffix (e.g. `mimo-v2.5-free`, `deepseek-v4-flash-free`).
 Qualified ids like `zen:mimo-v2.5-free` work anywhere a qualified id does,
 including sub-agent tier slugs.
+
+The `zen-go` provider is the same Zen account on OpenCode's flat-rate
+[Go subscription plan](https://opencode.ai/docs/go/): a separate
+OpenAI-compatible endpoint at `https://opencode.ai/zen/go/v1` whose catalog
+is open coding models only (`glm-5.2` default, `kimi-k3`, `minimax-m3`,
+`deepseek-v4`, …). It authenticates with the same `OPENCODE_API_KEY`; a key
+without an active Go subscription lists the provider but fails clearly at the
+first chat request. Billing is flat monthly with usage windows, so marim shows
+no per-token cost for it.
 
 Under the `claude-cli` provider marim delegates each turn to `claude -p` on a
 Claude subscription: Claude runs its own tools and loop, so marim's tools,

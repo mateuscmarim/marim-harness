@@ -55,6 +55,10 @@ def test_bare_id_survives_ollama_style_tags():
     assert _bare_id("local:qwen2.5-coder:7b") == "qwen2.5-coder:7b"
 
 
+def test_bare_id_strips_zen_go_qualifier():
+    assert _bare_id("zen-go:glm-5.2") == "glm-5.2"
+
+
 def test_budget_precedence_first_match_wins_then_global():
     limits = ContextLimits(
         budget=100_000,

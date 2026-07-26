@@ -8,6 +8,10 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+- New `zen-go` provider: OpenCode Go, Zen's flat-rate subscription plan, via
+  its OpenAI-compatible endpoint — `MARIM_PROVIDER=zen-go` with the same
+  `OPENCODE_API_KEY` as `zen`, default model `glm-5.2` (open coding models
+  only). Catalog, settings card, and qualified `zen-go:<model>` ids included.
 - Image reads hardened (follow-ups to the `read_file` image support below):
   files are now recognized by header magic, not extension alone — a text file
   named `diagram.png` reads as text and a corrupt/0-byte image gets a notice

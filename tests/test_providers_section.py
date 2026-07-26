@@ -45,7 +45,7 @@ def test_short_error_first_line_truncated():
 def test_provider_specs_env_keys():
     specs = {s.name: s for s in PROVIDER_SPECS}
     assert [s.name for s in PROVIDER_SPECS] == [
-        "openrouter", "google", "zen", "local", "claude-cli"]
+        "openrouter", "google", "zen", "zen-go", "local", "claude-cli"]
     assert specs["openrouter"].write_key == "OPENROUTER_API_KEY"
     assert specs["openrouter"].drop_keys == ("OPENROUTER_API_KEY",)
     # google always WRITES GOOGLE_API_KEY but reads/drops both env names.
@@ -59,6 +59,13 @@ def test_provider_specs_env_keys():
     assert specs["zen"].read_keys == ("OPENCODE_API_KEY",)
     assert specs["zen"].drop_keys == ("OPENCODE_API_KEY",)
     assert specs["zen"].base_url_key is None
+    # zen-go: SAME key env as zen (one Zen account covers both plans), so
+    # removing the key from either card deconfigures both.
+    assert specs["zen-go"].write_key == "OPENCODE_API_KEY"
+    assert specs["zen-go"].key_fallbacks == ()
+    assert specs["zen-go"].read_keys == ("OPENCODE_API_KEY",)
+    assert specs["zen-go"].drop_keys == ("OPENCODE_API_KEY",)
+    assert specs["zen-go"].base_url_key is None
     # local is configured by its base URL; removal clears URL + key together.
     assert specs["local"].base_url_key == "MARIM_BASE_URL"
     assert specs["local"].read_keys == ("MARIM_BASE_URL",)
@@ -109,7 +116,7 @@ class _PaneHost(App):
 async def test_pane_mounts_all_cards_without_writing_env(
     isolated_env, monkeypatch, tmp_path
 ):
-    """Mounting paints all five cards and must not write .env (mount-time
+    """Mounting paints all six cards and must not write .env (mount-time
     widget events are gated, like the settings screen's _ready flag)."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setenv("MARIM_PROVIDER", "openrouter")
@@ -117,7 +124,7 @@ async def test_pane_mounts_all_cards_without_writing_env(
     async with app.run_test(size=(120, 45)) as pilot:
         await pilot.pause()
         pane = app.query_one(ProvidersPane)
-        for name in ("openrouter", "google", "zen", "local", "claude-cli"):
+        for name in ("openrouter", "google", "zen", "zen-go", "local", "claude-cli"):
             assert pane.query_one(f"#prov-card-{name}") is not None
         # Key inputs are password fields that start empty.
         key = pane.query_one("#prov-key-openrouter", Input)
@@ -423,6 +430,83 @@ async def test_remove_local_drops_url_and_key_and_clears_input(
         assert os.environ.get("MARIM_BASE_URL") is None
         assert os.environ.get("MARIM_API_KEY") is None
         assert pane.query_one("#prov-url-local", Input).value == ""
+
+
+@pytest.mark.anyio
+async def test_zen_key_commit_repaints_zen_go_sibling_card(
+    isolated_env, monkeypatch, tmp_path
+):
+    """zen and zen-go share OPENCODE_API_KEY: saving the key via the zen card
+    must also flip the zen-go card to 'configured' (and show its remove
+    button) — not just repaint the card that was actually edited."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
+    app = _PaneHost()
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        pane = app.query_one(ProvidersPane)
+        assert "not configured" in str(
+            pane.query_one("#prov-status-zen-go", Static).render()
+        )
+        assert pane.query_one("#prov-remove-zen-go", Button).display is False
+        inp = pane.query_one("#prov-key-zen", Input)
+        inp.value = "zen-key-12345678"
+        pane._commit("prov-key-zen")
+        await pilot.pause()
+        assert os.environ.get("OPENCODE_API_KEY") == "zen-key-12345678"
+        # zen-go's card, though untouched directly, must now read configured.
+        assert "configured" in str(
+            pane.query_one("#prov-status-zen-go", Static).render()
+        )
+        assert "not configured" not in str(
+            pane.query_one("#prov-status-zen-go", Static).render()
+        )
+        assert pane.query_one("#prov-remove-zen-go", Button).display is True
+        assert pane.query_one("#prov-key-zen-go", Input).placeholder == (
+            "configured · …5678 — type to replace"
+        )
+
+
+@pytest.mark.anyio
+async def test_remove_via_zen_go_card_unconfigures_zen_and_clears_cache(
+    isolated_env, monkeypatch, tmp_path
+):
+    """Removing the shared key via the zen-go card must repaint the zen card
+    back to 'not configured' and purge zen's cached verify verdict — a stale
+    ✓ on the sibling card with a live remove button would be a lie."""
+    from marim_harness.config import save_env_settings
+    from marim_harness.interfaces.tui.providers import _SPECS
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    save_env_settings({"OPENCODE_API_KEY": "zen-key-12345678"})
+    app = _PaneHost()
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        pane = app.query_one(ProvidersPane)
+        # Pretend zen has an earned verify verdict cached, as it would after
+        # on_show's initial sweep verified it.
+        pane._verify_results["zen"] = "✓ connected · 3 models"
+        pane._paint_card(_SPECS["zen"])
+        assert pane.query_one("#prov-remove-zen", Button).display is True
+        pane._remove("zen-go")
+        await pilot.pause()
+        assert os.environ.get("OPENCODE_API_KEY") is None
+        zen_badge = str(pane.query_one("#prov-status-zen", Static).render())
+        assert "not configured" in zen_badge
+        assert "connected" not in zen_badge
+        assert "zen" not in pane._verify_results
+        assert pane.query_one("#prov-remove-zen", Button).display is False
+
+
+@pytest.mark.anyio
+async def test_zen_go_card_has_shared_key_note(isolated_env, monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    app = _PaneHost()
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        pane = app.query_one(ProvidersPane)
+        note = pane.query_one("#prov-card-zen-go .prov-note", Static)
+        assert "zen" in str(note.render()).lower()
 
 
 @pytest.mark.anyio

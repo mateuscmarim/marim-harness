@@ -221,21 +221,29 @@ def parse_zen_models(payload: dict) -> list[ModelEntry]:
 
 
 async def fetch_zen_models(
-    api_key: str | None = None, timeout: float = 10.0, *, strict: bool = False
+    api_key: str | None = None,
+    timeout: float = 10.0,
+    *,
+    strict: bool = False,
+    url: str | None = None,
 ) -> list[ModelEntry]:
     """Fetch the OpenCode Zen catalog. Returns ``[]`` on any failure so the
     picker degrades to free-text entry, unless ``strict=True`` (verification
-    needs the real error), in which case the exception is re-raised. Note:
-    ``/models`` is public, so strict mode verifies *connectivity*, not the
-    key — Zen has no known key-validation endpoint (unlike OpenRouter's
-    ``/key``); a bad key surfaces at first chat request instead. httpx is
-    imported lazily to keep the import chain light."""
+    needs the real error), in which case the exception is re-raised. ``url``
+    selects the endpoint — the zen-go provider passes its Go-plan catalog URL
+    (same payload shape); ``None`` resolves to ``_ZEN_MODELS_URL`` at CALL
+    time, not def time, so tests that monkeypatch the module constant keep
+    working. Note: ``/models`` is public, so strict mode verifies
+    *connectivity*, not the key — Zen has no known key-validation endpoint
+    (unlike OpenRouter's ``/key``); a bad key surfaces at first chat request
+    instead. httpx is imported lazily to keep the import chain light."""
     import httpx
 
+    target = url or _ZEN_MODELS_URL
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.get(_ZEN_MODELS_URL, headers=headers)
+            response = await client.get(target, headers=headers)
             response.raise_for_status()
             return parse_zen_models(response.json())
     except Exception as exc:
