@@ -253,7 +253,7 @@ async def get_session(request: Request) -> Response:
         "status": host.status if host else "idle",
         "queued": host.queued if host else 0,
         "pending_asks": host.pending_asks() if host else [],
-    }, "max-age=30")
+    }, "no-cache")
 
 
 async def delete_session(request: Request) -> Response:

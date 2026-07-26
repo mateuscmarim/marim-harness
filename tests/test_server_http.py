@@ -832,7 +832,7 @@ def test_get_cache_control_headers(client):
         ("/v1/models", AUTH, "max-age=300"),
         ("/v1/workspaces", AUTH, "max-age=60"),
         (f"/v1/workspaces/{ws_id}/sessions", AUTH, "max-age=60"),
-        (base, AUTH, "max-age=30"),
+        (base, AUTH, "no-cache"),
         (f"{base}/history", AUTH, "max-age=10"),
         (f"{base}/asks", AUTH, "no-cache"),
         (f"{base}/jobs", AUTH, "max-age=30"),
