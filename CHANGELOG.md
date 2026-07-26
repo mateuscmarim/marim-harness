@@ -8,6 +8,11 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+- Resumed sessions now revalidate offloaded-output references at load: a
+  handle whose scratchpad file was cleaned up (reboot, tmpfiles aging) gets
+  an explicit "file no longer exists — re-run the tool" note appended, with
+  the inline preview kept — instead of promising a `read_file` that would
+  fail. Sub-agent and workflow spill notes now always carry absolute paths.
 - New `zen-go` provider: OpenCode Go, Zen's flat-rate subscription plan, via
   its OpenAI-compatible endpoint — `MARIM_PROVIDER=zen-go` with the same
   `OPENCODE_API_KEY` as `zen`, default model `glm-5.2` (open coding models

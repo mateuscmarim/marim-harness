@@ -16,6 +16,7 @@ import dataclasses
 import logging
 import os
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from pydantic_ai import Agent
@@ -31,6 +32,7 @@ from pydantic_ai.messages import (
 )
 
 from .binary_safe import has_binary_content, render_binary_safe
+from .tools.impl.offload import OFFLOAD_GONE_NOTE, find_offload_paths
 
 logger = logging.getLogger(__name__)
 
@@ -310,28 +312,68 @@ def elided_pointer_path(content) -> str | None:
     return path if sep else None
 
 
-def _revalidate_parts(parts, exists: Callable[[str], bool]) -> tuple[list | None, int]:
-    """Rewrite dangling pointer returns within one message's parts.
+def _annotate_dangling_handles(
+    content, exists: Callable[[str], bool], base: Path | None
+) -> str | None:
+    """*content* with :data:`OFFLOAD_GONE_NOTE` appended when any offload-handle
+    path inside it no longer exists, or None when nothing needs annotating.
 
-    Returns ``(new_parts, rewritten)`` — ``new_parts`` is None when nothing
-    dangled, so the caller can skip rebuilding the message."""
+    Append, never replace: unlike an elided pointer (whose whole content IS the
+    placeholder), a handle carries a real inline preview that must survive.
+    Idempotent via the note itself — content already annotated is skipped, so
+    one note per part even with several dangling paths (the note says
+    "referenced above" rather than naming one). Non-absolute paths (legacy
+    histories predating absolute spill paths) resolve against *base*."""
+    if not isinstance(content, str) or OFFLOAD_GONE_NOTE in content:
+        return None
+    paths = find_offload_paths(content)
+    if not paths:
+        return None
+
+    def resolved(p: str) -> str:
+        return p if os.path.isabs(p) or base is None else str(base / p)
+
+    if all(exists(resolved(p)) for p in paths):
+        return None
+    return content + OFFLOAD_GONE_NOTE
+
+
+def _revalidate_parts(
+    parts, exists: Callable[[str], bool], base: Path | None
+) -> tuple[list | None, int]:
+    """Rewrite dangling scratchpad references within one message's parts.
+
+    Two detectors, mutually exclusive by construction (their copy differs on
+    purpose): a dangling elided POINTER is replaced with the plain masked
+    placeholder (nothing to preserve), a dangling offload HANDLE gets the
+    gone-note appended (the preview survives). Returns ``(new_parts,
+    rewritten)`` — ``new_parts`` is None when nothing dangled, so the caller
+    can skip rebuilding the message."""
     new_parts: list | None = None
     rewritten = 0
     for pidx, part in enumerate(parts):
         if not isinstance(part, ToolReturnPart):
             continue
+        replacement: object | None = None
         path = elided_pointer_path(part.content)
-        if path is None or exists(path):
+        if path is not None:
+            if not exists(path):
+                replacement = MASKED_OBSERVATION
+        else:
+            replacement = _annotate_dangling_handles(part.content, exists, base)
+        if replacement is None:
             continue
         if new_parts is None:
             new_parts = list(parts)
-        new_parts[pidx] = dataclasses.replace(part, content=MASKED_OBSERVATION)
+        new_parts[pidx] = dataclasses.replace(part, content=replacement)
         rewritten += 1
     return new_parts, rewritten
 
 
 def revalidate_elided_pointers(
-    history: list, exists: Callable[[str], bool] = os.path.exists
+    history: list,
+    exists: Callable[[str], bool] = os.path.exists,
+    base: Path | None = None,
 ) -> tuple[list, int]:
     """Degrade elided-pointer placeholders whose backing file no longer exists.
 
@@ -343,6 +385,12 @@ def revalidate_elided_pointers(
     rewrites dangling ones to plain :data:`MASKED_OBSERVATION`, which honestly
     tells the model to re-run the tool instead. Live pointers and every other
     part are left untouched.
+
+    Offload HANDLES (the ``saved to `path` `` envelope from
+    tools/impl/offload.py) are revalidated in the same walk: a dangling one
+    gets OFFLOAD_GONE_NOTE appended — preview preserved — rather than being
+    replaced. ``base`` resolves non-absolute handle paths (legacy histories)
+    against the workspace root; absolute paths ignore it.
 
     Same contract as :func:`mask_stale_observations`: never mutates the input
     (changed messages are rebuilt via ``replace``), idempotent (the plain
@@ -356,7 +404,7 @@ def revalidate_elided_pointers(
         parts = getattr(message, "parts", None)
         if not parts:
             continue
-        new_parts, rewritten = _revalidate_parts(parts, exists)
+        new_parts, rewritten = _revalidate_parts(parts, exists, base)
         if new_parts is None:
             continue
         if new_history is None:
