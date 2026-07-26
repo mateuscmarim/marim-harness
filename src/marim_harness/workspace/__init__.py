@@ -8,6 +8,7 @@ from .agents import (
     discover_agents,
     effective_tools,
     find_agent,
+    spill_target,
     subagent_instructions,
 )
 from .catalog import (
@@ -55,6 +56,7 @@ __all__ = [
     "discover_agents",
     "effective_tools",
     "find_agent",
+    "spill_target",
     "subagent_instructions",
     # catalog
     "ModelEntry",

@@ -421,6 +421,25 @@ def compose_subagent_task(
     return "\n\n".join(sections)
 
 
+def spill_target(
+    scratchpad: "Path | None", workspace_root: "Path", subdir: str, filename: str
+) -> tuple[str, str | None]:
+    """Where an over-budget report spills, preferring the session scratchpad.
+
+    Returns ``(spill_path, rel)``: ``spill_path`` is the ABSOLUTE path that
+    goes into the model-facing cap note — absolute so the handle survives a
+    resume from any cwd, and so load-seam revalidation (compaction.py) can
+    exists-check it without context. ``rel`` is the workspace-relative
+    fallback path for ``fs.write_file`` when no scratchpad is available, or
+    ``None`` when the scratchpad is used (caller writes there directly).
+    Pure — no filesystem access; shared by the sub-agent runner and the
+    workflow engine so the two spill paths cannot drift."""
+    if scratchpad is not None:
+        return str(scratchpad / subdir / filename), None
+    rel = f".marim/{subdir}/{filename}"
+    return str(workspace_root / rel), rel
+
+
 def cap_subagent_output(
     output: str, max_output_chars: int | None, spill_path: str
 ) -> tuple[str, str | None]:
@@ -435,7 +454,10 @@ def cap_subagent_output(
     the cap the spawner asked for actually holds."""
     if max_output_chars is None or len(output) <= max_output_chars:
         return output, None
-    note = f"\n\n[output capped at {max_output_chars} chars — full report at {spill_path}]"
+    note = (
+        f"\n\n[output capped at {max_output_chars} chars — "
+        f"full report saved to `{spill_path}`]"
+    )
     head = output[: max(0, max_output_chars - len(note))]
     return head + note, output
 

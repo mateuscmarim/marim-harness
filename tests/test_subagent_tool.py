@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
@@ -5,6 +7,7 @@ from pydantic_ai.models.test import TestModel
 
 from marim_harness.runtime.deps import Deps
 from marim_harness.runtime.permissions import Mode
+from marim_harness.tools.impl.offload import find_offload_paths
 from marim_harness.tools.provider import (
     GATED_TOOLS,
     READ_TOOLS,
@@ -15,6 +18,7 @@ from marim_harness.workspace.agents import (
     AgentDef,
     cap_subagent_output,
     compose_subagent_task,
+    spill_target,
     subagent_instructions,
 )
 from tests.conftest import _make_deps
@@ -173,3 +177,31 @@ def test_subagent_gated_tools_run_without_approval(tmp_path):
     assert (tmp_path / "out.txt").read_text() == "hello sub"
     # The run produced a plain string output, not a DeferredToolRequests.
     assert isinstance(result.output, str)
+
+
+# --- offload-handle envelope conformance (spec 2026-07-26) --------------------
+
+
+def test_cap_pointer_matches_offload_envelope():
+    """Tripwire: the cap note's path is extractable by the shared envelope regex."""
+    out = "CONCLUSION first. " + "filler detail. " * 500
+    text, spill = cap_subagent_output(out, 300, "/abs/pad/subagent-output/a1.md")
+    assert spill == out
+    assert find_offload_paths(text) == ["/abs/pad/subagent-output/a1.md"]
+
+
+def test_spill_target_prefers_scratchpad_absolute(tmp_path):
+    pad = tmp_path / "pad"
+    root = tmp_path / "ws"
+    path, rel = spill_target(pad, root, "subagent-output", "r1.md")
+    assert rel is None
+    assert Path(path).is_absolute()
+    assert path == str(pad / "subagent-output" / "r1.md")
+
+
+def test_spill_target_fallback_is_absolute_with_workspace_rel(tmp_path):
+    root = tmp_path / "ws"
+    path, rel = spill_target(None, root, "workflow-output", "wf.json")
+    assert rel == ".marim/workflow-output/wf.json"
+    assert Path(path).is_absolute()
+    assert path == str(root / ".marim" / "workflow-output" / "wf.json")
