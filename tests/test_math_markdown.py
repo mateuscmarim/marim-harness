@@ -1,6 +1,8 @@
 """Math rendering for the TUI: LaTeX -> Unicode transliteration seam and the
 math-aware markdown parser factory (see interfaces/tui/math_markdown.py)."""
 
+import pytest
+
 from marim_harness.interfaces.tui import math_markdown
 from marim_harness.interfaces.tui.math_markdown import latex_to_unicode
 
@@ -121,3 +123,35 @@ def test_factory_none_without_flatlatex(monkeypatch):
 def test_factory_on_by_default(monkeypatch):
     monkeypatch.delenv("MARIM_TUI_MATH", raising=False)
     assert math_markdown.math_parser_factory() is not None
+
+
+@pytest.mark.anyio
+async def test_assistant_message_streaming_self_corrects_split_math():
+    """A \\(..\\) span split across two appends must convert once the closer
+    arrives: Markdown.append re-parses the still-open trailing block from
+    source each flush, so no hold-back logic exists anywhere — this test is
+    the proof that the parser-level design actually self-corrects."""
+    from textual.app import App, ComposeResult
+    from textual.widgets._markdown import MarkdownBlock
+
+    from marim_harness.interfaces.tui.widgets import AssistantMessage
+
+    class _App(App):
+        def compose(self) -> ComposeResult:
+            yield AssistantMessage()
+
+    app = _App()
+    async with app.run_test() as pilot:
+        msg = app.query_one(AssistantMessage)
+        msg.append("value \\(x^2")   # opener only — renders literally for now
+        msg.flush()
+        await pilot.pause()
+        msg.append("\\) end")        # closer arrives in a later delta
+        for _ in range(20):          # drain like the permanent flush interval
+            msg.flush()
+            await pilot.pause()
+        rendered = " ".join(
+            block._content.plain for block in msg.query(MarkdownBlock)
+        )
+        assert "x²" in rendered
+        assert "\\(" not in rendered

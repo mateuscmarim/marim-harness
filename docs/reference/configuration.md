@@ -150,6 +150,14 @@ notes above). TUI theme selection is a Settings-screen choice, not an env var
 (`MARIM_THEMES` in `interfaces/tui/themes.py` is a Python constant holding the
 built-in theme palette, not configuration).
 
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MARIM_TUI_MATH` | `1` (on) | Boolean. Render LaTeX math spans (`$..$`, `$$..$$`, `\(..\)`, `\[..\]`) in assistant replies as Unicode approximations. |
+
+Needs `flatlatex` (the `[tui]` extra); an unparsable span falls back to the
+literal LaTeX and the transcript on disk always keeps the raw source.
+`MARIM_TUI_MATH=0` reverts the TUI to Textual's stock markdown parser.
+
 ## Approval & command policy
 
 | Variable | Default | Purpose |
