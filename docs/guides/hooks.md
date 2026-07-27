@@ -88,10 +88,12 @@ it) and the session continues. On observe-only events stderr is discarded.
 `.marim/hooks.json` ships with the repo, and hooks execute arbitrary
 commands — so a cloned, untrusted repo must not be able to run code just
 because you opened it in marim. Project-local hooks (and project-scope
-plugin hooks) therefore load only when `MARIM_TRUST_PROJECT_HOOKS=1` (also
-`true`/`on`/`yes`) is set in your real shell environment or global config —
-a project's own `.env` is blocked from setting it, so a repo cannot
-self-trust. Global hooks and trusted non-project plugins always load. See
+plugin hooks) therefore load only when the project is trusted: a stored
+per-project decision (the first-open prompt, `/trust on`, or `marim trust
+grant`) or `MARIM_TRUST_PROJECT_HOOKS=1` (also `true`/`on`/`yes`) set in your
+real shell environment or global config — a project's own `.env` is blocked
+from setting the env var, so a repo cannot self-trust. Global hooks and
+trusted non-project plugins always load. See
 [guides/trust.md](trust.md) for the full rationale; the same gate governs
 project MCP servers, skills, and agents.
 

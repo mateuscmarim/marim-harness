@@ -149,8 +149,8 @@ def _cmd_add(args, rest, *, out, err) -> int:
         return 1
     print(f"Added MCP server {args.name!r} ({args.transport}) to {path}", file=out)
     if args.scope == "project":
-        print("note: project servers in .marim/mcp.json load only when project "
-              "trust is enabled (MARIM_TRUST_PROJECT_HOOKS).", file=err)
+        print("note: project servers in .marim/mcp.json load only when the project "
+              "is trusted ('marim trust grant' or MARIM_TRUST_PROJECT_HOOKS).", file=err)
     return 0
 
 

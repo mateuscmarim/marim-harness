@@ -48,8 +48,9 @@ launched). Installing a plugin with hooks/MCP/`lsp` prompts for trust; pass
 plugin.
 
 *Project-scope* plugins additionally require the project itself to be trusted
-(`MARIM_TRUST_PROJECT_HOOKS=1`, the same gate as `.marim/hooks.json` and
-`.marim/mcp.json`) before contributing anything at all. Their registry —
+(a stored per-project grant — the first-open prompt, `/trust on`, `marim trust
+grant` — or `MARIM_TRUST_PROJECT_HOOKS=1`; the same gate as `.marim/hooks.json`
+and `.marim/mcp.json`) before contributing anything at all. Their registry —
 enabled/trusted bits included — is committed to the repo, so on a freshly
 cloned repo those bits are whoever-committed-it's word, not yours. An
 untrusted project's plugins contribute nothing: skills, sub-agents, and
