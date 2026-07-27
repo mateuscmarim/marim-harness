@@ -587,7 +587,12 @@ async def _cmd_trust(app: HarnessApp, arg: str) -> None:
         return
     if not arg:
         trust = app.harness.deps.trust
-        surface = app.harness.project_surface or scan_project_surface(root)
+        surface = app.harness.project_surface
+        if surface is None:
+            # Embedder-built harnesses skip bootstrap and never cache a surface;
+            # scan once and cache it so this status line, the settings row, and
+            # a later /trust all report the same snapshot.
+            surface = app.harness.project_surface = scan_project_surface(root)
         state = "trusted" if trust.project else "untrusted"
         await app.post_system(
             f"Project **{state}** (source: {trust.source}).\n\n"

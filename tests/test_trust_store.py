@@ -121,3 +121,27 @@ def test_resolution_default_untrusted_prompts_only_with_surface(tmp_path):
     assert r == TrustResolution(trusted=False, source="default", prompt_needed=True)
     r = resolve_project_trust(tmp_path, explicit=None, fingerprint="fp", surface_empty=True)
     assert r == TrustResolution(trusted=False, source="default", prompt_needed=False)
+
+
+def test_resolution_explicit_beats_stale_fingerprint(tmp_path):
+    # An explicit config decision short-circuits before the store is consulted,
+    # so a stale entry (fingerprint mismatch) can neither demote it to a
+    # re-prompt nor flip its direction.
+    record_decision(tmp_path, trusted=False, fingerprint="old", now="t")
+    r = resolve_project_trust(tmp_path, explicit=True, fingerprint="new", surface_empty=False)
+    assert r == TrustResolution(trusted=True, source="config", prompt_needed=False)
+    r = resolve_project_trust(tmp_path, explicit=False, fingerprint="new", surface_empty=False)
+    assert r == TrustResolution(trusted=False, source="config", prompt_needed=False)
+
+
+def test_resolution_malformed_entry_reads_as_absent(tmp_path):
+    # A hand-mangled entry (trusted not a bool) fails closed mid-resolution:
+    # no decision, so an interactive front-end re-asks.
+    path = trusted_projects_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    key = str(tmp_path.resolve())
+    path.write_text(json.dumps({key: {"trusted": "yes", "fingerprint": "fp"}}),
+                    encoding="utf-8")
+    assert stored_decision(tmp_path) is None
+    r = resolve_project_trust(tmp_path, explicit=None, fingerprint="fp", surface_empty=False)
+    assert r == TrustResolution(trusted=False, source="default", prompt_needed=True)
