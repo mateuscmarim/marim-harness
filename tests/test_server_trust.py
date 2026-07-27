@@ -264,3 +264,43 @@ def test_session_payload_pending_false_for_empty_surface(app):
         created = tc.post(f"/v1/workspaces/{ws_id}/sessions", headers=AUTH,
                           json={"name": "run1"})
         assert created.json()["trust_prompt_pending"] is False
+
+
+def test_grant_persist_failure_still_flips_state_and_500s(app, monkeypatch):
+    """A store-write OSError must return 500 trust_store_error while the live
+    TrustState still flips (the user consented; only durability failed)."""
+    application, tmp_path = app
+    project = _mk_project_with_skill(tmp_path)
+    with TestClient(application) as tc:
+        ws_id = _register_workspace(tc, project)
+        sid = tc.post(f"/v1/workspaces/{ws_id}/sessions", headers=AUTH,
+                      json={"name": "run1", "mode": "auto"}).json()["id"]
+        base = f"/v1/workspaces/{ws_id}/sessions/{sid}"
+        # Mount a live host by driving one turn to completion.
+        assert tc.post(f"{base}/messages", headers=AUTH,
+                       json={"prompt": "hi"}).status_code == 202
+        _poll_idle(tc, base)
+
+        # Monkeypatch record_decision to raise OSError.
+        def boom(*args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr("marim_harness.server.http.record_decision", boom)
+
+        # POST trust grant; the store write fails but the state flips live.
+        resp = tc.post(f"/v1/workspaces/{ws_id}/trust", headers=AUTH,
+                       json={"trusted": True})
+        assert resp.status_code == 500
+        body = resp.json()
+        assert body["error"]["code"] == "trust_store_error"
+        assert "disk full" in body["error"]["message"]
+
+        # The live host's state flipped despite the failed write.
+        host = application.state.supervisor.peek(ws_id, sid)
+        assert host is not None
+        assert host.harness.deps.trust.project is True
+
+        # The store on disk has NO decision recorded.
+        from marim_harness.trust import stored_decision
+
+        assert stored_decision(project) is None
