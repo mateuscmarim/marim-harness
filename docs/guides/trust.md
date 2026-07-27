@@ -241,7 +241,7 @@ and agents inject prompt content. docs/guides/trust.md
   silently swallowed; the rest of the apply still proceeds.
 - **`d` / Escape / Don't trust** — persists `{trusted: false, fingerprint}`;
   a notice appears instead (`Project config present but not trusted — /trust
-  to enable.`).
+  on to enable.`).
 - An unanswered panel means **untrusted for this session** — the panel stays
   mounted (fail closed) rather than the turn quietly running trusted
   underneath it.
