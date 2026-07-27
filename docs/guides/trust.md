@@ -251,8 +251,8 @@ and agents inject prompt content. docs/guides/trust.md
 — same persist-then-hot-apply path as the panel. `/trust off` revokes:
 persists immediately, but warns that already-running MCP/LSP processes for
 this project keep running until the app restarts (nothing kills a live
-subprocess on revoke). The Settings screen's "Trust project hooks" row shows
-the live state and its source, not just the env var.
+subprocess on revoke). The Settings screen's "Project trust" row shows the
+live state and its source, not just the env var.
 
 ### CLI: `marim trust`
 

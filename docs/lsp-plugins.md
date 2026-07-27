@@ -93,8 +93,9 @@ MCP server, and third-party LSP providers follow the **exact same rule**:
 - Global/user-installed plugins load their LSP providers once the plugin
   itself is trusted (the per-plugin `trusted` bit).
 - Project-scope plugins require **both** the per-plugin `trusted` bit **and**
-  the project itself being trusted (`MARIM_TRUST_PROJECT_HOOKS=1`) — the same
-  gate as `.marim/hooks.json` and `.marim/mcp.json`.
+  the project itself being trusted (a stored trust grant or
+  `MARIM_TRUST_PROJECT_HOOKS=1`; see [guides/trust.md](guides/trust.md)) — the
+  same gate as `.marim/hooks.json` and `.marim/mcp.json`.
 
 An untrusted provider contributes nothing: its extensions never route to it,
 its binary is never launched, and it never registers navigation tools for its

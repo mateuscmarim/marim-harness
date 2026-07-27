@@ -213,6 +213,71 @@ def test_post_trust_grant_one_host_failure_does_not_strand_the_others(app, monke
         assert host2.harness.deps.trust.project is True
 
 
+def test_post_trust_grant_scoped_to_its_workspace(app):
+    """hosts_for isolation end-to-end: granting trust on workspace A must not
+    touch workspace B's live host or B's stored decision — the store is keyed
+    by resolved workspace root and the hot-apply loop only sees A's hosts."""
+    application, tmp_path = app
+    proj_a = _mk_project_with_skill(tmp_path, name="proj-a")
+    proj_b = _mk_project_with_skill(tmp_path, name="proj-b")
+    with TestClient(application) as tc:
+        ws_a = _register_workspace(tc, proj_a, name="a")
+        ws_b = _register_workspace(tc, proj_b, name="b")
+        sids = {}
+        for ws_id, name in ((ws_a, "run-a"), (ws_b, "run-b")):
+            sid = tc.post(f"/v1/workspaces/{ws_id}/sessions", headers=AUTH,
+                          json={"name": name, "mode": "auto"}).json()["id"]
+            base = f"/v1/workspaces/{ws_id}/sessions/{sid}"
+            assert tc.post(f"{base}/messages", headers=AUTH,
+                           json={"prompt": "hi"}).status_code == 202
+            _poll_idle(tc, base)
+            sids[ws_id] = sid
+
+        granted = tc.post(f"/v1/workspaces/{ws_a}/trust", headers=AUTH,
+                          json={"trusted": True})
+        assert granted.status_code == 200
+        assert granted.json()["applied_sessions"] == 1  # A's host only
+
+        host_a = application.state.supervisor.peek(ws_a, sids[ws_a])
+        host_b = application.state.supervisor.peek(ws_b, sids[ws_b])
+        assert host_a.harness.deps.trust.project is True
+        assert host_b.harness.deps.trust.project is False
+
+        from marim_harness.trust import stored_decision
+
+        assert stored_decision(proj_a).trusted is True
+        assert stored_decision(proj_b) is None
+        assert tc.get(f"/v1/workspaces/{ws_b}/trust",
+                      headers=AUTH).json()["trusted"] is False
+
+
+def test_revoke_clears_trust_prompt_pending(app):
+    """A remembered decline is a decision too: after revoke, session payloads
+    (create / detail / list, hostless included) stop owing the prompt, exactly
+    like the grant direction already covered above."""
+    application, tmp_path = app
+    project = _mk_project_with_skill(tmp_path)
+    with TestClient(application) as tc:
+        ws_id = _register_workspace(tc, project)
+        created = tc.post(f"/v1/workspaces/{ws_id}/sessions", headers=AUTH,
+                          json={"name": "run1"})
+        sid = created.json()["id"]
+        assert created.json()["trust_prompt_pending"] is True
+
+        revoked = tc.post(f"/v1/workspaces/{ws_id}/trust", headers=AUTH,
+                          json={"trusted": False})
+        assert revoked.status_code == 200
+
+        detail = tc.get(f"/v1/workspaces/{ws_id}/sessions/{sid}", headers=AUTH).json()
+        assert detail["trust_prompt_pending"] is False
+        rows = tc.get(f"/v1/workspaces/{ws_id}/sessions", headers=AUTH).json()["sessions"]
+        [row] = [r for r in rows if r["id"] == sid]
+        assert row["trust_prompt_pending"] is False
+        created2 = tc.post(f"/v1/workspaces/{ws_id}/sessions", headers=AUTH,
+                           json={"name": "run2"})
+        assert created2.json()["trust_prompt_pending"] is False
+
+
 def test_post_trust_revoke_reports_restart_note_for_live_session(app):
     application, tmp_path = app
     project = _mk_project_with_skill(tmp_path)

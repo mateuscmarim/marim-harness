@@ -292,9 +292,9 @@ marim mcp remove <name>
 
 Manages MCP servers in the global config or the project's `.marim/mcp.json`
 (`--scope user|project`, default project). The flag surface mirrors
-`claude mcp add`. Project-scoped servers only load when project trust is
-enabled (`MARIM_TRUST_PROJECT_HOOKS`). See the [MCP guide](mcp.md) for the
-full picture. Plugins are managed with `marim plugin` — see
+`claude mcp add`. Project-scoped servers only load when the project is
+trusted (`marim trust grant` below, or `MARIM_TRUST_PROJECT_HOOKS`). See the
+[MCP guide](mcp.md) for the full picture. Plugins are managed with `marim plugin` — see
 [plugins](../plugins.md).
 
 ### `marim trust`

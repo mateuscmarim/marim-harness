@@ -13,8 +13,8 @@ Servers are declared in two JSON files, merged at startup:
 - **Global** — `~/.config/marim/mcp.json` (strictly: `$XDG_CONFIG_HOME/marim/`
   falling back to `~/.config/marim/`). Always loaded.
 - **Project** — `.marim/mcp.json` in the workspace. Loaded **only when the
-  project is trusted** (`MARIM_TRUST_PROJECT_HOOKS=1` — see
-  [Trust](#trust-and-approval) below).
+  project is trusted** (a stored trust grant or `MARIM_TRUST_PROJECT_HOOKS=1`
+  — see [Trust](#trust-and-approval) below).
 
 Merge precedence, lowest first: servers from enabled+trusted plugins
 (namespaced `<plugin>_<server>`), then global, then project — so on a name
@@ -79,7 +79,7 @@ Flags on `add`:
 - `-t`, `--transport stdio|http|sse` — default `stdio`.
 - `-s`, `--scope user|project` — `user` targets the global file, `project`
   (the default) targets `.marim/mcp.json`. Adding to project scope prints a
-  reminder that project servers only load under `MARIM_TRUST_PROJECT_HOOKS`.
+  reminder that project servers only load in a trusted project.
 - `-H`, `--header "NAME: VALUE"` — repeatable; http/sse only (an error on stdio).
 - `-e`, `--env KEY=VALUE` — repeatable; stdio only (an error on http/sse).
 - `--trust` — writes `"trust": true` into the spec (bypasses ask-mode approval
@@ -136,9 +136,11 @@ Two separate trust decisions apply.
 connect to endpoints *at connect time*, before any tool-call approval gate can
 apply — so a cloned, untrusted repository shipping that file could otherwise
 run arbitrary commands on first launch. Project servers (and MCP servers from
-project-scope plugins) therefore load only when `MARIM_TRUST_PROJECT_HOOKS=1`,
-the same gate as project-local hooks. Global servers and global plugins are
-your own configuration and always load.
+project-scope plugins) therefore load only when the project is trusted — a
+stored per-project decision (the first-open prompt, `/trust on`, `marim trust
+grant`) or `MARIM_TRUST_PROJECT_HOOKS=1` — the same gate as project-local
+hooks. Global servers and global plugins are your own configuration and
+always load.
 
 **Per-call approval.** Every config-built server's tool calls pass through a
 gate that reads the live session mode at call time:
@@ -217,7 +219,7 @@ marim mcp add -s user --trust mddocs node /opt/mddocs/dist/index.js \
 Add a remote HTTP server to the project (requires a trusted project to load):
 
 ```bash
-export MARIM_TRUST_PROJECT_HOOKS=1
+marim trust grant
 marim mcp add --transport http issues https://forge.example.com/mcp \
     -H "Authorization: Bearer tok_xxx"
 ```

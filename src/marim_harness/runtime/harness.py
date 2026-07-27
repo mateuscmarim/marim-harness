@@ -903,6 +903,11 @@ class Harness:
         Persistence is the CALLER's job (record_decision) — this seam is
         pure runtime state, so tests and embedders can drive it without
         touching the operator's store."""
+        # Idempotence check, not a lock: two overlapping awaits could both get
+        # past this guard. Every caller today sits on a single-threaded command
+        # path (TUI panel//trust, serve's per-workspace loop), and a double
+        # apply is merely wasteful, not corrupting — add a latch only if a
+        # genuinely concurrent caller ever appears.
         if self.deps.trust.project:
             return
         from ..hooks import HookRunner, load_hooks_config

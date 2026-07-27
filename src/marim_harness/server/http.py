@@ -198,15 +198,24 @@ async def list_sessions(request: Request) -> Response:
     root = Path(record.path)
     infos = SessionManager(root).list()
     sessions = []
+    # Trust is a workspace property, so every hostless row shares one answer —
+    # memoize it per request instead of re-scanning .marim/ once per idle row.
+    no_host_pending: bool | None = None
     for info in infos:
         host = supervisor.peek(record.id, info.id)
+        if host is not None:
+            pending = _trust_prompt_pending(host, root)
+        else:
+            if no_host_pending is None:
+                no_host_pending = _trust_prompt_pending(None, root)
+            pending = no_host_pending
         row = asdict(info)
         row["model"] = _effective_model(host, info.model)
         sessions.append({
             **row,
             "status": host.status if host else "idle",
             "pending_asks": host.pending_asks() if host else [],
-            "trust_prompt_pending": _trust_prompt_pending(host, root),
+            "trust_prompt_pending": pending,
         })
     return _cached_json({"sessions": sessions}, "max-age=60")
 
