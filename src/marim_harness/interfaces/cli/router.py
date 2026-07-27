@@ -10,7 +10,14 @@ from ...config import load_environment
 
 # Reserved first-token keywords. argparse subparsers would claim the workspace
 # positional, so we route manually before any parser sees the args.
-_MANAGEMENT = {"sessions", "config", "models", "plugin", "mcp", "serve"}
+_MANAGEMENT = {"sessions", "config", "models", "plugin", "mcp", "serve", "trust"}
+
+# Keyword -> submodule name, for the one case where they differ: the module
+# is named ``trust_cmd`` (not ``trust``) so a bare `import trust` anywhere
+# near this package unambiguously means the top-level ``marim_harness.trust``
+# predicate module, never this CLI command group. Every other keyword here
+# still maps to a same-named module.
+_MODULE_NAMES = {"trust": "trust_cmd"}
 
 
 def _setup_logging() -> None:
@@ -66,7 +73,7 @@ def main() -> None:
         # commands (config/models) don't pay for pydantic_ai via their siblings.
         from importlib import import_module
 
-        module = import_module(f".{argv[0]}", __package__)
+        module = import_module(f".{_MODULE_NAMES.get(argv[0], argv[0])}", __package__)
         raise SystemExit(module.main(argv[1:]))
     from .default_cmd import run_default
 

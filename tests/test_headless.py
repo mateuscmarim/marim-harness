@@ -287,6 +287,42 @@ async def test_cleanup_error_on_success_does_not_break(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_headless_notes_untrusted_project_on_stderr(tmp_path: Path):
+    """When bootstrap left a pending trust prompt (gated project surface, no
+    stored/env decision), headless never prompts interactively — it just notes
+    the situation on stderr, exactly once, and leaves stdout/json untouched."""
+    from marim_harness.interfaces.cli.headless import run_headless
+    from marim_harness.trust_surface import ProjectSurface
+
+    out = io.StringIO()
+    err = io.StringIO()
+    harness = _harness(tmp_path, "the answer is 42")
+    harness.trust_prompt = ProjectSurface(skills=["s"], fingerprint="fp")
+
+    code = await run_headless(harness, "go", "text", out=out, err=err)
+    assert code == 0
+    notice = "project config present but not trusted"
+    assert err.getvalue().count(notice) == 1
+    assert notice not in out.getvalue()
+
+
+@pytest.mark.anyio
+async def test_headless_no_notice_when_trust_prompt_absent(tmp_path: Path):
+    """A trusted (or surface-empty) project leaves ``trust_prompt`` at its
+    default None — no notice should appear."""
+    from marim_harness.interfaces.cli.headless import run_headless
+
+    out = io.StringIO()
+    err = io.StringIO()
+    harness = _harness(tmp_path, "the answer is 42")
+    assert harness.trust_prompt is None
+
+    code = await run_headless(harness, "go", "text", out=out, err=err)
+    assert code == 0
+    assert "not trusted" not in err.getvalue()
+
+
+@pytest.mark.anyio
 async def test_stream_json_emits_terminal_error_line_on_failure(tmp_path: Path):
     """stream-json consumers parse NDJSON; a crashed turn must still emit a
     terminal error line so the stream isn't silently truncated."""

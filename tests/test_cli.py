@@ -92,6 +92,23 @@ def test_router_dispatches_management(monkeypatch):
     assert seen["argv"] == ["list", "--json"]
 
 
+def test_router_dispatches_trust_to_trust_cmd_module(monkeypatch):
+    """The "trust" keyword's module is named trust_cmd.py (not trust.py, to
+    avoid colliding with the top-level marim_harness.trust module) — router
+    must special-case the module name while still keying off the "trust"
+    keyword."""
+    import marim_harness.interfaces.cli.trust_cmd as trust_cmd
+
+    seen = {}
+    monkeypatch.setattr(router, "load_environment", lambda: None)
+    monkeypatch.setattr(trust_cmd, "main", lambda argv: seen.update(argv=argv) or 0)
+    monkeypatch.setattr("sys.argv", ["marim", "trust", "status", "."])
+    with pytest.raises(SystemExit) as ei:
+        router.main()
+    assert ei.value.code == 0
+    assert seen["argv"] == ["status", "."]
+
+
 def test_router_falls_through_to_default(monkeypatch):
     # run_default is now imported lazily inside main() from default_cmd; patch it
     # at its source module so the local `from .default_cmd import run_default` binds
