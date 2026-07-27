@@ -96,7 +96,11 @@ async def test_subagent_output_cap_spills_full_and_returns_pointer(tmp_path: Pat
     assert result.startswith("CONCLUSION first.")
     spill = tmp_path / ".marim" / "subagent-output" / "tc-1.md"
     assert spill.read_text() == long
-    assert ".marim/subagent-output/tc-1.md" in result
+    # The pointer must be the ABSOLUTE fallback path in the shared envelope —
+    # a bare relative substring would also pass, so extract via the regex.
+    from marim_harness.tools.impl.offload import find_offload_paths
+
+    assert find_offload_paths(result) == [str(spill)]
 
 
 @pytest.mark.anyio

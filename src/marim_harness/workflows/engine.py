@@ -44,8 +44,7 @@ from pydantic_monty import (
 )
 
 from ..runtime.deps import Deps
-from ..tools.impl import fs
-from ..workspace.agents import cap_subagent_output, spill_target
+from ..workspace.agents import cap_subagent_output, spill_target, write_spill
 from .errors import WorkflowCancelled, WorkflowResultError
 from .schema import check_valid_schema, shape_result, validate_report
 
@@ -429,15 +428,7 @@ class WorkflowEngine:
         if value is None and printed.strip():
             text, spill = cap_subagent_output(printed, MAX_RESULT_CHARS, spill_path)
             if spill is not None:
-                if rel is None:
-                    from pathlib import Path
-
-                    from ..atomic_io import atomic_write_text
-                    dest = Path(spill_path)
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    atomic_write_text(dest, spill, durable=False)
-                else:
-                    fs.write_file(self.deps.workspace.root, rel, spill)
+                write_spill(self.deps.workspace.root, spill_path, rel, spill)
             return (
                 "Note: the workflow's final expression was None -- the tool "
                 "returns the script's LAST EXPRESSION, so end the script with "
@@ -449,13 +440,5 @@ class WorkflowEngine:
         except WorkflowResultError as exc:
             return f"Workflow completed but its result was unusable: {exc}"
         if spill is not None:
-            if rel is None:
-                from pathlib import Path
-
-                from ..atomic_io import atomic_write_text
-                dest = Path(spill_path)
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                atomic_write_text(dest, spill, durable=False)
-            else:
-                fs.write_file(self.deps.workspace.root, rel, spill)
+            write_spill(self.deps.workspace.root, spill_path, rel, spill)
         return text

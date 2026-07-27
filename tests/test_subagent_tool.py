@@ -20,6 +20,7 @@ from marim_harness.workspace.agents import (
     compose_subagent_task,
     spill_target,
     subagent_instructions,
+    write_spill,
 )
 from tests.conftest import _make_deps
 
@@ -205,3 +206,22 @@ def test_spill_target_fallback_is_absolute_with_workspace_rel(tmp_path):
     assert rel == ".marim/workflow-output/wf.json"
     assert Path(path).is_absolute()
     assert path == str(root / ".marim" / "workflow-output" / "wf.json")
+
+
+def test_write_spill_scratchpad_writes_at_absolute_path(tmp_path):
+    pad = tmp_path / "pad"
+    root = tmp_path / "ws"
+    root.mkdir()
+    path, rel = spill_target(pad, root, "subagent-output", "r1.md")
+    write_spill(root, path, rel, "full report")
+    assert (pad / "subagent-output" / "r1.md").read_text() == "full report"
+    # Nothing leaks into the workspace on the scratchpad branch.
+    assert not (root / ".marim").exists()
+
+
+def test_write_spill_fallback_writes_under_workspace(tmp_path):
+    root = tmp_path / "ws"
+    root.mkdir()
+    path, rel = spill_target(None, root, "workflow-output", "wf.json")
+    write_spill(root, path, rel, "{}")
+    assert (root / ".marim" / "workflow-output" / "wf.json").read_text() == "{}"

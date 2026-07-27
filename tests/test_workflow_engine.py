@@ -77,8 +77,13 @@ async def test_args_are_injected(tmp_path):
 async def test_oversized_result_spills_to_workspace_file(tmp_path):
     eng, deps = _engine(tmp_path, _echo_spawn)
     out = await eng.run('["x" * 100] * 500', None, "tc9")
-    assert ".marim/workflow-output/tc9.json" in out
-    assert (deps.workspace.root / ".marim/workflow-output/tc9.json").exists()
+    spill = deps.workspace.root / ".marim/workflow-output/tc9.json"
+    assert spill.exists()
+    # The pointer must be the ABSOLUTE fallback path in the shared envelope —
+    # a bare relative substring would also pass, so extract via the regex.
+    from marim_harness.tools.impl.offload import find_offload_paths
+
+    assert find_offload_paths(out) == [str(spill)]
 
 
 @pytest.mark.anyio
