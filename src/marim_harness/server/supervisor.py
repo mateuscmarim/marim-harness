@@ -116,6 +116,11 @@ class SessionSupervisor:
     def peek(self, ws_id: str, session_id: str) -> SessionHost | None:
         return self._hosts.get((ws_id, session_id))
 
+    def hosts_for(self, ws_id: str) -> list[SessionHost]:
+        """Live hosts of one workspace (no spawning) — the serve trust
+        endpoint hot-applies a grant/revoke to every running session."""
+        return [host for (wid, _sid), host in self._hosts.items() if wid == ws_id]
+
     async def host_for(self, record: WorkspaceRecord, session_id: str) -> SessionHost:
         key = (record.id, session_id)
         lock = self._locks.setdefault(key, asyncio.Lock())

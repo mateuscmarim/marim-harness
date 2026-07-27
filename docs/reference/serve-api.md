@@ -64,7 +64,7 @@ This includes the WebSocket upgrade request. Failures:
 
 Codes used: `unauthorized` (401), `bad_request` (400), `not_found` (404),
 `busy` (409), `not_running` (409), `queue_full` (429), `host_closed` (404),
-`unreadable` (500).
+`unreadable` (500), `trust_store_error` (500).
 
 ## Endpoint summary
 
@@ -76,6 +76,8 @@ Codes used: `unauthorized` (401), `bad_request` (400), `not_found` (404),
 | DELETE | `/v1/workspaces/{ws}`                            | Delete a workspace               |
 | GET    | `/v1/workspaces/{ws}/sessions`                   | List sessions (with live status) |
 | POST   | `/v1/workspaces/{ws}/sessions`                   | Create a session                 |
+| GET    | `/v1/workspaces/{ws}/trust`                      | Workspace trust state + surface  |
+| POST   | `/v1/workspaces/{ws}/trust`                      | Grant/revoke project trust       |
 | GET    | `/v1/workspaces/{ws}/sessions/{sid}`             | Session detail + live status     |
 | DELETE | `/v1/workspaces/{ws}/sessions/{sid}`             | Delete a session                 |
 | POST   | `/v1/workspaces/{ws}/sessions/{sid}/messages`    | Submit a prompt (enqueue a turn) |
@@ -154,6 +156,99 @@ deleted (possibly purged) directory.
 
 `200`: `{"deleted": true}`
 
+## Trust
+
+Project trust is a property of the *workspace* (its directory on disk), not of
+any one session — every session sharing a workspace shares one trust
+decision. See `docs/guides/trust.md` for the full model (the trust store, the
+gated surface it decides over, and the TUI/CLI front-ends); this section
+covers only the serve-specific shape.
+
+`marim serve` never prompts interactively — it consults the same persistent
+store (`$XDG_STATE_HOME/marim-harness/trusted-projects.json`) `marim trust`
+and the TUI's first-open dialog write to, so a decision made in any front-end
+is honored by the others. `GET .../sessions` and `GET/POST
+.../sessions/{sid}` surface `"trust_prompt_pending"` (see below) so a remote
+client knows when to render its own trust dialog for a workspace.
+
+### GET /v1/workspaces/{ws}/trust
+
+`200`, `Cache-Control: no-cache` (decision state, like `get_session`):
+
+```json
+{
+  "trusted": false,
+  "source": "default",
+  "fingerprint_fresh": false,
+  "surface": {
+    "hook_events": ["SessionStart"],
+    "mcp_servers": ["docs-server"],
+    "skills": ["deploy"],
+    "agents": [],
+    "plugins": [],
+    "summary": "hooks: 1 (SessionStart) · mcp: 1 (docs-server) · skills: 1"
+  }
+}
+```
+
+- `source` — which layer decided: `"config"` (an explicit caller decision),
+  `"env"` (`MARIM_TRUST_PROJECT_HOOKS`), `"store"` (a persisted decision whose
+  fingerprint still matches), or `"default"` (no usable decision — untrusted).
+- `fingerprint_fresh` — whether a stored decision exists AND its fingerprint
+  still matches the workspace's current gated surface. `false` either when
+  nothing is stored, or the executable surface changed since the last
+  decision (hooks/MCP/plugin config edited) — in that case the stored
+  decision is ignored and the resolution falls through to `"default"`.
+- `surface` — everything a grant would enable, straight from
+  `ProjectSurface`: hook event names, MCP server names, skill/agent/plugin
+  names, and `summary` (the same one-line readout the TUI panel and `marim
+  trust status` show).
+
+`404 not_found` for an unknown workspace.
+
+### POST /v1/workspaces/{ws}/trust
+
+Request body:
+
+```json
+{"trusted": true}
+```
+
+Persists the decision against the workspace's *current* fingerprint (so a
+grant/revoke always applies to what's on disk right now, not some earlier
+scan), then hot-applies it to every **live** session host of the workspace:
+
+- `trusted: true` — each live host's `apply_project_trust()` reloads hooks,
+  connects project MCP servers, and rebuilds the LSP registry, live, no
+  restart.
+- `trusted: false` — each live host's `revoke_project_trust()` flips its
+  trust state immediately (lazy readers stop seeing project content on their
+  next read), but already-running MCP server processes / LSP providers for
+  that host keep running until the daemon restarts — `restart_note` reports
+  this.
+
+`200`:
+
+```json
+{"trusted": true, "applied_sessions": 2, "restart_note": null}
+```
+
+- `applied_sessions` — how many live hosts the decision was hot-applied to
+  (0 when the workspace has no live sessions right now).
+- `restart_note` — non-null only on a revoke that reached at least one live
+  host; `null` on a grant, or when nothing was live to apply to.
+
+`400 bad_request` for a malformed body (missing/non-boolean `trusted`).
+`404 not_found` for an unknown workspace. `500 trust_store_error` if the
+decision could not be persisted (disk full, permissions) — the live
+TrustState still flips on every reached host (the caller already consented;
+only durability failed), so the error is informational, not a rollback.
+
+**Honest limit (documented, not mitigated here):** `POST /v1/workspaces/{ws}/trust`
+lets a remote client enable startup code execution. Serve already exposes
+turn execution (bash in auto mode) to whoever can reach it, so trust adds no
+new exposure class.
+
 ## Sessions
 
 Session files persist under the workspace's session store (the same store the
@@ -182,7 +277,8 @@ blocked on an unanswered ask).
       "thinking": null,
       "mode": "ask",
       "status": "idle",
-      "pending_asks": []
+      "pending_asks": [],
+      "trust_prompt_pending": false
     }
   ]
 }
@@ -191,6 +287,13 @@ blocked on an unanswered ask).
 Each row carries the same `status`/`pending_asks` a per-session GET would
 return, so list consumers don't need one detail request per session. The
 status lookup is in-memory only — no harness is spawned.
+
+`trust_prompt_pending` mirrors the TUI's first-open mount check
+(`Harness.trust_prompt is not None`): `true` means this workspace ships a
+non-empty gated surface with no usable trust decision yet, and a client
+should offer its own trust dialog (`GET/POST .../trust` above). It reflects
+the *workspace's* trust state, so it reads the same whether or not this
+particular session has a live host.
 
 ### POST /v1/workspaces/{ws}/sessions
 
@@ -206,7 +309,7 @@ Request body (`SessionIn`, both fields optional):
   restarts and idle evictions; it also appears as `"mode"` in session
   list/detail responses.
 
-`201`: `{"id": "<session-id>", "name": "<name>"}`
+`201`: `{"id": "<session-id>", "name": "<name>", "trust_prompt_pending": false}`
 
 The session file is written immediately (empty history), so list/history/
 message endpoints see it before its first turn.
@@ -222,7 +325,8 @@ message endpoints see it before its first turn.
               "advisor_model": null, "thinking": null, "mode": null},
   "status": "idle",
   "queued": 0,
-  "pending_asks": []
+  "pending_asks": [],
+  "trust_prompt_pending": false
 }
 ```
 

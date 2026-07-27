@@ -14,6 +14,7 @@ import json
 import re
 import time
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -28,10 +29,20 @@ from ..config import MultiModelSource, detect_active_providers
 from ..images import image_cache_root, media_type_for_path
 from ..runtime.permissions import Mode
 from ..session import SessionManager, TranscriptStore
+from ..trust import record_decision, resolve_project_trust, stored_decision
+from ..trust_surface import ProjectSurface, scan_project_surface
 from . import jobs_view
 from .auth import token_matches
 from .host import HostClosed, TurnQueueFull
-from .schema import AskAnswerIn, MessageIn, SessionIn, SetModelIn, SteerIn, WorkspaceIn
+from .schema import (
+    AskAnswerIn,
+    MessageIn,
+    SessionIn,
+    SetModelIn,
+    SteerIn,
+    TrustIn,
+    WorkspaceIn,
+)
 from .supervisor import SessionBusy, SessionSupervisor
 from .workspaces import WorkspaceRegistry
 
@@ -85,6 +96,34 @@ async def _json_body(request: Request, model):
 
 class _BadBody(Exception):
     pass
+
+
+def _trust_prompt_pending(host, root: Path) -> bool:
+    """Whether the first-open trust prompt is still owed for ``root`` — the
+    same check ``HarnessApp.on_mount`` makes for the TUI panel
+    (``Harness.trust_prompt is not None``). A live host's harness is
+    authoritative (it reflects any grant/revoke applied this run); without one
+    (a session created but never mounted) recompute the same way
+    ``bootstrap.build_harness`` does — trust is a workspace property, not a
+    per-session one, so both paths must agree."""
+    if host is not None:
+        return host.harness.trust_prompt is not None
+    surface = scan_project_surface(root)
+    resolution = resolve_project_trust(
+        root, explicit=None, fingerprint=surface.fingerprint, surface_empty=surface.empty
+    )
+    return resolution.prompt_needed
+
+
+def _surface_dict(surface: ProjectSurface) -> dict:
+    return {
+        "hook_events": surface.hook_events,
+        "mcp_servers": surface.mcp_servers,
+        "skills": surface.skills,
+        "agents": surface.agents,
+        "plugins": surface.plugins,
+        "summary": surface.summary(),
+    }
 
 
 async def health(request: Request) -> Response:
@@ -156,7 +195,8 @@ async def list_sessions(request: Request) -> Response:
     # return, so list consumers (e.g. the mobile app) don't need one detail
     # request per session. peek() is an in-memory lookup — no host is spawned.
     supervisor = _supervisor(request)
-    infos = SessionManager(Path(record.path)).list()
+    root = Path(record.path)
+    infos = SessionManager(root).list()
     sessions = []
     for info in infos:
         host = supervisor.peek(record.id, info.id)
@@ -166,6 +206,7 @@ async def list_sessions(request: Request) -> Response:
             **row,
             "status": host.status if host else "idle",
             "pending_asks": host.pending_asks() if host else [],
+            "trust_prompt_pending": _trust_prompt_pending(host, root),
         })
     return _cached_json({"sessions": sessions}, "max-age=60")
 
@@ -216,7 +257,89 @@ async def create_session(request: Request) -> Response:
     store.save([], RunUsage())
     if body.mode is not None:
         _supervisor(request).set_mode(record.id, store.session_id, Mode(body.mode))
-    return JSONResponse({"id": store.session_id, "name": store.name}, status_code=201)
+    return JSONResponse({
+        "id": store.session_id,
+        "name": store.name,
+        # No host exists yet (just created) — recompute from the workspace's
+        # trust state directly.
+        "trust_prompt_pending": _trust_prompt_pending(None, Path(record.path)),
+    }, status_code=201)
+
+
+async def get_trust(request: Request) -> Response:
+    denied = _unauthorized(request)
+    if denied:
+        return denied
+    record = _workspace(request)
+    if record is None:
+        return _error(404, "not_found", "unknown workspace")
+    root = Path(record.path)
+    surface = scan_project_surface(root)
+    stored = stored_decision(root)
+    resolution = resolve_project_trust(
+        root, explicit=None, fingerprint=surface.fingerprint, surface_empty=surface.empty
+    )
+    fingerprint_fresh = stored is not None and stored.fingerprint == surface.fingerprint
+    return _cached_json({
+        "trusted": resolution.trusted,
+        "source": resolution.source,
+        "fingerprint_fresh": fingerprint_fresh,
+        "surface": _surface_dict(surface),
+    }, "no-cache")
+
+
+# Reported in POST /trust's response only when a revoke actually reached a
+# live host — a workspace with no running sessions has nothing that needs a
+# restart to shed the (never-loaded) gated content.
+_REVOKE_RESTART_NOTE = (
+    "MCP servers and LSP providers already running for this workspace keep "
+    "running until the daemon restarts"
+)
+
+
+async def post_trust(request: Request) -> Response:
+    denied = _unauthorized(request)
+    if denied:
+        return denied
+    ws_id = request.path_params["ws"]
+    record = _workspace(request)
+    if record is None:
+        return _error(404, "not_found", "unknown workspace")
+    try:
+        body = await _json_body(request, TrustIn)
+    except _BadBody as exc:
+        return _error(400, "bad_request", str(exc))
+    root = Path(record.path)
+    surface = scan_project_surface(root)
+    persist_error: str | None = None
+    try:
+        record_decision(
+            root, trusted=body.trusted, fingerprint=surface.fingerprint,
+            now=datetime.now(timezone.utc).isoformat(),
+        )
+    except OSError as exc:
+        persist_error = str(exc)
+    applied = 0
+    restart_note = None
+    for host in _supervisor(request).hosts_for(ws_id):
+        if body.trusted:
+            await host.harness.apply_project_trust()
+        else:
+            host.harness.revoke_project_trust()
+            restart_note = _REVOKE_RESTART_NOTE
+        applied += 1
+    # A store write failure never blocks the live flip above: the user already
+    # consented to (or asked to revoke) this decision, only its durability
+    # failed — surface a 500 while the decision still governs every session
+    # already running under this daemon (spec §8).
+    if persist_error is not None:
+        return _error(
+            500, "trust_store_error",
+            f"trust decision applied but not persisted: {persist_error}",
+        )
+    return JSONResponse({
+        "trusted": body.trusted, "applied_sessions": applied, "restart_note": restart_note,
+    })
 
 
 def _effective_model(host, info_model: str | None) -> str:
@@ -253,6 +376,7 @@ async def get_session(request: Request) -> Response:
         "status": host.status if host else "idle",
         "queued": host.queued if host else 0,
         "pending_asks": host.pending_asks() if host else [],
+        "trust_prompt_pending": _trust_prompt_pending(host, Path(record.path)),
     }, "no-cache")
 
 
@@ -592,6 +716,8 @@ def create_app(
         Route("/v1/workspaces/{ws}", delete_workspace, methods=["DELETE"]),
         Route("/v1/workspaces/{ws}/sessions", list_sessions, methods=["GET"]),
         Route("/v1/workspaces/{ws}/sessions", create_session, methods=["POST"]),
+        Route("/v1/workspaces/{ws}/trust", get_trust, methods=["GET"]),
+        Route("/v1/workspaces/{ws}/trust", post_trust, methods=["POST"]),
         Route(base, get_session, methods=["GET"]),
         Route(base, delete_session, methods=["DELETE"]),
         Route(f"{base}/messages", post_message, methods=["POST"]),

@@ -67,6 +67,13 @@ class SetModelIn(BaseModel):
     model: str
 
 
+class TrustIn(BaseModel):
+    """POST /v1/workspaces/{ws}/trust body: the one binary decision — trust
+    everything project-local, or nothing."""
+
+    trusted: bool
+
+
 class AskAnswerIn(BaseModel):
     """POST answer for a parked ask. Approvals use approve/reason; ask_user
     questions use answers (or cancel)."""
