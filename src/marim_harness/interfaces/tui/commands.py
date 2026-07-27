@@ -596,10 +596,20 @@ async def _cmd_trust(app: HarnessApp, arg: str) -> None:
         return
     trusted = arg == "on"
     surface = scan_project_surface(root)
-    record_decision(
-        root, trusted=trusted, fingerprint=surface.fingerprint,
-        now=datetime.now(timezone.utc).isoformat(),
-    )
+    # Persist-before-apply: the decision is written first so a hot-apply that
+    # blows up still leaves a durable record behind it. But a persist failure
+    # (read-only home, full disk) must not crash the TUI or strand the user's
+    # decision either — they already consented, only durability failed, so we
+    # surface the error and still fall through to the apply/revoke branch
+    # exactly as if the write had succeeded (spec §8; mirrors
+    # app._prompt_project_trust's handling of the same call).
+    try:
+        record_decision(
+            root, trusted=trusted, fingerprint=surface.fingerprint,
+            now=datetime.now(timezone.utc).isoformat(),
+        )
+    except OSError as exc:
+        await app.post_system(f"Couldn't save the trust decision: {exc}")
     if trusted:
         # Route through the same guarded hot-apply the first-open TrustPanel
         # uses (app._apply_trust_and_confirm): it swallows/reports a hot-apply

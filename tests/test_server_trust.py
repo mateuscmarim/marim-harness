@@ -129,7 +129,9 @@ def test_post_trust_grant_persists_and_get_reflects_store(app):
                           json={"trusted": True})
         assert granted.status_code == 200
         body = granted.json()
-        assert body == {"trusted": True, "applied_sessions": 0, "restart_note": None}
+        assert body == {
+            "trusted": True, "applied_sessions": 0, "restart_note": None, "failed_sessions": [],
+        }
 
         from marim_harness.trust import stored_decision
 
@@ -165,6 +167,50 @@ def test_post_trust_grant_hot_applies_to_live_session(app):
         host = application.state.supervisor.peek(ws_id, sid)
         assert host is not None
         assert host.harness.deps.trust.project is True
+
+
+def test_post_trust_grant_one_host_failure_does_not_strand_the_others(app, monkeypatch):
+    """A per-host apply_project_trust() failure must not crash the request or
+    stop the loop: the request still 200s, every other live host still gets
+    applied, and the failure is reported per session (spec §8 — partial apply
+    failure is recorded per host, never aborts the loop)."""
+    application, tmp_path = app
+    project = _mk_project_with_skill(tmp_path)
+    with TestClient(application) as tc:
+        ws_id = _register_workspace(tc, project)
+        sid1 = tc.post(f"/v1/workspaces/{ws_id}/sessions", headers=AUTH,
+                       json={"name": "run1", "mode": "auto"}).json()["id"]
+        sid2 = tc.post(f"/v1/workspaces/{ws_id}/sessions", headers=AUTH,
+                       json={"name": "run2", "mode": "auto"}).json()["id"]
+        base1 = f"/v1/workspaces/{ws_id}/sessions/{sid1}"
+        base2 = f"/v1/workspaces/{ws_id}/sessions/{sid2}"
+        assert tc.post(f"{base1}/messages", headers=AUTH,
+                       json={"prompt": "hi"}).status_code == 202
+        _poll_idle(tc, base1)
+        assert tc.post(f"{base2}/messages", headers=AUTH,
+                       json={"prompt": "hi"}).status_code == 202
+        _poll_idle(tc, base2)
+
+        host1 = application.state.supervisor.peek(ws_id, sid1)
+        host2 = application.state.supervisor.peek(ws_id, sid2)
+        assert host1 is not None and host2 is not None
+
+        async def _boom() -> None:
+            raise RuntimeError("lsp rebuild blew up")
+
+        monkeypatch.setattr(host1.harness, "apply_project_trust", _boom)
+
+        resp = tc.post(f"/v1/workspaces/{ws_id}/trust", headers=AUTH,
+                       json={"trusted": True})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["applied_sessions"] == 1
+        assert body["failed_sessions"] == [
+            {"session_id": sid1, "error": "lsp rebuild blew up"}
+        ]
+
+        assert host1.harness.deps.trust.project is False
+        assert host2.harness.deps.trust.project is True
 
 
 def test_post_trust_revoke_reports_restart_note_for_live_session(app):

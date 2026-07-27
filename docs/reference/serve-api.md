@@ -230,13 +230,20 @@ scan), then hot-applies it to every **live** session host of the workspace:
 `200`:
 
 ```json
-{"trusted": true, "applied_sessions": 2, "restart_note": null}
+{"trusted": true, "applied_sessions": 2, "restart_note": null, "failed_sessions": []}
 ```
 
 - `applied_sessions` — how many live hosts the decision was hot-applied to
-  (0 when the workspace has no live sessions right now).
+  successfully (0 when the workspace has no live sessions right now, or when
+  every host's apply failed).
 - `restart_note` — non-null only on a revoke that reached at least one live
   host; `null` on a grant, or when nothing was live to apply to.
+- `failed_sessions` — one entry per host whose hot-apply raised (LSP registry
+  rebuild, hooks/MCP config load can all fail independently per host):
+  `{"session_id": ..., "error": "<str(exc)>"}`. A per-host failure never
+  aborts the loop or changes the HTTP status of an otherwise-successful
+  persist — the rest of the workspace's live hosts still get applied and are
+  reported normally.
 
 `400 bad_request` for a malformed body (missing/non-boolean `trusted`).
 `404 not_found` for an unknown workspace. `500 trust_store_error` if the

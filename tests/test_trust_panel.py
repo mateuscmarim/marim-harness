@@ -183,6 +183,31 @@ async def test_trust_on_persists_and_applies(tmp_path):
     assert "trusted" in text.lower()
 
 
+async def test_trust_on_surfaces_persist_failure_but_still_applies(tmp_path, monkeypatch):
+    """A store-write OSError on `/trust on` must not crash the TUI: the user
+    already consented, so the live state still flips (apply_project_trust
+    still runs) and the failure is surfaced as a system line instead of
+    propagating into the message pump (mirrors _prompt_project_trust's
+    handling of the same call; spec §8)."""
+    import marim_harness.trust as trust_module
+
+    def _boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(trust_module, "record_decision", _boom)
+
+    app = _app_for_trust_cmd(tmp_path, trusted=False)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await dispatch(app, "/trust on")
+        await pilot.pause()
+        text = " ".join(w.text for w in app.query(AssistantMessage))
+    assert stored_decision(tmp_path) is None  # persist never succeeded
+    assert app.harness.apply_called is True
+    assert app.harness.deps.trust.project is True
+    assert "disk full" in text.lower()
+
+
 async def test_trust_off_persists_and_warns_restart(tmp_path):
     app = _app_for_trust_cmd(tmp_path, trusted=True, source="store")
     async with app.run_test() as pilot:

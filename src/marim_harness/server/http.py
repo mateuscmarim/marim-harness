@@ -33,7 +33,7 @@ from ..trust import record_decision, resolve_project_trust, stored_decision
 from ..trust_surface import ProjectSurface, scan_project_surface
 from . import jobs_view
 from .auth import token_matches
-from .host import HostClosed, TurnQueueFull
+from .host import HostClosed, SessionHost, TurnQueueFull
 from .schema import (
     AskAnswerIn,
     MessageIn,
@@ -297,6 +297,37 @@ _REVOKE_RESTART_NOTE = (
 )
 
 
+def _host_session_id(host: SessionHost) -> str:
+    store = host.harness.session.store
+    return store.session_id if store is not None else "?"
+
+
+async def _hot_apply_trust_to_hosts(
+    hosts: list[SessionHost], *, trusted: bool
+) -> tuple[int, list[dict]]:
+    """Grant/revoke trust across every live host of a workspace, one host at a
+    time. Both apply_project_trust() (LSP registry rebuild, hooks/MCP config
+    load) and revoke_project_trust() (hooks config reload) can raise — a
+    per-host guard is required so host N blowing up doesn't strand hosts
+    0..N-1 (already flipped and unreported) or hosts after N (never reached).
+    Every host gets its shot regardless of an earlier one's outcome, and each
+    failure is recorded instead of propagating into a bare 500 (spec §8:
+    partial apply failure is recorded per host, the loop never aborts)."""
+    applied = 0
+    failed: list[dict] = []
+    for host in hosts:
+        try:
+            if trusted:
+                await host.harness.apply_project_trust()
+            else:
+                host.harness.revoke_project_trust()
+        except Exception as exc:
+            failed.append({"session_id": _host_session_id(host), "error": str(exc)})
+        else:
+            applied += 1
+    return applied, failed
+
+
 async def post_trust(request: Request) -> Response:
     denied = _unauthorized(request)
     if denied:
@@ -319,15 +350,9 @@ async def post_trust(request: Request) -> Response:
         )
     except OSError as exc:
         persist_error = str(exc)
-    applied = 0
-    restart_note = None
-    for host in _supervisor(request).hosts_for(ws_id):
-        if body.trusted:
-            await host.harness.apply_project_trust()
-        else:
-            host.harness.revoke_project_trust()
-            restart_note = _REVOKE_RESTART_NOTE
-        applied += 1
+    hosts = _supervisor(request).hosts_for(ws_id)
+    applied, failed = await _hot_apply_trust_to_hosts(hosts, trusted=body.trusted)
+    restart_note = _REVOKE_RESTART_NOTE if not body.trusted and hosts else None
     # A store write failure never blocks the live flip above: the user already
     # consented to (or asked to revoke) this decision, only its durability
     # failed — surface a 500 while the decision still governs every session
@@ -339,6 +364,7 @@ async def post_trust(request: Request) -> Response:
         )
     return JSONResponse({
         "trusted": body.trusted, "applied_sessions": applied, "restart_note": restart_note,
+        "failed_sessions": failed,
     })
 
 
