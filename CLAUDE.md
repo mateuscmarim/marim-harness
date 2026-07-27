@@ -13,10 +13,11 @@ console scripts are `marim` and `marim-harness` (both → `marim_harness.__main_
 
 ```bash
 uv sync                          # install deps (creates .venv)
-uv run pytest                    # full test suite (coverage is on by default via pyproject)
+uv run pytest                    # full test suite (parallel via xdist + coverage, per pyproject)
 uv run pytest tests/test_agent.py            # one file
 uv run pytest tests/test_agent.py::test_name # one test
 uv run pytest --no-cov tests/test_x.py       # skip coverage for a fast single run
+uv run pytest -n 0 ...                       # serial (for --pdb/-x or cross-test interactions)
 uv run ruff check src tests      # lint
 uv run ruff check --fix src tests
 uv run pyright                   # type-check (standard mode, src only)

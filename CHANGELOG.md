@@ -14,6 +14,10 @@ pre-1.0, minor versions may contain breaking changes.
   (the parser converts a span once its closer arrives), falls back to literal
   LaTeX on anything unparsable, `MARIM_TUI_MATH=0` disables. flatlatex joins
   the `[tui]` extra.
+- The test suite runs in parallel by default (pytest-xdist, `-n auto` with
+  work-stealing): a ~5.5-minute serial run drops under a minute on a
+  multi-core machine. `uv run pytest -n 0` restores the serial run for
+  debugging.
 
 ## [0.2.0] - 2026-07-26
 

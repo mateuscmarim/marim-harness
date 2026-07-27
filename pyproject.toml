@@ -85,6 +85,8 @@ dev = [
     # Fail a hung test (a stuck Pilot app, a deadlocked worker) instead of
     # stalling the whole CI leg until the runner's job timeout.
     "pytest-timeout>=2",
+    # Parallel test run (see addopts): -n auto + worksteal.
+    "pytest-xdist>=3.5",
     # The `marim serve` tests (Starlette TestClient) need these even though
     # they moved to the optional `serve` extra, so plain `uv sync` keeps
     # developing/CI working.
@@ -119,7 +121,11 @@ pattern = '(?<!!)\[([^\]]*)\]\((?!https?://|#)([^)]+)\)'
 replacement = '[\1](https://github.com/mateuscmarim/marim-harness/blob/master/\2)'
 
 [tool.pytest.ini_options]
-addopts = "-q --cov=marim_harness --cov-report=term-missing --cov-report=xml --cov-fail-under=90"
+# -n auto/worksteal (pytest-xdist): the suite is dominated by thousands of
+# 0.1-4s tests (many Textual Pilot apps), so work-stealing parallelism cuts a
+# ~5.5-minute serial run to under a minute. Pass `-n 0` to run serial (pdb,
+# -x bisection, or chasing a suspected cross-test interaction).
+addopts = "-q -n auto --dist worksteal --cov=marim_harness --cov-report=term-missing --cov-report=xml --cov-fail-under=90"
 testpaths = ["tests"]
 # Per-test ceiling (pytest-timeout): generous — the slowest Pilot tests run a
 # few seconds — so only a genuine hang trips it. The thread method kills the

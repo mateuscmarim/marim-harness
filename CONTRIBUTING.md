@@ -17,8 +17,9 @@ uv sync                # install deps into .venv (includes the dev group + TUI)
 Useful commands:
 
 ```bash
-uv run pytest                          # full test suite (coverage on by default)
+uv run pytest                          # full test suite (parallel + coverage on by default)
 uv run pytest --no-cov tests/test_x.py # fast single-file run, no coverage
+uv run pytest -n 0 -x --pdb tests/...  # serial run for debugging (disables xdist)
 uv run ruff check src tests            # lint
 uv run ruff check --fix src tests      # lint + autofix
 uv run pyright                         # type-check (standard mode, src only)
