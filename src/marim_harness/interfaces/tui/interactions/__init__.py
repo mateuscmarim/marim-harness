@@ -5,6 +5,7 @@ from .approval import ApprovalPanel
 from .ask_user import AskUserPanel
 from .base import InteractionPanel, run_panel
 from .plan_card import PlanCard
+from .trust_panel import TrustPanel
 
 __all__ = [
     "InteractionPanel",
@@ -12,4 +13,5 @@ __all__ = [
     "ApprovalPanel",
     "AskUserPanel",
     "PlanCard",
+    "TrustPanel",
 ]

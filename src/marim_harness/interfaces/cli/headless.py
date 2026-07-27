@@ -90,6 +90,19 @@ async def run_headless(
     than their streaming ones, so streaming here keeps headless runs as reliable
     as the interactive app."""
 
+    # The TUI's counterpart to this is the first-open TrustPanel — but headless
+    # runs never prompt interactively (there is no one to answer), so bootstrap
+    # leaving `trust_prompt` set (a gated project surface with no env/store
+    # decision) just gets a one-line heads-up here. stderr only, never stdout
+    # or the JSON/NDJSON result — those are consumer-parsed and the model never
+    # sees it either, since this runs outside the turn/prompt path entirely.
+    if getattr(harness, "trust_prompt", None) is not None:
+        print(
+            "note: project config present but not trusted; run 'marim trust grant'"
+            " or set MARIM_TRUST_PROJECT_HOOKS=1",
+            file=err,
+        )
+
     async def handler(ctx, events):
         async for event in events:
             if output_format != "stream-json":

@@ -7,10 +7,11 @@ import pytest
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
-from marim_harness.runtime.deps import Deps, UIHooks, WorkspaceConfig
+from marim_harness.runtime.deps import Deps, TrustState, UIHooks, WorkspaceConfig
 from marim_harness.runtime.harness import Harness
 from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
+from marim_harness.trust import project_trusted
 
 
 def _capture_script(tmp_path, name: str, outfile) -> str:
@@ -43,8 +44,18 @@ def _make_deps(root: Path, mode: Mode = Mode.auto, **kw) -> Deps:
 
     UI-hook kwargs (request_approval, ask_user, etc.) are automatically routed
     into a ``UIHooks`` sub-object; everything else goes to ``Deps`` directly.
+
+    Tests build ``Deps`` by hand rather than going through
+    ``bootstrap.build_harness`` (the only place that resolves ``TrustState``
+    from the env/store), so ``trust`` defaults here to the same env-only
+    fallback the lazy discovery readers used before Task 3 threaded the live
+    ``ctx.deps.trust.project`` field through — this keeps
+    ``_trust_project_local_suites`` (which sets ``MARIM_TRUST_PROJECT_HOOKS``
+    for specific test files) behaving exactly as it did. A caller that wants a
+    specific resolved trust/source can still pass ``trust=`` explicitly.
     """
     ui_kw = {k: kw.pop(k) for k in list(kw) if k in _UI_HOOK_FIELDS}
+    kw.setdefault("trust", TrustState(project=project_trusted()))
     return Deps(
         workspace=WorkspaceConfig(root=root, mode=mode),
         ui=UIHooks(**ui_kw) if ui_kw else UIHooks(),

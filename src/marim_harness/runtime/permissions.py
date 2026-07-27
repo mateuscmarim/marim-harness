@@ -1,19 +1,27 @@
+from __future__ import annotations
+
 import json
 from collections.abc import Awaitable, Callable
 from enum import Enum
 from pathlib import Path
-
-from pydantic_ai import (
-    DeferredToolRequests,
-    DeferredToolResults,
-    ToolApproved,
-    ToolDenied,
-)
-from pydantic_ai.tools import DeferredToolApprovalResult
+from typing import TYPE_CHECKING
 
 from ..read_only_commands import is_read_only
 from ..tools.names import NET_TOOLS
 from ..workspace.fs import WorkspaceError, resolve_in_workspace
+
+# pydantic_ai's construction classes (ToolApproved/ToolDenied/DeferredToolResults)
+# are imported lazily, inside the functions that actually build one, rather than
+# at module level: this module is on the cheap CLI import path (mcp/config.py
+# imports just the `Mode` enum from here for its approval hook, and that in turn
+# sits behind `marim trust` -> trust_surface -> mcp.config), so a module-level
+# `import pydantic_ai` would drag its ~0.5s transitive weight into a status
+# command that never resolves an actual approval. Every other caller of this
+# module (the turn controller, harness, sub-agent runner, ...) already pays for
+# pydantic_ai elsewhere, so this costs the real callers nothing.
+if TYPE_CHECKING:
+    from pydantic_ai import DeferredToolRequests, DeferredToolResults, ToolApproved, ToolDenied
+    from pydantic_ai.tools import DeferredToolApprovalResult
 
 
 class Mode(str, Enum):
@@ -21,7 +29,7 @@ class Mode(str, Enum):
     auto = "auto"
     plan = "plan"
 
-    def cycle(self) -> "Mode":
+    def cycle(self) -> Mode:
         order = [Mode.ask, Mode.auto, Mode.plan]
         return order[(order.index(self) + 1) % len(order)]
 
@@ -91,13 +99,17 @@ def _scratchpad_approval(
         return None
     args = dict(_call_args(call))
     args["path"] = str(target)
+    from pydantic_ai import ToolApproved  # lazy — see module-level note above.
+
     return ToolApproved(override_args=args)
 
 
-def _plan_decision(call: object) -> "bool | ToolDenied":
+def _plan_decision(call: object) -> bool | ToolDenied:
     """Plan mode is read-only. Deny mutations, but let a read-only ``bash``
     command through so the agent can research before presenting a plan
     (see read_only_commands.is_read_only — best-effort, not a sandbox)."""
+    from pydantic_ai import ToolDenied  # lazy — see module-level note above.
+
     tool_name = getattr(call, "tool_name", None)
     if tool_name == "bash" and is_read_only(_bash_command(call)):
         return True
@@ -135,6 +147,8 @@ async def resolve_approvals(
     callback wired (e.g. a non-interactive run), deny rather than crash — nothing
     can grant approval, so the safe answer is to refuse.
     """
+    from pydantic_ai import DeferredToolResults, ToolDenied  # lazy — see module note above.
+
     results = DeferredToolResults()
     for call in requests.approvals:
         # Scratchpad writes are pre-blessed in ask mode — the directory exists

@@ -323,6 +323,11 @@ def _surface_fingerprint(plugin_dir: Path) -> str:
     )
 
 
+# Public alias: trust_surface.scan_project_surface folds each project-scope
+# plugin's executable surface into the workspace trust fingerprint.
+plugin_surface_fingerprint = _surface_fingerprint
+
+
 def update_plugin(name: str, *, scope: str, workspace_root, now: str) -> InstalledPlugin:
     """Re-fetch a git-sourced plugin to the latest of its ref. Local/linked
     plugins cannot be updated this way."""

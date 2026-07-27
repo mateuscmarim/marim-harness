@@ -236,7 +236,7 @@ class SubagentRunner:
         for d in self._extra_agents:
             if type_ in (d.name, d.qualified_name):
                 return d
-        return find_agent(self.deps.workspace.root, type_)
+        return find_agent(self.deps.workspace.root, type_, trust_project=self.deps.trust.project)
 
     def _open_worktree(self, stream_id: str) -> tuple[SpawnWorktree | None, str | None]:
         """Open an isolated worktree for a fresh spawn, naming its branch from the
@@ -387,7 +387,12 @@ class SubagentRunner:
         if defn is None:
             names = ", ".join(
                 a.qualified_name
-                for a in (*self._extra_agents, *discover_agents(self.deps.workspace.root))
+                for a in (
+                    *self._extra_agents,
+                    *discover_agents(
+                        self.deps.workspace.root, trust_project=self.deps.trust.project
+                    ),
+                )
             )
             return None, f"No sub-agent type {type!r}. Available: {names}."
         instr_root = (

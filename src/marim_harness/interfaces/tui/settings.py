@@ -499,11 +499,21 @@ class SettingsScreen(Screen[None]):
     def _advanced_widgets(self) -> ComposeResult:
         deny = ", ".join(self.env_cfg.command_denylist) or "(none)"
         allow = ", ".join(self.env_cfg.command_allowlist) or "(none)"
-        trust = "on" if self.env_cfg.trust_project_hooks else "off"
         yield Static("Read-only — managed in config or project settings.", classes="muted")
         yield Static(f"Command denylist: {deny}", classes="muted")
         yield Static(f"Command allowlist: {allow}", classes="muted")
-        yield Static(f"Trust project hooks: {trust}", classes="muted")
+        # Live per-project decision (deps.trust), not the env/config knob:
+        # MARIM_TRUST_PROJECT_HOOKS is only one input to resolution (config >
+        # env > store > default — see marim_harness.trust) and can disagree
+        # with what's actually in effect this session, e.g. a decision
+        # recorded via /trust or the first-open TrustPanel. `source` names
+        # which layer won, the same wording /trust reports.
+        trust = self.harness.deps.trust
+        yield Static(
+            f"Project trust: {'on' if trust.project else 'off'} (source: {trust.source})",
+            id="trust-status",
+            classes="muted",
+        )
         yield Static(f"Config file: {global_config_path()}", classes="muted")
 
     def on_mount(self) -> None:

@@ -297,6 +297,22 @@ enabled (`MARIM_TRUST_PROJECT_HOOKS`). See the [MCP guide](mcp.md) for the
 full picture. Plugins are managed with `marim plugin` — see
 [plugins](../plugins.md).
 
+### `marim trust`
+
+```bash
+marim trust                 # status: decision + source + gated surface (cwd)
+marim trust grant [path]    # persist trusted, against the current fingerprint
+marim trust revoke [path]   # persist untrusted
+```
+
+Inspects or sets the same per-project trust decision the TUI's first-open
+prompt and `/trust` write — see the [trust guide](trust.md). `status` is the
+default action, the workspace defaults to the current directory, and a bad
+path exits `2`. Deliberately cheap: stays off the `pydantic_ai` import path
+like `marim config`/`marim models`. A headless `-p` run never prompts; when
+the workspace ships gated config and isn't trusted, it prints one stderr-only
+note (`marim trust grant && marim -p ...` is the one-shot pattern).
+
 ### `marim serve`
 
 `marim serve [--host] [--port] [--workspaces-root] [--idle-ttl]` runs marim

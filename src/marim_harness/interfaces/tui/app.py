@@ -1,6 +1,7 @@
 import logging
 import time
 from asyncio import CancelledError
+from datetime import datetime, timezone
 
 import rich.markup
 from pydantic_ai import ToolDenied
@@ -16,11 +17,19 @@ from ...runtime.errors import format_provider_error
 from ...runtime.harness import Harness
 from ...runtime.wake import WakeController
 from ...runtime.wake_driver import WakeDriver
+from ...trust import record_decision
 from ...usage import resolve_cost
 from ..history import PromptHistory
 from ..prefs import load_theme, save_theme
 from .commands import dispatch
-from .interactions import ApprovalPanel, AskUserPanel, InteractionPanel, PlanCard, run_panel
+from .interactions import (
+    ApprovalPanel,
+    AskUserPanel,
+    InteractionPanel,
+    PlanCard,
+    TrustPanel,
+    run_panel,
+)
 from .model_picker import ModelPickerModal
 from .notify import FinishedJobNotifier
 from .queue import TurnQueue
@@ -284,6 +293,12 @@ class HarnessApp(App):
         await self.harness.session_start(
             "resume" if self.harness.session.history else "startup"
         )
+        # First-open trust prompt: bootstrap only sets trust_prompt when the
+        # project ships a gated surface AND no decision (env/store) already
+        # resolved it. Kicked off as its own worker (not awaited inline) so
+        # on_mount itself isn't held hostage to the user answering the panel.
+        if getattr(self.harness, "trust_prompt", None) is not None:
+            self.run_worker(self._prompt_project_trust(), group="trust", exit_on_error=False)
 
     def on_descendant_focus(self, event: events.DescendantFocus) -> None:
         """Keep the prompt focused. When focus lands on a non-input main-screen
@@ -320,6 +335,50 @@ class HarnessApp(App):
             )
         for name, error in status["failed"]:
             await log.mount(ErrorMessage(f"MCP {name} failed: {error}"))
+
+    async def _prompt_project_trust(self) -> None:
+        """First-open trust dialog. Failure to persist must not strand the
+        decision: the session still applies it (the user consented), the error
+        is surfaced as a system line."""
+        surface = self.harness.trust_prompt
+        if surface is None:  # pragma: no cover - guarded by the on_mount check
+            return
+        trusted = bool(await run_panel(self, TrustPanel(surface)))
+        try:
+            record_decision(
+                self.harness.deps.workspace.root, trusted=trusted,
+                fingerprint=surface.fingerprint,
+                now=datetime.now(timezone.utc).isoformat(),
+            )
+        except OSError as exc:
+            await self.post_system(f"Couldn't save the trust decision: {exc}")
+        if trusted:
+            await self._apply_trust_and_confirm()
+        else:
+            await self.post_system(
+                "Project config present but not trusted — `/trust on` to enable."
+            )
+
+    async def _apply_trust_and_confirm(self) -> None:
+        """Hot-apply the just-granted trust (hooks reload, MCP config load, LSP
+        registry rebuild) and confirm. The decision is already persisted and
+        the TrustState already flipped by this point — the user consented, so
+        neither is undone if the hot-apply itself blows up; a failure here just
+        means a restart is needed to pick up the config, not that anything was
+        rolled back. Runs inside a worker with exit_on_error=False and no
+        on_worker_state_changed handler, so an unguarded raise here would
+        otherwise vanish silently (same belt-and-suspenders as
+        _run_shell_passthrough)."""
+        try:
+            await self.harness.apply_project_trust()
+        except Exception as exc:  # keep the session alive on any hot-apply failure
+            await self.post_system(
+                "Project trusted and saved, but applying it live failed: "
+                f"{type(exc).__name__}: {exc}. Restart marim to pick up the config."
+            )
+            logger.warning("apply_project_trust failed", exc_info=True)
+            return
+        await self.post_system("Project trusted — hooks, MCP, skills and agents are live.")
 
     async def on_unmount(self) -> None:
         """Jobs are process-scoped — kill any still running when the app exits so

@@ -298,7 +298,9 @@ async def _cmd_skill(app: HarnessApp, arg: str) -> None:
     arg = arg.strip()
     if not arg:
         skills = discover_skills(
-            app.harness.deps.workspace.root, dirs=app.harness.deps.workspace.skill_dirs
+            app.harness.deps.workspace.root,
+            trust_project=app.harness.deps.trust.project,
+            dirs=app.harness.deps.workspace.skill_dirs,
         )
         if not skills:
             await app.post_system(
@@ -569,6 +571,59 @@ async def _cmd_plugin(app: HarnessApp, arg: str) -> None:
     await app.post_system("Usage: `/plugin [list | enable <name> | disable <name>]`")
 
 
+async def _cmd_trust(app: HarnessApp, arg: str) -> None:
+    """Project trust: `/trust` shows the decision and the gated surface;
+    `/trust on` grants (persist + hot-apply); `/trust off` revokes (persist;
+    running MCP/LSP processes stop only on restart)."""
+    from datetime import datetime, timezone
+
+    from ...trust import record_decision
+    from ...trust_surface import scan_project_surface
+
+    root = app.harness.deps.workspace.root
+    arg = arg.strip().lower()
+    if arg not in ("", "on", "off"):
+        await app.post_system("Usage: `/trust [on|off]`")
+        return
+    if not arg:
+        trust = app.harness.deps.trust
+        surface = app.harness.project_surface or scan_project_surface(root)
+        state = "trusted" if trust.project else "untrusted"
+        await app.post_system(
+            f"Project **{state}** (source: {trust.source}).\n\n"
+            f"Gated project config — {surface.summary()}"
+        )
+        return
+    trusted = arg == "on"
+    surface = scan_project_surface(root)
+    # Persist-before-apply: the decision is written first so a hot-apply that
+    # blows up still leaves a durable record behind it. But a persist failure
+    # (read-only home, full disk) must not crash the TUI or strand the user's
+    # decision either — they already consented, only durability failed, so we
+    # surface the error and still fall through to the apply/revoke branch
+    # exactly as if the write had succeeded (spec §8; mirrors
+    # app._prompt_project_trust's handling of the same call).
+    try:
+        record_decision(
+            root, trusted=trusted, fingerprint=surface.fingerprint,
+            now=datetime.now(timezone.utc).isoformat(),
+        )
+    except OSError as exc:
+        await app.post_system(f"Couldn't save the trust decision: {exc}")
+    if trusted:
+        # Route through the same guarded hot-apply the first-open TrustPanel
+        # uses (app._apply_trust_and_confirm): it swallows/reports a hot-apply
+        # failure without rolling back the decision just persisted above, and
+        # posts the confirmation itself — don't duplicate that logic here.
+        await app._apply_trust_and_confirm()
+    else:
+        app.harness.revoke_project_trust()
+        await app.post_system(
+            "Project trust revoked. Skills/agents/hooks drop now; already-running "
+            "MCP servers and language servers stop on restart."
+        )
+
+
 async def _cmd_settings(app: HarnessApp, arg: str) -> None:
     app.open_settings()
 
@@ -591,6 +646,7 @@ COMMANDS: list[Command] = [
     Command("rewind", "rewind to an earlier turn: /rewind [number|undo]", _cmd_rewind),
     Command("name", "name this session: /name [title] (auto-titles if blank)", _cmd_name),
     Command("mode", "set approval mode: /mode [ask|auto|plan]", _cmd_mode),
+    Command("trust", "show or set project trust: /trust [on|off]", _cmd_trust),
     Command("model", "switch model: /model [id] (opens a picker if blank)", _cmd_model),
     Command("advisor", "set the advisor model: /advisor [id|off] (picker if blank)", _cmd_advisor),
     Command(

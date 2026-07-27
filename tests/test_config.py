@@ -367,7 +367,11 @@ def test_load_environment_project_env_cannot_grant_trust(isolated_env, monkeypat
     load_environment()
 
     assert "MARIM_TRUST_PROJECT_HOOKS" not in os.environ
-    assert load_config().trust_project_hooks is False
+    # Tri-state: with the env var blocklisted (never set), there is no env
+    # decision at all — None, not an explicit False — so bootstrap still
+    # consults the per-project trust store rather than treating this as a
+    # forced untrust.
+    assert load_config().trust_project_hooks is None
 
 
 def test_load_environment_global_env_can_grant_trust(isolated_env, monkeypatch, tmp_path):
@@ -454,10 +458,13 @@ def test_job_tool_combined_truthy_enables(monkeypatch, raw):
     assert load_config().job_tool_combined is True
 
 
-def test_trust_project_hooks_defaults_false(monkeypatch):
+def test_trust_project_hooks_defaults_none(monkeypatch):
+    # Tri-state: an unset env var is "no decision" (None), not an explicit
+    # False — bootstrap falls through to the per-project trust store rather
+    # than force-untrusting.
     from marim_harness.config.model import load_config
     monkeypatch.delenv("MARIM_TRUST_PROJECT_HOOKS", raising=False)
-    assert load_config().trust_project_hooks is False
+    assert load_config().trust_project_hooks is None
 
 
 def test_trust_project_hooks_env_truthy(monkeypatch):

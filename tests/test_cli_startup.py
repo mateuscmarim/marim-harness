@@ -30,6 +30,25 @@ def test_default_cmd_import_does_not_load_pydantic_ai():
     assert not _imports_pydantic_ai("marim_harness.interfaces.cli.default_cmd")
 
 
+def test_trust_cmd_import_does_not_load_pydantic_ai():
+    # `marim trust` is a cheap status command (reads .marim/mcp.json /
+    # hooks.json, no agent). Its import chain (trust_cmd -> trust_surface ->
+    # mcp.config) must not drag in pydantic_ai (MCPToolset construction) or
+    # fastmcp (the MCP transports) — both are only needed by the code paths
+    # that actually build/connect an MCP server, never by a status readout.
+    assert not _imports_pydantic_ai("marim_harness.interfaces.cli.trust_cmd")
+
+
+def test_trust_cmd_import_does_not_load_fastmcp():
+    code = (
+        "import marim_harness.interfaces.cli.trust_cmd\n"
+        "import sys\n"
+        "raise SystemExit(1 if 'fastmcp' in sys.modules else 0)"
+    )
+    result = subprocess.run([sys.executable, "-c", code])
+    assert result.returncode == 0
+
+
 def test_help_exits_fast_without_pydantic_ai(tmp_path):
     # `marim --help` must print usage and exit 0 in a fresh interpreter without
     # ever importing pydantic_ai.

@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
     from ..config.model import ModelSource, MultiModelSource
     from ..forge.backend import ForgeBackend
+    from ..trust_surface import ProjectSurface
 
 from ..compaction import (
     Summarizer,
@@ -522,6 +523,12 @@ class Harness:
             )
         cfg = config or HarnessConfig(**kwargs)
         self.deps = deps
+        # Set by bootstrap: the project's gated surface, and — when no trust
+        # decision exists anywhere and the surface is non-empty — the payload the
+        # TUI's first-open TrustPanel renders. None for embedders (HarnessBuilder
+        # does no workspace scanning) and once a decision exists.
+        self.project_surface: ProjectSurface | None = None
+        self.trust_prompt: ProjectSurface | None = None
         self.provider = provider
         self.model_label = cfg.model_label
         # The model object used for each turn (swappable at runtime), the source
@@ -887,6 +894,53 @@ class Harness:
         with — only spawns started after the flip see the change (the runner
         reads ``self._tiers`` per spawn)."""
         self.subagents.set_tiering_enabled(enabled)
+
+    async def apply_project_trust(self) -> None:
+        """Hot-apply a project-trust grant: flip the live TrustState, then
+        eagerly reload what loads at startup (hooks config, project MCP
+        servers, LSP registry). Lazy readers (skills/agents discovery,
+        instructions) pick the flip up on their next read. Idempotent.
+        Persistence is the CALLER's job (record_decision) — this seam is
+        pure runtime state, so tests and embedders can drive it without
+        touching the operator's store."""
+        if self.deps.trust.project:
+            return
+        from ..hooks import HookRunner, load_hooks_config
+        from ..mcp import build_mcp_servers, load_mcp_config
+        from .bootstrap import build_lsp_registry  # lazy: bootstrap imports this module
+
+        ws = self.deps.workspace.root
+        self.deps.trust.project = True
+        self.deps.trust.source = "store"
+        self.trust_prompt = None
+        hooks_cfg = load_hooks_config(ws, trust_project=True)
+        self.deps.hooks = HookRunner(hooks_cfg) if hooks_cfg else None
+        if self.mcp is not None:
+            specs = load_mcp_config(ws, trust_project=True)
+            servers, warnings = build_mcp_servers(specs)
+            for warning in warnings:
+                logger.warning("MCP config: %s", warning)
+            self.mcp.trust_project = True
+            await self.mcp.add_servers(servers)
+        if self.lsp is not None:
+            self.lsp.set_registry(build_lsp_registry(ws, trust_project=True))
+
+    def revoke_project_trust(self) -> None:
+        """Flip the live TrustState off and drop project hooks. Already-running
+        MCP servers / LSP providers keep running until restart — the caller
+        owns telling the user that caveat (and persisting the decision)."""
+        self.deps.trust.project = False
+        self.deps.trust.source = "store"
+        self.trust_prompt = None
+        from ..hooks import HookRunner, load_hooks_config
+
+        hooks_cfg = load_hooks_config(self.deps.workspace.root, trust_project=False)
+        self.deps.hooks = HookRunner(hooks_cfg) if hooks_cfg else None
+        if self.mcp is not None:
+            # McpManager.persist_server_enabled() uses trust_project to decide
+            # write-trust; the load-trust used here must match, or toggling
+            # a server later would persist into the untrusted project's .marim/mcp.json.
+            self.mcp.trust_project = False
 
     def _apply_saved_model(self) -> None:
         """Re-point at a session's saved model after loading it, if one differs

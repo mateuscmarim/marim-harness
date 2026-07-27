@@ -64,8 +64,9 @@ class McpManager:
         # call, explicitly, never omitted. The invariant this upholds: the
         # trust decision used to WRITE mcp config must be the SAME one used to
         # LOAD it (mcp.config.load_mcp_config's own trust_project). The CLI
-        # preset (bootstrap.build_harness) wires this from
-        # cfg.trust_project_hooks, the very value it already passes to
+        # preset (bootstrap.build_harness) wires this from the single
+        # store-aware `trusted` boolean it resolves once per run (via
+        # trust.resolve_project_trust) — the very value it already passes to
         # load_mcp_config; an embedder composing HarnessBuilder directly has no
         # project-file loading path at all (with_mcp_server takes ready-built
         # toolsets — load_mcp_config is bootstrap-only), so False (untrusted)
@@ -357,3 +358,25 @@ class McpManager:
             # must be recorded (de-duped) so the UI/status reflects it.
             self.mcp_status.add_failed(name, err)
         return err
+
+    async def add_servers(self, servers: list) -> dict:
+        """Register and connect servers that aren't already configured (by name).
+        The trust hot-apply path: granting project trust mid-session loads the
+        project's .marim/mcp.json servers without a rebuild. Mirrors
+        enable_server's per-server bookkeeping; disabled names are registered
+        but not connected (a later enable_server picks them up)."""
+        known = set(self.configured_names())
+        fresh = [s for s in servers if self.server_name(s) not in known]
+        self.mcp_servers.extend(fresh)
+        for server in fresh:
+            name = self.server_name(server)
+            if name in self.disabled:
+                continue
+            err = await self._connect_one(server)
+            # Same bookkeeping as enable_server above: record success/failure so
+            # status stays accurate for a server connected outside enable_server.
+            if err is None:
+                self.mcp_status.add_connected(name)
+            else:
+                self.mcp_status.add_failed(name, err)
+        return self.mcp_status.to_dict()
