@@ -7,6 +7,7 @@ from typing import Any
 from ..command_policy import split_patterns
 from ..notifications import NotificationConfig, parse_events
 from ..thinking import parse_thinking_level
+from ..trust import trust_env
 from ..workspace.catalog import (
     ModelEntry,
     fetch_google_models,
@@ -173,9 +174,12 @@ class ModelConfig:
     # tool_search_threshold. Builtins are never deferred.
     tool_search: str = "auto"
     tool_search_threshold: int = 15
-    # When true, project-local .marim/hooks.json hooks are honored; otherwise
-    # only the global hooks config runs (supply-chain guard for cloned repos).
-    trust_project_hooks: bool = False
+    # Tri-state project-trust decision from the environment. True/False are
+    # explicit decisions — an explicit False force-untrusts, overriding even a
+    # trusting store entry. None means no env decision: fall through to the
+    # per-project trust store (see ``trust.resolve_project_trust``), which
+    # bootstrap consults once per run. Supply-chain guard for cloned repos.
+    trust_project_hooks: bool | None = None
     # LSP master switch. False ⇒ no language-server pool is built, so the six
     # navigation tools are not registered and diagnostics-on-edit is a no-op.
     lsp_enabled: bool = True
@@ -313,7 +317,7 @@ def _common_kwargs() -> dict[str, Any]:
         default_mode=_mode_env("MARIM_DEFAULT_MODE", "ask"),
         tool_search=_enum_env("MARIM_TOOL_SEARCH", "auto", _VALID_TOOL_SEARCH),
         tool_search_threshold=_int_env("MARIM_TOOL_SEARCH_THRESHOLD", 15),
-        trust_project_hooks=_bool_env("MARIM_TRUST_PROJECT_HOOKS", False),
+        trust_project_hooks=trust_env(),
         lsp_enabled=_bool_env("MARIM_LSP", True),
         lsp_tools_enabled=_bool_env("MARIM_LSP_TOOLS", True),
         forge_enabled=_bool_env("MARIM_FORGE", True),

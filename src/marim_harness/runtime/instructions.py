@@ -260,12 +260,11 @@ def _scratchpad(ctx: RunContext[Deps]) -> str:
 
 
 def _plugin_instructions(ctx: RunContext[Deps]) -> str:
-    # No trust flag is in reach here, so plugin_instruction_texts falls
-    # back to MARIM_TRUST_PROJECT_HOOKS itself (same convention as the
-    # discover_skills/discover_agents closures below): a cloned repo's
-    # committed project-scope plugin can't inject its AGENTS.md until
-    # the project is trusted.
-    texts = plugin_instruction_texts(ctx.deps.workspace.root)
+    # The live TrustState on ctx.deps carries this turn's resolved trust
+    # decision (store-aware, resolved once by bootstrap) so a cloned repo's
+    # committed project-scope plugin can't inject its AGENTS.md until the
+    # project is trusted.
+    texts = plugin_instruction_texts(ctx.deps.workspace.root, trust_project=ctx.deps.trust.project)
     if not texts:
         return ""
     blocks = [f"## From plugin '{name}'\n\n{text}" for name, text in texts]
@@ -280,7 +279,10 @@ def _memory_indexes(ctx: RunContext[Deps]) -> str:
 
 
 def _skill_index(ctx: RunContext[Deps]) -> str:
-    skills = discover_skills(ctx.deps.workspace.root, dirs=ctx.deps.workspace.skill_dirs)
+    skills = discover_skills(
+        ctx.deps.workspace.root, trust_project=ctx.deps.trust.project,
+        dirs=ctx.deps.workspace.skill_dirs,
+    )
     text = skills_index_text(skills)
     if not text:
         return ""
@@ -292,7 +294,9 @@ def _skill_index(ctx: RunContext[Deps]) -> str:
 
 
 def _agent_index(ctx: RunContext[Deps]) -> str:
-    text = agents_index_text(discover_agents(ctx.deps.workspace.root))
+    text = agents_index_text(
+        discover_agents(ctx.deps.workspace.root, trust_project=ctx.deps.trust.project)
+    )
     if not text:
         return ""
     # The mode-reach rule is stated statically (not "the current mode is

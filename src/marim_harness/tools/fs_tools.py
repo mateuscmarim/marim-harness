@@ -59,7 +59,10 @@ async def read_file(
     # Whitelist every discovered skill's directory for reading, so an agent that
     # reaches for a skill's bundled file by absolute path succeeds even when the
     # skill lives outside the workspace (discover_skills is cached per workspace).
-    skills = discover_skills(ctx.deps.workspace.root, dirs=ctx.deps.workspace.skill_dirs)
+    skills = discover_skills(
+        ctx.deps.workspace.root, trust_project=ctx.deps.trust.project,
+        dirs=ctx.deps.workspace.skill_dirs,
+    )
     skill_roots = tuple(s.root for s in skills)
     out = fs.read_file(
         ctx.deps.workspace.root, path, offset=offset, limit=limit,

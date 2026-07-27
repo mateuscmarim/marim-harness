@@ -64,8 +64,9 @@ class McpManager:
         # call, explicitly, never omitted. The invariant this upholds: the
         # trust decision used to WRITE mcp config must be the SAME one used to
         # LOAD it (mcp.config.load_mcp_config's own trust_project). The CLI
-        # preset (bootstrap.build_harness) wires this from
-        # cfg.trust_project_hooks, the very value it already passes to
+        # preset (bootstrap.build_harness) wires this from the single
+        # store-aware `trusted` boolean it resolves once per run (via
+        # trust.resolve_project_trust) — the very value it already passes to
         # load_mcp_config; an embedder composing HarnessBuilder directly has no
         # project-file loading path at all (with_mcp_server takes ready-built
         # toolsets — load_mcp_config is bootstrap-only), so False (untrusted)

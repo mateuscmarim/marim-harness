@@ -499,7 +499,17 @@ class SettingsScreen(Screen[None]):
     def _advanced_widgets(self) -> ComposeResult:
         deny = ", ".join(self.env_cfg.command_denylist) or "(none)"
         allow = ", ".join(self.env_cfg.command_allowlist) or "(none)"
-        trust = "on" if self.env_cfg.trust_project_hooks else "off"
+        # Tri-state: trust_project_hooks is True/False/None now, so a plain
+        # "on" if x else "off" would render "no env decision" (None)
+        # identically to an explicit force-untrust (False). Name the third
+        # state explicitly instead — this row reflects the env/config knob,
+        # not the live per-project decision (which may come from the trust
+        # store when this is unset; see marim_harness.trust).
+        env_trust = self.env_cfg.trust_project_hooks
+        if env_trust is None:
+            trust = "unset (defers to the project trust store)"
+        else:
+            trust = "on" if env_trust else "off"
         yield Static("Read-only — managed in config or project settings.", classes="muted")
         yield Static(f"Command denylist: {deny}", classes="muted")
         yield Static(f"Command allowlist: {allow}", classes="muted")

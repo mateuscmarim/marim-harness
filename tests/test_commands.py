@@ -34,7 +34,12 @@ class _FakeApp:
         self.stream = SimpleNamespace(current_assistant="sentinel")
         self.harness = SimpleNamespace(
             deps=SimpleNamespace(
-                workspace=SimpleNamespace(root=workspace_root, skill_dirs=None)
+                workspace=SimpleNamespace(root=workspace_root, skill_dirs=None),
+                # This suite is in conftest's _TRUST_PROJECT_SUITES (its
+                # project-local .marim/skills fixtures need the gate open);
+                # /skill now threads this live field rather than falling back
+                # to the env itself, so mirror that resolved decision here.
+                trust=SimpleNamespace(project=True),
             ),
             checkpoints=SimpleNamespace(list=lambda: []),
             manual_compact=_default_manual_compact,

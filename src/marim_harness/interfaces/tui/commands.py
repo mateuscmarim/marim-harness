@@ -298,7 +298,9 @@ async def _cmd_skill(app: HarnessApp, arg: str) -> None:
     arg = arg.strip()
     if not arg:
         skills = discover_skills(
-            app.harness.deps.workspace.root, dirs=app.harness.deps.workspace.skill_dirs
+            app.harness.deps.workspace.root,
+            trust_project=app.harness.deps.trust.project,
+            dirs=app.harness.deps.workspace.skill_dirs,
         )
         if not skills:
             await app.post_system(

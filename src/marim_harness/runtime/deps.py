@@ -267,8 +267,21 @@ class UIHooks:
 
 
 @dataclass
+class TrustState:
+    """The session's live project-trust decision. Mutable on purpose:
+    Harness.apply_project_trust / revoke flip ``project`` in place so every
+    lazy reader (skills/agents discovery, instructions) sees the change on
+    its next read — the same live-field pattern as WorkspaceConfig.mode."""
+
+    project: bool = False
+    source: str = "default"
+    fingerprint: str = ""
+
+
+@dataclass
 class Deps:
     workspace: WorkspaceConfig
+    trust: TrustState = field(default_factory=TrustState)
     ui: UIHooks = field(default_factory=UIHooks)
     tasks: TaskList = field(default_factory=TaskList)
     jobs: JobRegistry = field(default_factory=JobRegistry)

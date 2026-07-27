@@ -18,7 +18,9 @@ from ..notifications import Notifier
 from ..plugins.discovery import plugin_lsp_providers
 from ..session import SessionManager
 from ..session.ctrl import aux_model_for
-from .deps import Deps, UIHooks, WorkspaceConfig
+from ..trust import resolve_project_trust
+from ..trust_surface import scan_project_surface
+from .deps import Deps, TrustState, UIHooks, WorkspaceConfig
 from .harness import Harness
 from .permissions import Mode
 
@@ -55,6 +57,18 @@ def build_harness(
     sessions explicitly rather than "latest"); it replays any saved history,
     and is mutually exclusive with ``resume``."""
     cfg = load_config()
+    # Resolve project trust once, store-aware: an explicit env decision wins,
+    # otherwise the per-project trust store is consulted (honored only while
+    # its fingerprint still matches the current gated surface). Every loader
+    # below and the live TrustState on Deps consume this single `trusted`
+    # value, so the CLI's gate and the TUI's first-open prompt can never
+    # disagree about what "trusted" means for this run.
+    surface = scan_project_surface(workspace)
+    resolution = resolve_project_trust(
+        workspace, explicit=cfg.trust_project_hooks,
+        fingerprint=surface.fingerprint, surface_empty=surface.empty,
+    )
+    trusted = resolution.trusted
     if mode is None:
         mode = Mode(cfg.default_mode)
     configs, default_provider = detect_active_providers()
@@ -69,7 +83,7 @@ def build_harness(
     command_policy = CommandPolicy(
         denylist=cfg.command_denylist, allowlist=cfg.command_allowlist
     )
-    hooks_cfg = load_hooks_config(workspace, trust_project=cfg.trust_project_hooks)
+    hooks_cfg = load_hooks_config(workspace, trust_project=trusted)
     hook_runner = HookRunner(hooks_cfg) if hooks_cfg else None
     notifier = Notifier(cfg.notifications)
     deps = Deps(
@@ -79,6 +93,9 @@ def build_harness(
             command_policy=command_policy,
             tool_search=cfg.tool_search,
             tool_search_threshold=cfg.tool_search_threshold,
+        ),
+        trust=TrustState(
+            project=trusted, source=resolution.source, fingerprint=surface.fingerprint
         ),
         hooks=hook_runner,
         ui=UIHooks(detach_fanout=cfg.subagent.detach_fanout, notifier=notifier),
@@ -104,7 +121,7 @@ def build_harness(
     # MCP servers from the merged global + project config. Malformed specs are
     # dropped (build returns warnings); connections are opened later by the caller
     # (the TUI on mount, headless around its run).
-    mcp_specs = load_mcp_config(workspace, trust_project=cfg.trust_project_hooks)
+    mcp_specs = load_mcp_config(workspace, trust_project=trusted)
     mcp_servers, mcp_warnings = build_mcp_servers(mcp_specs)
     for warning in mcp_warnings:
         logger.warning("MCP config: %s", warning)
@@ -121,7 +138,7 @@ def build_harness(
     # was covered at startup, a server installed mid-session needs a restart
     # to surface the tools (under partial coverage the tools stay registered
     # and LspManager still probes availability per call).
-    lsp_reg = build_lsp_registry(workspace, trust_project=cfg.trust_project_hooks)
+    lsp_reg = build_lsp_registry(workspace, trust_project=trusted)
     register_lsp_tools = cfg.lsp_enabled and cfg.lsp_tools_enabled
     if register_lsp_tools:
         found = lsp_reg.workspace_languages(workspace)
@@ -205,11 +222,14 @@ def build_harness(
             # Same trust decision load_mcp_config was just called with above
             # (see HarnessConfig.mcp_trust_project's docstring for why this
             # must not be re-derived independently downstream).
-            mcp_trust_project=cfg.trust_project_hooks,
+            mcp_trust_project=trusted,
             notifications=cfg.notifications,
         )
     )
     harness = builder.build()
+    harness.project_surface = surface
+    if resolution.prompt_needed:
+        harness.trust_prompt = surface
     if resume or session_id is not None:
         harness.resume()
 

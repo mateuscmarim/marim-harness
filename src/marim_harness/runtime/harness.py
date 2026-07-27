@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
     from ..config.model import ModelSource, MultiModelSource
     from ..forge.backend import ForgeBackend
+    from ..trust_surface import ProjectSurface
 
 from ..compaction import (
     Summarizer,
@@ -522,6 +523,12 @@ class Harness:
             )
         cfg = config or HarnessConfig(**kwargs)
         self.deps = deps
+        # Set by bootstrap: the project's gated surface, and — when no trust
+        # decision exists anywhere and the surface is non-empty — the payload the
+        # TUI's first-open TrustPanel renders. None for embedders (HarnessBuilder
+        # does no workspace scanning) and once a decision exists.
+        self.project_surface: ProjectSurface | None = None
+        self.trust_prompt: ProjectSurface | None = None
         self.provider = provider
         self.model_label = cfg.model_label
         # The model object used for each turn (swappable at runtime), the source
