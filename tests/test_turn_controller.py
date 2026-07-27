@@ -151,7 +151,9 @@ async def test_non_actionable_failure_leaves_no_note(tmp_path):
         await tc.run_turn("first request")
     echoed = await tc.run_turn("second request")
     assert "did not complete" not in echoed
-    assert echoed == "second request"
+    # The date envelope wraps every turn now; the important thing is that no
+    # error note from the failed first turn leaked into the second prompt.
+    assert echoed.endswith("second request")
 
 
 # --- new encapsulation methods ---

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from datetime import date
 
 from ..tasks import Task, render_tasks
 from .errors import provider_error_status
@@ -97,6 +98,14 @@ def plan_mode_preamble() -> str:
     in plan mode. Lives in the per-turn envelope (not the system prompt) so the
     cached system/tool prefix stays stable across turns."""
     return _PLAN_MODE_PREAMBLE
+
+
+def render_current_date_block() -> str:
+    """Return the current date as a short block for the turn-context envelope.
+
+    Placed in the per-turn user message (not the system prompt) so the cached
+    system/tool prefix stays stable across turns and across day boundaries."""
+    return f"Current date: {date.today().isoformat()}"
 
 
 def render_checklist_block(items: list[Task]) -> str:

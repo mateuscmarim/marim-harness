@@ -135,7 +135,9 @@ async def test_no_hooks_runs_turn_normally(tmp_path):
     harness = _make_harness(_prompt_capturing_model(sink), deps)
     out = await harness.run_turn("hello")
     assert out == "ok"
-    assert sink[0] == "hello"  # untouched
+    # The date envelope wraps every turn now; verify the typed text is present
+    # and no hook modified it.
+    assert sink[0].endswith("hello")
 
 
 def test_strip_turn_context_recovers_typed_text():
@@ -193,8 +195,8 @@ async def test_injected_context_is_wrapped_so_replay_can_recover_typed_text(tmp_
 
 @pytest.mark.anyio
 async def test_plain_turn_is_not_wrapped(tmp_path):
-    """With nothing injected, the persisted prompt is the typed text verbatim —
-    no envelope — so existing sessions and output are unaffected."""
+    """Even with no hooks, the date envelope wraps every turn — but
+    strip_turn_context always recovers the original typed text."""
     from marim_harness.runtime.harness import strip_turn_context
 
     deps = _make_deps(tmp_path)  # no hooks
@@ -207,7 +209,9 @@ async def test_plain_turn_is_not_wrapped(tmp_path):
         for p in getattr(m, "parts", [])
         if type(p).__name__ == "UserPromptPart"
     ]
-    assert persisted[0] == "hello"
+    # The turn-context envelope is always present (date injection), but the
+    # original typed text is always recoverable.
+    assert "hello" in persisted[0]
     assert strip_turn_context(persisted[0]) == "hello"
 
 

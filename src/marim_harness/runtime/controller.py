@@ -42,6 +42,7 @@ from .context import (
 from .context import (
     plan_mode_preamble,
     render_checklist_block,
+    render_current_date_block,
     render_shell_results_block,
     wrap_turn_context,
 )
@@ -493,12 +494,16 @@ class TurnController:
 
     async def _assemble_prompt(self, typed: str) -> str:
         """Build the turn's prompt from what the user ``typed``, prepending any
-        pending context — a finished-jobs digest, the prior turn's actionable
-        error note, SessionStart-injected context, and UserPromptSubmit hook
-        output — then wrapping the injected prefix in the turn-context envelope
-        so a resumed session can recover just the typed text. The one-shot notes
-        and the digest are consumed here."""
+        pending context — a current-date note, plan-mode preamble, a finished-jobs
+        digest, the prior turn's actionable error note, SessionStart-injected
+        context, and UserPromptSubmit hook output — then wrapping the injected
+        prefix in the turn-context envelope so a resumed session can recover just
+        the typed text. The one-shot notes and the digest are consumed here."""
         prompt = typed
+        # Current date so the model can reason about time-sensitive tasks.
+        # Rides in the per-turn user message (not the system prompt) so the
+        # cached prefix stays stable across turns and day boundaries.
+        prompt = f"{render_current_date_block()}\n\n{prompt}"
         # Plan mode: tell the model it is planning so it researches deliberately
         # and ends by calling present_plan, rather than flailing into denials.
         # Prepended first so it sits just above the user's typed request.
