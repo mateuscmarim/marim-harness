@@ -24,17 +24,13 @@ prefixing the model sees is applied at compose time (``runtime.toolsets`` /
 toolsets stay the single lifecycle/introspection handle here.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import os
 from pathlib import Path
-
-from fastmcp.client.transports import (
-    SSETransport,
-    StdioTransport,
-    StreamableHttpTransport,
-)
-from pydantic_ai.mcp import MCPToolset
+from typing import TYPE_CHECKING
 
 from ..atomic_io import atomic_write_text
 from ..config import config_dir
@@ -42,6 +38,16 @@ from ..runtime.permissions import Mode
 from ..tools.impl.coerce import coerce_by_schema
 from ..tools.impl.offload import _INLINE_CHAR_LIMIT, offload_if_large
 from ..trust import project_trusted
+
+# fastmcp (transports) and pydantic_ai (MCPToolset) are imported lazily, inside
+# build_mcp_servers, rather than at module level: this module sits on the
+# `marim trust` import path (trust_surface -> mcp.config) for its cheap
+# `_read_servers`/`project_mcp_config_path` helpers, and neither dependency's
+# transitive weight (~0.3-0.5s combined) should be paid by a status command
+# that never builds an actual server. TYPE_CHECKING keeps the names resolvable
+# for type checkers without importing them at runtime.
+if TYPE_CHECKING:
+    from fastmcp.client.transports import SSETransport, StdioTransport, StreamableHttpTransport
 
 logger = logging.getLogger(__name__)
 
@@ -444,6 +450,13 @@ def build_mcp_servers(specs: dict) -> tuple[list, list[str]]:
     default keeps the child alive for cross-session reuse, which marim never
     does — it holds one connection for the whole session and reconnects through
     the manager."""
+    # Lazy — see the module-level note above: this is the only function that
+    # actually needs fastmcp/pydantic_ai, so importing here (once, cached by
+    # sys.modules for the rest of the process) keeps every other caller of this
+    # module cheap.
+    from fastmcp.client.transports import SSETransport, StdioTransport, StreamableHttpTransport
+    from pydantic_ai.mcp import MCPToolset
+
     servers: list = []
     notes: list[str] = []
     for name, spec in specs.items():
