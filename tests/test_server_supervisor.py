@@ -131,6 +131,10 @@ async def test_set_mode_raises_when_host_busy(tmp_path):
     with pytest.raises(SessionBusy):
         sup.set_mode(record, "s1", Mode.plan)
 
+    # A rejected switch must mutate nothing: the mode cache stays unseeded, so
+    # a later idle-evicted rebuild does not silently pick up the 409'd mode.
+    assert ("ws", "s1") not in sup._modes
+
     await sup.aclose()
 
 

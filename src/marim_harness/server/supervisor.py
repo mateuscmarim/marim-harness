@@ -93,15 +93,19 @@ class SessionSupervisor:
         return self._buses.get((ws_id, session_id))
 
     def set_mode(self, record: WorkspaceRecord, session_id: str, mode: Mode) -> None:
-        """Apply a mode to a session. A loaded host switches live (persisted)
-        unless it is busy, in which case SessionBusy is raised so the API can
-        reject with 409. An idle session persists straight to its store. The
-        in-memory cache is kept warm either way, for host_for's next build."""
-        self._modes[(record.id, session_id)] = mode
+        """Apply a mode to a session. Busy is checked first and raises
+        SessionBusy (409) before anything is mutated — mirroring set_model's
+        mutate-nothing-on-409 semantics, so a rejected switch cannot leave a
+        stale mode in the cache for a later idle-evicted rebuild to pick up
+        (host_for prefers self._modes over the persisted store). Once past
+        that check, a loaded host switches live (persisted) and an idle
+        session persists straight to its store; the in-memory cache is kept
+        warm either way, for host_for's next build."""
         host = self._hosts.get((record.id, session_id))
+        if host is not None and host.busy:
+            raise SessionBusy(session_id)
+        self._modes[(record.id, session_id)] = mode
         if host is not None:
-            if host.busy:
-                raise SessionBusy(session_id)
             host.harness.set_mode(mode, persist=True)
             return
         store = SessionManager(Path(record.path)).store(session_id)
