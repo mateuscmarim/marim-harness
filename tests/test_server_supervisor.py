@@ -14,7 +14,7 @@ from pydantic_ai.usage import RunUsage
 from marim_harness.runtime.deps import Deps, UIHooks, WorkspaceConfig
 from marim_harness.runtime.harness import Harness
 from marim_harness.runtime.permissions import Mode
-from marim_harness.server.supervisor import SessionSupervisor
+from marim_harness.server.supervisor import SessionBusy, SessionSupervisor
 from marim_harness.server.workspaces import WorkspaceRecord
 from marim_harness.session import SessionManager
 from marim_harness.tools.provider import BuiltinToolProvider
@@ -83,7 +83,7 @@ async def test_set_mode_reaches_factory(tmp_path):
     created: list = []
     sup = SessionSupervisor(_factory(created))
     record = _record(tmp_path)
-    sup.set_mode("ws", "s1", Mode.plan)
+    sup.set_mode(record, "s1", Mode.plan)
     await sup.host_for(record, "s1")
     assert created[0][2] is Mode.plan
     await sup.aclose()
@@ -102,6 +102,36 @@ async def test_set_model_persists_when_idle(tmp_path):
     sup.set_model(record, sid, "claude-cli:opus")
 
     assert manager.store(sid).model == "claude-cli:opus"
+
+
+async def test_set_mode_persists_when_idle(tmp_path):
+    """No live host for the session (idle) -> set_mode persists straight to
+    the on-disk session store instead of touching a harness."""
+    record = _record(tmp_path)
+    manager = SessionManager(Path(record.path))
+    store = manager.create("s1")
+    store.save([], RunUsage())
+    sid = store.session_id
+
+    sup = SessionSupervisor(_factory([]))
+    sup.set_mode(record, sid, Mode.plan)
+
+    assert manager.store(sid).mode == "plan"
+
+
+async def test_set_mode_raises_when_host_busy(tmp_path):
+    record = _record(tmp_path)
+    sup = SessionSupervisor(_factory([]))
+    host = await sup.host_for(record, "s1")
+    # host.busy reads status, which is "running" whenever _turn_task is not
+    # None (or the queue is non-empty) -- simulate a running turn the same
+    # way the worker loop itself would set it, not via a made-up field.
+    host._turn_task = asyncio.create_task(asyncio.sleep(1000))
+
+    with pytest.raises(SessionBusy):
+        sup.set_mode(record, "s1", Mode.plan)
+
+    await sup.aclose()
 
 
 async def test_bus_survives_eviction(tmp_path):
@@ -162,7 +192,7 @@ async def test_forget_reclaims_bus_lock_and_mode(tmp_path):
     the lock and any stored mode."""
     sup = SessionSupervisor(_factory([]))
     record = _record(tmp_path)
-    sup.set_mode("ws", "s1", Mode.plan)
+    sup.set_mode(record, "s1", Mode.plan)
     original_bus = sup.bus_for("ws", "s1")
     await sup.host_for(record, "s1")
     await sup.close_host("ws", "s1")
@@ -278,7 +308,7 @@ async def test_in_memory_mode_wins_over_persisted(tmp_path):
 
     created: list = []
     sup = SessionSupervisor(_factory(created))
-    sup.set_mode("ws", "s1", Mode.auto)
+    sup.set_mode(record, "s1", Mode.auto)
     await sup.host_for(record, "s1")
     assert created[0][2] is Mode.auto
     await sup.aclose()
@@ -299,7 +329,7 @@ async def test_close_workspace_reclaims_all_state(tmp_path):
     record = _record(tmp_path)
     host = await sup.host_for(record, "s1")
     sup.bus_for("ws", "s1")
-    sup.set_mode("ws", "s2", Mode.auto)  # mode-only entry, no live host
+    sup.set_mode(record, "s2", Mode.auto)  # mode-only entry, no live host
     sup.bus_for("other", "s9")  # a different workspace must be untouched
 
     await sup.close_workspace("ws")

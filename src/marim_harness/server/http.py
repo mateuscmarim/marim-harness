@@ -265,7 +265,7 @@ async def create_session(request: Request) -> Response:
     # message endpoints see it before its first turn.
     store.save([], RunUsage())
     if body.mode is not None:
-        _supervisor(request).set_mode(record.id, store.session_id, Mode(body.mode))
+        _supervisor(request).set_mode(record, store.session_id, Mode(body.mode))
     return JSONResponse({
         "id": store.session_id,
         "name": store.name,

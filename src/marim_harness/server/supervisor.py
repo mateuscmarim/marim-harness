@@ -92,12 +92,21 @@ class SessionSupervisor:
         callers (e.g. /history) that must not spawn a bus as a side effect."""
         return self._buses.get((ws_id, session_id))
 
-    def set_mode(self, ws_id: str, session_id: str, mode: Mode) -> None:
-        """Cache a session's approval mode for the next host build. In-memory
-        only — durability is the create-session route's job (it writes the mode
-        onto the session file header, which host_for reads when this cache is
-        cold)."""
-        self._modes[(ws_id, session_id)] = mode
+    def set_mode(self, record: WorkspaceRecord, session_id: str, mode: Mode) -> None:
+        """Apply a mode to a session. A loaded host switches live (persisted)
+        unless it is busy, in which case SessionBusy is raised so the API can
+        reject with 409. An idle session persists straight to its store. The
+        in-memory cache is kept warm either way, for host_for's next build."""
+        self._modes[(record.id, session_id)] = mode
+        host = self._hosts.get((record.id, session_id))
+        if host is not None:
+            if host.busy:
+                raise SessionBusy(session_id)
+            host.harness.set_mode(mode, persist=True)
+            return
+        store = SessionManager(Path(record.path)).store(session_id)
+        store.mode = mode.value
+        store.save_meta()
 
     def set_model(self, record: WorkspaceRecord, session_id: str, model_id: str) -> None:
         """Apply a model to a session. A loaded host switches live (rebuild +
