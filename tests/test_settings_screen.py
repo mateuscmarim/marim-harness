@@ -15,6 +15,7 @@ from textual.app import App
 from marim_harness.config import ModelConfig
 from marim_harness.interfaces.tui.settings import SettingsScreen
 from marim_harness.interfaces.tui.themes import MARIM_THEMES, THEME_NAMES
+from marim_harness.runtime.deps import TrustState
 from marim_harness.runtime.permissions import Mode
 
 
@@ -30,7 +31,9 @@ def _fake_harness():
     from types import SimpleNamespace
 
     h = SimpleNamespace(
-        deps=SimpleNamespace(workspace=SimpleNamespace(mode=Mode.auto)),
+        deps=SimpleNamespace(
+            workspace=SimpleNamespace(mode=Mode.auto), trust=TrustState()
+        ),
         model_label="openrouter/x",
         model_id="x",
         model_source=None,  # disables the model-change picker path
@@ -124,6 +127,22 @@ async def test_every_page_mounts_its_fields():
         # Providers: the pane mounts as its own section with all four cards.
         assert s.query_one("#section-providers #prov-card-openrouter") is not None
         assert s.query_one("#section-providers #prov-default-set") is not None
+
+
+@pytest.mark.anyio
+async def test_advanced_shows_live_trust_state():
+    """The Advanced page's trust row reads the live deps.trust (Task 6),
+    not the env/config knob — must reflect a store-sourced grant."""
+    harness = _fake_harness()
+    harness.deps.trust = TrustState(project=True, source="store")
+    app = _Host(harness, _env_cfg())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "advanced"
+        await pilot.pause()
+        text = str(app.screen.query_one("#trust-status").render())
+    assert "on" in text
+    assert "store" in text
 
 
 @pytest.mark.anyio
