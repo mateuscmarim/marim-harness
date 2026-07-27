@@ -161,15 +161,140 @@ model sees the message and can correct itself; nothing outside the root is read
 or written by these tools. (The `bash` tool is *not* path-confined — see the
 honest limits below.)
 
-## The project trust gate: `MARIM_TRUST_PROJECT_HOOKS`
+## The project trust gate
 
 A cloned repository can ship configuration that launches processes on startup or
 injects text into the model's context — before any tool-call approval could
 apply. All of it is **off by default** and loads only when the project is
-trusted: set `MARIM_TRUST_PROJECT_HOOKS=1` (also accepts `true`/`on`/`yes`) in
-your shell environment or global config. The single predicate lives in
-`src/marim_harness/trust.py`: explicit config wins, then the env var, and absent
-both the project is untrusted — fail closed.
+trusted. Trust is a **per-project, persistent decision** — remembered on your
+machine after the first answer — with four ways to make it: the TUI's
+first-open prompt, the `/trust` command, the `marim trust` CLI, and (for
+`marim serve`) a REST endpoint. All four write the same store and drive the
+same reload; none of them are required — the env var below still works as a
+standalone override, for scripts and CI that never touch the store.
+
+### The store and resolution order
+
+Decisions live in `$XDG_STATE_HOME/marim-harness/trusted-projects.json`
+(`~/.local/state/marim-harness/` when `XDG_STATE_HOME` is unset) — machine
+state, never inside the repo, keyed by the **resolved** workspace root:
+
+```json
+{
+  "/abs/resolved/workspace/root": {
+    "trusted": true,
+    "fingerprint": "<canonical surface JSON>",
+    "decided_at": "2026-07-26T21:00:00Z"
+  }
+}
+```
+
+Both answers are remembered — a decline persists too, so an untrusted project
+shows a one-line notice instead of re-prompting every time. A stored decision
+is honored only while `fingerprint` still matches the project's current
+*executable* surface (resolved `.marim/hooks.json` entries, `.marim/mcp.json`
+server specs, and each project-scope plugin's executable surface — the same
+shape as the plugin registry's own fingerprint). Skills/agents text is
+deliberately excluded from the fingerprint, matching the plugin-trust policy:
+editing a skill or adding an agent spec must not silently drop trust. When the
+surface has changed since the decision was recorded, the stored entry is
+treated as absent — the TUI re-prompts, headless runs stay untrusted. A
+corrupt or unreadable store reads as empty (fail closed, warning logged).
+
+Full resolution order, checked in this sequence
+(`trust.py::resolve_project_trust`):
+
+1. **Explicit config** — a value threaded in by the embedding caller (rare;
+   wins unconditionally).
+2. **`MARIM_TRUST_PROJECT_HOOKS`** — set (any truthy spelling: `1`/`true`/
+   `on`/`yes`) forces trusted; set to anything else (`0`, `false`, ...) forces
+   **untrusted, even over a trusting store entry**. Only an *unset* variable
+   falls through to the store.
+3. **The store**, only while fingerprint-fresh (above).
+4. **Untrusted** — the fail-closed default.
+
+That means the env var is still a full override in both directions: it can
+force trust on for a repo you haven't clicked through, or force it off even
+after you granted it interactively (e.g. a CI job that must never trust
+anything, regardless of what a developer's laptop has stored).
+
+### TUI: the first-open prompt, `/trust`, and the settings row
+
+When a workspace has a non-empty gated surface and no usable decision (env
+unset, store empty or stale), the harness starts the session **untrusted**
+and the TUI mounts an inline `TrustPanel` above the status bar on open (never
+a modal — the transcript stays scrollable and typing a prompt is never
+blocked):
+
+```
+This project ships configuration that loads on startup:
+  hooks: 2 (SessionStart, PreToolUse) · mcp: 1 (docs-server) · skills: 3 · agents: 1
+Trust it? Hooks and MCP servers run code with no per-call approval; skills
+and agents inject prompt content. docs/guides/trust.md
+[t] Trust   [d] Don't trust
+```
+
+- **`t` / Trust** — persists `{trusted: true, fingerprint}` and hot-applies it
+  immediately: hooks config reloads, project MCP servers connect, the LSP
+  registry rebuilds to include project/plugin providers. A failure partway
+  through (say, one MCP server won't connect) is reported inline rather than
+  silently swallowed; the rest of the apply still proceeds.
+- **`d` / Escape / Don't trust** — persists `{trusted: false, fingerprint}`;
+  a notice appears instead (`Project config present but not trusted — /trust
+  to enable.`).
+- An unanswered panel means **untrusted for this session** — the panel stays
+  mounted (fail closed) rather than the turn quietly running trusted
+  underneath it.
+
+`/trust` (bare) reports the resolved state, the source that decided it
+(`config`/`env`/`store`/`default`), and the gated surface. `/trust on` grants
+— same persist-then-hot-apply path as the panel. `/trust off` revokes:
+persists immediately, but warns that already-running MCP/LSP processes for
+this project keep running until the app restarts (nothing kills a live
+subprocess on revoke). The Settings screen's "Trust project hooks" row shows
+the live state and its source, not just the env var.
+
+### CLI: `marim trust`
+
+```bash
+marim trust                 # status: decision + source + gated surface (cwd)
+marim trust status <path>   # same, for another workspace
+marim trust grant [<path>]  # persist trusted, against the current fingerprint
+marim trust revoke [<path>] # persist untrusted
+```
+
+`status` is the default action; the workspace defaults to the current
+directory; a bad path exits `2`. `marim trust` is intentionally cheap — it
+stays off the `pydantic_ai` import path (like `marim config`/`marim models`),
+so checking or flipping trust from a script or CI step doesn't pay for
+loading the agent stack.
+
+Headless (`marim -p ...`) never prompts — there's no one to answer. When the
+workspace has a non-empty gated surface and no usable trust decision, it
+prints one line to **stderr only** (never stdout, never the JSON/NDJSON
+result):
+
+```
+note: project config present but not trusted; run 'marim trust grant' or set MARIM_TRUST_PROJECT_HOOKS=1
+```
+
+`marim trust grant && marim -p ...` is the one-shot pattern; there is no
+`--trust-project` flag on `-p` itself.
+
+### `marim serve`
+
+Trust is a property of the daemon's **workspace** (its directory on disk),
+shared by every session on it. `GET /v1/workspaces/{ws}/trust` and
+`POST /v1/workspaces/{ws}/trust` expose the same store/resolve/apply seam over
+HTTP — grant hot-applies to every live session on that workspace, revoke
+flips state and warns about the restart caveat above — and session payloads
+carry `trust_prompt_pending` so a remote client knows when to show its own
+dialog. Full request/response shapes: [serve API
+reference](../reference/serve-api.md#trust). The same honest limit applies
+there as to the rest of serve: a client that can call `POST .../trust` can
+enable startup code execution, but serve already exposes turn execution
+(`bash` in auto mode) to whoever can reach it, so this adds no new exposure
+class.
 
 What the gate covers (each verified at its loader):
 
@@ -208,13 +333,14 @@ your machine or the package, not the repo:
   the repo's source files read by the tools. Reading the repo is the product;
   be aware that repo text reaching the model is inherently untrusted input.
 
-Treat the variable as a **supply-chain decision**, not a convenience toggle:
-everything behind it runs (or is injected) with no per-call approval, on
-startup, from files whoever authored the repo controls. Leave it unset for
-repositories you don't fully control. A project `.env` cannot set it (blocklist,
-see above), so a repo cannot self-trust — and the `XDG_CONFIG_HOME`/
-`XDG_DATA_HOME` redirect that would let a repo substitute its own "global"
-config is blocked from project `.env` files too.
+Treat trusting a project as a **supply-chain decision**, not a convenience
+toggle: everything behind it runs (or is injected) with no per-call approval,
+on startup, from files whoever authored the repo controls. Decline (or leave
+`MARIM_TRUST_PROJECT_HOOKS` unset) for repositories you don't fully control.
+A project `.env` cannot set the env var (blocklist, see above), so a repo
+cannot self-trust — and the `XDG_CONFIG_HOME`/`XDG_DATA_HOME` redirect that
+would let a repo substitute its own "global" config, or point `$XDG_STATE_HOME`
+at a repo-controlled trust store, is blocked from project `.env` files too.
 
 ## Approval UX quick pointers
 

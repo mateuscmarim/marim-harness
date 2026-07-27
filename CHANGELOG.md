@@ -8,6 +8,21 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+- Interactive per-project trust: instead of a silent, undiscoverable
+  `MARIM_TRUST_PROJECT_HOOKS` env var, marim now remembers a per-project trust
+  decision in a persistent store (`$XDG_STATE_HOME/marim-harness/`), honored
+  only while the project's gated surface (hooks/MCP/plugin executables)
+  hasn't changed since the decision was made. First-open TUI dialog lists
+  what a grant would enable and hot-applies it live (hooks reload, MCP
+  connects, LSP registry rebuilds) — no restart needed; a decline persists
+  too, with a one-line notice instead of re-prompting. New `/trust [on|off]`
+  command and a live settings row; new `marim trust [status|grant|revoke]`
+  CLI subcommand (headless `-p` prints a one-line stderr notice when
+  untrusted, never re-prompting); `marim serve` gets
+  `GET/POST /v1/workspaces/{ws}/trust` plus `trust_prompt_pending` on session
+  payloads. `MARIM_TRUST_PROJECT_HOOKS` still works as a standalone override
+  in both directions (explicit falsy now force-untrusts even over a trusting
+  store). See `docs/guides/trust.md`.
 - The TUI renders LaTeX math in replies (`$..$`, `$$..$$`, `\(..\)`, `\[..\]`)
   as Unicode approximations (`α² + √(β₁)`, `(-b±√(b²-4ac))/(2a)`) on every
   prose surface, including sub-agent transcripts. Streaming-safe by design

@@ -127,14 +127,15 @@ to avoid import cycles.
   (rewind via `GitSnapshotter`, honoring `.gitignore`).
 - `mcp/` — Model Context Protocol server config + lifecycle; servers can be granted
   selectively to sub-agents. Project-local `.marim/mcp.json` servers launch code on
-  connect, so they load only when the project is trusted (the same
-  `MARIM_TRUST_PROJECT_HOOKS` gate as project hooks); global/plugin servers always load.
+  connect, so they load only when the project is trusted (the same trust gate as
+  project hooks — a persistent per-project store plus the `MARIM_TRUST_PROJECT_HOOKS`
+  override, see `trust.py`/`docs/guides/trust.md`); global/plugin servers always load.
 - `lsp/` — multilspy-backed language servers, now assembled from **LSP providers**
   (`provider.py`: `LspProvider` + `LspRegistry`) rather than a hard-coded set. Four
   bundled language plugins (`lsp/bundled/{python,typescript,cpp,java}`) ship in-tree
   and always load; third-party plugins add languages via an `lsp` manifest block
-  (declarative `command`/`args` only) under the same `MARIM_TRUST_PROJECT_HOOKS` gate
-  as MCP. `backend:`/named-`diagnostics:` keys are a bundled-only seam to in-tree tuned
+  (declarative `command`/`args` only) under the same project trust gate as MCP.
+  `backend:`/named-`diagnostics:` keys are a bundled-only seam to in-tree tuned
   code (`basedpyright.py`, ruff/pyright via `checks.py`). Declarative servers launch
   through `GenericStdioServer` (`generic.py`). Two switches still gate the whole thing:
   `lsp_enabled` (manager + diagnostics-on-edit) and `lsp_tools_enabled` (the six nav
@@ -150,8 +151,9 @@ to avoid import cycles.
   compaction events). Observe-only except SessionStart/UserPromptSubmit (inject
   context) and PreCompact (may block a *manual* /compact via exit 2 or
   `{"decision":"block"}`; block verdicts on auto compaction are logged and
-  ignored). Project-local hooks run only when trusted
-  (`MARIM_TRUST_PROJECT_HOOKS`).
+  ignored). Project-local hooks run only when trusted (the persistent
+  per-project trust store, or the `MARIM_TRUST_PROJECT_HOOKS` override —
+  see `trust.py`/`docs/guides/trust.md`).
 - `plugins/` — bundles skills + sub-agents + hooks + MCP + `AGENTS.md`; hooks/MCP load
   only for *trusted* plugins. Namespaced `plugin:item`. See `docs/plugins.md`.
 - `workspace/` — fs primitives, memory (`remember`/`recall`), skills, sub-agent specs,

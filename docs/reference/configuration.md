@@ -187,14 +187,21 @@ project `.env`.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MARIM_TRUST_PROJECT_HOOKS` | unset (untrusted) | Boolean. Allow project-local executable config to load. |
+| `MARIM_TRUST_PROJECT_HOOKS` | unset (fall through) | Tri-state. `1`/`true`/`on`/`yes` forces trusted; any other set value (`0`, `false`, ...) force-*untrusts*, overriding even a trusting store entry; unset falls through to the per-project trust store. |
 
-This is the single project-trust gate (`trust.py::project_trusted`). When
-truthy, project-local hooks (`.marim/hooks.json`), project-local MCP servers
-(`.marim/mcp.json`), project-scope plugins, project skills/agents, and
-third-party plugin **LSP** manifest blocks are honored; otherwise they are
-withheld (global and bundled equivalents always load). Blocked from the
-project `.env`, so a cloned repo cannot self-trust.
+This is one layer of the project-trust gate; the full resolution order is
+explicit config → this env var → the per-project trust store (honored only
+while its fingerprint matches the project's current hooks/MCP/plugin
+surface) → untrusted (fail closed). The store is written by the TUI's
+first-open trust prompt, `/trust`, `marim trust grant/revoke`, and
+`POST /v1/workspaces/{ws}/trust` — see [the trust guide](../guides/trust.md)
+for the full model. When resolved trusted (by any layer), project-local hooks
+(`.marim/hooks.json`), project-local MCP servers (`.marim/mcp.json`),
+project-scope plugins, project skills/agents, and third-party plugin **LSP**
+manifest blocks are honored; otherwise they are withheld (global and bundled
+equivalents always load). The env var is blocked from the project `.env`, so
+a cloned repo cannot self-trust; the store lives outside the repo entirely
+(`$XDG_STATE_HOME/marim-harness/trusted-projects.json`).
 
 ## Sub-agents
 
