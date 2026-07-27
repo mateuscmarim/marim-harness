@@ -87,6 +87,30 @@ async def test_trust_key_persists_applies_and_confirms(tmp_path):
         assert "trusted" in text.lower()
 
 
+async def test_apply_failure_keeps_decision_and_surfaces_error(tmp_path):
+    """A raised apply_project_trust must not vanish: the decision stays
+    persisted trusted=True (the user consented), an error line lands in the
+    transcript, and the app doesn't crash despite exit_on_error=False."""
+    app = _app_with_prompt(tmp_path, _surface())
+
+    async def _boom() -> None:
+        raise RuntimeError("boom")
+
+    app.harness.apply_project_trust = _boom  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        await _settle_until(pilot, lambda: bool(app.query(TrustPanel)))
+        await pilot.press("t")
+        await _settle_until(pilot, lambda: not app.query(TrustPanel))
+
+        decision = stored_decision(tmp_path)
+        assert decision is not None
+        assert decision.trusted is True
+
+        text = " ".join(w.text for w in app.query(AssistantMessage))
+        assert "boom" in text.lower()
+
+
 async def test_decline_key_persists_and_notices(tmp_path):
     app = _app_with_prompt(tmp_path, _surface())
     async with app.run_test() as pilot:

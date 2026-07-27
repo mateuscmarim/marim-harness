@@ -353,12 +353,32 @@ class HarnessApp(App):
         except OSError as exc:
             await self.post_system(f"Couldn't save the trust decision: {exc}")
         if trusted:
-            await self.harness.apply_project_trust()
-            await self.post_system("Project trusted — hooks, MCP, skills and agents are live.")
+            await self._apply_trust_and_confirm()
         else:
             await self.post_system(
                 "Project config present but not trusted — `/trust on` to enable."
             )
+
+    async def _apply_trust_and_confirm(self) -> None:
+        """Hot-apply the just-granted trust (hooks reload, MCP config load, LSP
+        registry rebuild) and confirm. The decision is already persisted and
+        the TrustState already flipped by this point — the user consented, so
+        neither is undone if the hot-apply itself blows up; a failure here just
+        means a restart is needed to pick up the config, not that anything was
+        rolled back. Runs inside a worker with exit_on_error=False and no
+        on_worker_state_changed handler, so an unguarded raise here would
+        otherwise vanish silently (same belt-and-suspenders as
+        _run_shell_passthrough)."""
+        try:
+            await self.harness.apply_project_trust()
+        except Exception as exc:  # keep the session alive on any hot-apply failure
+            await self.post_system(
+                "Project trusted and saved, but applying it live failed: "
+                f"{type(exc).__name__}: {exc}. Restart marim to pick up the config."
+            )
+            logger.warning("apply_project_trust failed", exc_info=True)
+            return
+        await self.post_system("Project trusted — hooks, MCP, skills and agents are live.")
 
     async def on_unmount(self) -> None:
         """Jobs are process-scoped — kill any still running when the app exits so
