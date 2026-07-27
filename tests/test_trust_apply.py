@@ -104,3 +104,23 @@ async def test_revoke_flips_state_and_drops_project_hooks(tmp_path, monkeypatch)
 
     assert harness.deps.trust.project is False
     assert harness.deps.hooks is None  # only project hooks existed
+
+
+@pytest.mark.anyio
+async def test_revoke_resets_mcp_trust_project(tmp_path, monkeypatch):
+    """Verify revoke_project_trust resets McpManager.trust_project to False
+    to maintain the invariant: write-trust must match load-trust."""
+    from marim_harness.runtime.bootstrap import build_harness
+
+    marim = tmp_path / ".marim"
+    marim.mkdir()
+    monkeypatch.setenv("MARIM_PROVIDER", "local")
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    harness = build_harness(tmp_path)
+    assert harness.mcp is not None
+
+    await harness.apply_project_trust()
+    assert harness.mcp.trust_project is True
+
+    harness.revoke_project_trust()
+    assert harness.mcp.trust_project is False

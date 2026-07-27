@@ -936,6 +936,11 @@ class Harness:
 
         hooks_cfg = load_hooks_config(self.deps.workspace.root, trust_project=False)
         self.deps.hooks = HookRunner(hooks_cfg) if hooks_cfg else None
+        if self.mcp is not None:
+            # McpManager.persist_server_enabled() uses trust_project to decide
+            # write-trust; the load-trust used here must match, or toggling
+            # a server later would persist into the untrusted project's .marim/mcp.json.
+            self.mcp.trust_project = False
 
     def _apply_saved_model(self) -> None:
         """Re-point at a session's saved model after loading it, if one differs
