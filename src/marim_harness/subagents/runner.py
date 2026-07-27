@@ -41,7 +41,6 @@ from ..runtime.errors import is_context_overflow_error
 from ..runtime.permissions import Mode
 from ..tasks import TaskList
 from ..thinking import resolve_thinking, settings_for
-from ..tools.impl import fs
 from ..tools.names import GATED_TOOLS
 from ..workspace import (
     cap_subagent_output,
@@ -50,6 +49,7 @@ from ..workspace import (
     find_agent,
     spill_target,
     subagent_instructions,
+    write_spill,
 )
 from .backend import CONTINUATION_PROMPT, SpawnRun
 from .cli_spawn import CliSpawnOrchestrator
@@ -526,15 +526,7 @@ class SubagentRunner:
         )
         text, spill = cap_subagent_output(output, max_output_chars, spill_path)
         if spill is not None:
-            if rel is None:
-                from pathlib import Path
-
-                from ..atomic_io import atomic_write_text
-                dest = Path(spill_path)
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                atomic_write_text(dest, spill, durable=False)
-            else:
-                fs.write_file(self.deps.workspace.root, rel, spill)
+            write_spill(self.deps.workspace.root, spill_path, rel, spill)
         return text
 
     async def _finalize_spawn(

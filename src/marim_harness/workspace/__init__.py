@@ -10,6 +10,7 @@ from .agents import (
     find_agent,
     spill_target,
     subagent_instructions,
+    write_spill,
 )
 from .catalog import (
     ModelEntry,
@@ -58,6 +59,7 @@ __all__ = [
     "find_agent",
     "spill_target",
     "subagent_instructions",
+    "write_spill",
     # catalog
     "ModelEntry",
     "fetch_google_models",

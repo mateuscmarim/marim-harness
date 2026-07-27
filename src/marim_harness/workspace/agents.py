@@ -422,7 +422,7 @@ def compose_subagent_task(
 
 
 def spill_target(
-    scratchpad: "Path | None", workspace_root: "Path", subdir: str, filename: str
+    scratchpad: Path | None, workspace_root: Path, subdir: str, filename: str
 ) -> tuple[str, str | None]:
     """Where an over-budget report spills, preferring the session scratchpad.
 
@@ -438,6 +438,30 @@ def spill_target(
         return str(scratchpad / subdir / filename), None
     rel = f".marim/{subdir}/{filename}"
     return str(workspace_root / rel), rel
+
+
+def write_spill(workspace_root: Path, spill_path: str, rel: str | None, content: str) -> None:
+    """Persist an over-budget spill at the location :func:`spill_target` chose.
+
+    The effectful companion to the pure ``spill_target`` — callers pass its
+    ``(spill_path, rel)`` result through unchanged, so the write always lands
+    where the model-facing note points. Scratchpad writes (``rel is None``)
+    go straight to the absolute path (the scratchpad is outside the workspace
+    guard by design); workspace fallbacks route through ``fs.write_file`` so
+    the usual guard and atomicity apply."""
+    if rel is None:
+        from ..atomic_io import atomic_write_text
+
+        dest = Path(spill_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(dest, content, durable=False)
+    else:
+        # Deferred: tools.impl.fs reaches back into workspace.fs, so a
+        # module-level import here would tie the workspace package to the
+        # tool layer at import time.
+        from ..tools.impl import fs
+
+        fs.write_file(workspace_root, rel, content)
 
 
 def cap_subagent_output(
