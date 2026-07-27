@@ -13,7 +13,10 @@ def activate_skill(ctx: RunContext[Deps], name: str) -> str:
     run any scripts with bash using that absolute path. Activate a skill
     when the task matches its one-line description, then follow what it
     says."""
-    skill = find_skill(ctx.deps.workspace.root, name, dirs=ctx.deps.workspace.skill_dirs)
+    skill = find_skill(
+        ctx.deps.workspace.root, name,
+        trust_project=ctx.deps.trust.project, dirs=ctx.deps.workspace.skill_dirs,
+    )
     if skill is None:
         return f"No skill named {name!r}. See the skills index."
     # Offload an oversized SKILL.md through the same guard read_file/grep/bash use,
@@ -39,7 +42,10 @@ def read_skill_file(ctx: RunContext[Deps], name: str, path: str) -> str:
     directory. Use after activate_skill when its instructions point you at
     a bundled file. Works for skills in any scope, including global ones
     outside the workspace, and saves you needing the skill's absolute path."""
-    skill = find_skill(ctx.deps.workspace.root, name, dirs=ctx.deps.workspace.skill_dirs)
+    skill = find_skill(
+        ctx.deps.workspace.root, name,
+        trust_project=ctx.deps.trust.project, dirs=ctx.deps.workspace.skill_dirs,
+    )
     if skill is None:
         return f"No skill named {name!r}. See the skills index."
     # Same context-flood guard as read_file: a large bundled file is spilled to a
