@@ -895,6 +895,48 @@ class Harness:
         reads ``self._tiers`` per spawn)."""
         self.subagents.set_tiering_enabled(enabled)
 
+    async def apply_project_trust(self) -> None:
+        """Hot-apply a project-trust grant: flip the live TrustState, then
+        eagerly reload what loads at startup (hooks config, project MCP
+        servers, LSP registry). Lazy readers (skills/agents discovery,
+        instructions) pick the flip up on their next read. Idempotent.
+        Persistence is the CALLER's job (record_decision) — this seam is
+        pure runtime state, so tests and embedders can drive it without
+        touching the operator's store."""
+        if self.deps.trust.project:
+            return
+        from ..hooks import HookRunner, load_hooks_config
+        from ..mcp import build_mcp_servers, load_mcp_config
+        from .bootstrap import build_lsp_registry  # lazy: bootstrap imports this module
+
+        ws = self.deps.workspace.root
+        self.deps.trust.project = True
+        self.deps.trust.source = "store"
+        self.trust_prompt = None
+        hooks_cfg = load_hooks_config(ws, trust_project=True)
+        self.deps.hooks = HookRunner(hooks_cfg) if hooks_cfg else None
+        if self.mcp is not None:
+            specs = load_mcp_config(ws, trust_project=True)
+            servers, warnings = build_mcp_servers(specs)
+            for warning in warnings:
+                logger.warning("MCP config: %s", warning)
+            self.mcp.trust_project = True
+            await self.mcp.add_servers(servers)
+        if self.lsp is not None:
+            self.lsp.set_registry(build_lsp_registry(ws, trust_project=True))
+
+    def revoke_project_trust(self) -> None:
+        """Flip the live TrustState off and drop project hooks. Already-running
+        MCP servers / LSP providers keep running until restart — the caller
+        owns telling the user that caveat (and persisting the decision)."""
+        self.deps.trust.project = False
+        self.deps.trust.source = "store"
+        self.trust_prompt = None
+        from ..hooks import HookRunner, load_hooks_config
+
+        hooks_cfg = load_hooks_config(self.deps.workspace.root, trust_project=False)
+        self.deps.hooks = HookRunner(hooks_cfg) if hooks_cfg else None
+
     def _apply_saved_model(self) -> None:
         """Re-point at a session's saved model after loading it, if one differs
         from what's already active."""

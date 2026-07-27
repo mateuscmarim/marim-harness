@@ -358,3 +358,25 @@ class McpManager:
             # must be recorded (de-duped) so the UI/status reflects it.
             self.mcp_status.add_failed(name, err)
         return err
+
+    async def add_servers(self, servers: list) -> dict:
+        """Register and connect servers that aren't already configured (by name).
+        The trust hot-apply path: granting project trust mid-session loads the
+        project's .marim/mcp.json servers without a rebuild. Mirrors
+        enable_server's per-server bookkeeping; disabled names are registered
+        but not connected (a later enable_server picks them up)."""
+        known = set(self.configured_names())
+        fresh = [s for s in servers if self.server_name(s) not in known]
+        self.mcp_servers.extend(fresh)
+        for server in fresh:
+            name = self.server_name(server)
+            if name in self.disabled:
+                continue
+            err = await self._connect_one(server)
+            # Same bookkeeping as enable_server above: record success/failure so
+            # status stays accurate for a server connected outside enable_server.
+            if err is None:
+                self.mcp_status.add_connected(name)
+            else:
+                self.mcp_status.add_failed(name, err)
+        return self.mcp_status.to_dict()

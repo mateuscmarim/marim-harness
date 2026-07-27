@@ -139,6 +139,15 @@ class LspManager:
         # stall this map avoids.
         self._starts: dict[str, asyncio.Task[str | None]] = {}
 
+    def set_registry(self, registry: LspRegistry) -> None:
+        """Swap the provider registry live (the trust hot-apply path: project
+        trust granted mid-session adds third-party providers). Safe because
+        every lookup reads ``self._registry`` per call and servers connect
+        lazily — there is no cached snapshot of the old registry to
+        invalidate, so an in-flight request still resolves against whichever
+        registry is current when it reads the attribute."""
+        self._registry = registry
+
     # --- lifecycle -----------------------------------------------------------
 
     async def _ensure_started(self, language: str) -> str | None:
