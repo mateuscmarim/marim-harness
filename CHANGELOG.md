@@ -33,6 +33,12 @@ pre-1.0, minor versions may contain breaking changes.
   work-stealing): a ~5.5-minute serial run drops under a minute on a
   multi-core machine. `uv run pytest -n 0` restores the serial run for
   debugging.
+- Live session mode switch: new `POST /v1/workspaces/{ws}/sessions/{sid}/mode`
+  route lets a client change an existing session's approval mode
+  (ask/auto/plan) after creation — same live-vs-persist shape as the existing
+  `/model` route, 409 while a turn is running. The TUI's own mode
+  toggle/cycle is unaffected (still a live, per-launch setting, not
+  persisted).
 
 ## [0.2.0] - 2026-07-26
 
