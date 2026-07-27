@@ -355,6 +355,36 @@ def test_set_model_rejected_while_running(client):
     test_client.post(f"{base}/interrupt", headers=AUTH)
 
 
+def test_set_mode_on_idle_session_persists(client):
+    test_client, tmp_path = client
+    ws_id, sid, _ = _setup_workspace_and_session(test_client, tmp_path)
+    base = f"/v1/workspaces/{ws_id}/sessions/{sid}"
+    resp = test_client.post(f"{base}/mode", headers=AUTH, json={"mode": "plan"})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "mode": "plan"}
+    detail = test_client.get(base, headers=AUTH).json()
+    assert detail["session"]["mode"] == "plan"
+
+
+def test_set_mode_rejected_while_running(client):
+    test_client, tmp_path = client
+    ws_id, sid, _ = _setup_workspace_and_session(test_client, tmp_path)
+    base = f"/v1/workspaces/{ws_id}/sessions/{sid}"
+    test_client.post(f"{base}/messages", headers=AUTH, json={"prompt": "edit it"})
+    _poll(test_client, base, lambda s: s["status"] == "waiting_ask")
+    refused = test_client.post(f"{base}/mode", headers=AUTH, json={"mode": "plan"})
+    assert refused.status_code == 409
+    test_client.post(f"{base}/interrupt", headers=AUTH)
+
+
+def test_set_mode_rejects_unknown_value(client):
+    test_client, tmp_path = client
+    ws_id, sid, _ = _setup_workspace_and_session(test_client, tmp_path)
+    base = f"/v1/workspaces/{ws_id}/sessions/{sid}"
+    resp = test_client.post(f"{base}/mode", headers=AUTH, json={"mode": "yolo"})
+    assert resp.status_code == 400
+
+
 def test_unknown_workspace_and_session_404(client):
     test_client, _ = client
     assert test_client.get("/v1/workspaces/nope/sessions", headers=AUTH).status_code == 404

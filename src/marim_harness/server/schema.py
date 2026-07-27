@@ -67,6 +67,10 @@ class SetModelIn(BaseModel):
     model: str
 
 
+class SetModeIn(BaseModel):
+    mode: str
+
+
 class TrustIn(BaseModel):
     """POST /v1/workspaces/{ws}/trust body: the one binary decision — trust
     everything project-local, or nothing."""

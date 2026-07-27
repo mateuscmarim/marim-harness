@@ -38,6 +38,7 @@ from .schema import (
     AskAnswerIn,
     MessageIn,
     SessionIn,
+    SetModeIn,
     SetModelIn,
     SteerIn,
     TrustIn,
@@ -520,6 +521,29 @@ async def set_session_model(request: Request) -> Response:
     return JSONResponse({"ok": True, "model": body.model})
 
 
+async def set_session_mode(request: Request) -> Response:
+    denied = _unauthorized(request)
+    if denied:
+        return denied
+    record = _workspace(request)
+    if record is None:
+        return _error(404, "not_found", "unknown workspace")
+    session_id = request.path_params["sid"]
+    if not _session_exists(record, session_id):
+        return _error(404, "not_found", "unknown session")
+    try:
+        body = await _json_body(request, SetModeIn)
+    except _BadBody as exc:
+        return _error(400, "bad_request", str(exc))
+    if body.mode not in (m.value for m in Mode):
+        return _error(400, "bad_request", f"unknown mode: {body.mode}")
+    try:
+        _supervisor(request).set_mode(record, session_id, Mode(body.mode))
+    except SessionBusy:
+        return _error(409, "busy", "cannot switch modes while a turn is running")
+    return JSONResponse({"ok": True, "mode": body.mode})
+
+
 def _spawn_meta_reader(record, session_id: str):
     """A ``stream_id -> meta | None`` closure over the session's persisted
     sidecar store. Rebuilt per request (cheap) so it always targets the session
@@ -759,6 +783,7 @@ def create_app(
         Route(f"{base}/interrupt", post_interrupt, methods=["POST"]),
         Route(f"{base}/steer", post_steer, methods=["POST"]),
         Route(f"{base}/model", set_session_model, methods=["POST"]),
+        Route(f"{base}/mode", set_session_mode, methods=["POST"]),
         Route(f"{base}/asks", list_asks, methods=["GET"]),
         Route(f"{base}/asks/{{aid}}", answer_ask, methods=["POST"]),
         Route(f"{base}/jobs", list_jobs, methods=["GET"]),
