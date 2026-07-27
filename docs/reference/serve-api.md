@@ -68,26 +68,27 @@ Codes used: `unauthorized` (401), `bad_request` (400), `not_found` (404),
 
 ## Endpoint summary
 
-| Method | Path                                             | Purpose                          |
-| ------ | ------------------------------------------------ | -------------------------------- |
-| GET    | `/v1/health`                                     | Liveness check (no auth)         |
-| GET    | `/v1/workspaces`                                 | List workspaces                  |
-| POST   | `/v1/workspaces`                                 | Register or create a workspace   |
-| DELETE | `/v1/workspaces/{ws}`                            | Delete a workspace               |
-| GET    | `/v1/workspaces/{ws}/sessions`                   | List sessions (with live status) |
-| POST   | `/v1/workspaces/{ws}/sessions`                   | Create a session                 |
-| GET    | `/v1/workspaces/{ws}/trust`                      | Workspace trust state + surface  |
-| POST   | `/v1/workspaces/{ws}/trust`                      | Grant/revoke project trust       |
-| GET    | `/v1/workspaces/{ws}/sessions/{sid}`             | Session detail + live status     |
-| DELETE | `/v1/workspaces/{ws}/sessions/{sid}`             | Delete a session                 |
-| POST   | `/v1/workspaces/{ws}/sessions/{sid}/messages`    | Submit a prompt (enqueue a turn) |
-| POST   | `/v1/workspaces/{ws}/sessions/{sid}/interrupt`   | Cancel the running turn          |
-| POST   | `/v1/workspaces/{ws}/sessions/{sid}/steer`       | Steer the running turn           |
-| GET    | `/v1/workspaces/{ws}/sessions/{sid}/asks`        | List pending asks                |
-| POST   | `/v1/workspaces/{ws}/sessions/{sid}/asks/{aid}`  | Answer an ask                    |
-| WS     | `/v1/workspaces/{ws}/sessions/{sid}/ws`          | Live event stream                |
-| GET    | `/v1/workspaces/{ws}/sessions/{sid}/history`     | Persisted message history        |
-| GET    | `/v1/workspaces/{ws}/sessions/{sid}/images/{sha}`| Cached image bytes               |
+| Method | Path                                              | Purpose                            |
+| ------ | ------------------------------------------------- | ---------------------------------- |
+| GET    | `/v1/health`                                      | Liveness check (no auth)           |
+| GET    | `/v1/workspaces`                                  | List workspaces                    |
+| POST   | `/v1/workspaces`                                  | Register or create a workspace     |
+| DELETE | `/v1/workspaces/{ws}`                             | Delete a workspace                 |
+| GET    | `/v1/workspaces/{ws}/sessions`                    | List sessions (with live status)   |
+| POST   | `/v1/workspaces/{ws}/sessions`                    | Create a session                   |
+| GET    | `/v1/workspaces/{ws}/trust`                       | Workspace trust state + surface    |
+| POST   | `/v1/workspaces/{ws}/trust`                       | Grant/revoke project trust         |
+| GET    | `/v1/workspaces/{ws}/sessions/{sid}`              | Session detail + live status       |
+| DELETE | `/v1/workspaces/{ws}/sessions/{sid}`              | Delete a session                   |
+| POST   | `/v1/workspaces/{ws}/sessions/{sid}/messages`     | Submit a prompt (enqueue a turn)   |
+| POST   | `/v1/workspaces/{ws}/sessions/{sid}/interrupt`    | Cancel the running turn            |
+| POST   | `/v1/workspaces/{ws}/sessions/{sid}/steer`        | Steer the running turn             |
+| GET    | `/v1/workspaces/{ws}/sessions/{sid}/asks`         | List pending asks                  |
+| POST   | `/v1/workspaces/{ws}/sessions/{sid}/asks/{aid}`   | Answer an ask                      |
+| POST   | `/v1/workspaces/{ws}/sessions/{sid}/mode`         | Switch the session's approval mode |
+| WS     | `/v1/workspaces/{ws}/sessions/{sid}/ws`           | Live event stream                  |
+| GET    | `/v1/workspaces/{ws}/sessions/{sid}/history`      | Persisted message history          |
+| GET    | `/v1/workspaces/{ws}/sessions/{sid}/images/{sha}` | Cached image bytes                 |
 
 ## Health
 
@@ -346,6 +347,34 @@ closes the live host (if any), deletes the session file, and reclaims all
 server state for the session (event bus included).
 
 `200`: `{"deleted": true}`
+
+### POST /v1/workspaces/{ws}/sessions/{sid}/mode
+
+Switches the session's approval mode. Request body (`SetModeIn`):
+
+```json
+{"mode": "plan"}
+```
+
+`mode` must be `"auto"`, `"ask"`, or `"plan"`; anything else returns `400
+bad_request`.
+
+A loaded (live) host switches immediately, mid-session. A session with no
+live host (idle-evicted, or never yet prompted) persists the mode straight
+to the session file header — the same field the create-session `mode` and
+list/detail `"mode"` responses read — so the switch survives daemon restarts
+and idle evictions either way.
+
+`200`: `{"ok": true, "mode": "plan"}`
+
+`409 busy` while a turn is running:
+
+```json
+{"error": {"code": "busy", "message": "cannot switch modes while a turn is running"}}
+```
+
+The mode is left untouched in this case — retry after the turn finishes or
+interrupt it first.
 
 ## Messages (turns)
 

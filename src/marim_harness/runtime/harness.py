@@ -864,14 +864,22 @@ class Harness:
         """The current approval mode (auto/ask/plan)."""
         return self.deps.workspace.mode
 
-    def set_mode(self, mode: Mode) -> None:
-        """Set the approval mode. The single write point for ``deps.mode`` so the
-        interface layer doesn't poke ``harness.deps`` field-by-field."""
+    def set_mode(self, mode: Mode, *, persist: bool = False) -> None:
+        """Set the approval mode. The single write point for ``deps.mode`` so
+        the interface layer doesn't poke ``harness.deps`` field-by-field.
+        persist defaults to False: the TUI's mode toggle/cycle is a live,
+        per-launch setting (see session/store.py's SessionStore.mode
+        docstring) and must keep behaving that way; only the server's
+        live-switch path opts in."""
         self.deps.workspace.mode = mode
+        if persist:
+            self.session.set_mode(mode.value)
 
-    def cycle_mode(self) -> Mode:
+    def cycle_mode(self, *, persist: bool = False) -> Mode:
         """Advance to the next approval mode and return it."""
         self.deps.workspace.mode = self.deps.workspace.mode.cycle()
+        if persist:
+            self.session.set_mode(self.deps.workspace.mode.value)
         return self.deps.workspace.mode
 
     def set_workflows_enabled(self, enabled: bool) -> bool:
