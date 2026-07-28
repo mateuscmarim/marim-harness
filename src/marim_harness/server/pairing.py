@@ -95,11 +95,20 @@ def bind_loopback_warning(host: str) -> str | None:
 def _is_loopback(host: str) -> bool:
     """True for any loopback form: ``127.0.0.0/8``, ``::1`` (bare, bracketed, or
     expanded), ``::ffff:127.x.x.x``, and ``localhost``. Delegates to the stdlib
-    so expanded/mapped IPv6 forms (e.g. ``0:0:0:0:0:0:0:1``) aren't missed."""
+    so expanded/mapped IPv6 forms (e.g. ``0:0:0:0:0:0:0:1``) aren't missed.
+
+    The ``ipv4_mapped`` unwrap is deliberate rather than redundant: whether
+    ``IPv6Address.is_loopback`` follows a ``::ffff:`` mapping to its IPv4 half
+    varies by *patch* release (3.12.3 says False, 3.10.20 and 3.14.6 say True),
+    and ``requires-python >= 3.10`` admits all of them. Unwrapping first makes
+    the answer the same everywhere.
+    """
+    bare = host.strip("[]")
     try:
-        return ipaddress.ip_address(host.strip("[]")).is_loopback
+        address = ipaddress.ip_address(bare)
     except ValueError:
-        return host.strip("[]").lower() == "localhost"
+        return bare.lower() == "localhost"
+    return (getattr(address, "ipv4_mapped", None) or address).is_loopback
 
 
 def _split_host_port(raw: str, default_port: int) -> tuple[str, int]:
