@@ -123,6 +123,9 @@ def _qr_parser() -> argparse.ArgumentParser:
     parser.add_argument("--name", default=None,
                         help="profile name shown on the client (default: this machine's "
                              "hostname)")
+    parser.add_argument("--wide", action="store_true",
+                        help="draw the code with half-blocks instead of sextants — five "
+                             "rows taller, but readable in fonts that predate Unicode 13")
     return parser
 
 
@@ -154,7 +157,7 @@ def _resolve_pair_url(advertise: str | None, port: int) -> str:
 
 
 def _pairing_block(*, url: str, token: str, name: str, warning: str | None,
-                   terminal_lines: int) -> str:
+                   terminal_lines: int, wide: bool = False) -> str:
     """The whole printed block: optional warning, the code (or a typed-URI
     fallback), and the facts under it."""
     uri = pairing_uri(url, token, name)
@@ -170,17 +173,21 @@ def _pairing_block(*, url: str, token: str, name: str, warning: str | None,
             f"  {uri}",
         ])
         return "\n".join(lines)
-    note = height_note(rendered=rendered_rows(matrix), terminal_lines=terminal_lines)
+    note = height_note(rendered=rendered_rows(matrix, wide=wide), terminal_lines=terminal_lines)
     if note:
         lines.extend([note, ""])
     lines.extend([
-        render_matrix(matrix),
+        render_matrix(matrix, wide=wide),
         "",
         f"  {url}",
         f"  {name} · token included — treat this like a password",
         "",
         "  wrong address?  marim serve qr --advertise <host>",
     ])
+    if not wide:
+        # The sextants are Unicode 13; a font without them draws tofu, and a QR
+        # made of empty boxes is a puzzle unless the way out is printed with it.
+        lines.append("  empty boxes?    marim serve qr --wide")
     return "\n".join(lines)
 
 
@@ -206,6 +213,7 @@ def _qr_main(argv: list[str], *, out, err) -> int:
             name=args.name or default_name(),
             warning=loopback_warning(url),
             terminal_lines=shutil.get_terminal_size(fallback=(80, 0)).lines,
+            wide=args.wide,
         )
     except Exception as exc:  # never {exc}: see the note in _print_startup_qr
         print(f"couldn't build the pairing code ({type(exc).__name__})", file=err)
@@ -238,6 +246,7 @@ def _print_startup_qr(args, *, token: str, out, err) -> None:
             # gets connection-refused when the daemon is listening on loopback.
             warning=bind_loopback_warning(args.host) or loopback_warning(url),
             terminal_lines=shutil.get_terminal_size(fallback=(80, 0)).lines,
+            wide=args.wide,
         )
     except Exception as exc:
         # Unlike the _resolve_pair_url handler above (whose exceptions come from
@@ -288,6 +297,9 @@ def main(argv: list[str], *, out=None, err=None) -> int:
     parser.add_argument("--advertise", default=None, metavar="HOST[:PORT]",
                         help="address for --qr to encode instead of the auto-detected "
                              "one (see: marim serve qr --help)")
+    parser.add_argument("--wide", action="store_true",
+                        help="draw the --qr code with half-blocks instead of sextants, "
+                             "for fonts that predate Unicode 13")
     args = parser.parse_args(argv)
 
     try:

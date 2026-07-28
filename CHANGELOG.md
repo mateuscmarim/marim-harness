@@ -18,7 +18,12 @@ pre-1.0, minor versions may contain breaking changes.
   a tailnet name or a reverse proxy. `marim serve --qr` prints one at startup.
   Because the code carries a credential it is never part of normal startup
   output and is refused outright when stdout isn't a terminal. Needs `segno`
-  (added to the `serve` extra); without it the pairing URI prints as text.
+  (added to the `serve` extra); without it the pairing URI prints as text. The
+  code is drawn with Unicode 13 sextants, six modules to a character cell, so a
+  typical pairing payload is 27 columns by 18 rows — small enough that the whole
+  block clears a 25-line terminal. `--wide` falls back to half-blocks (five rows
+  taller, drawn from a block every terminal font has had for decades) for fonts
+  that predate Unicode 13, and the code prints that escape hatch under itself.
 
 - `marim serve` startup now leads with the MARIM wordmark (the same art as the
   TUI intro header, shared from `interfaces/branding.py`) over an aligned block

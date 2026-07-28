@@ -11,6 +11,15 @@ details decide whether a phone can actually read the result:
 * **The quiet zone.** Four light modules on every side are required by the QR
   spec, and the terminal's own background does not count once we paint the code
   white.
+
+There are two packings. The default packs 2×3 modules into each cell using the
+sextants from Unicode 13's Symbols for Legacy Computing — 18 text rows for a
+typical pairing payload, which is what lets the whole block fit an 80×24
+terminal. `wide=True` falls back to the half-blocks (1×2 per cell), five rows
+taller but drawn from a block that every terminal font has had for decades. The
+sextant cell is a third wider than it is tall in module terms, which scanners
+handle: the finder patterns give them a perspective transform, and a uniform
+stretch is exactly what that corrects for.
 """
 
 import math
@@ -22,9 +31,14 @@ QUIET_ZONE = 4
 _SGR = "\033[38;2;0;0;0;48;2;255;255;255m"
 _RESET = "\033[0m"
 
-# (top module, bottom module) -> the glyph that paints them. Dark modules are
-# painted by the black foreground; light ones show the white background.
-_BLOCKS = {(0, 0): " ", (1, 0): "▀", (0, 1): "▄", (1, 1): "█"}
+# Dark modules are painted by the black foreground; light ones show the white
+# background. Both tables are indexed by the cell's modules read left-to-right,
+# top-to-bottom, as a bitmask with the first module in bit 0.
+_HALF_BLOCKS = (" ", "▀", "▄", "█")
+
+# The four combinations Unicode did *not* give a sextant of its own, because a
+# block-element character already draws them.
+_SEXTANT_ALIASES = {0b000000: " ", 0b010101: "▌", 0b101010: "▐", 0b111111: "█"}
 
 
 def encode(uri: str) -> list[tuple[int, ...]]:
@@ -39,23 +53,54 @@ def encode(uri: str) -> list[tuple[int, ...]]:
     return [tuple(row) for row in qr.matrix_iter(border=QUIET_ZONE)]
 
 
-def render_matrix(matrix: list[tuple[int, ...]]) -> str:
-    """The matrix as half-block text, two module rows per text row."""
-    if not matrix:
-        return ""
-    light = (0,) * len(matrix[0])
+def _sextant(bits: int) -> str:
+    """The glyph painting a 2×3 cell whose modules are ``bits``.
+
+    The 60 sextants run consecutively from U+1FB00 in bitmask order, with the
+    four aliased combinations left out of the block — so the codepoint is the
+    bitmask minus however many of those it has passed.
+    """
+    alias = _SEXTANT_ALIASES.get(bits)
+    if alias is not None:
+        return alias
+    return chr(0x1FB00 + bits - 1 - (bits > 0b010101) - (bits > 0b101010))
+
+
+def _pack(matrix: list[tuple[int, ...]], *, height: int, width: int) -> str:
+    """``matrix`` drawn ``height``×``width`` modules to the character cell.
+
+    Cells that run past the last row or column are padded with light modules.
+    Both edges being padded are the far ones, so padding only ever *widens* the
+    quiet zone — never encroaches on it.
+    """
+    glyph = _sextant if (height, width) == (3, 2) else _HALF_BLOCKS.__getitem__
+    columns = len(matrix[0])
     lines = []
-    for index in range(0, len(matrix), 2):
-        top = matrix[index]
-        bottom = matrix[index + 1] if index + 1 < len(matrix) else light
-        cells = "".join(_BLOCKS[(t, b)] for t, b in zip(top, bottom, strict=True))
-        lines.append(f"{_SGR}{cells}{_RESET}")
+    for top in range(0, len(matrix), height):
+        cells = []
+        for left in range(0, columns, width):
+            bits = 0
+            for offset_y in range(height):
+                row = matrix[top + offset_y] if top + offset_y < len(matrix) else ()
+                for offset_x in range(width):
+                    x = left + offset_x
+                    if x < len(row) and row[x]:
+                        bits |= 1 << (offset_y * width + offset_x)
+            cells.append(glyph(bits))
+        lines.append(f"{_SGR}{''.join(cells)}{_RESET}")
     return "\n".join(lines)
 
 
-def rendered_rows(matrix: list[tuple[int, ...]]) -> int:
+def render_matrix(matrix: list[tuple[int, ...]], *, wide: bool = False) -> str:
+    """The matrix as block text: 2×3 modules per cell, or 1×2 when ``wide``."""
+    if not matrix:
+        return ""
+    return _pack(matrix, height=2, width=1) if wide else _pack(matrix, height=3, width=2)
+
+
+def rendered_rows(matrix: list[tuple[int, ...]], *, wide: bool = False) -> int:
     """Text rows `render_matrix` will produce for ``matrix``."""
-    return math.ceil(len(matrix) / 2)
+    return math.ceil(len(matrix) / (2 if wide else 3))
 
 
 def height_note(*, rendered: int, terminal_lines: int) -> str | None:
@@ -71,6 +116,9 @@ def height_note(*, rendered: int, terminal_lines: int) -> str | None:
     )
 
 
-# The address line, the password warning, the --advertise hint, and the blank
-# lines between them: what the caller prints around the code itself.
-_SURROUNDING_LINES = 6
+# The address line, the password warning, the two hint lines, and the blank
+# lines between them: what the caller prints around the code itself. The `--wide`
+# hint is one of them and only prints in the default packing, so the estimate is
+# a line pessimistic under `wide=True` — which costs at most one spurious note on
+# a terminal the block fits exactly.
+_SURROUNDING_LINES = 7
