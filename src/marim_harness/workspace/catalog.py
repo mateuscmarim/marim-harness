@@ -21,6 +21,62 @@ _ZEN_MODELS_URL = "https://opencode.ai/zen/v1/models"
 _ZEN_EXCLUDED_PREFIXES = ("claude-", "gemini-")
 
 
+# Endpoints that have already reported a transport failure. A long-lived
+# `marim serve` re-probes catalogs on every session build and model listing, so
+# without this a server that stays down would repeat the same warning forever.
+# Cleared by _note_reachable on the next success, so a recovery re-arms it.
+_unreachable: set[str] = set()
+
+
+def _describe(exc: Exception) -> str:
+    """``httpx.ConnectTimeout()`` and several of its siblings stringify to the
+    empty string, which would leave a one-line failure log saying nothing at
+    all — so always name the exception type, and append its message when it
+    has one."""
+    text = str(exc).strip()
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
+
+def _dedup_key(what: str, url: str) -> str:
+    """Dedup per (catalog, endpoint), not per endpoint alone: two providers can
+    be pointed at the same URL (tests do exactly that), and each still owes its
+    own first warning — the two lines don't say the same thing."""
+    return f"{what}\x00{url}"
+
+
+def _note_reachable(what: str, url: str) -> None:
+    """Record that the endpoint answered, so the next outage warns again."""
+    _unreachable.discard(_dedup_key(what, url))
+
+
+def _log_fetch_failure(what: str, exc: Exception, url: str) -> None:
+    """Log a non-strict catalog fetch failure without shouting.
+
+    A model server being unreachable is an ordinary condition, not a bug: LM
+    Studio isn't running, the machine is offline, an upstream is slow. Those
+    used to spill a full httpx traceback on every attempt, which in daemon mode
+    buried the log under stack frames that say nothing the message doesn't. So:
+    transport failures log one line, and only the first time per endpoint (a
+    repeat while it stays down drops to DEBUG); HTTP status/URL errors log one
+    line every time, since a 401 is actionable but its traceback isn't; and
+    anything else — a malformed payload, a parser bug — keeps ``exc_info``,
+    because that one really is unexpected."""
+    import httpx
+
+    detail = _describe(exc)
+    if isinstance(exc, httpx.TransportError):
+        key = _dedup_key(what, url)
+        if key in _unreachable:
+            logger.debug("%s still unreachable (%s)", what, detail)
+            return
+        _unreachable.add(key)
+        logger.warning("%s unreachable (%s)", what, detail)
+    elif isinstance(exc, httpx.HTTPError):
+        logger.warning("failed to fetch %s: %s", what, detail)
+    else:
+        logger.warning("failed to fetch %s: %s", what, detail, exc_info=True)
+
+
 @dataclass(frozen=True)
 class ModelEntry:
     """One selectable model: its provider id and a human-readable name.
@@ -144,11 +200,13 @@ async def fetch_google_models(
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.get(_GOOGLE_MODELS_URL, headers=headers)
             response.raise_for_status()
-            return parse_google_models(response.json())
+            entries = parse_google_models(response.json())
+        _note_reachable("Google model catalog", _GOOGLE_MODELS_URL)
+        return entries
     except Exception as exc:
         if strict:
             raise
-        logger.warning("failed to fetch Google model catalog: %s", exc, exc_info=True)
+        _log_fetch_failure("Google model catalog", exc, _GOOGLE_MODELS_URL)
         return []
 
 
@@ -173,11 +231,13 @@ async def fetch_openrouter_models(
                 (await client.get(_OPENROUTER_KEY_URL, headers=headers)).raise_for_status()
             response = await client.get(_OPENROUTER_MODELS_URL, headers=headers)
             response.raise_for_status()
-            return parse_models(response.json())
+            entries = parse_models(response.json())
+        _note_reachable("OpenRouter model catalog", _OPENROUTER_MODELS_URL)
+        return entries
     except Exception as exc:
         if strict:
             raise
-        logger.warning("failed to fetch OpenRouter model catalog: %s", exc, exc_info=True)
+        _log_fetch_failure("OpenRouter model catalog", exc, _OPENROUTER_MODELS_URL)
         return []
 
 
@@ -202,11 +262,13 @@ async def fetch_local_models(
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.get(url, headers=headers)
             response.raise_for_status()
-            return parse_models(response.json())
+            entries = parse_models(response.json())
+        _note_reachable(f"local model catalog at {url}", url)
+        return entries
     except Exception as exc:
         if strict:
             raise
-        logger.warning("failed to fetch local model catalog from %s: %s", url, exc, exc_info=True)
+        _log_fetch_failure(f"local model catalog at {url}", exc, url)
         return []
 
 
@@ -245,11 +307,13 @@ async def fetch_zen_models(
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.get(target, headers=headers)
             response.raise_for_status()
-            return parse_zen_models(response.json())
+            entries = parse_zen_models(response.json())
+        _note_reachable("OpenCode Zen model catalog", target)
+        return entries
     except Exception as exc:
         if strict:
             raise
-        logger.warning("failed to fetch OpenCode Zen model catalog: %s", exc, exc_info=True)
+        _log_fetch_failure("OpenCode Zen model catalog", exc, target)
         return []
 
 
@@ -305,9 +369,11 @@ async def fetch_lmstudio_windows(
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.get(url, headers=headers)
             response.raise_for_status()
-            return parse_lmstudio_models(response.json())
+            windows = parse_lmstudio_models(response.json())
+        _note_reachable(f"LM Studio context windows at {url}", url)
+        return windows
     except Exception as exc:
-        logger.warning("failed to fetch LM Studio windows from %s: %s", url, exc, exc_info=True)
+        _log_fetch_failure(f"LM Studio context windows at {url}", exc, url)
         return {}
 
 

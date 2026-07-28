@@ -1,3 +1,4 @@
+import logging
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -494,3 +495,116 @@ async def test_make_supports_images_fetch_failure_is_unknown():
     assert await gate("m1") is None
     assert await gate("m1") is None
     assert len(calls) == 1  # failure is cached too — no per-read refetch storm
+
+
+# -- quiet failure logging ---------------------------------------------------
+#
+# A model server being unreachable is routine (LM Studio not running, machine
+# offline). These pin that it costs one log line, not an httpx traceback per
+# probe — `marim serve` re-fetches catalogs on every session build.
+
+
+@pytest.fixture
+def fresh_unreachable():
+    """catalog._unreachable is process-global dedup state; isolate each test."""
+    catalog._unreachable.clear()
+    yield catalog._unreachable
+    catalog._unreachable.clear()
+
+
+def _catalog_records(caplog):
+    return [r for r in caplog.records if r.name == catalog.__name__]
+
+
+@pytest.mark.anyio
+async def test_transport_failure_logs_one_line_then_quiets(caplog, fresh_unreachable):
+    """First outage: one WARNING, no traceback. While it stays down: DEBUG."""
+    import httpx
+
+    cm, _ = _mock_async_client(None, raises=httpx.ConnectTimeout(""))
+    with caplog.at_level(logging.DEBUG, logger=catalog.__name__), cm:
+        assert await fetch_local_models("http://localhost:1234/v1") == []
+        assert await fetch_local_models("http://localhost:1234/v1") == []
+
+    first, second = _catalog_records(caplog)
+    assert first.levelno == logging.WARNING
+    assert first.exc_info is None
+    # ConnectTimeout("") stringifies to "", so the type name must carry the message.
+    assert "ConnectTimeout" in first.getMessage()
+    assert "unreachable" in first.getMessage()
+    assert second.levelno == logging.DEBUG
+
+
+@pytest.mark.anyio
+async def test_recovery_rearms_the_warning(caplog, fresh_unreachable):
+    """Once the endpoint answers again, the next outage warns rather than
+    hiding at DEBUG — otherwise a flapping server would go silent forever."""
+    import httpx
+
+    url = "http://localhost:1234/v1"
+    down, _ = _mock_async_client(None, raises=httpx.ConnectError("refused"))
+    up, _ = _mock_async_client({"data": [{"id": "m"}]})
+    with caplog.at_level(logging.DEBUG, logger=catalog.__name__):
+        with down:
+            await fetch_local_models(url)
+        with up:
+            assert [e.id for e in await fetch_local_models(url)] == ["m"]
+        with down:
+            await fetch_local_models(url)
+
+    assert [r.levelno for r in _catalog_records(caplog)] == [logging.WARNING, logging.WARNING]
+
+
+@pytest.mark.anyio
+async def test_http_status_error_logs_without_traceback(caplog, fresh_unreachable):
+    """A 401 is actionable, but its stack frames are not — one line every time
+    (no dedup: the message is the whole signal and it may change)."""
+    import httpx
+
+    request = httpx.Request("GET", "http://localhost:1234/v1/models")
+    response = httpx.Response(401, request=request)
+    exc = httpx.HTTPStatusError("401 Unauthorized", request=request, response=response)
+    cm, _ = _mock_async_client(None, raises=exc)
+    with caplog.at_level(logging.DEBUG, logger=catalog.__name__), cm:
+        await fetch_local_models("http://localhost:1234/v1")
+        await fetch_local_models("http://localhost:1234/v1")
+
+    records = _catalog_records(caplog)
+    assert [r.levelno for r in records] == [logging.WARNING, logging.WARNING]
+    assert all(r.exc_info is None for r in records)
+    assert "401" in records[0].getMessage()
+
+
+@pytest.mark.anyio
+async def test_unexpected_error_keeps_the_traceback(caplog, fresh_unreachable):
+    """Not a network condition — a parser bug or the like still needs frames."""
+    cm, _ = _mock_async_client(None, raises=RuntimeError("boom"))
+    with caplog.at_level(logging.DEBUG, logger=catalog.__name__), cm:
+        assert await fetch_local_models("http://localhost:1234/v1") == []
+
+    (record,) = _catalog_records(caplog)
+    assert record.levelno == logging.WARNING
+    assert record.exc_info is not None
+
+
+@pytest.mark.anyio
+async def test_zen_and_lmstudio_windows_also_stay_quiet(caplog, fresh_unreachable):
+    """The dedup key is the endpoint, so the other fetchers get their own
+    first-warning rather than being silenced by an unrelated outage."""
+    import httpx
+
+    cm, _ = _mock_async_client(None, raises=httpx.ConnectTimeout(""))
+    with caplog.at_level(logging.DEBUG, logger=catalog.__name__), cm:
+        assert await catalog.fetch_zen_models("sk-x") == []
+        assert await catalog.fetch_lmstudio_windows("http://localhost:1234/v1") == {}
+
+    records = _catalog_records(caplog)
+    assert [r.levelno for r in records] == [logging.WARNING, logging.WARNING]
+    assert all(r.exc_info is None for r in records)
+
+
+def test_describe_names_the_type_for_a_blank_message():
+    import httpx
+
+    assert catalog._describe(httpx.ConnectTimeout("")) == "ConnectTimeout"
+    assert catalog._describe(RuntimeError("boom")) == "RuntimeError: boom"

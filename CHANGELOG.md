@@ -8,6 +8,15 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+- Model-catalog fetch failures no longer shout. An unreachable model server
+  (LM Studio not running, the box offline, a slow upstream) used to spill a
+  full httpx traceback per probe, which in `marim serve` — a daemon that
+  re-fetches catalogs on every session build and model listing — buried the
+  log. Transport failures now log a single line, and only the first time per
+  endpoint until it answers again (repeats drop to DEBUG); HTTP status errors
+  log one line every time (a 401 is actionable, its stack frames aren't);
+  genuinely unexpected errors keep their traceback. Applies to the OpenRouter,
+  Google, Zen, local (LM Studio/Ollama), and LM Studio context-window fetches.
 - Interactive per-project trust: instead of a silent, undiscoverable
   `MARIM_TRUST_PROJECT_HOOKS` env var, marim now remembers a per-project trust
   decision in a persistent store (`$XDG_STATE_HOME/marim-harness/`), honored
