@@ -116,6 +116,37 @@ def test_qr_without_segno_falls_back_to_the_uri(state, monkeypatch):
     assert state in text  # positive control: the real token reaches the fallback URI
 
 
+def _has_sextant(text: str) -> bool:
+    return any(0x1FB00 <= ord(char) <= 0x1FB3B for char in text)
+
+
+def test_qr_defaults_to_the_short_form_and_says_how_to_escape_it(state):
+    """A font without Unicode 13 draws the sextants as empty boxes, so the way
+    back has to be printed with the code rather than left in --help."""
+    out = _Tty()
+    assert serve.main(["qr"], out=out, err=io.StringIO()) == 0
+    text = out.getvalue()
+    assert _has_sextant(text)
+    assert "--wide" in text
+
+
+def test_qr_wide_falls_back_to_half_blocks_and_is_taller(state):
+    wide, short = _Tty(), _Tty()
+    assert serve.main(["qr", "--wide"], out=wide, err=io.StringIO()) == 0
+    assert serve.main(["qr"], out=short, err=io.StringIO()) == 0
+    assert not _has_sextant(wide.getvalue())
+    assert wide.getvalue().count("\n") > short.getvalue().count("\n")
+    # Nothing to escape from, so no dangling hint about a flag already in use.
+    assert "--wide" not in wide.getvalue()
+
+
+def test_serve_qr_flag_honors_wide(state, stub_uvicorn):
+    out = _Tty()
+    assert serve.main(["--qr", "--wide", "--no-banner"], out=out, err=io.StringIO()) == 0
+    assert not _has_sextant(out.getvalue())
+    assert "treat this like a password" in out.getvalue()
+
+
 def test_qr_creates_the_token_before_the_daemon_has_ever_run(tmp_path, monkeypatch):
     """The token file is the contract, not the process — pairing works first."""
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "fresh"))
