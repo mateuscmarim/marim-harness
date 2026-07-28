@@ -165,3 +165,22 @@ def test_serve_qr_flag_honors_advertise(state, stub_uvicorn):
         ["--qr", "--advertise", "10.1.2.3:9000", "--no-banner"], out=out, err=io.StringIO()
     ) == 0
     assert "http://10.1.2.3:9000" in out.getvalue()
+
+
+def test_serve_qr_flag_survives_a_broken_pairing_block(state, stub_uvicorn, monkeypatch):
+    """The never-fatal contract covers building the code, not just resolving the
+    address: a segno DataOverflowError (a ValueError subclass) raised while
+    building the block must not stop uvicorn from starting (proven by `main`
+    still returning 0 instead of the exception escaping), and the stderr note
+    must not echo the exception's message — it could contain the token-bearing
+    pairing URI that choked the encoder."""
+    def boom(**kwargs):
+        raise ValueError(f"leaked token in the message: {kwargs['token']}")
+
+    monkeypatch.setattr(serve, "_pairing_block", boom)
+    out, err = _Tty(), io.StringIO()
+    assert serve.main(["--qr", "--no-banner"], out=out, err=err) == 0
+    assert "listening on" in out.getvalue()
+    assert state not in out.getvalue()
+    assert state not in err.getvalue()
+    assert "ValueError" in err.getvalue()

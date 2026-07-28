@@ -222,8 +222,8 @@ def _print_startup_qr(args, *, token: str, out, err) -> None:
         print(f"--qr skipped: can't work out an address to encode ({exc}); "
               f"try marim serve qr --advertise <host>", file=err)
         return
-    print(
-        _pairing_block(
+    try:
+        block = _pairing_block(
             url=url,
             token=token,
             name=default_name(),
@@ -232,10 +232,21 @@ def _print_startup_qr(args, *, token: str, out, err) -> None:
             # gets connection-refused when the daemon is listening on loopback.
             warning=bind_loopback_warning(args.host) or loopback_warning(url),
             terminal_lines=shutil.get_terminal_size(fallback=(80, 0)).lines,
-        ),
-        file=out,
-        flush=True,
-    )
+        )
+    except Exception as exc:
+        # Unlike the _resolve_pair_url handler above (whose exceptions come from
+        # address parsing and never see the token), `token` and the pairing URI
+        # built from it are in scope for everything this try covers — pairing_uri,
+        # encode (segno.make can raise DataOverflowError, a ValueError subclass),
+        # height_note, render_matrix. An exception that echoes its input (e.g. a
+        # "value too long: <the uri>" message) would put the bearer token on
+        # stderr, which the stdout-isatty refusal above does not cover — a user
+        # can redirect stderr to a file while stdout stays a terminal. So: no
+        # `{exc}` here, only the exception's type name.
+        print(f"--qr skipped: couldn't build the pairing code ({type(exc).__name__}); "
+              f"try marim serve qr --advertise <host>", file=err)
+        return
+    print(block, file=out, flush=True)
 
 
 def main(argv: list[str], *, out=None, err=None) -> int:
