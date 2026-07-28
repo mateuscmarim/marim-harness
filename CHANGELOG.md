@@ -8,6 +8,18 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+- `marim serve qr` prints a QR code that pairs a client with the daemon in one
+  scan, encoding `marim://pair?v=1&url=…&token=…&name=…` — the URL, the bearer
+  token, and a profile name (the machine's hostname by default), which is
+  everything `marim-mobile` needs for a server profile. The address it encodes
+  comes from the source address of the default route, so it's the one a phone
+  on the same network should use rather than a `docker0` or bridge address, and
+  it always prints in plain text under the code; `--advertise` overrides it for
+  a tailnet name or a reverse proxy. `marim serve --qr` prints one at startup.
+  Because the code carries a credential it is never part of normal startup
+  output and is refused outright when stdout isn't a terminal. Needs `segno`
+  (added to the `serve` extra); without it the pairing URI prints as text.
+
 - `marim serve` startup now leads with the MARIM wordmark (the same art as the
   TUI intro header, shared from `interfaces/branding.py`) over an aligned block
   of the facts you need to drive the daemon — listen URL, bearer-token path,
