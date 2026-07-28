@@ -23,6 +23,9 @@ stretch is exactly what that corrects for.
 """
 
 import math
+from dataclasses import dataclass
+
+from . import sixel
 
 QUIET_ZONE = 4
 
@@ -101,6 +104,37 @@ def render_matrix(matrix: list[tuple[int, ...]], *, wide: bool = False) -> str:
 def rendered_rows(matrix: list[tuple[int, ...]], *, wide: bool = False) -> int:
     """Text rows `render_matrix` will produce for ``matrix``."""
     return math.ceil(len(matrix) / (2 if wide else 3))
+
+
+@dataclass(frozen=True)
+class Rendering:
+    """How to draw the code, once the terminal has been asked what it can do.
+
+    The three ways trade size against what the terminal has to support: a sixel
+    image is square and needs no font at all, the sextants are the smallest thing
+    a font can draw, and the half-blocks are square but ask nothing newer than
+    1993 of it.
+    """
+
+    wide: bool = False
+    sixel: bool = False
+    cell: tuple[int, int] | None = None
+
+    def draw(self, matrix: list[tuple[int, ...]]) -> tuple[str, int]:
+        """The drawn code, and the text rows it will occupy."""
+        if not self.sixel:
+            return render_matrix(matrix, wide=self.wide), rendered_rows(matrix, wide=self.wide)
+        scale = sixel.choose_scale(len(matrix), cell=self.cell)
+        return (
+            sixel.render(matrix, scale=scale),
+            sixel.rendered_rows(len(matrix), scale=scale, cell=self.cell),
+        )
+
+    @property
+    def needs_a_font_escape_hatch(self) -> bool:
+        """Whether the drawing depends on glyphs a font may not have — i.e. is
+        worth printing `--wide` under."""
+        return not self.sixel and not self.wide
 
 
 def height_note(*, rendered: int, terminal_lines: int) -> str | None:
