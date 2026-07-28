@@ -27,6 +27,8 @@ Flags (all optional):
 | `--workspaces-root` | `<state-dir>/workspaces` | Directory for *managed* workspaces             |
 | `--idle-ttl`        | `900.0`                  | Seconds before an idle session host is evicted |
 | `--no-banner`       | off                      | Skip the startup wordmark                      |
+| `--qr`              | off                      | Also print a pairing QR at startup             |
+| `--advertise`       | auto-detected            | Address `--qr` encodes (`HOST[:PORT]`)         |
 
 The state dir is `$XDG_DATA_HOME/marim-harness/server` (default
 `~/.local/share/marim-harness/server`). It holds the bearer token file, the
@@ -64,6 +66,47 @@ skipped automatically and the same facts print one per line, led by the
 long-standing `marim serve <version> listening on <url>` line, with absolute
 paths. `--no-banner` or `MARIM_NO_BANNER=1` forces that plain form on a
 terminal too; `NO_COLOR` (or `TERM=dumb`) keeps the art but drops the color.
+
+### Pairing a client (QR)
+
+```
+marim serve qr [--port N] [--advertise HOST[:PORT]] [--name NAME]
+marim serve --qr            # print one at startup, then serve
+```
+
+Prints a QR encoding a pairing URI, so a client (e.g. `marim-mobile`) can
+provision a server profile in one scan instead of retyping a 43-character
+bearer token:
+
+```
+marim://pair?v=1&url=http%3A%2F%2F192.168.0.3%3A8642&token=<token>&name=workstation
+```
+
+That format is the cross-repo contract. `v=1` lets a client reject a future
+shape rather than mis-parse it; `url` keeps its scheme so a reverse-proxy or
+tailnet address round-trips; `name` defaults to the machine's hostname.
+
+The subcommand doesn't talk to a running daemon — the token file *is* the
+contract, so it works before the first `marim serve` and creates the token if
+it doesn't exist yet. It can't discover a running daemon's port, so pass
+`--port` if it isn't the default.
+
+The encoded address comes from the source address of the default route (the
+address a client on the same network should use — never a `docker0` or bridge
+address), and always prints in plain text beneath the code so a wrong guess is
+visible. `--advertise` overrides it and is the only way to encode a tailnet
+name or a proxy domain. With no default route and no `--advertise`, the command
+exits 1 and says so.
+
+**The code is a credential.** It prints only on an explicit `marim serve qr` or
+`--qr`, never as part of normal startup output, and it is **refused when stdout
+isn't a terminal** (exit 1, no token bytes emitted) — a QR in a log file is
+both useless and a leak. `NO_COLOR` is also refused rather than honored: a code
+drawn in the terminal's own colors renders inverted on a dark theme and may not
+scan. Under `--qr`, a refusal is a note on stderr and the daemon still starts.
+
+Rendering needs `segno` (in the `serve` extra). Without it the command prints
+the URI as text plus an install hint and exits 0 — a typed URI still pairs.
 
 ## Authentication
 

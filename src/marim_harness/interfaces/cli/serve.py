@@ -14,6 +14,7 @@ from pathlib import Path
 from ...server.auth import load_or_create_token
 from ...server.pairing import (
     advertised_address,
+    bind_loopback_warning,
     default_name,
     loopback_warning,
     pairing_uri,
@@ -207,6 +208,36 @@ def _qr_main(argv: list[str], *, out, err) -> int:
     return 0
 
 
+def _print_startup_qr(args, *, token: str, out, err) -> None:
+    """The ``--qr`` block. Never fatal: a daemon that started fine must not be
+    taken down by an unprintable pairing code, so every failure here is a note
+    on stderr and the serve loop carries on."""
+    refusal = _qr_refusal(isatty=_isatty(out), env=os.environ)
+    if refusal is not None:
+        print(refusal, file=err)
+        return
+    try:
+        url = _resolve_pair_url(args.advertise, args.port)
+    except (OSError, ValueError) as exc:
+        print(f"--qr skipped: can't work out an address to encode ({exc}); "
+              f"try marim serve qr --advertise <host>", file=err)
+        return
+    print(
+        _pairing_block(
+            url=url,
+            token=token,
+            name=default_name(),
+            # The bind is known here, so warn about the daemon's own reachability
+            # in preference to the encoded address: a correct LAN address still
+            # gets connection-refused when the daemon is listening on loopback.
+            warning=bind_loopback_warning(args.host) or loopback_warning(url),
+            terminal_lines=shutil.get_terminal_size(fallback=(80, 0)).lines,
+        ),
+        file=out,
+        flush=True,
+    )
+
+
 def main(argv: list[str], *, out=None, err=None) -> int:
     # Resolved here, not bound as a def-time default: a `def main(..., out=sys.stdout)`
     # default is evaluated once at first import, which can capture a stale stream
@@ -218,7 +249,8 @@ def main(argv: list[str], *, out=None, err=None) -> int:
     parser = argparse.ArgumentParser(
         prog="marim serve",
         description="Run the marim HTTP server daemon "
-                    "(sessions over REST + WebSocket).",
+                    "(sessions over REST + WebSocket). "
+                    "See `marim serve qr --help` to pair a client.",
     )
     parser.add_argument("--host", default="127.0.0.1",
                         help="bind address (default: 127.0.0.1)")
@@ -233,6 +265,12 @@ def main(argv: list[str], *, out=None, err=None) -> int:
     parser.add_argument("--no-banner", action="store_true",
                         help="skip the startup wordmark (also: MARIM_NO_BANNER=1); "
                              "it is already skipped when stdout isn't a terminal")
+    parser.add_argument("--qr", action="store_true",
+                        help="also print a QR code that pairs a client with this daemon "
+                             "(encodes the bearer token; terminal only)")
+    parser.add_argument("--advertise", default=None, metavar="HOST[:PORT]",
+                        help="address for --qr to encode instead of the auto-detected "
+                             "one (see: marim serve qr --help)")
     args = parser.parse_args(argv)
 
     try:
@@ -272,5 +310,7 @@ def main(argv: list[str], *, out=None, err=None) -> int:
         file=out,
         flush=True,
     )
+    if args.qr:
+        _print_startup_qr(args, token=token, out=out, err=err)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     return 0

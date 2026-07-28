@@ -315,7 +315,7 @@ note (`marim trust grant && marim -p ...` is the one-shot pattern).
 
 ### `marim serve`
 
-`marim serve [--host] [--port] [--workspaces-root] [--idle-ttl] [--no-banner]`
+`marim serve [--host] [--port] [--workspaces-root] [--idle-ttl] [--no-banner] [--qr]`
 runs marim as a long-lived HTTP daemon exposing sessions over REST plus a
 WebSocket event stream (the same event shapes as `--output-format
 stream-json`). It binds `127.0.0.1:8642` by default, authenticates with a
@@ -324,7 +324,8 @@ printed at startup), and requires the `serve` extra (`pip install
 'marim-harness[serve]'`). Startup prints the MARIM wordmark over the listen
 URL, token path, workspaces root, and idle TTL on a terminal, and the same
 facts as plain lines when stdout is redirected — `--no-banner` /
-`MARIM_NO_BANNER=1` force the plain form. See the
+`MARIM_NO_BANNER=1` force the plain form. `marim serve qr` prints a QR that
+pairs a client (e.g. the Android app) in one scan — see the
 [serve API reference](../reference/serve-api.md).
 
 ## The claude-cli provider

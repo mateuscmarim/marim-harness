@@ -8,6 +8,13 @@ import pytest
 from marim_harness.interfaces.cli import serve
 
 
+@pytest.fixture
+def stub_uvicorn(monkeypatch):
+    import uvicorn
+
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: None)
+
+
 class _Tty(io.StringIO):
     """stdout that claims to be a terminal."""
 
@@ -106,6 +113,7 @@ def test_qr_without_segno_falls_back_to_the_uri(state, monkeypatch):
     assert "marim://pair?" in text
     assert "segno" in text
     assert "█" not in text
+    assert state in text  # positive control: the real token reaches the fallback URI
 
 
 def test_qr_creates_the_token_before_the_daemon_has_ever_run(tmp_path, monkeypatch):
@@ -119,5 +127,41 @@ def test_qr_creates_the_token_before_the_daemon_has_ever_run(tmp_path, monkeypat
 
 
 def test_qr_rejects_unknown_flags(state):
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as exc:
         serve.main(["qr", "--bogus"], out=_Tty(), err=io.StringIO())
+    assert exc.value.code == 2
+
+
+def test_serve_qr_flag_prints_the_code_after_the_startup_block(state, stub_uvicorn):
+    out = _Tty()
+    assert serve.main(["--qr", "--no-banner"], out=out, err=io.StringIO()) == 0
+    text = out.getvalue()
+    assert text.index("listening on") < text.index("treat this like a password")
+
+
+def test_serve_qr_flag_warns_about_the_loopback_bind(state, stub_uvicorn):
+    """The default bind means a phone can't connect even to a correct address."""
+    out = _Tty()
+    assert serve.main(["--qr"], out=out, err=io.StringIO()) == 0
+    assert "--host 0.0.0.0" in out.getvalue()
+
+    out = _Tty()
+    assert serve.main(["--qr", "--host", "0.0.0.0"], out=out, err=io.StringIO()) == 0
+    assert "--host 0.0.0.0" not in out.getvalue()
+
+
+def test_serve_qr_flag_skips_the_code_but_still_serves_when_refused(state, stub_uvicorn):
+    """A refused QR must never stop the daemon from starting."""
+    out, err = io.StringIO(), io.StringIO()
+    assert serve.main(["--qr"], out=out, err=err) == 0
+    assert state not in out.getvalue()
+    assert "terminal" in err.getvalue()
+    assert "listening on" in out.getvalue()
+
+
+def test_serve_qr_flag_honors_advertise(state, stub_uvicorn):
+    out = _Tty()
+    assert serve.main(
+        ["--qr", "--advertise", "10.1.2.3:9000", "--no-banner"], out=out, err=io.StringIO()
+    ) == 0
+    assert "http://10.1.2.3:9000" in out.getvalue()
