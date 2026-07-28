@@ -20,8 +20,10 @@ from ...server.pairing import (
     pairing_uri,
     parse_advertise,
 )
+from .. import terminal
 from ..branding import banner_enabled, color_enabled, field_block, package_version, wordmark_block
-from ..qr import encode, height_note, render_matrix, rendered_rows
+from ..qr import Rendering, encode, height_note
+from ..sixel import supports_sixel
 
 # The daemon's default bind port. Shared by `_qr_parser` and the `serve` parser
 # below so the two commands can't drift apart — a stale duplicate would have
@@ -126,6 +128,9 @@ def _qr_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wide", action="store_true",
                         help="draw the code with half-blocks instead of sextants — five "
                              "rows taller, but readable in fonts that predate Unicode 13")
+    parser.add_argument("--sixel", action=argparse.BooleanOptionalAction, default=None,
+                        help="draw the code as a sixel image, which is square and needs no "
+                             "font (default: use it when the terminal says it can)")
     return parser
 
 
@@ -149,6 +154,24 @@ def _qr_refusal(*, isatty: bool, env) -> str | None:
     return None
 
 
+def _probe_rendering(stream, *, wide: bool, sixel: bool | None) -> Rendering:
+    """How to draw the code on ``stream``'s terminal.
+
+    ``--wide`` asks for the half-blocks by name, so it settles the question
+    without a probe; otherwise the terminal is asked whether it does sixel,
+    unless ``--sixel``/``--no-sixel`` has already answered for it. Probing is
+    two escape-sequence round trips at worst and only happens on the path that
+    can use the answer.
+    """
+    if wide:
+        return Rendering(wide=True)
+    if sixel is False:
+        return Rendering()
+    if sixel is None and not supports_sixel(terminal.device_attributes(stream)):
+        return Rendering()
+    return Rendering(sixel=True, cell=terminal.cell_pixels(stream))
+
+
 def _resolve_pair_url(advertise: str | None, port: int) -> str:
     """The URL to encode: an explicit --advertise wins, else the default route."""
     if advertise:
@@ -157,7 +180,7 @@ def _resolve_pair_url(advertise: str | None, port: int) -> str:
 
 
 def _pairing_block(*, url: str, token: str, name: str, warning: str | None,
-                   terminal_lines: int, wide: bool = False) -> str:
+                   terminal_lines: int, rendering: Rendering) -> str:
     """The whole printed block: optional warning, the code (or a typed-URI
     fallback), and the facts under it."""
     uri = pairing_uri(url, token, name)
@@ -173,18 +196,19 @@ def _pairing_block(*, url: str, token: str, name: str, warning: str | None,
             f"  {uri}",
         ])
         return "\n".join(lines)
-    note = height_note(rendered=rendered_rows(matrix, wide=wide), terminal_lines=terminal_lines)
+    code, rows = rendering.draw(matrix)
+    note = height_note(rendered=rows, terminal_lines=terminal_lines)
     if note:
         lines.extend([note, ""])
     lines.extend([
-        render_matrix(matrix, wide=wide),
+        code,
         "",
         f"  {url}",
         f"  {name} · token included — treat this like a password",
         "",
         "  wrong address?  marim serve qr --advertise <host>",
     ])
-    if not wide:
+    if rendering.needs_a_font_escape_hatch:
         # The sextants are Unicode 13; a font without them draws tofu, and a QR
         # made of empty boxes is a puzzle unless the way out is printed with it.
         lines.append("  empty boxes?    marim serve qr --wide")
@@ -213,7 +237,7 @@ def _qr_main(argv: list[str], *, out, err) -> int:
             name=args.name or default_name(),
             warning=loopback_warning(url),
             terminal_lines=shutil.get_terminal_size(fallback=(80, 0)).lines,
-            wide=args.wide,
+            rendering=_probe_rendering(out, wide=args.wide, sixel=args.sixel),
         )
     except Exception as exc:  # never {exc}: see the note in _print_startup_qr
         print(f"couldn't build the pairing code ({type(exc).__name__})", file=err)
@@ -246,7 +270,7 @@ def _print_startup_qr(args, *, token: str, out, err) -> None:
             # gets connection-refused when the daemon is listening on loopback.
             warning=bind_loopback_warning(args.host) or loopback_warning(url),
             terminal_lines=shutil.get_terminal_size(fallback=(80, 0)).lines,
-            wide=args.wide,
+            rendering=_probe_rendering(out, wide=args.wide, sixel=args.sixel),
         )
     except Exception as exc:
         # Unlike the _resolve_pair_url handler above (whose exceptions come from
@@ -300,6 +324,9 @@ def main(argv: list[str], *, out=None, err=None) -> int:
     parser.add_argument("--wide", action="store_true",
                         help="draw the --qr code with half-blocks instead of sextants, "
                              "for fonts that predate Unicode 13")
+    parser.add_argument("--sixel", action=argparse.BooleanOptionalAction, default=None,
+                        help="draw the --qr code as a sixel image (default: use it when "
+                             "the terminal says it can)")
     args = parser.parse_args(argv)
 
     try:

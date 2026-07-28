@@ -147,6 +147,68 @@ def test_serve_qr_flag_honors_wide(state, stub_uvicorn):
     assert "treat this like a password" in out.getvalue()
 
 
+@pytest.fixture
+def sixel_terminal(monkeypatch):
+    """A terminal that answers the DA1 probe with sixel among its attributes."""
+    monkeypatch.setattr(serve.terminal, "device_attributes",
+                        lambda stream, **kw: "\033[?62;4;22c")
+    monkeypatch.setattr(serve.terminal, "cell_pixels", lambda stream: (8, 17))
+
+
+@pytest.fixture
+def unprobeable_terminal(monkeypatch):
+    """A probe that fails the test if anything asks it a question."""
+    def never(*args, **kwargs):
+        raise AssertionError("the terminal was probed when the flag had already answered")
+
+    monkeypatch.setattr(serve.terminal, "device_attributes", never)
+    monkeypatch.setattr(serve.terminal, "cell_pixels", never)
+
+
+def test_qr_draws_a_sixel_image_when_the_terminal_says_it_can(state, sixel_terminal):
+    """Sixel is drawn in pixels, so the code comes out square and no font is
+    involved — which is also why the --wide hint has nothing to escape."""
+    out = _Tty()
+    assert serve.main(["qr"], out=out, err=io.StringIO()) == 0
+    text = out.getvalue()
+    assert text.count("\033Pq") == 1 and "\033\\" in text
+    assert not _has_sextant(text)
+    assert "--wide" not in text
+    assert "http://192.168.0.3:8642" in text
+
+
+def test_qr_no_sixel_takes_the_characters_without_asking(state, unprobeable_terminal):
+    out = _Tty()
+    assert serve.main(["qr", "--no-sixel"], out=out, err=io.StringIO()) == 0
+    assert _has_sextant(out.getvalue())
+    assert "\033Pq" not in out.getvalue()
+
+
+def test_qr_wide_wins_over_a_sixel_terminal(state, unprobeable_terminal):
+    """--wide names a rendering, so it settles the question before the probe."""
+    out = _Tty()
+    assert serve.main(["qr", "--wide"], out=out, err=io.StringIO()) == 0
+    assert "\033Pq" not in out.getvalue()
+    assert not _has_sextant(out.getvalue())
+
+
+def test_qr_sixel_can_be_forced_past_a_silent_terminal(state, monkeypatch):
+    """Terminals that render sixel but don't advertise it are common enough to
+    need a flag that doesn't take no for an answer."""
+    monkeypatch.setattr(serve.terminal, "device_attributes", lambda stream, **kw: "")
+    monkeypatch.setattr(serve.terminal, "cell_pixels", lambda stream: None)
+    out = _Tty()
+    assert serve.main(["qr", "--sixel"], out=out, err=io.StringIO()) == 0
+    assert "\033Pq" in out.getvalue()
+
+
+def test_serve_qr_flag_honors_sixel(state, stub_uvicorn, sixel_terminal):
+    out = _Tty()
+    assert serve.main(["--qr", "--no-banner"], out=out, err=io.StringIO()) == 0
+    assert "\033Pq" in out.getvalue()
+    assert "treat this like a password" in out.getvalue()
+
+
 def test_qr_creates_the_token_before_the_daemon_has_ever_run(tmp_path, monkeypatch):
     """The token file is the contract, not the process — pairing works first."""
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "fresh"))

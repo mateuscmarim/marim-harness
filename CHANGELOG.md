@@ -19,11 +19,14 @@ pre-1.0, minor versions may contain breaking changes.
   Because the code carries a credential it is never part of normal startup
   output and is refused outright when stdout isn't a terminal. Needs `segno`
   (added to the `serve` extra); without it the pairing URI prints as text. The
-  code is drawn with Unicode 13 sextants, six modules to a character cell, so a
-  typical pairing payload is 27 columns by 18 rows — small enough that the whole
-  block clears a 25-line terminal. `--wide` falls back to half-blocks (five rows
-  taller, drawn from a block every terminal font has had for decades) for fonts
-  that predate Unicode 13, and the code prints that escape hatch under itself.
+  On a terminal that advertises sixel the code is drawn as an image — square,
+  crisp, and free of any dependence on the font — and otherwise with Unicode 13
+  sextants, six modules to a character cell, which puts a typical pairing
+  payload in 27 columns by 18 rows and the whole block inside a 25-line
+  terminal. `--sixel`/`--no-sixel` overrides the detection either way, and
+  `--wide` falls back to half-blocks (square modules, five rows taller, drawn
+  from a block every terminal font has had for decades) for fonts that predate
+  Unicode 13 — an escape hatch the code prints under itself.
 
 - `marim serve` startup now leads with the MARIM wordmark (the same art as the
   TUI intro header, shared from `interfaces/branding.py`) over an aligned block

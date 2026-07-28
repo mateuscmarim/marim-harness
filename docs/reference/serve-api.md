@@ -30,6 +30,7 @@ Flags (all optional):
 | `--qr`              | off                      | Also print a pairing QR at startup             |
 | `--advertise`       | auto-detected            | Address `--qr` encodes (`HOST[:PORT]`)         |
 | `--wide`            | off                      | Draw `--qr` with half-blocks, not sextants     |
+| `--sixel`           | auto-detected            | Draw `--qr` as a sixel image (`--no-sixel` off)|
 
 The state dir is `$XDG_DATA_HOME/marim-harness/server` (default
 `~/.local/share/marim-harness/server`). It holds the bearer token file, the
@@ -71,7 +72,8 @@ terminal too; `NO_COLOR` (or `TERM=dumb`) keeps the art but drops the color.
 ### Pairing a client (QR)
 
 ```
-marim serve qr [--port N] [--advertise HOST[:PORT]] [--name NAME] [--wide]
+marim serve qr [--port N] [--advertise HOST[:PORT]] [--name NAME]
+               [--wide] [--sixel | --no-sixel]
 marim serve --qr            # print one at startup, then serve
 ```
 
@@ -109,16 +111,28 @@ scan. Under `--qr`, a refusal is a note on stderr and the daemon still starts.
 Rendering needs `segno` (in the `serve` extra). Without it the command prints
 the URI as text plus an install hint and exits 0 — a typed URI still pairs.
 
-**Size.** The code is drawn with the sextants from Unicode 13's Symbols for
-Legacy Computing — 2×3 modules per character cell — which puts a typical
-pairing payload in 27 columns by 18 rows and the whole block inside a 25-line
-terminal. That makes each module a third taller than it is wide; scanners
-correct for it, since the finder patterns give them a perspective transform and
-a uniform stretch is exactly what that undoes. `--wide` switches to half-blocks
-(1×2 per cell, square modules, five rows taller) for fonts that predate Unicode
-13 and draw the sextants as empty boxes; the code prints that hint under itself,
-because a QR made of tofu is a puzzle otherwise. The four-module quiet zone is
-not adjustable either way — scanners need it.
+**Size and shape.** There are three renderings, and the terminal picks between
+them:
+
+- **Sixel**, when the terminal advertises it in reply to a `DA1` query. The
+  code is drawn in pixels rather than characters, so it comes out square, at
+  whatever resolution the display can show, with no font involved. This is the
+  default wherever it works. `--no-sixel` forces characters; `--sixel` forces
+  the image, for terminals that render sixel without advertising it. The probe
+  is a single escape sequence with a 0.35s timeout, and a terminal that doesn't
+  answer just gets the character rendering.
+- **Sextants** (Unicode 13's Symbols for Legacy Computing), the character
+  default: 2×3 modules per cell puts a typical pairing payload in 27 columns by
+  18 rows, and the whole block inside a 25-line terminal. Each module ends up a
+  third taller than it is wide; scanners correct for it, since the finder
+  patterns give them a perspective transform and a uniform stretch is exactly
+  what that undoes.
+- **Half-blocks**, via `--wide`: 1×2 per cell, square modules, five rows
+  taller. For fonts that predate Unicode 13 and draw the sextants as empty
+  boxes — the code prints that hint under itself, because a QR made of tofu is
+  a puzzle otherwise.
+
+The four-module quiet zone is not adjustable in any of them — scanners need it.
 
 ## Authentication
 
