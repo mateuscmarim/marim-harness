@@ -11,6 +11,7 @@ Everything here is pure except `advertised_address`, whose whole job is to ask
 the kernel a question.
 """
 
+import ipaddress
 import socket
 import urllib.parse
 
@@ -109,6 +110,10 @@ def _split_host_port(raw: str, default_port: int) -> tuple[str, int]:
     head, sep, tail = raw.rpartition(":")
     if sep and tail.isdigit() and ":" not in head and head:
         return head, int(tail)
-    if ":" in raw:  # a bare IPv6 literal — bracket it
-        return f"[{raw}]", default_port
+    if ":" in raw:  # might be a bare IPv6 literal — validate it
+        try:
+            ipaddress.ip_address(raw)
+            return f"[{raw}]", default_port
+        except ValueError as err:
+            raise ValueError(f"expected host:port or IPv6 literal, got {raw!r}") from err
     return raw, default_port

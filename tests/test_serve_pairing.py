@@ -68,6 +68,16 @@ def test_advertise_rejects_junk():
         parse_advertise("http://", default_port=8642)
 
 
+def test_advertise_rejects_malformed_host_port_and_ipv6():
+    """A colon-containing value must be valid host:port or IPv6, not junk."""
+    with pytest.raises(ValueError):
+        parse_advertise("192.168.0.3:", default_port=8642)
+    with pytest.raises(ValueError):
+        parse_advertise("192.168.0.3:80x", default_port=8642)
+    with pytest.raises(ValueError):
+        parse_advertise("example.com:abc", default_port=8642)
+
+
 def test_loopback_warning_fires_only_for_unreachable_hosts():
     assert loopback_warning("http://127.0.0.1:8642")
     assert loopback_warning("http://localhost:8642")
