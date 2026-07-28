@@ -94,6 +94,9 @@ dev = [
     # developing/CI working.
     "starlette>=0.40",
     "uvicorn>=0.30",
+    # The QR-rendering tests need segno even though it lives in the optional
+    # `serve` extra, so plain `uv sync` keeps developing/CI working.
+    "segno>=1.6",
     # Dynamic workflows: model-authored orchestration scripts sandboxed in
     # pydantic-monty. Bare installs leave the run_workflow tool returning an
     # install hint (services.run_workflow stays None).
