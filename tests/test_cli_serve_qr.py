@@ -132,6 +132,22 @@ def test_qr_rejects_unknown_flags(state):
     assert exc.value.code == 2
 
 
+def test_qr_reports_a_broken_pairing_block_without_leaking_the_token(state, monkeypatch):
+    """`marim serve qr`'s own never-guarded-before path: a segno DataOverflowError
+    (a ValueError subclass) or any other exception raised while building the
+    block must exit 1 with a stderr note naming the exception's type, and the
+    real token must reach neither stream."""
+    def boom(**kwargs):
+        raise ValueError(f"leaked token in the message: {kwargs['token']}")
+
+    monkeypatch.setattr(serve, "_pairing_block", boom)
+    out, err = _Tty(), io.StringIO()
+    assert serve.main(["qr"], out=out, err=err) == 1
+    assert state not in out.getvalue()
+    assert state not in err.getvalue()
+    assert "ValueError" in err.getvalue()
+
+
 def test_serve_qr_flag_prints_the_code_after_the_startup_block(state, stub_uvicorn):
     out = _Tty()
     assert serve.main(["--qr", "--no-banner"], out=out, err=io.StringIO()) == 0

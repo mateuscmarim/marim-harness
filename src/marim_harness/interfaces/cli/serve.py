@@ -23,6 +23,11 @@ from ...server.pairing import (
 from ..branding import banner_enabled, color_enabled, field_block, package_version, wordmark_block
 from ..qr import encode, height_note, render_matrix, rendered_rows
 
+# The daemon's default bind port. Shared by `_qr_parser` and the `serve` parser
+# below so the two commands can't drift apart — a stale duplicate would have
+# `marim serve qr` encode a port the daemon isn't actually listening on.
+DEFAULT_PORT = 8642
+
 
 def _default_state_dir() -> Path:
     base = os.environ.get("XDG_DATA_HOME")
@@ -108,9 +113,9 @@ def _qr_parser() -> argparse.ArgumentParser:
                     "daemon. The code carries the bearer token, so it prints to a "
                     "terminal only.",
     )
-    parser.add_argument("--port", type=int, default=8642,
-                        help="port the daemon listens on (default: 8642); this command "
-                             "can't discover a running daemon's port")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT,
+                        help=f"port the daemon listens on (default: {DEFAULT_PORT}); this "
+                             "command can't discover a running daemon's port")
     parser.add_argument("--advertise", default=None, metavar="HOST[:PORT]",
                         help="address to encode instead of the auto-detected one — a "
                              "bare host, host:port, or a full URL (the way to encode a "
@@ -191,20 +196,21 @@ def _qr_main(argv: list[str], *, out, err) -> int:
         print(f"can't work out an address to encode: {exc}\n"
               f"pass one explicitly:  marim serve qr --advertise <host>", file=err)
         return 1
-    # load_or_create, not load: the token file is the contract the daemon reads
-    # at startup, so pairing works before `marim serve` has ever run.
-    token = load_or_create_token(_default_state_dir())
-    print(
-        _pairing_block(
+    try:
+        # load_or_create, not load: the token file is the contract the daemon reads
+        # at startup, so pairing works before `marim serve` has ever run.
+        token = load_or_create_token(_default_state_dir())
+        block = _pairing_block(
             url=url,
             token=token,
             name=args.name or default_name(),
             warning=loopback_warning(url),
             terminal_lines=shutil.get_terminal_size(fallback=(80, 0)).lines,
-        ),
-        file=out,
-        flush=True,
-    )
+        )
+    except Exception as exc:  # never {exc}: see the note in _print_startup_qr
+        print(f"couldn't build the pairing code ({type(exc).__name__})", file=err)
+        return 1
+    print(block, file=out, flush=True)
     return 0
 
 
@@ -265,8 +271,8 @@ def main(argv: list[str], *, out=None, err=None) -> int:
     )
     parser.add_argument("--host", default="127.0.0.1",
                         help="bind address (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=8642,
-                        help="bind port (default: 8642)")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT,
+                        help=f"bind port (default: {DEFAULT_PORT})")
     parser.add_argument("--workspaces-root", type=Path, default=None,
                         help="directory for managed workspaces "
                              "(default: <state-dir>/workspaces)")

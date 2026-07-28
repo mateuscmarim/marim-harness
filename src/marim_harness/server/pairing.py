@@ -24,8 +24,6 @@ PAIR_VERSION = "1"
 # never returns a docker0/bridge address that nothing off-box can reach.
 _PROBE_TARGET = ("192.0.2.1", 80)
 
-_LOOPBACK_HOSTS = frozenset({"localhost", "::1"})
-
 
 def pairing_uri(url: str, token: str, name: str) -> str:
     """The scannable URI. Values are percent-escaped; the client parses it with
@@ -95,7 +93,13 @@ def bind_loopback_warning(host: str) -> str | None:
 
 
 def _is_loopback(host: str) -> bool:
-    return host.strip("[]").lower() in _LOOPBACK_HOSTS or host.startswith("127.")
+    """True for any loopback form: ``127.0.0.0/8``, ``::1`` (bare, bracketed, or
+    expanded), ``::ffff:127.x.x.x``, and ``localhost``. Delegates to the stdlib
+    so expanded/mapped IPv6 forms (e.g. ``0:0:0:0:0:0:0:1``) aren't missed."""
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return host.strip("[]").lower() == "localhost"
 
 
 def _split_host_port(raw: str, default_port: int) -> tuple[str, int]:

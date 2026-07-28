@@ -1,12 +1,14 @@
 """The `marim serve qr` payload: building the marim://pair URI, normalizing
---advertise, and the loopback warnings. All pure — the one socket probe
-(`advertised_address`) is exercised through its caller in test_cli_serve_qr.py."""
+--advertise, and the loopback warnings. Mostly pure — `advertised_address` is
+also exercised indirectly through its caller in test_cli_serve_qr.py, which
+monkeypatches it; here it runs for real against whatever route this sandbox has."""
 
 import urllib.parse
 
 import pytest
 
 from marim_harness.server.pairing import (
+    advertised_address,
     bind_loopback_warning,
     default_name,
     loopback_warning,
@@ -82,6 +84,10 @@ def test_loopback_warning_fires_only_for_unreachable_hosts():
     assert loopback_warning("http://127.0.0.1:8642")
     assert loopback_warning("http://localhost:8642")
     assert loopback_warning("http://[::1]:8642")
+    # Expanded and IPv4-mapped IPv6 loopback forms — ipaddress.is_loopback
+    # catches these where a hand-rolled set of literals would miss them.
+    assert loopback_warning("http://[0:0:0:0:0:0:0:1]:8642")
+    assert loopback_warning("http://[::ffff:127.0.0.1]:8642")
     assert loopback_warning("http://192.168.0.3:8642") is None
     assert loopback_warning("https://marim.example.com") is None
 
@@ -95,3 +101,14 @@ def test_bind_loopback_warning_names_the_fix():
 
 def test_default_name_is_a_non_empty_string():
     assert default_name()
+
+
+def test_advertised_address_reports_a_routable_source_address():
+    """Exercises the real UDP-probe path (every other test monkeypatches it
+    away). Skipped rather than failed when the sandbox has no default route —
+    some CI/container legs run fully offline — so this stays non-flaky."""
+    try:
+        url = advertised_address(8642)
+    except OSError:
+        pytest.skip("no default route in this sandbox")
+    assert url.startswith("http://") and url.endswith(":8642")
