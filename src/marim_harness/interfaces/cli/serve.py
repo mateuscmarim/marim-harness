@@ -6,11 +6,21 @@ the server state dir). Requires the ``serve`` extra (starlette + uvicorn)."""
 
 import argparse
 import os
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from ...server.auth import load_or_create_token
+from ...server.pairing import (
+    advertised_address,
+    default_name,
+    loopback_warning,
+    pairing_uri,
+    parse_advertise,
+)
 from ..branding import banner_enabled, color_enabled, field_block, package_version, wordmark_block
+from ..qr import encode, height_note, render_matrix, rendered_rows
 
 
 def _default_state_dir() -> Path:
@@ -84,7 +94,127 @@ class ServeStartup:
         )
 
 
-def main(argv: list[str], *, out=sys.stdout, err=sys.stderr) -> int:
+def _isatty(stream) -> bool:
+    """Whether ``stream`` is a terminal. A StringIO under test and a pipe under
+    systemd both answer honestly, which is exactly the signal we want."""
+    return bool(getattr(stream, "isatty", lambda: False)())
+
+
+def _qr_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="marim serve qr",
+        description="Print a QR code that pairs a marim client with this machine's "
+                    "daemon. The code carries the bearer token, so it prints to a "
+                    "terminal only.",
+    )
+    parser.add_argument("--port", type=int, default=8642,
+                        help="port the daemon listens on (default: 8642); this command "
+                             "can't discover a running daemon's port")
+    parser.add_argument("--advertise", default=None, metavar="HOST[:PORT]",
+                        help="address to encode instead of the auto-detected one — a "
+                             "bare host, host:port, or a full URL (the way to encode a "
+                             "tailnet name or a reverse proxy)")
+    parser.add_argument("--name", default=None,
+                        help="profile name shown on the client (default: this machine's "
+                             "hostname)")
+    return parser
+
+
+def _qr_refusal(*, isatty: bool, env) -> str | None:
+    """Why we won't print a code, or None to go ahead.
+
+    Both refusals protect the reader rather than the code: a redirected QR is a
+    bearer token written verbatim into a file, and an unforced-color QR renders
+    inverted on a dark theme and may not scan at all.
+    """
+    if not isatty:
+        return (
+            "refusing to print a pairing QR: stdout isn't a terminal, and the code "
+            "encodes your bearer token — it would land in a file or log verbatim"
+        )
+    if (env.get("NO_COLOR") or "").strip():
+        return (
+            "refusing to print a pairing QR: NO_COLOR is set, and a code drawn in the "
+            "terminal's own colors renders inverted on a dark theme and may not scan"
+        )
+    return None
+
+
+def _resolve_pair_url(advertise: str | None, port: int) -> str:
+    """The URL to encode: an explicit --advertise wins, else the default route."""
+    if advertise:
+        return parse_advertise(advertise, default_port=port)
+    return advertised_address(port)
+
+
+def _pairing_block(*, url: str, token: str, name: str, warning: str | None,
+                   terminal_lines: int) -> str:
+    """The whole printed block: optional warning, the code (or a typed-URI
+    fallback), and the facts under it."""
+    uri = pairing_uri(url, token, name)
+    lines = [f"warning: {warning}", ""] if warning else []
+    try:
+        matrix = encode(uri)
+    except ImportError:
+        lines.extend([
+            "QR rendering needs segno. Install with:",
+            "  uv add 'marim-harness[serve]'   (or: pip install segno)",
+            "",
+            "or pair by hand with this URI:",
+            f"  {uri}",
+        ])
+        return "\n".join(lines)
+    note = height_note(rendered=rendered_rows(matrix), terminal_lines=terminal_lines)
+    if note:
+        lines.extend([note, ""])
+    lines.extend([
+        render_matrix(matrix),
+        "",
+        f"  {url}",
+        f"  {name} · token included — treat this like a password",
+        "",
+        "  wrong address?  marim serve qr --advertise <host>",
+    ])
+    return "\n".join(lines)
+
+
+def _qr_main(argv: list[str], *, out, err) -> int:
+    args = _qr_parser().parse_args(argv)
+    refusal = _qr_refusal(isatty=_isatty(out), env=os.environ)
+    if refusal is not None:
+        print(refusal, file=err)
+        return 1
+    try:
+        url = _resolve_pair_url(args.advertise, args.port)
+    except (OSError, ValueError) as exc:
+        print(f"can't work out an address to encode: {exc}\n"
+              f"pass one explicitly:  marim serve qr --advertise <host>", file=err)
+        return 1
+    # load_or_create, not load: the token file is the contract the daemon reads
+    # at startup, so pairing works before `marim serve` has ever run.
+    token = load_or_create_token(_default_state_dir())
+    print(
+        _pairing_block(
+            url=url,
+            token=token,
+            name=args.name or default_name(),
+            warning=loopback_warning(url),
+            terminal_lines=shutil.get_terminal_size(fallback=(80, 0)).lines,
+        ),
+        file=out,
+        flush=True,
+    )
+    return 0
+
+
+def main(argv: list[str], *, out=None, err=None) -> int:
+    # Resolved here, not bound as a def-time default: a `def main(..., out=sys.stdout)`
+    # default is evaluated once at first import, which can capture a stale stream
+    # before pytest swaps in its own (see the same note in trust_cmd.py).
+    out = sys.stdout if out is None else out
+    err = sys.stderr if err is None else err
+    if argv and argv[0] == "qr":
+        return _qr_main(argv[1:], out=out, err=err)
     parser = argparse.ArgumentParser(
         prog="marim serve",
         description="Run the marim HTTP server daemon "
@@ -108,7 +238,6 @@ def main(argv: list[str], *, out=sys.stdout, err=sys.stderr) -> int:
     try:
         import uvicorn
 
-        from ...server.auth import load_or_create_token
         from ...server.http import create_app
         from ...server.supervisor import SessionSupervisor
         from ...server.workspaces import WorkspaceRegistry
@@ -134,9 +263,7 @@ def main(argv: list[str], *, out=sys.stdout, err=sys.stderr) -> int:
         idle_ttl=args.idle_ttl,
         version=package_version(),
     )
-    # `out` is a StringIO under test and a pipe under systemd; both answer
-    # isatty() honestly, which is exactly the signal we want.
-    isatty = bool(getattr(out, "isatty", lambda: False)())
+    isatty = _isatty(out)
     print(
         startup.render(
             banner=banner_enabled(isatty=isatty, disabled=args.no_banner, env=os.environ),
