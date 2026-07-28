@@ -327,6 +327,18 @@ best-effort (`notify-send` on Linux, `osascript` on macOS, a PowerShell toast
 on Windows) and never raise; rapid duplicates of the same event are coalesced
 within a 2-second window.
 
+## Startup banner
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MARIM_NO_BANNER` | `0` (banner shown) | Boolean. Suppress `marim serve`'s startup wordmark. |
+
+The wordmark prints only when stdout is a terminal, so a daemonized `marim
+serve` (systemd, Docker, `nohup`) already gets the plain line-per-fact form
+without setting anything; `MARIM_NO_BANNER=1` (or `--no-banner`) forces it on
+a terminal too. `NO_COLOR` (any non-empty value) and `TERM=dumb` keep the art
+but drop the accent color.
+
 ## Forge
 
 | Variable | Default | Purpose |

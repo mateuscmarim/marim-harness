@@ -71,16 +71,6 @@ from .widgets import (
 
 logger = logging.getLogger(__name__)
 
-_BANNER = (
-    " ███╗   ███╗ █████╗ ██████╗ ██╗███╗   ███╗\n"
-    " ████╗ ████║██╔══██╗██╔══██╗██║████╗ ████║\n"
-    " ██╔████╔██║███████║██████╔╝██║██╔████╔██║\n"
-    " ██║╚██╔╝██║██╔══██║██╔══██╗██║██║╚██╔╝██║\n"
-    " ██║ ╚═╝ ██║██║  ██║██║  ██║██║██║ ╚═╝ ██║\n"
-    " ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝╚═╝     ╚═╝\n"
-    "   · · ·   a   t e r m i n a l   h a r n e s s"
-)
-
 # How often (seconds) buffered streaming text is rendered. ~12 flushes/sec reads
 # as smooth while collapsing many per-token markdown re-parses into one.
 _STREAM_FLUSH_INTERVAL = 0.08

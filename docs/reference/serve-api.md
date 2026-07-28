@@ -26,6 +26,7 @@ Flags (all optional):
 | `--port`            | `8642`                   | Bind port                                      |
 | `--workspaces-root` | `<state-dir>/workspaces` | Directory for *managed* workspaces             |
 | `--idle-ttl`        | `900.0`                  | Seconds before an idle session host is evicted |
+| `--no-banner`       | off                      | Skip the startup wordmark                      |
 
 The state dir is `$XDG_DATA_HOME/marim-harness/server` (default
 `~/.local/share/marim-harness/server`). It holds the bearer token file, the
@@ -33,8 +34,36 @@ workspace registry (`workspaces.json`), and by default the managed-workspaces
 root.
 
 The daemon binds loopback by default; to reach it remotely, front it with a
-reverse proxy or a tailnet. At startup it prints the listen URL and the path
-of the token file.
+reverse proxy or a tailnet.
+
+### Startup output
+
+On a terminal, startup prints the MARIM wordmark (the same art as the TUI intro
+header) over the four facts you need to drive the daemon:
+
+```
+ ███╗   ███╗ █████╗ ██████╗ ██╗███╗   ███╗
+ ████╗ ████║██╔══██╗██╔══██╗██║████╗ ████║
+ ██╔████╔██║███████║██████╔╝██║██╔████╔██║
+ ██║╚██╔╝██║██╔══██║██╔══██╗██║██║╚██╔╝██║
+ ██║ ╚═╝ ██║██║  ██║██║  ██║██║██║ ╚═╝ ██║
+ ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝╚═╝     ╚═╝
+   · · ·   s e r v e   v0.2.0
+
+  listening     http://127.0.0.1:8642
+  bearer token  ~/.local/share/marim-harness/server/token
+  workspaces    ~/.local/share/marim-harness/server/workspaces
+  idle ttl      900s
+```
+
+Only the token's *path* is ever printed, never its value — startup output ends
+up in scrollback and screenshots.
+
+When stdout isn't a terminal (systemd, Docker, `nohup`, a pipe) the art is
+skipped automatically and the same facts print one per line, led by the
+long-standing `marim serve <version> listening on <url>` line, with absolute
+paths. `--no-banner` or `MARIM_NO_BANNER=1` forces that plain form on a
+terminal too; `NO_COLOR` (or `TERM=dumb`) keeps the art but drops the color.
 
 ## Authentication
 

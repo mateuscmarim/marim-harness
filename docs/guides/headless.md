@@ -315,12 +315,16 @@ note (`marim trust grant && marim -p ...` is the one-shot pattern).
 
 ### `marim serve`
 
-`marim serve [--host] [--port] [--workspaces-root] [--idle-ttl]` runs marim
-as a long-lived HTTP daemon exposing sessions over REST plus a WebSocket
-event stream (the same event shapes as `--output-format stream-json`). It binds
-`127.0.0.1:8642` by default, authenticates with a bearer token persisted
-under the server state dir (the token file's path is printed at startup),
-and requires the `serve` extra (`pip install 'marim-harness[serve]'`). See the
+`marim serve [--host] [--port] [--workspaces-root] [--idle-ttl] [--no-banner]`
+runs marim as a long-lived HTTP daemon exposing sessions over REST plus a
+WebSocket event stream (the same event shapes as `--output-format
+stream-json`). It binds `127.0.0.1:8642` by default, authenticates with a
+bearer token persisted under the server state dir (the token file's path is
+printed at startup), and requires the `serve` extra (`pip install
+'marim-harness[serve]'`). Startup prints the MARIM wordmark over the listen
+URL, token path, workspaces root, and idle TTL on a terminal, and the same
+facts as plain lines when stdout is redirected — `--no-banner` /
+`MARIM_NO_BANNER=1` force the plain form. See the
 [serve API reference](../reference/serve-api.md).
 
 ## The claude-cli provider

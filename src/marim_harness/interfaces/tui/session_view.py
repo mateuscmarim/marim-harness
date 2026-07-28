@@ -9,6 +9,7 @@ from textual.widgets import Static
 
 from ...compaction import summary_text
 from ...runtime.harness import strip_turn_context
+from ..branding import BANNER
 from .stream_render import status_from_part, subagent_failed, tool_result_text
 from .subagents import SubAgentDetailHost, SubAgentWidget
 from .widgets import (
@@ -452,12 +453,10 @@ class SessionView:
         """Mount the two-column intro header — the MARIM banner on the left, the
         welcome/resume text on the right (Claude-style) — and return the intro
         AssistantMessage for the caller to stream into."""
-        from .app import _BANNER
-
         intro = AssistantMessage()
         await log.mount(
             Horizontal(
-                Static(_BANNER, id="banner", markup=False),
+                Static(BANNER, id="banner", markup=False),
                 intro,
                 id="intro-header",
             )

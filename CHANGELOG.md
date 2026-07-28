@@ -8,6 +8,18 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+- `marim serve` startup now leads with the MARIM wordmark (the same art as the
+  TUI intro header, shared from `interfaces/branding.py`) over an aligned block
+  of the facts you need to drive the daemon — listen URL, bearer-token path,
+  workspaces root, and idle TTL. The last two come from flags that were
+  previously invisible at startup, so you couldn't tell from the terminal which
+  workspaces root a running daemon had adopted. Only the token's path is
+  printed, never its value. The art is skipped automatically when stdout isn't
+  a terminal (systemd, Docker, a pipe), where the same facts print one per line
+  led by the long-standing `marim serve … listening on …` line; new
+  `--no-banner` flag and `MARIM_NO_BANNER=1` force that plain form on a
+  terminal, and `NO_COLOR`/`TERM=dumb` drop the accent color.
+
 - Model-catalog fetch failures no longer shout. An unreachable model server
   (LM Studio not running, the box offline, a slow upstream) used to spill a
   full httpx traceback per probe, which in `marim serve` — a daemon that
