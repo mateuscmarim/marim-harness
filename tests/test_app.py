@@ -3379,11 +3379,19 @@ async def test_status_shows_live_turn_timer_when_busy(tmp_path: Path):
     async with app.run_test() as pilot:
         await pilot.pause()
         app.status.busy = True
-        app.status.turn_start = time.monotonic() - 5  # 5s into a turn
+        # Minutes, not seconds: under `format_duration` a sub-minute stamp
+        # renders whole seconds, so any wall-clock slip between stamping and
+        # rendering flips "5s" to "6s" — which is exactly what a loaded CI
+        # runner produces. At minute granularity the same slip is invisible
+        # (300s through 359s all render "5m"), so this asserts that the timer
+        # derives from `turn_start` without racing the clock to do it. The
+        # seconds formatting itself is covered purely by
+        # `test_format_duration_units`.
+        app.status.turn_start = time.monotonic() - 300  # 5m into a turn
         app.status.refresh_status()
         await pilot.pause()
         text = str(app.query_one("#status-bar").render())
-        assert "working" in text and "5s" in text
+        assert "working" in text and "5m" in text
 
 
 @pytest.mark.anyio
