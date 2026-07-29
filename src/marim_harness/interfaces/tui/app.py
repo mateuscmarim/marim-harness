@@ -185,7 +185,7 @@ class HarnessApp(App):
         self._autocomplete: CommandAutocomplete | None = None
         # Full-bleed sub-agents screen (ctrl+x): its open/navigate/close lifecycle
         # and the per-frame repaint coalescing live in this collaborator.
-        self.subagents = SubAgentsScreen(self)
+        self.subagents = SubAgentsScreen()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)

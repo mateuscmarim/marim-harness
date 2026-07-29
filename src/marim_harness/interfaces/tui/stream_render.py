@@ -583,7 +583,7 @@ class StreamRenderer:
             self._fill_detached_card(job_id, jobs)
         # A settling background job changes a card's status/stats; repaint the
         # open screen so its list/summary tick live.
-        self.app.subagents.refresh()
+        self.app.subagents.mark_dirty()
 
     def prune_completed(self) -> None:
         """Drop finished entries from ``tool_widgets`` at a turn boundary so the
@@ -799,7 +799,7 @@ class StreamRenderer:
         self.subagents.append(widget)
         self.workflow_cards[tool_call_id] = widget
         self.ensure_pane(widget)
-        self.app.subagents.refresh()
+        self.app.subagents.mark_dirty()
 
     def append_workflow_log(self, tool_call_id: str, message: str) -> None:
         """Persist a script's log() line into the run card's pane (the toast
@@ -821,7 +821,7 @@ class StreamRenderer:
         if widget is None:
             return
         widget.finish(outcome, status="failed" if failed else "done")
-        self.app.subagents.refresh()
+        self.app.subagents.mark_dirty()
 
     async def claim_workflow_spawn(
         self, stream_id: str, type_: str, task: str, parent_id: str
@@ -866,7 +866,7 @@ class StreamRenderer:
             return
         status = "failed" if subagent_failed(content) else "done"
         widget.finish(content, status=status)
-        self.app.subagents.refresh()
+        self.app.subagents.mark_dirty()
 
     def _log_container(self) -> VerticalScroll:
         """The main log's mount target — the one query-selector site shared by
@@ -940,7 +940,7 @@ class StreamRenderer:
         if usage is not None and usage.total_tokens:
             self.note_subagent_usage(parent, usage)
         await self.dispatch_stream_event(event, _SubAgentSink(self, parent, stream_id))
-        self.app.subagents.refresh()  # list/summary tick live while open
+        self.app.subagents.mark_dirty()  # list/summary tick live while open
 
     async def on_cli_activity(self, events: list) -> None:
         """Render a claude-cli model's own tool_use/tool_result as native tool cards
@@ -1075,7 +1075,7 @@ class StreamRenderer:
                 widget.finish(content, status=status)
                 if isinstance(widget, SubAgentWidget):
                     # A finished card changes the screen's list/summary scalars.
-                    self.app.subagents.refresh()
+                    self.app.subagents.mark_dirty()
                 if isinstance(widget, ToolCallWidget):
                     group = self._group_of(widget)
                     if group is not None:
