@@ -897,6 +897,21 @@ def test_scratchpad_env_off(monkeypatch):
     assert load_config().scratchpad_enabled is False
 
 
+def test_stats_env_defaults_on(monkeypatch):
+    monkeypatch.delenv("MARIM_STATS", raising=False)
+    from marim_harness.config import load_config
+
+    assert load_config().stats_enabled is True
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no"])
+def test_stats_env_off(monkeypatch, value):
+    monkeypatch.setenv("MARIM_STATS", value)
+    from marim_harness.config import load_config
+
+    assert load_config().stats_enabled is False
+
+
 def _clear_provider_env(monkeypatch):
     for k in ("MARIM_PROVIDER", "OPENROUTER_API_KEY", "GOOGLE_API_KEY",
               "GEMINI_API_KEY", "MARIM_BASE_URL", "MARIM_API_KEY", "MARIM_MODEL"):
