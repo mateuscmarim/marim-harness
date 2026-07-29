@@ -5,10 +5,14 @@ import json
 import logging
 from collections.abc import Iterator
 from dataclasses import asdict
+from datetime import date
 from pathlib import Path
+from typing import Literal
 
 from ..session.store import default_sessions_base, workspace_slug
-from .types import TurnEvent
+from .query import models as _models_query
+from .query import overview as _overview_query
+from .types import ModelsReport, Overview, Range, TurnEvent
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +23,8 @@ __all__ = [
     "event_from_dict",
     "event_to_dict",
     "iter_turns",
+    "load_models",
+    "load_overview",
     "workspace_slug",
 ]
 
@@ -119,3 +125,37 @@ class StatsLedger:
 
     def iter_global(self) -> Iterator[TurnEvent]:
         yield from iter_turns(self.global_path)
+
+
+def _scope_path(
+    scope: Literal["workspace", "global"], stats_base: Path, workspace_slug: str | None
+) -> Path:
+    if scope == "workspace":
+        if not workspace_slug:
+            raise ValueError("workspace_slug is required when scope is 'workspace'")
+        return stats_base / workspace_slug / "turns.jsonl"
+    return stats_base / "global" / "turns.jsonl"
+
+
+def load_overview(
+    scope: Literal["workspace", "global"],
+    range: Range,
+    *,
+    stats_base: Path,
+    workspace_slug: str | None = None,
+    today: date | None = None,
+) -> Overview:
+    path = _scope_path(scope, stats_base, workspace_slug)
+    return _overview_query(iter_turns(path), range, today=today)
+
+
+def load_models(
+    scope: Literal["workspace", "global"],
+    range: Range,
+    *,
+    stats_base: Path,
+    workspace_slug: str | None = None,
+    today: date | None = None,
+) -> ModelsReport:
+    path = _scope_path(scope, stats_base, workspace_slug)
+    return _models_query(iter_turns(path), range, today=today)
