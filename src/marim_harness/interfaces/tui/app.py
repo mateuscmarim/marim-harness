@@ -10,7 +10,7 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.css.query import NoMatches
-from textual.widgets import Footer, Header, Static
+from textual.widgets import Footer, Header
 
 from ...jobs import JobRegistry
 from ...runtime.errors import format_provider_error
@@ -42,13 +42,7 @@ from .shell_passthrough import (
     parse_bang,
     run_passthrough,
 )
-from .status import (
-    _CLOCK_TICK_INTERVAL,
-    _SPINNER_TICK_INTERVAL,
-    StatusPresenter,
-    format_duration,
-    osc_title,
-)
+from .status import _CLOCK_TICK_INTERVAL, _SPINNER_TICK_INTERVAL, format_duration
 from .stream_render import StreamRenderer
 from .subagents import SubAgentsScreen, SubAgentsView
 from .themes import MARIM_THEMES
@@ -60,7 +54,6 @@ from .widgets import (
     JobPanel,
     NoticeMessage,
     PromptInput,
-    QueuePanel,
     SummaryWidget,
     TaskPanel,
     TurnMeta,
@@ -68,6 +61,9 @@ from .widgets import (
     format_cost,
     human_tokens,
 )
+from .widgets.compact_notice import CompactNotice
+from .widgets.queue_display import QueueDisplay
+from .widgets.status_bar import StatusBar, osc_title
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +111,7 @@ class HarnessApp(App):
     def __init__(self, harness: Harness, history: PromptHistory | None = None) -> None:
         super().__init__()
         self.harness = harness
-        self.status = StatusPresenter(self)
+        self.status = StatusBar()
         self.stream = StreamRenderer(self)
         self.session = SessionView(self)
         # Recallable prompt history. Defaults to in-memory; the CLI passes a
@@ -145,7 +141,6 @@ class HarnessApp(App):
             on_notice=self._on_session_notice,
             on_rename=self.session.on_rename,
         )
-        self._compacting_notice: NoticeMessage | None = None
         self._vision_caps: dict[str, bool | None] = {}
         self._turn_worker = None
         # Latch closing the window between "decided to start a turn" and the
@@ -190,15 +185,16 @@ class HarnessApp(App):
         self._autocomplete: CommandAutocomplete | None = None
         # Full-bleed sub-agents screen (ctrl+x): its open/navigate/close lifecycle
         # and the per-frame repaint coalescing live in this collaborator.
-        self.subagents = SubAgentsScreen(self)
+        self.subagents = SubAgentsScreen()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
         yield VerticalScroll(id="log")
         yield JobPanel()
         yield TaskPanel()
-        yield QueuePanel()
-        yield Static(self.status.status_text(), id="status-bar")
+        yield QueueDisplay()
+        yield self.status
+        yield CompactNotice()
         yield CommandAutocomplete(id="cmd-autocomplete")
         yield PromptInput(history=self._history)
         # The full-bleed sub-agents screen (hidden until ctrl+x). Its detail host
@@ -213,6 +209,7 @@ class HarnessApp(App):
             self.register_theme(theme)
         self.theme = load_theme()
         self.sub_title = str(self.harness.deps.workspace.root)
+        self.status.mode = self.harness.deps.workspace.mode.value
         self.status.refresh_title()
         log = self.query_one("#log", VerticalScroll)
         # Hand the renderer the persistent transcript host so spawns create their
@@ -509,17 +506,16 @@ class HarnessApp(App):
         return self._turn_worker is not None or self._turn_starting
 
     def _refresh_mode_display(self) -> None:
-        """Redraw the status bar to reflect the current mode.
+        """Push the current mode into the status bar's ``mode`` reactive.
 
-        Called from action_cycle_mode, the /mode command (via its own
-        app.status.refresh_status() call in commands.py), and via the
+        Called from action_cycle_mode, the /mode command, and via the
         on_mode_change UIHooks callback so a tool that flips workspace.mode
         mid-turn (e.g. present_plan) can nudge the status bar to redraw.
         Runs on the event-loop thread: the exclusive turn worker is an asyncio
         task, so no call_from_thread marshalling is needed — Textual widget
         mutations from asyncio tasks are safe.
         """
-        self.status.refresh_status()
+        self.status.mode = self.harness.deps.workspace.mode.value
 
     def action_cycle_mode(self) -> None:
         self.harness.cycle_mode()
@@ -663,14 +659,15 @@ class HarnessApp(App):
             logger.warning("failed to start next turn", exc_info=True)
 
     def _render_queue(self) -> None:
-        """Repaint the queue panel from the current queue."""
+        """Repaint the queue display from the current queue."""
         if not self.is_running:
             return
         try:
-            panel = self.query_one(QueuePanel)
+            qd = self.query_one(QueueDisplay)
         except NoMatches:
             return  # tearing down; nothing to paint
-        panel.show_queue(self._queue.items, paused=self._queue.paused)
+        qd.items = list(self._queue.items)
+        qd.paused = self._queue.paused
 
     async def action_run_queued(self) -> None:
         """Resume a paused queue: clear the pause and start the next item."""
@@ -739,31 +736,15 @@ class HarnessApp(App):
         few seconds, which would otherwise be indistinguishable from a slow turn.
         Cleared by _on_compact when the work finishes. Called synchronously from
         run_turn; mount without awaiting."""
-        log = self.query_one("#log", VerticalScroll)
-        self._compacting_notice = NoticeMessage("compacting conversation…")
-        log.mount(self._compacting_notice)
-
-    def clear_compacting_notice(self) -> None:
-        """Remove the live "compacting…" indicator if it is still mounted.
-        Idempotent and exception-safe. Called from both the turn worker's finally
-        and the /compact worker's error path so a ``maybe_compact`` that raised
-        between ``on_compact_start()`` and ``on_compact()`` can never leave the
-        notice stranded on screen forever."""
-        if self._compacting_notice is not None:
-            try:
-                self._compacting_notice.remove()
-            except ValueError:
-                pass  # widget already removed; safe to ignore
-            finally:
-                self._compacting_notice = None
+        self.query_one(CompactNotice).compacting = True
 
     def _on_compact(self, before: int, after: int) -> None:
         """Note in the log when history was trimmed to stay under the token budget.
         Called synchronously from run_turn; mount without awaiting."""
         log = self.query_one("#log", VerticalScroll)
-        if self._compacting_notice is not None:
-            self._compacting_notice.remove()  # replace the live "compacting…" line
-            self._compacting_notice = None
+        notice = self.query_one(CompactNotice)
+        notice.compacting = False
+        notice.done = True
         # before == after means a (forced) compaction ran without shrinking — the
         # call exists only to clear the indicator above, so don't post a confusing
         # "compacted: N → N" line or re-surface a stale summary.
@@ -939,7 +920,7 @@ class HarnessApp(App):
         if not chosen:
             return
         self.harness.set_model(chosen)
-        self.status.refresh_status()
+        self.status.model_name = self.harness.model_label
         self._append_log(NoticeMessage(f"model: {self.harness.model_label}"))
 
     async def open_advisor_picker(self) -> None:
@@ -1267,5 +1248,5 @@ class HarnessApp(App):
             self.status.set_busy(False)
             # Guard against an orphaned compaction notice if maybe_compact raised
             # between on_compact_start() and on_compact(). Always try to clean up.
-            self.clear_compacting_notice()
+            self.query_one(CompactNotice).compacting = False
             await self._after_turn()  # drain next queued item, or wake on jobs

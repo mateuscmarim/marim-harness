@@ -298,7 +298,7 @@ async def test_refresh_subagents_view_ticks_list_live_while_open(tmp_path):
         await pilot.pause()
 
         # Closed: a no-op (no crash, screen stays hidden).
-        app.subagents.refresh()
+        app.subagents.mark_dirty()
         assert app.subagents.open is False
 
         app.subagents.open_at("call_1")
@@ -312,7 +312,7 @@ async def test_refresh_subagents_view_ticks_list_live_while_open(tmp_path):
         w2.stream_id = "call_2"
         r.tool_widgets["call_2"] = w2
         r.ensure_pane(w2)
-        app.subagents.refresh()
+        app.subagents.mark_dirty()
         r.flush_streams()  # the tick drains the dirty repaint
         await pilot.pause()
         assert view.list.row_count == 2
@@ -348,7 +348,7 @@ async def test_streamed_events_coalesce_list_repaint_to_flush_tick(tmp_path):
         # Many per-event repaint requests do not rebuild the table; they only mark
         # it dirty.
         for _ in range(10):
-            app.subagents.refresh()
+            app.subagents.mark_dirty()
         assert n["c"] == 0
         assert app.subagents.dirty is True
 
@@ -445,7 +445,7 @@ async def test_live_repaint_preserves_user_selection(tmp_path):
         # Move the cursor (cursor updates now; its RowHighlighted is still queued)…
         lst.move_cursor(row=2)
         # …and a live event repaints the list before that message is processed.
-        app.subagents.refresh()
+        app.subagents.mark_dirty()
         r.flush_streams()
         await pilot.pause()
         await pilot.pause()
@@ -463,7 +463,7 @@ async def test_refresh_subagents_view_is_noop_when_closed(tmp_path):
     async with app.run_test() as pilot:
         await pilot.pause()
         assert app.subagents.open is False
-        app.subagents.refresh()
+        app.subagents.mark_dirty()
         assert app.subagents.dirty is False
 
 
@@ -527,7 +527,7 @@ async def test_live_stream_then_open_shows_current_transcript(tmp_path: Path):
         assert len(w.pane.query(Static)) >= 2  # body header + streamed line
         # Finish updates the row glyph live while open.
         w.finish("ok", status="done")
-        app.subagents.refresh()
+        app.subagents.mark_dirty()
         await pilot.pause()
         assert w.status == "done"
 
@@ -680,7 +680,7 @@ async def test_claude_cli_spawn_events_drive_a_native_card(tmp_path):
         assert card.status == "done"
 
 
-def test_repaint_list_survives_uncomposed_view():
+def test_repaint_list_survives_uncomposed_view(monkeypatch):
     """A flush tick can fire between the view being created and its compose
     children mounting, so ``view.list`` raises NoMatches. ``_repaint_list`` must
     skip that tick rather than crash the live flush path (regression guard for the
@@ -707,7 +707,11 @@ def test_repaint_list_survives_uncomposed_view():
         def query_one(self, _selector):
             return _StubView()
 
-    viewer = SubAgentsScreen(_StubApp())
+    viewer = SubAgentsScreen()
+    # SubAgentsScreen is never pushed/mounted, so its inherited ``app`` property
+    # (which _app narrows) isn't reachable outside a running Textual app here —
+    # stub it directly the way the real object gets it from the running app.
+    monkeypatch.setattr(SubAgentsScreen, "_app", property(lambda self: _StubApp()))
     viewer.open = True
     # Must return without raising even though the view's list isn't composed.
     assert viewer._repaint_list() is None

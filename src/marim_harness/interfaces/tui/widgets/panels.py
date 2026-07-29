@@ -182,17 +182,3 @@ class JobPanel(LivePanel):
 
     def show_jobs(self, jobs: list) -> None:
         self._render_items(jobs)
-
-
-class QueuePanel(LivePanel):
-    """Messages queued to run after the current turn."""
-
-    def __init__(self) -> None:
-        from ..queue import render_queue
-
-        super().__init__(name="queue", title="Queued", renderer=render_queue,
-                         markup=True)
-
-    def show_queue(self, items: list, paused: bool = False) -> None:
-        self._title = "Queued — paused" if paused else "Queued"
-        self._render_items(items)

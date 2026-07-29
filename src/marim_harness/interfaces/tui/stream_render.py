@@ -469,6 +469,7 @@ class StreamRenderer:
         # while opening the stream, before the handler is ever invoked, so a
         # handler-side timestamp always reads ~0 (see runtime/ttft.py).
         self.last_ttft: float | None = None
+        self.current_model = ""
         self.show_all_output = False  # Ctrl+O reveal-all toggle
         # True while a session view is being rebuilt (clear/switch/new). During the
         # rebuild the log's max_scroll_y is briefly stale (old content removed, new
@@ -496,6 +497,7 @@ class StreamRenderer:
         self._detached_cards.clear()
         self.dirty_streams.clear()
         self.last_ttft = None
+        self.live_run_tokens = 0
 
     def on_ttft(self, seconds: float) -> None:
         """bind_ui callback: record the latest streamed request's TTFT. The
@@ -581,7 +583,7 @@ class StreamRenderer:
             self._fill_detached_card(job_id, jobs)
         # A settling background job changes a card's status/stats; repaint the
         # open screen so its list/summary tick live.
-        self.app.subagents.refresh()
+        self.app.subagents.mark_dirty()
 
     def prune_completed(self) -> None:
         """Drop finished entries from ``tool_widgets`` at a turn boundary so the
@@ -660,10 +662,11 @@ class StreamRenderer:
         # pins a core during a fan-out); drain that here, once per frame, after the
         # visible pane's transcript has been flushed above.
         self.app.subagents.drain_repaint()
-        # Piggyback on the same per-frame tick to repaint the status bar while a
-        # turn is running, so the live token counter advances as the run streams.
-        if self.app.status.busy:
-            self.app.status.refresh_status()
+        # Sync live token/ttft to StatusBar's reactives so it re-renders
+        # automatically. The reactive assignment triggers StatusBar.render()
+        # without a manual refresh_status() call.
+        self.app.status.live_run_tokens = self.live_run_tokens
+        self.app.status.last_ttft = self.last_ttft
 
     def note_subagent_usage(self, parent: SubAgentWidget, usage) -> None:
         """Stash a sub-agent's latest live usage to be priced on the next flush tick.
@@ -796,7 +799,7 @@ class StreamRenderer:
         self.subagents.append(widget)
         self.workflow_cards[tool_call_id] = widget
         self.ensure_pane(widget)
-        self.app.subagents.refresh()
+        self.app.subagents.mark_dirty()
 
     def append_workflow_log(self, tool_call_id: str, message: str) -> None:
         """Persist a script's log() line into the run card's pane (the toast
@@ -818,7 +821,7 @@ class StreamRenderer:
         if widget is None:
             return
         widget.finish(outcome, status="failed" if failed else "done")
-        self.app.subagents.refresh()
+        self.app.subagents.mark_dirty()
 
     async def claim_workflow_spawn(
         self, stream_id: str, type_: str, task: str, parent_id: str
@@ -863,7 +866,7 @@ class StreamRenderer:
             return
         status = "failed" if subagent_failed(content) else "done"
         widget.finish(content, status=status)
-        self.app.subagents.refresh()
+        self.app.subagents.mark_dirty()
 
     def _log_container(self) -> VerticalScroll:
         """The main log's mount target — the one query-selector site shared by
@@ -937,7 +940,7 @@ class StreamRenderer:
         if usage is not None and usage.total_tokens:
             self.note_subagent_usage(parent, usage)
         await self.dispatch_stream_event(event, _SubAgentSink(self, parent, stream_id))
-        self.app.subagents.refresh()  # list/summary tick live while open
+        self.app.subagents.mark_dirty()  # list/summary tick live while open
 
     async def on_cli_activity(self, events: list) -> None:
         """Render a claude-cli model's own tool_use/tool_result as native tool cards
@@ -1072,7 +1075,7 @@ class StreamRenderer:
                 widget.finish(content, status=status)
                 if isinstance(widget, SubAgentWidget):
                     # A finished card changes the screen's list/summary scalars.
-                    self.app.subagents.refresh()
+                    self.app.subagents.mark_dirty()
                 if isinstance(widget, ToolCallWidget):
                     group = self._group_of(widget)
                     if group is not None:

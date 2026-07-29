@@ -14,34 +14,59 @@ pushed Textual ``Screen`` — so the renderer's panes stay mounted whether or no
 the screen is open, and opening mid-run shows an already-current transcript.
 """
 
+from typing import TYPE_CHECKING, cast
+
 from textual.containers import VerticalScroll
 from textual.css.query import NoMatches
+from textual.reactive import reactive
+from textual.screen import Screen
 
 from ..widgets import NoticeMessage, PromptInput
 from .stats import tree_order
 from .view import SubAgentsView
 
+if TYPE_CHECKING:
+    from ..app import HarnessApp
 
-class SubAgentsScreen:
-    """Drives the ctrl+x sub-agents screen on behalf of ``HarnessApp``."""
 
-    def __init__(self, app) -> None:
-        self.app = app
-        # Whether the screen is on-screen, and which spawned sub-agent (index into
-        # app.stream.subagents) is selected.
-        self.open = False
-        self.index = 0
-        # Set by a streamed sub-agent event to ask for a list/summary repaint; the
-        # flush tick drains it once per frame. Coalescing here (rather than
-        # repainting inline per event) is what keeps a fan-out from pinning a core —
-        # see refresh / drain_repaint.
-        self.dirty = False
+class SubAgentsScreen(Screen):
+    """Drives the ctrl+x sub-agents screen on behalf of ``HarnessApp``.
+
+    Not pushed onto the app's screen stack — ``SubAgentsView`` is a plain widget
+    mounted directly in ``HarnessApp.compose`` and shown/hidden via ``display``,
+    so the renderer's transcript panes stay mounted (and keep streaming) whether
+    or not this screen is open. Subclassing ``Screen`` here is purely to get
+    reactive ``open``/``index``/``dirty`` plus the inherited ``app`` property
+    (resolved off the running app's context var, so it works even though this
+    object is never mounted) — not the push/pop screen-stack lifecycle.
+    """
+
+    # Whether the screen is on-screen, and which spawned sub-agent (index into
+    # app.stream.subagents) is selected.
+    open: reactive[bool] = reactive(False, init=False)
+    index: reactive[int] = reactive(0, init=False)
+    # Set by a streamed sub-agent event to ask for a list/summary repaint; the
+    # flush tick drains it once per frame via drain_repaint(). Deliberately no
+    # watch_dirty here: an auto-repainting watcher would repaint inline on every
+    # event instead of coalescing to the flush tick, reintroducing the
+    # fan-out-pins-a-core cost mark_dirty()/drain_repaint() exist to avoid.
+    dirty: reactive[bool] = reactive(False, init=False)
+
+    def __init__(self) -> None:
+        super().__init__()
+
+    @property
+    def _app(self) -> "HarnessApp":
+        """``self.app`` (inherited from ``Screen``, resolved off the running app's
+        context var) narrowed to ``HarnessApp`` — the base type doesn't know about
+        ``.stream``/``.harness``/``.session``."""
+        return cast("HarnessApp", self.app)
 
     def _ordered(self) -> list:
         """Sub-agents in the list's display (depth-first) order — the same order
         SubAgentList.refresh_rows renders — so a DataTable cursor row maps to the
         correct agent."""
-        return [tr.agent for tr in tree_order(self.app.stream.subagents)]
+        return [tr.agent for tr in tree_order(self._app.stream.subagents)]
 
     def toggle(self) -> None:
         """Ctrl+X: open the full-bleed sub-agents screen (or close it if open)."""
@@ -53,7 +78,7 @@ class SubAgentsScreen:
     def open_at(self, stream_id: str | None) -> None:
         """Open the screen, selecting ``stream_id`` (or the most recent spawn when
         None — the one you most likely just watched)."""
-        app = self.app
+        app = self._app
         subs = app.stream.subagents
         if not subs:
             app.query_one("#log", VerticalScroll).mount(
@@ -75,7 +100,7 @@ class SubAgentsScreen:
         view.list.focus()
 
     def close(self) -> None:
-        app = self.app
+        app = self._app
         self.open = False
         app.query_one(SubAgentsView).display = False
         app.query_one("#log", VerticalScroll).display = True
@@ -92,12 +117,12 @@ class SubAgentsScreen:
             return
         # Own group + exit_on_error=False, same rationale as the transcript
         # loader below: the default group belongs to the exclusive turn worker.
-        self.app.run_worker(
+        self._app.run_worker(
             self._resume(card), group="subagent-resume", exit_on_error=False
         )
 
     async def _resume(self, card) -> None:
-        resume = self.app.harness.deps.services.resume_subagent
+        resume = self._app.harness.deps.services.resume_subagent
         if resume is None:
             return
         job_id, message = await resume(card.stream_id)
@@ -107,7 +132,7 @@ class SubAgentsScreen:
             if card.pane is not None:
                 card.pane.append_error(message)
         else:
-            self.app.stream.adopt_resumed_card(card, job_id)
+            self._app.stream.adopt_resumed_card(card, job_id)
         self._repaint_list()
 
     def _repaint_list(self, select: int | None = None) -> None:
@@ -122,7 +147,7 @@ class SubAgentsScreen:
         repaint during a fan-out follows the user's cursor instead of snapping it
         back to a stale stored index (the lag between a key press moving the cursor
         and its async RowHighlighted updating ``index``)."""
-        app = self.app
+        app = self._app
         subs = app.stream.subagents
         if not subs:
             self.close()
@@ -167,7 +192,7 @@ class SubAgentsScreen:
         # hazard the shell-passthrough worker in app.py documents).
         # exit_on_error=False: a replay of arbitrary persisted data must
         # degrade to a broken pane, never take down the whole session.
-        self.app.run_worker(
+        self._app.run_worker(
             self._load_transcript(card.pane, card.stream_id),
             group="subagent-transcripts",
             exit_on_error=False,
@@ -179,13 +204,13 @@ class SubAgentsScreen:
         Runs as a worker off the sync repaint path (``_repaint_list`` already set
         ``pane.transcript_loaded``). A missing store or sidecar just renders a
         fallback note — the guard is already set, so it isn't retried."""
-        store = self.app.harness.session.store
+        store = self._app.harness.session.store
         if store is None:
             return
         from ....session import TranscriptStore
         msgs = TranscriptStore(store.path, store.session_id).read(stream_id)
         if msgs is not None:
-            await self.app.session.replay_messages_into(pane, msgs, parent_id=stream_id)
+            await self._app.session.replay_messages_into(pane, msgs, parent_id=stream_id)
             # A nested background spawn buried in this transcript replays as a
             # fresh *pending* card — but the main-pass finish_replayed_cards already
             # ran (before this lazy pane load created the card), so nothing would
@@ -194,7 +219,7 @@ class SubAgentsScreen:
             # sidecar meta. Safe to re-run: the join only touches cards whose status
             # is still "pending" (plus the repair-stub-gated running-sidecar elif),
             # so every card the first pass already finished is skipped — idempotent.
-            await self.app.session.finish_replayed_cards()
+            await self._app.session.finish_replayed_cards()
         else:
             from textual.content import Content
             from textual.widgets import Static
@@ -207,18 +232,22 @@ class SubAgentsScreen:
         transcript immediately (its stream is skipped while it isn't the host's
         current pane, so it needs a one-off render on selection). Driven by user
         actions (open, cursor move), which are infrequent — unlike the live
-        streaming path, which coalesces via refresh."""
+        streaming path, which coalesces via mark_dirty."""
         self._repaint_list(select=self.index)
         if self.open:  # still open (not closed by an emptied list)
-            self.app.stream.flush_streams()
+            self._app.stream.flush_streams()
 
-    def refresh(self) -> None:
+    def mark_dirty(self) -> None:
         """Mark the open screen for a repaint on the next flush tick. Called from
         the renderer on every streamed sub-agent event; repainting inline per event
         — a full DataTable rebuild plus a transcript flush — pins a core during a
         fan-out, so the actual repaint is coalesced to the ~12.5Hz flush tick
         (drain_repaint). A no-op when closed, so streaming pays nothing for a hidden
-        screen."""
+        screen.
+
+        Named distinctly from ``Widget.refresh`` (inherited via ``Screen``) rather
+        than overriding it — that method repaints immediately with an incompatible
+        signature, exactly what coalescing to the flush tick exists to avoid."""
         if self.open:
             self.dirty = True
 
@@ -250,6 +279,6 @@ class SubAgentsScreen:
             self.index = max(0, min(event.cursor_row, len(ordered) - 1))
             current = ordered[self.index]
             if current.pane is not None:
-                self.app.query_one(SubAgentsView).host.show(current.stream_id)
+                self._app.query_one(SubAgentsView).host.show(current.stream_id)
                 self._lazy_load(current)
-            self.app.stream.flush_streams()
+            self._app.stream.flush_streams()
