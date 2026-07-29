@@ -146,7 +146,7 @@ class SpawnRunDriver:
         # place as each model step completes, so an attempt that dies mid-run
         # still leaves its spend here. On success the returned ``result.usage``
         # IS this object (agent.run threads ``usage or RunUsage()`` straight
-        # into run state), so the callers' ``session.usage += result.usage``
+        # into run state), so the callers' ``session.add_usage(result.usage)``
         # already covers the failed attempts; the re-raise path below banks it
         # explicitly since no result reaches the caller there.
         run_usage = RunUsage()
@@ -212,7 +212,7 @@ class SpawnRunDriver:
                     # tokens regardless, so bank the accumulator before the
                     # re-raise. (The success path needs no counterpart — the
                     # callers fold result.usage, which IS this accumulator.)
-                    self.session.usage += run_usage
+                    self.session.add_usage(run_usage)
                     raise
                 attempt += 1
                 resume_history = _resumable_history(list(captured))

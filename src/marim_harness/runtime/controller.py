@@ -700,7 +700,7 @@ class TurnController:
         # (it can't block the re-raise / Ctrl-C). Counts the failed
         # attempt on the overflow-retry path too: those tokens were
         # spent before the compaction-and-retry below.
-        self.session.usage += round_usage
+        self.session.add_usage(round_usage)
         # A steer flushed into this round may never have reached a
         # request boundary; put it back in the buffer (for the
         # overflow retry below, or the TUI's turn-end pickup) before
@@ -960,7 +960,7 @@ class TurnController:
             # rounds — only the first success matters.
             self._consumed_this_turn = _ConsumedContext()
             self.session.history = result.all_messages()
-            self.session.usage += result.usage
+            self.session.add_usage(result.usage)
             # Record the last request's real input-token count so the next
             # compaction check gates on the provider's measurement rather than the
             # chars/4 estimate alone (which undershoots dense code ~25% and can sail

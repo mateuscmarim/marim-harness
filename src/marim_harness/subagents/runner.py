@@ -561,7 +561,7 @@ class SubagentRunner:
         # after a resume. Empty for native spawns — a no-op there.
         for child_id, msgs in run.child_transcripts.items():
             self._transcripts.save(child_id, msgs)
-        self.session.usage += run.usage
+        self.session.add_usage(run.usage)
         if persist_bg:
             # A background spawn finishes off-turn, so no run_turn folds its spend;
             # persist right away. force=True: the persist cache keys off

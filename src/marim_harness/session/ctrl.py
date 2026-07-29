@@ -33,6 +33,7 @@ from ..compaction import (
 from ..hooks import events as hook_events
 from ..hooks.runner import HookVerdict, base_payload
 from ..runtime.deps import Deps
+from ..stats.recorder import StatsRecorder
 from ..workspace.scratchpad import persist_elided
 from .store import SessionInfo, SessionManager, SessionStore
 
@@ -146,6 +147,7 @@ class SessionController:
         mask_min_chars: int = 200,
         limits: ContextLimits | None = None,
         get_model_id: Callable[[], str | None] | None = None,
+        stats_recorder: StatsRecorder | None = None,
     ) -> None:
         self.store = store
         self.manager = manager
@@ -154,6 +156,7 @@ class SessionController:
         self.keep_last_messages = keep_last_messages
         self.summarizer = summarizer
         self.titler = titler
+        self.stats_recorder = stats_recorder
         # When set, compaction also elides older tool-observation payloads in the
         # retained tail (see mask_stale_observations). Off by default so the
         # behaviour is opt-in for non-TUI/embedding callers; the harness wires the
@@ -218,6 +221,28 @@ class SessionController:
     @property
     def total_tokens(self) -> int:
         return self.usage.total_tokens
+
+    def add_usage(self, delta: RunUsage) -> None:
+        """Bank ``delta`` into the session total and best-effort record it
+        in the stats ledger. Every call site that used to do
+        ``session.usage += x`` must go through here so spend cannot be
+        double-counted or forgotten by the ledger."""
+        self.usage += delta
+        rec = self.stats_recorder
+        if rec is not None:
+            try:
+                rec.record(delta)
+            except Exception:
+                # Recorder implementations already swallow I/O errors; this
+                # guard keeps a buggy recorder from aborting a turn.
+                logger.exception("stats_recorder.record failed")
+
+    def duration_snapshot(self) -> float:
+        """The session's active-time total as of right now, folding in the
+        open segment (if any) without mutating ``duration_seconds`` — mirrors
+        the ``elapsed`` computation ``persist`` uses for the on-disk value."""
+        elapsed = (time.monotonic() - self._segment_start) if self._segment_start else 0.0
+        return self.duration_seconds + elapsed
 
     @property
     def compact_threshold(self) -> int:
