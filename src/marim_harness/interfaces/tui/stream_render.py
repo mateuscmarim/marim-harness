@@ -469,6 +469,7 @@ class StreamRenderer:
         # while opening the stream, before the handler is ever invoked, so a
         # handler-side timestamp always reads ~0 (see runtime/ttft.py).
         self.last_ttft: float | None = None
+        self.current_model = ""
         self.show_all_output = False  # Ctrl+O reveal-all toggle
         # True while a session view is being rebuilt (clear/switch/new). During the
         # rebuild the log's max_scroll_y is briefly stale (old content removed, new
@@ -496,6 +497,7 @@ class StreamRenderer:
         self._detached_cards.clear()
         self.dirty_streams.clear()
         self.last_ttft = None
+        self.live_run_tokens = 0
 
     def on_ttft(self, seconds: float) -> None:
         """bind_ui callback: record the latest streamed request's TTFT. The
@@ -660,10 +662,11 @@ class StreamRenderer:
         # pins a core during a fan-out); drain that here, once per frame, after the
         # visible pane's transcript has been flushed above.
         self.app.subagents.drain_repaint()
-        # Piggyback on the same per-frame tick to repaint the status bar while a
-        # turn is running, so the live token counter advances as the run streams.
-        if self.app.status.busy:
-            self.app.status.refresh_status()
+        # Sync live token/ttft to StatusBar's reactives so it re-renders
+        # automatically. The reactive assignment triggers StatusBar.render()
+        # without a manual refresh_status() call.
+        self.app.status.live_run_tokens = self.live_run_tokens
+        self.app.status.last_ttft = self.last_ttft
 
     def note_subagent_usage(self, parent: SubAgentWidget, usage) -> None:
         """Stash a sub-agent's latest live usage to be priced on the next flush tick.
