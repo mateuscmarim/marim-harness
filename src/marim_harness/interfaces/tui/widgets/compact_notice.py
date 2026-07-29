@@ -26,7 +26,7 @@ class CompactNotice(Static):
     error_msg: reactive[str] = reactive("", init=False)
 
     def __init__(self) -> None:
-        super().__init__()
+        super().__init__(markup=False)
         self.display = False  # hidden by default
 
     def watch_compacting(self, value: bool) -> None:

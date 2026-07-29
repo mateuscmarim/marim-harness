@@ -113,7 +113,10 @@ class StatusBar(Static):
         cost, session duration) that isn't tracked by a dedicated reactive, and
         pull the renderer's in-flight live-token/ttft tallies into the matching
         reactives so a caller that only touches ``app.stream`` still shows up."""
-        stream = getattr(self.app, "stream", None)
+        app: HarnessApp = self.app  # type: ignore[assignment]
+        self.mode = app.harness.deps.workspace.mode.value
+        self.model_name = app.harness.model_label
+        stream = getattr(app, "stream", None)
         if stream is not None:
             self.live_run_tokens = stream.live_run_tokens
             self.last_ttft = stream.last_ttft

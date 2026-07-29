@@ -2,11 +2,10 @@
 manual QueuePanel.show_queue() / _render_queue() pattern."""
 from __future__ import annotations
 
-from textual.markup import escape
 from textual.reactive import reactive
 from textual.widgets import Static
 
-from ..queue import QueuedMessage
+from ..queue import QueuedMessage, render_queue
 
 
 class QueueDisplay(Static):
@@ -18,6 +17,15 @@ class QueueDisplay(Static):
 
     items: reactive[list[QueuedMessage]] = reactive(list, init=False)
     paused: reactive[bool] = reactive(False, init=False)
+
+    DEFAULT_CSS = """
+    QueueDisplay {
+        max-height: 8;
+        overflow-y: auto;
+        background: $panel;
+        padding: 0 1;
+    }
+    """
 
     def __init__(self) -> None:
         super().__init__()
@@ -36,14 +44,5 @@ class QueueDisplay(Static):
         """Render the queue items as markup."""
         if not self.items:
             return
-        lines = []
-        for i, m in enumerate(self.items, 1):
-            n = len(m.attachments or [])
-            tag = f" 📎{n}" if n else ""
-            lines.append(
-                f"{i}. {escape(m.text)}{tag}  "
-                f"[@click=app.edit_queued('{m.id}')]edit[/] "
-                f"[@click=app.remove_queued('{m.id}')]✕[/]"
-            )
         header = "Queued — paused" if self.paused else "Queued"
-        self.update(f"[bold]{header}[/]\n" + "\n".join(lines))
+        self.update(f"[bold]{header}[/]\n" + render_queue(self.items))

@@ -42,7 +42,7 @@ from .shell_passthrough import (
     parse_bang,
     run_passthrough,
 )
-from .status import _CLOCK_TICK_INTERVAL, _SPINNER_TICK_INTERVAL, format_duration, osc_title
+from .status import _CLOCK_TICK_INTERVAL, _SPINNER_TICK_INTERVAL, format_duration
 from .stream_render import StreamRenderer
 from .subagents import SubAgentsScreen, SubAgentsView
 from .themes import MARIM_THEMES
@@ -63,7 +63,7 @@ from .widgets import (
 )
 from .widgets.compact_notice import CompactNotice
 from .widgets.queue_display import QueueDisplay
-from .widgets.status_bar import StatusBar
+from .widgets.status_bar import StatusBar, osc_title
 
 logger = logging.getLogger(__name__)
 

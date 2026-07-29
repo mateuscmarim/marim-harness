@@ -2,7 +2,6 @@ from pathlib import Path
 
 import pytest
 
-from marim_harness.interfaces.tui.status import StatusPresenter
 from marim_harness.interfaces.tui.widgets.status_bar import StatusBar
 from tests.conftest import _make_deps
 
@@ -37,7 +36,9 @@ def test_context_tokens_memoized_until_history_changes(monkeypatch):
     it must be cached and recomputed only when the history actually changes —
     re-stringifying the transcript on every repaint is pure waste that grows with
     session length."""
-    import marim_harness.interfaces.tui.status as status_mod
+    from textual._context import active_app
+
+    import marim_harness.interfaces.tui.widgets.status_bar as status_bar_mod
 
     calls = {"n": 0}
 
@@ -45,7 +46,7 @@ def test_context_tokens_memoized_until_history_changes(monkeypatch):
         calls["n"] += 1
         return len(history) * 10
 
-    monkeypatch.setattr(status_mod, "estimate_tokens", fake_estimate)
+    monkeypatch.setattr(status_bar_mod, "estimate_tokens", fake_estimate)
 
     history = [object(), object()]
 
@@ -56,26 +57,33 @@ def test_context_tokens_memoized_until_history_changes(monkeypatch):
 
     _App.harness.session.history = history
 
-    presenter = StatusPresenter.__new__(StatusPresenter)
-    presenter.app = _App()  # type: ignore[assignment]
-    presenter._ctx_tokens_key = -1
-    presenter._ctx_tokens = 0
+    # A bare StatusBar() (never mounted) needs an app to resolve `self.app`
+    # against — set it via Textual's active_app context var rather than
+    # assigning the (read-only) `app` property directly.
+    token = active_app.set(_App())  # type: ignore[arg-type]
+    try:
+        presenter = StatusBar()
+        presenter._ctx_tokens_key = -1
+        presenter._ctx_tokens = 0
 
-    # Repeated reads (every repaint) recompute the estimate exactly once.
-    assert presenter._context_tokens() == 20
-    assert presenter._context_tokens() == 20
-    assert calls["n"] == 1
+        # Repeated reads (every repaint) recompute the estimate exactly once.
+        assert presenter._context_tokens() == 20
+        assert presenter._context_tokens() == 20
+        assert calls["n"] == 1
 
-    # A committed message grows the history → recompute exactly once more.
-    history.append(object())
-    assert presenter._context_tokens() == 30
-    assert calls["n"] == 2
+        # A committed message grows the history → recompute exactly once more.
+        history.append(object())
+        assert presenter._context_tokens() == 30
+        assert calls["n"] == 2
+    finally:
+        active_app.reset(token)
 
 
 def test_refresh_title_swallows_driver_errors_during_teardown():
     """refresh_title runs from set_busy in _run_turn's finally block. A driver
     mid-teardown can raise BrokenPipeError on write/flush; it must not escape,
     or _after_turn() is skipped and the queue/wake chain stalls."""
+    from textual._context import active_app
 
     class _BrokenDriver:
         def write(self, _text):
@@ -95,11 +103,15 @@ def test_refresh_title_swallows_driver_errors_during_teardown():
         harness = _Harness()
         _driver = _BrokenDriver()
 
-    presenter = StatusPresenter.__new__(StatusPresenter)
-    presenter.app = _App()  # type: ignore[assignment]
-    presenter.busy = False
-    presenter.spin = 0
+    fake_app = _App()
+    token = active_app.set(fake_app)  # type: ignore[arg-type]
+    try:
+        presenter = StatusBar()
+        presenter.busy = False
+        presenter.spin = 0
 
-    # Must not raise — the BrokenPipeError is swallowed best-effort.
-    presenter.refresh_title()
-    assert presenter.app.title == "● s"  # in-app Header still updated
+        # Must not raise — the BrokenPipeError is swallowed best-effort.
+        presenter.refresh_title()
+        assert fake_app.title == "● s"  # in-app Header still updated
+    finally:
+        active_app.reset(token)
