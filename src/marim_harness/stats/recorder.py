@@ -44,6 +44,12 @@ class LedgerStatsRecorder:
         self._get_model_id = get_model_id
         self._get_duration = get_duration_seconds
 
+    def set_session_id(self, session_id: str) -> None:
+        """Repoint this recorder at a different session (session switch/new/
+        resume swaps ``SessionController.store``, and events must attribute
+        to the now-active session, not the one this recorder was built for)."""
+        self._session_id = session_id
+
     def record(self, delta: RunUsage) -> None:
         try:
             inp = int(delta.input_tokens or 0)

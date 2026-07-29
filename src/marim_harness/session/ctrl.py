@@ -33,7 +33,7 @@ from ..compaction import (
 from ..hooks import events as hook_events
 from ..hooks.runner import HookVerdict, base_payload
 from ..runtime.deps import Deps
-from ..stats.recorder import StatsRecorder
+from ..stats.recorder import LedgerStatsRecorder, StatsRecorder
 from ..workspace.scratchpad import persist_elided
 from .store import SessionInfo, SessionManager, SessionStore
 
@@ -476,6 +476,8 @@ class SessionController:
                 "(elided pointers masked, offload handles annotated)", n_dangling,
             )
         self.store = store
+        if isinstance(self.stats_recorder, LedgerStatsRecorder):
+            self.stats_recorder.set_session_id(store.session_id)
         self.history = history
         self.usage = usage
         # Per-request context size isn't persisted, and it belongs to the process
@@ -566,6 +568,8 @@ class SessionController:
             return
         self.cancel_autoname()
         self.store = self.manager.create(name)
+        if isinstance(self.stats_recorder, LedgerStatsRecorder):
+            self.stats_recorder.set_session_id(self.store.session_id)
         if model_id is not None:
             self.store.model = model_id
         self.history = []

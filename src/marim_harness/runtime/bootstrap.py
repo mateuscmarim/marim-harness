@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ..command_policy import CommandPolicy
 from ..compaction import make_summarizer, make_titler
@@ -24,7 +25,26 @@ from .deps import Deps, TrustState, UIHooks, WorkspaceConfig
 from .harness import Harness
 from .permissions import Mode
 
+if TYPE_CHECKING:
+    from ..stats.ledger import StatsLedger
+
 logger = logging.getLogger(__name__)
+
+
+def _build_stats_ledger(workspace: Path, *, enabled: bool) -> StatsLedger | None:
+    """The stats ledger, or None when MARIM_STATS is off. Extracted out of
+    build_harness to keep it under the cyclomatic-complexity ceiling."""
+    if not enabled:
+        return None
+    from ..stats.ledger import (
+        StatsLedger,
+        default_sessions_base,
+        default_stats_base,
+        workspace_slug,
+    )
+
+    sessions_base = default_sessions_base()
+    return StatsLedger(default_stats_base(sessions_base), workspace_slug(workspace))
 
 
 def build_lsp_registry(workspace: Path, *, trust_project: bool) -> LspRegistry:
@@ -111,6 +131,8 @@ def build_harness(
         latest = manager.latest() if resume else None
         store = manager.store(latest.id) if latest is not None else manager.create()
 
+    stats_ledger = _build_stats_ledger(workspace, enabled=cfg.stats_enabled)
+
     # When starting fresh (not resuming, no explicit session), pick up the model
     # from the most recent session so the user doesn't have to re-select it after
     # every restart. Resumed/explicit sessions get theirs via harness.resume().
@@ -182,6 +204,7 @@ def build_harness(
             model_label=model_source.label(model_id),
             store=store,
             manager=manager,
+            stats_ledger=stats_ledger,
             max_context_tokens=cfg.max_context_tokens,
             # Window discovery covers EVERY active provider (the same set the
             # MultiModelSource above routes across): /model can switch to a
