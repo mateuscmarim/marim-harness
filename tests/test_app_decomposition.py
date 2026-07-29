@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from marim_harness.interfaces.tui.status import StatusPresenter
+from marim_harness.interfaces.tui.widgets.status_bar import StatusBar
 from tests.conftest import _make_deps
 
 
@@ -22,7 +23,7 @@ def _app(tmp_path):
 @pytest.mark.anyio
 async def test_status_presenter_owns_busy_and_drives_title(tmp_path: Path):
     app = _app(tmp_path)
-    assert isinstance(app.status, StatusPresenter)
+    assert isinstance(app.status, StatusBar)
     async with app.run_test() as pilot:
         await pilot.pause()
         app.status.set_busy(True)
