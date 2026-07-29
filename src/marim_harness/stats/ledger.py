@@ -40,58 +40,98 @@ def event_to_dict(event: TurnEvent) -> dict:
     return asdict(event)
 
 
-def event_from_dict(data: dict) -> TurnEvent | None:
+def _as_int(value: object) -> int:
+    """Token counts as a plain ``int``, whatever JSON handed us.
+
+    A ledger line is only ever read back, never trusted: a float, a numeric
+    string, or ``None`` from a hand-edited or older file must not leak a
+    non-``int`` into the pure query layer (where it would silently poison
+    sums or raise on comparison). Anything uncoercible counts as zero.
+    """
+    if isinstance(value, bool) or value is None:
+        return 0
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+
+
+def _as_float(value: object) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def event_from_dict(data: object) -> TurnEvent | None:
     if not isinstance(data, dict):
         return None
     if data.get("v") != 1:
         return None
     session_id = data.get("session_id")
     day = data.get("day")
-    if not session_id or not day:
+    if not isinstance(session_id, str) or not isinstance(day, str) or not session_id:
         return None
     try:
-        return TurnEvent(
-            v=1,
-            ts=data.get("ts", ""),
-            day=day,
-            session_id=session_id,
-            workspace=data.get("workspace", ""),
-            model=data.get("model"),
-            input_tokens=data.get("input_tokens", 0),
-            output_tokens=data.get("output_tokens", 0),
-            cache_read_tokens=data.get("cache_read_tokens", 0),
-            cache_write_tokens=data.get("cache_write_tokens", 0),
-            cost_usd=data.get("cost_usd"),
-            cost_is_exact=data.get("cost_is_exact", False),
-            session_duration_seconds=data.get("session_duration_seconds"),
-        )
-    except (TypeError, ValueError):
+        # The query layer parses ``day`` unguarded, so a line whose day isn't
+        # a real ISO date is dropped here rather than blowing up a report.
+        date.fromisoformat(day)
+    except ValueError:
         return None
+    model = data.get("model")
+    return TurnEvent(
+        v=1,
+        ts=str(data.get("ts", "")),
+        day=day,
+        session_id=session_id,
+        workspace=str(data.get("workspace", "")),
+        model=model if isinstance(model, str) else None,
+        input_tokens=_as_int(data.get("input_tokens")),
+        output_tokens=_as_int(data.get("output_tokens")),
+        cache_read_tokens=_as_int(data.get("cache_read_tokens")),
+        cache_write_tokens=_as_int(data.get("cache_write_tokens")),
+        cost_usd=_as_float(data.get("cost_usd")),
+        cost_is_exact=bool(data.get("cost_is_exact", False)),
+        session_duration_seconds=_as_float(data.get("session_duration_seconds")),
+    )
 
 
 def iter_turns(path: Path) -> Iterator[TurnEvent]:
+    """Stream events out of a ledger file, skipping anything unreadable.
+
+    Read line-by-line (not whole-file) so a multi-megabyte ledger costs one
+    line of memory, and with ``errors="replace"`` so a torn or non-UTF-8 line
+    — a partial write, a truncated tail, an unrelated file at this path —
+    degrades into a JSON parse failure we skip, never a ``UnicodeDecodeError``
+    that would take down the whole query.
+    """
     path = Path(path)
     try:
-        lines = path.read_text().splitlines()
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            for lineno, raw in enumerate(f, start=1):
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    logger.debug("stats ledger: skipping corrupt line %s:%d", path, lineno)
+                    continue
+                event = event_from_dict(data)
+                if event is None:
+                    logger.debug("stats ledger: skipping unusable event %s:%d", path, lineno)
+                    continue
+                yield event
     except OSError:
         return
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            data = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        event = event_from_dict(data)
-        if event is not None:
-            yield event
 
 
 def _append_line(path: Path, line: str) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a") as f:
+        with path.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
             f.flush()
     except (OSError, TypeError) as exc:

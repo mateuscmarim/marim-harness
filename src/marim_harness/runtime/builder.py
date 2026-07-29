@@ -318,12 +318,6 @@ class HarnessBuilder:
         self, problems: list[str]
     ) -> tuple[SessionManager | None, SessionStore | None, StatsLedger | None]:
         from ..session import SessionManager
-        from ..stats.ledger import (
-            StatsLedger,
-            default_sessions_base,
-            default_stats_base,
-            workspace_slug,
-        )
 
         manager = store = ledger = None
         if self._sessions:
@@ -335,6 +329,15 @@ class HarnessBuilder:
             else:
                 store = manager.create()
                 if self._stats_enabled:
+                    # Deferred to the branch that needs it: a stats-off build
+                    # should not pay to import the ledger module at all.
+                    from ..stats.ledger import (
+                        StatsLedger,
+                        default_sessions_base,
+                        default_stats_base,
+                        workspace_slug,
+                    )
+
                     sessions_base = self._sessions_dir or default_sessions_base()
                     stats_base = self._stats_dir or default_stats_base(sessions_base)
                     ledger = StatsLedger(stats_base, workspace_slug(self._workspace))

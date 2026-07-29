@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from pydantic_ai.models import Model
 
     from ..config.context_limits import ContextLimits
+    from ..stats.recorder import StatsRecorder
 
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.usage import RunUsage
@@ -33,7 +34,6 @@ from ..compaction import (
 from ..hooks import events as hook_events
 from ..hooks.runner import HookVerdict, base_payload
 from ..runtime.deps import Deps
-from ..stats.recorder import LedgerStatsRecorder, StatsRecorder
 from ..workspace.scratchpad import persist_elided
 from .store import SessionInfo, SessionManager, SessionStore
 
@@ -221,6 +221,21 @@ class SessionController:
     @property
     def total_tokens(self) -> int:
         return self.usage.total_tokens
+
+    def _repoint_stats(self, session_id: str) -> None:
+        """Repoint the stats recorder at ``session_id`` after a session swap.
+
+        Duck-typed on purpose. Naming the concrete ``LedgerStatsRecorder``
+        here would make ``session`` import ``stats`` at module scope, and
+        ``stats.ledger`` already imports ``session.store`` — that cycle makes
+        ``import marim_harness.stats`` fail outright in a cold process. Only
+        the type-checking import of the ``StatsRecorder`` protocol is kept.
+        Recorders that don't track a session id (the null one) simply lack
+        the attribute.
+        """
+        setter = getattr(self.stats_recorder, "set_session_id", None)
+        if setter is not None:
+            setter(session_id)
 
     def add_usage(self, delta: RunUsage) -> None:
         """Bank ``delta`` into the session total and best-effort record it
@@ -476,8 +491,7 @@ class SessionController:
                 "(elided pointers masked, offload handles annotated)", n_dangling,
             )
         self.store = store
-        if isinstance(self.stats_recorder, LedgerStatsRecorder):
-            self.stats_recorder.set_session_id(store.session_id)
+        self._repoint_stats(store.session_id)
         self.history = history
         self.usage = usage
         # Per-request context size isn't persisted, and it belongs to the process
@@ -568,8 +582,7 @@ class SessionController:
             return
         self.cancel_autoname()
         self.store = self.manager.create(name)
-        if isinstance(self.stats_recorder, LedgerStatsRecorder):
-            self.stats_recorder.set_session_id(self.store.session_id)
+        self._repoint_stats(self.store.session_id)
         if model_id is not None:
             self.store.model = model_id
         self.history = []

@@ -153,6 +153,68 @@ def test_models_share_and_series():
     assert last == {"sonnet": 50, "opus": 10}
 
 
+def test_models_series_spans_bounded_window():
+    """A 7d report covers all 7 days, even though only today has data."""
+    today = date(2026, 7, 28)
+    r = models([_e("2026-07-28", inp=1, out=1)], "7d", today=today)
+    assert len(r.series) == 7
+    assert r.series[0].day == "2026-07-22"  # today - 6
+    assert r.series[-1].day == "2026-07-28"
+    assert [d.by_model for d in r.series[:-1]] == [{}] * 6
+    assert r.series[-1].by_model == {"opus": 2}
+
+
+def test_models_series_30d_window():
+    today = date(2026, 7, 28)
+    r = models([_e("2026-07-20")], "30d", today=today)
+    assert len(r.series) == 30
+    assert r.series[0].day == "2026-06-29"  # today - 29
+    assert r.series[-1].day == "2026-07-28"
+    assert r.series[21].by_model == {"opus": 150}
+
+
+def test_models_series_empty_bounded_range_is_full_zero_window():
+    today = date(2026, 7, 28)
+    r = models([], "7d", today=today)
+    assert len(r.series) == 7
+    assert all(d.by_model == {} for d in r.series)
+    assert r.totals == []
+
+
+def test_models_series_empty_all_range_is_empty():
+    """``all`` has no window start, so with no data there is nothing to span."""
+    r = models([], "all", today=date(2026, 7, 28))
+    assert r.series == []
+
+
+def test_models_series_all_range_spans_min_day_through_today():
+    today = date(2026, 7, 28)
+    r = models([_e("2026-07-25")], "all", today=today)
+    assert [d.day for d in r.series] == [
+        "2026-07-25", "2026-07-26", "2026-07-27", "2026-07-28",
+    ]
+
+
+def test_models_series_extends_past_today_for_future_events():
+    """Clock skew / hand-edited days must not make series and totals disagree."""
+    today = date(2026, 7, 28)
+    r = models([_e("2026-07-30", inp=3, out=4)], "7d", today=today)
+    assert r.series[0].day == "2026-07-22"
+    assert r.series[-1].day == "2026-07-30"
+    assert len(r.series) == 9
+    assert r.series[-1].by_model == {"opus": 7}
+    # the event is in the totals, so it must be somewhere in the series too
+    assert r.totals[0].total_tokens == 7
+
+
+def test_models_series_absurd_future_day_is_bounded():
+    """A single garbage day must not allocate millions of entries."""
+    today = date(2026, 7, 28)
+    r = models([_e("9999-01-01")], "7d", today=today)
+    assert len(r.series) == 3660
+    assert r.series[0].day == "2026-07-22"
+
+
 def test_unknown_model_bucket():
     today = date(2026, 7, 28)
     o = overview([_e("2026-07-28", model=None)], "all", today=today)

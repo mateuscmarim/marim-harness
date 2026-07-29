@@ -73,17 +73,20 @@ provider payloads one `git add -A` away from being committed.
 
 ## Stats ledger
 
-Usage-per-turn deltas are collected into a dual JSONL ledger stored
-under `{sessions_base}/stats/{global,<workspace-slug>}/turns.jsonl`.
-Query via `marim_harness.stats.load_overview()` and `load_models()` to get
+Usage-per-turn deltas are collected into a dual JSONL ledger stored under
+`{stats_base}/{global,<workspace-slug>}/turns.jsonl`. By default `stats_base`
+is a **sibling** of the sessions dir, not a child of it: a sessions base of
+`…/marim-harness/sessions` puts the ledger at `…/marim-harness/stats`
+(any other sessions base gets a `stats/` subdirectory instead). Override it
+with `with_sessions(stats_dir=…)`. Query via `marim_harness.stats.load_overview()` and `load_models()` to get
 aggregated stats (per-model token counts, cost, usage streaks). The ledger
 is never backfilled from old sessions; deltas come from `SessionController.add_usage`,
 which is invoked automatically at each turn's end during normal operation.
 
 To disable stats collection entirely, pass `stats=False` to `with_sessions()`
-or set `MARIM_STATS=0` in the environment. Stats files are fully scoped to
-your sessions base and can be wiped by deleting the `stats/` directory —
-no prompts or tool content is ever stored.
+or set `MARIM_STATS=0` in the environment. Stats files stay inside the data
+directory your sessions base lives in and can be wiped by deleting the
+`stats/` directory — no prompts or tool content is ever stored.
 
 ## Quick reference: what can touch disk, and when
 

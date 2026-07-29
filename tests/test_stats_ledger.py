@@ -189,3 +189,103 @@ def test_load_models_workspace_and_global(tmp_path: Path):
     assert [t.model for t in mw.totals] == ["opus"]
     mg = load_models("global", "all", stats_base=tmp_path, today=today)
     assert {t.model for t in mg.totals} == {"opus", "haiku"}
+
+
+def test_stats_package_cold_import():
+    """``marim_harness.stats`` must import in a process that has imported
+    nothing else. ``stats.ledger`` imports ``session.store`` (which drags in
+    ``session/__init__`` → ``session.ctrl``), so any module-level import back
+    into ``stats`` from the session package closes a cycle that only shows up
+    cold — a warm test session masks it entirely. Hence the subprocess.
+    """
+    import subprocess
+    import sys
+
+    r = subprocess.run(
+        [sys.executable, "-c",
+         "from marim_harness.stats import load_overview, overview, StatsLedger"],
+        capture_output=True, text=True, check=False,
+    )
+    assert r.returncode == 0, r.stderr
+
+
+def test_session_package_cold_import():
+    """The mirror direction: importing the session package first must not
+    break either."""
+    import subprocess
+    import sys
+
+    r = subprocess.run(
+        [sys.executable, "-c",
+         "import marim_harness.session; import marim_harness.stats"],
+        capture_output=True, text=True, check=False,
+    )
+    assert r.returncode == 0, r.stderr
+
+
+def test_iter_turns_skips_undecodable_and_corrupt_lines(tmp_path: Path):
+    """A torn write or a stray non-UTF-8 byte must not sink the whole read."""
+    from marim_harness.stats.ledger import event_to_dict
+
+    good = json.dumps(event_to_dict(_event(session_id="keep", input_tokens=42)))
+    path = tmp_path / "turns.jsonl"
+    path.write_bytes(
+        b"\xff\xfe not utf-8 at all\n"
+        + b'{"v":1,"session_id":"torn","day":"2026-07-2\n'  # truncated json
+        + b"\n"
+        + good.encode("utf-8") + b"\n"
+    )
+
+    events = list(iter_turns(path))
+    assert [e.session_id for e in events] == ["keep"]
+    assert events[0].input_tokens == 42
+
+
+def test_iter_turns_skips_bad_day_and_wrong_types(tmp_path: Path):
+    path = tmp_path / "turns.jsonl"
+    path.write_text(
+        json.dumps({"v": 1, "session_id": "s", "day": "not-a-date"}) + "\n"
+        + json.dumps({"v": 1, "session_id": 123, "day": "2026-07-28"}) + "\n"
+        + json.dumps({"v": 2, "session_id": "s", "day": "2026-07-28"}) + "\n"
+        + json.dumps({"v": 1, "session_id": "ok", "day": "2026-07-28"}) + "\n",
+        encoding="utf-8",
+    )
+    events = list(iter_turns(path))
+    assert [e.session_id for e in events] == ["ok"]
+
+
+def test_event_from_dict_coerces_numeric_fields():
+    e = event_from_dict({
+        "v": 1,
+        "session_id": "s",
+        "day": "2026-07-28",
+        "input_tokens": "120",       # numeric string
+        "output_tokens": 30.0,       # float
+        "cache_read_tokens": None,   # missing/null
+        "cache_write_tokens": "nope",  # uncoercible
+        "cost_usd": "0.25",
+        "session_duration_seconds": "12",
+        "model": 7,                  # not a string
+    })
+    assert e is not None
+    assert (e.input_tokens, e.output_tokens) == (120, 30)
+    assert (e.cache_read_tokens, e.cache_write_tokens) == (0, 0)
+    assert e.cost_usd == 0.25
+    assert e.session_duration_seconds == 12.0
+    assert e.model is None
+    assert all(isinstance(v, int) for v in
+               (e.input_tokens, e.output_tokens, e.cache_read_tokens, e.cache_write_tokens))
+
+
+def test_event_from_dict_rejects_non_dict():
+    assert event_from_dict(["not", "a", "dict"]) is None
+    assert event_from_dict(None) is None
+
+
+def test_ledger_roundtrip_survives_non_ascii_workspace(tmp_path: Path):
+    """Append writes UTF-8 explicitly, so a non-ASCII slug survives a locale
+    whose default encoding isn't UTF-8."""
+    ledger = StatsLedger(tmp_path, "projeto-café-中文")
+    ledger.append(_event(workspace="projeto-café-中文"))
+    events = list(ledger.iter_workspace())
+    assert [e.workspace for e in events] == ["projeto-café-中文"]

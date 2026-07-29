@@ -20,6 +20,7 @@ from .types import (
 )
 
 _HEATMAP_DAYS = 365
+_MAX_SERIES_DAYS = 3660
 
 
 def _utc_today() -> date:
@@ -186,9 +187,39 @@ def _model_totals(ranged: list[TurnEvent]) -> list[ModelTotal]:
     return totals
 
 
-def _day_model_series(ranged: list[TurnEvent], today: date) -> list[DayModelSeries]:
-    if not ranged:
+def _series_window(
+    ranged: list[TurnEvent], range: Range, today: date
+) -> tuple[date, date] | None:
+    """The inclusive ``(start, end)`` day span the model series must cover.
+
+    A bounded range covers its whole window — every day from the window start
+    through today, data or not — so a caller can plot it directly without
+    reconstructing the missing days. ``"all"`` has no window start, so it runs
+    from the first day that actually has data (and is empty when nothing does).
+
+    ``end`` is never earlier than today, and stretches past it if the ledger
+    holds future-dated events (a clock skew, or a hand-edited file): dropping
+    them would make the totals and the series disagree.
+    """
+    days = {_parse_day(e.day) for e in ranged}
+    start = _range_start(range, today)
+    if start is None:  # "all"
+        if not days:
+            return None
+        start = min(min(days), today)
+    end = max(days | {today})
+    # Runaway guard, not a real limit: a single absurd day value ("9999-01-01")
+    # would otherwise allocate millions of entries. No plausible ledger reaches
+    # this, and the same bounding is why the heatmap is a fixed 365 days.
+    return start, min(end, start + timedelta(days=_MAX_SERIES_DAYS - 1))
+
+
+def _day_model_series(ranged: list[TurnEvent], range: Range, today: date) -> list[DayModelSeries]:
+    window = _series_window(ranged, range, today)
+    if window is None:
         return []
+    start, end = window
+
     day_model_totals: dict[date, dict[str, int]] = defaultdict(dict)
     for e in ranged:
         d = _parse_day(e.day)
@@ -196,21 +227,21 @@ def _day_model_series(ranged: list[TurnEvent], today: date) -> list[DayModelSeri
         key = _model_key(e)
         bucket[key] = bucket.get(key, 0) + _event_tokens(e)
 
-    min_day = min(day_model_totals)
-    span = (today - min_day).days + 1
-    return [
-        DayModelSeries(
-            day=(min_day + timedelta(days=i)).isoformat(),
-            by_model=dict(day_model_totals.get(min_day + timedelta(days=i), {})),
+    # Walked rather than indexed: ``range`` is shadowed by the parameter here.
+    series: list[DayModelSeries] = []
+    d = start
+    while d <= end:
+        series.append(
+            DayModelSeries(day=d.isoformat(), by_model=dict(day_model_totals.get(d, {})))
         )
-        for i in range(span)
-    ]
+        d += timedelta(days=1)
+    return series
 
 
 def models(events: Iterable[TurnEvent], range: Range, *, today: date | None = None) -> ModelsReport:
     today = today if today is not None else _utc_today()
     ranged = _filter_range(list(events), range, today)
     return ModelsReport(
-        series=_day_model_series(ranged, today),
+        series=_day_model_series(ranged, range, today),
         totals=_model_totals(ranged),
     )
