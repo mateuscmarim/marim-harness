@@ -34,15 +34,25 @@ class SessionLoadError(Exception):
     empty history would look like the conversation was lost."""
 
 
-def _default_base_dir() -> Path:
+def default_sessions_base() -> Path:
     base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
     return Path(base) / "marim-harness" / "sessions"
 
 
+# Old private name, kept as an alias for internal call sites.
+_default_base_dir = default_sessions_base
+
+
+def workspace_slug(workspace_root: Path | str) -> str:
+    """Stable per-workspace directory name: ``{name}-{sha256[:12]}``."""
+    root = Path(workspace_root).resolve()
+    digest = hashlib.sha256(str(root).encode()).hexdigest()[:12]
+    return f"{root.name}-{digest}"
+
+
 def _workspace_dir(base: Path, workspace_root: Path) -> Path:
     """A per-workspace directory holding one JSON file per named session."""
-    digest = hashlib.sha256(str(workspace_root).encode()).hexdigest()[:12]
-    return Path(base) / f"{workspace_root.name}-{digest}"
+    return Path(base) / workspace_slug(workspace_root)
 
 
 def _slugify(name: str) -> str:
