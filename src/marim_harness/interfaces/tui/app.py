@@ -62,6 +62,7 @@ from .widgets import (
     format_cost,
     human_tokens,
 )
+from .widgets.compact_notice import CompactNotice
 from .widgets.status_bar import StatusBar
 
 logger = logging.getLogger(__name__)
@@ -140,7 +141,6 @@ class HarnessApp(App):
             on_notice=self._on_session_notice,
             on_rename=self.session.on_rename,
         )
-        self._compacting_notice: NoticeMessage | None = None
         self._vision_caps: dict[str, bool | None] = {}
         self._turn_worker = None
         # Latch closing the window between "decided to start a turn" and the
@@ -194,6 +194,7 @@ class HarnessApp(App):
         yield TaskPanel()
         yield QueuePanel()
         yield self.status
+        yield CompactNotice()
         yield CommandAutocomplete(id="cmd-autocomplete")
         yield PromptInput(history=self._history)
         # The full-bleed sub-agents screen (hidden until ctrl+x). Its detail host
@@ -734,31 +735,15 @@ class HarnessApp(App):
         few seconds, which would otherwise be indistinguishable from a slow turn.
         Cleared by _on_compact when the work finishes. Called synchronously from
         run_turn; mount without awaiting."""
-        log = self.query_one("#log", VerticalScroll)
-        self._compacting_notice = NoticeMessage("compacting conversation…")
-        log.mount(self._compacting_notice)
-
-    def clear_compacting_notice(self) -> None:
-        """Remove the live "compacting…" indicator if it is still mounted.
-        Idempotent and exception-safe. Called from both the turn worker's finally
-        and the /compact worker's error path so a ``maybe_compact`` that raised
-        between ``on_compact_start()`` and ``on_compact()`` can never leave the
-        notice stranded on screen forever."""
-        if self._compacting_notice is not None:
-            try:
-                self._compacting_notice.remove()
-            except ValueError:
-                pass  # widget already removed; safe to ignore
-            finally:
-                self._compacting_notice = None
+        self.query_one(CompactNotice).compacting = True
 
     def _on_compact(self, before: int, after: int) -> None:
         """Note in the log when history was trimmed to stay under the token budget.
         Called synchronously from run_turn; mount without awaiting."""
         log = self.query_one("#log", VerticalScroll)
-        if self._compacting_notice is not None:
-            self._compacting_notice.remove()  # replace the live "compacting…" line
-            self._compacting_notice = None
+        notice = self.query_one(CompactNotice)
+        notice.compacting = False
+        notice.done = True
         # before == after means a (forced) compaction ran without shrinking — the
         # call exists only to clear the indicator above, so don't post a confusing
         # "compacted: N → N" line or re-surface a stale summary.
@@ -1262,5 +1247,5 @@ class HarnessApp(App):
             self.status.set_busy(False)
             # Guard against an orphaned compaction notice if maybe_compact raised
             # between on_compact_start() and on_compact(). Always try to clean up.
-            self.clear_compacting_notice()
+            self.query_one(CompactNotice).compacting = False
             await self._after_turn()  # drain next queued item, or wake on jobs

@@ -12,6 +12,7 @@ from marim_harness.interfaces.tui.commands import (
     resolve_ref,
 )
 from marim_harness.interfaces.tui.themes import THEME_NAMES
+from marim_harness.interfaces.tui.widgets.compact_notice import CompactNotice
 from marim_harness.mcp.manager import McpStatus
 from marim_harness.session import SessionInfo
 
@@ -29,7 +30,7 @@ class _FakeApp:
         self._turn_worker = None
         self.turn_busy = False
         self.compact_busy = False
-        self.compacting_notice_cleared = False
+        self._compact_notice = CompactNotice()
         self._worker_tasks: list[asyncio.Future] = []
         self.stream = SimpleNamespace(current_assistant="sentinel")
         self.harness = SimpleNamespace(
@@ -48,8 +49,9 @@ class _FakeApp:
         self.undone = False
         self.rewound: list[int] = []
 
-    def clear_compacting_notice(self) -> None:
-        self.compacting_notice_cleared = True
+    def query_one(self, selector):
+        assert selector is CompactNotice
+        return self._compact_notice
 
     async def post_system(self, msg: str) -> None:
         self.posted.append(msg)
@@ -697,5 +699,5 @@ async def test_compact_worker_reports_error_and_clears_notice():
     await dispatch(app, "/compact")
     await app.drain_workers()  # must not raise
     assert any("Compaction failed" in m and "disk full" in m for m in app.posted)
-    assert app.compacting_notice_cleared is True
+    assert "disk full" in app._compact_notice.error_msg
     assert app.compact_busy is False

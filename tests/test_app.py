@@ -1130,6 +1130,7 @@ async def test_compaction_shows_notice_in_log(tmp_path: Path):
 @pytest.mark.anyio
 async def test_compacting_indicator_shown_then_replaced(tmp_path: Path):
     from marim_harness.interfaces.tui.widgets import NoticeMessage
+    from marim_harness.interfaces.tui.widgets.compact_notice import CompactNotice
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:
@@ -1137,13 +1138,14 @@ async def test_compacting_indicator_shown_then_replaced(tmp_path: Path):
         # Compaction begins: the live "compacting…" indicator appears.
         app.harness.session.on_compact_start()
         await pilot.pause()
-        live = [str(n.render()) for n in app.query(NoticeMessage)]
-        assert any("compacting" in t.lower() for t in live)
+        notice = app.query_one(CompactNotice)
+        assert notice.compacting is True
+        assert "compacting" in str(notice.render()).lower()
         # Compaction finishes: the indicator is replaced by the result line.
         app.harness.session.on_compact(40, 10)
         await pilot.pause()
+        assert notice.compacting is False
         final = [str(n.render()) for n in app.query(NoticeMessage)]
-        assert not any("compacting conversation" in t.lower() for t in final)
         assert any("40" in t and "10" in t for t in final)
 
 
@@ -3782,14 +3784,17 @@ async def test_on_compact_noop_clears_indicator_without_message(tmp_path: Path):
     # A forced compaction that doesn't shrink calls _on_compact(before, before).
     # The "compacting…" notice must be cleared, and no misleading "compacted
     # history: N → N" line should be added.
+    from marim_harness.interfaces.tui.widgets.compact_notice import CompactNotice
+
     app = _app(tmp_path)
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         app._on_compact_start()
-        assert app._compacting_notice is not None
+        notice = app.query_one(CompactNotice)
+        assert notice.compacting is True
         app._on_compact(3, 3)  # no-shrink signal
         await pilot.pause()
-        assert app._compacting_notice is None  # indicator cleared
+        assert notice.compacting is False  # indicator cleared
         texts = [str(w.render()) for w in app.query(NoticeMessage)]
         assert not any("compacted history" in t for t in texts)
 
@@ -3797,13 +3802,15 @@ async def test_on_compact_noop_clears_indicator_without_message(tmp_path: Path):
 @pytest.mark.anyio
 async def test_on_compact_shrink_shows_message(tmp_path: Path):
     # A real compaction (after < before) still posts the summary line.
+    from marim_harness.interfaces.tui.widgets.compact_notice import CompactNotice
+
     app = _app(tmp_path)
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         app._on_compact_start()
         app._on_compact(10, 4)
         await pilot.pause()
-        assert app._compacting_notice is None
+        assert app.query_one(CompactNotice).compacting is False
         texts = [str(w.render()) for w in app.query(NoticeMessage)]
         assert any("compacted history: 10 → 4" in t for t in texts)
 

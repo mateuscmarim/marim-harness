@@ -18,6 +18,7 @@ from ...runtime.permissions import Mode
 from ...thinking import THINKING_LEVELS, parse_thinking_level
 from ...workspace import discover_skills
 from .themes import THEME_NAMES
+from .widgets.compact_notice import CompactNotice
 
 if TYPE_CHECKING:
     from ...session.store import SessionInfo
@@ -84,7 +85,7 @@ async def _cmd_compact(app: HarnessApp, arg: str) -> None:
             # Mirror the turn worker's finally discipline: report and clean up.
             # Clear the notice BEFORE posting: if post_system itself raises
             # (UI mid-teardown) the notice must not strand.
-            app.clear_compacting_notice()
+            app.query_one(CompactNotice).error_msg = str(exc)
             await app.post_system(f"Compaction failed: {exc}")
             logger.warning("compaction failed", exc_info=True)
         finally:
