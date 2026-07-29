@@ -158,12 +158,3 @@ class StatusBar(Static):
             return
         self.spin = (self.spin + 1) % len(_SPINNER)
         self.refresh_title()
-
-    def refresh_status(self) -> None:
-        """Force a re-render — bridge for callers that don't set a specific reactive.
-
-        Ideally callers set a reactive value (e.g. ``self.status.mode = ...``)
-        which triggers an automatic re-render. This method exists so callers
-        that haven't been migrated yet still work — it forces a repaint by
-        calling Textual's ``refresh()``."""
-        self.refresh()
