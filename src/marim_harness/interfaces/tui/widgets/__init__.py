@@ -24,7 +24,7 @@ from .messages import (
     TurnMeta,
     UserMessage,
 )
-from .panels import JobPanel, QueuePanel, TaskPanel
+from .panels import JobPanel, TaskPanel
 from .prompt import PromptInput
 from .tools import ToolCallWidget, ToolGroupWidget
 
@@ -56,7 +56,6 @@ __all__ = [
     "UserMessage",
     # panels
     "JobPanel",
-    "QueuePanel",
     "TaskPanel",
     # input
     "PromptInput",

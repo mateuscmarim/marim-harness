@@ -54,7 +54,6 @@ from .widgets import (
     JobPanel,
     NoticeMessage,
     PromptInput,
-    QueuePanel,
     SummaryWidget,
     TaskPanel,
     TurnMeta,
@@ -63,6 +62,7 @@ from .widgets import (
     human_tokens,
 )
 from .widgets.compact_notice import CompactNotice
+from .widgets.queue_display import QueueDisplay
 from .widgets.status_bar import StatusBar
 
 logger = logging.getLogger(__name__)
@@ -192,7 +192,7 @@ class HarnessApp(App):
         yield VerticalScroll(id="log")
         yield JobPanel()
         yield TaskPanel()
-        yield QueuePanel()
+        yield QueueDisplay()
         yield self.status
         yield CompactNotice()
         yield CommandAutocomplete(id="cmd-autocomplete")
@@ -659,14 +659,15 @@ class HarnessApp(App):
             logger.warning("failed to start next turn", exc_info=True)
 
     def _render_queue(self) -> None:
-        """Repaint the queue panel from the current queue."""
+        """Repaint the queue display from the current queue."""
         if not self.is_running:
             return
         try:
-            panel = self.query_one(QueuePanel)
+            qd = self.query_one(QueueDisplay)
         except NoMatches:
             return  # tearing down; nothing to paint
-        panel.show_queue(self._queue.items, paused=self._queue.paused)
+        qd.items = list(self._queue.items)
+        qd.paused = self._queue.paused
 
     async def action_run_queued(self) -> None:
         """Resume a paused queue: clear the pause and start the next item."""
