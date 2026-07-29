@@ -175,6 +175,10 @@ to avoid import cycles.
   engine-level (`schema.py`, jsonschema). Never cancel the Monty VM task —
   aborts flow through host functions (see engine.py's module docstring).
   Optional extra `[workflows]`; `MARIM_WORKFLOWS` gates it.
+- `stats/` — dual-JSONL usage ledger collecting per-turn token counts and cost
+  deltas via `SessionController.add_usage`. Query via `load_overview()`/`load_models()`.
+  Scoped to sessions base; best-effort never fails a turn. Opt-out via `stats=False` or
+  `MARIM_STATS=0`. No backfill from old sessions; docs at `docs/sdk/sessions-and-state.md`.
 - `advisor.py` (root) — the advisor: an `advisor()` tool on the main agent
   forwards the full transcript to a separately-configured model
   (`MARIM_ADVISOR_MODEL`, any provider) and returns strategic guidance.
