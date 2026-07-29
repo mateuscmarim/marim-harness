@@ -71,6 +71,23 @@ something diagnosable behind.
 otherwise the first provider failure leaves an untracked directory of raw
 provider payloads one `git add -A` away from being committed.
 
+## Stats ledger
+
+Usage-per-turn deltas are collected into a dual JSONL ledger stored under
+`{stats_base}/{global,<workspace-slug>}/turns.jsonl`. By default `stats_base`
+is a **sibling** of the sessions dir, not a child of it: a sessions base of
+`…/marim-harness/sessions` puts the ledger at `…/marim-harness/stats`
+(any other sessions base gets a `stats/` subdirectory instead). Override it
+with `with_sessions(stats_dir=…)`. Query via `marim_harness.stats.load_overview()` and `load_models()` to get
+aggregated stats (per-model token counts, cost, usage streaks). The ledger
+is never backfilled from old sessions; deltas come from `SessionController.add_usage`,
+which is invoked automatically at each turn's end during normal operation.
+
+To disable stats collection entirely, pass `stats=False` to `with_sessions()`
+or set `MARIM_STATS=0` in the environment. Stats files stay inside the data
+directory your sessions base lives in and can be wiped by deleting the
+`stats/` directory — no prompts or tool content is ever stored.
+
 ## Quick reference: what can touch disk, and when
 
 | State | Bare build | Opt-in | Scopable to your dir? |
@@ -79,5 +96,6 @@ provider payloads one `git add -A` away from being committed.
 | Memory | off | `with_memory()` | `with_memory(dir=...)` |
 | Skills (read-only scan) | off | `with_skills()` | `with_skills(dirs=[...])` |
 | Global instructions / plugins (XDG read) | off | `with_defaults()` or `global_instructions=True` | no (XDG by definition) |
+| Stats ledger | off | `with_sessions()` (default on; `stats=False` / `MARIM_STATS=0` offs) | sibling `stats/` of sessions base (`with_sessions(dir=...)`) |
 | Workspace file edits | via gated tools | — | confined to `workspace` root |
 | `.marim/last-provider-error.json` | on hard provider failure | always (best-effort) | no — workspace-local |

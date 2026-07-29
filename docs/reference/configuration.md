@@ -361,6 +361,18 @@ removes all three. `MARIM_PROACTIVE_MEMORY` only switches which memory-policy
 instructions the model receives (proactive vs on-request); the
 `remember`/`recall` tools exist either way.
 
+## Stats ledger
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MARIM_STATS` | `1` (on) | Boolean. Per-turn usage recording into the stats ledger. |
+
+Each turn's token/cost delta is appended as one JSONL line to both a
+per-workspace and a global ledger file under
+`$XDG_DATA_HOME/marim-harness/stats`. Requires sessions to be on (in-memory
+sessions have no session id to attribute events to); `MARIM_STATS=0` disables
+recording without affecting sessions themselves.
+
 ## Misc & debug
 
 | Variable | Default | Purpose |

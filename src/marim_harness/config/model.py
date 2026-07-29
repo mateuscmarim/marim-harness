@@ -194,6 +194,10 @@ class ModelConfig:
     # advertised, writable, or approval-exempt (services.get_scratchpad
     # stays None).
     scratchpad_enabled: bool = True
+    # Stats ledger master switch. False ⇒ no StatsLedger is built and
+    # add_usage stays a plain in-memory +=, regardless of whether sessions
+    # are on. MARIM_STATS.
+    stats_enabled: bool = True
     # Dynamic workflows (the run_workflow tool) master switch. False ⇒ the
     # engine is never built, regardless of whether pydantic-monty is
     # installed (see HarnessConfig.workflows_enabled).
@@ -322,6 +326,7 @@ def _common_kwargs() -> dict[str, Any]:
         lsp_tools_enabled=_bool_env("MARIM_LSP_TOOLS", True),
         forge_enabled=_bool_env("MARIM_FORGE", True),
         scratchpad_enabled=_bool_env("MARIM_SCRATCHPAD", True),
+        stats_enabled=_bool_env("MARIM_STATS", True),
         workflows_enabled=_bool_env("MARIM_WORKFLOWS", True),
         workflow_timeout_secs=float(_int_env("MARIM_WORKFLOW_TIMEOUT", 1800)),
         job_tool_combined=_bool_env("MARIM_JOB_TOOL_COMBINED", False),

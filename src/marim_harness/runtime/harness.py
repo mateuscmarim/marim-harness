@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
     from ..config.model import ModelSource, MultiModelSource
     from ..forge.backend import ForgeBackend
+    from ..stats.ledger import StatsLedger
     from ..trust_surface import ProjectSurface
 
 from ..compaction import (
@@ -99,6 +100,11 @@ class HarnessConfig:
     model_label: str = "model"
     store: SessionStore | None = None
     manager: SessionManager | None = None
+    # The stats ledger (per-turn usage JSONL, dual-written workspace+global).
+    # None ⇒ no LedgerStatsRecorder is built and add_usage stays a plain
+    # in-memory +=; requires ``store`` too (see build_collaborators — a
+    # ledger event needs a session id to attribute to).
+    stats_ledger: StatsLedger | None = None
     max_context_tokens: int = 100_000
     keep_last_messages: int = 20
     summarizer: Summarizer | None = None
@@ -404,6 +410,23 @@ def build_collaborators(
     # call, so a runtime /model switch re-keys thresholds without rewiring —
     # the same closure trick get_model itself uses.
     get_model_id = lambda: getattr(get_model(), "model_name", None)  # noqa: E731
+    # Late-binding holder: LedgerStatsRecorder needs a duration getter that
+    # reads the SessionController being constructed right below it (a
+    # chicken/egg the closure resolves by reading the holder lazily, once
+    # the controller has been appended to it).
+    session_holder: list[SessionController] = []
+    stats_recorder = None
+    if cfg.stats_ledger is not None and cfg.store is not None:
+        from ..stats.recorder import LedgerStatsRecorder
+
+        stats_recorder = LedgerStatsRecorder(
+            cfg.stats_ledger,
+            session_id=cfg.store.session_id,
+            get_model_id=get_model_id,
+            get_duration_seconds=lambda: (
+                session_holder[0].duration_snapshot() if session_holder else None
+            ),
+        )
     session = SessionController(
         cfg.store, cfg.manager, deps,
         cfg.max_context_tokens, cfg.keep_last_messages,
@@ -413,7 +436,9 @@ def build_collaborators(
         mask_min_chars=cfg.mask_min_chars,
         limits=limits,
         get_model_id=get_model_id,
+        stats_recorder=stats_recorder,
     )
+    session_holder.append(session)
     # Per-session checkpoints. Wire the real GitSnapshotter so rewind
     # restores working-tree files end-to-end.
     checkpoints = CheckpointManager(session, GitSnapshotter(deps.workspace.root))

@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from ..hooks import HookRunner
     from ..lsp.provider import LspRegistry
     from ..session import SessionManager, SessionStore
+    from ..stats.ledger import StatsLedger
     from ..workspace.agents import AgentDef
     from .harness import Harness
 
@@ -76,6 +77,8 @@ class HarnessBuilder:
         self._instructions_extra: list[str] = []
         self._sessions_dir: Path | None = None
         self._sessions = False
+        self._stats_enabled = True
+        self._stats_dir: Path | None = None
         self._memory_root: Path | None = None
         self._skill_dirs: tuple[Path, ...] | None = None
         self._mode = Mode.auto
@@ -169,9 +172,17 @@ class HarnessBuilder:
             self._instructions_extra.append(extra)
         return self
 
-    def with_sessions(self, dir: Path | None = None) -> HarnessBuilder:
+    def with_sessions(self, dir: Path | None = None, *, stats: bool = True,
+                      stats_dir: Path | None = None) -> HarnessBuilder:
+        """Turn on persisted sessions. ``stats`` (on by default when sessions
+        are on) additionally records per-turn usage into the stats ledger
+        under ``stats_dir`` (default: alongside the sessions dir — see
+        ``stats.ledger.default_stats_base``). Sessions off ⇒ no ledger either,
+        since there is no session id to attribute events to."""
         self._sessions = True
         self._sessions_dir = Path(dir) if dir is not None else None
+        self._stats_enabled = stats
+        self._stats_dir = Path(stats_dir) if stats_dir is not None else None
         return self
 
     def with_mode(self, mode: Mode) -> HarnessBuilder:
@@ -305,10 +316,10 @@ class HarnessBuilder:
 
     def _open_sessions(
         self, problems: list[str]
-    ) -> tuple[SessionManager | None, SessionStore | None]:
+    ) -> tuple[SessionManager | None, SessionStore | None, StatsLedger | None]:
         from ..session import SessionManager
 
-        manager = store = None
+        manager = store = ledger = None
         if self._sessions:
             try:
                 manager = SessionManager(self._workspace, base_dir=self._sessions_dir)
@@ -317,7 +328,20 @@ class HarnessBuilder:
                 problems.append(f"sessions dir is not usable: {exc}")
             else:
                 store = manager.create()
-        return manager, store
+                if self._stats_enabled:
+                    # Deferred to the branch that needs it: a stats-off build
+                    # should not pay to import the ledger module at all.
+                    from ..stats.ledger import (
+                        StatsLedger,
+                        default_sessions_base,
+                        default_stats_base,
+                        workspace_slug,
+                    )
+
+                    sessions_base = self._sessions_dir or default_sessions_base()
+                    stats_base = self._stats_dir or default_stats_base(sessions_base)
+                    ledger = StatsLedger(stats_base, workspace_slug(self._workspace))
+        return manager, store, ledger
 
     # -- build --------------------------------------------------------------
 
@@ -382,7 +406,7 @@ class HarnessBuilder:
         grantable = builtin_names | (LSP_TOOLS if self._lsp_tools else frozenset())
         self._check_subagent_grants(grantable, problems)
 
-        manager, store = self._open_sessions(problems)
+        manager, store, stats_ledger = self._open_sessions(problems)
 
         if problems:
             raise BuilderError(problems)
@@ -445,6 +469,7 @@ class HarnessBuilder:
             capabilities=list(self._capabilities),
             store=store,
             manager=manager,
+            stats_ledger=stats_ledger,
             summarizer=make_summarizer(model),
             titler=make_titler(model),
         )

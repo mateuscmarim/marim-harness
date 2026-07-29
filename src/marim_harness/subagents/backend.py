@@ -41,7 +41,7 @@ class SpawnRun:
       the process's emitted transcript).
     - ``usage`` — spend to fold into the session: a ``RunUsage`` either way,
       since ``cli_backend.synth_usage`` builds one from the CLI process's
-      reported usage block too, so ``session.usage += x`` always applies.
+      reported usage block too, so ``session.add_usage(x)`` always applies.
     - ``final_meta`` — the terminal sidecar meta to stamp (``None`` when the
       spawn had no stream id, i.e. nothing was persisted).
     - ``child_transcripts`` — CLI-only: the demuxed Claude-side Agent/Task

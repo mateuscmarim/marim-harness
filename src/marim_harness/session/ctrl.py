@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from pydantic_ai.models import Model
 
     from ..config.context_limits import ContextLimits
+    from ..stats.recorder import StatsRecorder
 
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.usage import RunUsage
@@ -146,6 +147,7 @@ class SessionController:
         mask_min_chars: int = 200,
         limits: ContextLimits | None = None,
         get_model_id: Callable[[], str | None] | None = None,
+        stats_recorder: StatsRecorder | None = None,
     ) -> None:
         self.store = store
         self.manager = manager
@@ -154,6 +156,7 @@ class SessionController:
         self.keep_last_messages = keep_last_messages
         self.summarizer = summarizer
         self.titler = titler
+        self.stats_recorder = stats_recorder
         # When set, compaction also elides older tool-observation payloads in the
         # retained tail (see mask_stale_observations). Off by default so the
         # behaviour is opt-in for non-TUI/embedding callers; the harness wires the
@@ -218,6 +221,43 @@ class SessionController:
     @property
     def total_tokens(self) -> int:
         return self.usage.total_tokens
+
+    def _repoint_stats(self, session_id: str) -> None:
+        """Repoint the stats recorder at ``session_id`` after a session swap.
+
+        Duck-typed on purpose. Naming the concrete ``LedgerStatsRecorder``
+        here would make ``session`` import ``stats`` at module scope, and
+        ``stats.ledger`` already imports ``session.store`` — that cycle makes
+        ``import marim_harness.stats`` fail outright in a cold process. Only
+        the type-checking import of the ``StatsRecorder`` protocol is kept.
+        Recorders that don't track a session id (the null one) simply lack
+        the attribute.
+        """
+        setter = getattr(self.stats_recorder, "set_session_id", None)
+        if setter is not None:
+            setter(session_id)
+
+    def add_usage(self, delta: RunUsage) -> None:
+        """Bank ``delta`` into the session total and best-effort record it
+        in the stats ledger. Every call site that used to do
+        ``session.usage += x`` must go through here so spend cannot be
+        double-counted or forgotten by the ledger."""
+        self.usage += delta
+        rec = self.stats_recorder
+        if rec is not None:
+            try:
+                rec.record(delta)
+            except Exception:
+                # Recorder implementations already swallow I/O errors; this
+                # guard keeps a buggy recorder from aborting a turn.
+                logger.exception("stats_recorder.record failed")
+
+    def duration_snapshot(self) -> float:
+        """The session's active-time total as of right now, folding in the
+        open segment (if any) without mutating ``duration_seconds`` — mirrors
+        the ``elapsed`` computation ``persist`` uses for the on-disk value."""
+        elapsed = (time.monotonic() - self._segment_start) if self._segment_start else 0.0
+        return self.duration_seconds + elapsed
 
     @property
     def compact_threshold(self) -> int:
@@ -451,6 +491,7 @@ class SessionController:
                 "(elided pointers masked, offload handles annotated)", n_dangling,
             )
         self.store = store
+        self._repoint_stats(store.session_id)
         self.history = history
         self.usage = usage
         # Per-request context size isn't persisted, and it belongs to the process
@@ -541,6 +582,7 @@ class SessionController:
             return
         self.cancel_autoname()
         self.store = self.manager.create(name)
+        self._repoint_stats(self.store.session_id)
         if model_id is not None:
             self.store.model = model_id
         self.history = []
