@@ -3,6 +3,8 @@ turn queue, parked asks, interrupt, steer — observed through the event bus."""
 
 import asyncio
 import json as _json
+import os
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -91,16 +93,46 @@ def _edit_model() -> FunctionModel:
     return FunctionModel(fn, stream_function=stream_fn)
 
 
-async def _wait_for(predicate, timeout=5.0):
-    deadline = asyncio.get_running_loop().time() + timeout
+# Wall-clock budget for the polling helpers below. Deliberately generous, because
+# it only bounds the *failing* path: a wait that is going to succeed returns as
+# soon as its predicate flips, so raising this costs a passing run nothing. The
+# old 5s budget was tight enough that runner load alone could break it — this
+# suite finishes in ~50s on a developer machine but has taken ~295s on the CI
+# 3.12 leg, and at that ~6x dilation a genuinely-correct wake arrived after the
+# deadline. What actually catches a real hang is pytest-timeout's 120s per-test
+# ceiling (see [tool.pytest.ini_options] in pyproject.toml), which kills the test
+# with a stack dump instead of silently reporting "not reached in time".
+_WAIT_TIMEOUT = float(os.environ.get("MARIM_TEST_WAIT_TIMEOUT", "30"))
+
+
+async def _wait_for(
+    predicate, timeout: float | None = None, what: str | Callable[[], str] = "condition"
+):
+    """Poll ``predicate`` until it is true or the budget expires.
+
+    ``what`` describes what is being awaited and may be a callable, resolved only
+    on failure — that lets a caller quote live state (the events seen so far) in
+    the message without paying to build it on every successful wait.
+    """
+    # `is None`, not `or`: an explicit timeout=0 is a legitimate "fail on the first
+    # unmet check" and must not be swallowed as unset.
+    deadline = asyncio.get_running_loop().time() + (
+        _WAIT_TIMEOUT if timeout is None else timeout
+    )
     while not predicate():
         if asyncio.get_running_loop().time() > deadline:
-            raise AssertionError("condition not reached in time")
+            raise AssertionError(f"{what() if callable(what) else what} not reached in time")
         await asyncio.sleep(0.01)
 
 
-async def _drain_until(bus_events: list, type_: str, timeout=5.0):
-    await _wait_for(lambda: any(e.type == type_ for e in bus_events), timeout)
+async def _drain_until(bus_events: list, type_: str, timeout: float | None = None):
+    await _wait_for(
+        lambda: any(e.type == type_ for e in bus_events),
+        timeout,
+        # Built lazily: the list is still filling while we wait, so a snapshot
+        # taken at call time would always read as empty.
+        what=lambda: f"event {type_!r} (saw {[e.type for e in bus_events]})",
+    )
     return next(e for e in bus_events if e.type == type_)
 
 
@@ -115,6 +147,23 @@ def _spy(bus: EventBus) -> list:
 
     bus.publish = publish  # type: ignore[method-assign]
     return events
+
+
+async def test_wait_for_timeout_reports_observed_state():
+    """A timed-out wait must say what it saw, not just that it gave up.
+
+    The bare "condition not reached in time" message cost real diagnosis time on a
+    CI failure: it named neither the awaited condition nor the events that *did*
+    arrive. Both forms of ``what`` are covered here, including that the callable is
+    resolved at failure time rather than at call time.
+    """
+    seen = ["turn.started", "turn.finished"]
+    with pytest.raises(AssertionError, match=r"event 'wake' \(saw \['turn.started'"):
+        await _wait_for(
+            lambda: False, timeout=0.0, what=lambda: f"event 'wake' (saw {seen})"
+        )
+    with pytest.raises(AssertionError, match="host idle not reached in time"):
+        await _wait_for(lambda: False, timeout=0.0, what="host idle")
 
 
 async def test_simple_turn_publishes_lifecycle_events(tmp_path):
@@ -284,8 +333,12 @@ async def test_job_settled_mid_turn_wakes_after_turn_ends(tmp_path):
     assert [e for e in events
             if e.type == "turn.started" and e.data.get("trigger") == "autonomous"] == []
     release.set()                                 # let the user turn finish
-    await _wait_for(lambda: any(
-        e.type == "turn.started" and e.data.get("trigger") == "autonomous"
-        for e in events))
-    await _wait_for(lambda: host.status == "idle")
+    await _wait_for(
+        lambda: any(
+            e.type == "turn.started" and e.data.get("trigger") == "autonomous"
+            for e in events),
+        what=lambda: f"autonomous turn.started after the user turn (saw "
+                     f"{[(e.type, e.data.get('trigger')) for e in events]})",
+    )
+    await _wait_for(lambda: host.status == "idle", what="host idle")
     await host.aclose()
