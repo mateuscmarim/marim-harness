@@ -115,3 +115,22 @@ def test_refresh_title_swallows_driver_errors_during_teardown():
         assert fake_app.title == "● s"  # in-app Header still updated
     finally:
         active_app.reset(token)
+
+
+@pytest.mark.anyio
+async def test_app_exposes_its_collaborators_with_no_shims(tmp_path: Path):
+    """The queue, out-of-turn activity, and the live model pickers each own their
+    own state and are reached through a named attribute. Asserting the old
+    private names are *gone* is the point: a leftover ``_queue``/``_wake`` shim
+    would let a call site keep bypassing the collaborator (and its repaint /
+    depth-cap bookkeeping) without anything failing."""
+    from marim_harness.interfaces.tui.activity import ActivityMonitor
+    from marim_harness.interfaces.tui.pickers import ModelPickers
+    from marim_harness.interfaces.tui.queue_control import QueueController
+
+    app = _app(tmp_path)
+    assert isinstance(app.queue, QueueController)
+    assert isinstance(app.activity, ActivityMonitor)
+    assert isinstance(app.pickers, ModelPickers)
+    for gone in ("_queue", "_wake", "_vision_caps", "_job_notifier"):
+        assert not hasattr(app, gone)

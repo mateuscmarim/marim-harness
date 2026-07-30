@@ -1,7 +1,6 @@
 import logging
 import time
 from asyncio import CancelledError
-from datetime import datetime, timezone
 
 import rich.markup
 from pydantic_ai import ToolDenied
@@ -15,24 +14,20 @@ from textual.widgets import Footer, Header
 from ...jobs import JobRegistry
 from ...runtime.errors import format_provider_error
 from ...runtime.harness import Harness
-from ...runtime.wake import WakeController
-from ...runtime.wake_driver import WakeDriver
-from ...trust import record_decision
 from ...usage import resolve_cost
 from ..history import PromptHistory
 from ..prefs import load_theme, save_theme
+from .activity import ActivityMonitor
 from .commands import dispatch
 from .interactions import (
     ApprovalPanel,
     AskUserPanel,
     InteractionPanel,
     PlanCard,
-    TrustPanel,
     run_panel,
 )
-from .model_picker import ModelPickerModal
-from .notify import FinishedJobNotifier
-from .queue import TurnQueue
+from .pickers import ModelPickers
+from .queue_control import QueueController
 from .session_view import SessionView
 from .settings import SettingsScreen
 from .shell_passthrough import (
@@ -45,7 +40,7 @@ from .shell_passthrough import (
 from .stream_render import StreamRenderer
 from .subagents import SubAgentsScreen, SubAgentsView
 from .themes import MARIM_THEMES
-from .thinking_picker import ThinkingPickerModal
+from .trust_flow import prompt_project_trust
 from .widgets import (
     AssistantMessage,
     CommandAutocomplete,
@@ -53,7 +48,6 @@ from .widgets import (
     JobPanel,
     NoticeMessage,
     PromptInput,
-    SummaryWidget,
     TaskPanel,
     TurnMeta,
     UserMessage,
@@ -95,6 +89,21 @@ _WELCOME = (
 
 
 class HarnessApp(App):
+    """The interactive TUI.
+
+    This class is the Textual surface — bindings, compose, message handlers,
+    actions — plus the turn lifecycle, which is the one thing every other part
+    of the UI is timed against. Concerns with their own state and their own
+    invariants are collaborators constructed here and reachable as attributes:
+
+    - ``stream`` renders the model's output (stream_render.py)
+    - ``session`` rebuilds the log across new/switch/clear (session_view.py)
+    - ``queue`` holds submissions made mid-turn (queue_control.py)
+    - ``activity`` owns the panels, notifications and wake (activity.py)
+    - ``pickers`` opens the live model/advisor/thinking pickers (pickers.py)
+    - ``subagents`` drives the ctrl+x screen (subagents/screen.py)
+    """
+
     CSS_PATH = "styles.tcss"
     # Textual binds its command palette to ctrl+p with priority, which would
     # shadow the plain show_plan binding below and make the plan screen
@@ -121,6 +130,37 @@ class HarnessApp(App):
         # Recallable prompt history. Defaults to in-memory; the CLI passes a
         # persistent one so Up/Down recall prompts across restarts.
         self._history = history if history is not None else PromptHistory()
+        self._turn_worker = None
+        # Latch closing the window between "decided to start a turn" and the
+        # exclusive worker actually existing. start_turn awaits a mount before it
+        # can set _turn_worker, so without this a second submit landing in that gap
+        # would pass the _turn_worker guard and start a *duplicate* exclusive
+        # worker — which Textual resolves by silently cancelling the first, the
+        # exact hazard turn_busy exists to prevent. Set before the first await,
+        # cleared on every start_turn exit path.
+        self._turn_starting = False
+        # True while the /compact worker (group "compact") is mid-run. A
+        # summarize can take seconds, and starting a turn or rebinding the
+        # session store under it risks silent turn loss, cross-session history
+        # contamination (a late `self.history=…; persist()` after the store was
+        # swapped), and the only path to concurrent persist_elided calls. So the
+        # session-teardown/turn-start flows gate on it, symmetric with the guard
+        # /compact itself applies against turn_busy. Set in _cmd_compact, cleared
+        # in its worker's finally.
+        self.compact_busy = False
+        # Confirm-to-quit guard (see _QUIT_CONFIRM_WINDOW): timestamp of the last
+        # unconfirmed quit attempt, or None if there isn't one outstanding.
+        self._quit_warned_at: float | None = None
+        # Autonomous wake-on-completion (interactive TUI only). When a background
+        # job finishes while the turn worker is idle, fire a digest-only turn so
+        # the agent reacts without waiting for the user. Seeded from config;
+        # toggled at runtime by `/jobs wake on|off` and from the settings screen,
+        # which is why it stays a plain App attribute rather than moving into the
+        # ActivityMonitor that reads it.
+        self.autonomous_wake = harness.autonomous_wake
+        self.activity = ActivityMonitor(self)
+        self.queue = QueueController(self)
+        self.pickers = ModelPickers(self)
         self.harness.bind_ui(
             request_approval=self._request_approval,
             ask_user=self._ask_user,
@@ -138,54 +178,13 @@ class HarnessApp(App):
             on_cli_activity=self.stream.on_cli_activity,
             on_ttft=self.stream.on_ttft,
             on_mode_change=self._refresh_mode_display,
-            on_tasks_changed=self._on_tasks_changed,
-            on_jobs_changed=self._on_jobs_changed,
-            on_compact=self._on_compact,
-            on_compact_start=self._on_compact_start,
-            on_notice=self._on_session_notice,
+            on_tasks_changed=self.activity.on_tasks_changed,
+            on_jobs_changed=self.activity.on_jobs_changed,
+            on_compact=self.session.on_compact,
+            on_compact_start=self.session.on_compact_start,
+            on_notice=self.session.on_notice,
             on_rename=self.session.on_rename,
         )
-        self._vision_caps: dict[str, bool | None] = {}
-        self._turn_worker = None
-        # Latch closing the window between "decided to start a turn" and the
-        # exclusive worker actually existing. _start_turn awaits a mount before it
-        # can set _turn_worker, so without this a second submit landing in that gap
-        # would pass the _turn_worker guard and start a *duplicate* exclusive
-        # worker — which Textual resolves by silently cancelling the first, the
-        # exact hazard turn_busy exists to prevent. Set before the first await,
-        # cleared on every _start_turn exit path.
-        self._turn_starting = False
-        # True while the /compact worker (group "compact") is mid-run. A
-        # summarize can take seconds, and starting a turn or rebinding the
-        # session store under it risks silent turn loss, cross-session history
-        # contamination (a late `self.history=…; persist()` after the store was
-        # swapped), and the only path to concurrent persist_elided calls. So the
-        # session-teardown/turn-start flows gate on it, symmetric with the guard
-        # /compact itself applies against turn_busy. Set in _cmd_compact, cleared
-        # in its worker's finally.
-        self.compact_busy = False
-        self._queue = TurnQueue()
-        # Confirm-to-quit guard (see _QUIT_CONFIRM_WINDOW): timestamp of the last
-        # unconfirmed quit attempt, or None if there isn't one outstanding.
-        self._quit_warned_at: float | None = None
-        # Autonomous wake-on-completion (interactive TUI only). When a background
-        # job finishes while the turn worker is idle, fire a digest-only turn so
-        # the agent reacts without waiting for the user. Seeded from config;
-        # toggled at runtime by `/jobs wake on|off`.
-        self.autonomous_wake = harness.autonomous_wake
-        # Bounds the wake→spawn→wake chain and owns the should-wake decision; the
-        # App keeps the public autonomous_wake toggle and the wake's side effects.
-        self._wake = WakeDriver(
-            WakeController(harness.wake_depth_cap),
-            is_enabled=lambda: self.autonomous_wake,
-            turn_busy=lambda: self.turn_busy,
-            has_finished_pending=self.jobs.has_finished_pending,
-            all_jobs_settled=lambda: not self.jobs.any_running(),
-            enqueue_digest_turn=self._mount_wake_turn,
-        )
-        # Dedup tracker: pings each finished job exactly once, independent of
-        # the autonomous-wake path.
-        self._job_notifier = FinishedJobNotifier()
         self._autocomplete: CommandAutocomplete | None = None
         # Full-bleed sub-agents screen (ctrl+x): its open/navigate/close lifecycle
         # and the per-frame repaint coalescing live in this collaborator.
@@ -244,27 +243,16 @@ class HarnessApp(App):
             # Already anchored at the bottom — latch so a later flush won't re-anchor
             # and yank the user back down after they scroll up.
             self.stream._anchored_on_overflow = True
-        self._render_tasks()  # reflect any checklist restored with the session
-        self._render_jobs()  # process-scoped jobs survive session switches
-        self._render_queue()
-        # One-line advisor status at session start, so an active advisor (env
-        # default or session-persisted) is visible without opening settings.
-        if self.harness.advisor_model_id is not None:
-            self._append_log(
-                NoticeMessage(f"Advisor: {self.harness.advisor_model_id} · /advisor")
-            )
-        # One-line thinking status at session start when a non-off level is
-        # active (env default or session-persisted), so it's visible without
-        # opening settings. off/unset stays silent (that's the default).
-        level = self.harness.thinking_level_id
-        if level is not None and level != "off":
-            self._append_log(NoticeMessage(f"Thinking: {level} · /think"))
+        self.activity.render_tasks()  # reflect any checklist restored with the session
+        self.activity.render_jobs()  # process-scoped jobs survive session switches
+        self.queue.render()
+        self._announce_session_defaults()
         # Seed vision capabilities in the background so the text-only-model
         # warning can fire even before the user opens the model picker.
         source = self.harness.model_source
         if source is not None:
             self.run_worker(
-                self._refresh_vision_caps(source.list_models), exclusive=False
+                self.pickers.refresh_vision_caps(source.list_models), exclusive=False
             )
         # Coalesce streaming text deltas: render buffered AssistantMessages on a
         # shared interval instead of re-parsing the markdown on every token.
@@ -289,7 +277,21 @@ class HarnessApp(App):
         # resolved it. Kicked off as its own worker (not awaited inline) so
         # on_mount itself isn't held hostage to the user answering the panel.
         if getattr(self.harness, "trust_prompt", None) is not None:
-            self.run_worker(self._prompt_project_trust(), group="trust", exit_on_error=False)
+            self.run_worker(
+                prompt_project_trust(self), group="trust", exit_on_error=False
+            )
+
+    def _announce_session_defaults(self) -> None:
+        """One-line advisor/thinking status at session start, so a setting
+        inherited from .env or restored with the session is visible without
+        opening settings. An off/unset level stays silent — that's the default."""
+        if self.harness.advisor_model_id is not None:
+            self.append_log(
+                NoticeMessage(f"Advisor: {self.harness.advisor_model_id} · /advisor")
+            )
+        level = self.harness.thinking_level_id
+        if level is not None and level != "off":
+            self.append_log(NoticeMessage(f"Thinking: {level} · /think"))
 
     def on_descendant_focus(self, event: events.DescendantFocus) -> None:
         """Keep the prompt focused. When focus lands on a non-input main-screen
@@ -327,50 +329,6 @@ class HarnessApp(App):
         for name, error in status["failed"]:
             await log.mount(ErrorMessage(f"MCP {name} failed: {error}"))
 
-    async def _prompt_project_trust(self) -> None:
-        """First-open trust dialog. Failure to persist must not strand the
-        decision: the session still applies it (the user consented), the error
-        is surfaced as a system line."""
-        surface = self.harness.trust_prompt
-        if surface is None:  # pragma: no cover - guarded by the on_mount check
-            return
-        trusted = bool(await run_panel(self, TrustPanel(surface)))
-        try:
-            record_decision(
-                self.harness.deps.workspace.root, trusted=trusted,
-                fingerprint=surface.fingerprint,
-                now=datetime.now(timezone.utc).isoformat(),
-            )
-        except OSError as exc:
-            await self.post_system(f"Couldn't save the trust decision: {exc}")
-        if trusted:
-            await self._apply_trust_and_confirm()
-        else:
-            await self.post_system(
-                "Project config present but not trusted — `/trust on` to enable."
-            )
-
-    async def _apply_trust_and_confirm(self) -> None:
-        """Hot-apply the just-granted trust (hooks reload, MCP config load, LSP
-        registry rebuild) and confirm. The decision is already persisted and
-        the TrustState already flipped by this point — the user consented, so
-        neither is undone if the hot-apply itself blows up; a failure here just
-        means a restart is needed to pick up the config, not that anything was
-        rolled back. Runs inside a worker with exit_on_error=False and no
-        on_worker_state_changed handler, so an unguarded raise here would
-        otherwise vanish silently (same belt-and-suspenders as
-        _run_shell_passthrough)."""
-        try:
-            await self.harness.apply_project_trust()
-        except Exception as exc:  # keep the session alive on any hot-apply failure
-            await self.post_system(
-                "Project trusted and saved, but applying it live failed: "
-                f"{type(exc).__name__}: {exc}. Restart marim to pick up the config."
-            )
-            logger.warning("apply_project_trust failed", exc_info=True)
-            return
-        await self.post_system("Project trusted — hooks, MCP, skills and agents are live.")
-
     async def on_unmount(self) -> None:
         """Jobs are process-scoped — kill any still running when the app exits so
         no detached shell or agent run is left behind, and close MCP connections."""
@@ -407,94 +365,6 @@ class HarnessApp(App):
         await self.harness.session_end("exit")
         await self.harness.aclose()
 
-    def _render_tasks(self) -> None:
-        """Repaint the task panel from the harness's current checklist, plus a
-        compact plan title when a plan has been presented this session."""
-        try:
-            panel = self.query_one(TaskPanel)
-        except NoMatches:
-            return  # tearing down; nothing to paint
-        plan = self.harness.deps.plan
-        panel.show_tasks(
-            self.harness.deps.tasks.items,
-            plan_title=plan.summary if plan is not None else None,
-        )
-
-    def _on_tasks_changed(self) -> None:
-        """Live callback from the update_tasks tool — repaint as the agent edits
-        the list mid-turn. Fired on the app's event loop, so it's safe to touch
-        widgets directly."""
-        self._render_tasks()
-
-    def _render_jobs(self) -> None:
-        """Repaint the jobs panel from the registry's current jobs, prior-session
-        history first (history rows are terminal, so render_jobs already
-        suffixes them ``(done)``/``(failed)``)."""
-        if not self.is_running:
-            return  # a job changed before mount / after teardown — on_mount paints
-        try:
-            panel = self.query_one(JobPanel)
-        except NoMatches:
-            return  # tearing down; nothing to paint
-        panel.show_jobs(self.jobs.history + self.jobs.list())
-
-    def _on_jobs_changed(self) -> None:
-        """Live callback from the job registry — repaint as jobs launch and
-        finish. Each job runs as a task on the app's event loop, so the callback
-        fires there and direct widget mutation is safe."""
-        self.stream.fill_finished_detached_cards(self.jobs)
-        self._render_jobs()
-        self._notify_finished_jobs()
-        self._maybe_wake()
-
-    def _notify(self, title: str, body: str, event_type: str) -> None:
-        """Fire a desktop notification if one is wired on deps. Best-effort —
-        the notifier itself swallows all errors, so this is a safe no-op when
-        notifications are off or the platform lacks a daemon.
-
-        Dispatched OFF the event loop: the platform notifiers shell out and wait
-        (the Windows balloon-tip backend alone sleeps ~5.5s), so calling the
-        blocking ``send`` here — from turn-end / approval / job-completion
-        callbacks — would freeze the whole UI. We schedule the async send path,
-        which spawns the subprocess via asyncio and awaits it without blocking
-        other tasks. Failures stay swallowed inside the notifier."""
-        notifier = self.harness.deps.ui.notifier
-        if notifier is not None:
-            self.run_worker(
-                notifier.send_async(title, body, event_type),
-                name=f"notify:{event_type}",
-                group="notifications",
-                exit_on_error=False,
-            )
-
-    def _notify_finished_jobs(self) -> None:
-        """Desktop-notify once per genuinely completed (done/failed) background
-        job. Decoupled from the autonomous-wake path so a completion still pings
-        when wake is off, a turn is busy, or the depth cap is hit. Cancelled jobs
-        are skipped — they're either agent-initiated or shutdown teardown, so a
-        ping would be noise (and this keeps ``cancel_all`` on exit silent)."""
-        for job in self._job_notifier.newly_finished(self.jobs.list()):
-            self._notify(
-                "Background job finished",
-                f"{job.id} ({job.kind}) {job.status}",
-                "job_done",
-            )
-
-    def _maybe_wake(self) -> None:
-        """Fire one digest-only autonomous turn iff a background job finished and
-        nothing is blocking. The decision + depth bookkeeping live in the shared
-        WakeDriver; this method only supplies the is-running mount guard."""
-        if not self.is_running:
-            return  # firing during teardown would race the unmount
-        self._wake.maybe_wake()
-
-    def _mount_wake_turn(self) -> None:
-        """The wake effect the driver invokes: post the resume notice and spawn the
-        digest-only turn worker. Mounted synchronously (we may be in a sync
-        on_change callback), mirroring _on_compact / _on_rename."""
-        self._append_log(NoticeMessage("⏰ Resumed — background job(s) finished"))
-        self._turn_worker = self.run_worker(self._run_turn(""), exclusive=True)
-
     @property
     def jobs(self) -> JobRegistry:
         return self.harness.deps.jobs
@@ -506,7 +376,7 @@ class HarnessApp(App):
         single guard against starting another exclusive turn — which Textual would
         satisfy by silently cancelling the running one — or tearing down the
         conversation/session under it. The ``_turn_starting`` term closes the gap
-        before ``_start_turn`` has set ``_turn_worker``."""
+        before ``start_turn`` has set ``_turn_worker``."""
         return self._turn_worker is not None or self._turn_starting
 
     def _refresh_mode_display(self) -> None:
@@ -561,7 +431,9 @@ class HarnessApp(App):
         which save_theme ignores."""
         save_theme(theme)
 
-    async def _start_turn(
+    # --- Turn lifecycle ---
+
+    async def start_turn(
         self, text: str, attachments: list[tuple[bytes, str]] | None = None
     ) -> None:
         """Mount the user message and spawn the exclusive turn worker. Shared by
@@ -575,7 +447,7 @@ class HarnessApp(App):
         error there is no worker, so the latch must drop or the UI wedges."""
         self._turn_starting = True
         try:
-            self._wake.note_user_turn()
+            self.activity.note_user_turn()
             log = self.query_one("#log", VerticalScroll)
             await log.mount(UserMessage(text))
             self.stream.current_assistant = None
@@ -587,7 +459,7 @@ class HarnessApp(App):
 
     def start_system_turn(self, prompt: str) -> bool:
         """Spawn a turn for a system-initiated prompt — a slash command like
-        /remember or /skill that injects its own prompt. Unlike _start_turn it
+        /remember or /skill that injects its own prompt. Unlike start_turn it
         mounts no user message and leaves the autonomous-wake chain untouched;
         it just resets the stream and runs the exclusive worker.
 
@@ -602,7 +474,7 @@ class HarnessApp(App):
                 )
             )
             return False
-        # Mirror _start_turn's discipline: keep the spawn exception-safe. This path
+        # Mirror start_turn's discipline: keep the spawn exception-safe. This path
         # has no awaits (so no concurrent submit can interleave, hence no
         # _turn_starting latch is needed), but resetting the stream or creating the
         # worker could still raise if Textual is mid-teardown. If it does, leave no
@@ -616,96 +488,77 @@ class HarnessApp(App):
             self._turn_worker = None
             self.log.error("failed to start system turn")
             logger.warning("failed to start system turn: %s", exc, exc_info=True)
-            self._append_log(
+            self.append_log(
                 NoticeMessage("Couldn't start the command — please try again.")
             )
             return False
         return True
 
-    def _enqueue(
-        self, text: str, attachments: list[tuple[bytes, str]] | None = None
-    ) -> None:
-        """Buffer a submission to run after the current turn."""
-        self._queue.enqueue(text, attachments)
-        self._render_queue()
-
-    async def _drain_next(self) -> None:
-        """Pop and start the next queued message."""
-        item = self._queue.pop_next()
-        self._render_queue()
-        await self._start_turn(item.text, item.attachments)
-
-    async def _after_turn(self) -> None:
-        """Called from _run_turn's finally. Drain the next queued item on a
-        clean, unpaused turn; otherwise fall through to the background-job wake."""
-        # A steer that landed in the finishing gap (never flushed onto a live
-        # run) falls back to the front of the queue so it runs next — kept even
-        # on a paused (cancel/error) finish, matching how the queue itself is
-        # preserved on pause; the drain below stays gated so it waits for resume.
-        leftover = self.harness.take_buffered_steers()
-        if leftover:
-            for text, atts in reversed(leftover):
-                self._queue.prepend(text, atts)
-            self._render_queue()
-        # _after_turn runs from _run_turn's finally; an exception escaping here
-        # would kill the worker before it unwinds cleanly. Draining starts the
-        # next turn (worker scheduling, widget mounts) and the wake path touches
-        # jobs — both can fail. Pause the queue and surface the error rather than
-        # let it propagate out of the finally and strand the session.
-        try:
-            if not self._queue.paused and self._queue:
-                await self._drain_next()
-            else:
-                self._maybe_wake()
-        except Exception as exc:
-            self._queue.paused = True
-            self._append_log(ErrorMessage(f"failed to start next turn: {exc}"))
-            logger.warning("failed to start next turn", exc_info=True)
-
-    def _render_queue(self) -> None:
-        """Repaint the queue display from the current queue."""
-        if not self.is_running:
-            return
-        try:
-            qd = self.query_one(QueueDisplay)
-        except NoMatches:
-            return  # tearing down; nothing to paint
-        qd.items = list(self._queue.items)
-        qd.paused = self._queue.paused
-
-    async def action_run_queued(self) -> None:
-        """Resume a paused queue: clear the pause and start the next item."""
-        if self._queue and not self.turn_busy:
-            self._queue.paused = False
-            await self._drain_next()
-
-    def action_remove_queued(self, id: str) -> None:
-        """Drop a pending queued message before it runs."""
-        self._queue.remove(id)
-        self._render_queue()
-
-    async def action_edit_queued(self, id: str) -> None:
-        """Pop a queued message out of the queue and load it into the prompt input
-        for editing — text and image attachments both, so an edit round-trips
-        without losing the images (their ``[Image #N]`` markers ride along in the
-        text)."""
-        item = self._queue.take(id)
-        if item is None:
-            return
-        self._render_queue()
-        prompt = self.query_one(PromptInput)
-        prompt.text = item.text
-        prompt.load_attachments(item.attachments or [])
-        # Drop the paste stash along with the old draft: it belongs to whatever
-        # was in the box before, and a stale entry would leave a dangling
-        # [Pasted text #N] marker (or make a hand-typed #1 resurrect it).
-        prompt.pastes = []
-        prompt.move_cursor(prompt.document.end)
-        prompt.focus()
+    def mount_wake_turn(self) -> None:
+        """The wake effect the ActivityMonitor's driver invokes: post the resume
+        notice and spawn the digest-only turn worker. Mounted synchronously (we
+        may be in a sync on_change callback), mirroring on_compact / on_rename."""
+        self.append_log(NoticeMessage("⏰ Resumed — background job(s) finished"))
+        self._turn_worker = self.run_worker(self._run_turn(""), exclusive=True)
 
     def action_cancel_turn(self) -> None:
         if self.status.busy and self._turn_worker is not None:
             self._turn_worker.cancel()
+
+    async def _run_turn(
+        self, text: str, attachments: list[tuple[bytes, str]] | None = None
+    ) -> None:
+        self.status.turn_start = time.monotonic()
+        self.status.set_busy(True)
+        # Drop finished tool-widget entries from the prior turn(s) so the per-turn
+        # tracking dict doesn't grow unbounded across a long session. Done at the
+        # turn boundary (not per approval round) so the within-turn duplicate guard
+        # for gated tools keeps its entries while the turn is live.
+        self.stream.prune_completed()
+        log = self.query_one("#log", VerticalScroll)
+        try:
+            await self.harness.run_turn(
+                text, event_stream_handler=self.stream.on_events, attachments=attachments
+            )
+            # Stamp the just-finished turn's duration under its reply (success
+            # only; cancelled/errored turns surface an ErrorMessage instead).
+            elapsed = format_duration(time.monotonic() - self.status.turn_start, precise=True)
+            await log.mount(TurnMeta(elapsed))
+            self.activity.desktop_notify(
+                "Turn complete", f"Finished in {elapsed}", "turn_complete"
+            )
+        except CancelledError:
+            # User pressed escape; mount synchronously (we are unwinding) and
+            # let the worker finish as cancelled.
+            self.queue.paused = True
+            self.append_log(ErrorMessage("turn cancelled"))
+            raise
+        except Exception as exc:  # keep the session alive on any turn failure
+            self.queue.paused = True
+            detail = format_provider_error(exc) or f"{type(exc).__name__}: {exc}"
+            self.append_log(ErrorMessage(detail))
+            self.activity.desktop_notify("Turn error", detail, "error")
+            logger.warning("turn failed", exc_info=True)
+        finally:
+            self._turn_worker = None
+            self.status.set_busy(False)
+            # Guard against an orphaned compaction notice if maybe_compact raised
+            # between on_compact_start() and on_compact(). Always try to clean up.
+            self.query_one(CompactNotice).compacting = False
+            await self.queue.after_turn()  # drain next queued item, or wake on jobs
+
+    # --- Queue actions (the Textual surface; QueueController does the work) ---
+
+    async def action_run_queued(self) -> None:
+        await self.queue.resume()
+
+    def action_remove_queued(self, id: str) -> None:
+        self.queue.remove(id)
+
+    async def action_edit_queued(self, id: str) -> None:
+        await self.queue.edit_in_prompt(id)
+
+    # --- Quitting ---
 
     def _maybe_warn_pending_quit(self) -> bool:
         """Confirm-to-quit guard against an accidental Ctrl+C. Returns True if
@@ -720,9 +573,9 @@ class HarnessApp(App):
         ):
             return False
         self._quit_warned_at = now
-        if self._queue:
+        if self.queue:
             message = (
-                f"{len(self._queue.items)} queued message(s) will be discarded. "
+                f"{len(self.queue.items)} queued message(s) will be discarded. "
                 "Quit again to confirm."
             )
         else:
@@ -750,7 +603,7 @@ class HarnessApp(App):
         Shares ``_quit_warned_at`` with the ctrl+c guard on purpose: a user who
         was just told what a quit would cost shouldn't be told twice for
         switching from the key to the command."""
-        if not self._queue:
+        if not self.queue:
             return False
         now = time.monotonic()
         if (
@@ -761,58 +614,13 @@ class HarnessApp(App):
         self._quit_warned_at = now
         self.query_one("#log", VerticalScroll).mount(
             NoticeMessage(
-                f"{len(self._queue.items)} queued message(s) will be discarded. "
+                f"{len(self.queue.items)} queued message(s) will be discarded. "
                 "Run /exit again to confirm."
             )
         )
         return True
 
-    def _on_compact_start(self) -> None:
-        """Show a live note while compaction runs — the summarizer call can take a
-        few seconds, which would otherwise be indistinguishable from a slow turn.
-        Cleared by _on_compact when the work finishes. Called synchronously from
-        run_turn; mount without awaiting."""
-        self.query_one(CompactNotice).compacting = True
-
-    def _on_compact(self, before: int, after: int) -> None:
-        """Note in the log when history was trimmed to stay under the token budget.
-        Called synchronously from run_turn; mount without awaiting."""
-        log = self.query_one("#log", VerticalScroll)
-        notice = self.query_one(CompactNotice)
-        notice.compacting = False
-        notice.done = True
-        # before == after means a (forced) compaction ran without shrinking — the
-        # call exists only to clear the indicator above, so don't post a confusing
-        # "compacted: N → N" line or re-surface a stale summary.
-        if before == after:
-            self.status.refresh_status()
-            return
-        log.mount(
-            NoticeMessage(f"compacted history: {before} → {after} messages")
-        )
-        # Surface the just-created summary as its own collapsed block so the
-        # condensed context is legible immediately, not just on the next resume.
-        body = self._latest_summary()
-        if body is not None:
-            log.mount(SummaryWidget(body))
-        self.status.refresh_status()  # context gauge shrinks immediately
-
-    def _on_session_notice(self, message: str) -> None:
-        """Session-level advisory (breaker tripped, manual compact blocked).
-        Same call-from-anywhere contract as _on_compact."""
-        self._append_log(NoticeMessage(message))
-
-    def _latest_summary(self) -> "str | None":
-        """The body of the most recent compaction summary in history, or None."""
-        from ...compaction import summary_text
-
-        found = None
-        for message in self.harness.session.history:
-            for part in getattr(message, "parts", []):
-                body = summary_text(getattr(part, "content", None))
-                if body is not None:
-                    found = body
-        return found
+    # --- Log helpers ---
 
     async def post_system(self, markdown: str) -> None:
         """Render a system/command message into the log (markdown)."""
@@ -822,15 +630,24 @@ class HarnessApp(App):
         self.stream.append_stream(msg, markdown)
         self.stream.flush_streams()  # one-shot system text: render it now, no tick wait
 
+    def append_log(self, widget) -> None:
+        """Mount a notice/error into the log, keeping the viewport pinned to the
+        bottom only if it was already there. A user who scrolled up to read history
+        isn't yanked back down, but a user following live still sees new messages
+        (errors, steering echoes) scroll into view instead of landing off-screen."""
+        log = self.query_one("#log", VerticalScroll)
+        at_bottom = log.scroll_offset.y >= log.max_scroll_y
+        log.mount(widget)
+        if at_bottom:
+            log.scroll_end(animate=False)
+
+    # --- Session lifecycle (guards here; SessionView does the rebuild) ---
+
     async def reset_conversation(self) -> None:
         """Wipe the conversation and re-show the welcome screen (the /clear cmd).
         Refused mid-turn — clearing would tear down the log the running turn is
         still streaming into and wipe history it is appending to."""
-        if self.turn_busy:
-            await self.post_system("Can't clear while a turn is running. Press Esc first.")
-            return
-        if self.compact_busy:
-            await self.post_system("Compaction in progress — wait for it to finish.")
+        if await self._refuse_if_session_busy("clear"):
             return
         await self.session.reset_conversation()
 
@@ -838,13 +655,7 @@ class HarnessApp(App):
         """Begin a fresh named session, leaving existing ones on disk. Refused
         mid-turn — switching the active session out from under a running turn
         would race its history persist."""
-        if self.turn_busy:
-            await self.post_system(
-                "Can't start a new session while a turn is running. Press Esc first."
-            )
-            return
-        if self.compact_busy:
-            await self.post_system("Compaction in progress — wait for it to finish.")
+        if await self._refuse_if_session_busy("start a new session"):
             return
         await self.session.start_new_session(name)
 
@@ -852,15 +663,23 @@ class HarnessApp(App):
         """Load an existing session and show where it left off. Refused mid-turn
         for the same reason as /new — the running turn writes to the session it
         would be switched away from."""
-        if self.turn_busy:
-            await self.post_system(
-                "Can't switch sessions while a turn is running. Press Esc first."
-            )
-            return
-        if self.compact_busy:
-            await self.post_system("Compaction in progress — wait for it to finish.")
+        if await self._refuse_if_session_busy("switch sessions"):
             return
         await self.session.switch_to_session_id(session_id)
+
+    async def _refuse_if_session_busy(self, what: str) -> bool:
+        """True (with a notice posted) when ``what`` must not run right now.
+        Both flows below tear down or rebind the session store, so both have to
+        wait out a running turn *and* an in-flight compaction."""
+        if self.turn_busy:
+            await self.post_system(
+                f"Can't {what} while a turn is running. Press Esc first."
+            )
+            return True
+        if self.compact_busy:
+            await self.post_system("Compaction in progress — wait for it to finish.")
+            return True
+        return False
 
     async def rewind_to_checkpoint(self, index: int) -> None:
         """Rewind the session to checkpoint ``index`` and rebuild the log.
@@ -917,117 +736,10 @@ class HarnessApp(App):
             )
         )
 
-    async def open_model_picker(self) -> None:
-        """Open the picker and let the user choose a model, applying the choice to
-        the harness. The catalog loads inside the modal's own worker, so the
-        picker appears instantly even on a slow provider; it degrades to free-text
-        when no catalog loads.
-
-        Uses the callback form of push_screen (not push_screen_wait) so it works
-        when called straight from the command-dispatch path, which is not a
-        worker — push_screen_wait would raise NoActiveWorker there.
-        """
-        source = self.harness.model_source
-        if source is None:
-            await self.post_system("Model switching isn't available here.")
-            return
-        self.run_worker(self._refresh_vision_caps(source.list_models),
-                        exclusive=False)
-        self.push_screen(
-            ModelPickerModal(
-                current=self.harness.model_id,
-                fetch=source.list_models,
-                is_local=source.is_local,
-            ),
-            self._on_model_chosen,
-        )
-
-    async def _refresh_vision_caps(self, fetch) -> None:
-        try:
-            entries = await fetch()
-        except Exception as exc:
-            logger.debug("failed to refresh vision capabilities: %s", exc, exc_info=True)
-            return  # unknown stays unknown; never blocks submit
-        self._vision_caps = {e.qualified: e.supports_images for e in entries}
-
-    def _on_model_chosen(self, chosen: str | None) -> None:
-        """Apply a model selected in the picker. Invoked by push_screen when the
-        modal is dismissed; a None result (cancelled) is a no-op."""
-        if not chosen:
-            return
-        self.harness.set_model(chosen)
-        self.status.model_name = self.harness.model_label
-        self._append_log(NoticeMessage(f"model: {self.harness.model_label}"))
-
-    async def open_advisor_picker(self) -> None:
-        """Model picker for the advisor. Mirrors open_model_picker, but the
-        choice lands on the advisor seam (session-persisted) rather than the
-        live turn model."""
-        source = self.harness.model_source
-        if source is None:
-            await self.post_system("Model switching isn't available here.")
-            return
-        self.push_screen(
-            ModelPickerModal(
-                current=self.harness.advisor_model_id,
-                fetch=source.list_models,
-                is_local=source.is_local,
-            ),
-            self._on_advisor_chosen,
-        )
-
-    def _on_advisor_chosen(self, chosen: str | None) -> None:
-        if not chosen:
-            return
-        # A typed "off" in the free-text picker means "disable", same as
-        # `/advisor off` and the settings picker — map it to None (the seam's
-        # off state), never persist the literal "off" as a model id (which
-        # would leave the seam active and every consult failing to build it).
-        if chosen.strip().lower() == "off":
-            self.harness.set_advisor_model(None)
-            self._append_log(NoticeMessage("advisor: off"))
-            return
-        self.harness.set_advisor_model(chosen)
-        self._append_log(NoticeMessage(f"advisor: {chosen}"))
-
-    async def open_thinking_picker(self) -> None:
-        """Fixed-list picker for the session thinking level. The choice lands
-        on Harness.set_thinking_level (session-persisted, live)."""
-        self.push_screen(
-            ThinkingPickerModal(current=self.harness.thinking_level_id),
-            self._on_thinking_chosen,
-        )
-
-    def _on_thinking_chosen(self, chosen: str | None) -> None:
-        if not chosen:
-            return
-        self.harness.set_thinking_level(chosen)
-        self._append_log(NoticeMessage(f"thinking: {chosen}"))
-
-    def _append_log(self, widget) -> None:
-        """Mount a notice/error into the log, keeping the viewport pinned to the
-        bottom only if it was already there. A user who scrolled up to read history
-        isn't yanked back down, but a user following live still sees new messages
-        (errors, steering echoes) scroll into view instead of landing off-screen."""
-        log = self.query_one("#log", VerticalScroll)
-        at_bottom = log.scroll_offset.y >= log.max_scroll_y
-        log.mount(widget)
-        if at_bottom:
-            log.scroll_end(animate=False)
-
-    def _image_block_reason(self, attachments) -> str | None:
-        """A warning to show instead of submitting, or None to proceed. Only a
-        positive text-only capability blocks; unknown always proceeds."""
-        if not attachments:
-            return None
-        model_id = self.harness.model_id
-        if model_id is not None and self._vision_caps.get(model_id) is False:
-            return (f"{model_id} can't read images — "
-                    "switch to a vision model with /model or remove the image.")
-        return None
+    # --- Callbacks the harness reaches the user through (see bind_ui) ---
 
     async def _request_approval(self, call) -> DeferredToolApprovalResult | bool:
-        self._notify(
+        self.activity.desktop_notify(
             "Approval needed",
             f"Tool: {call.tool_name}",
             "approval_needed",
@@ -1043,7 +755,7 @@ class HarnessApp(App):
         modal: the transcript stays scrollable while the agent waits, and a
         cancelled turn removes the panel via run_panel's finally."""
         prompt = questions[0].question if questions else ""
-        self._notify("Question from agent", prompt, "ask_user")
+        self.activity.desktop_notify("Question from agent", prompt, "ask_user")
         return await run_panel(self, AskUserPanel(questions))
 
     async def _present_plan(self, summary, steps, choices):
@@ -1053,8 +765,9 @@ class HarnessApp(App):
         removes the card via run_panel's finally. The plan's summary/steps already live
         on deps.plan (set by present_plan), so the pinned title and Ctrl+P overlay stay
         in sync regardless of the choice made here."""
-        self._notify("Plan ready", summary, "ask_user")
-        self._render_tasks()  # refresh the TaskPanel title now that deps.plan is set
+        self.activity.desktop_notify("Plan ready", summary, "ask_user")
+        # Refresh the TaskPanel title now that deps.plan is set.
+        self.activity.render_tasks()
         return await run_panel(self, PlanCard(summary, steps, choices))
 
     async def _on_workflow_spawn(
@@ -1125,6 +838,8 @@ class HarnessApp(App):
         self._hide_autocomplete()
         prompt.focus()
 
+    # --- Submission routing ---
+
     async def on_prompt_input_steer(self, event: PromptInput.Steer) -> None:
         text = event.value.strip()
         if not text and not event.attachments:
@@ -1138,13 +853,13 @@ class HarnessApp(App):
             self._history.add(text)
             await self._route_submission(text, event.attachments)
             return
-        reason = self._image_block_reason(event.attachments)
+        reason = self.pickers.image_block_reason(event.attachments)
         if reason is not None:
-            self._append_log(NoticeMessage(reason))
+            self.append_log(NoticeMessage(reason))
             return
         self.harness.steer(text, event.attachments)
         tag = f"  📎 {len(event.attachments)}" if event.attachments else ""
-        self._append_log(NoticeMessage(f"↪ steering: {text}{tag}"))
+        self.append_log(NoticeMessage(f"↪ steering: {text}{tag}"))
 
     async def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
         self._hide_autocomplete()
@@ -1166,25 +881,27 @@ class HarnessApp(App):
         if (command := parse_bang(text)) is not None:
             await self._handle_bang(command)
             return
-        reason = self._image_block_reason(attachments)
+        reason = self.pickers.image_block_reason(attachments)
         if reason is not None:
-            self._append_log(NoticeMessage(reason))
+            self.append_log(NoticeMessage(reason))
             return
         if self.compact_busy:
             # Refuse (don't enqueue) so the turn isn't silently lost or run against
             # a session the compact worker is mid-summarize on. Symmetric with the
             # notice /compact posts when a turn is running.
-            self._append_log(
+            self.append_log(
                 NoticeMessage("Compaction in progress — wait for it to finish.")
             )
             return
         if self.turn_busy:
             # turn_busy (not _turn_worker) so a submit landing in the start-up gap
             # is queued rather than racing a second exclusive worker.
-            self._enqueue(text, attachments)
+            self.queue.enqueue(text, attachments)
             return
-        self._queue.paused = False
-        await self._start_turn(text, attachments)
+        self.queue.paused = False
+        await self.start_turn(text, attachments)
+
+    # --- `!` shell passthrough (pure helpers live in shell_passthrough.py) ---
 
     async def _handle_bang(self, command: str) -> None:
         """Route a `!` submission: usage hint for a bare `!`, refusal mid-turn,
@@ -1199,14 +916,14 @@ class HarnessApp(App):
             )
             return
         if self.turn_busy:
-            self._append_log(NoticeMessage(
+            self.append_log(NoticeMessage(
                 "Can't run a shell command while a turn is running. "
                 "Press Esc first."
             ))
             return
         # group="shell-passthrough": Textual's WorkerManager cancels every worker
         # sharing a group when a new *exclusive* worker joins that group. The turn
-        # worker (_start_turn) runs exclusive=True in the default group, so leaving
+        # worker (start_turn) runs exclusive=True in the default group, so leaving
         # this one there too would let a chat message silently kill an in-flight
         # `!` command with no notice and no queued output. Its own group keeps it
         # immune to that sweep; a turn starting mid-passthrough is fine — the
@@ -1218,7 +935,7 @@ class HarnessApp(App):
             # Belt for anything the except clauses in _run_shell_passthrough miss:
             # an arbitrary user command (up to PASSTHROUGH_TIMEOUT) must never be
             # able to take down the whole session via Textual's default
-            # exit_on_error=True (see the notification worker below for the same
+            # exit_on_error=True (see the notification worker for the same
             # pattern).
             exit_on_error=False,
         )
@@ -1231,14 +948,14 @@ class HarnessApp(App):
         if needs_sudo_password(command):
             password = await self.push_screen_wait(SudoPasswordModal(command))
             if password is None:
-                self._append_log(NoticeMessage("sudo command cancelled"))
+                self.append_log(NoticeMessage("sudo command cancelled"))
                 return
         try:
             output = await run_passthrough(
                 self.harness.deps.workspace.root, command, password
             )
         except OSError as exc:
-            self._append_log(ErrorMessage(f"! {command} failed to start: {exc}"))
+            self.append_log(ErrorMessage(f"! {command} failed to start: {exc}"))
             return
         try:
             # Queue before rendering: if the render below fails, the model still
@@ -1248,45 +965,5 @@ class HarnessApp(App):
             self.harness.add_shell_result(command, output)
             await self.post_system(format_transcript_block(command, output))
         except Exception as exc:  # keep the session alive on any render failure
-            self._append_log(ErrorMessage(f"! {command}: {type(exc).__name__}: {exc}"))
+            self.append_log(ErrorMessage(f"! {command}: {type(exc).__name__}: {exc}"))
             logger.warning("failed to render shell passthrough output", exc_info=True)
-
-    async def _run_turn(
-        self, text: str, attachments: list[tuple[bytes, str]] | None = None
-    ) -> None:
-        self.status.turn_start = time.monotonic()
-        self.status.set_busy(True)
-        # Drop finished tool-widget entries from the prior turn(s) so the per-turn
-        # tracking dict doesn't grow unbounded across a long session. Done at the
-        # turn boundary (not per approval round) so the within-turn duplicate guard
-        # for gated tools keeps its entries while the turn is live.
-        self.stream.prune_completed()
-        log = self.query_one("#log", VerticalScroll)
-        try:
-            await self.harness.run_turn(
-                text, event_stream_handler=self.stream.on_events, attachments=attachments
-            )
-            # Stamp the just-finished turn's duration under its reply (success
-            # only; cancelled/errored turns surface an ErrorMessage instead).
-            elapsed = format_duration(time.monotonic() - self.status.turn_start, precise=True)
-            await log.mount(TurnMeta(elapsed))
-            self._notify("Turn complete", f"Finished in {elapsed}", "turn_complete")
-        except CancelledError:
-            # User pressed escape; mount synchronously (we are unwinding) and
-            # let the worker finish as cancelled.
-            self._queue.paused = True
-            self._append_log(ErrorMessage("turn cancelled"))
-            raise
-        except Exception as exc:  # keep the session alive on any turn failure
-            self._queue.paused = True
-            detail = format_provider_error(exc) or f"{type(exc).__name__}: {exc}"
-            self._append_log(ErrorMessage(detail))
-            self._notify("Turn error", detail, "error")
-            logger.warning("turn failed", exc_info=True)
-        finally:
-            self._turn_worker = None
-            self.status.set_busy(False)
-            # Guard against an orphaned compaction notice if maybe_compact raised
-            # between on_compact_start() and on_compact(). Always try to clean up.
-            self.query_one(CompactNotice).compacting = False
-            await self._after_turn()  # drain next queued item, or wake on jobs

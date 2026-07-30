@@ -296,7 +296,7 @@ async def test_steer_while_busy_calls_harness_steer(tmp_path):
         app._turn_worker = object()  # simulate a running turn
         await app.on_prompt_input_steer(PromptInput.Steer("redirect", []))
         assert seen == [("redirect", [])]
-        assert app._queue.items == []  # not queued
+        assert app.queue.items == []  # not queued
         assert app._turn_worker is not None  # no new worker
 
 
@@ -306,7 +306,7 @@ async def test_steer_while_idle_runs_normally(tmp_path):
     async with app.run_test() as pilot:
         await pilot.pause()
         started = []
-        app._start_turn = lambda text, attachments=None: started.append(text) or _noop()
+        app.start_turn = lambda text, attachments=None: started.append(text) or _noop()
         app._turn_worker = None
         await app.on_prompt_input_steer(PromptInput.Steer("just run", []))
         assert started == ["just run"]
@@ -329,17 +329,17 @@ async def test_stranded_steer_goes_to_front_of_queue(tmp_path):
     app = _tui_app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._queue.enqueue("existing")
-        app._queue.paused = False
+        app.queue.enqueue("existing")
+        app.queue.paused = False
         # simulate a steer left buffered on the harness when the turn ended
         app.harness.turn_controller._steer_buffer = [("stranded", None)]
         started = []
-        app._start_turn = lambda text, attachments=None: started.append(text) or _noop()
-        await app._after_turn()
+        app.start_turn = lambda text, attachments=None: started.append(text) or _noop()
+        await app.queue.after_turn()
         # "stranded" was prepended to the front and drained first;
         # "existing" remains at position 0 after the drain.
         assert started[0] == "stranded"  # stranded steer was first to run
-        assert app._queue.items[0].text == "existing"  # existing item is now front
+        assert app.queue.items[0].text == "existing"  # existing item is now front
 
 
 @pytest.mark.anyio
@@ -349,16 +349,16 @@ async def test_stranded_steer_kept_on_paused_finish(tmp_path):
     app = _tui_app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._queue.paused = True
+        app.queue.paused = True
         # simulate a steer buffered in the harness when the turn ended
         app.harness.turn_controller._steer_buffer = [("stranded", None)]
         start_calls = []
-        app._start_turn = lambda text, attachments=None: start_calls.append(text) or _noop()
-        await app._after_turn()
+        app.start_turn = lambda text, attachments=None: start_calls.append(text) or _noop()
+        await app.queue.after_turn()
         # steer was NOT started (queue is paused)
         assert start_calls == []
         # steer was kept at front of the queue, not dropped
-        assert app._queue.items[0].text == "stranded"
+        assert app.queue.items[0].text == "stranded"
 
 
 def _recording_streaming_harness(tmp_path, calls):

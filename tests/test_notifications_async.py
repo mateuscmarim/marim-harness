@@ -139,7 +139,7 @@ async def test_notify_does_not_call_blocking_send_synchronously(tmp_path: Path):
         ) as async_send, patch(
             "marim_harness.notifications.asyncio.create_subprocess_exec"
         ):
-            app._notify("Turn complete", "done", EVENT_TURN_COMPLETE)
+            app.activity.desktop_notify("Turn complete", "done", EVENT_TURN_COMPLETE)
             blocking_send.assert_not_called()
             async_send.assert_called_once()
 
@@ -150,4 +150,4 @@ async def test_notify_noop_when_notifier_absent(tmp_path: Path):
     app.harness.deps.ui.notifier = None
     async with app.run_test():
         # Must not raise when no notifier is wired.
-        app._notify("Turn complete", "done", EVENT_TURN_COMPLETE)
+        app.activity.desktop_notify("Turn complete", "done", EVENT_TURN_COMPLETE)

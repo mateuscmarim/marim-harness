@@ -1,8 +1,10 @@
 """Session-view orchestration — extracted from HarnessApp.
 
 Rebuilds the log when the active session changes (new / switch / clear), replays a
-restored conversation, and notes auto-renames. Behavior only — it holds no state;
-it reaches the app, status presenter, and stream renderer through ``self.app``."""
+restored conversation, and posts the session-level notices the harness raises
+outside a turn's own stream — auto-rename, compaction, advisories. Behavior only
+— it holds no state; it reaches the app, status bar, and stream renderer through
+``self.app``."""
 
 from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Static
@@ -21,6 +23,7 @@ from .widgets import (
     ToolGroupWidget,
     UserMessage,
 )
+from .widgets.compact_notice import CompactNotice
 
 
 class SessionView:
@@ -472,6 +475,51 @@ class SessionView:
         self.app.status.refresh_title()  # the new name shows in the terminal title
         self.app.status.refresh_status()
 
+    def on_compact_start(self) -> None:
+        """Show a live note while compaction runs — the summarizer call can take a
+        few seconds, which would otherwise be indistinguishable from a slow turn.
+        Cleared by on_compact when the work finishes. Called synchronously from
+        run_turn; mount without awaiting."""
+        self.app.query_one(CompactNotice).compacting = True
+
+    def on_compact(self, before: int, after: int) -> None:
+        """Note in the log when history was trimmed to stay under the token budget.
+        Called synchronously from run_turn; mount without awaiting."""
+        log = self.app.query_one("#log", VerticalScroll)
+        notice = self.app.query_one(CompactNotice)
+        notice.compacting = False
+        notice.done = True
+        # before == after means a (forced) compaction ran without shrinking — the
+        # call exists only to clear the indicator above, so don't post a confusing
+        # "compacted: N → N" line or re-surface a stale summary.
+        if before == after:
+            self.app.status.refresh_status()
+            return
+        log.mount(
+            NoticeMessage(f"compacted history: {before} → {after} messages")
+        )
+        # Surface the just-created summary as its own collapsed block so the
+        # condensed context is legible immediately, not just on the next resume.
+        body = self._latest_summary()
+        if body is not None:
+            log.mount(SummaryWidget(body))
+        self.app.status.refresh_status()  # context gauge shrinks immediately
+
+    def on_notice(self, message: str) -> None:
+        """Session-level advisory (breaker tripped, manual compact blocked).
+        Same call-from-anywhere contract as on_compact."""
+        self.app.append_log(NoticeMessage(message))
+
+    def _latest_summary(self) -> str | None:
+        """The body of the most recent compaction summary in history, or None."""
+        found = None
+        for message in self.app.harness.session.history:
+            for part in getattr(message, "parts", []):
+                body = summary_text(getattr(part, "content", None))
+                if body is not None:
+                    found = body
+        return found
+
     async def render_session(self, note: str) -> None:
         """Rebuild the log for a fresh view of the active session: banner, an
         intro note, then a replay of any restored history."""
@@ -508,8 +556,8 @@ class SessionView:
         self.app.stream._anchored_on_overflow = restored
         self.app.status.refresh_title()  # reflect the switched-to session's name
         self.app.status.refresh_status()
-        self.app._render_tasks()
-        self.app._render_jobs()  # jobs are process-scoped, not per-session
+        self.app.activity.render_tasks()
+        self.app.activity.render_jobs()  # jobs are process-scoped, not per-session
 
     async def reset_conversation(self) -> None:
         """Wipe the conversation and re-show the welcome screen (the /clear cmd)."""
