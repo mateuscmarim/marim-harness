@@ -124,7 +124,7 @@ async def test_text_only_model_blocks_image_submit_with_warning(tmp_path, monkey
         await pilot.pause()
         app.harness.run_turn = fake_run_turn
         app.harness.model_id = "b/text"
-        app._vision_caps = {"b/text": False}
+        app.pickers.vision_caps = {"b/text": False}
         box = app.query_one(PromptInput)
         box.focus()
         await pilot.press("ctrl+v")
@@ -150,7 +150,7 @@ async def test_startup_seeds_vision_caps(tmp_path):
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.pause()
-        assert app._vision_caps == {"x/text": False}
+        assert app.pickers.vision_caps == {"x/text": False}
 
 
 @pytest.mark.anyio
@@ -171,7 +171,7 @@ async def test_unknown_capability_allows_image_submit(tmp_path, monkeypatch):
     async with app.run_test() as pilot:
         await pilot.pause()
         app.harness.run_turn = fake_run_turn
-        app._vision_caps = {}  # unknown
+        app.pickers.vision_caps = {}  # unknown
         box = app.query_one(PromptInput)
         box.focus()
         await pilot.press("ctrl+v")

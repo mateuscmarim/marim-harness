@@ -18,6 +18,7 @@ from ...runtime.permissions import Mode
 from ...thinking import THINKING_LEVELS, parse_thinking_level
 from ...workspace import discover_skills
 from .themes import THEME_NAMES
+from .trust_flow import apply_trust_and_confirm
 from .widgets.compact_notice import CompactNotice
 
 if TYPE_CHECKING:
@@ -223,7 +224,7 @@ async def _cmd_model(app: HarnessApp, arg: str) -> None:
         app.status.refresh_status()
         await app.post_system(f"Model: `{app.harness.model_label}`")
         return
-    await app.open_model_picker()
+    await app.pickers.open_model()
 
 
 async def _cmd_advisor(app: HarnessApp, arg: str) -> None:
@@ -238,7 +239,7 @@ async def _cmd_advisor(app: HarnessApp, arg: str) -> None:
         app.harness.set_advisor_model(arg)
         await app.post_system(f"Advisor: `{arg}` — applies to the next consultation.")
         return
-    await app.open_advisor_picker()
+    await app.pickers.open_advisor()
 
 
 async def _cmd_thinking(app: HarnessApp, arg: str) -> None:
@@ -246,7 +247,7 @@ async def _cmd_thinking(app: HarnessApp, arg: str) -> None:
     # switch simply applies to the next turn/spawn.
     arg = arg.strip()
     if not arg:
-        await app.open_thinking_picker()
+        await app.pickers.open_thinking()
         return
     level = parse_thinking_level(arg)
     if level is None:
@@ -608,7 +609,7 @@ async def _cmd_trust(app: HarnessApp, arg: str) -> None:
     # decision either — they already consented, only durability failed, so we
     # surface the error and still fall through to the apply/revoke branch
     # exactly as if the write had succeeded (spec §8; mirrors
-    # app._prompt_project_trust's handling of the same call).
+    # trust_flow.prompt_project_trust's handling of the same call).
     try:
         record_decision(
             root, trusted=trusted, fingerprint=surface.fingerprint,
@@ -618,10 +619,10 @@ async def _cmd_trust(app: HarnessApp, arg: str) -> None:
         await app.post_system(f"Couldn't save the trust decision: {exc}")
     if trusted:
         # Route through the same guarded hot-apply the first-open TrustPanel
-        # uses (app._apply_trust_and_confirm): it swallows/reports a hot-apply
-        # failure without rolling back the decision just persisted above, and
-        # posts the confirmation itself — don't duplicate that logic here.
-        await app._apply_trust_and_confirm()
+        # uses (trust_flow.apply_trust_and_confirm): it swallows/reports a
+        # hot-apply failure without rolling back the decision just persisted
+        # above, and posts the confirmation itself — don't duplicate it here.
+        await apply_trust_and_confirm(app)
     else:
         app.harness.revoke_project_trust()
         await app.post_system(

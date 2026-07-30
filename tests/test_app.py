@@ -45,15 +45,15 @@ async def test_after_turn_survives_drain_failure(tmp_path: Path):
         async def boom() -> None:
             raise RuntimeError("drain exploded")
 
-        app._drain_next = boom  # type: ignore[method-assign]
-        app._enqueue("queued message")
-        assert app._queue and not app._queue.paused
+        app.queue.drain_next = boom  # type: ignore[method-assign]
+        app.queue.enqueue("queued message")
+        assert app.queue and not app.queue.paused
 
         # Must not raise out of _after_turn.
-        await app._after_turn()
+        await app.queue.after_turn()
         await pilot.pause()
 
-        assert app._queue.paused is True
+        assert app.queue.paused is True
         errors = [w for w in app.query(ErrorMessage)]
         assert any("failed to start next turn" in str(w.render()) for w in errors)
 
@@ -534,7 +534,7 @@ async def test_live_compaction_mounts_summary_widget(tmp_path: Path):
             ModelRequest(parts=[UserPromptPart(
                 content=f"{SUMMARY_PREFIX}\n\nlive-made summary body")]),
         ]
-        app._on_compact(80, 22)
+        app.session.on_compact(80, 22)
         await pilot.pause()
         widgets = list(app.query(SummaryWidget))
         assert len(widgets) == 1
@@ -722,7 +722,7 @@ async def test_on_advisor_chosen_off_disables_advisor(
     monkeypatch.setattr(app.harness, "set_advisor_model", lambda mid: calls.append(mid))
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._on_advisor_chosen(typed)
+        app.pickers.on_advisor_chosen(typed)
         await pilot.pause()
     assert calls == [None]
 
@@ -734,7 +734,7 @@ async def test_on_advisor_chosen_slug_sets_it(tmp_path: Path, monkeypatch: pytes
     monkeypatch.setattr(app.harness, "set_advisor_model", lambda mid: calls.append(mid))
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._on_advisor_chosen("openrouter:some-model")
+        app.pickers.on_advisor_chosen("openrouter:some-model")
         await pilot.pause()
     assert calls == ["openrouter:some-model"]
 
@@ -746,7 +746,7 @@ async def test_on_advisor_chosen_none_is_a_noop(tmp_path: Path, monkeypatch: pyt
     monkeypatch.setattr(app.harness, "set_advisor_model", lambda mid: calls.append(mid))
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._on_advisor_chosen(None)
+        app.pickers.on_advisor_chosen(None)
         await pilot.pause()
     assert calls == []
 
@@ -2185,7 +2185,7 @@ async def test_model_picker_applies_choice(tmp_path: Path):
     app.push_screen = fake_push  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app.open_model_picker()
+        await app.pickers.open_model()
         await pilot.pause()
         assert app.harness.model_id == "openai/gpt-5.2"
         notices = [str(n.render()) for n in app.query(NoticeMessage)]
@@ -2203,7 +2203,7 @@ async def test_model_picker_cancel_keeps_model(tmp_path: Path):
     app.push_screen = fake_push  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app.open_model_picker()
+        await app.pickers.open_model()
         await pilot.pause()
         assert app.harness.model_id == "startup"  # unchanged
 
@@ -3205,7 +3205,7 @@ async def test_wake_fires_autonomous_turn_when_job_finishes_idle(tmp_path: Path)
         await app.harness.deps.jobs.wait(job_id)  # completion fires on_change
         await pilot.pause()
         assert len(started) == 1  # one autonomous turn started
-        assert app._wake.controller.depth == 1
+        assert app.activity.wake.controller.depth == 1
         assert any("Resumed" in str(n.render()) for n in app.query(NoticeMessage))
 
 
@@ -3233,8 +3233,8 @@ async def test_wake_stops_at_depth_cap(tmp_path: Path):
     app.run_worker = lambda c, *a, **k: (started.append(c), c.close())  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
-        for _ in range(app._wake.controller.depth_cap):  # drive the chain up to the cap
-            app._wake.controller.record_auto_turn()
+        for _ in range(app.activity.wake.controller.depth_cap):  # drive the chain up to the cap
+            app.activity.wake.controller.record_auto_turn()
         job_id = app.harness.deps.jobs.register("agent", "explore: x", _done("R"))
         await app.harness.deps.jobs.wait(job_id)
         await pilot.pause()
@@ -3254,7 +3254,7 @@ async def test_wake_does_not_fire_while_a_turn_is_running(tmp_path: Path):
         await pilot.pause()
         assert started == []  # queued; but wake-consumed by wait()
         app._turn_worker = None  # turn ends -> finally calls _maybe_wake
-        app._maybe_wake()
+        app.activity.maybe_wake()
         assert len(started) == 0  # no redundant wake — result already consumed
 
 
@@ -3264,10 +3264,10 @@ async def test_user_turn_resets_auto_depth(tmp_path: Path):
     app.run_worker = lambda c, *a, **k: (c.close() if hasattr(c, "close") else None)  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._wake.controller.record_auto_turn()
-        app._wake.controller.record_auto_turn()
+        app.activity.wake.controller.record_auto_turn()
+        app.activity.wake.controller.record_auto_turn()
         await _submit(app, "do something")  # a user-initiated turn
-        assert app._wake.controller.depth == 0
+        assert app.activity.wake.controller.depth == 0
 
 
 @pytest.mark.anyio
@@ -3789,10 +3789,10 @@ async def test_on_compact_noop_clears_indicator_without_message(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
-        app._on_compact_start()
+        app.session.on_compact_start()
         notice = app.query_one(CompactNotice)
         assert notice.compacting is True
-        app._on_compact(3, 3)  # no-shrink signal
+        app.session.on_compact(3, 3)  # no-shrink signal
         await pilot.pause()
         assert notice.compacting is False  # indicator cleared
         texts = [str(w.render()) for w in app.query(NoticeMessage)]
@@ -3807,8 +3807,8 @@ async def test_on_compact_shrink_shows_message(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
-        app._on_compact_start()
-        app._on_compact(10, 4)
+        app.session.on_compact_start()
+        app.session.on_compact(10, 4)
         await pilot.pause()
         assert app.query_one(CompactNotice).compacting is False
         texts = [str(w.render()) for w in app.query(NoticeMessage)]
@@ -3964,7 +3964,7 @@ async def test_bang_survives_a_turn_starting_mid_run(tmp_path: Path):
         await app.on_prompt_input_submitted(
             PromptInput.Submitted("!sleep 0.3 && echo survived")
         )
-        await app._start_turn("hello")  # exclusive turn worker joins now
+        await app.start_turn("hello")  # exclusive turn worker joins now
         await app.workers.wait_for_complete()
         await pilot.pause()
         pending = app.harness.turn_controller._pending_shell_results
@@ -4069,7 +4069,7 @@ async def test_quit_warning_rearms_after_confirm_window(tmp_path: Path, monkeypa
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._enqueue("first")
+        app.queue.enqueue("first")
         clock = [1000.0]
         monkeypatch.setattr(app_module.time, "monotonic", lambda: clock[0])
         assert app._maybe_warn_pending_quit() is True  # warns
@@ -4253,7 +4253,7 @@ async def test_slash_exit_warns_before_discarding_queued_messages(tmp_path: Path
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._queue.enqueue("something i still want to send")
+        app.queue.enqueue("something i still want to send")
 
         await dispatch(app, "/exit")
         await pilot.pause()

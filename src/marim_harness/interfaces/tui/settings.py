@@ -3,6 +3,11 @@ Providers, Theme, MCP servers, Context & Memory, Tools, Notifications,
 Advanced). Live settings (mode, model, theme, MCP, provider credentials,
 dynamic workflows) apply immediately; env-backed settings auto-save per field.
 
+This module is the screen's *behaviour*: layout, navigation, and what each
+widget's change event does. The two halves it delegates to are
+``settings_sections`` (the widget tree of each topic page) and ``settings_env``
+(which widget id maps to which env var, and the single save funnel).
+
 Live widgets apply immediately by calling the same harness mutations the slash
 commands use. The env block (LSP, LSP tools, job-tool mode, context budget,
 proactive memory, ...) is written to the global .env as soon as a field changes
@@ -20,32 +25,45 @@ from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.content import Content
 from textual.reactive import reactive
 from textual.screen import Screen
-from textual.widgets import (
-    Button,
-    Checkbox,
-    Input,
-    Label,
-    RadioButton,
-    RadioSet,
-    Static,
-)
+from textual.widgets import Button, Checkbox, Input, RadioSet, Static
 
-from ...config import ModelConfig, MultiModelSource, global_config_path, save_env_settings
+from ...config import ModelConfig, MultiModelSource
 from ...runtime.permissions import Mode
 from ...subagents.cli_backend import resolve_cli_binary
 from .model_picker import ModelPickerModal
 from .providers import ProvidersPane, current_default_provider
-from .themes import MARIM_THEMES, THEME_NAMES
+from .settings_env import (
+    ENV_CHECKBOXES,
+    ENV_INT_INPUTS,
+    ENV_RADIOS,
+    ENV_TEXT_INPUTS,
+    MODES,
+    TIER_ENV,
+    EnvAutoSave,
+    env_flag,
+)
+from .settings_sections import (
+    advanced_widgets,
+    advisor_value_text,
+    context_widgets,
+    mcp_status_word,
+    mcp_widgets,
+    notifications_widgets,
+    session_widgets,
+    short_theme,
+    theme_widgets,
+    thinking_value_text,
+    tier_value_text,
+    tools_widgets,
+)
+from .themes import THEME_NAMES
 from .thinking_picker import ThinkingPickerModal
+from .widgets.box_checkbox import BoxCheckbox
 
 if TYPE_CHECKING:
     from ...runtime.harness import Harness
-
-_MODES = ("ask", "auto", "plan")
-_TOOL_SEARCH_MODES = ("off", "auto", "on")
 
 # The full-bleed settings screen's rail sections, in order: (key, label).
 _SECTIONS = (
@@ -59,85 +77,6 @@ _SECTIONS = (
     ("advanced", "Advanced"),
 )
 _SETTINGS_HINTS = "↑↓ section · enter edit · esc back/close · changes save automatically"
-
-# Each theme's accent hex, for the colored dot in the Theme section + the rail badge.
-_ACCENTS = {t.name: str(t.primary) for t in MARIM_THEMES}
-
-# Auto-save registries: widget id -> what to persist. The same ids are used in
-# both the old single-Config layout and the topic-page layout, so these maps are
-# the single source of truth for persistence and survive the page restructure.
-_ENV_CHECKBOXES: dict[str, str] = {
-    "sw-lsp": "MARIM_LSP",
-    "sw-lsp-tools": "MARIM_LSP_TOOLS",
-    "sw-job": "MARIM_JOB_TOOL_COMBINED",
-    "sw-mem": "MARIM_PROACTIVE_MEMORY",
-    "sw-mask-obs": "MARIM_MASK_OBSERVATIONS",
-    "sw-notifications": "MARIM_NOTIFICATIONS",
-}
-# widget id -> (env var, human label for the validation error message)
-_ENV_INT_INPUTS: dict[str, tuple[str, str]] = {
-    "ctx-input": ("MARIM_CONTEXT_BUDGET", "Context budget"),
-    "toolsearch-threshold": ("MARIM_TOOL_SEARCH_THRESHOLD", "Tool-search threshold"),
-    "mask-keep-recent": ("MARIM_MASK_KEEP_RECENT", "Mask: keep recent returns"),
-    "mask-min-chars": ("MARIM_MASK_MIN_CHARS", "Mask: min chars to elide"),
-    "subagent-req-limit": ("MARIM_SUBAGENT_REQUEST_LIMIT", "Sub-agent request limit"),
-    "wake-depth-cap": ("MARIM_WAKE_DEPTH_CAP", "Autonomous wake turns"),
-    "advisor-max-tokens": ("MARIM_ADVISOR_MAX_TOKENS", "Advisor max tokens"),
-    "advisor-max-uses": ("MARIM_ADVISOR_MAX_USES", "Advisor max uses/turn"),
-}
-# Integer inputs whose domain includes 0. The context budget's label promises
-# "0 = unbudgeted" (window-only); the advisor per-turn cap's label promises
-# "0 = unlimited" — both must accept it; every other integer field still
-# requires a positive value.
-_ZERO_OK_INPUTS = frozenset({"ctx-input", "advisor-max-uses"})
-# env var -> deprecated aliases removed in the same save. Saving the budget
-# must retire MARIM_MAX_CONTEXT_TOKENS: leaving the old line behind would make
-# the deprecation nag fire against a line the app wrote itself, and — worse —
-# would let the stale alias linger where a user might expect it to still win.
-_DROP_ON_SAVE: dict[str, tuple[str, ...]] = {
-    "MARIM_CONTEXT_BUDGET": ("MARIM_MAX_CONTEXT_TOKENS",),
-}
-# radio set id -> (env var, ordered choices)
-_ENV_RADIOS: dict[str, tuple[str, tuple[str, ...]]] = {
-    "default-mode-set": ("MARIM_DEFAULT_MODE", _MODES),
-    "toolsearch-set": ("MARIM_TOOL_SEARCH", _TOOL_SEARCH_MODES),
-}
-_ENV_TEXT_INPUTS: dict[str, str] = {"notif-events-input": "MARIM_NOTIFICATION_EVENTS"}
-
-# The three sub-agent model-tier rows: (tier key, env var, row label). Order
-# matches the picker rows top-to-bottom. Each tier's env var holds a qualified
-# ``provider:model_id`` or is unset (⇒ inherit the main model) — see
-# ``SubagentTiers`` in config/model.py.
-_TIER_ROWS: tuple[tuple[str, str, str], ...] = (
-    ("cheap", "MARIM_SUBAGENT_TIER_CHEAP", "Cheap tier"),
-    ("med", "MARIM_SUBAGENT_TIER_MED", "Med tier"),
-    ("high", "MARIM_SUBAGENT_TIER_HIGH", "High tier"),
-)
-_TIER_ENV: dict[str, str] = {tier: env_key for tier, env_key, _ in _TIER_ROWS}
-
-
-def _short_theme(name: str) -> str:
-    """``marim-teal`` -> ``teal`` for the compact rail badge."""
-    return name.split("-")[-1]
-
-
-class BoxCheckbox(Checkbox):
-    """A terminal-native ``[x]`` / ``[ ]`` checkbox. Textual's Checkbox draws a
-    ``▐X▌`` block and signals on/off by colour alone; we render literal brackets with
-    a blank inner glyph when off so it reads like a TUI checkbox, not an iOS slider.
-    Brackets take the muted colour and the check takes the success colour."""
-
-    @property
-    def _button(self) -> Content:
-        tv = self.app.theme_variables
-        bracket = tv.get("text-muted", "#7c828d")
-        inner = "x" if self.value else " "
-        icol = tv.get("success", "#5fae7e") if self.value else bracket
-        return Content.assemble(("[", bracket), (inner, icol), ("]", bracket))
-
-
-def _b(value: bool) -> str:
-    return "1" if value else "0"
 
 
 class SettingsScreen(Screen[None]):
@@ -209,11 +148,18 @@ class SettingsScreen(Screen[None]):
         self._mcp_names: list[str] = []
         # Rail row id -> section key, for click-to-select.
         self._rail_ids = {f"rail-{k}": k for k, _ in _SECTIONS}
+        # Every .env write goes through here, so a failed save is reported on the
+        # footer status line from one place instead of six.
+        self._env = EnvAutoSave(self._status)
         # Gate auto-save until the initial widget tree has mounted: setting widget
         # values during compose fires Changed events we must not persist.
         self._ready = False
 
     def compose(self) -> ComposeResult:
+        # Snapshot the configured servers before building: both the MCP section's
+        # toggles and the rail badge index into this list by position, and
+        # `_toggle_mcp` resolves a checkbox id back to a name through it.
+        self._mcp_names = list(self.harness.mcp.configured_names())
         yield Static(id="settings-header")
         with Horizontal(id="settings-body"):
             with Vertical(id="settings-rail"):
@@ -228,7 +174,13 @@ class SettingsScreen(Screen[None]):
                         )
             with VerticalScroll(id="settings-content"):
                 with Vertical(id="section-session"):
-                    yield from self._session_widgets()
+                    yield from session_widgets(
+                        self.harness,
+                        self.env_cfg,
+                        autonomous_wake=getattr(
+                            self.app, "autonomous_wake", self.harness.autonomous_wake
+                        ),
+                    )
                 yield ProvidersPane(
                     model_source=self.harness.model_source,
                     status=self._status,
@@ -237,17 +189,17 @@ class SettingsScreen(Screen[None]):
                     id="section-providers",
                 )
                 with Vertical(id="section-theme"):
-                    yield from self._theme_widgets()
+                    yield from theme_widgets()
                 with Vertical(id="section-mcp"):
-                    yield from self._mcp_widgets()
+                    yield from mcp_widgets(self.harness.mcp, self._mcp_names)
                 with Vertical(id="section-context"):
-                    yield from self._context_widgets()
+                    yield from context_widgets(self.env_cfg)
                 with Vertical(id="section-tools"):
-                    yield from self._tools_widgets()
+                    yield from tools_widgets(self.env_cfg)
                 with Vertical(id="section-notifications"):
-                    yield from self._notifications_widgets()
+                    yield from notifications_widgets(self.env_cfg)
                 with Vertical(id="section-advanced"):
-                    yield from self._advanced_widgets()
+                    yield from advanced_widgets(self.harness, self.env_cfg)
         with Horizontal(id="settings-footer"):
             yield Static(_SETTINGS_HINTS, id="settings-hints")
             yield Static("", id="settings-status")
@@ -259,262 +211,10 @@ class SettingsScreen(Screen[None]):
         if key == "providers":
             return current_default_provider()
         if key == "theme":
-            return _short_theme(self.current_theme)
+            return short_theme(self.current_theme)
         if key == "mcp":
-            return str(len(list(self.harness.mcp.configured_names())))
+            return str(len(self._mcp_names))
         return ""
-
-    def _session_widgets(self) -> ComposeResult:
-        yield Static(
-            "Mode, model & autonomous wake apply live; default mode applies next launch.",
-            classes="muted",
-        )
-        yield Label("Mode (this session)")
-        with RadioSet(id="mode-set"):
-            for name in _MODES:
-                yield RadioButton(
-                    name,
-                    value=(name == self.harness.deps.workspace.mode.value),
-                    id=f"mode-{name}",
-                )
-        with Horizontal(classes="srow"):
-            yield Static(f"Model: {self.harness.model_label}", id="model-label")
-            # compact: without it Button's default tall borders survive the
-            # `.srow Button { border: none }` override and paint a ▔ strip at
-            # height 1 instead of the label.
-            yield Button("change", id="model-change", variant="primary", compact=True)
-        yield BoxCheckbox(
-            "Autonomous wake (react to finished jobs)",
-            value=getattr(self.app, "autonomous_wake", self.harness.autonomous_wake),
-            id="sw-autonomous-wake",
-        )
-        yield Label("Default mode (new sessions)")
-        with RadioSet(id="default-mode-set"):
-            for name in _MODES:
-                yield RadioButton(
-                    name,
-                    value=(name == self.env_cfg.default_mode),
-                    id=f"defmode-{name}",
-                )
-
-    def _theme_widgets(self) -> ComposeResult:
-        yield Static("Accent palette for the harness UI.", classes="muted")
-        for i, name in enumerate(THEME_NAMES):
-            with Horizontal(id=f"theme-{i}", classes="theme-row"):
-                yield Static(
-                    Content.assemble(("● ", _ACCENTS[name]), name),
-                    classes="theme-name",
-                )
-                yield Static("", id=f"theme-active-{i}", classes="theme-active")
-
-    def _mcp_widgets(self) -> ComposeResult:
-        self._mcp_names = list(self.harness.mcp.configured_names())
-        if not self._mcp_names:
-            yield Static("No MCP servers configured.", classes="muted")
-            return
-        with Horizontal(classes="mcp-head"):
-            yield Static("SERVER", classes="mcp-name")
-            yield Static("STATUS", classes="mcp-status")
-            yield Static("ON", classes="mcp-on")
-        for i, name in enumerate(self._mcp_names):
-            with Horizontal(classes="mcp-row"):
-                yield Static(name, classes="mcp-name")
-                yield Static(
-                    self._mcp_status_word(name),
-                    id=f"mcp-state-{i}",
-                    classes="mcp-status",
-                )
-                yield BoxCheckbox(
-                    value=(name not in self.harness.mcp.disabled),
-                    id=f"mcp-toggle-{i}",
-                    classes="mcp-on",
-                )
-
-    def _context_widgets(self) -> ComposeResult:
-        yield Static("Saved to .env — applies on next launch.", classes="muted")
-        with Horizontal(classes="frow"):
-            yield Label("Context budget (tokens, 0 = unbudgeted)")
-            yield Input(
-                value=str(self.env_cfg.max_context_tokens),
-                id="ctx-input",
-                type="integer",
-            )
-        yield BoxCheckbox(
-            "Mask stale observations at compaction",
-            value=self.env_cfg.mask_observations,
-            id="sw-mask-obs",
-        )
-        with Horizontal(classes="frow"):
-            yield Label("Mask: keep recent returns")
-            yield Input(
-                value=str(self.env_cfg.mask_keep_recent),
-                id="mask-keep-recent",
-                type="integer",
-            )
-        with Horizontal(classes="frow"):
-            yield Label("Mask: min chars to elide")
-            yield Input(
-                value=str(self.env_cfg.mask_min_chars),
-                id="mask-min-chars",
-                type="integer",
-            )
-        yield BoxCheckbox(
-            "Proactive memory", value=self.env_cfg.proactive_memory, id="sw-mem"
-        )
-
-    def _tools_widgets(self) -> ComposeResult:
-        yield Static(
-            "Saved to .env — applies on next launch (dynamic workflows applies live).",
-            classes="muted",
-        )
-        yield BoxCheckbox("LSP", value=self.env_cfg.lsp_enabled, id="sw-lsp")
-        yield BoxCheckbox(
-            "LSP navigation tools",
-            value=self.env_cfg.lsp_tools_enabled,
-            id="sw-lsp-tools",
-        )
-        yield BoxCheckbox(
-            "Job tool combined", value=self.env_cfg.job_tool_combined, id="sw-job"
-        )
-        # Not in _ENV_CHECKBOXES: unlike its neighbours this toggle also applies
-        # live (the run_workflow tool checks services.run_workflow per call, so
-        # flipping the seam needs no relaunch) — it takes a dedicated handler
-        # instead of the plain env commit.
-        yield BoxCheckbox(
-            "Dynamic workflows (run_workflow)",
-            value=self.env_cfg.workflows_enabled,
-            id="sw-workflows",
-        )
-        yield Label("Tool search (MCP/plugin tools)")
-        with RadioSet(id="toolsearch-set"):
-            for name in _TOOL_SEARCH_MODES:
-                yield RadioButton(
-                    name,
-                    value=(name == self.env_cfg.tool_search),
-                    id=f"toolsearch-{name}",
-                )
-        with Horizontal(classes="frow"):
-            yield Label("Tool-search threshold")
-            yield Input(
-                value=str(self.env_cfg.tool_search_threshold),
-                id="toolsearch-threshold",
-                type="integer",
-            )
-        with Horizontal(classes="frow"):
-            yield Label("Sub-agent request limit")
-            yield Input(
-                value=str(self.env_cfg.subagent.request_limit),
-                id="subagent-req-limit",
-                type="integer",
-            )
-        with Horizontal(classes="frow"):
-            yield Label("Autonomous wake turns")
-            yield Input(
-                value=str(self.env_cfg.subagent.wake_depth_cap),
-                id="wake-depth-cap",
-                type="integer",
-            )
-        yield BoxCheckbox(
-            "Model tiering",
-            value=self.env_cfg.subagent.tiers.enabled,
-            id="sw-tiering",
-        )
-        yield Static(
-            "Master switch — off routes every new spawn to the main model while "
-            "keeping the tier models below saved (toggle back on to restore "
-            "routing, no re-entry). Applies to new spawns live; sub-agents "
-            "already in flight keep their model. Per-tier changes below save to "
-            ".env and apply to new sessions (next harness rebuild/relaunch).",
-            classes="muted",
-        )
-        for tier, _env_key, label in _TIER_ROWS:
-            with Horizontal(classes="srow"):
-                yield Static(label, classes="tier-row-label")
-                yield Static(
-                    self._tier_value_text(tier),
-                    id=f"tier-value-{tier}",
-                    classes="tier-row-value",
-                )
-                yield Button(
-                    "change", id=f"tier-change-{tier}", variant="primary", compact=True
-                )
-        yield Static(
-            "Advisor — a model the agent can consult mid-task for strategic "
-            "guidance (the advisor tool). This row saves the global default "
-            "to .env (new sessions); /advisor overrides it per session, live. "
-            "Type 'off' in the picker to clear it. Uses/turn: 0 = unlimited.",
-            classes="muted",
-        )
-        with Horizontal(classes="srow"):
-            yield Static("Advisor", classes="tier-row-label")
-            yield Static(
-                self._advisor_value_text(), id="advisor-value", classes="tier-row-value"
-            )
-            yield Button(
-                "change", id="advisor-change", variant="primary", compact=True
-            )
-        with Horizontal(classes="frow"):
-            yield Label("Advisor max tokens")
-            yield Input(
-                value=str(self.env_cfg.advisor_max_tokens),
-                id="advisor-max-tokens",
-                type="integer",
-            )
-        with Horizontal(classes="frow"):
-            yield Label("Advisor max uses/turn")
-            yield Input(
-                value=str(self.env_cfg.advisor_max_uses or 0),
-                id="advisor-max-uses",
-                type="integer",
-            )
-        yield Static(
-            "Thinking — reasoning effort applied to the model "
-            "(off/minimal/low/medium/high/xhigh). This row saves the global "
-            "default to .env (new sessions); /think overrides it per session, "
-            "live. Not every provider supports it; unsupported models ignore it.",
-            classes="muted",
-        )
-        with Horizontal(classes="srow"):
-            yield Static("Thinking", classes="tier-row-label")
-            yield Static(
-                self._thinking_value_text(), id="thinking-value",
-                classes="tier-row-value",
-            )
-            yield Button("change", id="thinking-change", variant="primary", compact=True)
-
-    def _notifications_widgets(self) -> ComposeResult:
-        yield Static("Saved to .env — applies on next launch.", classes="muted")
-        yield BoxCheckbox(
-            "Desktop notifications",
-            value=self.env_cfg.notifications.enabled,
-            id="sw-notifications",
-        )
-        with Horizontal(classes="frow"):
-            yield Label("Notification events")
-            yield Input(
-                value=", ".join(sorted(self.env_cfg.notifications.events)),
-                id="notif-events-input",
-            )
-
-    def _advanced_widgets(self) -> ComposeResult:
-        deny = ", ".join(self.env_cfg.command_denylist) or "(none)"
-        allow = ", ".join(self.env_cfg.command_allowlist) or "(none)"
-        yield Static("Read-only — managed in config or project settings.", classes="muted")
-        yield Static(f"Command denylist: {deny}", classes="muted")
-        yield Static(f"Command allowlist: {allow}", classes="muted")
-        # Live per-project decision (deps.trust), not the env/config knob:
-        # MARIM_TRUST_PROJECT_HOOKS is only one input to resolution (config >
-        # env > store > default — see marim_harness.trust) and can disagree
-        # with what's actually in effect this session, e.g. a decision
-        # recorded via /trust or the first-open TrustPanel. `source` names
-        # which layer won, the same wording /trust reports.
-        trust = self.harness.deps.trust
-        yield Static(
-            f"Project trust: {'on' if trust.project else 'off'} (source: {trust.source})",
-            id="trust-status",
-            classes="muted",
-        )
-        yield Static(f"Config file: {global_config_path()}", classes="muted")
 
     def on_mount(self) -> None:
         self._apply_section()
@@ -593,14 +293,14 @@ class SettingsScreen(Screen[None]):
         self.current_theme = name
         self.app.theme = name  # type: ignore[attr-defined]
         self._paint_themes()
-        self.query_one("#badge-theme", Static).update(_short_theme(name))
+        self.query_one("#badge-theme", Static).update(short_theme(name))
 
     def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
         if event.index is None:
             return
         rid = event.radio_set.id or ""
         if rid == "mode-set":
-            self.harness.set_mode(Mode(_MODES[event.index]))
+            self.harness.set_mode(Mode(MODES[event.index]))
             self.query_one("#badge-session", Static).update(
                 self.harness.deps.workspace.mode.value
             )
@@ -608,20 +308,19 @@ class SettingsScreen(Screen[None]):
             return
         if not self._ready:
             return
-        spec = _ENV_RADIOS.get(rid)
+        spec = ENV_RADIOS.get(rid)
         if spec is not None:
             env_key, choices = spec
-            self._commit_env(env_key, choices[event.index])
+            self._env.commit(env_key, choices[event.index])
 
     def _tier_value_text(self, tier: str) -> str:
-        value = self.env_cfg.subagent.tiers.model_for(tier)
-        return value or "inherit main"
+        return tier_value_text(self.env_cfg, tier)
 
     def _advisor_value_text(self) -> str:
-        return self.env_cfg.advisor_model or "off"
+        return advisor_value_text(self.env_cfg)
 
     def _thinking_value_text(self) -> str:
-        return self.env_cfg.thinking_level or "off"
+        return thinking_value_text(self.env_cfg)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id or ""
@@ -653,9 +352,9 @@ class SettingsScreen(Screen[None]):
         if cid == "sw-tiering":
             self._toggle_tiering(event.value)
             return
-        env_key = _ENV_CHECKBOXES.get(cid)
+        env_key = ENV_CHECKBOXES.get(cid)
         if env_key is not None:
-            self._commit_env(env_key, _b(event.value))
+            self._env.commit(env_key, env_flag(event.value))
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         self._commit_input(event.input.id or "")
@@ -667,23 +366,13 @@ class SettingsScreen(Screen[None]):
     def _commit_input(self, widget_id: str) -> None:
         if not self._ready:
             return
-        if widget_id in _ENV_INT_INPUTS:
-            self._commit_int(widget_id)
-        elif widget_id in _ENV_TEXT_INPUTS:
-            self._commit_env(
-                _ENV_TEXT_INPUTS[widget_id],
+        if widget_id in ENV_INT_INPUTS:
+            self._env.commit_int(widget_id, self.query_one(f"#{widget_id}", Input).value)
+        elif widget_id in ENV_TEXT_INPUTS:
+            self._env.commit(
+                ENV_TEXT_INPUTS[widget_id],
                 self.query_one(f"#{widget_id}", Input).value.strip(),
             )
-
-    def _mcp_status_word(self, name: str) -> str:
-        mcp = self.harness.mcp
-        if name in mcp.disabled:
-            return "disabled"
-        if name in set(mcp.mcp_status.connected):
-            return "connected"
-        if name in dict(mcp.mcp_status.failed):
-            return "failed"
-        return "—"
 
     async def _toggle_mcp(self, index: int, want_on: bool) -> None:
         """Enable/disable a server to match the toggle. Reverts the checkbox (without
@@ -702,19 +391,8 @@ class SettingsScreen(Screen[None]):
                 return
         else:
             await self.harness.disable_server(name)
-        state.update(self._mcp_status_word(name))
+        state.update(mcp_status_word(self.harness.mcp, name))
         self.app.status.refresh_status()  # type: ignore[attr-defined]
-
-    def _int_at_least(self, selector: str, minimum: int) -> int | None:
-        """Parse an integer ≥ ``minimum`` from an Input, or None if blank/
-        invalid/below the floor. The caller turns None into a field-specific
-        error on the status line."""
-        raw = self.query_one(selector, Input).value.strip()
-        try:
-            value = int(raw)
-        except ValueError:
-            return None
-        return value if value >= minimum else None
 
     def _status(self, msg: str) -> None:
         self.query_one("#settings-status", Static).update(msg)
@@ -728,10 +406,7 @@ class SettingsScreen(Screen[None]):
         live only when an engine was built at launch — otherwise (workflows off
         at launch, or pydantic-monty missing) the harness reports False and the
         status line falls back to the usual next-launch promise."""
-        try:
-            save_env_settings({"MARIM_WORKFLOWS": _b(enabled)})
-        except Exception as exc:
-            self._status(f"Save failed: {exc}")
+        if not self._env.save({"MARIM_WORKFLOWS": env_flag(enabled)}):
             return
         applied = self.harness.set_workflows_enabled(enabled)
         suffix = "applied" if applied else "applies next launch"
@@ -742,40 +417,12 @@ class SettingsScreen(Screen[None]):
         the same gesture — new spawns pick up the change without a relaunch. The
         curated per-tier slugs are left untouched, so re-enabling restores routing
         without re-entry."""
-        try:
-            save_env_settings({"MARIM_SUBAGENT_TIERING": _b(enabled)})
-        except Exception as exc:
-            self._status(f"Save failed: {exc}")
+        if not self._env.save({"MARIM_SUBAGENT_TIERING": env_flag(enabled)}):
             return
         self.env_cfg.subagent.tiers = replace(self.env_cfg.subagent.tiers, enabled=enabled)
         self.harness.set_subagent_tiering_enabled(enabled)
         state = "on" if enabled else "off"
         self._status(f"✓ saved MARIM_SUBAGENT_TIERING · tiering {state} · applied")
-
-    def _commit_env(self, env_key: str, value: str) -> None:
-        """Persist a single env var to the global .env (retiring any deprecated
-        aliases in the same save), surfacing the result in the footer status.
-        Used by every auto-saving widget."""
-        try:
-            save_env_settings({env_key: value}, drop=_DROP_ON_SAVE.get(env_key, ()))
-        except Exception as exc:  # surface any write failure on the status line
-            self._status(f"Save failed: {exc}")
-            return
-        self._status(f"✓ saved {env_key} · applies next launch")
-
-    def _commit_int(self, widget_id: str) -> None:
-        """Validate and persist one integer Input. A blank/invalid/out-of-range
-        value is rejected with a field-specific message and nothing is written.
-        Fields in ``_ZERO_OK_INPUTS`` accept 0 (a meaningful sentinel there);
-        the rest require a positive integer."""
-        env_key, label = _ENV_INT_INPUTS[widget_id]
-        minimum = 0 if widget_id in _ZERO_OK_INPUTS else 1
-        value = self._int_at_least(f"#{widget_id}", minimum)
-        if value is None:
-            kind = "non-negative" if minimum == 0 else "positive"
-            self._status(f"{label} must be a {kind} integer.")
-            return
-        self._commit_env(env_key, str(value))
 
     def _open_model_picker(self) -> None:
         source = self.harness.model_source
@@ -837,15 +484,10 @@ class SettingsScreen(Screen[None]):
         ``harness.set_subagent_tiers()`` setter is a deferred follow-up)."""
         if chosen is None:
             return
-        env_key = _TIER_ENV[tier]
-        try:
-            save_env_settings({env_key: chosen})
-        except Exception as exc:  # surface any write failure on the status line
-            self._status(f"Save failed: {exc}")
+        env_key = TIER_ENV[tier]
+        if not self._env.save({env_key: chosen}):
             return
-        source = self.harness.model_source
-        if isinstance(source, MultiModelSource):
-            source.refresh_from_env()
+        self._refresh_model_catalog()
         self.env_cfg.subagent.tiers = replace(self.env_cfg.subagent.tiers, **{tier: chosen})
         self.query_one(f"#tier-value-{tier}", Static).update(chosen)
         self._status(f"✓ saved {env_key} · applies to new sessions")
@@ -872,22 +514,18 @@ class SettingsScreen(Screen[None]):
     def _on_advisor_chosen(self, chosen: str | None) -> None:
         if not chosen:
             return
-        try:
-            if chosen.strip().lower() == "off":
-                # An explicit off DROPS the var rather than writing a
-                # sentinel: unset is the env layer's own "no advisor", and a
-                # written "off" would round-trip as a bogus model slug.
-                save_env_settings({}, drop=("MARIM_ADVISOR_MODEL",))
-                self.env_cfg.advisor_model = None
-            else:
-                save_env_settings({"MARIM_ADVISOR_MODEL": chosen})
-                self.env_cfg.advisor_model = chosen
-        except Exception as exc:  # surface any write failure on the status line
-            self._status(f"Save failed: {exc}")
-            return
-        source = self.harness.model_source
-        if isinstance(source, MultiModelSource):
-            source.refresh_from_env()
+        if chosen.strip().lower() == "off":
+            # An explicit off DROPS the var rather than writing a
+            # sentinel: unset is the env layer's own "no advisor", and a
+            # written "off" would round-trip as a bogus model slug.
+            if not self._env.save({}, drop=("MARIM_ADVISOR_MODEL",)):
+                return
+            self.env_cfg.advisor_model = None
+        else:
+            if not self._env.save({"MARIM_ADVISOR_MODEL": chosen}):
+                return
+            self.env_cfg.advisor_model = chosen
+        self._refresh_model_catalog()
         self.query_one("#advisor-value", Static).update(self._advisor_value_text())
         self._status("✓ saved MARIM_ADVISOR_MODEL · applies to new sessions")
 
@@ -902,22 +540,28 @@ class SettingsScreen(Screen[None]):
     def _on_thinking_chosen(self, chosen: str | None) -> None:
         if not chosen:
             return
-        try:
-            if chosen == "off":
-                # off DROPS the var rather than writing a sentinel: unset is the
-                # env layer's own "no thinking", and a written "off" round-trips
-                # to the same None anyway (parse_thinking_level("off") == "off",
-                # but the .env default should read as absent).
-                save_env_settings({}, drop=("MARIM_THINKING",))
-                self.env_cfg.thinking_level = None
-            else:
-                save_env_settings({"MARIM_THINKING": chosen})
-                self.env_cfg.thinking_level = chosen
-        except Exception as exc:  # surface any write failure on the status line
-            self._status(f"Save failed: {exc}")
-            return
+        if chosen == "off":
+            # off DROPS the var rather than writing a sentinel: unset is the
+            # env layer's own "no thinking", and a written "off" round-trips
+            # to the same None anyway (parse_thinking_level("off") == "off",
+            # but the .env default should read as absent).
+            if not self._env.save({}, drop=("MARIM_THINKING",)):
+                return
+            self.env_cfg.thinking_level = None
+        else:
+            if not self._env.save({"MARIM_THINKING": chosen}):
+                return
+            self.env_cfg.thinking_level = chosen
         self.query_one("#thinking-value", Static).update(self._thinking_value_text())
         self._status("✓ saved MARIM_THINKING · applies to new sessions")
+
+    def _refresh_model_catalog(self) -> None:
+        """Re-read per-provider credentials into the live catalog after a
+        model-ish .env save, so the next picker open lists whatever the new
+        value unlocked. Only MultiModelSource has that seam."""
+        source = self.harness.model_source
+        if isinstance(source, MultiModelSource):
+            source.refresh_from_env()
 
     def action_cancel(self) -> None:
         # Two-stage escape mirroring enter: leave edit mode (back to the
