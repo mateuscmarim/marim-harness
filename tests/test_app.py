@@ -3356,7 +3356,7 @@ async def test_ask_user_panel_closes_open_subagents_viewer(tmp_path: Path):
 
 
 def test_format_duration_units():
-    from marim_harness.interfaces.tui.status import format_duration as _format_duration
+    from marim_harness.interfaces.tui.widgets.format import format_duration as _format_duration
 
     assert _format_duration(5) == "5s"
     assert _format_duration(5, precise=True) == "5.0s"
@@ -3475,7 +3475,7 @@ async def test_session_name_in_title_not_status_bar(tmp_path: Path, monkeypatch)
 
 
 def test_osc_title_sequence_format():
-    from marim_harness.interfaces.tui.status import osc_title as _osc_title
+    from marim_harness.interfaces.tui.widgets.status_bar import osc_title as _osc_title
 
     # OSC 0 sets both the terminal tab and window title: ESC ] 0 ; <text> BEL
     assert _osc_title("● my-session") == "\033]0;● my-session\007"
@@ -3530,7 +3530,7 @@ async def test_ctrl_o_toggles_reveal_all_outputs(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_busy_title_uses_spinner_frame(tmp_path: Path, monkeypatch):
-    from marim_harness.interfaces.tui.status import _SPINNER
+    from marim_harness.interfaces.tui.widgets.format import _SPINNER
 
     monkeypatch.setattr(
         type(_app(tmp_path).harness.session),
@@ -3548,7 +3548,7 @@ async def test_busy_title_uses_spinner_frame(tmp_path: Path, monkeypatch):
 
 @pytest.mark.anyio
 async def test_tick_spinner_advances_only_when_busy(tmp_path: Path, monkeypatch):
-    from marim_harness.interfaces.tui.status import _SPINNER
+    from marim_harness.interfaces.tui.widgets.format import _SPINNER
 
     monkeypatch.setattr(
         type(_app(tmp_path).harness.session),

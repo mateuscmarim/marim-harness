@@ -1570,8 +1570,8 @@ async def test_toolcall_bash_background_shows_bg_badge():
 
 
 def test_toolcall_pending_glyph_is_spinner_done_is_check():
-    from marim_harness.interfaces.tui.status import _SPINNER
     from marim_harness.interfaces.tui.widgets import ToolCallWidget
+    from marim_harness.interfaces.tui.widgets.format import _SPINNER
 
     w = ToolCallWidget("read_file", {"path": "a.py"})
     assert w._glyph()[0] == _SPINNER[0]  # pending → spinner frame, not "·"

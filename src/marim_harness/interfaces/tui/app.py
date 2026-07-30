@@ -42,7 +42,6 @@ from .shell_passthrough import (
     parse_bang,
     run_passthrough,
 )
-from .status import _CLOCK_TICK_INTERVAL, _SPINNER_TICK_INTERVAL, format_duration
 from .stream_render import StreamRenderer
 from .subagents import SubAgentsScreen, SubAgentsView
 from .themes import MARIM_THEMES
@@ -62,6 +61,7 @@ from .widgets import (
     human_tokens,
 )
 from .widgets.compact_notice import CompactNotice
+from .widgets.format import _CLOCK_TICK_INTERVAL, _SPINNER_TICK_INTERVAL, format_duration
 from .widgets.queue_display import QueueDisplay
 from .widgets.status_bar import StatusBar, osc_title
 

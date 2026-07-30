@@ -5,11 +5,15 @@
 # it here to keep the TUI's ``from .format import format_duration`` paths working.
 from ...durations import format_duration  # noqa: F401  (re-export)
 
-# Spinner characters and tick interval — defined here (a leaf module) so that
-# tools.py can import them without pulling in status.py, breaking the circular
-# import that otherwise forms: tools → status → widgets → tools.
+# Spinner characters and the status-chrome tick intervals — defined here (a leaf
+# module) so that tools.py can import them without dragging in the widgets that
+# render the status bar, breaking the circular import that would otherwise form:
+# tools → status chrome → widgets → tools.
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _SPINNER_TICK_INTERVAL = 0.1
+# How often the status bar repaints while idle, to advance the session timer and
+# pick up harness/session state that has no dedicated reactive (ctx, cost).
+_CLOCK_TICK_INTERVAL = 1.0
 
 
 def human_tokens(n: int) -> str:

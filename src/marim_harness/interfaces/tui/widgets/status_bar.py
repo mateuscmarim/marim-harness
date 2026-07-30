@@ -1,6 +1,12 @@
-"""Reactive status bar — owns all display state that was scattered across
-HarnessApp and StatusPresenter. Setting any reactive triggers an automatic
-re-render, eliminating the manual refresh_status() call sites."""
+"""Reactive status bar — owns the display state that was scattered across
+HarnessApp and the retired StatusPresenter. Setting any of the reactives below
+(busy, mode, model_name, live_run_tokens, last_ttft) re-renders on its own, so
+those five no longer need a manual repaint call.
+
+The rest of the bar — context size, token split, cost, session duration — is
+still read straight off live harness/session state in ``render``, so it has no
+reactive to change and something must still poke the widget: hence the surviving
+``refresh_status`` below and the idle ``_CLOCK_TICK_INTERVAL`` repaint."""
 from __future__ import annotations
 
 import time
