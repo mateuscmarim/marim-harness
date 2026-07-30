@@ -50,12 +50,30 @@ _REQUEST_CANCELLED = -32800
 
 
 def _server_alive(server: Any) -> bool:
-    """Whether a warm multilspy server's process is still up. multilspy sets
-    ``server_started`` True while the LSP subprocess runs and flips it False when
-    the start_server context exits / the process is gone. When the attribute is
-    absent (a stub or older multilspy) we assume alive: only a *known*-dead server
-    is ever evicted, never one we merely can't inspect."""
-    return bool(getattr(server, "server_started", True))
+    """Whether a warm multilspy server's process is still up. Two independent
+    signals, because neither one alone is sufficient:
+
+    * ``server_started`` — multilspy sets it True while the start_server context
+      is live and flips it False when that context exits.
+    * the launched subprocess's ``returncode`` — the only signal for a server that
+      died *on its own* (OOM kill, segfault). multilspy flips ``server_started``
+      solely on context exit, and a crashed child leaves that context suspended at
+      its ``yield`` forever, so the flag stays True over a corpse. Nothing else
+      notices either: the RPC read loop exits quietly on EOF without failing the
+      pending request futures, so every later request for the language would stall
+      out to the full request timeout instead of erroring — for the rest of the
+      session, with no restart path.
+
+    When a signal can't be inspected (a stub server, an older multilspy, a handler
+    that never launched a process) we assume alive: only a *known*-dead server is
+    ever evicted, never one we merely can't see into. ``returncode`` also lags the
+    child's death until asyncio's child watcher reaps it (see generic.py's
+    ``_await_process_exit``), and that lag errs the same safe way — a still-None
+    returncode just defers eviction to the next request."""
+    if not bool(getattr(server, "server_started", True)):
+        return False
+    process = getattr(getattr(server, "server", None), "process", None)
+    return process is None or process.returncode is None
 
 
 def _path_to_uri(root: Path, relpath: str) -> str:
@@ -312,10 +330,11 @@ class LspManager:
             server = self._servers[language]
             if _server_alive(server):
                 return server, language, None
-            # The server was up but its process is gone (multilspy flipped
-            # ``server_started`` False). Left cached, every later request for this
-            # language would route to a corpse and return the same error for the
-            # rest of the session, with no restart path. Evict it so the cold-start
+            # The server was up but is now known dead — either multilspy flipped
+            # ``server_started`` False, or the subprocess itself exited (see
+            # _server_alive). Left cached, every later request for this language
+            # would route to a corpse and fail the same way for the rest of the
+            # session, with no restart path. Evict it so the cold-start
             # path below re-spawns a fresh one — the single-flight in
             # _ensure_started still coalesces concurrent callers onto one restart.
             self._evict(language)

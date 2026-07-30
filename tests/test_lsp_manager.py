@@ -486,6 +486,85 @@ async def test_dead_server_is_evicted_and_restarted(tmp_path, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_crashed_process_is_evicted_though_server_started_stays_true(tmp_path, monkeypatch):
+    """A server whose *process* died must be evicted even though ``server_started``
+    is still True — the realistic crash, and the one the flag alone misses.
+
+    multilspy flips ``server_started`` only when the start_server context exits; a
+    child killed by the OOM killer or a segfault leaves that context suspended at
+    its yield, so the flag keeps claiming the corpse is alive. Its read loop exits
+    quietly on EOF without failing pending futures, so absent the returncode probe
+    every later request stalls to the full request timeout for the rest of the
+    session rather than restarting."""
+    from marim_harness.lsp import registry
+
+    fakes: list = []
+
+    class _Proc:
+        """Stands in for the asyncio subprocess multilspy launches."""
+
+        returncode = None
+
+    class _Crashable(_FakeServer):
+        def __init__(self, root):
+            super().__init__(root)
+            self.server_started = True
+            self.server.process = _Proc()
+
+    def factory(language, root):
+        srv = _Crashable(root)
+        fakes.append(srv)
+        return srv
+
+    (tmp_path / "m.py").write_text("x = 1\n")
+    mgr = LspManager(tmp_path, registry=_bundled_reg(), server_factory=factory)
+    monkeypatch.setattr(
+        mgr._registry, "availability", lambda lang: registry.Availability(True, "")
+    )
+
+    await mgr.goto_definition("m.py", 1, 1)
+    assert len(fakes) == 1
+
+    fakes[0].server.process.returncode = -9  # SIGKILL — the OOM killer
+    assert fakes[0].server_started is True  # multilspy never noticed the death
+
+    out = await mgr.goto_definition("m.py", 1, 1)
+    assert "target.py" in out  # restarted and served, not routed to the corpse
+    assert len(fakes) == 2
+    assert mgr._servers["python"] is fakes[1]
+    await mgr.aclose()
+
+
+def test_server_alive_assumes_alive_when_uninspectable():
+    """The eviction guard must only ever fire on a *known*-dead server. A stub
+    server, an older multilspy, or a handler that never launched a process must all
+    read as alive — otherwise _server_for would evict and cold-start a healthy
+    server on every single request."""
+    from marim_harness.lsp.manager import _server_alive
+
+    class _Bare:  # no server_started, no handler at all
+        pass
+
+    class _NoProcess:
+        server_started = True
+        server = type("H", (), {})()  # handler present, never launched
+
+    class _Running:
+        server_started = True
+        server = type("H", (), {"process": type("P", (), {"returncode": None})()})()
+
+    class _Exited:
+        server_started = True
+        server = type("H", (), {"process": type("P", (), {"returncode": 0})()})()
+
+    assert _server_alive(_Bare()) is True
+    assert _server_alive(_NoProcess()) is True
+    assert _server_alive(_Running()) is True
+    # Only an observed exit counts as dead — including a clean exit(0).
+    assert _server_alive(_Exited()) is False
+
+
+@pytest.mark.anyio
 async def test_diagnostics_wakes_on_publish_before_settle(tmp_path):
     """The non-Python diagnostics push path must return the moment the server
     publishes for the opened URI, treating ``settle`` as a ceiling rather than a
