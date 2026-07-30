@@ -14,12 +14,10 @@ pushed Textual ``Screen`` — so the renderer's panes stay mounted whether or no
 the screen is open, and opening mid-run shows an already-current transcript.
 """
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from textual.containers import VerticalScroll
 from textual.css.query import NoMatches
-from textual.reactive import reactive
-from textual.screen import Screen
 
 from ..widgets import NoticeMessage, PromptInput
 from .stats import tree_order
@@ -29,38 +27,35 @@ if TYPE_CHECKING:
     from ..app import HarnessApp
 
 
-class SubAgentsScreen(Screen):
+class SubAgentsScreen:
     """Drives the ctrl+x sub-agents screen on behalf of ``HarnessApp``.
 
-    Not pushed onto the app's screen stack — ``SubAgentsView`` is a plain widget
-    mounted directly in ``HarnessApp.compose`` and shown/hidden via ``display``,
-    so the renderer's transcript panes stay mounted (and keep streaming) whether
-    or not this screen is open. Subclassing ``Screen`` here is purely to get
-    reactive ``open``/``index``/``dirty`` plus the inherited ``app`` property
-    (resolved off the running app's context var, so it works even though this
-    object is never mounted) — not the push/pop screen-stack lifecycle.
+    Despite the name, this is a plain controller, not a Textual ``Screen``, and
+    is never pushed onto the app's screen stack. ``SubAgentsView`` — the actual
+    widget — is mounted directly in ``HarnessApp.compose`` and shown/hidden via
+    ``display``, so the renderer's transcript panes stay mounted (and keep
+    streaming) whether or not the view is on screen.
+
+    This used to subclass ``Screen`` for its ``reactive`` descriptors and its
+    ``app`` property. Neither earned the base class: none of the three fields
+    below has a watcher, so ``reactive`` bought nothing but a repaint scheduled
+    against a node that was never in the DOM, and ``app`` only resolved the
+    running app off a context var — which the explicit back-reference below now
+    does without the inheritance or the implicit global.
     """
 
-    # Whether the screen is on-screen, and which spawned sub-agent (index into
-    # app.stream.subagents) is selected.
-    open: reactive[bool] = reactive(False, init=False)
-    index: reactive[int] = reactive(0, init=False)
-    # Set by a streamed sub-agent event to ask for a list/summary repaint; the
-    # flush tick drains it once per frame via drain_repaint(). Deliberately no
-    # watch_dirty here: an auto-repainting watcher would repaint inline on every
-    # event instead of coalescing to the flush tick, reintroducing the
-    # fan-out-pins-a-core cost mark_dirty()/drain_repaint() exist to avoid.
-    dirty: reactive[bool] = reactive(False, init=False)
-
-    def __init__(self) -> None:
-        super().__init__()
-
-    @property
-    def _app(self) -> "HarnessApp":
-        """``self.app`` (inherited from ``Screen``, resolved off the running app's
-        context var) narrowed to ``HarnessApp`` — the base type doesn't know about
-        ``.stream``/``.harness``/``.session``."""
-        return cast("HarnessApp", self.app)
+    def __init__(self, app: "HarnessApp") -> None:
+        self._app = app
+        # Whether the view is on-screen, and which spawned sub-agent (index into
+        # app.stream.subagents) is selected.
+        self.open = False
+        self.index = 0
+        # Set by a streamed sub-agent event to ask for a list/summary repaint;
+        # the flush tick drains it once per frame via drain_repaint(). Plain
+        # state on purpose: an auto-repainting watcher would repaint inline on
+        # every event instead of coalescing to the flush tick, reintroducing the
+        # fan-out-pins-a-core cost mark_dirty()/drain_repaint() exist to avoid.
+        self.dirty = False
 
     def _ordered(self) -> list:
         """Sub-agents in the list's display (depth-first) order — the same order
@@ -243,11 +238,7 @@ class SubAgentsScreen(Screen):
         — a full DataTable rebuild plus a transcript flush — pins a core during a
         fan-out, so the actual repaint is coalesced to the ~12.5Hz flush tick
         (drain_repaint). A no-op when closed, so streaming pays nothing for a hidden
-        screen.
-
-        Named distinctly from ``Widget.refresh`` (inherited via ``Screen``) rather
-        than overriding it — that method repaints immediately with an incompatible
-        signature, exactly what coalescing to the flush tick exists to avoid."""
+        screen."""
         if self.open:
             self.dirty = True
 

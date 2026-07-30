@@ -75,11 +75,14 @@ SubAgentWidget { margin: 0 0 1 0; height: auto; padding-left: 2; }
 .subagent-activity { height: 1; padding-left: 2; color: $text-muted; }
 /* Expanded failure: let the error line grow and wrap to show the full body. */
 .subagent-activity.-expanded { height: auto; text-wrap: wrap; }
-/* Brighten the whole row to white + bold on hover. Driven by a `-hovered` class
-   the card toggles from its own mouse state (CSS :hover only lands on the leaf
-   line under the pointer, not the container — see SubAgentWidget.on_enter). */
+/* Brighten the whole row from muted to full-contrast + bold on hover. Driven by
+   a `-hovered` class the card toggles from its own mouse state (CSS :hover only
+   lands on the leaf line under the pointer, not the container — see
+   SubAgentWidget.on_enter). `$text` rather than a literal `white`: the command
+   palette (ctrl+shift+p) can select Textual's built-in *light* themes, where a
+   hardcoded white row would be invisible against the background. */
 SubAgentWidget.-hovered .subagent-header,
-SubAgentWidget.-hovered .subagent-activity { color: white; text-style: bold; }
+SubAgentWidget.-hovered .subagent-activity { color: $text; text-style: bold; }
 /* Line 1: the agent's description/title (the ◼ headline), clipped to one row. */
 .subagent-bhead { color: $accent; text-style: bold; height: 1; text-wrap: nowrap; text-overflow: ellipsis; }
 /* Line 2: the muted type · model subtitle below the headline. */
@@ -128,9 +131,11 @@ CollapsibleTitle:focus { background: transparent; color: $accent; text-style: bo
 
 /* Slash-command autocomplete dropdown.  Docked to the screen bottom (same
    edge as the Footer), offset upward so it sits directly above the prompt.
-   The offset value: -(footer=1 + prompt-border-top=1 + prompt-min-height=1
-   + prompt-border-bottom=1) = -4.  Uses layer:overlay so it floats above
-   sibling content without pushing the layout. */
+   Uses layer:overlay so it floats above sibling content without pushing the
+   layout.  The offset below is only the at-rest value for a one-line prompt:
+   -(footer=1 + prompt-border-top=1 + prompt-min-height=1 + prompt-border-bottom=1).
+   The prompt grows to 6 text rows, so the real offset is recomputed from its
+   live height in CommandAutocomplete.position_above — don't tune it here. */
 #cmd-autocomplete {
     layer: overlay;
     dock: bottom;

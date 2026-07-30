@@ -4180,3 +4180,127 @@ async def test_ctrl_p_without_plan_flashes_hint(tmp_path: Path):
         await pilot.pause()
         assert not isinstance(app.screen, PlanScreen)
         assert any("No plan yet" in n.message for n in app._notifications)
+
+
+@pytest.mark.anyio
+async def test_group_folds_when_results_interleave_with_calls(tmp_path: Path):
+    """A sequential run emits call→result→call→result, so the FIRST tool's result
+    lands while it is still a bare widget with no group to notify. The group must
+    still absorb that already-finished state when it promotes the solo, or its
+    finished count can never reach its child count: it would stay expanded forever
+    and never freeze a duration into its header."""
+    from pydantic_ai.messages import FunctionToolResultEvent, ToolReturnPart
+
+    from marim_harness.interfaces.tui.widgets import ToolGroupWidget
+
+    def _res(cid: str):
+        return FunctionToolResultEvent(
+            part=ToolReturnPart(tool_name="read_file", content="ok", tool_call_id=cid)
+        )
+
+    async def gen():
+        yield _call("read_file", "c1")
+        yield _res("c1")
+        yield _call("read_file", "c2")
+        yield _res("c2")
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.stream.on_events(None, gen())
+        await pilot.pause()
+        groups = list(app.query(ToolGroupWidget))
+        assert len(groups) == 1
+        group = groups[0]
+        assert group._finished == 2
+        assert group._t_end is not None, "group never froze its duration"
+        assert group.collapsed, "group never folded"
+
+
+@pytest.mark.anyio
+async def test_promoted_group_does_not_fold_over_its_live_call(tmp_path: Path):
+    """Absorbing the finished solo must not fold the group at promotion time: the
+    call that *caused* the promotion is still running, and folding would hide it."""
+    from pydantic_ai.messages import FunctionToolResultEvent, ToolReturnPart
+
+    from marim_harness.interfaces.tui.widgets import ToolGroupWidget
+
+    async def gen():
+        yield _call("read_file", "c1")
+        yield FunctionToolResultEvent(
+            part=ToolReturnPart(tool_name="read_file", content="ok", tool_call_id="c1")
+        )
+        yield _call("grep", "c2")  # no result — still in flight
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.stream.on_events(None, gen())
+        await pilot.pause()
+        group = list(app.query(ToolGroupWidget))[0]
+        assert group._finished == 1
+        assert not group.collapsed, "folded while a child was still running"
+        assert group._t_end is None
+
+
+@pytest.mark.anyio
+async def test_slash_exit_warns_before_discarding_queued_messages(tmp_path: Path):
+    """/exit used to call app.exit() directly, throwing away everything queued
+    without a word. It must warn once first, then honour a second attempt."""
+    from marim_harness.interfaces.tui.commands import dispatch
+    from marim_harness.interfaces.tui.widgets import NoticeMessage
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._queue.enqueue("something i still want to send")
+
+        await dispatch(app, "/exit")
+        await pilot.pause()
+        assert app.is_running, "quit went through without confirmation"
+        assert any(
+            "will be discarded" in str(n.render()) for n in app.query(NoticeMessage)
+        )
+
+        await dispatch(app, "/exit")
+        await pilot.pause()
+        assert not app.is_running, "second /exit did not quit"
+
+
+@pytest.mark.anyio
+async def test_slash_exit_quits_immediately_with_nothing_queued(tmp_path: Path):
+    """The confirmation exists to protect queued work, not to nag: with an empty
+    queue a typed /exit is unambiguous and quits on the first attempt."""
+    from marim_harness.interfaces.tui.commands import dispatch
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await dispatch(app, "/exit")
+        await pilot.pause()
+        assert not app.is_running
+
+
+@pytest.mark.anyio
+async def test_autocomplete_offset_tracks_the_prompt_height(tmp_path: Path):
+    """The dropdown floats above the prompt, which grows with its content — so its
+    offset must be recomputed from the prompt's live height, not left at the
+    stylesheet constant derived from the prompt's *minimum* height."""
+    from marim_harness.interfaces.tui.widgets import CommandAutocomplete, PromptInput
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        prompt = app.query_one(PromptInput)
+        menu = app.query_one("#cmd-autocomplete", CommandAutocomplete)
+
+        prompt.text = "/help"
+        await pilot.pause()
+        one_line = menu.styles.offset.y.value
+        assert one_line == -(1 + prompt.box_height)
+
+        prompt.text = "/help\na\nb\nc"
+        await pilot.pause()
+        assert prompt.box_height > 3
+        assert menu.styles.offset.y.value == -(1 + prompt.box_height)
+        assert menu.styles.offset.y.value < one_line, "menu did not move up"
