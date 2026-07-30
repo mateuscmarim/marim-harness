@@ -12,6 +12,11 @@ from textual.message import Message
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
+# Rows the Footer occupies below the prompt. The dropdown docks to the same
+# bottom edge, so it has to clear the footer *and* the prompt box to sit above
+# both (see position_above).
+_FOOTER_ROWS = 1
+
 
 class CommandAutocomplete(Static):
     """A floating dropdown that shows matching slash commands."""
@@ -25,7 +30,7 @@ class CommandAutocomplete(Static):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self._options: list[tuple[str, str, str]] = []  # (name, display, canonical)
+        self._options: list[tuple[str, str]] = []  # (name, display)
         self.can_focus = False
 
     def compose(self) -> ComposeResult:
@@ -33,6 +38,17 @@ class CommandAutocomplete(Static):
 
     def on_mount(self) -> None:
         self.visible = False
+
+    def position_above(self, prompt_box_height: int) -> None:
+        """Offset the bottom-docked dropdown up past the footer and the prompt.
+
+        The offset can't be a constant in the stylesheet: the prompt box grows
+        with its content (1–6 text rows plus 2 border rows), so an offset derived
+        from its *minimum* height leaves the menu sitting on top of a multi-line
+        draft. The caller re-applies this every time the menu is filtered, which
+        is on every keystroke while a slash command is being typed — i.e. on
+        every edit that can change the prompt's height."""
+        self.styles.offset = (0, -(_FOOTER_ROWS + prompt_box_height))
 
     def filter(self, query: str) -> None:
         """Update the dropdown to show commands matching *query*.
@@ -54,14 +70,14 @@ class CommandAutocomplete(Static):
                 continue
             seen.add(cmd.name)
             display = f"/{cmd.name}  — {cmd.summary}"
-            self._options.append((cmd.name, display, cmd.name))
+            self._options.append((cmd.name, display))
 
         option_list = self.query_one("#cmd-options", OptionList)
         option_list.clear_options()
         if not self._options:
             self.visible = False
             return
-        for _, display, _ in self._options:
+        for _, display in self._options:
             option_list.add_option(Option(display))
         self.visible = True
         # Highlight the first item.

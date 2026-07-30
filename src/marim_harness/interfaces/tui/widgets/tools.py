@@ -13,6 +13,7 @@ from textual.containers import Vertical
 from textual.content import Content
 from textual.widgets import Collapsible, Static
 
+from ..themes import ERROR
 from .diff import _DIFF_CAP, _reverse_edits, render_edit_diff, render_file_diff
 from .format import _SPINNER, _SPINNER_TICK_INTERVAL, format_duration
 from .highlight import _LEXERS, _highlight_lines, strip_line_numbers
@@ -21,8 +22,11 @@ from .tool_summary import humanize_tool, summarize
 # The bash tool prefixes its result with "exit N" (inline) or carries it as the
 # first preview line of an offloaded result — a non-zero N is a failed command.
 _EXIT_RE = re.compile(r"(?m)^exit (-?\d+)")
-# Foreground for failed bash output (the shared error red, see themes.py).
-_FAIL_FG = "#d9544f"
+# Foreground for failed bash output. Rich/Textual Content styles here take a
+# literal color, not a `$error` CSS variable, so this reads the one shared
+# definition out of themes.py rather than re-typing the hex (which drifted
+# silently the last time the palette moved).
+_FAIL_FG = ERROR
 
 
 def _ask_user_render():
@@ -502,5 +506,25 @@ class ToolGroupWidget(Collapsible):
         widget may already be mounted elsewhere (a lone call promoted into a new
         group); the caller detaches it first."""
         self._counts[widget.tool_name] = self._counts.get(widget.tool_name, 0) + 1
+        # A promoted solo may ALREADY have finished. The renderer only learns to
+        # build a group when a second call arrives, and a sequential run emits
+        # call→result→call→result, so the first tool's result lands while it is
+        # still a bare widget with no group to notify — _on_tool_result's
+        # note_child_finished never fires for it. Absorb its terminal state here
+        # or _finished can never reach the child count: the group would stay
+        # expanded forever and never freeze a duration into its header.
+        #
+        # Deliberately no fold check after this: a group is only ever built
+        # around a freshly-started call, so at least one child is still running
+        # at this point. Running one here would fold the group at promotion time
+        # (_finished == 1 == the count so far), hiding the live call that
+        # triggered the promotion. note_child_finished owns the folding.
+        # "not pending" is exactly _on_tool_result's own condition for calling
+        # note_child_finished (it runs right after finish() moved the status off
+        # "pending"), so the two can't drift into double-counting: if the status
+        # has moved, the one result event that moves it has already been handled.
+        if widget.status != "pending":
+            self._finished += 1
+            self._any_failed = self._any_failed or widget.status == "failed"
         self.title = self._summary()
         await self.body.mount(widget)

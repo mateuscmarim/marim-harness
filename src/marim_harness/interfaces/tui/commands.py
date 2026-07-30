@@ -635,6 +635,12 @@ async def _cmd_settings(app: HarnessApp, arg: str) -> None:
 
 
 async def _cmd_exit(app: HarnessApp, arg: str) -> None:
+    # Never a bare app.exit(): that path used to discard every queued message in
+    # silence. warn_typed_quit_discards returns True on the first attempt when
+    # something would actually be lost (see its docstring for why this isn't the
+    # same always-warn guard ctrl+c uses).
+    if app.warn_typed_quit_discards():
+        return
     app.exit()
 
 

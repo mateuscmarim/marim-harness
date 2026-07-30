@@ -16,10 +16,12 @@ _PANEL = "#232730"
 _FOREGROUND = "#d7dae0"
 _TEXT_MUTED = "#7c828d"
 
-# Semantic status colors — shared by all themes.
-_ERROR = "#d9544f"
-_WARNING = "#d9a14f"
-_SUCCESS = "#5fae7e"
+# Semantic status colors — shared by all themes. Public because a few widgets
+# build Rich/Textual `Content` styles in Python, where a `$error` CSS variable
+# isn't available and the literal would otherwise be re-typed (and drift).
+ERROR = "#d9544f"
+WARNING = "#d9a14f"
+SUCCESS = "#5fae7e"
 
 _BASE = {
     "background": _BACKGROUND,
@@ -37,9 +39,9 @@ def _theme(name: str, hue: str) -> Theme:
         name=name,
         primary=hue,
         accent=hue,
-        error=_ERROR,
-        warning=_WARNING,
-        success=_SUCCESS,
+        error=ERROR,
+        warning=WARNING,
+        success=SUCCESS,
         **_BASE,
     )
 

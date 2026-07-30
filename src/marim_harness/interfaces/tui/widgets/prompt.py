@@ -480,16 +480,30 @@ class PromptInput(TextArea):
         lines = self.wrapped_document.height
         return max(self._MIN_LINES, min(lines, self._MAX_LINES))
 
-    def _resize(self) -> None:
+    @property
+    def box_height(self) -> int:
+        """Rows the whole box occupies, borders included — i.e. what a widget
+        floating above the prompt has to clear. Computed rather than read back
+        off ``outer_size``, so a caller reacting to the very edit that grew the
+        box gets the new height without waiting for a layout pass."""
         # +2 for the box border's top and bottom rows (see styles.tcss), so the
         # visible text area, not the outer box, tracks the [min, max] window.
-        self.styles.height = self._target_height() + 2
+        return self._target_height() + 2
+
+    def _resize(self) -> None:
+        self.styles.height = self.box_height
 
     def on_resize(self) -> None:
         # A width change re-wraps the text, changing the visual line count —
         # re-fit. (Our own height writes land here too, but re-setting an
         # unchanged height is a no-op, so this can't loop.)
         self._resize()
+        if self._slash_active:
+            # The slash menu floats directly above this box, so a re-wrap that
+            # changed our height moved where it belongs. Nothing else notices a
+            # terminal resize, so re-announce; the handler only re-filters and
+            # re-offsets, neither of which resizes us back.
+            self.post_message(self.SlashChanged(self.text))
 
     def on_text_area_changed(self, event: "TextArea.Changed") -> None:
         self._resize()

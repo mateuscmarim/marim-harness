@@ -71,12 +71,16 @@ logger = logging.getLogger(__name__)
 # as smooth while collapsing many per-token markdown re-parses into one.
 _STREAM_FLUSH_INTERVAL = 0.08
 
-# A second quit attempt (ctrl+c, /exit, /quit) within this many seconds of the
-# first confirms the quit; after it elapses the next attempt warns again. A
-# short deliberate window, not a latch, so the warning always resurfaces after
-# real inactivity instead of being spent once and forgotten for the rest of
-# the process.
+# A second ctrl+c within this many seconds of the first confirms the quit; after
+# it elapses the next attempt warns again. A short deliberate window, not a
+# latch, so the warning always resurfaces after real inactivity instead of being
+# spent once and forgotten for the rest of the process.
 _QUIT_CONFIRM_WINDOW = 2.0
+
+# The same confirmation for a *typed* quit (/exit, /quit). Much wider, because
+# re-typing a command is far slower than double-tapping a key — 2s would make
+# the confirmation unreachable and so effectively a hard block.
+_TYPED_QUIT_CONFIRM_WINDOW = 20.0
 
 _WELCOME = (
     "Type a message below to start, or `/help` for commands.\n\n"
@@ -185,7 +189,7 @@ class HarnessApp(App):
         self._autocomplete: CommandAutocomplete | None = None
         # Full-bleed sub-agents screen (ctrl+x): its open/navigate/close lifecycle
         # and the per-frame repaint coalescing live in this collaborator.
-        self.subagents = SubAgentsScreen()
+        self.subagents = SubAgentsScreen(self)
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -731,6 +735,38 @@ class HarnessApp(App):
             return
         await super().action_quit()
 
+    def warn_typed_quit_discards(self) -> bool:
+        """The /exit · /quit counterpart of ``_maybe_warn_pending_quit``. Returns
+        True if the quit should be cancelled (a warning was just shown).
+
+        Deliberately *not* the same guard as ctrl+c. That one always warns,
+        because the risk it defends against is a stray keypress — which doesn't
+        apply to six characters typed on purpose. What does still apply is the
+        silent data loss: before this existed, /exit called app.exit() directly
+        and threw away everything the user had queued without a word. So this
+        warns only when there is actually something to discard, and over a window
+        wide enough to re-type the command (_TYPED_QUIT_CONFIRM_WINDOW).
+
+        Shares ``_quit_warned_at`` with the ctrl+c guard on purpose: a user who
+        was just told what a quit would cost shouldn't be told twice for
+        switching from the key to the command."""
+        if not self._queue:
+            return False
+        now = time.monotonic()
+        if (
+            self._quit_warned_at is not None
+            and now - self._quit_warned_at <= _TYPED_QUIT_CONFIRM_WINDOW
+        ):
+            return False
+        self._quit_warned_at = now
+        self.query_one("#log", VerticalScroll).mount(
+            NoticeMessage(
+                f"{len(self._queue.items)} queued message(s) will be discarded. "
+                "Run /exit again to confirm."
+            )
+        )
+        return True
+
     def _on_compact_start(self) -> None:
         """Show a live note while compaction runs — the summarizer call can take a
         few seconds, which would otherwise be indistinguishable from a slow turn.
@@ -1043,6 +1079,10 @@ class HarnessApp(App):
     def _show_autocomplete(self, query: str) -> None:
         if self._autocomplete is None:
             self._autocomplete = self.query_one("#cmd-autocomplete", CommandAutocomplete)
+        # Re-derive the float offset from the prompt's *current* height every
+        # time: the box grows with its content, so a menu positioned once (or by
+        # a stylesheet constant) ends up covering a multi-line draft.
+        self._autocomplete.position_above(self.query_one(PromptInput).box_height)
         self._autocomplete.filter(query)
 
     def _hide_autocomplete(self) -> None:
