@@ -15,6 +15,31 @@
 
 **Tech Stack:** Python 3.10+, Textual (>=0.80; 8.2.7 in the dev env), Rich, pytest + Textual `Pilot`.
 
+## Baseline note (read before Task 1)
+
+This plan was written against `edb7446`. The tree has since moved to `origin/master`
+(`8f63753`), which added two relevant commits: **`79a101b` fixed six TUI findings** (the
+`/exit`/`/quit` queue-discard bypass and the `SubAgentsScreen(Screen)` base among them — both
+were in this plan's source review, and neither is a task here), and **`d2fb97e` split
+`app.py` and `settings.py` into cohesive modules**.
+
+All six majors this plan targets were re-verified as **still open** on `origin/master`
+before execution. But the split renamed several attributes and moved code:
+
+| Was | Now |
+|---|---|
+| `app.py` 1252 lines | 969 lines; `_run_turn` at `:508`, its `finally` at `:541-547` |
+| `self._queue` | `self.queue` |
+| `self._append_log(...)` | `self.append_log(...)` |
+| `self._notify(...)` | `self.activity.desktop_notify(...)` |
+| `await self._after_turn()` | `await self.queue.after_turn()` |
+| `self._stream` | `self.stream` |
+
+Line numbers elsewhere in this plan are hints, not contracts — **read the file before
+editing** and match the symbol, not the line. `tests/test_queue.py` also grew by ~74 lines
+in that range, so reconcile new tests with what is already there rather than assuming the
+file matches the snippets below.
+
 ## Global Constraints
 
 - Run everything through `uv`. Never bare `python`/`pip`/`pytest`.
@@ -752,7 +777,7 @@ prefs.py's documented best-effort contract."
 
 **Files:**
 - Modify: `src/marim_harness/interfaces/tui/subagents/card.py:189-195` (`on_mount`), `:404-412` (`finish`)
-- Modify: `src/marim_harness/interfaces/tui/app.py:1234-1252` (the `CancelledError` arm and the `finally`)
+- Modify: `src/marim_harness/interfaces/tui/app.py:530-547` (the `CancelledError` arm and the `finally`)
 - Test: `tests/test_subagent_card.py`, `tests/test_app.py`
 
 **Interfaces:**
@@ -833,7 +858,7 @@ In `app.py`'s `except CancelledError` arm, before `raise`:
             # Settle anything still pending: a cancelled turn otherwise leaves its
             # tool rows and sub-agent cards "pending" forever, each holding a 10Hz
             # repaint timer and rendering a spinner for work that is already dead.
-            self._stream.settle_pending("cancelled")
+            self.stream.settle_pending("cancelled")
 ```
 
 Implement `settle_pending(reason: str)` on `StreamRenderer` (`stream_render.py`) to walk the
@@ -857,10 +882,11 @@ those registries, and reuse the existing status vocabulary rather than inventing
                 self.query_one(CompactNotice).compacting = False
             except NoMatches:
                 pass
-            await self._after_turn()  # drain next queued item, or wake on jobs
+            await self.queue.after_turn()  # drain next queued item, or wake on jobs
 ```
 
-Confirm `NoMatches` is imported in `app.py` (it is used by `_render_tasks`/`_render_jobs`).
+Confirm `NoMatches` is imported in `app.py`; add the import if the split moved its only
+previous user out of this module.
 
 - [ ] **Step 6: Run the new tests**
 
