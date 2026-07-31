@@ -123,21 +123,7 @@ def resolve_ref(infos: list[SessionInfo], ref: str) -> SessionInfo | None:
 
 
 async def _cmd_sessions(app: HarnessApp, arg: str) -> None:
-    infos = app.harness.session.sessions()
-    if not infos:
-        await app.post_system("No saved sessions yet. Use `/new [name]` to start one.")
-        return
-    active = app.harness.session.session_name
-    lines = ["**Sessions**", ""]
-    for i, info in enumerate(infos, start=1):
-        marker = " ← active" if info.name == active else ""
-        when = info.updated[:16].replace("T", " ") if info.updated else "—"
-        lines.append(
-            f"{i}. `{info.name}` — {info.message_count} msgs, "
-            f"{info.tokens} tokens, {when}{marker}"
-        )
-    lines += ["", "Switch with `/switch <number|name>`."]
-    await app.post_system("\n".join(lines))
+    await app.open_session_picker()
 
 
 async def _cmd_new(app: HarnessApp, arg: str) -> None:
@@ -646,7 +632,7 @@ COMMANDS: list[Command] = [
         "free context now: /compact [summary instructions]",
         _cmd_compact,
     ),
-    Command("sessions", "list saved sessions", _cmd_sessions, aliases=("ls",)),
+    Command("sessions", "browse and switch sessions (picker)", _cmd_sessions, aliases=("ls",)),
     Command("new", "start a new session: /new [name]", _cmd_new),
     Command("switch", "switch sessions: /switch <number|name>", _cmd_switch),
     Command("rewind", "rewind to an earlier turn: /rewind [number|undo]", _cmd_rewind),
