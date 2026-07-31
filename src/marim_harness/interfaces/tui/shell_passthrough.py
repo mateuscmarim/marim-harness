@@ -15,6 +15,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Static
 
 from ...tools.impl.shell import run_bash
+from .interactions.sanitize import safe_text
 
 # Human-run commands get more room than the model's 30s tool default: a user
 # knowingly kicks off installs/builds and watches them, so a short leash only
@@ -131,7 +132,12 @@ class SudoPasswordModal(ModalScreen[str | None]):
             # MarkupError during render (killing the app), and a '[b]…[/b]' would
             # render as styling while the bracketed text is what actually runs —
             # a display that disagrees with the command being authorized.
-            yield Static(f"$ {self.command}", id="sudo-command", markup=False)
+            # safe_text: this is a consent surface too (the user is about to
+            # authorize a sudo command), so it gets the same ANSI-neutralizing
+            # treatment as the approval preview — defense-in-depth, since the
+            # command is user-typed today but nothing structural stops a future
+            # caller from routing model-influenced text through this modal.
+            yield Static(f"$ {safe_text(self.command)}", id="sudo-command", markup=False)
             yield Input(password=True, placeholder="password", id="sudo-password")
             with Horizontal(id="sudo-buttons"):
                 yield Button("Cancel (esc)", id="sudo-cancel", variant="error")

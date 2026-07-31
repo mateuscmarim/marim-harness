@@ -28,7 +28,7 @@ class _PanelHostApp(App):
         yield Static("", id="status-bar")
 
     def on_mount(self) -> None:
-        self.run_worker(self._ask())
+        self.worker = self.run_worker(self._ask())
 
     async def _ask(self) -> None:
         self.result = await run_panel(self, self.panel)
@@ -135,6 +135,48 @@ async def test_panel_removed_after_decision():
         await pilot.press("a")
         await pilot.pause()
         assert not app.query(ApprovalPanel)
+
+
+@pytest.mark.anyio
+async def test_more_hint_survives_turn_worker_cancelled_before_first_refresh():
+    """Regression: on_mount defers _update_more_hint via
+    call_after_refresh. run_panel's finally calls panel.remove() without
+    awaiting it, so cancelling the turn worker (Esc/Ctrl-C on the real app)
+    can prune the panel's children before that deferred callback runs — the
+    callback then queries a childless panel. Before the fix this raised
+    NoMatches out of the handler, which Textual treats as a fatal error and
+    tears the whole app down (losing the in-flight turn), and app.run_test's
+    context manager re-raises it here.
+
+    Zero-pause cancel (no `await pilot.pause()` before `.cancel()`) is what
+    makes this deterministic: it lets `panel.remove()` get scheduled before
+    the mount's own refresh has had a chance to fire the deferred callback,
+    so the callback always runs after the children are already pruned. With
+    a pause in between the callback sometimes wins the race instead — which
+    is exactly why the real app only hit this 1 run in 3."""
+    app = _PanelHostApp(ApprovalPanel("bash", {"command": "ls -la"}))
+    async with app.run_test() as pilot:
+        app.worker.cancel()
+        await pilot.pause()
+        await pilot.pause()
+        assert app.is_running  # explicit: the app didn't die out from under us
+    assert app.result == "unset"  # cancelled turn worker: run_panel's await never resolved
+
+
+@pytest.mark.anyio
+async def test_more_hint_survives_direct_on_resize_after_panel_removal():
+    """Same hazard as the call_after_refresh regression above, but for the
+    on_resize entry point named explicitly in review: 'A direct synchronous
+    panel.on_resize() after removal raises today; the *event* path survives
+    only because the pump stops first — luck, not a guard.' No race needed
+    here — panel.remove() then a direct on_resize() call deterministically
+    hits a childless panel either way."""
+    panel = ApprovalPanel("bash", {"command": "ls -la"})
+    async with _panel_app(panel) as pilot:
+        panel.remove()
+        await pilot.pause()
+        panel.on_resize()  # pre-fix: raises NoMatches; post-fix: no-op
+        assert pilot.app.is_running
 
 
 @pytest.mark.anyio

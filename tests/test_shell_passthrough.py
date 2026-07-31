@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 from textual.app import App
+from textual.widgets import Static
 
 from marim_harness.interfaces.tui.shell_passthrough import (
     PASSTHROUGH_TIMEOUT,
@@ -123,3 +124,21 @@ async def test_sudo_password_modal_escape_cancels():
         await pilot.press("escape")
         await pilot.pause()
         assert results == [None]
+
+
+@pytest.mark.anyio
+async def test_sudo_command_neutralizes_ansi_escapes():
+    """The sudo modal is a consent surface too (the user is about to authorize
+    a command as root). The command is user-typed today, so there's no live
+    exposure, but #sudo-command should get the same ANSI-neutralizing
+    treatment as the approval preview as defense-in-depth — an ESC[2K/ESC[1G
+    pair could otherwise repaint the line the user is reading, same as the
+    approval-panel hole this branch closed elsewhere."""
+    evil = "whoami\x1b[2K\x1b[1G$ id"
+    app = _ModalHost()
+    async with app.run_test() as pilot:
+        app.push_screen(SudoPasswordModal(f"sudo {evil}"))
+        await pilot.pause()
+        rendered = app.screen.query_one("#sudo-command", Static).render().plain
+        assert "\x1b" not in rendered
+        assert "whoami" in rendered  # neutralized, not truncated

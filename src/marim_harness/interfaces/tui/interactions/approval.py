@@ -4,6 +4,7 @@ from rich.text import Text
 from textual import errors
 from textual.app import ComposeResult
 from textual.containers import Horizontal, VerticalScroll
+from textual.css.query import NoMatches
 from textual.dom import NoScreen
 from textual.widgets import Button, Static
 
@@ -201,8 +202,20 @@ class ApprovalPanel(InteractionPanel):
         in one measurement. virtual_size.height (the full, unclamped content
         height) minus visible_region.height is exactly "rows not currently
         painted," regardless of which of the two is clipping them."""
-        detail = self.query_one("#approval-detail", VerticalScroll)
-        more = self.query_one("#approval-more", Static)
+        try:
+            detail = self.query_one("#approval-detail", VerticalScroll)
+            more = self.query_one("#approval-more", Static)
+        except NoMatches:
+            # This call is always deferred (call_after_refresh at mount, or a
+            # Resize event) relative to when it was scheduled. run_panel's
+            # finally calls panel.remove() without awaiting it, so if the turn
+            # worker is cancelled between mount and this callback firing, the
+            # panel's children can already be pruned by the time it runs —
+            # before the panel's own message pump has stopped delivering to
+            # it. There's no hint to update in that case; return rather than
+            # raise NoMatches out of a consent surface's callback and take the
+            # whole app (and the in-flight turn) down with it.
+            return
         try:
             visible_rows = self.screen.find_widget(detail).visible_region.height
         except (NoScreen, errors.NoWidget):
