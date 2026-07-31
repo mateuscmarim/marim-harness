@@ -6,6 +6,7 @@ from textual.containers import Horizontal
 from textual.widgets import Button, Static
 
 from .base import InteractionPanel
+from .sanitize import safe_text
 
 # Diff highlighting styles for the approval preview.
 REMOVED_STYLE = "red"
@@ -16,9 +17,9 @@ LABEL_STYLE = "dim"
 
 def _append_diff(detail: Text, old_string: str, new_string: str) -> None:
     """Append an old/new block: removed lines in red, then added lines in green."""
-    for line in str(old_string).splitlines():
+    for line in safe_text(old_string).splitlines():
         detail.append(f"- {line}\n", style=REMOVED_STYLE)
-    for line in str(new_string).splitlines():
+    for line in safe_text(new_string).splitlines():
         detail.append(f"+ {line}\n", style=ADDED_STYLE)
 
 
@@ -26,21 +27,24 @@ def _append_workflow_script(detail: Text, args: dict) -> None:
     """Render the run_workflow script as readable Python (real newlines, not
     an escaped repr) followed by a compact JSON rendering of ``args`` when
     present, so the user can actually review the script they're approving."""
-    for line in str(args["script"]).splitlines():
+    for line in safe_text(args["script"]).splitlines():
         detail.append(f"{line}\n", style=ADDED_STYLE)
     workflow_args = args.get("args")
     if workflow_args is not None:
         detail.append("\nargs: ", style=LABEL_STYLE)
-        detail.append(f"{json.dumps(workflow_args)}\n")
+        detail.append(f"{safe_text(json.dumps(workflow_args))}\n")
 
 
+# Every value below is model-authored. safe_text neutralizes terminal control
+# sequences so the preview cannot be repainted into showing something other than
+# what will execute — see sanitize.py for the attack this closes.
 def format_detail(tool_name: str, args: dict) -> Text:
     """Build a styled preview of what a tool call will do, instead of dumping the
     raw args dict. Removed lines are red, added (or newly-written) lines green."""
     detail = Text()
     if tool_name == "edit_file" and isinstance(args.get("edits"), list):
         edits = args["edits"]
-        detail.append(f"{args.get('path', '?')}\n\n", style=HEADER_STYLE)
+        detail.append(f"{safe_text(args.get('path', '?'))}\n\n", style=HEADER_STYLE)
         for i, edit in enumerate(edits, 1):
             if len(edits) > 1:
                 detail.append(f"edit {i}:\n", style=LABEL_STYLE)
@@ -49,18 +53,18 @@ def format_detail(tool_name: str, args: dict) -> Text:
                 detail.append("\n")
         return detail
     if tool_name in ("run_command", "bash") and "command" in args:
-        detail.append(f"$ {args['command']}", style=HEADER_STYLE)
+        detail.append(f"$ {safe_text(args['command'])}", style=HEADER_STYLE)
         return detail
     if tool_name == "write_file" and "content" in args:
-        detail.append(f"{args.get('path', '?')}\n\n", style=HEADER_STYLE)
-        for line in str(args["content"]).splitlines():
+        detail.append(f"{safe_text(args.get('path', '?'))}\n\n", style=HEADER_STYLE)
+        for line in safe_text(args["content"]).splitlines():
             detail.append(f"{line}\n", style=ADDED_STYLE)
         return detail
     if tool_name == "run_workflow" and "script" in args:
         _append_workflow_script(detail, args)
         return detail
     for k, v in args.items():
-        detail.append(f"{k}: {v!r}\n")
+        detail.append(f"{safe_text(k)}: {safe_text(repr(v))}\n")
     return detail
 
 
