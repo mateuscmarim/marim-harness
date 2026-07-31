@@ -127,7 +127,11 @@ class SudoPasswordModal(ModalScreen[str | None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="sudo-box"):
             yield Static("sudo password required", id="sudo-title")
-            yield Static(f"$ {self.command}", id="sudo-command")
+            # markup=False: the command is user-typed. A '[/]' in it raises
+            # MarkupError during render (killing the app), and a '[b]…[/b]' would
+            # render as styling while the bracketed text is what actually runs —
+            # a display that disagrees with the command being authorized.
+            yield Static(f"$ {self.command}", id="sudo-command", markup=False)
             yield Input(password=True, placeholder="password", id="sudo-password")
             with Horizontal(id="sudo-buttons"):
                 yield Button("Cancel (esc)", id="sudo-cancel", variant="error")

@@ -2,11 +2,25 @@ from asyncio import CancelledError
 from pathlib import Path
 
 import pytest
+from textual.app import App, ComposeResult
 
 from marim_harness.interfaces.tui.app import HarnessApp
 from marim_harness.interfaces.tui.queue import QueuedMessage, render_queue
 from marim_harness.interfaces.tui.widgets.prompt import PromptInput
+from marim_harness.interfaces.tui.widgets.queue_display import QueueDisplay
 from tests.conftest import _make_deps
+
+
+class _QueueOnlyApp(App[None]):
+    def compose(self) -> ComposeResult:
+        yield QueueDisplay()
+
+
+def _queue_app():
+    """A minimal app hosting just the QueueDisplay, for exercising the real
+    watch_items -> _repaint -> update() render path (where the MarkupError
+    used to be raised) without spinning up a full HarnessApp."""
+    return _QueueOnlyApp().run_test()
 
 
 def test_queued_message_holds_text_attachments_id():
@@ -18,7 +32,7 @@ def test_queued_message_holds_text_attachments_id():
 
 def test_render_queue_lists_items_in_order():
     items = [QueuedMessage("first", None, "1"), QueuedMessage("second", None, "2")]
-    out = render_queue(items)
+    out = render_queue(items).plain
     assert "1. first" in out
     assert "2. second" in out
     # first appears before second
@@ -27,14 +41,45 @@ def test_render_queue_lists_items_in_order():
 
 def test_render_queue_shows_attachment_count():
     items = [QueuedMessage("with files", [(b"x", "image/png"), (b"y", "image/png")], "1")]
-    assert "📎2" in render_queue(items)
+    assert "📎2" in render_queue(items).plain
 
 
-def test_render_queue_escapes_markup_in_user_text():
-    # A '[' in user text must not be parsed as Textual markup.
+def test_render_queue_does_not_parse_markup_in_user_text():
+    # User text is composed as literal Content (never markup-parsed), so a
+    # '[' in it must survive verbatim rather than being escaped or swallowed.
     items = [QueuedMessage("do [this]", None, "1")]
-    out = render_queue(items)
-    assert "\\[this]" in out  # escaped open bracket
+    out = render_queue(items).plain
+    assert "do [this]" in out
+
+
+def test_render_queue_survives_an_unterminated_bracket():
+    """escape() only neutralizes bracket runs that have a closing ']'. An
+    unterminated '[' escapes into the parser and swallows the developer-authored
+    '[/]' that follows, raising MarkupError during render — which kills the app."""
+    items = [QueuedMessage("also fix the [old_string bug", None, "1")]
+    content = render_queue(items)
+    assert "also fix the [old_string bug" in content.plain
+
+
+def test_render_queue_survives_an_unterminated_markup_value():
+    items = [QueuedMessage("run [foo bar='baz", None, "1")]
+    assert "run [foo bar='baz" in render_queue(items).plain
+
+
+def test_render_queue_keeps_the_action_links():
+    """The edit/remove click targets must survive the composition change."""
+    content = render_queue([QueuedMessage("hi", None, "7")])
+    assert "edit" in content.plain and "✕" in content.plain
+
+
+@pytest.mark.anyio
+async def test_queue_display_repaints_unterminated_bracket_without_crashing():
+    """End-to-end: the crash happened in watch_items -> _repaint -> update()."""
+    async with _queue_app() as pilot:
+        qd = pilot.app.query_one(QueueDisplay)
+        qd.items = [QueuedMessage("oops [unclosed", None, "1")]
+        await pilot.pause()
+        assert pilot.app.is_running
 
 
 @pytest.fixture
@@ -168,10 +213,14 @@ async def test_run_queued_action_resumes(tmp_path):
 
 
 def test_render_queue_embeds_click_actions():
+    # The @click action strings are markup styles, not plain text — .plain
+    # strips them (see test_render_queue_keeps_the_action_links for the
+    # visible-text check), so verify them via the composed Content's spans.
     items = [QueuedMessage("draft one", None, "7")]
-    out = render_queue(items)
-    assert "@click=app.edit_queued('7')" in out
-    assert "@click=app.remove_queued('7')" in out
+    content = render_queue(items)
+    styles = [span.style for span in content.spans]
+    assert "@click=app.edit_queued('7')" in styles
+    assert "@click=app.remove_queued('7')" in styles
 
 
 @pytest.mark.anyio

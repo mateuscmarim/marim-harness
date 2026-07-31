@@ -439,6 +439,48 @@ async def test_task_and_job_panels_survive_markup_like_text():
         assert "[/]" in str(app.query_one("#job-body").render())
 
 
+@pytest.mark.anyio
+async def test_queue_display_survives_markup_like_text():
+    """A queued message is arbitrary user-typed text and may contain an
+    unterminated bracket, which would swallow the developer-authored '[/]'
+    that closes the row's action links. It must render literally rather than
+    crash — see queue.py's render_queue."""
+    from marim_harness.interfaces.tui.queue import QueuedMessage
+    from marim_harness.interfaces.tui.widgets.queue_display import QueueDisplay
+
+    class H(App):
+        def compose(self) -> ComposeResult:
+            yield QueueDisplay()
+
+    app = H()
+    async with app.run_test() as pilot:
+        qd = app.query_one(QueueDisplay)
+        qd.items = [QueuedMessage("oops [unclosed", None, "1")]
+        await pilot.pause()
+        assert "oops [unclosed" in str(qd.render())
+
+
+@pytest.mark.anyio
+async def test_sudo_modal_survives_markup_like_command():
+    """The sudo command line echoes user-typed text and may contain markup-like
+    syntax; it must render literally (markup=False) rather than crash — see
+    shell_passthrough.py's SudoPasswordModal. A bare "oops [unclosed" (no
+    trailing tag to swallow) doesn't actually trip the parser on this single
+    Static, so use the other payload confirmed to raise MarkupError
+    ("Expected markup value") on an unterminated quoted attribute."""
+    from marim_harness.interfaces.tui.shell_passthrough import SudoPasswordModal
+
+    class H(App):
+        pass
+
+    app = H()
+    async with app.run_test() as pilot:
+        app.push_screen(SudoPasswordModal("run [foo bar='baz"))
+        await pilot.pause()
+        body = str(app.screen.query_one("#sudo-command").render())
+        assert "run [foo bar='baz" in body
+
+
 def _panel_item(kind):
     """A duck-typed task or job item the panel renderers accept."""
     if kind == "task":
