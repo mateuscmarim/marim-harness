@@ -115,7 +115,17 @@ class ApprovalPanel(InteractionPanel):
         self.args = args
 
     def compose(self) -> ComposeResult:
-        yield Static(f"Approve  {self.tool_name}?", id="approval-title")
+        # tool_name can come from an untrusted MCP server's advertised tool
+        # name (see mcp/config.py's `display = f"{label}_{name}"`), so it gets
+        # the same safe_text treatment as everything in format_detail. markup=
+        # False is the other half: unlike Text.append (used by format_detail),
+        # a bare Static(str) parses Rich console markup, so a tool name like
+        # "evil[/bold]" would otherwise raise MarkupError and crash the panel
+        # before it ever mounts — leaving the approval unresolved instead of
+        # just spoofed.
+        yield Static(
+            f"Approve  {safe_text(self.tool_name)}?", id="approval-title", markup=False
+        )
         yield Static(format_detail(self.tool_name, self.args), id="approval-detail")
         with Horizontal(id="approval-buttons"):
             yield Button("Deny (d)", id="deny", variant="error")

@@ -42,6 +42,28 @@ class _Harness(App):
         )
 
 
+class _NamedHarness(App):
+    """Like ``_Harness`` but lets a test pick ``tool_name``/``args`` so it can
+    probe ``ApprovalPanel``'s title line, which is built independently of
+    ``format_detail`` and needs its own coverage."""
+
+    def __init__(self, tool_name: str, args: dict):
+        super().__init__()
+        self.tool_name = tool_name
+        self.args = args
+        self.result = "unset"
+
+    def compose(self) -> ComposeResult:
+        yield VerticalScroll(Static("line\n" * 100), id="log")
+        yield Static("", id="status-bar")
+
+    def on_mount(self) -> None:
+        self.run_worker(self._ask())
+
+    async def _ask(self) -> None:
+        self.result = await run_panel(self, ApprovalPanel(self.tool_name, self.args))
+
+
 @pytest.mark.anyio
 async def test_approve_returns_true():
     app = _Harness()
@@ -209,3 +231,102 @@ def test_fallback_arg_dump_neutralizes_escapes():
     """The generic `k: v!r` branch takes model args for any unrecognized tool."""
     plain = format_detail("some_tool", {"k": "v\x1b[2Kspoof"}).plain
     assert "\x1b" not in plain
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "args", "legible"),
+    [
+        pytest.param(
+            "edit_file",
+            {
+                "path": "a\x1b[2K\x1b[1Gspoof.txt",
+                "edits": [{"old_string": "foo", "new_string": "bar"}],
+            },
+            "a",
+            id="edit_file_path_header",
+        ),
+        pytest.param(
+            "edit_file",
+            {
+                "path": "a.txt",
+                "edits": [{"old_string": "foo\x1b[2K\x1b[1Gspoof", "new_string": "bar"}],
+            },
+            "foo",
+            id="append_diff_old_string",
+        ),
+        pytest.param(
+            "edit_file",
+            {
+                "path": "a.txt",
+                "edits": [{"old_string": "foo", "new_string": "bar\x1b[2K\x1b[1Gspoof"}],
+            },
+            "bar",
+            id="append_diff_new_string",
+        ),
+        pytest.param(
+            "run_workflow",
+            {"script": "log('hi')\x1b[2K\x1b[1Gspoof"},
+            "log('hi')",
+            id="append_workflow_script_script",
+        ),
+        pytest.param(
+            "write_file",
+            {"path": "a\x1b[2K\x1b[1Gspoof.py", "content": "ok"},
+            "a",
+            id="write_file_path_header",
+        ),
+        pytest.param(
+            "some_tool",
+            {"k\x1b[2K\x1b[1Gspoof": 1},
+            "k",
+            id="fallback_arg_key",
+        ),
+    ],
+)
+def test_format_detail_neutralizes_escapes_at_every_model_supplied_site(
+    tool_name, args, legible
+):
+    """Six of format_detail's model-supplied insertion points had no test that
+    would fail on a revert: the earlier tests only covered the bash-command and
+    write_file-content sites (and the fallback *value*, via repr(), which
+    already escapes ESC on its own). This exercises the remaining six —
+    edit_file's path header, both _append_diff arguments, the run_workflow
+    script, write_file's path, and the fallback dict *key* — each individually,
+    so reverting any one safe_text call fails exactly one case here."""
+    plain = format_detail(tool_name, args).plain
+    assert "\x1b" not in plain
+    assert legible in plain
+
+
+@pytest.mark.anyio
+async def test_approval_title_neutralizes_ansi_escapes():
+    """The title Static is built independently of format_detail, so tool_name
+    needs its own safe_text call. This is reachable with attacker-influenced
+    text: mcp/config.py builds `display = f"{label}_{name}"` from an untrusted
+    MCP server's advertised tool name and passes it as tool_name for ask-mode
+    approvals, with no provider-side validation of either half."""
+    evil = "x\x1b[2K\x1b[1Gsafe_tool"
+    app = _NamedHarness(evil, {"path": "a.txt"})
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        title = app.query_one("#approval-title", Static)
+        assert "\x1b" not in title.content
+        await pilot.press("d")
+        await pilot.pause()
+
+
+@pytest.mark.anyio
+async def test_approval_title_with_markup_syntax_does_not_crash():
+    """Static(str) parses Rich console markup unless markup=False (unlike
+    Text.append, used by format_detail, which never does). Without markup=False
+    a tool name like 'evil[/bold]' raises MarkupError while the title renders,
+    crashing the panel before it mounts — the pending approval would never
+    resolve, which is worse than a spoof: it's a denial of consent."""
+    app = _NamedHarness("evil[/bold]", {"path": "a.txt"})
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        title = app.query_one("#approval-title", Static)
+        assert "evil[/bold]" in title.content
+        await pilot.press("d")
+        await pilot.pause()
+    assert app.result is False
