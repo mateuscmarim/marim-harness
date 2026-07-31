@@ -73,6 +73,19 @@ class SessionPickerModal(ModalScreen[str | None]):
     #session-options {
         height: auto;
         max-height: 20;
+        /* Rows are a fixed-width formatted string (see _format_row) that can
+           exceed the box width at narrow terminal sizes (confirmed at
+           80/100 cols); without this, OptionList wraps them onto a second
+           line instead of clipping, which looks broken. Clip with an
+           ellipsis instead. This must live on the OptionList's own rule
+           (not a `.option-list--option` component-class rule) because
+           OptionList's line-height/wrap computation reads the widget's own
+           resolved `styles`, not the per-option component style returned by
+           `get_component_styles()` — a component-class-only rule parses and
+           resolves fine but has no effect on actual wrapping. Scoped to
+           #session-options so it doesn't affect any other OptionList. */
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
     }
     """
 

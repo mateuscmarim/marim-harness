@@ -186,6 +186,34 @@ async def test_active_session_cannot_be_armed():
 
 
 @pytest.mark.anyio
+async def test_option_rows_do_not_wrap():
+    # Regression test: at narrow terminal widths (confirmed at 80/100 cols via
+    # tmux smoke test), _format_row's fixed-width string (up to 89 cols) wraps
+    # onto a second line inside the OptionList instead of being clipped, which
+    # looks broken. Assert the OptionList's own resolved style carries the
+    # no-wrap/ellipsis fix. This must be read off `opts.styles` (the widget's
+    # own resolved style), not `get_component_styles("option-list--option")`:
+    # OptionList's line-height/wrapping computation
+    # (`_update_lines`/`Visual.to_strips`) reads the widget's own `styles`
+    # directly, so a component-class-scoped rule resolves fine but has no
+    # effect on actual wrapping — verified by direct experimentation against
+    # the installed Textual source.
+    app = _Host(_SESSIONS)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        modal = app.screen
+        opts = modal.query_one("#session-options", OptionList)
+        assert opts.styles.text_wrap == "nowrap"
+        assert opts.styles.text_overflow == "ellipsis"
+
+        # Stronger, still-deterministic check: with wrapping disabled, each
+        # option must render as exactly one line, so the OptionList's total
+        # rendered height equals its option count. Pre-fix, at 80 cols each
+        # 79+ char row wraps onto 2 lines, so this would be 2x option_count.
+        assert opts.virtual_size.height == opts.option_count
+
+
+@pytest.mark.anyio
 async def test_moving_highlight_clears_armed_state():
     app = _Host(_SESSIONS)
     async with app.run_test() as pilot:
