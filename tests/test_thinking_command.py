@@ -16,11 +16,12 @@ class _App:
             set_thinking_level=lambda level: self.calls.append(level),
             thinking_level_id=None,
         )
+        self.pickers = SimpleNamespace(open_thinking=self._open_thinking)
 
     async def post_system(self, msg: str) -> None:
         self.posted.append(msg)
 
-    async def open_thinking_picker(self) -> None:
+    async def _open_thinking(self) -> None:
         self.picker_opened = True
 
 

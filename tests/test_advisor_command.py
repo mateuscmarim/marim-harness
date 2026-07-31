@@ -15,11 +15,12 @@ class _App:
         self.harness = SimpleNamespace(
             set_advisor_model=lambda mid: self.advisor_calls.append(mid),
         )
+        self.pickers = SimpleNamespace(open_advisor=self._open_advisor)
 
     async def post_system(self, msg: str) -> None:
         self.posted.append(msg)
 
-    async def open_advisor_picker(self) -> None:
+    async def _open_advisor(self) -> None:
         self.picker_opened = True
 
 

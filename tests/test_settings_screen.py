@@ -823,12 +823,12 @@ async def test_advisor_off_choice_drops_the_env_var(isolated_env, monkeypatch, t
 
 @pytest.mark.anyio
 async def test_advisor_numeric_knobs_are_registered():
-    from marim_harness.interfaces.tui.settings import _ENV_INT_INPUTS, _ZERO_OK_INPUTS
+    from marim_harness.interfaces.tui.settings_env import ENV_INT_INPUTS, ZERO_OK_INPUTS
 
-    assert _ENV_INT_INPUTS["advisor-max-tokens"][0] == "MARIM_ADVISOR_MAX_TOKENS"
-    assert _ENV_INT_INPUTS["advisor-max-uses"][0] == "MARIM_ADVISOR_MAX_USES"
+    assert ENV_INT_INPUTS["advisor-max-tokens"][0] == "MARIM_ADVISOR_MAX_TOKENS"
+    assert ENV_INT_INPUTS["advisor-max-uses"][0] == "MARIM_ADVISOR_MAX_USES"
     # 0 = unlimited must be commit-able, like the context budget's 0.
-    assert "advisor-max-uses" in _ZERO_OK_INPUTS
+    assert "advisor-max-uses" in ZERO_OK_INPUTS
 
 
 @pytest.mark.anyio

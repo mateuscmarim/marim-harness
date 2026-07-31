@@ -707,11 +707,9 @@ def test_repaint_list_survives_uncomposed_view(monkeypatch):
         def query_one(self, _selector):
             return _StubView()
 
-    viewer = SubAgentsScreen()
-    # SubAgentsScreen is never pushed/mounted, so its inherited ``app`` property
-    # (which _app narrows) isn't reachable outside a running Textual app here —
-    # stub it directly the way the real object gets it from the running app.
-    monkeypatch.setattr(SubAgentsScreen, "_app", property(lambda self: _StubApp()))
+    # SubAgentsScreen is a plain controller holding a back-reference to its app,
+    # so a stub app is all it takes to drive it outside a running Textual app.
+    viewer = SubAgentsScreen(_StubApp())  # type: ignore[arg-type]
     viewer.open = True
     # Must return without raising even though the view's list isn't composed.
     assert viewer._repaint_list() is None

@@ -66,7 +66,7 @@ async def test_concurrent_submit_during_start_gap_enqueues_not_duplicate(
         app._turn_worker = object()
 
     async with app.run_test():
-        app._start_turn = _fake_start_turn  # type: ignore[assignment]
+        app.start_turn = _fake_start_turn  # type: ignore[assignment]
 
         # First submit: no turn running -> starts a turn.
         await app.on_prompt_input_submitted(PromptInput.Submitted("first", []))
@@ -78,7 +78,7 @@ async def test_concurrent_submit_during_start_gap_enqueues_not_duplicate(
         await app.on_prompt_input_submitted(PromptInput.Submitted("second", []))
         # Second did NOT start a turn; it was enqueued instead.
         assert started == ["first"]
-        assert any(m.text == "second" for m in app._queue.items)
+        assert any(m.text == "second" for m in app.queue.items)
 
 
 @pytest.mark.anyio
@@ -88,7 +88,7 @@ async def test_start_turn_clears_latch_on_success(tmp_path: Path):
         # The worker is created before the latch drops, so capture it right after
         # _start_turn returns (the fast TestModel turn may already have finished and
         # nulled _turn_worker by the time we check, so don't await a pause first).
-        await app._start_turn("hello")
+        await app.start_turn("hello")
         # Latch cleared on the success path; the worker (created inside) carries the
         # busy flag from here on.
         assert app._turn_starting is False
@@ -113,7 +113,7 @@ async def test_start_turn_clears_latch_on_error(tmp_path: Path):
 
         app.query_one = _boom  # type: ignore[assignment]
         with pytest.raises(RuntimeError):
-            await app._start_turn("hello")
+            await app.start_turn("hello")
         assert app._turn_starting is False
 
 
@@ -164,12 +164,12 @@ async def test_compact_busy_refuses_turn_submission_without_losing_it_silently(
         started.append(text)
 
     async with app.run_test():
-        app._start_turn = _fake_start_turn  # type: ignore[assignment]
+        app.start_turn = _fake_start_turn  # type: ignore[assignment]
         app.compact_busy = True
         await app._route_submission("hello", None)
 
         assert started == []  # not started
-        assert not app._queue.items  # not silently enqueued either
+        assert not app.queue.items  # not silently enqueued either
 
 
 # ---------------------------------------------------------------------------
