@@ -162,12 +162,11 @@ class ApprovalPanel(InteractionPanel):
         """Say how many rows sit below the fold. Runs after refresh because the
         detail's scroll geometry is only known once it has been laid out.
 
-        max_scroll_y (not virtual_size.height - _MAX_DETAIL_ROWS) is the
-        number to use: the panel that hosts #approval-detail is itself
-        clamped to 50% height and scrollable, so #approval-detail's own
-        *visible* height can be less than _MAX_DETAIL_ROWS when the terminal
-        is short. max_scroll_y is "rows still below the fold" by definition,
-        so it stays correct in that case instead of undercounting."""
+        max_scroll_y — not virtual_size.height - _MAX_DETAIL_ROWS — is the
+        number to report: it is "rows still below the fold" by construction,
+        read off the same layout that produced the clamp. The subtraction
+        form would restate the CSS max-height a second time in Python and
+        silently undercount if the two ever drifted."""
         detail = self.query_one("#approval-detail", VerticalScroll)
         hidden = detail.max_scroll_y
         more = self.query_one("#approval-more", Static)
