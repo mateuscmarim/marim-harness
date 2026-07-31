@@ -1993,7 +1993,9 @@ async def test_new_command_starts_named_session(tmp_path: Path):
 
 
 @pytest.mark.anyio
-async def test_sessions_command_lists_saved(tmp_path: Path):
+async def test_sessions_command_opens_picker(tmp_path: Path):
+    from marim_harness.interfaces.tui.session_picker import SessionPickerModal
+
     app = _app_with_manager(tmp_path)
     app.harness.new_session("first")
     app.harness.session.persist()
@@ -2003,9 +2005,9 @@ async def test_sessions_command_lists_saved(tmp_path: Path):
         await pilot.pause()
         await _submit(app, "/sessions")
         await pilot.pause()
-        text = _log_text(app)
-        assert "first" in text
-        assert "second" in text
+        assert isinstance(app.screen, SessionPickerModal)
+        opts = app.screen.query_one("#session-options")
+        assert opts.option_count == 2
 
 
 @pytest.mark.anyio
@@ -2206,6 +2208,78 @@ async def test_model_picker_cancel_keeps_model(tmp_path: Path):
         await app.pickers.open_model()
         await pilot.pause()
         assert app.harness.model_id == "startup"  # unchanged
+
+
+@pytest.mark.anyio
+async def test_session_picker_switches_on_choice(tmp_path: Path):
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    app = _app_with_manager(tmp_path)
+    app.harness.new_session("alpha")
+    app.harness.session.history = [ModelRequest(parts=[UserPromptPart(content="hi alpha")])]
+    app.harness.session.persist()
+    app.harness.new_session("beta")
+    app.harness.session.persist()
+
+    target_id = next(
+        info.id for info in app.harness.session.sessions() if info.name == "alpha"
+    )
+
+    def fake_push(screen, callback=None):
+        # Mirrors Textual's own ResultCallback.__call__, which never invokes the
+        # callback directly — it routes through call_next so an async callback
+        # (like _on_session_chosen) gets scheduled and awaited by the message
+        # pump instead of producing an inert, never-awaited coroutine.
+        if callback is not None:
+            app.call_next(callback, target_id)
+
+    app.push_screen = fake_push  # type: ignore[method-assign]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.open_session_picker()
+        await pilot.pause()
+        assert app.harness.session.session_name == "alpha"
+        assert len(app.harness.session.history) == 1
+
+
+@pytest.mark.anyio
+async def test_session_picker_cancel_keeps_current_session(tmp_path: Path):
+    app = _app_with_manager(tmp_path)
+
+    def fake_push(screen, callback=None):
+        # See the matching comment in test_session_picker_switches_on_choice.
+        if callback is not None:
+            app.call_next(callback, None)  # cancelled
+
+    app.push_screen = fake_push  # type: ignore[method-assign]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        current = app.harness.session.session_name
+        await app.open_session_picker()
+        await pilot.pause()
+        assert app.harness.session.session_name == current
+
+
+@pytest.mark.anyio
+async def test_session_picker_delete_message_removes_session(tmp_path: Path):
+    app = _app_with_manager(tmp_path)
+    app.harness.new_session("doomed")
+    app.harness.session.persist()
+    doomed_id = next(
+        info.id for info in app.harness.session.sessions() if info.name == "doomed"
+    )
+    # Switch back to a non-doomed session so "doomed" isn't the active one.
+    app.harness.new_session("keeper")
+    app.harness.session.persist()
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        from marim_harness.interfaces.tui.session_picker import SessionPickerModal
+
+        app.on_session_picker_modal_deleted(SessionPickerModal.Deleted(doomed_id))
+        await pilot.pause()
+        remaining_ids = {info.id for info in app.harness.session.sessions()}
+        assert doomed_id not in remaining_ids
 
 
 @pytest.mark.anyio

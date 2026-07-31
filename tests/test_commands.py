@@ -253,18 +253,16 @@ async def test_skill_no_arg_no_skills(tmp_path: Path, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_sessions_marks_the_active_session():
+async def test_sessions_command_opens_picker():
     app = _FakeApp()
-    infos = _infos()
-    app.harness = SimpleNamespace(
-        session=SimpleNamespace(sessions=lambda: infos, session_name="Beta Work")
-    )
+    opened = []
+
+    async def fake_open_session_picker():
+        opened.append(True)
+
+    app.open_session_picker = fake_open_session_picker  # type: ignore[attr-defined]
     await dispatch(app, "/sessions")
-    lines = app.posted[-1].splitlines()
-    beta_line = next(line for line in lines if "Beta Work" in line)
-    alpha_line = next(line for line in lines if "Alpha" in line)
-    assert "← active" in beta_line
-    assert "← active" not in alpha_line
+    assert opened == [True]
 
 
 @pytest.mark.anyio

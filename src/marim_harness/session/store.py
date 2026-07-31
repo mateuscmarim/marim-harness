@@ -164,6 +164,16 @@ class SessionInfo:
     mode: str | None = None
 
 
+def filter_sessions(sessions: list[SessionInfo], query: str) -> list[SessionInfo]:
+    """Substring filter over session name (case-insensitive). Blank query keeps
+    everything. Matches auto-generated timestamp names (e.g. "20260703-120000")
+    the same as user-given titles — both live in the same ``name`` field."""
+    q = query.strip().lower()
+    if not q:
+        return sessions
+    return [s for s in sessions if q in s.name.lower()]
+
+
 class SessionStore:
     """Persists one named conversation to a JSON file, so it can be resumed
     across launches. Created by a :class:`SessionManager`, which decides the

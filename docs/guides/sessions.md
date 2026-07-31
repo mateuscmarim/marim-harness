@@ -46,7 +46,9 @@ checkpoints pinned. `marim sessions delete <id>` removes all of them.
 
 Inside the TUI:
 
-- `/sessions` lists saved sessions for this workspace, newest first.
+- `/sessions` opens an interactive picker listing saved sessions for this
+  workspace, newest first, with filter-as-you-type, switch on Enter, and
+  delete (press `d` twice on a non-active row).
 - `/new [name]` starts a fresh session (named, or unnamed and auto-titled).
 - `/switch <number|name>` switches to another session. A corrupt target fails
   loudly and leaves you on the current session — nothing is overwritten.
