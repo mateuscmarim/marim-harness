@@ -36,7 +36,15 @@ class PromptHistory:
         if self.path is None or not self.path.exists():
             return []
         entries: list[str] = []
-        for line in self.path.read_text(encoding="utf-8").splitlines():
+        try:
+            raw = self.path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            # Best-effort, matching prefs._read: PromptHistory is constructed
+            # during CLI startup, so a corrupt or unreadable file must degrade to
+            # an empty history rather than stopping marim from launching at all.
+            logger.debug("failed to read prompt history %s: %s", self.path, exc)
+            return []
+        for line in raw.splitlines():
             line = line.strip()
             if not line:
                 continue
@@ -63,9 +71,19 @@ class PromptHistory:
             self.entries = self.entries[-self.max_entries:]
         self._save()
 
-    def _save(self) -> None:
+    def _save(self) -> bool:
+        """Persist the history. Best-effort: a write failure returns False rather
+        than raising — matching prefs.save_theme. This is called from add(), which
+        the TUI invokes inside the prompt's key handler BEFORE routing the
+        submission, so an escaping OSError would kill the app and lose the message
+        the user just typed."""
         if self.path is None:
-            return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+            return False
         body = "\n".join(json.dumps(entry) for entry in self.entries)
-        atomic_write_text(self.path, body + "\n" if body else "")
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(self.path, body + "\n" if body else "")
+        except OSError as exc:
+            logger.debug("failed to save prompt history %s: %s", self.path, exc)
+            return False
+        return True
