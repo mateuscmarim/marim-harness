@@ -1,5 +1,13 @@
+import pytest
+from textual.app import App, ComposeResult
+
 import marim_harness.interfaces.tui.subagents.card as subagent_mod
 from marim_harness.interfaces.tui.subagents.card import SubAgentWidget
+
+
+class _CardHarness(App):
+    def compose(self) -> ComposeResult:
+        yield SubAgentWidget("explore", "map the codebase", "sonnet")
 
 
 def test_display_title_is_derived_once_and_cached(monkeypatch):
@@ -161,3 +169,65 @@ def test_finish_clears_stale_waiting_state():
     assert w.waiting is False
     header = str(w._header.render())
     assert "⧗" not in header and "after" not in header
+
+
+@pytest.mark.anyio
+async def test_finished_subagent_card_stops_its_spinner_timer():
+    """A finished card must not keep a 10Hz repaint timer alive for the rest of
+    the session — ToolCallWidget already stops its timer in finish() for
+    exactly this reason (tools.py's on_mount comment)."""
+    app = _CardHarness()
+    async with app.run_test() as pilot:
+        card = app.query_one(SubAgentWidget)
+        await pilot.pause()
+        # Sanity: on_mount armed a real, running interval before finish().
+        assert card._spinner_timer is not None
+        assert card._spinner_timer._task is not None
+
+        card.finish("done", status="done")
+        await pilot.pause()
+
+        assert card._spinner_timer is not None
+        assert card._spinner_timer._task is None
+
+
+@pytest.mark.anyio
+async def test_rearm_spinner_restarts_a_stopped_timer():
+    """Regression: adopt_resumed_card flips a settled card back to "pending"
+    (the sub-agents screen's `r` key resumes an "interrupted" card — e.g. one
+    settle_pending froze on a cancelled turn). Without restarting the timer,
+    the card would sit "pending" forever with a frozen glyph — finish() never
+    gets called again to notice."""
+    app = _CardHarness()
+    async with app.run_test() as pilot:
+        card = app.query_one(SubAgentWidget)
+        await pilot.pause()
+
+        card.finish("cancelled", status="interrupted")
+        await pilot.pause()
+        assert card._spinner_timer._task is None  # stopped, per finish()
+
+        card.rearm_spinner()
+        assert card._spinner_timer._task is not None  # running again
+        card.status = "pending"
+        spin_before = card._spin
+        await pilot.pause(0.25)  # several 10Hz ticks
+        assert card._spin != spin_before  # _tick is actually firing
+
+
+@pytest.mark.anyio
+async def test_rearm_spinner_is_a_noop_when_timer_still_running():
+    """The other adopt_resumed_card caller (still-running replay) re-adopts a
+    card whose timer was never stopped; rearm_spinner must not double-arm it
+    (a second concurrent interval would double the tick rate, and orphan the
+    first timer's task)."""
+    app = _CardHarness()
+    async with app.run_test() as pilot:
+        card = app.query_one(SubAgentWidget)
+        await pilot.pause()
+        original = card._spinner_timer
+        assert original is not None and original._task is not None
+
+        card.rearm_spinner()
+
+        assert card._spinner_timer is original  # untouched — no second timer

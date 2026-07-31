@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from textual.containers import Vertical
 from textual.content import Content
+from textual.timer import Timer
 from textual.widgets import Static
 
 if TYPE_CHECKING:
@@ -184,15 +185,18 @@ class SubAgentWidget(Vertical):
         # card whose usage hasn't moved. -1 forces the first pricing.
         self._pending_usage: RunUsage | None = None
         self._priced_tokens = -1
+        # The set_interval handle from on_mount, so finish() can stop it. The
+        # callback no-ops once status leaves "pending", but an un-stopped interval
+        # still wakes the app 10x/s per finished card for the rest of the session
+        # (see ToolCallWidget, which stops its timer for exactly this reason).
+        self._spinner_timer: Timer | None = None
         super().__init__(self._header, self._activity)
 
     def on_mount(self) -> None:
         self._paint_header()
         self._paint_activity()
-        # Animate the working glyph and tick the duration while the agent runs; the
-        # callback no-ops once the status leaves "pending", so a finished card stops
-        # repainting.
-        self.set_interval(_SPINNER_TICK, self._tick)
+        # Animate the working glyph and tick the duration while the agent runs.
+        self._spinner_timer = self.set_interval(_SPINNER_TICK, self._tick)
 
     # The CSS ``:hover`` pseudo-class only lands on the leaf widget under the
     # pointer, not on this container, so hovering a child line wouldn't light up
@@ -425,3 +429,20 @@ class SubAgentWidget(Vertical):
             self.pane.append_report(report)
         self._paint_header()
         self._paint_activity()
+        if self._spinner_timer is not None:
+            self._spinner_timer.stop()
+
+    def rearm_spinner(self) -> None:
+        """Restart the spinner timer if ``finish()`` previously stopped it.
+        Called by the renderer's ``adopt_resumed_card`` when a settled card
+        comes back to "pending" — e.g. the sub-agents screen's `r` key resumes
+        a card that ``finish(..., status="interrupted")`` (a cancelled turn,
+        or a replayed crash) already froze. Without this the resumed card's
+        status flips back to "pending" but its glyph never animates again —
+        the interval that used to drive ``_tick`` is gone. A no-op when the
+        timer never stopped (e.g. the OTHER ``adopt_resumed_card`` caller,
+        which re-adopts a still-running replayed card whose timer was never
+        touched) so this is safe to call unconditionally."""
+        if self._spinner_timer is not None and self._spinner_timer._task is not None:
+            return
+        self._spinner_timer = self.set_interval(_SPINNER_TICK, self._tick)
