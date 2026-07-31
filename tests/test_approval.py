@@ -376,15 +376,17 @@ async def test_approval_detail_scrolls_when_content_overflows():
 
 
 @pytest.mark.anyio
-async def test_approval_announces_how_many_lines_are_hidden():
+async def test_approval_announces_how_many_rows_are_hidden():
     """Mirror AskUserPanel's '+N more options — scroll' hint — a scrollbar alone
-    is easy to miss, and this panel authorizes shell commands."""
+    is easy to miss, and this panel authorizes shell commands. The count is
+    exact (95), not just "some number" — a hint reading '+1 more row' while 94
+    more rows are hidden would pass a looser assertion and still lie."""
     content = "\n".join(f"line{i}" for i in range(100))
     panel = ApprovalPanel("write_file", {"path": "a.py", "content": content})
     async with _panel_app(panel) as pilot:
         more = pilot.app.query_one("#approval-more")
         assert more.display is True
-        assert "more line" in more.render().plain
+        assert more.render().plain == "+95 more rows — scroll ↓"
 
 
 @pytest.mark.anyio
@@ -393,17 +395,120 @@ async def test_approval_hides_the_more_hint_for_short_content():
         assert pilot.app.query_one("#approval-more").display is False
 
 
+# The two boundary tests below (and test_approval_hint_never_hides_while_the_
+# outer_panel_still_clips) hardcode exact row counts derived from a specific
+# stack of layout inputs, all at the default 80x24 test size: InteractionPanel's
+# `max-height: 50%` and round border (base.py), ApprovalPanel's title row +
+# its margin-bottom, #approval-detail's own margin-bottom, the button row's 3
+# rows, and format_detail's write_file "path\n\n" header. If any of those
+# shift, these numbers shift with them — that's expected; re-measure (e.g. via
+# a small script that prints #approval-more.render().plain for a few content
+# sizes) rather than guessing a fix.
 @pytest.mark.anyio
-async def test_approval_still_resolves_when_detail_is_scrollable():
-    """The detail becoming a scrollable container (not a bare Static) must not
-    change what 'd' resolves to — the scroll/hint work is presentation only,
-    consent resolution stays fail-closed regardless of what's below the fold."""
-    content = "\n".join(f"line{i}" for i in range(100)) + "\nEVIL PAYLOAD"
+async def test_approval_hint_boundary_no_hint_when_nothing_is_clipped():
+    """Boundary just below where the hosting InteractionPanel starts clipping
+    #approval-detail. Measured directly (not assumed): 5 content lines render
+    with nothing hidden, 6 lines clip 1 row. This crossover is not 20/21 (the
+    #approval-detail internal-scroll cap) because the hint now also accounts
+    for the *outer* panel's clip (see _update_more_hint's docstring) — at this
+    terminal size the panel clips #approval-detail well before
+    #approval-detail's own 20-row cap is ever reached."""
+    content = "\n".join(f"line{i}" for i in range(5))
+    panel = ApprovalPanel("write_file", {"path": "a.py", "content": content})
+    async with _panel_app(panel) as pilot:
+        more = pilot.app.query_one("#approval-more")
+        assert more.display is False
+
+
+@pytest.mark.anyio
+async def test_approval_hint_boundary_shows_hint_once_a_row_is_clipped():
+    """One line past test_approval_hint_boundary_no_hint_when_nothing_is_clipped
+    — see that test's docstring for why 5/6 (not 20/21) is the real boundary
+    at this terminal size."""
+    content = "\n".join(f"line{i}" for i in range(6))
+    panel = ApprovalPanel("write_file", {"path": "a.py", "content": content})
+    async with _panel_app(panel) as pilot:
+        more = pilot.app.query_one("#approval-more")
+        assert more.display is True
+        assert more.render().plain == "+1 more row — scroll ↓"
+
+
+@pytest.mark.anyio
+async def test_approval_hint_never_hides_while_the_outer_panel_still_clips():
+    """The bug this regresses: #approval-detail.max_scroll_y == 0 (nothing to
+    scroll to *within* detail) does not mean nothing is hidden — the hosting
+    InteractionPanel can still be clipping #approval-detail itself. 10 lines
+    of write_file content fit inside #approval-detail's own 20-row box
+    (detail.max_scroll_y == 0) but are still 5 rows taller than what the
+    panel actually shows on screen at 80x24; the hint must still fire."""
+    content = "\n".join(f"line{i}" for i in range(10))
     panel = ApprovalPanel("write_file", {"path": "a.py", "content": content})
     async with _panel_app(panel) as pilot:
         app = pilot.app
         detail = app.query_one("#approval-detail")
+        more = app.query_one("#approval-more")
+        assert detail.max_scroll_y == 0, "setup check: nothing to scroll within detail itself"
+        assert more.display is True, "the outer panel is still clipping rows — hint must not lie"
+        assert more.render().plain == "+5 more rows — scroll ↓"
+
+
+@pytest.mark.anyio
+async def test_approval_hint_recomputes_on_resize():
+    """Regression: the hint used to compute once at mount via
+    call_after_refresh and never again, so it went stale (and silently
+    under-reported by an order of magnitude) the moment the terminal
+    resized. A width change re-wraps the content, changing how many rows are
+    hidden; on_resize must redo the calculation.
+
+    Asserts the narrow count is strictly greater (not just "!="): narrowing
+    from the default 80 columns to 50 can only increase wrapping and
+    therefore hidden rows. A weaker "!=" would also pass if on_resize fired
+    but read stale or wrong geometry (e.g. a hint that changed to something
+    smaller, or to garbage) — this pins the direction, not just that
+    something moved."""
+    content = "x" * 2000  # one very long line: wraps very differently by width
+    panel = ApprovalPanel("write_file", {"path": "a.py", "content": content})
+    async with _panel_app(panel) as pilot:
+        app = pilot.app
+        more = app.query_one("#approval-more", Static)
+        wide_hidden = int(more.render().plain.split()[0].lstrip("+"))
+        await pilot.resize_terminal(50, 24)
+        await pilot.pause()
+        narrow_hidden = int(more.render().plain.split()[0].lstrip("+"))
+    assert narrow_hidden > wide_hidden, "hint did not recompute (or got worse) after narrowing"
+
+
+@pytest.mark.anyio
+async def test_approval_keeps_a_gap_before_buttons_for_short_content():
+    """Regression: margin-bottom was moved from #approval-detail onto
+    #approval-more, which is display:none (and so contributes no margin at
+    all) for short content — collapsing the gap between the detail and the
+    button row on the common short-approval path. The margin belongs on
+    #approval-detail itself, which is always in layout."""
+    async with _panel_app(ApprovalPanel("bash", {"command": "ls -la"})) as pilot:
+        app = pilot.app
+        detail = app.query_one("#approval-detail")
+        buttons = app.query_one("#approval-buttons")
+        detail_bottom = detail.region.y + detail.region.height
+        assert buttons.region.y > detail_bottom, "no gap between detail and the button row"
+
+
+@pytest.mark.anyio
+async def test_approval_still_resolves_when_detail_is_scrollable():
+    """The detail becoming a scrollable, focusable container (not a bare
+    Static) must not change what 'd' resolves to — the scroll/hint work is
+    presentation only, consent resolution stays fail-closed regardless of
+    what's below the fold. Focuses #approval-detail itself before pressing
+    'd' (rather than leaving focus on the panel) so this actually exercises
+    the new DOM node's key handling, not just the panel's."""
+    content = "\n".join(f"line{i}" for i in range(100)) + "\nEVIL PAYLOAD"
+    panel = ApprovalPanel("write_file", {"path": "a.py", "content": content})
+    async with _panel_app(panel) as pilot:
+        app = pilot.app
+        detail = app.query_one("#approval-detail", VerticalScroll)
         assert detail.max_scroll_y > 0
+        detail.focus()
+        await pilot.pause()
         await pilot.press("d")
         await pilot.pause()
     assert app.result is False

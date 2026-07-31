@@ -1,8 +1,10 @@
 import json
 
 from rich.text import Text
+from textual import errors
 from textual.app import ComposeResult
 from textual.containers import Horizontal, VerticalScroll
+from textual.dom import NoScreen
 from textual.widgets import Button, Static
 
 from .base import InteractionPanel
@@ -100,6 +102,7 @@ class ApprovalPanel(InteractionPanel):
         height: auto;
         max-height: 20;
         overflow-y: auto;
+        margin-bottom: 1;
     }
     #approval-detail-content {
         height: auto;
@@ -158,21 +161,67 @@ class ApprovalPanel(InteractionPanel):
         self.focus()
         self.call_after_refresh(self._update_more_hint)
 
-    def _update_more_hint(self) -> None:
-        """Say how many rows sit below the fold. Runs after refresh because the
-        detail's scroll geometry is only known once it has been laid out.
+    def on_resize(self) -> None:
+        # A width change re-wraps #approval-detail's content, changing its
+        # virtual_size, and can also change how much of it the hosting
+        # InteractionPanel clips (see _update_more_hint) — both feed the
+        # hint, so redo it. Layout is already settled by the time Resize is
+        # delivered (mirrors prompt.py's on_resize, which re-fits on the
+        # same event for the same reason), so no call_after_refresh needed.
+        #
+        # This can recurse: _update_more_hint's more.display/.update() are
+        # themselves layout changes, and the panel is `height: auto`, so a
+        # False->True hint can itself trigger another on_resize. It
+        # terminates rather than oscillating because showing the hint can
+        # only ever *shrink* #approval-detail's visible rows (never grow
+        # them back), so `hidden` is monotonically non-decreasing across
+        # these self-triggered passes — it converges instead of flapping
+        # between "hidden" and "not hidden" (same shape as prompt.py's
+        # on_resize note that re-setting an unchanged height is a no-op).
+        self._update_more_hint()
 
-        max_scroll_y — not virtual_size.height - _MAX_DETAIL_ROWS — is the
-        number to report: it is "rows still below the fold" by construction,
-        read off the same layout that produced the clamp. The subtraction
-        form would restate the CSS max-height a second time in Python and
-        silently undercount if the two ever drifted."""
+    def _update_more_hint(self) -> None:
+        """Say how many rows are currently NOT on screen. Runs after refresh
+        (mount) and on every resize — see on_resize — because the answer
+        depends on layout that isn't known any earlier.
+
+        This is deliberately not just detail.max_scroll_y. #approval-detail
+        sits inside InteractionPanel, which is itself `max-height: 50%` and
+        scrollable (base.py) — so #approval-detail's own 20-row box can be
+        further clipped by its ancestor, and content can be hidden with
+        detail.max_scroll_y == 0 (nothing to scroll to *within* detail) while
+        most of that box is off-screen. Measured: a 13-row #approval-detail
+        with max_scroll_y == 0 had only 8 of those rows actually painted at
+        80x24 — reporting "nothing hidden" there would tell the user their
+        content is fully visible when 5 rows of it are not.
+
+        find_widget(...).visible_region is #approval-detail's on-screen
+        region intersected with whatever ancestor clip applies — it already
+        accounts for both detail's own scroll position and the panel's clip
+        in one measurement. virtual_size.height (the full, unclamped content
+        height) minus visible_region.height is exactly "rows not currently
+        painted," regardless of which of the two is clipping them."""
         detail = self.query_one("#approval-detail", VerticalScroll)
-        hidden = detail.max_scroll_y
         more = self.query_one("#approval-more", Static)
+        try:
+            visible_rows = self.screen.find_widget(detail).visible_region.height
+        except (NoScreen, errors.NoWidget):
+            # NoScreen: run_panel's finally calls panel.remove() without
+            # awaiting it, so a Resize can still be delivered to a panel
+            # that's mid-teardown and no longer on a screen. NoWidget: not
+            # yet mapped by the compositor (shouldn't happen once this runs
+            # post-refresh/resize, but the same degrade applies). Widget.region
+            # (widget.py) guards this exact pair for the same reason. Either
+            # way: degrade to detail's own scroll rather than raise out of a
+            # consent surface over a hint.
+            visible_rows = detail.size.height
+        hidden = max(0, detail.virtual_size.height - visible_rows)
         more.display = hidden > 0
         if hidden > 0:
-            more.update(f"+{hidden} more line{'s' if hidden > 1 else ''} — scroll ↓")
+            # "rows", not "lines": the count is of rendered, wrapped rows —
+            # a single long line that wraps to 10 rows is 1 line but 10 rows,
+            # and "lines" would misstate what's actually hidden.
+            more.update(f"+{hidden} more row{'s' if hidden > 1 else ''} — scroll ↓")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.resolve(event.button.id == "approve")
