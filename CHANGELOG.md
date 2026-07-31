@@ -8,6 +8,12 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+- `/sessions` now opens an interactive picker instead of printing a text
+  list: type to filter by name, Tab into the list to navigate, Enter to
+  switch. Press `d` twice on a highlighted (non-active) session to delete it
+  — the same teardown `marim sessions delete` already performs. `/switch
+  <number|name>` is unchanged.
+
 - `marim serve qr` prints a QR code that pairs a client with the daemon in one
   scan, encoding `marim://pair?v=1&url=…&token=…&name=…` — the URL, the bearer
   token, and a profile name (the machine's hostname by default), which is
