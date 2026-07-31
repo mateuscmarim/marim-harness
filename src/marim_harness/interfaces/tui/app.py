@@ -33,6 +33,7 @@ from .interactions import (
 from .model_picker import ModelPickerModal
 from .notify import FinishedJobNotifier
 from .queue import TurnQueue
+from .session_picker import SessionPickerModal
 from .session_view import SessionView
 from .settings import SettingsScreen
 from .shell_passthrough import (
@@ -967,6 +968,36 @@ class HarnessApp(App):
             return
         self.harness.set_thinking_level(chosen)
         self._append_log(NoticeMessage(f"thinking: {chosen}"))
+
+    async def open_session_picker(self) -> None:
+        """Open the session picker and let the user browse/filter/switch/delete
+        saved sessions. Sessions are fetched synchronously up front (listing is
+        a cheap header-only parse — see session/store.py's _header_fields), so
+        unlike the model picker there's no async fetch/loading state to manage.
+
+        Uses the callback form of push_screen (not push_screen_wait) for the same
+        reason open_model_picker does: /sessions dispatches from the command path,
+        which is not a worker — push_screen_wait would raise NoActiveWorker there.
+        """
+        infos = self.harness.session.sessions()
+        store = self.harness.session.store
+        active = store.session_id if store is not None else None
+        self.push_screen(SessionPickerModal(infos, active), self._on_session_chosen)
+
+    async def _on_session_chosen(self, chosen: str | None) -> None:
+        """Apply a session selected in the picker. Invoked by push_screen when the
+        modal is dismissed; a None result (cancelled) is a no-op."""
+        if not chosen:
+            return
+        await self.switch_to_session_id(chosen)
+
+    def on_session_picker_modal_deleted(self, message: SessionPickerModal.Deleted) -> None:
+        """The picker already removed the row optimistically; this performs the
+        actual on-disk teardown via the same SessionManager.delete used by
+        `marim sessions delete` (interfaces/cli/sessions.py)."""
+        manager = self.harness.session.manager
+        if manager is not None:
+            manager.delete(message.session_id)
 
     def _append_log(self, widget) -> None:
         """Mount a notice/error into the log, keeping the viewport pinned to the
