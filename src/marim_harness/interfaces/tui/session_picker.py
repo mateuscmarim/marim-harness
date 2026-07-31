@@ -17,6 +17,7 @@ from textual.widgets.option_list import Option
 
 from ...interfaces.durations import format_duration
 from ...session import SessionInfo, filter_sessions
+from .widgets.format import human_tokens
 
 _NAME_WIDTH = 28
 # Mirrors HarnessApp._QUIT_CONFIRM_WINDOW: a second same-row `d` within this
@@ -30,10 +31,14 @@ def _format_row(info: SessionInfo, active: str | None) -> str:
     duration = (
         format_duration(info.duration_seconds) if info.duration_seconds is not None else "—"
     )
-    marker = "  ← active" if info.id == active else ""
+    # A fixed-width leading marker (rather than a trailing suffix) survives
+    # the OptionList's ellipsis truncation at narrow terminal widths — a
+    # trailing "← active" gets clipped off entirely, making the active row
+    # indistinguishable from the rest once you've navigated away from it.
+    prefix = "▸ " if info.id == active else "  "
     return (
-        f"{name:<{_NAME_WIDTH}}  {info.message_count:>3} msgs · "
-        f"{info.tokens:>6} tok · {duration:>6} · {when}{marker}"
+        f"{prefix}{name:<{_NAME_WIDTH}}  {info.message_count:>3} msgs · "
+        f"{human_tokens(info.tokens):>6} tok · {duration:>6} · {when}"
     )
 
 
@@ -96,6 +101,11 @@ class SessionPickerModal(ModalScreen[str | None]):
         self.sessions = sessions
         self.active = active
         self._armed: tuple[str, float] | None = None  # (session_id, armed_at)
+        # Lockout window right after a confirmed delete: without it, terminal
+        # key auto-repeat on a held `d` can arm→confirm→arm→confirm several
+        # times in the time it takes a human to lift a finger, cascading into
+        # multiple real SessionManager.delete() teardowns from one keypress.
+        self._locked_until: float | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="session-box"):
@@ -131,6 +141,7 @@ class SessionPickerModal(ModalScreen[str | None]):
 
     def on_input_changed(self, event: Input.Changed) -> None:
         self._armed = None
+        self._set_status("")
         self._populate(filter_sessions(self.sessions, event.value))
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -148,6 +159,22 @@ class SessionPickerModal(ModalScreen[str | None]):
             self._armed = None
             self._set_status("")
 
+    def _confirm_delete(self, session_id: str, now: float) -> None:
+        """Second `d` within the window: remove the session, keep the active
+        filter and cursor position, and start the post-delete lockout."""
+        name = next((s.name for s in self.sessions if s.id == session_id), session_id)
+        self.sessions = [s for s in self.sessions if s.id != session_id]
+        options = self.query_one("#session-options", OptionList)
+        old_index = options.highlighted
+        filter_text = self.query_one("#session-filter", Input).value
+        self._populate(filter_sessions(self.sessions, filter_text))
+        if options.option_count and old_index is not None:
+            options.highlighted = min(old_index, options.option_count - 1)
+        self._armed = None
+        self._locked_until = now + _DELETE_CONFIRM_WINDOW
+        self._set_status(f"Deleted {name}.")
+        self.post_message(self.Deleted(session_id))
+
     def action_delete(self) -> None:
         session_id = self._highlighted_id()
         if session_id is None:
@@ -157,13 +184,22 @@ class SessionPickerModal(ModalScreen[str | None]):
             self._set_status("Can't delete the active session.")
             return
         now = time.monotonic()
-        if self._armed is not None and self._armed[0] == session_id and \
-                now - self._armed[1] <= _DELETE_CONFIRM_WINDOW:
-            self._armed = None
-            self.sessions = [s for s in self.sessions if s.id != session_id]
-            self._populate(self.sessions)
-            self._set_status(f"Deleted {session_id}.")
-            self.post_message(self.Deleted(session_id))
+        if (
+            self._armed is not None
+            and self._armed[0] == session_id
+            and now - self._armed[1] <= _DELETE_CONFIRM_WINDOW
+        ):
+            self._confirm_delete(session_id, now)
+            return
+        # A fresh press right after a confirmed delete (auto-repeat on a held
+        # `d`, or a very fast double-tap) must not re-arm — otherwise a burst
+        # of keys can cascade arm->confirm across several rows in well under
+        # the confirm window a human would experience. Refresh the deadline
+        # on every blocked press so a *sustained* hold stays locked out for
+        # as long as the key keeps repeating, not just for one fixed window
+        # measured from the original delete.
+        if self._locked_until is not None and now < self._locked_until:
+            self._locked_until = now + _DELETE_CONFIRM_WINDOW
             return
         self._armed = (session_id, now)
         self._set_status("Press d again to delete.")

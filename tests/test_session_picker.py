@@ -1,6 +1,6 @@
 import pytest
 from textual.app import App
-from textual.widgets import OptionList
+from textual.widgets import Input, OptionList
 
 from marim_harness.interfaces.tui.session_picker import SessionPickerModal
 from marim_harness.session import SessionInfo
@@ -103,10 +103,11 @@ async def test_option_selected_dismisses_with_id():
 
 def test_row_shows_msgs_tokens_duration_and_updated():
     from marim_harness.interfaces.tui.session_picker import _format_row
+    from marim_harness.interfaces.tui.widgets.format import human_tokens
 
     row = _format_row(_SESSIONS[0], active=None)
     assert "5" in row and "msgs" in row
-    assert "1200" in row
+    assert human_tokens(1200) in row  # "1.2k" — compact, not the raw "1200"
     assert "2m" in row  # format_duration(125.0) == "2m"
     assert "2026-07-03 10:00" in row
 
@@ -115,9 +116,10 @@ def test_row_marks_active_session():
     from marim_harness.interfaces.tui.session_picker import _format_row
 
     row = _format_row(_SESSIONS[0], active="s-alpha")
-    assert "active" in row.lower()
+    assert row.startswith("▸ ")
     other = _format_row(_SESSIONS[1], active="s-alpha")
-    assert "active" not in other.lower()
+    assert not other.startswith("▸ ")
+    assert other.startswith("  ")
 
 
 def test_row_shows_dash_for_missing_duration():
@@ -226,3 +228,116 @@ async def test_moving_highlight_clears_armed_state():
         await pilot.pause()
         opts = modal.query_one("#session-options", OptionList)
         assert opts.option_count == len(_SESSIONS)  # nothing deleted
+
+
+@pytest.mark.anyio
+async def test_typing_after_arm_clears_status():
+    # Finding 5: the "Press d again to delete." status must not linger once
+    # the user starts typing in the filter box (which also cancels the arm).
+    app = _Host(_SESSIONS)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = app.screen
+        await pilot.press("tab")
+        await pilot.press("d")  # arm s-alpha
+        await pilot.press("shift+tab")  # back to the filter Input
+        await pilot.press("x")
+        await pilot.pause()
+        status = str(modal.query_one("#session-status").render())
+        assert status == ""
+
+
+@pytest.mark.anyio
+async def test_delete_confirm_shows_session_name_not_id():
+    # Finding 6: the confirmation message should read the user-visible name,
+    # not the opaque session id.
+    app = _Host(_SESSIONS)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = app.screen
+        await pilot.press("tab")  # highlight s-alpha, "Fix auth bug"
+        await pilot.press("d")
+        await pilot.press("d")
+        await pilot.pause()
+        status = str(modal.query_one("#session-status").render())
+        assert "Fix auth bug" in status
+        assert "s-alpha" not in status
+
+
+@pytest.mark.anyio
+async def test_delete_confirm_respects_active_filter():
+    # Finding 1: a confirmed delete must repopulate against the active filter,
+    # not silently reset to the full unfiltered session list.
+    app = _Host(_SESSIONS)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = app.screen
+        for ch in "a":  # matches "Fix auth bug" and "Refactor session store"
+            await pilot.press(ch)
+        await pilot.pause()
+        opts = modal.query_one("#session-options", OptionList)
+        assert opts.option_count == 2
+        await pilot.press("tab")
+        await pilot.press("down")  # highlight s-beta ("Refactor session store")
+        await pilot.press("d")
+        await pilot.press("d")
+        await pilot.pause()
+        assert modal.query_one("#session-filter", Input).value == "a"
+        assert opts.option_count == 1
+        assert opts.get_option_at_index(0).id == "s-alpha"
+
+
+@pytest.mark.anyio
+async def test_delete_confirm_preserves_cursor_position():
+    # Finding 1: the highlight should stay near where the user was, not jump
+    # back to the active row (or index 0) on every confirmed delete.
+    app = _Host(_SESSIONS)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = app.screen
+        opts = modal.query_one("#session-options", OptionList)
+        await pilot.press("tab")
+        await pilot.press("down")  # highlight index 1 (s-beta)
+        await pilot.press("d")
+        await pilot.press("d")  # confirms; s-beta removed, [s-alpha, s-gamma] remain
+        await pilot.pause()
+        assert opts.option_count == 2
+        assert opts.highlighted == 1
+        assert opts.get_option_at_index(opts.highlighted).id == "s-gamma"
+
+
+@pytest.mark.anyio
+async def test_held_d_does_not_cascade_delete_past_one_session():
+    # Finding 2: reproduces the reviewer's live repro deterministically. The
+    # active session is NOT present in the visible list (a real state — see
+    # SessionManager.create's comment in session/store.py: a brand-new session
+    # with no turns yet has no file on disk, so it's absent from
+    # manager.list()). Six rapid `d` presses (simulating terminal key
+    # auto-repeat on a held key) must delete AT MOST ONE session, not cascade
+    # through arm->confirm->arm->confirm.
+    received: list[str] = []
+
+    class _DeleteHost(App):
+        def __init__(self, sessions, active):
+            super().__init__()
+            self.sessions = sessions
+            self.active = active
+
+        def on_mount(self) -> None:
+            self.push_screen(SessionPickerModal(self.sessions, active=self.active))
+
+        def on_session_picker_modal_deleted(self, message: SessionPickerModal.Deleted) -> None:
+            received.append(message.session_id)
+
+    app = _DeleteHost(_SESSIONS, active="s-not-in-list")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = app.screen
+        opts = modal.query_one("#session-options", OptionList)
+        start_count = opts.option_count
+        await pilot.press("tab")
+        for _ in range(6):
+            await pilot.press("d")
+            await pilot.pause()
+        assert len(received) == 1
+        assert opts.option_count == start_count - 1

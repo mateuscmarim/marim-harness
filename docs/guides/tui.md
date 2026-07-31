@@ -167,9 +167,9 @@ known command reports an error instead of being sent to the model.
 | `/help` | `/?` | List all commands with one-line summaries. |
 | `/clear` | — | Wipe the conversation and re-show the welcome screen. Refused mid-turn. |
 | `/compact` | — | Compact the session now to free context: mask stale tool output, then summarize. Optional argument: `/compact [summary instructions]` steers the summarizer. Refused mid-turn. |
-| `/sessions` | `/ls` | List saved sessions (messages, tokens, last-updated, active marker). |
+| `/sessions` | `/ls` | Open the session picker: filter-as-you-type, Tab to navigate, Enter to switch, `d` twice to delete a non-active session. |
 | `/new` | — | Start a fresh session: `/new [name]`. Existing sessions stay on disk. Refused mid-turn. |
-| `/switch` | — | Switch sessions: `/switch <number|name>` (number from `/sessions`, exact id, or name). Refused mid-turn. |
+| `/switch` | — | Switch sessions: `/switch <number|name>` (1-based position in the newest-first list, exact id, or name). Refused mid-turn. |
 | `/rewind` | — | Bare `/rewind` lists checkpoints (one per turn, with the prompt that started it). `/rewind <number>` restores the conversation to that point and restores the working tree from the checkpoint's snapshot. `/rewind undo` reverses the last rewind, restoring the pre-rewind conversation and files. Refused mid-turn. |
 | `/name` | — | Rename the session: `/name <title>`, or bare `/name` to auto-title it from the conversation. |
 | `/mode` | — | Set the approval mode: `/mode [ask|auto|plan]`; bare `/mode` cycles. |
