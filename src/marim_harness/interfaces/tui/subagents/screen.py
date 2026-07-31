@@ -73,7 +73,15 @@ class SubAgentsScreen:
     def open_at(self, stream_id: str | None) -> None:
         """Open the screen, selecting ``stream_id`` (or the most recent spawn when
         None — the one you most likely just watched)."""
+        from ..interactions.base import InteractionPanel
+
         app = self._app
+        # Never cover a pending interaction panel: close() focuses PromptInput,
+        # which leaves the panel visible, pending and keyboard-dead — the turn
+        # looks wedged. run_panel closes this view before mounting for the same
+        # reason; this is the other half of that guard.
+        if app.query(InteractionPanel):
+            return
         subs = app.stream.subagents
         if not subs:
             app.query_one("#log", VerticalScroll).mount(
