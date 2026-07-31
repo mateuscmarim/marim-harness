@@ -26,7 +26,7 @@ from marim_harness.hooks import events as hook_events
 from marim_harness.hooks.runner import HookRunner, HookVerdict
 from marim_harness.runtime.deps import Deps, WorkspaceConfig
 from marim_harness.runtime.permissions import Mode
-from marim_harness.session import SessionManager, SessionStore
+from marim_harness.session import SessionInfo, SessionManager, SessionStore, filter_sessions
 from marim_harness.session.ctrl import SessionController
 from tests.conftest import _make_deps
 
@@ -1630,3 +1630,41 @@ async def test_mask_only_compaction_does_not_invalidate(tmp_path):
     assert await ctrl.maybe_compact() is True
     assert len(ctrl.history) == before  # masked in place, count unchanged
     assert fired == []                  # so no checkpoint invalidation
+
+
+def _sessions_for_filter():
+    return [
+        SessionInfo(
+            id="a", name="Fix auth bug", updated="2026-07-01", message_count=1, tokens=0
+        ),
+        SessionInfo(
+            id="b", name="Refactor session store", updated="2026-07-02", message_count=1,
+            tokens=0
+        ),
+        SessionInfo(
+            id="c", name="20260703-120000", updated="2026-07-03", message_count=1, tokens=0
+        ),
+    ]
+
+
+def test_filter_sessions_blank_query_returns_all():
+    sessions = _sessions_for_filter()
+    assert filter_sessions(sessions, "") == sessions
+    assert filter_sessions(sessions, "   ") == sessions
+
+
+def test_filter_sessions_substring_case_insensitive():
+    sessions = _sessions_for_filter()
+    result = filter_sessions(sessions, "AUTH")
+    assert [s.id for s in result] == ["a"]
+
+
+def test_filter_sessions_matches_auto_generated_name():
+    sessions = _sessions_for_filter()
+    result = filter_sessions(sessions, "20260703")
+    assert [s.id for s in result] == ["c"]
+
+
+def test_filter_sessions_no_match_returns_empty():
+    sessions = _sessions_for_filter()
+    assert filter_sessions(sessions, "nope-nothing-here") == []
