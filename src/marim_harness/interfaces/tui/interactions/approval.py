@@ -2,7 +2,7 @@ import json
 
 from rich.text import Text
 from textual.app import ComposeResult
-from textual.containers import Horizontal
+from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Button, Static
 
 from .base import InteractionPanel
@@ -76,6 +76,9 @@ class ApprovalPanel(InteractionPanel):
     # immediately (the modal got this from the screen's focus scope).
     can_focus = True
 
+    # Kept beside the CSS's #approval-detail max-height so the two can't drift.
+    _MAX_DETAIL_ROWS = 20
+
     DEFAULT_CSS = """
     ApprovalPanel {
         border: round $warning;
@@ -85,9 +88,24 @@ class ApprovalPanel(InteractionPanel):
         color: $warning;
         margin-bottom: 1;
     }
+    /* Scrollable, not clipped: a Static at max-height silently truncates, so the
+       user approves content they were never shown. The panel's own overflow only
+       scrolls BETWEEN children — it cannot reveal rows inside a clamped Static.
+       #approval-detail is a VerticalScroll (not the Static directly) because a
+       leaf Static's virtual_size is pinned to its own allocated box — the
+       compositor only grows virtual_size from *arranging children*, so only a
+       container actually gets scrollable content; overflow-y on a bare Static
+       is a no-op. _MAX_DETAIL_ROWS below must match the max-height here. */
     #approval-detail {
         height: auto;
         max-height: 20;
+        overflow-y: auto;
+    }
+    #approval-detail-content {
+        height: auto;
+    }
+    #approval-more {
+        color: $text-muted;
         margin-bottom: 1;
     }
     #approval-buttons {
@@ -126,13 +144,36 @@ class ApprovalPanel(InteractionPanel):
         yield Static(
             f"Approve  {safe_text(self.tool_name)}?", id="approval-title", markup=False
         )
-        yield Static(format_detail(self.tool_name, self.args), id="approval-detail")
+        with VerticalScroll(id="approval-detail"):
+            yield Static(format_detail(self.tool_name, self.args), id="approval-detail-content")
+        # A scrollbar alone is easy to miss on a panel that authorizes shell
+        # commands, so say how much is below the fold — same rationale as
+        # AskUserPanel's "+N more options" line.
+        yield Static("", id="approval-more")
         with Horizontal(id="approval-buttons"):
             yield Button("Deny (d)", id="deny", variant="error")
             yield Button("Approve (a)", id="approve", variant="success")
 
     def on_mount(self) -> None:
         self.focus()
+        self.call_after_refresh(self._update_more_hint)
+
+    def _update_more_hint(self) -> None:
+        """Say how many rows sit below the fold. Runs after refresh because the
+        detail's scroll geometry is only known once it has been laid out.
+
+        max_scroll_y (not virtual_size.height - _MAX_DETAIL_ROWS) is the
+        number to use: the panel that hosts #approval-detail is itself
+        clamped to 50% height and scrollable, so #approval-detail's own
+        *visible* height can be less than _MAX_DETAIL_ROWS when the terminal
+        is short. max_scroll_y is "rows still below the fold" by definition,
+        so it stays correct in that case instead of undercounting."""
+        detail = self.query_one("#approval-detail", VerticalScroll)
+        hidden = detail.max_scroll_y
+        more = self.query_one("#approval-more", Static)
+        more.display = hidden > 0
+        if hidden > 0:
+            more.update(f"+{hidden} more line{'s' if hidden > 1 else ''} — scroll ↓")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.resolve(event.button.id == "approve")

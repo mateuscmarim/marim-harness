@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 import pytest
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
@@ -9,7 +11,37 @@ from marim_harness.interfaces.tui.interactions.approval import (
     ApprovalPanel,
     format_detail,
 )
-from marim_harness.interfaces.tui.interactions.base import run_panel
+from marim_harness.interfaces.tui.interactions.base import InteractionPanel, run_panel
+
+
+class _PanelHostApp(App):
+    """Hosts a caller-supplied panel via run_panel, mirroring the real app's
+    layout (#log above #status-bar) that run_panel mounts against."""
+
+    def __init__(self, panel: InteractionPanel) -> None:
+        super().__init__()
+        self.panel = panel
+        self.result = "unset"
+
+    def compose(self) -> ComposeResult:
+        yield VerticalScroll(Static("line\n" * 100), id="log")
+        yield Static("", id="status-bar")
+
+    def on_mount(self) -> None:
+        self.run_worker(self._ask())
+
+    async def _ask(self) -> None:
+        self.result = await run_panel(self, self.panel)
+
+
+@asynccontextmanager
+async def _panel_app(panel: InteractionPanel):
+    """Pilot-app helper: mounts ``panel`` via run_panel and yields the pilot,
+    already paused past the initial layout."""
+    app = _PanelHostApp(panel)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        yield pilot
 
 
 def _styled_text(detail, needle: str) -> set[str]:
@@ -327,6 +359,51 @@ async def test_approval_title_with_markup_syntax_does_not_crash():
         await pilot.pause()
         title = app.query_one("#approval-title", Static)
         assert "evil[/bold]" in title.content
+        await pilot.press("d")
+        await pilot.pause()
+    assert app.result is False
+
+
+@pytest.mark.anyio
+async def test_approval_detail_scrolls_when_content_overflows():
+    """A clipped preview is a consent failure: the user approves what they cannot
+    see. The detail must scroll rather than silently truncate."""
+    content = "\n".join(f"line{i}" for i in range(100)) + "\nEVIL PAYLOAD"
+    panel = ApprovalPanel("write_file", {"path": "a.py", "content": content})
+    async with _panel_app(panel) as pilot:
+        detail = pilot.app.query_one("#approval-detail")
+        assert detail.max_scroll_y > 0, "detail cannot scroll; content past the fold is lost"
+
+
+@pytest.mark.anyio
+async def test_approval_announces_how_many_lines_are_hidden():
+    """Mirror AskUserPanel's '+N more options — scroll' hint — a scrollbar alone
+    is easy to miss, and this panel authorizes shell commands."""
+    content = "\n".join(f"line{i}" for i in range(100))
+    panel = ApprovalPanel("write_file", {"path": "a.py", "content": content})
+    async with _panel_app(panel) as pilot:
+        more = pilot.app.query_one("#approval-more")
+        assert more.display is True
+        assert "more line" in more.render().plain
+
+
+@pytest.mark.anyio
+async def test_approval_hides_the_more_hint_for_short_content():
+    async with _panel_app(ApprovalPanel("bash", {"command": "ls -la"})) as pilot:
+        assert pilot.app.query_one("#approval-more").display is False
+
+
+@pytest.mark.anyio
+async def test_approval_still_resolves_when_detail_is_scrollable():
+    """The detail becoming a scrollable container (not a bare Static) must not
+    change what 'd' resolves to — the scroll/hint work is presentation only,
+    consent resolution stays fail-closed regardless of what's below the fold."""
+    content = "\n".join(f"line{i}" for i in range(100)) + "\nEVIL PAYLOAD"
+    panel = ApprovalPanel("write_file", {"path": "a.py", "content": content})
+    async with _panel_app(panel) as pilot:
+        app = pilot.app
+        detail = app.query_one("#approval-detail")
+        assert detail.max_scroll_y > 0
         await pilot.press("d")
         await pilot.pause()
     assert app.result is False
