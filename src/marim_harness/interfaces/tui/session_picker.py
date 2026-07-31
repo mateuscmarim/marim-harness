@@ -6,8 +6,11 @@ only parses each file's JSON header, never the full messages array — see
 ``session/store.py``'s ``_header_fields``), so unlike ``ModelPickerModal`` there
 is no async loading state to manage here."""
 
+import time
+
 from textual.app import ComposeResult
 from textual.containers import Vertical
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
@@ -16,6 +19,9 @@ from ...interfaces.durations import format_duration
 from ...session import SessionInfo, filter_sessions
 
 _NAME_WIDTH = 28
+# Mirrors HarnessApp._QUIT_CONFIRM_WINDOW: a second same-row `d` within this
+# window confirms; anything after it is treated as a fresh first press.
+_DELETE_CONFIRM_WINDOW = 2.0
 
 
 def _format_row(info: SessionInfo, active: str | None) -> str:
@@ -33,6 +39,15 @@ def _format_row(info: SessionInfo, active: str | None) -> str:
 
 class SessionPickerModal(ModalScreen[str | None]):
     """Dismisses with the chosen session id, or None if cancelled."""
+
+    class Deleted(Message):
+        """Posted once a delete is confirmed (second `d` within the window).
+        The caller (HarnessApp) owns the actual SessionManager.delete() call —
+        this modal only knows the SessionInfo list it was given, not a manager."""
+
+        def __init__(self, session_id: str) -> None:
+            self.session_id = session_id
+            super().__init__()
 
     CSS = """
     SessionPickerModal {
@@ -61,12 +76,13 @@ class SessionPickerModal(ModalScreen[str | None]):
     }
     """
 
-    BINDINGS = [("escape", "cancel", "Cancel")]
+    BINDINGS = [("escape", "cancel", "Cancel"), ("d", "delete", "Delete")]
 
     def __init__(self, sessions: list[SessionInfo], active: str | None = None) -> None:
         super().__init__()
         self.sessions = sessions
         self.active = active
+        self._armed: tuple[str, float] | None = None  # (session_id, armed_at)
 
     def compose(self) -> ComposeResult:
         with Vertical(id="session-box"):
@@ -97,7 +113,11 @@ class SessionPickerModal(ModalScreen[str | None]):
             return options.get_option_at_index(options.highlighted).id
         return None
 
+    def _set_status(self, text: str) -> None:
+        self.query_one("#session-status", Static).update(text)
+
     def on_input_changed(self, event: Input.Changed) -> None:
+        self._armed = None
         self._populate(filter_sessions(self.sessions, event.value))
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -107,6 +127,33 @@ class SessionPickerModal(ModalScreen[str | None]):
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         self.dismiss(event.option.id)
+
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        # Any highlight change (arrow/home/end/pageup/pagedown) cancels an
+        # in-progress arm — the second `d` must land on the SAME row.
+        if self._armed is not None and self._armed[0] != event.option_id:
+            self._armed = None
+            self._set_status("")
+
+    def action_delete(self) -> None:
+        session_id = self._highlighted_id()
+        if session_id is None:
+            return
+        if session_id == self.active:
+            self._armed = None
+            self._set_status("Can't delete the active session.")
+            return
+        now = time.monotonic()
+        if self._armed is not None and self._armed[0] == session_id and \
+                now - self._armed[1] <= _DELETE_CONFIRM_WINDOW:
+            self._armed = None
+            self.sessions = [s for s in self.sessions if s.id != session_id]
+            self._populate(self.sessions)
+            self._set_status(f"Deleted {session_id}.")
+            self.post_message(self.Deleted(session_id))
+            return
+        self._armed = (session_id, now)
+        self._set_status("Press d again to delete.")
 
     def action_cancel(self) -> None:
         self.dismiss(None)

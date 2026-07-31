@@ -125,3 +125,76 @@ def test_row_shows_dash_for_missing_duration():
 
     row = _format_row(_SESSIONS[1], active=None)  # duration_seconds=None
     assert "—" in row
+
+
+@pytest.mark.anyio
+async def test_first_d_arms_without_deleting():
+    app = _Host(_SESSIONS)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = app.screen
+        await pilot.press("tab")
+        await pilot.press("d")
+        await pilot.pause()
+        opts = modal.query_one("#session-options", OptionList)
+        assert opts.option_count == len(_SESSIONS)  # nothing removed yet
+        assert "press d again" in str(modal.query_one("#session-status").render()).lower()
+
+
+@pytest.mark.anyio
+async def test_second_d_confirms_removes_row_and_posts_deleted():
+    received: list[str] = []
+
+    class _DeleteHost(App):
+        def __init__(self, sessions):
+            super().__init__()
+            self.sessions = sessions
+
+        def on_mount(self) -> None:
+            self.push_screen(SessionPickerModal(self.sessions))
+
+        def on_session_picker_modal_deleted(self, message: SessionPickerModal.Deleted) -> None:
+            received.append(message.session_id)
+
+    app = _DeleteHost(_SESSIONS)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = app.screen
+        await pilot.press("tab")
+        await pilot.press("d")
+        await pilot.press("d")
+        await pilot.pause()
+        opts = modal.query_one("#session-options", OptionList)
+        assert opts.option_count == len(_SESSIONS) - 1
+    assert received == ["s-alpha"]
+
+
+@pytest.mark.anyio
+async def test_active_session_cannot_be_armed():
+    app = _Host(_SESSIONS, active="s-alpha")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = app.screen
+        await pilot.press("tab")  # highlighted starts on s-alpha (the active one)
+        await pilot.press("d")
+        await pilot.pause()
+        opts = modal.query_one("#session-options", OptionList)
+        assert opts.option_count == len(_SESSIONS)
+        assert "can't delete the active session" in str(
+            modal.query_one("#session-status").render()
+        ).lower()
+
+
+@pytest.mark.anyio
+async def test_moving_highlight_clears_armed_state():
+    app = _Host(_SESSIONS)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = app.screen
+        await pilot.press("tab")
+        await pilot.press("d")  # arm s-alpha
+        await pilot.press("down")  # move off it
+        await pilot.press("d")  # would confirm s-alpha if still armed; must NOT
+        await pilot.pause()
+        opts = modal.query_one("#session-options", OptionList)
+        assert opts.option_count == len(_SESSIONS)  # nothing deleted
