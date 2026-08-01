@@ -6,7 +6,63 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/) —
 pre-1.0, minor versions may contain breaking changes.
 
-## [Unreleased]
+## [0.3.0] - 2026-07-31
+
+- The approval panel now shows what you are approving. A long `write_file`
+  preview rendered 18 rows in a non-scrolling box with no scrollbar and no
+  marker, so a 101-line write looked like an 18-line one — you consented to a
+  file you could not see. The detail pane scrolls, and a live "+N more lines"
+  hint counts everything below the fold, including the rows the hosting panel
+  itself clips; it recomputes on resize instead of measuring once at mount.
+  The title, the preview, and the sudo passthrough modal's command line all
+  run through a sanitizer that neutralizes terminal control sequences, so a
+  tool argument cannot repaint or relocate the text a consent decision is
+  read from.
+
+- Four crash and hang paths around that panel are closed. A pending
+  interaction panel that lost focus could never get it back — `a`/`d` typed
+  into the prompt and Esc cancelled the turn — so teardown now prefers a
+  still-pending sibling and the sub-agents view refuses to open over one. A
+  queued message containing an unbalanced `[` raised `MarkupError` mid-render
+  and took the app down with the in-flight turn; queue rows compose as
+  `Content` (never parsed) instead of escaping to markup. A read-only data
+  dir or a non-UTF-8 prompt-history file killed the app on write and on
+  launch respectively; both are best-effort now, matching `prefs.py`.
+  Finished sub-agent cards stop their spinner timers instead of waking the
+  app 10×/s for the rest of the session, and a turn ending by cancel or
+  provider error settles its in-flight rows and cards rather than leaving
+  them pending forever.
+
+- A run of consecutive tool calls folds into its group when the results
+  interleave with the calls (call → result → call → result) — the common
+  sequential case, where the group used to stay expanded forever with no
+  duration in its header. `/exit` and `/quit` no longer discard queued
+  messages in silence; they warn when there is something to lose. The
+  slash-menu no longer covers a multi-line draft: its offset is recomputed
+  from the prompt's real height on every filter and re-wrap.
+
+- A durable usage ledger records per-turn token counts and cost deltas to a
+  pair of JSONL files under the sessions base, queryable through
+  `load_overview()` / `load_models()` (`marim_harness.stats`) for spend and
+  model mix over time. Writes ride on the existing per-turn usage banking and
+  are best-effort — a ledger failure never fails a turn. There is no backfill
+  from sessions recorded before this landed. Opt out with `stats=False` on
+  the builder or `MARIM_STATS=0`; see `docs/sdk/sessions-and-state.md`.
+
+- An LSP server whose process died is evicted and cold-started instead of
+  being trusted as alive. Eviction keyed on multilspy's `server_started`
+  flag, which only flips when the `start_server` context exits — so a server
+  killed by the OOM killer or a segfault left that context suspended and the
+  flag reporting a corpse as alive. Nothing else caught it either: the RPC
+  read loop exits quietly on EOF without failing pending requests, so every
+  later request for that language stalled to the full 15s timeout, for the
+  rest of the session, with no restart path. The subprocess's returncode is
+  now a second, authoritative signal; an uninspectable server still reads as
+  alive, so only a *known*-dead one is ever evicted.
+
+- The model is told the current date. It rides in the per-turn user message
+  rather than the system prompt, so the cached prefix stays byte-stable
+  across turns and across day boundaries.
 
 - `/sessions` now opens an interactive picker instead of printing a text
   list: type to filter by name, Tab into the list to navigate, Enter to

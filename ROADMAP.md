@@ -12,9 +12,10 @@ Feedback on any of this is welcome — open an issue.
 
 - **Documentation site** — publish the existing guides and reference pages
   (`docs/`) as a proper site at docs.marim.dev (mkdocs-material).
-- **v0.2.0** — batch up the unreleased changelog (the `with_capability()`
-  builder seam, serve-mode model switching, fixes) into the next release.
-  Expect small, frequent releases rather than big ones.
+- **Small, frequent releases** — batch the unreleased changelog into the next
+  version rather than saving up for a big one. v0.3.0 (the usage ledger, the
+  session picker, `marim serve qr` pairing, interactive project trust, the
+  approval-panel repair) followed v0.2.0 by five days.
 
 ## Next
 
