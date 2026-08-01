@@ -2,6 +2,7 @@
 manual QueuePanel.show_queue() / _render_queue() pattern."""
 from __future__ import annotations
 
+from textual.content import Content
 from textual.reactive import reactive
 from textual.widgets import Static
 
@@ -41,8 +42,11 @@ class QueueDisplay(Static):
         self._repaint()
 
     def _repaint(self) -> None:
-        """Render the queue items as markup."""
+        """Render the queue items. The body is composed Content (never parsed as
+        markup) so a bracket in a user's message cannot raise during render."""
         if not self.items:
             return
         header = "Queued — paused" if self.paused else "Queued"
-        self.update(f"[bold]{header}[/]\n" + render_queue(self.items))
+        self.update(
+            Content.from_markup(f"[bold]{header}[/]\n") + render_queue(self.items)
+        )

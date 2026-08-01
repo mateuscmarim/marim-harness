@@ -3,7 +3,7 @@ held to run as their own turns after the current one. In-memory, process-scoped.
 
 from dataclasses import dataclass
 
-from textual.markup import escape
+from textual.content import Content
 
 
 @dataclass
@@ -17,20 +17,29 @@ class QueuedMessage:
     id: str
 
 
-def render_queue(items: list[QueuedMessage]) -> str:
-    """Render the pending items as a numbered Textual-markup string with
-    per-item edit/remove action links. User text is escaped so brackets in a
-    prompt are not parsed as markup; the ids are numeric and safe inline."""
-    lines = []
+def render_queue(items: list[QueuedMessage]) -> Content:
+    """Render the pending items as numbered rows with per-item edit/remove action
+    links.
+
+    Built by COMPOSITION, not by escaping into a markup string: ``escape()`` only
+    neutralizes bracket runs that have a closing ``]``, so an unterminated ``[``
+    in a user's message escapes into the parser and swallows the ``[/]`` that
+    closes the action link — a MarkupError raised during render, which kills the
+    app mid-turn. ``Content(m.text)`` is never parsed, so any bracket is safe.
+    Same pattern (and same reason) as widgets/panels.py and plan_card.py."""
+    rows: list[Content] = []
     for i, m in enumerate(items, 1):
         n = len(m.attachments or [])
         tag = f" 📎{n}" if n else ""
-        lines.append(
-            f"{i}. {escape(m.text)}{tag}  "
-            f"[@click=app.edit_queued('{m.id}')]edit[/] "
-            f"[@click=app.remove_queued('{m.id}')]✕[/]"
+        rows.append(
+            Content(f"{i}. ")
+            + Content(m.text)
+            + Content.from_markup(
+                f"{tag}  [@click=app.edit_queued('{m.id}')]edit[/] "
+                f"[@click=app.remove_queued('{m.id}')]✕[/]"
+            )
         )
-    return "\n".join(lines)
+    return Content("\n").join(rows)
 
 
 class TurnQueue:

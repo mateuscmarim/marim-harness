@@ -1,6 +1,11 @@
+import os
 from pathlib import Path
 
+import pytest
+
 from marim_harness.interfaces.history import PromptHistory, default_history_path
+
+_ROOT = os.geteuid() == 0 if hasattr(os, "geteuid") else False
 
 
 def test_add_keeps_order_oldest_to_newest():
@@ -69,3 +74,38 @@ def test_default_history_path_under_data_dir(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     p = default_history_path()
     assert p == tmp_path / "data" / "marim-harness" / "prompt_history.jsonl"
+
+
+@pytest.mark.skipif(_ROOT, reason="root ignores permission bits")
+def test_add_survives_an_unwritable_history_dir(tmp_path: Path):
+    """A write failure must not raise: add() is called from the TUI's key handler
+    before the prompt is routed, so an escaping OSError kills the app AND eats the
+    message the user just typed."""
+    target = tmp_path / "ro" / "prompt_history.jsonl"
+    target.parent.mkdir()
+    target.parent.chmod(0o500)
+    try:
+        h = PromptHistory(target)
+        h.add("hello")  # must not raise
+        assert h.entries == ["hello"]  # in-memory history still works
+    finally:
+        target.parent.chmod(0o700)
+
+
+def test_load_survives_a_non_utf8_history_file(tmp_path: Path):
+    """A corrupt file must not stop marim from launching — PromptHistory is
+    constructed during CLI startup."""
+    p = tmp_path / "prompt_history.jsonl"
+    p.write_bytes(b'"ok"\n\xff\xfe not utf-8\n')
+    assert PromptHistory(p).entries == []
+
+
+@pytest.mark.skipif(_ROOT, reason="root ignores permission bits")
+def test_load_survives_an_unreadable_history_file(tmp_path: Path):
+    p = tmp_path / "prompt_history.jsonl"
+    p.write_text('"ok"\n', encoding="utf-8")
+    p.chmod(0o000)
+    try:
+        assert PromptHistory(p).entries == []
+    finally:
+        p.chmod(0o600)

@@ -1,6 +1,7 @@
 import logging
 import time
 from asyncio import CancelledError
+from contextlib import suppress
 
 import rich.markup
 from pydantic_ai import ToolDenied
@@ -533,6 +534,10 @@ class HarnessApp(App):
             # let the worker finish as cancelled.
             self.queue.paused = True
             self.append_log(ErrorMessage("turn cancelled"))
+            # Settle anything still pending: a cancelled turn otherwise leaves its
+            # tool rows and sub-agent cards "pending" forever, each holding a 10Hz
+            # repaint timer and rendering a spinner for work that is already dead.
+            self.stream.settle_pending("cancelled")
             raise
         except Exception as exc:  # keep the session alive on any turn failure
             self.queue.paused = True
@@ -540,12 +545,21 @@ class HarnessApp(App):
             self.append_log(ErrorMessage(detail))
             self.activity.desktop_notify("Turn error", detail, "error")
             logger.warning("turn failed", exc_info=True)
+            # Same leak as the cancel arm above: a turn that dies mid tool-call
+            # (a provider 500, a malformed response) leaves that row/card
+            # "pending" with a live 10Hz timer just as surely as an Esc does.
+            self.stream.settle_pending(detail)
         finally:
             self._turn_worker = None
             self.status.set_busy(False)
             # Guard against an orphaned compaction notice if maybe_compact raised
-            # between on_compact_start() and on_compact(). Always try to clean up.
-            self.query_one(CompactNotice).compacting = False
+            # between on_compact_start() and on_compact(). query_one is guarded
+            # because this runs during teardown too, where the widget may already
+            # be gone: a NoMatches here would skip after_turn() below (stranding
+            # the queue and the wake chain) and, with no exit_on_error=False on
+            # the turn worker, take the app down.
+            with suppress(NoMatches):
+                self.query_one(CompactNotice).compacting = False
             await self.queue.after_turn()  # drain next queued item, or wake on jobs
 
     # --- Queue actions (the Textual surface; QueueController does the work) ---

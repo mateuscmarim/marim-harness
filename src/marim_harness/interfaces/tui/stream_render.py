@@ -510,7 +510,13 @@ class StreamRenderer:
         and map the job so the settle fills it like any detached spawn. Called
         both when a spawn is just resumed and, on the settle path, to re-arm a
         still-running job's card during replay (``session_view.
-        finish_replayed_cards``)."""
+        finish_replayed_cards``).
+
+        ``rearm_spinner`` restarts the card's spinner timer if a prior
+        ``finish()`` (e.g. ``settle_pending`` on a cancelled turn, or a
+        replayed crash settling "interrupted") stopped it — otherwise the
+        card goes back to "pending" with a permanently frozen glyph. A no-op
+        when the timer never stopped."""
         card.status = "pending"
         card._t0 = time.monotonic()
         card._t_end = None
@@ -518,6 +524,7 @@ class StreamRenderer:
         card.job_id = job_id
         self.tool_widgets[card.stream_id] = card
         self._detached_cards[job_id] = card
+        card.rearm_spinner()
         card._paint_header()
         card._paint_activity()
 
@@ -608,6 +615,44 @@ class StreamRenderer:
         for sid in list(self._sub_streams):
             if sid not in self.tool_widgets:
                 del self._sub_streams[sid]
+
+    def settle_pending(self, reason: str) -> None:
+        """Force every still-"pending" tool row and sub-agent card to a terminal
+        state when a turn ends without settling them normally — e.g. Ctrl-C/Esc
+        cancels the turn mid tool-call. Without this a cancelled turn leaves its
+        rows "pending" forever: each keeps its 10Hz spinner timer alive
+        (ToolCallWidget/SubAgentWidget only stop theirs in ``finish()``) and
+        renders a stale "in progress" state for work that will never report back.
+
+        Detached (background) sub-agent cards are skipped: those spawns run as
+        independent job-manager tasks the cancelled turn's own task never
+        touches, so they're still genuinely in flight and settle normally
+        through ``fill_finished_detached_cards`` when their job completes.
+
+        Walks ``tool_widgets`` (the in-flight rows — see ``prune_completed`` for
+        why only "pending" entries matter) for plain tool calls, settled
+        "failed" — there is no "cancelled" in ``ToolCallWidget``'s status
+        vocabulary, and an unresolved call getting no result IS a failure from
+        the row's point of view. Walks the ordered ``subagents`` list (every
+        SubAgentWidget the session ever created — top-level, nested, or a
+        workflow's own RUN card; a superset of the SubAgentWidget entries also
+        keyed into ``tool_widgets``) for sub-agent cards, settled "interrupted" —
+        the same status a spawn cut down mid-run already resumes from (see
+        ``session_view._settle_pending_card``'s "running" arm), so a cancelled
+        card gets the same "press r to resume" affordance instead of a
+        misleadingly final ✕.
+
+        Idempotent: each widget's own status guards a repeat call (or a card
+        also reachable through both registries) from being re-finished, and
+        ``finish()`` itself tolerates an unmounted widget."""
+        for widget in self.tool_widgets.values():
+            if isinstance(widget, SubAgentWidget) or widget.status != "pending":
+                continue
+            widget.finish(reason, status="failed")
+        for card in self.subagents:
+            if card.status != "pending" or card.detached:
+                continue
+            card.finish(reason, status="interrupted")
 
     def reset_live_tokens(self) -> None:
         self.live_run_tokens = 0

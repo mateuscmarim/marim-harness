@@ -880,6 +880,147 @@ async def test_set_busy_survives_missing_status_bar(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_turn_finally_survives_a_missing_compact_notice(tmp_path: Path):
+    """Sibling regression to test_set_busy_survives_missing_status_bar: the
+    finally's `query_one(CompactNotice).compacting = False` sat unguarded,
+    *before* `await self.queue.after_turn()`. If the notice is already gone
+    (e.g. torn down mid-turn) the NoMatches propagates out of _run_turn,
+    skipping after_turn() — stranding the queue and the wake chain — and,
+    since the turn worker has no exit_on_error=False, would take the app
+    down. Guarding it (mirroring StatusBar.refresh_title's identical guard)
+    must let a normal turn finish cleanly and still drain the queue."""
+    from marim_harness.interfaces.tui.widgets.compact_notice import CompactNotice
+
+    async def fake_run_turn(*a, **k):
+        return "ok"
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.query_one(CompactNotice).remove()
+        await pilot.pause()
+
+        ran = {"after_turn": False}
+        real_after_turn = app.queue.after_turn
+
+        async def spy_after_turn():
+            ran["after_turn"] = True
+            await real_after_turn()
+
+        app.queue.after_turn = spy_after_turn  # type: ignore[method-assign]
+        app.harness.run_turn = fake_run_turn  # type: ignore[method-assign]
+
+        # Must not raise NoMatches.
+        await app._run_turn("hi")
+
+        assert pilot.app.is_running is True
+        assert ran["after_turn"] is True
+
+
+@pytest.mark.anyio
+async def test_cancelled_turn_settles_pending_tool_and_subagent_widgets(tmp_path: Path):
+    """One Esc during a bash call or a spawn must not leave that row 'pending'
+    forever: it would keep rebuilding its title / animating its spinner 10x/s
+    for work that is already dead. A detached (background) card must NOT be
+    settled — its job runs independently of the cancelled turn's task."""
+    import asyncio
+
+    from textual.containers import VerticalScroll
+
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
+    from marim_harness.interfaces.tui.widgets import PromptInput, ToolCallWidget
+
+    app = _app(tmp_path)
+    started = asyncio.Event()
+
+    async def hang(*a, **k):
+        started.set()
+        await asyncio.sleep(3600)
+
+    app.harness.run_turn = hang  # type: ignore[method-assign]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        log = app.query_one("#log", VerticalScroll)
+        tool = ToolCallWidget("bash", {"command": "sleep 999"})
+        await log.mount(tool)
+        app.stream.tool_widgets["t1"] = tool
+
+        card = SubAgentWidget("explore", "map the codebase", "sonnet")
+        await log.mount(card)
+        app.stream.subagents.append(card)
+        app.stream.tool_widgets["s1"] = card
+
+        bg_card = SubAgentWidget("explore", "background work", "sonnet")
+        bg_card.detached = True
+        await log.mount(bg_card)
+        app.stream.subagents.append(bg_card)
+        await pilot.pause()
+
+        # Sanity: both timers are real, running intervals before cancellation.
+        assert tool._spinner_timer is not None and tool._spinner_timer._task is not None
+        assert card._spinner_timer is not None and card._spinner_timer._task is not None
+
+        await app.on_prompt_input_submitted(PromptInput.Submitted("do something slow"))
+        for _ in range(50):
+            await pilot.pause()
+            if started.is_set():
+                break
+
+        app.action_cancel_turn()
+        for _ in range(50):
+            await pilot.pause()
+            if not app.status.busy:
+                break
+        assert app.status.busy is False
+
+        assert tool.status == "failed"
+        assert tool._spinner_timer._task is None
+        assert card.status == "interrupted"
+        assert card._spinner_timer._task is None
+        # Untouched: still pending, still animating — its job is still live.
+        assert bg_card.status == "pending"
+        assert bg_card._spinner_timer is not None and bg_card._spinner_timer._task is not None
+
+
+@pytest.mark.anyio
+async def test_errored_turn_also_settles_pending_widgets(tmp_path: Path):
+    """The same leak as a cancelled turn, from the sibling `except Exception`
+    arm: a turn that dies mid tool-call on a provider error (not an Esc) must
+    not leave that row/card 'pending' forever either."""
+    from textual.containers import VerticalScroll
+
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
+    from marim_harness.interfaces.tui.widgets import ToolCallWidget
+
+    async def boom(*a, **k):
+        raise RuntimeError("upstream exploded")
+
+    app = _app(tmp_path)
+    app.harness.run_turn = boom  # type: ignore[method-assign]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        log = app.query_one("#log", VerticalScroll)
+        tool = ToolCallWidget("bash", {"command": "sleep 999"})
+        await log.mount(tool)
+        app.stream.tool_widgets["t1"] = tool
+
+        card = SubAgentWidget("explore", "map the codebase", "sonnet")
+        await log.mount(card)
+        app.stream.subagents.append(card)
+        app.stream.tool_widgets["s1"] = card
+        await pilot.pause()
+
+        await app._run_turn("hi")
+
+        assert tool.status == "failed"
+        assert tool._spinner_timer._task is None
+        assert card.status == "interrupted"
+        assert card._spinner_timer._task is None
+
+
+@pytest.mark.anyio
 async def test_log_and_input_both_visible(tmp_path: Path):
     """Status bar and input must not collide; both render at non-zero size."""
     app = _app(tmp_path)

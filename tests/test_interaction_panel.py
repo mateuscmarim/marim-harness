@@ -1,6 +1,10 @@
 """The InteractionPanel base: future-resolution lifecycle, teardown on worker
 cancel, and scroll-key forwarding to the transcript."""
 
+import tempfile
+from contextlib import asynccontextmanager
+from pathlib import Path
+
 import pytest
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
@@ -123,6 +127,135 @@ async def test_mounts_into_base_screen_with_modal_on_top():
         app.panel.resolve("done")
         await pilot.pause()
         assert app.result == "done"
+
+
+def _harness_app(root: Path):
+    """A real HarnessApp (not the bare-App stand-ins above), needed for these
+    two tests because they exercise app.on_descendant_focus, which only
+    exists on HarnessApp."""
+    from pydantic_ai.models.test import TestModel
+
+    from marim_harness.interfaces.tui.app import HarnessApp
+    from marim_harness.runtime.harness import Harness
+    from marim_harness.tools.provider import BuiltinToolProvider
+    from tests.conftest import _make_deps
+
+    deps = _make_deps(root)
+    harness = Harness(TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test")
+    return HarnessApp(harness)
+
+
+@asynccontextmanager
+async def _app_with_two_panels():
+    """Two InteractionPanels mounted concurrently via run_panel, mirroring the
+    real hazard: pydantic-ai's concurrent tool calls (or the trust prompt,
+    which isn't gated on turn_busy) can put a second panel up while the first
+    is still pending."""
+    with tempfile.TemporaryDirectory() as tmp:
+        app = _harness_app(Path(tmp))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            panel_a = InteractionPanel()
+            panel_a.can_focus = True
+            panel_b = InteractionPanel()
+            panel_b.can_focus = True
+            app.run_worker(run_panel(app, panel_a))
+            await pilot.pause()
+            panel_a.focus()
+            app.run_worker(run_panel(app, panel_b))
+            await pilot.pause()
+            yield pilot, panel_a, panel_b
+
+
+@asynccontextmanager
+async def _app_with_pending_panel():
+    """One pending InteractionPanel, plus a seeded sub-agent card so ctrl+x
+    doesn't no-op (SubAgentsScreen.open_at no-ops with no cards — see
+    tests/test_subagents_screen.py)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        app = _harness_app(Path(tmp))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            r = app.stream
+            w = r.mount_spawn_widget({"type": "research", "description": "map it"})
+            w.stream_id = "call_1"
+            r.tool_widgets["call_1"] = w
+            r.ensure_pane(w)
+            await app.query_one("#log").mount(w)
+            await pilot.pause()
+
+            panel = InteractionPanel()
+            panel.can_focus = True
+            app.run_worker(run_panel(app, panel))
+            await pilot.pause()
+            panel.focus()
+            await pilot.pause()
+            yield pilot, panel
+
+
+@pytest.mark.anyio
+async def test_resolving_one_panel_refocuses_a_still_pending_sibling():
+    """Two panels can coexist (concurrent tool calls; the trust prompt is not
+    gated on turn_busy). Resolving the first must hand focus to the one still
+    waiting — otherwise 'a'/'d' type into the prompt and Esc cancels the turn."""
+    async with _app_with_two_panels() as (pilot, panel_a, panel_b):
+        panel_a.resolve(True)
+        await pilot.pause()
+        assert pilot.app.focused is panel_b
+
+
+@pytest.mark.anyio
+async def test_refocus_falls_back_to_a_non_focusable_siblings_descendant():
+    """AskUserPanel/PlanCard don't set can_focus on themselves — they focus a
+    SelectionList/OptionList descendant in on_mount instead. sibling.focus()
+    would silently no-op for those (Textual only moves focus onto a
+    `.focusable` widget), leaving the panel just as keyboard-dead as the bug
+    this task fixes. Use the real subclasses, not the bare test double, so
+    this actually exercises that shape."""
+    from textual.widgets import OptionList
+
+    from marim_harness.ask_user import Choice, Question
+    from marim_harness.interfaces.tui.interactions.approval import ApprovalPanel
+    from marim_harness.interfaces.tui.interactions.ask_user import AskUserPanel
+
+    with tempfile.TemporaryDirectory() as tmp:
+        app = _harness_app(Path(tmp))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            questions = [Question("Pick one", "Pick", [Choice("Alpha"), Choice("Beta")])]
+            ask = AskUserPanel(questions)
+            approval = ApprovalPanel("bash", {"command": "echo hi"})
+
+            # ask mounts first, its on_mount worker focuses its OptionList —
+            # then approval mounts and, being focusable, steals focus onto
+            # itself in its own on_mount. This is the scenario that actually
+            # exercises the fallback: when approval resolves, focus is on
+            # approval itself, NOT already sitting on ask's descendant.
+            app.run_worker(run_panel(app, ask))
+            await pilot.pause()  # lets AskUserPanel's on_mount worker mount+focus its list
+            assert pilot.app.focused in ask.query(OptionList)  # sanity: ask had focus first
+
+            app.run_worker(run_panel(app, approval))
+            await pilot.pause()
+            assert pilot.app.focused is approval  # approval stole focus on mount
+
+            assert ask.focusable is False  # the shape this test is pinning
+            approval.resolve(True)
+            await pilot.pause()
+
+            assert isinstance(pilot.app.focused, OptionList)
+            assert pilot.app.focused in ask.query(OptionList)
+
+
+@pytest.mark.anyio
+async def test_opening_the_subagents_view_does_not_strand_a_pending_panel():
+    """run_panel's docstring names this hazard and closes it before mounting, but
+    nothing stopped ctrl+x afterward: the panel was covered and keyboard-dead
+    while the turn appeared wedged."""
+    async with _app_with_pending_panel() as (pilot, panel):
+        await pilot.press("ctrl+x")
+        await pilot.pause()
+        assert pilot.app.focused is panel
 
 
 @pytest.mark.anyio
