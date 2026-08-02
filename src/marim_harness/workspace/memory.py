@@ -100,9 +100,14 @@ def _index_title(title: str) -> str:
     return _single_line(re.sub(r"[\[\]()]", "", title or ""))
 
 
-def _index_entries(scope: MemoryScope) -> list[tuple[str, str]]:
+def index_entries(scope: MemoryScope) -> list[tuple[str, str]]:
     """``(title, slug)`` for every entry in ``MEMORY.md``, in file order.
-    Best-effort: an absent/unreadable index yields ``[]`` (never raises)."""
+    Best-effort: an absent/unreadable index yields ``[]`` (never raises).
+
+    Public because the Claude importer (``workspace.claude_import``) reads a
+    *foreign* store's index through the same parser — Claude keeps a memory's
+    title only in its index line, and sharing this one regex is what keeps the
+    two readers from drifting."""
     path = scope.root / _INDEX_FILE
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -129,7 +134,7 @@ def _allocate_slug(scope: MemoryScope, *, name: str, title: str) -> str:
     (Residual: read_memory/delete_memory re-slugify a bare title to the base, so a
     loser is not reachable by its title — only by its index slug.)"""
     wanted = _index_title(title)
-    entries = _index_entries(scope)
+    entries = index_entries(scope)
     for etitle, eslug in entries:
         if etitle == wanted:
             return eslug
