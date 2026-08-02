@@ -142,6 +142,16 @@ def test_failed_write_exits_one(tmp_path, capsys, monkeypatch):
     assert "alpha" in capsys.readouterr().err
 
 
+def test_bad_from_exits_two(tmp_path, capsys):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    missing = tmp_path / "nope"
+    from marim_harness.interfaces.cli.import_cmd import run
+
+    assert run(["claude", str(ws), "--from", str(missing)]) == 2
+    assert "not a directory" in capsys.readouterr().err
+
+
 def test_router_routes_the_import_keyword():
     from marim_harness.interfaces.cli import router
 

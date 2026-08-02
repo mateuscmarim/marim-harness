@@ -144,6 +144,19 @@ def main(argv: list[str], *, out=None, err=None) -> int:
         print(f"not a directory: {root}", file=err)
         return 2
 
+    # A bad `--from` is an argument error (exit 2), same as a bad workspace —
+    # not a "source not found" case (exit 1), which is reserved for a
+    # well-formed argument (or auto-detection) that just doesn't resolve to a
+    # store, where listing candidate stores is the useful next step.
+    # `_resolve_source` re-derives `given` itself; the duplicated resolve()
+    # is cheap and lets it stay a single Path|None helper instead of having
+    # to signal two different failure kinds back to `main`.
+    if args.from_dir is not None:
+        given = Path(args.from_dir).expanduser().resolve()
+        if not given.is_dir():
+            print(f"not a directory: {given}", file=err)
+            return 2
+
     source = _resolve_source(args.from_dir, root, err=err)
     if source is None:
         return 1
