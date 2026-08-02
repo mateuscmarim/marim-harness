@@ -8,9 +8,9 @@ format *bridge*, not a translation.
 
 The split follows the house convention: everything above ``read_source`` is
 pure (path math, frontmatter parsing, conflict planning) and unit-tested
-directly; ``read_source`` and ``apply_plan`` are the only functions that touch
-disk, and ``apply_plan`` delegates every write to ``memory.save_memory`` so the
-memory format keeps exactly one writer.
+directly; ``read_source``, ``target_state``, and ``apply_plan`` are the
+disk-touching functions, and ``apply_plan`` delegates every write to
+``memory.save_memory`` so the memory format keeps exactly one writer.
 """
 
 import os
