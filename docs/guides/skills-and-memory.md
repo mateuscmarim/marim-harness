@@ -257,9 +257,19 @@ that the imported memories would be committable.
 
 A memory whose slug already exists in the target is skipped, as is one whose
 title is already claimed by a different slug — either would overwrite something
-marim's own `remember` tool wrote. `--force` overwrites both. Claude's extra
-frontmatter keys (`originSessionId`, `modified`) are dropped; marim reads none
-of them.
+marim's own `remember` tool wrote. Both checks are made against the *saved*
+form, not the raw source: titles are compared as they appear in `MEMORY.md`
+(whitespace runs collapsed, `[]()` stripped) and slugs as they appear on disk,
+because that is what the writer compares. So `Deploy (notes)` is recognized as
+the memory already stored under `Deploy notes`, and two Claude memories that
+collide with *each other* are caught too — the second is skipped rather than
+silently overwriting the first.
+
+`--force` overwrites in both cases. When a title conflict redirects the write
+onto an existing memory's file, the plan line shows it — `overwrite alpha →
+marim-deploy` — because that is the file that changes; `alpha.md` is never
+created. Claude's extra frontmatter keys (`originSessionId`, `modified`) are
+dropped; marim reads none of them.
 
 Project instruction files need no import: marim already reads a `CLAUDE.md` in
 the workspace root when there is no `AGENTS.md`. Skills, sub-agents, hooks and

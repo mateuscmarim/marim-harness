@@ -77,6 +77,11 @@ def _resolve_source(from_dir: str | None, root: Path, *, err) -> Path | None:
     if from_dir is not None:
         given = Path(from_dir).expanduser().resolve()
         candidate = given / "memory" if (given / "memory").is_dir() else given
+        # `main` already rejected a non-directory `--from` with exit 2, so this
+        # is a TOCTOU-only guard (the path could vanish between the two checks)
+        # and it keeps the helper total on its own argument rather than correct
+        # only under a precondition established by a different function. It is
+        # exercised directly in tests, not through `main`.
         if not candidate.is_dir():
             print(f"not a directory: {given}", file=err)
             return None
@@ -122,11 +127,23 @@ def _report_scan(scan: SourceScan, source: Path, target: Path, *, out, err) -> N
         print(f"  source problem — {problem}", file=err)
 
 
+def _plan_label(entry: PlannedImport) -> str:
+    """How to name one planned entry. A write whose target slug differs from the
+    source slug is redirected onto an existing memory's file (a title match), so
+    the label has to show both — naming only the source slug would point the user
+    at a file the run never touches. Skips keep the bare source slug; their reason
+    line already names the incumbent."""
+    if entry.action == "skip" or not entry.target_slug or entry.target_slug == entry.slug:
+        return entry.slug
+    return f"{entry.slug} → {entry.target_slug}"
+
+
 def _report_plan(plan: Sequence[PlannedImport], *, out) -> None:
-    width = max((len(entry.slug) for entry in plan), default=0)
-    for entry in plan:
+    labels = [_plan_label(entry) for entry in plan]
+    width = max((len(label) for label in labels), default=0)
+    for entry, label in zip(plan, labels, strict=True):
         detail = entry.reason or entry.title
-        print(f"  {entry.action:<9} {entry.slug:<{width}}  {detail}", file=out)
+        print(f"  {entry.action:<9} {label:<{width}}  {detail}", file=out)
     if plan:
         print("", file=out)
 
@@ -168,13 +185,7 @@ def main(argv: list[str], *, out=None, err=None) -> int:
         print("nothing to import.", file=out)
         return 0
 
-    existing_slugs, existing_titles = target_state(scope)
-    plan = plan_import(
-        scan.memories,
-        existing_slugs=existing_slugs,
-        existing_titles=existing_titles,
-        force=args.force,
-    )
+    plan = plan_import(scan.memories, state=target_state(scope), force=args.force)
     _report_plan(plan, out=out)
 
     if not args.apply:

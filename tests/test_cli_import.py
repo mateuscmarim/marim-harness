@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 
@@ -157,3 +158,188 @@ def test_router_routes_the_import_keyword():
 
     assert "import" in router._MANAGEMENT
     assert router._MODULE_NAMES["import"] == "import_cmd"
+
+
+def test_nothing_to_import_on_an_empty_source(tmp_path, capsys, monkeypatch):
+    """The spec's clean-exit path: a source dir that resolves but holds no
+    memories is exit 0 with a "nothing to import" line, not an error."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    cfg = tmp_path / "cc"
+    _claude_store(cfg, ws, [])
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg))
+    from marim_harness.interfaces.cli.import_cmd import run
+
+    assert run(["claude", str(ws), "--apply"]) == 0
+    out = capsys.readouterr().out
+    assert "nothing to import." in out
+    assert not (ws / ".marim" / "memory").exists()
+
+
+def test_source_problems_reach_stderr(tmp_path, capsys, monkeypatch):
+    """One corrupt file must not cost the user the rest of the store: it is
+    reported on stderr and the good memory still imports."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    cfg = tmp_path / "cc"
+    src = _claude_store(cfg, ws, [("alpha", "Alpha Fact", "A body")])
+    (src / "junk.md").write_text("no frontmatter here\n", encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg))
+    from marim_harness.interfaces.cli.import_cmd import run
+
+    assert run(["claude", str(ws), "--apply"]) == 0
+    captured = capsys.readouterr()
+    assert "source problem" in captured.err and "junk.md" in captured.err
+    assert (ws / ".marim" / "memory" / "alpha.md").exists()
+
+
+def _git(repo: Path, *args: str) -> None:
+    import subprocess
+
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+
+def test_privacy_warning_fires_in_a_repo_that_does_not_ignore_dot_marim(
+    tmp_path, capsys, monkeypatch
+):
+    """The feature's one user-facing privacy surface: a personal Claude memory
+    store landing in committable space."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    _git(ws, "init", "-q")
+    cfg = tmp_path / "cc"
+    _claude_store(cfg, ws, [("alpha", "Alpha Fact", "A body")])
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg))
+    from marim_harness.interfaces.cli.import_cmd import run
+
+    assert run(["claude", str(ws), "--apply"]) == 0
+    err = capsys.readouterr().err
+    assert "not gitignored" in err and "committable" in err
+
+
+def test_privacy_warning_is_silent_when_dot_marim_is_gitignored(tmp_path, capsys, monkeypatch):
+    """`git check-ignore -q` exits 0 for an ignored path. Discriminating that
+    from 1 (not ignored) is the whole point of `_repo_tracks_target`; a
+    `returncode != 0` simplification would invert this case."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    _git(ws, "init", "-q")
+    (ws / ".gitignore").write_text(".marim/\n", encoding="utf-8")
+    cfg = tmp_path / "cc"
+    _claude_store(cfg, ws, [("alpha", "Alpha Fact", "A body")])
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg))
+    from marim_harness.interfaces.cli.import_cmd import run
+
+    assert run(["claude", str(ws), "--apply"]) == 0
+    assert "not gitignored" not in capsys.readouterr().err
+
+
+def test_privacy_warning_is_silent_outside_a_git_repo(tmp_path, capsys, monkeypatch):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    cfg = tmp_path / "cc"
+    _claude_store(cfg, ws, [("alpha", "Alpha Fact", "A body")])
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg))
+    from marim_harness.interfaces.cli.import_cmd import run
+
+    assert run(["claude", str(ws), "--apply"]) == 0
+    assert "not gitignored" not in capsys.readouterr().err
+
+
+def test_privacy_warning_is_not_printed_on_a_dry_run(tmp_path, capsys, monkeypatch):
+    """No write, no warning — and `_repo_tracks_target` (the only subprocess in
+    the command) must stay behind the dry-run early return."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    _git(ws, "init", "-q")
+    cfg = tmp_path / "cc"
+    _claude_store(cfg, ws, [("alpha", "Alpha Fact", "A body")])
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg))
+    from marim_harness.interfaces.cli.import_cmd import run
+
+    assert run(["claude", str(ws)]) == 0
+    assert "not gitignored" not in capsys.readouterr().err
+
+
+def test_repo_tracks_target_is_false_when_git_cannot_answer(tmp_path, monkeypatch):
+    """A missing git binary, or any return code other than 1, means "we cannot
+    tell" — and a warning printed when we cannot tell is worse than silence."""
+    import subprocess
+
+    from marim_harness.interfaces.cli import import_cmd
+
+    ws = tmp_path / "ws"
+    (ws / ".git").mkdir(parents=True)
+
+    def boom(*a, **k):
+        raise OSError("no git here")
+
+    monkeypatch.setattr(import_cmd.subprocess, "run", boom)
+    assert import_cmd._repo_tracks_target(ws) is False
+
+    monkeypatch.setattr(
+        import_cmd.subprocess, "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0] if a else [], 128, b"", b""),
+    )
+    assert import_cmd._repo_tracks_target(ws) is False
+
+
+def test_resolve_source_reports_a_from_path_that_vanished(tmp_path, capsys):
+    """`main` pre-validates `--from`, so this branch is a TOCTOU-only guard and
+    is only reachable by calling the helper directly — which is what keeps it a
+    total function rather than one correct only under a caller's precondition."""
+    from marim_harness.interfaces.cli import import_cmd
+
+    got = import_cmd._resolve_source(str(tmp_path / "gone"), tmp_path, err=sys.stderr)
+    assert got is None
+    assert "not a directory" in capsys.readouterr().err
+
+
+def _marim_memory(ws: Path, *, slug: str, title: str, body: str):
+    from marim_harness.workspace import memory
+
+    scope = memory.project_scope(ws)
+    memory.save_memory(
+        scope, name=slug, description="marim's own note", mem_type="project",
+        body=body, title=title,
+    )
+    return scope
+
+
+def test_apply_does_not_clobber_a_marim_memory_on_a_normalized_title(
+    tmp_path, capsys, monkeypatch
+):
+    """The C1 repro, at the CLI level: no --force, exit 0 is only honest if the
+    marim-authored memory is still on disk afterward."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    scope = _marim_memory(ws, slug="marim-deploy", title="Deploy notes", body="MARIM ORIGINAL")
+    cfg = tmp_path / "cc"
+    _claude_store(cfg, ws, [("alpha", "Deploy (notes)", "CLAUDE BODY")])
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg))
+    from marim_harness.interfaces.cli.import_cmd import run
+
+    assert run(["claude", str(ws), "--apply"]) == 0
+    out = capsys.readouterr().out
+    assert "skip" in out and "0 imported, 1 skipped" in out
+    kept = (scope.root / "marim-deploy.md").read_text(encoding="utf-8")
+    assert "MARIM ORIGINAL" in kept and "CLAUDE BODY" not in kept
+    assert not (scope.root / "alpha.md").exists()
+
+
+def test_force_report_names_the_file_that_changes(tmp_path, capsys, monkeypatch):
+    """M2: the plan line has to show the redirect, because `alpha.md` is never
+    created — `marim-deploy.md` is what the run overwrites."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    scope = _marim_memory(ws, slug="marim-deploy", title="Deploy notes", body="MARIM ORIGINAL")
+    cfg = tmp_path / "cc"
+    _claude_store(cfg, ws, [("alpha", "Deploy notes", "CLAUDE BODY")])
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg))
+    from marim_harness.interfaces.cli.import_cmd import run
+
+    assert run(["claude", str(ws), "--apply", "--force"]) == 0
+    out = capsys.readouterr().out
+    assert "alpha → marim-deploy" in out
+    assert "CLAUDE BODY" in (scope.root / "marim-deploy.md").read_text(encoding="utf-8")
+    assert not (scope.root / "alpha.md").exists()

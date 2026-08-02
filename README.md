@@ -166,6 +166,7 @@ Boundaries:
 marim sessions   # list / inspect saved sessions
 marim config     # view configuration
 marim models     # list available models for the active provider
+marim import claude   # carry a Claude Code memory store into this workspace
 ```
 
 ### Image input
