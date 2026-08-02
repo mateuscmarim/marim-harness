@@ -171,3 +171,93 @@ def test_read_source_on_empty_dir_is_empty(tmp_path: Path):
     src.mkdir()
     scan = claude_import.read_source(src)
     assert scan.memories == () and scan.problems == ()
+
+
+def _mem(slug, title):
+    return claude_import.ImportedMemory(
+        slug=slug, title=title, description="d", mem_type="project", body="b"
+    )
+
+
+def test_plan_import_marks_fresh_memories_as_import():
+    plan = claude_import.plan_import(
+        [_mem("alpha", "Alpha")], existing_slugs=set(), existing_titles={}, force=False
+    )
+    assert [(p.action, p.slug) for p in plan] == [("import", "alpha")]
+    assert plan[0].reason == ""
+
+
+def test_plan_import_skips_an_existing_slug():
+    plan = claude_import.plan_import(
+        [_mem("alpha", "Alpha")],
+        existing_slugs={"alpha"},
+        existing_titles={},
+        force=False,
+    )
+    assert plan[0].action == "skip"
+    assert "already present" in plan[0].reason
+
+
+def test_plan_import_skips_a_title_claimed_by_a_different_slug():
+    """The clobber _allocate_slug would otherwise cause: the source slug is
+    free, but the target already stores that title under another slug, so
+    save_memory would write into *that* file."""
+    plan = claude_import.plan_import(
+        [_mem("alpha", "Shared Title")],
+        existing_slugs={"other"},
+        existing_titles={"Shared Title": "other"},
+        force=False,
+    )
+    assert plan[0].action == "skip"
+    assert "other" in plan[0].reason
+
+
+def test_plan_import_allows_a_title_already_owned_by_the_same_slug():
+    """Re-importing the same memory is a refresh, not a cross-slug clobber, so
+    it is an ordinary overwrite decision rather than a title conflict."""
+    plan = claude_import.plan_import(
+        [_mem("alpha", "Alpha")],
+        existing_slugs=set(),
+        existing_titles={"Alpha": "alpha"},
+        force=False,
+    )
+    assert plan[0].action == "import"
+
+
+def test_plan_import_force_turns_conflicts_into_overwrites():
+    plan = claude_import.plan_import(
+        [_mem("alpha", "Alpha"), _mem("beta", "Beta")],
+        existing_slugs={"alpha"},
+        existing_titles={"Beta": "gamma"},
+        force=True,
+    )
+    assert [(p.action, p.slug) for p in plan] == [("overwrite", "alpha"), ("overwrite", "beta")]
+
+
+def test_plan_import_preserves_source_order():
+    plan = claude_import.plan_import(
+        [_mem("c", "C"), _mem("a", "A")],
+        existing_slugs=set(),
+        existing_titles={},
+        force=False,
+    )
+    assert [p.slug for p in plan] == ["c", "a"]
+
+
+def test_target_state_reads_slugs_and_titles(tmp_path: Path):
+    from marim_harness.workspace import memory
+
+    scope = memory.project_scope(tmp_path)
+    memory.save_memory(
+        scope, name="Alpha", description="d", mem_type="project", body="b", title="Alpha"
+    )
+    slugs, titles = claude_import.target_state(scope)
+    assert slugs == {"alpha"}
+    assert titles == {"Alpha": "alpha"}
+
+
+def test_target_state_on_missing_dir_is_empty(tmp_path: Path):
+    from marim_harness.workspace import memory
+
+    slugs, titles = claude_import.target_state(memory.project_scope(tmp_path))
+    assert slugs == set() and titles == {}

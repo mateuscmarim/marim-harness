@@ -15,7 +15,7 @@ memory format keeps exactly one writer.
 
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -146,3 +146,71 @@ def read_source(memory_dir: Path) -> SourceScan:
             continue
         memories.append(parsed)
     return SourceScan(memories=tuple(memories), problems=tuple(problems))
+
+
+@dataclass(frozen=True)
+class PlannedImport:
+    """What the importer decided to do about one source memory. ``reason`` is
+    empty except on a skip, where it explains the conflict well enough for the
+    user to decide whether ``--force`` is what they want."""
+
+    action: str  # "import" | "overwrite" | "skip"
+    slug: str
+    title: str
+    reason: str = ""
+
+
+def target_state(scope: MemoryScope) -> tuple[set[str], dict[str, str]]:
+    """The target scope's existing ``<slug>.md`` files and its ``title -> slug``
+    map. Slugs come from the *files*, not the index, because the index can be
+    stale — the same reasoning as ``memory._link_saved``. Titles necessarily
+    come from the index, which is where ``_allocate_slug`` reads them."""
+    try:
+        slugs = {p.stem for p in scope.root.glob("*.md") if p.name != _INDEX_FILE}
+    except OSError:
+        slugs = set()
+    titles = {title: slug for title, slug in index_entries(scope)}
+    return slugs, titles
+
+
+def _conflict(memory_: ImportedMemory, existing_slugs, existing_titles) -> str:
+    """Why importing ``memory_`` would destroy something, or ``""`` if it would
+    not. Two independent hazards, both real:
+
+    1. The slug's file already exists — the obvious collision.
+    2. The title is already claimed by a *different* slug. ``save_memory`` routes
+       through ``_allocate_slug``, which reuses an existing entry's slug on a
+       title match, so this would write into the other memory's file even though
+       the source slug is free. A same-slug title match is not a conflict; that
+       is just a refresh of the same memory.
+    """
+    if memory_.slug in existing_slugs:
+        return "already present — use --force"
+    owner = existing_titles.get(memory_.title)
+    if owner is not None and owner != memory_.slug:
+        return f"title already used by {owner!r} — use --force"
+    return ""
+
+
+def plan_import(
+    sources: Sequence[ImportedMemory],
+    *,
+    existing_slugs: set[str],
+    existing_titles: dict[str, str],
+    force: bool,
+) -> list[PlannedImport]:
+    """Decide import / overwrite / skip for each source, in source order.
+    Pure: takes the target's state as data so it can be tested without a disk."""
+    planned: list[PlannedImport] = []
+    for source in sources:
+        reason = _conflict(source, existing_slugs, existing_titles)
+        if not reason:
+            action, reason = "import", ""
+        elif force:
+            action, reason = "overwrite", ""
+        else:
+            action = "skip"
+        planned.append(
+            PlannedImport(action=action, slug=source.slug, title=source.title, reason=reason)
+        )
+    return planned
