@@ -261,3 +261,75 @@ def test_target_state_on_missing_dir_is_empty(tmp_path: Path):
 
     slugs, titles = claude_import.target_state(memory.project_scope(tmp_path))
     assert slugs == set() and titles == {}
+
+
+def test_apply_plan_writes_files_and_index(tmp_path: Path):
+    from marim_harness.workspace import memory
+
+    scope = memory.project_scope(tmp_path)
+    sources = [_mem("alpha", "Alpha Fact"), _mem("beta", "Beta Fact")]
+    plan = claude_import.plan_import(
+        sources, existing_slugs=set(), existing_titles={}, force=False
+    )
+    result = claude_import.apply_plan(plan, sources, scope)
+
+    assert result.imported == ("alpha", "beta")
+    assert result.skipped == () and result.failed == ()
+    written = (scope.root / "alpha.md").read_text(encoding="utf-8")
+    assert "name: alpha" in written
+    assert "type: project" in written
+    index = (scope.root / "MEMORY.md").read_text(encoding="utf-8")
+    assert "- [Alpha Fact](alpha.md)" in index
+    assert "- [Beta Fact](beta.md)" in index
+
+
+def test_apply_plan_does_not_write_skipped_memories(tmp_path: Path):
+    from marim_harness.workspace import memory
+
+    scope = memory.project_scope(tmp_path)
+    memory.save_memory(
+        scope, name="alpha", description="mine", mem_type="project", body="marim body",
+        title="Alpha Fact",
+    )
+    sources = [_mem("alpha", "Alpha Fact")]
+    plan = claude_import.plan_import(
+        sources, existing_slugs={"alpha"}, existing_titles={"Alpha Fact": "alpha"}, force=False
+    )
+    result = claude_import.apply_plan(plan, sources, scope)
+
+    assert result.imported == () and result.skipped == ("alpha",)
+    assert "marim body" in (scope.root / "alpha.md").read_text(encoding="utf-8")
+
+
+def test_apply_plan_overwrites_under_force(tmp_path: Path):
+    from marim_harness.workspace import memory
+
+    scope = memory.project_scope(tmp_path)
+    memory.save_memory(
+        scope, name="alpha", description="mine", mem_type="project", body="marim body",
+        title="Alpha Fact",
+    )
+    sources = [_mem("alpha", "Alpha Fact")]
+    plan = claude_import.plan_import(
+        sources, existing_slugs={"alpha"}, existing_titles={"Alpha Fact": "alpha"}, force=True
+    )
+    result = claude_import.apply_plan(plan, sources, scope)
+
+    assert result.imported == ("alpha",)
+    assert (scope.root / "alpha.md").read_text(encoding="utf-8").rstrip().endswith("b")
+
+
+def test_apply_plan_records_a_failed_write(tmp_path: Path, monkeypatch):
+    """save_memory returns None instead of raising when the write fails; the
+    importer must surface that as a failure rather than count it as imported."""
+    from marim_harness.workspace import memory
+
+    monkeypatch.setattr(claude_import, "save_memory", lambda *a, **k: None)
+    scope = memory.project_scope(tmp_path)
+    sources = [_mem("alpha", "Alpha")]
+    plan = claude_import.plan_import(
+        sources, existing_slugs=set(), existing_titles={}, force=False
+    )
+    result = claude_import.apply_plan(plan, sources, scope)
+
+    assert result.failed == ("alpha",) and result.imported == ()

@@ -22,7 +22,7 @@ from pathlib import Path
 import yaml
 
 from ._frontmatter import FRONTMATTER_RE
-from .memory import MemoryScope, index_entries
+from .memory import MemoryScope, index_entries, save_memory
 
 _DEFAULT_CLAUDE_DIRNAME = ".claude"
 
@@ -214,3 +214,54 @@ def plan_import(
             PlannedImport(action=action, slug=source.slug, title=source.title, reason=reason)
         )
     return planned
+
+
+@dataclass(frozen=True)
+class ImportResult:
+    """The outcome of one ``apply_plan``, as three slug tuples. A non-empty
+    ``failed`` is what makes the CLI exit non-zero."""
+
+    imported: tuple[str, ...]
+    skipped: tuple[str, ...]
+    failed: tuple[str, ...]
+
+
+def apply_plan(
+    plan: Sequence[PlannedImport],
+    sources: Sequence[ImportedMemory],
+    scope: MemoryScope,
+) -> ImportResult:
+    """Perform every non-skipped entry of ``plan``, writing through
+    ``memory.save_memory`` so the memory format keeps a single writer — index
+    upsert, slug allocation, atomic writes and the advisory lock all come from
+    there rather than being reimplemented here.
+
+    ``save_memory`` never raises (it logs and returns ``None`` on a failed
+    write, per its fail-soft contract for tool calls), so a falsy return is the
+    only failure signal there is; it is collected rather than swallowed because
+    this runs in a CLI, where failures should be loud.
+    """
+    by_slug = {source.slug: source for source in sources}
+    imported: list[str] = []
+    skipped: list[str] = []
+    failed: list[str] = []
+    for entry in plan:
+        if entry.action == "skip":
+            skipped.append(entry.slug)
+            continue
+        source = by_slug.get(entry.slug)
+        if source is None:  # pragma: no cover - plan is always built from sources
+            failed.append(entry.slug)
+            continue
+        written = save_memory(
+            scope,
+            name=source.slug,
+            description=source.description,
+            mem_type=source.mem_type,
+            body=source.body,
+            title=source.title,
+        )
+        (imported if written is not None else failed).append(entry.slug)
+    return ImportResult(
+        imported=tuple(imported), skipped=tuple(skipped), failed=tuple(failed)
+    )
