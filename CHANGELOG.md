@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/) —
 pre-1.0, minor versions may contain breaking changes.
 
+## [Unreleased]
+
+### Added
+
+- `marim import claude` — import a Claude Code CLI memory store into the
+  workspace's `.marim/memory`. Dry-run by default (`--apply` to write),
+  auto-detects Claude's per-project store or takes `--from`, and skips anything
+  that would overwrite an existing marim memory unless `--force` is passed.
+
 ## [0.3.0] - 2026-07-31
 
 - The approval panel now shows what you are approving. A long `write_file`

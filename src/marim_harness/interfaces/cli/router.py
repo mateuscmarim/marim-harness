@@ -10,14 +10,14 @@ from ...config import load_environment
 
 # Reserved first-token keywords. argparse subparsers would claim the workspace
 # positional, so we route manually before any parser sees the args.
-_MANAGEMENT = {"sessions", "config", "models", "plugin", "mcp", "serve", "trust"}
+_MANAGEMENT = {"sessions", "config", "models", "plugin", "mcp", "serve", "trust", "import"}
 
-# Keyword -> submodule name, for the one case where they differ: the module
-# is named ``trust_cmd`` (not ``trust``) so a bare `import trust` anywhere
-# near this package unambiguously means the top-level ``marim_harness.trust``
-# predicate module, never this CLI command group. Every other keyword here
-# still maps to a same-named module.
-_MODULE_NAMES = {"trust": "trust_cmd"}
+# Keyword -> submodule name, for the cases where they differ. ``trust`` maps to
+# ``trust_cmd`` so a bare `import trust` anywhere near this package unambiguously
+# means the top-level ``marim_harness.trust`` predicate module; ``import`` maps to
+# ``import_cmd`` because `import` is a Python keyword and cannot name a module
+# that anything imports by statement. Every other keyword maps to a same-named module.
+_MODULE_NAMES = {"trust": "trust_cmd", "import": "import_cmd"}
 
 
 def _setup_logging() -> None:

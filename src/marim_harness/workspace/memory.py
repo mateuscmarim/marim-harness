@@ -14,6 +14,7 @@ import hashlib
 import logging
 import re
 import unicodedata
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,7 +33,7 @@ _VALID_TYPES = ("user", "feedback", "project", "reference")
 # the upsert (refresh-in-place) and delete (drop-the-line) paths so the two
 # can't disagree about what "this entry's line" means. The title is captured too
 # so save-time slug allocation can tell whose entry a slug belongs to; titles are
-# sanitized on write (_index_title) so the FIRST `](…md)` is always the real link.
+# sanitized on write (index_title) so the FIRST `](…md)` is always the real link.
 _ENTRY_LINK_RE = re.compile(r"^- \[(?P<title>[^\]]*)\]\((?P<slug>[^)]+)\.md\)")
 
 # ``[[name]]`` wikilinks inside a memory body. Names may be titles or slugs
@@ -88,7 +89,7 @@ def _slugify(name: str) -> str:
     return f"memory-{hashlib.sha256((name or '').encode('utf-8')).hexdigest()[:8]}"
 
 
-def _index_title(title: str) -> str:
+def index_title(title: str) -> str:
     """Sanitize a title for the one-line index entry: collapse to a single line
     and strip markdown link punctuation ``[]()``.
 
@@ -96,13 +97,26 @@ def _index_title(title: str) -> str:
     second ``](slug.md)`` link on the entry line, so ``_ENTRY_LINK_RE`` (which
     anchors on the FIRST such link) captures the wrong slug and the upsert/delete
     dedup misfires, silently accumulating duplicate lines for the same memory.
-    Removing the brackets leaves the entry's own link as the only one present."""
+    Removing the brackets leaves the entry's own link as the only one present.
+
+    Public for the same reason ``index_entries`` is: the Claude importer has to
+    predict, before writing, which index entry a save will land on. This is the
+    exact normalization ``_upsert_index_line`` applies on the way to disk and
+    ``allocate_slug`` compares against, so a caller that wants to know "will
+    these two titles be the same entry?" must ask *this* function rather than
+    compare raw strings — that mismatch is precisely what let an import clobber
+    a marim-authored memory."""
     return _single_line(re.sub(r"[\[\]()]", "", title or ""))
 
 
-def _index_entries(scope: MemoryScope) -> list[tuple[str, str]]:
+def index_entries(scope: MemoryScope) -> list[tuple[str, str]]:
     """``(title, slug)`` for every entry in ``MEMORY.md``, in file order.
-    Best-effort: an absent/unreadable index yields ``[]`` (never raises)."""
+    Best-effort: an absent/unreadable index yields ``[]`` (never raises).
+
+    Public because the Claude importer (``workspace.claude_import``) reads a
+    *foreign* store's index through the same parser — Claude keeps a memory's
+    title only in its index line, and sharing this one regex is what keeps the
+    two readers from drifting."""
     path = scope.root / _INDEX_FILE
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -116,8 +130,29 @@ def _index_entries(scope: MemoryScope) -> list[tuple[str, str]]:
     return entries
 
 
-def _allocate_slug(scope: MemoryScope, *, name: str, title: str) -> str:
-    """The slug ``title`` should be saved under, disambiguating collisions.
+@dataclass(frozen=True)
+class SlugAllocation:
+    """Where a save will land. ``slug`` is the ``<slug>.md`` that will be written;
+    ``base`` is the slug the name alone would have produced; ``title_owner`` is
+    the existing index entry whose title claimed ``slug``, or ``None`` when the
+    slug came from the name.
+
+    ``slug != base`` is the interesting case — the write is being redirected onto
+    a file the caller did not name, either because an entry already holds this
+    title (``title_owner`` set) or because the base was taken by a different
+    title (suffixed ``base-2``). A caller deciding whether a save would destroy
+    something must look at ``slug``, never at ``base``."""
+
+    slug: str
+    base: str
+    title_owner: str | None
+
+
+def allocate_slug(
+    entries: Sequence[tuple[str, str]], *, name: str, title: str
+) -> SlugAllocation:
+    """The slug ``title`` should be saved under, disambiguating collisions,
+    decided against ``entries`` (``(title, slug)`` index lines in file order).
 
     Re-saving an existing title reuses that entry's slug (so the write updates in
     place). Otherwise the base is ``_slugify(name)``; if the base is already
@@ -127,20 +162,34 @@ def _allocate_slug(scope: MemoryScope, *, name: str, title: str) -> str:
     index line. The first writer keeps the clean base slug; the collision loser is
     reachable by the suffixed slug shown in the index (``recall`` takes a slug).
     (Residual: read_memory/delete_memory re-slugify a bare title to the base, so a
-    loser is not reachable by its title — only by its index slug.)"""
-    wanted = _index_title(title)
-    entries = _index_entries(scope)
+    loser is not reachable by its title — only by its index slug.)
+
+    Public, and pure over ``entries``, because the Claude importer must decide
+    *before* writing whether an import would destroy an existing memory. That
+    question is only answerable by running this allocation: any guard that
+    re-derives the answer from raw slugs and raw titles is comparing values this
+    function normalizes (``_slugify`` / ``index_title``), so it is strictly
+    weaker than the write it guards — which is exactly how an import came to
+    silently overwrite a marim-authored memory. Sharing the allocator, not just
+    the normalizers, is what makes that class of drift unrepresentable."""
+    base = _slugify(name)
+    wanted = index_title(title)
     for etitle, eslug in entries:
         if etitle == wanted:
-            return eslug
-    base = _slugify(name)
+            return SlugAllocation(slug=eslug, base=base, title_owner=eslug)
     taken = {eslug for _, eslug in entries}
     if base not in taken:
-        return base
+        return SlugAllocation(slug=base, base=base, title_owner=None)
     n = 2
     while f"{base}-{n}" in taken:
         n += 1
-    return f"{base}-{n}"
+    return SlugAllocation(slug=f"{base}-{n}", base=base, title_owner=None)
+
+
+def _allocate_slug(scope: MemoryScope, *, name: str, title: str) -> str:
+    """``allocate_slug`` against the scope's live index — the disk-reading half,
+    kept separate so the decision itself stays pure and testable as data."""
+    return allocate_slug(index_entries(scope), name=name, title=title).slug
 
 
 def load_index(scope: MemoryScope) -> str | None:
@@ -188,8 +237,8 @@ def _upsert_index_line(scope: MemoryScope, *, slug: str, title: str, hook: str) 
     preserving every other line and never duplicating an entry."""
     path = scope.root / _INDEX_FILE
     # Sanitize the title into the link so a ``](`` in it can't forge a second
-    # link and defeat the slug-keyed dedup below (see _index_title).
-    line = f"- [{_index_title(title)}]({slug}.md) — {hook}"
+    # link and defeat the slug-keyed dedup below (see index_title).
+    line = f"- [{index_title(title)}]({slug}.md) — {hook}"
 
     # Serialize the read+modify+write of the shared index with a best-effort
     # advisory lock: two concurrent save_memory calls each read the old index,

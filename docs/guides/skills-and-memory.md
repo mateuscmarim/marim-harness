@@ -234,3 +234,43 @@ gotchas — and promote anything that hardens into a standing rule to
 `AGENTS.md`. The injected memory policy draws the same line from the other
 side: the agent is told not to save what the repo already records, `AGENTS.md`
 included.
+
+## Importing from Claude Code
+
+marim's memory format mirrors Claude Code's, so an existing store carries over
+directly:
+
+    marim import claude              # dry run — reports, writes nothing
+    marim import claude --apply      # perform it
+
+Claude keeps memory per project directory, outside the repo, under
+`$CLAUDE_CONFIG_DIR/projects/<path-slug>/memory` (default `~/.claude`). The
+command derives that path from the workspace root. If it does not exist — a
+worktree, or a project you opened from a different path — it lists the stores it
+can see; pass one with `--from`:
+
+    marim import claude --from ~/.claude/projects/-home-me-Projects-app
+
+Memories land in **project scope**, `<workspace>/.marim/memory`, matching the
+directory Claude keyed them to. If `.marim/` is not gitignored, `--apply` warns
+that the imported memories would be committable.
+
+A memory whose slug already exists in the target is skipped, as is one whose
+title is already claimed by a different slug — either would overwrite something
+marim's own `remember` tool wrote. Both checks are made against the *saved*
+form, not the raw source: titles are compared as they appear in `MEMORY.md`
+(whitespace runs collapsed, `[]()` stripped) and slugs as they appear on disk,
+because that is what the writer compares. So `Deploy (notes)` is recognized as
+the memory already stored under `Deploy notes`, and two Claude memories that
+collide with *each other* are caught too — the second is skipped rather than
+silently overwriting the first.
+
+`--force` overwrites in both cases. When a title conflict redirects the write
+onto an existing memory's file, the plan line shows it — `overwrite alpha →
+marim-deploy` — because that is the file that changes; `alpha.md` is never
+created. Claude's extra frontmatter keys (`originSessionId`, `modified`) are
+dropped; marim reads none of them.
+
+Project instruction files need no import: marim already reads a `CLAUDE.md` in
+the workspace root when there is no `AGENTS.md`. Skills, sub-agents, hooks and
+MCP servers are not imported yet.
