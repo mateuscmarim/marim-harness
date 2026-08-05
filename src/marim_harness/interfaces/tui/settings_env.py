@@ -1,5 +1,6 @@
 """The settings screen's persistence layer: which widget id maps to which env
-var, and the one funnel every auto-saving field writes through.
+var, and the one funnel every auto-saving field writes through. Also holds the
+Tools page's help-line copy and dependent-row enablement registries.
 
 Kept apart from ``settings.py`` because it is the half of that screen with no
 Textual in it — the registries are data, and ``EnvAutoSave`` only needs a
@@ -67,6 +68,119 @@ TIER_ROWS: tuple[tuple[str, str, str], ...] = (
     ("high", "MARIM_SUBAGENT_TIER_HIGH", "High tier"),
 )
 TIER_ENV: dict[str, str] = {tier: env_key for tier, env_key, _ in TIER_ROWS}
+
+# Help-line copy for the Tools settings page, keyed by widget id. Looked up via
+# ``help_for`` against the focused widget's id-ancestor chain (leaf to root),
+# so a control's own id can win over its containing RadioSet/section.
+FIELD_HELP: dict[str, str] = {
+    "sw-lsp": (
+        "Language-server integration (diagnostics on edit). Applies next launch."
+    ),
+    "sw-lsp-tools": (
+        "Six navigation tools (definitions, references, …). Requires LSP. "
+        "Applies next launch."
+    ),
+    "toolsearch-set": (
+        "Serve MCP/plugin tools via search_tools instead of up-front schemas. "
+        "'auto' activates past the tool-count threshold. Applies next launch."
+    ),
+    "toolsearch-threshold": (
+        "Tool count at which 'auto' tool search activates. Applies next launch."
+    ),
+    "sw-job": (
+        "One combined job tool instead of separate list/output/wait/cancel "
+        "tools. Applies next launch."
+    ),
+    "sw-workflows": (
+        "Model-authored Python workflows in a sandbox (run_workflow). "
+        "Applies live."
+    ),
+    "subagent-req-limit": (
+        "Maximum model requests per sub-agent run. Applies next launch."
+    ),
+    "wake-depth-cap": (
+        "Maximum autonomous turns after a finished job wakes the agent. "
+        "Applies next launch."
+    ),
+    "sw-tiering": (
+        "Route new spawns to cheap/med/high tier models. Off sends every spawn "
+        "to the main model; tier picks stay saved. Applies live to new spawns."
+    ),
+    "tier-change-cheap": (
+        "Model for cheap-tier spawns; unset inherits the main model. "
+        "Saves to .env — applies to new sessions."
+    ),
+    "tier-change-med": (
+        "Model for med-tier spawns; unset inherits the main model. "
+        "Saves to .env — applies to new sessions."
+    ),
+    "tier-change-high": (
+        "Model for high-tier spawns; unset inherits the main model. "
+        "Saves to .env — applies to new sessions."
+    ),
+    "advisor-change": (
+        "A model the agent can consult for strategic guidance. Saves the "
+        "default to .env (new sessions); /advisor overrides per session, "
+        "live. 'off' clears."
+    ),
+    "advisor-max-tokens": "Token cap on advisor replies. Applies next launch.",
+    "advisor-max-uses": (
+        "Advisor calls per turn; 0 = unlimited. Applies next launch."
+    ),
+    "thinking-change": (
+        "Reasoning effort (off/minimal/low/medium/high/xhigh). Saves the "
+        "default to .env (new sessions); /think overrides per session, live."
+    ),
+}
+
+SECTION_HELP: dict[str, str] = {
+    "tools": (
+        "Env-backed settings — save automatically on change; apply next launch "
+        "unless the field says live."
+    ),
+}
+
+# checkbox widget id -> dependent row ids to enable/disable in lockstep.
+CHECK_DEPENDENTS: dict[str, list[str]] = {
+    "sw-lsp": ["row-lsp-tools"],
+    "sw-tiering": ["row-tier-cheap", "row-tier-med", "row-tier-high"],
+}
+
+# value-widget key -> (dependent row ids, predicate over the current value)
+# deciding whether those rows are enabled.
+VALUE_DEPENDENTS: dict[str, tuple[list[str], Callable[[str], bool]]] = {
+    "toolsearch": (["row-toolsearch-threshold"], lambda v: v != "off"),
+    "advisor": (
+        ["row-advisor-tokens", "row-advisor-uses"],
+        lambda v: v != "off",
+    ),
+}
+
+
+def help_for(ids: Iterable[str]) -> str | None:
+    """Return FIELD_HELP for the first id in ``ids`` that has an entry."""
+    for widget_id in ids:
+        text = FIELD_HELP.get(widget_id)
+        if text is not None:
+            return text
+    return None
+
+
+def dependents_enabled(
+    check_values: Mapping[str, bool],
+    value_masters: Mapping[str, str],
+) -> dict[str, bool]:
+    """Map every dependent ``row-*`` id to whether its controls should be enabled."""
+    enabled: dict[str, bool] = {}
+    for master, rows in CHECK_DEPENDENTS.items():
+        on = bool(check_values.get(master, False))
+        for row in rows:
+            enabled[row] = on
+    for master, (rows, pred) in VALUE_DEPENDENTS.items():
+        on = pred(value_masters.get(master, ""))
+        for row in rows:
+            enabled[row] = on
+    return enabled
 
 
 def env_flag(value: bool) -> str:

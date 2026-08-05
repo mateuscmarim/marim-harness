@@ -599,8 +599,69 @@ async def test_settings_has_three_tier_rows():
         await pilot.pause()
         app.screen.active_section = "tools"
         await pilot.pause()
-        labels = {str(w.render()) for w in app.screen.query(".tier-row-label")}
+        labels = {str(w.render()) for w in app.screen.query(".row-label")}
     assert {"Cheap tier", "Med tier", "High tier"} <= labels
+
+
+@pytest.mark.anyio
+async def test_tools_page_has_group_headers_and_dep_rows():
+    """Tools page mounts headed groups and every dependency row wrapper."""
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        s = app.screen
+        headers = {str(w.render()) for w in s.query("#section-tools .group-head")}
+        assert {
+            "Language server",
+            "Tool search",
+            "Agent tools",
+            "Sub-agents",
+            "Advisor",
+            "Thinking",
+        } <= headers
+        for row_id in (
+            "row-lsp-tools",
+            "row-toolsearch-threshold",
+            "row-tier-cheap",
+            "row-tier-med",
+            "row-tier-high",
+            "row-advisor-tokens",
+            "row-advisor-uses",
+        ):
+            assert s.query_one(f"#section-tools #{row_id}") is not None
+        # Control ids stay stable inside the wrappers.
+        assert s.query_one("#row-lsp-tools #sw-lsp-tools") is not None
+        assert s.query_one("#row-toolsearch-threshold #toolsearch-threshold") is not None
+        assert s.query_one("#row-tier-cheap #tier-change-cheap") is not None
+        assert s.query_one("#row-advisor-tokens #advisor-max-tokens") is not None
+        # Banner / prose walls removed.
+        body = " ".join(str(w.render()) for w in s.query("#section-tools Static"))
+        assert "Saved to .env" not in body
+        assert "Master switch" not in body
+        assert "Advisor — a model" not in body
+        assert "Thinking — reasoning" not in body
+        # Session model row still exists with model-label class.
+        assert "model-label" in s.query_one("#model-label").classes
+
+
+@pytest.mark.anyio
+async def test_toolsearch_radios_are_visible_after_layout():
+    """Regression: the RadioSet's default tall border collapsed its
+    content_region to height 0, making the radio buttons unreachable/
+    invisible even though `height: 1` was set on the set itself."""
+    from textual.widgets import RadioButton, RadioSet
+
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        rs = app.screen.query_one("#toolsearch-set", RadioSet)
+        assert rs.content_region.height >= 1
+        button = app.screen.query_one("#toolsearch-off", RadioButton)
+        assert rs.content_region.contains_point(button.region.offset)
 
 
 @pytest.mark.anyio
@@ -875,3 +936,142 @@ async def test_thinking_off_choice_drops_the_env_var(isolated_env, monkeypatch, 
         value = str(app.screen.query_one("#thinking-value").render())
     assert os.environ.get("MARIM_THINKING") is None
     assert value == "off"
+
+
+@pytest.mark.anyio
+async def test_tools_section_shows_section_help_on_rail():
+    from marim_harness.interfaces.tui.settings_env import SECTION_HELP
+
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        # Rail: nothing focused.
+        app.screen.set_focus(None)
+        await pilot.pause()
+        help_w = app.screen.query_one("#settings-help")
+        assert str(help_w.render()) == SECTION_HELP["tools"]
+        # Session has no SECTION_HELP → empty.
+        app.screen.active_section = "session"
+        await pilot.pause()
+        assert str(app.screen.query_one("#settings-help").render()) == ""
+
+
+@pytest.mark.anyio
+async def test_focusing_tools_field_shows_field_help():
+    from marim_harness.interfaces.tui.settings_env import FIELD_HELP
+
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        app.screen.query_one("#sw-lsp").focus()
+        await pilot.pause()
+        assert str(app.screen.query_one("#settings-help").render()) == FIELD_HELP["sw-lsp"]
+        # Escape returns to rail → section help again.
+        await pilot.press("escape")
+        await pilot.pause()
+        from marim_harness.interfaces.tui.settings_env import SECTION_HELP
+
+        assert str(app.screen.query_one("#settings-help").render()) == SECTION_HELP["tools"]
+
+
+@pytest.mark.anyio
+async def test_field_help_keys_resolve_to_tools_dom_ids():
+    """Every FIELD_HELP key must name a widget id actually mounted under
+    #section-tools — a stale key would silently dead-code the help line."""
+    from marim_harness.interfaces.tui.settings_env import FIELD_HELP
+
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        section = app.screen.query_one("#section-tools")
+        for widget_id in FIELD_HELP:
+            assert section.query(f"#{widget_id}"), (
+                f"FIELD_HELP key {widget_id!r} has no matching widget in #section-tools"
+            )
+
+
+@pytest.mark.anyio
+async def test_lsp_off_dims_and_disables_nav_tools():
+    from dataclasses import replace
+
+    env_cfg = _env_cfg()
+    # default lsp_enabled is True in ModelConfig — force off
+    env_cfg = replace(env_cfg, lsp_enabled=False)
+    app = _Host(_fake_harness(), env_cfg)
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        row = app.screen.query_one("#row-lsp-tools")
+        box = app.screen.query_one("#sw-lsp-tools")
+        assert "dimmed" in row.classes
+        assert box.disabled is True
+
+
+@pytest.mark.anyio
+async def test_toggling_lsp_enables_nav_tools_live():
+    env_cfg = _env_cfg()
+    from dataclasses import replace
+
+    env_cfg = replace(env_cfg, lsp_enabled=False)
+    app = _Host(_fake_harness(), env_cfg)
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        assert app.screen.query_one("#sw-lsp-tools").disabled is True
+        _scroll_to(app, "#sw-lsp")
+        await pilot.click("#sw-lsp")
+        await pilot.pause()
+        assert app.screen.query_one("#sw-lsp-tools").disabled is False
+        assert "dimmed" not in app.screen.query_one("#row-lsp-tools").classes
+
+
+@pytest.mark.anyio
+async def test_tiering_off_dims_tier_rows():
+    from dataclasses import replace
+
+    env_cfg = _env_cfg()
+    env_cfg.subagent.tiers = replace(env_cfg.subagent.tiers, enabled=False)
+    app = _Host(_fake_harness(), env_cfg)
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        for tier in ("cheap", "med", "high"):
+            row = app.screen.query_one(f"#row-tier-{tier}")
+            btn = app.screen.query_one(f"#tier-change-{tier}")
+            assert "dimmed" in row.classes
+            assert btn.disabled is True
+
+
+@pytest.mark.anyio
+async def test_advisor_off_dims_token_knobs_and_pick_undims(isolated_env, monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    app = _Host(_fake_harness(), _env_cfg())  # advisor_model default None → "off"
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        assert app.screen.query_one("#advisor-max-tokens").disabled is True
+        assert app.screen.query_one("#advisor-max-uses").disabled is True
+        app.screen._on_advisor_chosen("openrouter/guide")
+        await pilot.pause()
+        assert app.screen.query_one("#advisor-max-tokens").disabled is False
+        assert "dimmed" not in app.screen.query_one("#row-advisor-tokens").classes
+
+
+@pytest.mark.anyio
+async def test_toolsearch_off_disables_threshold(isolated_env):
+    env_cfg = _env_cfg()
+    env_cfg.tool_search = "off"
+    app = _Host(_fake_harness(), env_cfg)
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        assert app.screen.query_one("#toolsearch-threshold").disabled is True

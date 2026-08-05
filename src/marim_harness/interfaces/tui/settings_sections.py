@@ -49,6 +49,10 @@ def thinking_value_text(env_cfg: ModelConfig) -> str:
     return env_cfg.thinking_level or "off"
 
 
+def group_header(text: str) -> ComposeResult:
+    yield Static(text, classes="group-head")
+
+
 def mcp_status_word(mcp: McpManager, name: str) -> str:
     if name in mcp.disabled:
         return "disabled"
@@ -75,7 +79,7 @@ def session_widgets(
                 id=f"mode-{name}",
             )
     with Horizontal(classes="srow"):
-        yield Static(f"Model: {harness.model_label}", id="model-label")
+        yield Static(f"Model: {harness.model_label}", id="model-label", classes="model-label")
         # compact: without it Button's default tall borders survive the
         # `.srow Button { border: none }` override and paint a ▔ strip at
         # height 1 instead of the label.
@@ -161,29 +165,20 @@ def context_widgets(env_cfg: ModelConfig) -> ComposeResult:
 
 
 def tools_widgets(env_cfg: ModelConfig) -> ComposeResult:
-    """The Tools page: the plain env toggles, then three model-choosing blocks
-    (sub-agent tiers, advisor, thinking) that each pair a picker row with the
-    prose explaining what saving it does and does not apply to."""
-    yield Static(
-        "Saved to .env — applies on next launch (dynamic workflows applies live).",
-        classes="muted",
-    )
+    """The Tools page: headed groups, compact rows, dependent wrappers.
+
+    Prose walls live on the screen's docked help line (FIELD_HELP), not inline.
+    """
+    yield from group_header("Language server")
     yield BoxCheckbox("LSP", value=env_cfg.lsp_enabled, id="sw-lsp")
-    yield BoxCheckbox(
-        "LSP navigation tools",
-        value=env_cfg.lsp_tools_enabled,
-        id="sw-lsp-tools",
-    )
-    yield BoxCheckbox("Job tool combined", value=env_cfg.job_tool_combined, id="sw-job")
-    # Not in ENV_CHECKBOXES: unlike its neighbours this toggle also applies
-    # live (the run_workflow tool checks services.run_workflow per call, so
-    # flipping the seam needs no relaunch) — it takes a dedicated handler
-    # instead of the plain env commit.
-    yield BoxCheckbox(
-        "Dynamic workflows (run_workflow)",
-        value=env_cfg.workflows_enabled,
-        id="sw-workflows",
-    )
+    with Horizontal(id="row-lsp-tools", classes="dep-row"):
+        yield BoxCheckbox(
+            "LSP navigation tools",
+            value=env_cfg.lsp_tools_enabled,
+            id="sw-lsp-tools",
+        )
+
+    yield from group_header("Tool search")
     yield Label("Tool search (MCP/plugin tools)")
     with RadioSet(id="toolsearch-set"):
         for name in TOOL_SEARCH_MODES:
@@ -192,19 +187,31 @@ def tools_widgets(env_cfg: ModelConfig) -> ComposeResult:
                 value=(name == env_cfg.tool_search),
                 id=f"toolsearch-{name}",
             )
-    with Horizontal(classes="frow"):
+    with Horizontal(id="row-toolsearch-threshold", classes="frow dep-row"):
         yield Label("Tool-search threshold")
         yield Input(
             value=str(env_cfg.tool_search_threshold),
             id="toolsearch-threshold",
             type="integer",
+            classes="num",
         )
+
+    yield from group_header("Agent tools")
+    yield BoxCheckbox("Job tool combined", value=env_cfg.job_tool_combined, id="sw-job")
+    yield BoxCheckbox(
+        "Dynamic workflows (run_workflow)",
+        value=env_cfg.workflows_enabled,
+        id="sw-workflows",
+    )
+
+    yield from group_header("Sub-agents")
     with Horizontal(classes="frow"):
         yield Label("Sub-agent request limit")
         yield Input(
             value=str(env_cfg.subagent.request_limit),
             id="subagent-req-limit",
             type="integer",
+            classes="num",
         )
     with Horizontal(classes="frow"):
         yield Label("Autonomous wake turns")
@@ -212,33 +219,26 @@ def tools_widgets(env_cfg: ModelConfig) -> ComposeResult:
             value=str(env_cfg.subagent.wake_depth_cap),
             id="wake-depth-cap",
             type="integer",
+            classes="num",
         )
+    yield BoxCheckbox(
+        "Model tiering",
+        value=env_cfg.subagent.tiers.enabled,
+        id="sw-tiering",
+    )
     yield from _tier_widgets(env_cfg)
     yield from _advisor_widgets(env_cfg)
     yield from _thinking_widgets(env_cfg)
 
 
 def _tier_widgets(env_cfg: ModelConfig) -> ComposeResult:
-    yield BoxCheckbox(
-        "Model tiering",
-        value=env_cfg.subagent.tiers.enabled,
-        id="sw-tiering",
-    )
-    yield Static(
-        "Master switch — off routes every new spawn to the main model while "
-        "keeping the tier models below saved (toggle back on to restore "
-        "routing, no re-entry). Applies to new spawns live; sub-agents "
-        "already in flight keep their model. Per-tier changes below save to "
-        ".env and apply to new sessions (next harness rebuild/relaunch).",
-        classes="muted",
-    )
     for tier, _env_key, label in TIER_ROWS:
-        with Horizontal(classes="srow"):
-            yield Static(label, classes="tier-row-label")
+        with Horizontal(id=f"row-tier-{tier}", classes="srow dep-row"):
+            yield Static(label, classes="row-label")
             yield Static(
                 tier_value_text(env_cfg, tier),
                 id=f"tier-value-{tier}",
-                classes="tier-row-value",
+                classes="row-value",
             )
             yield Button(
                 "change", id=f"tier-change-{tier}", variant="primary", compact=True
@@ -246,47 +246,37 @@ def _tier_widgets(env_cfg: ModelConfig) -> ComposeResult:
 
 
 def _advisor_widgets(env_cfg: ModelConfig) -> ComposeResult:
-    yield Static(
-        "Advisor — a model the agent can consult mid-task for strategic "
-        "guidance (the advisor tool). This row saves the global default "
-        "to .env (new sessions); /advisor overrides it per session, live. "
-        "Type 'off' in the picker to clear it. Uses/turn: 0 = unlimited.",
-        classes="muted",
-    )
+    yield from group_header("Advisor")
     with Horizontal(classes="srow"):
-        yield Static("Advisor", classes="tier-row-label")
+        yield Static("Advisor", classes="row-label")
         yield Static(
-            advisor_value_text(env_cfg), id="advisor-value", classes="tier-row-value"
+            advisor_value_text(env_cfg), id="advisor-value", classes="row-value"
         )
         yield Button("change", id="advisor-change", variant="primary", compact=True)
-    with Horizontal(classes="frow"):
+    with Horizontal(id="row-advisor-tokens", classes="frow dep-row"):
         yield Label("Advisor max tokens")
         yield Input(
             value=str(env_cfg.advisor_max_tokens),
             id="advisor-max-tokens",
             type="integer",
+            classes="num",
         )
-    with Horizontal(classes="frow"):
+    with Horizontal(id="row-advisor-uses", classes="frow dep-row"):
         yield Label("Advisor max uses/turn")
         yield Input(
             value=str(env_cfg.advisor_max_uses or 0),
             id="advisor-max-uses",
             type="integer",
+            classes="num",
         )
 
 
 def _thinking_widgets(env_cfg: ModelConfig) -> ComposeResult:
-    yield Static(
-        "Thinking — reasoning effort applied to the model "
-        "(off/minimal/low/medium/high/xhigh). This row saves the global "
-        "default to .env (new sessions); /think overrides it per session, "
-        "live. Not every provider supports it; unsupported models ignore it.",
-        classes="muted",
-    )
+    yield from group_header("Thinking")
     with Horizontal(classes="srow"):
-        yield Static("Thinking", classes="tier-row-label")
+        yield Static("Thinking", classes="row-label")
         yield Static(
-            thinking_value_text(env_cfg), id="thinking-value", classes="tier-row-value"
+            thinking_value_text(env_cfg), id="thinking-value", classes="row-value"
         )
         yield Button("change", id="thinking-change", variant="primary", compact=True)
 

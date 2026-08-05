@@ -40,9 +40,13 @@ from .settings_env import (
     ENV_RADIOS,
     ENV_TEXT_INPUTS,
     MODES,
+    SECTION_HELP,
     TIER_ENV,
+    TOOL_SEARCH_MODES,
     EnvAutoSave,
+    dependents_enabled,
     env_flag,
+    help_for,
 )
 from .settings_sections import (
     advanced_widgets,
@@ -111,13 +115,47 @@ class SettingsScreen(Screen[None]):
     .mcp-status { width: 16; }
     .mcp-on { width: 5; }
     .srow { width: 1fr; height: 1; }
-    .srow Static { width: auto; }
     .srow Button { width: auto; height: 1; border: none; padding: 0 1; margin-left: 2; }
-    .tier-row-label { width: 12; }
-    .tier-row-value { width: 1fr; color: $text-muted; }
+    .model-label { width: auto; }
+    .row-label { width: 24; }
+    .row-value { width: 1fr; color: $text-muted; }
     .frow { width: 1fr; height: 3; }
     .frow Label { width: 24; height: 3; content-align: left middle; }
     .frow Input { width: 1fr; }
+    /* Tools-only compact rows — do not change Context/Notifications .frow. */
+    #section-tools .frow { height: 1; }
+    #section-tools .frow Label { height: 1; content-align: left middle; }
+    #section-tools .num {
+        width: 14;
+        height: 1;
+        border: none;
+        background: $panel;
+        padding: 0 1;
+    }
+    #section-tools .num:focus { border-bottom: tall $accent; }
+    #section-tools #toolsearch-set {
+        layout: horizontal;
+        height: 1;
+        width: auto;
+        border: none;
+        padding: 0;
+    }
+    #section-tools .group-head {
+        color: $accent;
+        text-style: bold;
+        margin-top: 1;
+        height: 1;
+    }
+    #section-tools .group-head:first-child { margin-top: 0; }
+    #section-tools .dep-row { padding-left: 2; height: auto; }
+    #section-tools .dep-row.dimmed { color: $text-muted; text-style: dim; }
+    #settings-help {
+        height: auto;
+        max-height: 2;
+        padding: 0 2;
+        color: $text-muted;
+        background: $surface;
+    }
     #settings-footer { height: 1; background: $panel; }
     #settings-hints { padding: 0 1; color: $text-muted; width: auto; }
     #settings-status { width: 1fr; color: $text-muted; content-align: right middle; padding: 0 1; }
@@ -200,6 +238,7 @@ class SettingsScreen(Screen[None]):
                     yield from notifications_widgets(self.env_cfg)
                 with Vertical(id="section-advanced"):
                     yield from advanced_widgets(self.harness, self.env_cfg)
+        yield Static("", id="settings-help")
         with Horizontal(id="settings-footer"):
             yield Static(_SETTINGS_HINTS, id="settings-hints")
             yield Static("", id="settings-status")
@@ -220,6 +259,8 @@ class SettingsScreen(Screen[None]):
         self._apply_section()
         self._paint_themes()
         self._ready = True
+        self._refresh_help()
+        self._refresh_dependencies()
 
     def watch_active_section(self) -> None:
         if self.is_mounted:
@@ -235,6 +276,83 @@ class SettingsScreen(Screen[None]):
             self.query_one(f"#caret-{key}", Static).update("›" if active else "")
         label = dict(_SECTIONS)[self.active_section]
         self.query_one("#settings-header", Static).update(f"settings  ›  {label}")
+        self._refresh_help()
+
+    def _ancestor_ids(self, widget) -> list[str]:
+        """Widget ids from ``widget`` up to (not including) this screen, leaf
+        first — the order ``help_for`` expects when resolving field help
+        through section fallbacks."""
+        ids: list[str] = []
+        node = widget
+        while node is not None and node is not self:
+            wid = getattr(node, "id", None)
+            if wid:
+                ids.append(wid)
+            node = node.parent
+        return ids
+
+    def _refresh_help(self) -> None:
+        """Docked help line: field help for whatever's focused inside
+        ``#settings-content``, else the active section's blurb, else empty.
+        Rail chrome (nothing focused, or focus outside the content pane)
+        always falls back to section help so the rail-first keyboard model
+        still shows something."""
+        help_w = self.query_one("#settings-help", Static)
+        focused = self.focused
+        text = ""
+        if focused is not None:
+            content = self.query_one("#settings-content")
+            node = focused
+            inside = False
+            while node is not None:
+                if node is content:
+                    inside = True
+                    break
+                node = node.parent
+            if inside:
+                text = help_for(self._ancestor_ids(focused)) or ""
+        if not text:
+            text = SECTION_HELP.get(self.active_section, "")
+        help_w.update(text)
+        help_w.display = bool(text)
+
+    def _toolsearch_value(self) -> str:
+        rs = self.query_one("#toolsearch-set", RadioSet)
+        if rs.pressed_button is not None and rs.pressed_button.id:
+            return rs.pressed_button.id.removeprefix("toolsearch-")
+        if rs.pressed_index is not None and rs.pressed_index >= 0:
+            return TOOL_SEARCH_MODES[rs.pressed_index]
+        return "off"
+
+    def _refresh_dependencies(self) -> None:
+        """Dim + disable every dependent Tools row whose master control (a
+        checkbox or a value like the tool-search mode) is currently off —
+        recomputed from live widget/``env_cfg`` state on every relevant
+        change, so it never drifts from what's actually on screen."""
+        enabled = dependents_enabled(
+            {
+                "sw-lsp": self.query_one("#sw-lsp", BoxCheckbox).value,
+                "sw-tiering": self.query_one("#sw-tiering", BoxCheckbox).value,
+            },
+            {
+                "toolsearch": self._toolsearch_value(),
+                "advisor": self._advisor_value_text(),
+            },
+        )
+        for row_id, on in enabled.items():
+            row = self.query_one(f"#{row_id}")
+            row.set_class(not on, "dimmed")
+            for child in row.query("*"):
+                if isinstance(child, (BoxCheckbox, Input, Button)):
+                    child.disabled = not on
+
+    def on_descendant_focus(self, event: events.DescendantFocus) -> None:
+        self._refresh_help()
+
+    def on_descendant_blur(self, event: events.DescendantBlur) -> None:
+        # Defer one tick so a same-frame refocus (e.g. escape-to-rail) wins
+        # the race instead of blur briefly showing rail chrome.
+        self.call_after_refresh(self._refresh_help)
 
     def _paint_themes(self) -> None:
         """Mark the current theme's row with an ``active`` badge + bold name."""
@@ -312,6 +430,8 @@ class SettingsScreen(Screen[None]):
         if spec is not None:
             env_key, choices = spec
             self._env.commit(env_key, choices[event.index])
+        if rid == "toolsearch-set":
+            self._refresh_dependencies()
 
     def _tier_value_text(self, tier: str) -> str:
         return tier_value_text(self.env_cfg, tier)
@@ -346,15 +466,19 @@ class SettingsScreen(Screen[None]):
             return
         if not self._ready:
             return
+        self._handle_env_checkbox(cid, event.value)
+        self._refresh_dependencies()
+
+    def _handle_env_checkbox(self, cid: str, value: bool) -> None:
         if cid == "sw-workflows":
-            self._toggle_workflows(event.value)
+            self._toggle_workflows(value)
             return
         if cid == "sw-tiering":
-            self._toggle_tiering(event.value)
+            self._toggle_tiering(value)
             return
         env_key = ENV_CHECKBOXES.get(cid)
         if env_key is not None:
-            self._env.commit(env_key, env_flag(event.value))
+            self._env.commit(env_key, env_flag(value))
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         self._commit_input(event.input.id or "")
@@ -423,6 +547,7 @@ class SettingsScreen(Screen[None]):
         self.harness.set_subagent_tiering_enabled(enabled)
         state = "on" if enabled else "off"
         self._status(f"✓ saved MARIM_SUBAGENT_TIERING · tiering {state} · applied")
+        self._refresh_dependencies()
 
     def _open_model_picker(self) -> None:
         source = self.harness.model_source
@@ -528,6 +653,7 @@ class SettingsScreen(Screen[None]):
         self._refresh_model_catalog()
         self.query_one("#advisor-value", Static).update(self._advisor_value_text())
         self._status("✓ saved MARIM_ADVISOR_MODEL · applies to new sessions")
+        self._refresh_dependencies()
 
     def _open_thinking_picker(self) -> None:
         """Fixed-list picker for the global thinking default. The pick persists
