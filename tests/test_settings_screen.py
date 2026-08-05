@@ -647,6 +647,24 @@ async def test_tools_page_has_group_headers_and_dep_rows():
 
 
 @pytest.mark.anyio
+async def test_toolsearch_radios_are_visible_after_layout():
+    """Regression: the RadioSet's default tall border collapsed its
+    content_region to height 0, making the radio buttons unreachable/
+    invisible even though `height: 1` was set on the set itself."""
+    from textual.widgets import RadioButton, RadioSet
+
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        rs = app.screen.query_one("#toolsearch-set", RadioSet)
+        assert rs.content_region.height >= 1
+        button = app.screen.query_one("#toolsearch-off", RadioButton)
+        assert rs.content_region.contains_point(button.region.offset)
+
+
+@pytest.mark.anyio
 async def test_tiering_toggle_saves_env_and_applies_live(isolated_env, monkeypatch, tmp_path):
     """The Tools page's Model-tiering checkbox persists MARIM_SUBAGENT_TIERING and
     flips the harness's live tier set in the same gesture — new spawns pick it up
@@ -958,6 +976,22 @@ async def test_focusing_tools_field_shows_field_help():
         from marim_harness.interfaces.tui.settings_env import SECTION_HELP
 
         assert str(app.screen.query_one("#settings-help").render()) == SECTION_HELP["tools"]
+
+
+@pytest.mark.anyio
+async def test_field_help_keys_resolve_to_tools_dom_ids():
+    """Every FIELD_HELP key must name a widget id actually mounted under
+    #section-tools — a stale key would silently dead-code the help line."""
+    from marim_harness.interfaces.tui.settings_env import FIELD_HELP
+
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        section = app.screen.query_one("#section-tools")
+        for widget_id in FIELD_HELP:
+            assert section.query(f"#{widget_id}"), (
+                f"FIELD_HELP key {widget_id!r} has no matching widget in #section-tools"
+            )
 
 
 @pytest.mark.anyio

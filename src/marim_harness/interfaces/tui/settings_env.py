@@ -81,9 +81,8 @@ FIELD_HELP: dict[str, str] = {
         "Applies next launch."
     ),
     "toolsearch-set": (
-        "Serve MCP/plugin tools via the search_tools tool instead of up-front "
-        "schemas. 'auto' activates once the tool count passes the threshold. "
-        "Applies next launch."
+        "Serve MCP/plugin tools via search_tools instead of up-front schemas. "
+        "'auto' activates past the tool-count threshold. Applies next launch."
     ),
     "toolsearch-threshold": (
         "Tool count at which 'auto' tool search activates. Applies next launch."
@@ -120,9 +119,9 @@ FIELD_HELP: dict[str, str] = {
         "Saves to .env — applies to new sessions."
     ),
     "advisor-change": (
-        "A model the agent can consult mid-task for strategic guidance. "
-        "Saves the global default to .env (new sessions); /advisor overrides "
-        "per session, live. Type 'off' to clear."
+        "A model the agent can consult for strategic guidance. Saves the "
+        "default to .env (new sessions); /advisor overrides per session, "
+        "live. 'off' clears."
     ),
     "advisor-max-tokens": "Token cap on advisor replies. Applies next launch.",
     "advisor-max-uses": (
@@ -130,8 +129,7 @@ FIELD_HELP: dict[str, str] = {
     ),
     "thinking-change": (
         "Reasoning effort (off/minimal/low/medium/high/xhigh). Saves the "
-        "global default to .env (new sessions); /think overrides per session, "
-        "live. Unsupported models ignore it."
+        "default to .env (new sessions); /think overrides per session, live."
     ),
 }
 

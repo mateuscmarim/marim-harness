@@ -133,7 +133,13 @@ class SettingsScreen(Screen[None]):
         padding: 0 1;
     }
     #section-tools .num:focus { border-bottom: tall $accent; }
-    #section-tools #toolsearch-set { layout: horizontal; height: 1; width: auto; }
+    #section-tools #toolsearch-set {
+        layout: horizontal;
+        height: 1;
+        width: auto;
+        border: none;
+        padding: 0;
+    }
     #section-tools .group-head {
         color: $accent;
         text-style: bold;
@@ -314,7 +320,7 @@ class SettingsScreen(Screen[None]):
         rs = self.query_one("#toolsearch-set", RadioSet)
         if rs.pressed_button is not None and rs.pressed_button.id:
             return rs.pressed_button.id.removeprefix("toolsearch-")
-        if rs.pressed_index is not None:
+        if rs.pressed_index is not None and rs.pressed_index >= 0:
             return TOOL_SEARCH_MODES[rs.pressed_index]
         return "off"
 
