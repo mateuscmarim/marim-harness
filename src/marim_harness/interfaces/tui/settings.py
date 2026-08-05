@@ -40,9 +40,11 @@ from .settings_env import (
     ENV_RADIOS,
     ENV_TEXT_INPUTS,
     MODES,
+    SECTION_HELP,
     TIER_ENV,
     EnvAutoSave,
     env_flag,
+    help_for,
 )
 from .settings_sections import (
     advanced_widgets,
@@ -228,6 +230,7 @@ class SettingsScreen(Screen[None]):
                     yield from notifications_widgets(self.env_cfg)
                 with Vertical(id="section-advanced"):
                     yield from advanced_widgets(self.harness, self.env_cfg)
+        yield Static("", id="settings-help")
         with Horizontal(id="settings-footer"):
             yield Static(_SETTINGS_HINTS, id="settings-hints")
             yield Static("", id="settings-status")
@@ -248,6 +251,7 @@ class SettingsScreen(Screen[None]):
         self._apply_section()
         self._paint_themes()
         self._ready = True
+        self._refresh_help()
 
     def watch_active_section(self) -> None:
         if self.is_mounted:
@@ -263,6 +267,53 @@ class SettingsScreen(Screen[None]):
             self.query_one(f"#caret-{key}", Static).update("›" if active else "")
         label = dict(_SECTIONS)[self.active_section]
         self.query_one("#settings-header", Static).update(f"settings  ›  {label}")
+        self._refresh_help()
+
+    def _ancestor_ids(self, widget) -> list[str]:
+        """Widget ids from ``widget`` up to (not including) this screen, leaf
+        first — the order ``help_for`` expects when resolving field help
+        through section fallbacks."""
+        ids: list[str] = []
+        node = widget
+        while node is not None and node is not self:
+            wid = getattr(node, "id", None)
+            if wid:
+                ids.append(wid)
+            node = node.parent
+        return ids
+
+    def _refresh_help(self) -> None:
+        """Docked help line: field help for whatever's focused inside
+        ``#settings-content``, else the active section's blurb, else empty.
+        Rail chrome (nothing focused, or focus outside the content pane)
+        always falls back to section help so the rail-first keyboard model
+        still shows something."""
+        help_w = self.query_one("#settings-help", Static)
+        focused = self.focused
+        text = ""
+        if focused is not None:
+            content = self.query_one("#settings-content")
+            node = focused
+            inside = False
+            while node is not None:
+                if node is content:
+                    inside = True
+                    break
+                node = node.parent
+            if inside:
+                text = help_for(self._ancestor_ids(focused)) or ""
+        if not text:
+            text = SECTION_HELP.get(self.active_section, "")
+        help_w.update(text)
+        help_w.display = bool(text)
+
+    def on_descendant_focus(self, event: events.DescendantFocus) -> None:
+        self._refresh_help()
+
+    def on_descendant_blur(self, event: events.DescendantBlur) -> None:
+        # Defer one tick so a same-frame refocus (e.g. escape-to-rail) wins
+        # the race instead of blur briefly showing rail chrome.
+        self.call_after_refresh(self._refresh_help)
 
     def _paint_themes(self) -> None:
         """Mark the current theme's row with an ``active`` badge + bold name."""

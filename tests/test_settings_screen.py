@@ -918,3 +918,43 @@ async def test_thinking_off_choice_drops_the_env_var(isolated_env, monkeypatch, 
         value = str(app.screen.query_one("#thinking-value").render())
     assert os.environ.get("MARIM_THINKING") is None
     assert value == "off"
+
+
+@pytest.mark.anyio
+async def test_tools_section_shows_section_help_on_rail():
+    from marim_harness.interfaces.tui.settings_env import SECTION_HELP
+
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        # Rail: nothing focused.
+        app.screen.set_focus(None)
+        await pilot.pause()
+        help_w = app.screen.query_one("#settings-help")
+        assert str(help_w.render()) == SECTION_HELP["tools"]
+        # Session has no SECTION_HELP → empty.
+        app.screen.active_section = "session"
+        await pilot.pause()
+        assert str(app.screen.query_one("#settings-help").render()) == ""
+
+
+@pytest.mark.anyio
+async def test_focusing_tools_field_shows_field_help():
+    from marim_harness.interfaces.tui.settings_env import FIELD_HELP
+
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        app.screen.query_one("#sw-lsp").focus()
+        await pilot.pause()
+        assert str(app.screen.query_one("#settings-help").render()) == FIELD_HELP["sw-lsp"]
+        # Escape returns to rail → section help again.
+        await pilot.press("escape")
+        await pilot.pause()
+        from marim_harness.interfaces.tui.settings_env import SECTION_HELP
+
+        assert str(app.screen.query_one("#settings-help").render()) == SECTION_HELP["tools"]
