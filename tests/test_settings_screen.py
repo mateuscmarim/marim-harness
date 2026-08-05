@@ -958,3 +958,86 @@ async def test_focusing_tools_field_shows_field_help():
         from marim_harness.interfaces.tui.settings_env import SECTION_HELP
 
         assert str(app.screen.query_one("#settings-help").render()) == SECTION_HELP["tools"]
+
+
+@pytest.mark.anyio
+async def test_lsp_off_dims_and_disables_nav_tools():
+    from dataclasses import replace
+
+    env_cfg = _env_cfg()
+    # default lsp_enabled is True in ModelConfig — force off
+    env_cfg = replace(env_cfg, lsp_enabled=False)
+    app = _Host(_fake_harness(), env_cfg)
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        row = app.screen.query_one("#row-lsp-tools")
+        box = app.screen.query_one("#sw-lsp-tools")
+        assert "dimmed" in row.classes
+        assert box.disabled is True
+
+
+@pytest.mark.anyio
+async def test_toggling_lsp_enables_nav_tools_live():
+    env_cfg = _env_cfg()
+    from dataclasses import replace
+
+    env_cfg = replace(env_cfg, lsp_enabled=False)
+    app = _Host(_fake_harness(), env_cfg)
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        assert app.screen.query_one("#sw-lsp-tools").disabled is True
+        _scroll_to(app, "#sw-lsp")
+        await pilot.click("#sw-lsp")
+        await pilot.pause()
+        assert app.screen.query_one("#sw-lsp-tools").disabled is False
+        assert "dimmed" not in app.screen.query_one("#row-lsp-tools").classes
+
+
+@pytest.mark.anyio
+async def test_tiering_off_dims_tier_rows():
+    from dataclasses import replace
+
+    env_cfg = _env_cfg()
+    env_cfg.subagent.tiers = replace(env_cfg.subagent.tiers, enabled=False)
+    app = _Host(_fake_harness(), env_cfg)
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        for tier in ("cheap", "med", "high"):
+            row = app.screen.query_one(f"#row-tier-{tier}")
+            btn = app.screen.query_one(f"#tier-change-{tier}")
+            assert "dimmed" in row.classes
+            assert btn.disabled is True
+
+
+@pytest.mark.anyio
+async def test_advisor_off_dims_token_knobs_and_pick_undims(isolated_env, monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    app = _Host(_fake_harness(), _env_cfg())  # advisor_model default None → "off"
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        assert app.screen.query_one("#advisor-max-tokens").disabled is True
+        assert app.screen.query_one("#advisor-max-uses").disabled is True
+        app.screen._on_advisor_chosen("openrouter/guide")
+        await pilot.pause()
+        assert app.screen.query_one("#advisor-max-tokens").disabled is False
+        assert "dimmed" not in app.screen.query_one("#row-advisor-tokens").classes
+
+
+@pytest.mark.anyio
+async def test_toolsearch_off_disables_threshold(isolated_env):
+    env_cfg = _env_cfg()
+    env_cfg.tool_search = "off"
+    app = _Host(_fake_harness(), env_cfg)
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        assert app.screen.query_one("#toolsearch-threshold").disabled is True
