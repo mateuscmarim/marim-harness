@@ -54,17 +54,18 @@ live application of per-tier model picks (already a documented follow-up in
 height 1, top margin except on the first group) and reorganizes into six
 groups, ordered tool-ish → model-ish:
 
-1. **Language server** — `LSP`; `LSP navigation tools` indented under it
-2. **Tool search** — off/auto/on radio; `Threshold` indented under it
+1. **Language server** — `LSP`; dependent `LSP navigation tools`
+2. **Tool search** — off/auto/on radio; dependent `Threshold`
 3. **Agent tools** — `Job tool combined`, `Dynamic workflows (run_workflow)`
-4. **Sub-agents** — request limit, wake turns, `Model tiering`, three tier
-   rows indented under it
-5. **Advisor** — advisor picker row; max tokens, max uses/turn indented
+4. **Sub-agents** — request limit, wake turns, `Model tiering`; dependent
+   cheap/med/high tier rows
+5. **Advisor** — advisor picker row; dependent max tokens, max uses/turn
 6. **Thinking** — thinking picker row
 
 The top banner `Static` and the three prose `Static` blocks are deleted from
-the flow (their content moves to the help line). Dependent rows get
-`padding-left: 2` so hierarchy reads even before dimming.
+the flow (their content moves to the help line). Only dependent rows get
+`padding-left: 2` so hierarchy reads even before dimming; non-dependent
+siblings in a group stay flush left.
 
 Resulting page (sketch):
 
@@ -83,13 +84,13 @@ Resulting page (sketch):
      Request limit        [50]
      Autonomous wake turns[20]
  [x] Model tiering
-     Cheap tier   zen:deepseek-v4-flash-free   [change]
-     Med tier     zen:mimo-v2.5-free           [change]
-     High tier    zen:mimo-v2.5-free           [change]
+       Cheap tier zen:deepseek-v4-flash-free   [change]
+       Med tier   zen:mimo-v2.5-free           [change]
+       High tier  zen:mimo-v2.5-free           [change]
  Advisor
      Advisor      off                          [change]
-     Max tokens           [2048]               (dimmed while advisor off)
-     Max uses/turn        [0]
+       Max tokens         [2048]               (dimmed while advisor off)
+       Max uses/turn      [0]
  Thinking
      Thinking     off                          [change]
 ─────────────────────────────────────────────────
@@ -99,19 +100,24 @@ Resulting page (sketch):
 
 ### Row anatomy & CSS fixes
 
-- **Specificity fix.** Scope the auto-width rule to the one row that needs it:
-  the Session model row's `Static` gets its own class (e.g. `.model-label`),
-  and `.srow Static { width: auto }` is removed. `.tier-row-label` /
-  `.tier-row-value` then apply as written.
-- **One label column.** Every label+control row uses the existing 24-wide
-  `.frow` label column; picker rows (tier/advisor/thinking) adopt it too,
-  replacing the 12-wide `.tier-row-label` (rename to a shared `.row-label`
-  class). Checkbox rows are unchanged (the checkbox is its own label).
+- **Specificity fix.** Remove `.srow Static { width: auto }`. The Session
+  model row's label Static takes class `model-label` with `width: auto` so
+  that one row keeps its old layout; every other `.srow` child is sized by
+  its own class.
+- **One label column.** Rename `.tier-row-label` → `.row-label` with
+  `width: 24` (same column as `.frow Label`). Rename `.tier-row-value` →
+  `.row-value` with `width: 1fr; color: $text-muted`. Picker rows
+  (tier/advisor/thinking) and numeric `.frow` rows share that 24-wide
+  label column. Checkbox rows are unchanged (the checkbox is its own label).
 - **Compact numeric inputs.** A `.num` class renders Inputs height-1,
   borderless, fixed ~14 wide, subtle panel background, accent underline on
-  focus; `.frow` height becomes 1. Reclaims ~12 rows of vertical space.
-- **Horizontal RadioSet.** The tool-search set lays out horizontally
-  (`( ) off (•) auto ( ) on`, one line), reclaiming 2 more rows.
+  focus. Scope the row height change to Tools only:
+  `#section-tools .frow { height: 1 }` — other pages keep today's height-3
+  `.frow` so Context & Memory / Notifications are untouched. Reclaims ~12
+  rows on Tools.
+- **Horizontal RadioSet.** Scope to Tools:
+  `#section-tools #toolsearch-set { layout: horizontal; height: 1; }` so
+  Session's mode radios stay vertical. Reclaims 2 more rows.
 
 ### Docked help line
 
@@ -125,13 +131,15 @@ FIELD_HELP: dict[str, str]          # focusable widget id -> 1–2 line help
 SECTION_HELP: dict[str, str]        # section key -> one-liner ("tools" only)
 ```
 
-- Resolution is a pure `help_for(widget_id) -> str | None` helper: direct hit,
-  else walk up (a focused `RadioButton` resolves to its parent `RadioSet`'s
-  id), else `None`.
-- The screen shows the field's text while a field is focused; when focus
-  returns to the rail (nothing focused) it shows `SECTION_HELP[section]`;
-  sections without an entry leave the line hidden. The screen listens for
-  descendant focus/blur on the content pane.
+- Resolution splits cleanly: the screen walks `focused` → ancestors collecting
+  ids (so a focused `RadioButton` contributes its parent `RadioSet` id); a
+  pure `help_for(ids: Iterable[str]) -> str | None` returns `FIELD_HELP` for
+  the first id that has an entry, else `None`. No Textual in `settings_env`.
+- While a content-pane field is focused, show that field's help. While nothing
+  is focused *and* `active_section` has a `SECTION_HELP` entry (Tools), show
+  the section one-liner — including on first entry to the section via the
+  rail. Other sections leave the line hidden. Refresh on descendant focus/
+  blur in the content pane, on section switch, and on mount.
 - The footer status line is untouched: help says *what a field is*, status
   says *what just happened* (save confirmations, validation errors). They
   never fight.
@@ -168,29 +176,41 @@ CHECK_DEPENDENTS: dict[str, list[str]] = {
     "sw-lsp":     ["row-lsp-tools"],
     "sw-tiering": ["row-tier-cheap", "row-tier-med", "row-tier-high"],
 }
-# value masters: enabled iff the predicate holds for the current value
+# value masters: enabled iff predicate(current_value) is true.
+# Keys are logical master names, not necessarily widget ids — the screen
+# supplies the current value when refreshing.
 VALUE_DEPENDENTS: dict[str, tuple[list[str], Callable[[str], bool]]] = {
-    "toolsearch-set":  (["row-toolsearch-threshold"], lambda v: v != "off"),
-    "advisor-change":  (["row-advisor-tokens", "row-advisor-uses"],
-                        lambda v: v != "off"),
+    "toolsearch": (["row-toolsearch-threshold"], lambda v: v != "off"),
+    "advisor":    (["row-advisor-tokens", "row-advisor-uses"],
+                   lambda v: v != "off"),
 }
 ```
 
 - Each dependent row wraps in a `Horizontal(id="row-…")` (new ids; existing
   control ids are unchanged, so every id-keyed handler and registry keeps
-  working).
-- `_refresh_dependencies()` recomputes every row from current values: set the
-  row's `.dimmed` class (muted text) and `disabled` on its controls.
-  Textual's `disabled` both dims and removes the widget from the focus chain —
+  working). Indentation (`padding-left: 2`) applies only to these dependent
+  rows — sibling controls in the same group (request limit, wake turns) stay
+  flush left so they are not mistaken for gated dependents.
+- A pure helper
+  `dependents_enabled(check_values: Mapping[str, bool], value_masters: Mapping[str, str]) -> dict[str, bool]`
+  maps every `row-*` id to enabled/disabled from the two registries; the
+  screen only reads widget/config state and applies the result. For
+  `toolsearch` the value is the selected radio name; for `advisor` it is
+  `advisor_value_text(env_cfg)` (`"off"` or a model slug) — not the
+  `advisor-change` button id.
+- `_refresh_dependencies()` applies that map: set each row's `.dimmed` class
+  (muted text) and `disabled` on its focusable controls. Textual's
+  `disabled` both dims and removes the widget from the focus chain —
   "dim + unfocusable" in one attribute.
 - It runs on mount (a relaunched session with LSP off mounts pre-dimmed) and
   after every master change: the `sw-lsp` / `sw-tiering` checkbox handlers,
   the tool-search radio handler, and `_on_advisor_chosen`.
 - Dimming is display-only derived state, never persisted. Disabled controls
   keep their saved value; it reappears on re-enable.
-- A disabled row can't take focus, so its `FIELD_HELP` never shows; the
-  dependency is documented on the dependent's own (unreachable-by-keyboard but
-  visible) dimmed row and discoverable via the master's help text.
+- A disabled row can't take focus, so its `FIELD_HELP` never shows via
+  keyboard; the dependency is still readable on the dimmed row ("Requires
+  LSP" in `sw-lsp-tools` help copy is for mouse readers) and on the master's
+  help text.
 
 ## Files touched
 
@@ -199,7 +219,7 @@ VALUE_DEPENDENTS: dict[str, tuple[list[str], Callable[[str], bool]]] = {
 | `settings_sections.py` | `tools_widgets` restructure: `group_header()`, six groups, `row-*` wrappers, `.num` inputs, horizontal RadioSet; prose Statics + banner deleted |
 | `settings.py` | CSS: `.srow` specificity fix, `.group-head`, `.num`, `.dimmed`, `#settings-help`, horizontal RadioSet; mount help line; descendant focus/blur → help lookup; `_refresh_dependencies()` + calls from the four master-change paths |
 | `settings_env.py` | `FIELD_HELP`, `SECTION_HELP`, `CHECK_DEPENDENTS`, `VALUE_DEPENDENTS`, pure `help_for()` + dependency-evaluation helpers |
-| `tests/test_settings_screen.py`, new pure-helper tests | below |
+| `tests/test_settings_screen.py` + pure helper tests | help line, dimming, registry↔DOM; see Testing |
 
 No changes to `EnvAutoSave`, env var names, persistence semantics, or other
 settings pages.
