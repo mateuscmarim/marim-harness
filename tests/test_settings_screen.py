@@ -599,8 +599,51 @@ async def test_settings_has_three_tier_rows():
         await pilot.pause()
         app.screen.active_section = "tools"
         await pilot.pause()
-        labels = {str(w.render()) for w in app.screen.query(".tier-row-label")}
+        labels = {str(w.render()) for w in app.screen.query(".row-label")}
     assert {"Cheap tier", "Med tier", "High tier"} <= labels
+
+
+@pytest.mark.anyio
+async def test_tools_page_has_group_headers_and_dep_rows():
+    """Tools page mounts headed groups and every dependency row wrapper."""
+    app = _Host(_fake_harness(), _env_cfg())
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        app.screen.active_section = "tools"
+        await pilot.pause()
+        s = app.screen
+        headers = {str(w.render()) for w in s.query("#section-tools .group-head")}
+        assert {
+            "Language server",
+            "Tool search",
+            "Agent tools",
+            "Sub-agents",
+            "Advisor",
+            "Thinking",
+        } <= headers
+        for row_id in (
+            "row-lsp-tools",
+            "row-toolsearch-threshold",
+            "row-tier-cheap",
+            "row-tier-med",
+            "row-tier-high",
+            "row-advisor-tokens",
+            "row-advisor-uses",
+        ):
+            assert s.query_one(f"#section-tools #{row_id}") is not None
+        # Control ids stay stable inside the wrappers.
+        assert s.query_one("#row-lsp-tools #sw-lsp-tools") is not None
+        assert s.query_one("#row-toolsearch-threshold #toolsearch-threshold") is not None
+        assert s.query_one("#row-tier-cheap #tier-change-cheap") is not None
+        assert s.query_one("#row-advisor-tokens #advisor-max-tokens") is not None
+        # Banner / prose walls removed.
+        body = " ".join(str(w.render()) for w in s.query("#section-tools Static"))
+        assert "Saved to .env" not in body
+        assert "Master switch" not in body
+        assert "Advisor — a model" not in body
+        assert "Thinking — reasoning" not in body
+        # Session model row still exists with model-label class.
+        assert "model-label" in s.query_one("#model-label").classes
 
 
 @pytest.mark.anyio

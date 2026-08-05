@@ -111,13 +111,41 @@ class SettingsScreen(Screen[None]):
     .mcp-status { width: 16; }
     .mcp-on { width: 5; }
     .srow { width: 1fr; height: 1; }
-    .srow Static { width: auto; }
     .srow Button { width: auto; height: 1; border: none; padding: 0 1; margin-left: 2; }
-    .tier-row-label { width: 12; }
-    .tier-row-value { width: 1fr; color: $text-muted; }
+    .model-label { width: auto; }
+    .row-label { width: 24; }
+    .row-value { width: 1fr; color: $text-muted; }
     .frow { width: 1fr; height: 3; }
     .frow Label { width: 24; height: 3; content-align: left middle; }
     .frow Input { width: 1fr; }
+    /* Tools-only compact rows — do not change Context/Notifications .frow. */
+    #section-tools .frow { height: 1; }
+    #section-tools .frow Label { height: 1; content-align: left middle; }
+    #section-tools .num {
+        width: 14;
+        height: 1;
+        border: none;
+        background: $panel;
+        padding: 0 1;
+    }
+    #section-tools .num:focus { border-bottom: tall $accent; }
+    #section-tools #toolsearch-set { layout: horizontal; height: 1; width: auto; }
+    #section-tools .group-head {
+        color: $accent;
+        text-style: bold;
+        margin-top: 1;
+        height: 1;
+    }
+    #section-tools .group-head:first-child { margin-top: 0; }
+    #section-tools .dep-row { padding-left: 2; height: auto; }
+    #section-tools .dep-row.dimmed { color: $text-muted; text-style: dim; }
+    #settings-help {
+        height: auto;
+        max-height: 2;
+        padding: 0 2;
+        color: $text-muted;
+        background: $surface;
+    }
     #settings-footer { height: 1; background: $panel; }
     #settings-hints { padding: 0 1; color: $text-muted; width: auto; }
     #settings-status { width: 1fr; color: $text-muted; content-align: right middle; padding: 0 1; }
