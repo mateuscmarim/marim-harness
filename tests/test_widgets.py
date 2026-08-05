@@ -1414,6 +1414,26 @@ def test_thinking_short_thought_is_not_capped():
     assert "more lines" not in plain
 
 
+@pytest.mark.anyio
+async def test_thinking_finalize_removes_empty_widget():
+    """Empty finished thoughts must not leave a bare Thinking: label."""
+    from textual.app import App, ComposeResult
+    from textual.containers import Vertical
+
+    class _Host(App):
+        def compose(self) -> ComposeResult:
+            with Vertical():
+                yield ThinkingWidget()
+
+    app = _Host()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        w = app.query_one(ThinkingWidget)
+        w.finalize()
+        await pilot.pause()
+        assert list(app.query(ThinkingWidget)) == []
+
+
 def test_thinking_reveal_uncaps_finished_thought():
     # Ctrl+O reveal-all restores the full text of a capped thought.
     w = ThinkingWidget()

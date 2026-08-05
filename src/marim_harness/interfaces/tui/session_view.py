@@ -49,7 +49,8 @@ class SessionView:
 
     async def _replay_thinking_part(self, part, mount_fn, group, solo):
         """ThinkingPart arm of ``_replay_parts``."""
-        if part.content:
+        # Match live stream: whitespace-only thoughts leave no bare label.
+        if part.content and part.content.strip():
             # Same reasoning as TextPart: thinking output breaks a tool run.
             group = None
             solo = None

@@ -161,10 +161,19 @@ class ThinkingWidget(Vertical):
         """Mark the reasoning stream complete so the inline view caps to its last
         lines. Called once when the thought ends — the next part starts or the run's
         event stream drains. Idempotent: re-finalizing is a no-op. Drops the frozen
-        chunks and renders the capped view into the (now sole) live Static."""
+        chunks and renders the capped view into the (now sole) live Static.
+
+        Providers (and some model paths) emit empty ThinkingParts between tools;
+        replay already skips those (``if part.content``), and a finished empty
+        thought must not leave a bare ``Thinking:`` label in the transcript —
+        remove the widget instead of rendering the label alone."""
         if self._done:
             return
         self._done = True
+        if not self.text.strip():
+            if self.is_mounted:
+                self.remove()
+            return
         for frozen in self._frozen:
             frozen.remove()
         self._frozen.clear()

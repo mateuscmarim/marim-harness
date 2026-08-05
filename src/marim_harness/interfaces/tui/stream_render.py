@@ -1060,19 +1060,33 @@ class StreamRenderer:
     ) -> None:
         # Reasoning streams as its own collapsed block, standalone like
         # assistant text (so it breaks any open tool run rather than nesting).
+        # Defer mounting until there is content — empty ThinkingParts (common
+        # between tool calls) must not flash a bare "Thinking:" label. The
+        # widget still sits on the sink so deltas can mount+append it, and
+        # finalize() drops it if the thought stays empty (matches replay).
         part = cast(ThinkingPart, event.part)
         sink.set_run(None, None)
         widget = ThinkingWidget()
         sink.set_thinking(widget)
-        await container.mount(widget)
-        if part.content:
+        if part.content and part.content.strip():
+            await container.mount(widget)
             self.append_stream(widget.body, part.content)
 
     async def _on_thinking_delta(self, event: PartDeltaEvent, sink: "_StreamSink") -> None:
         delta = cast(ThinkingPartDelta, event.delta)
         widget = sink.get_thinking()
-        if widget is not None:
-            self.append_stream(widget.body, delta.content_delta or "")
+        if widget is None:
+            return
+        chunk = delta.content_delta or ""
+        # First non-empty content mounts the deferred widget (see start).
+        if not widget.is_mounted:
+            if not (widget.text + chunk).strip():
+                if chunk:
+                    widget.append(chunk)
+                return
+            if sink.container is not None:
+                await sink.container.mount(widget)
+        self.append_stream(widget.body, chunk)
 
     async def _on_tool_call(
         self, event: FunctionToolCallEvent, sink: "_StreamSink", container: Widget

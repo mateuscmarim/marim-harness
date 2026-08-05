@@ -381,6 +381,69 @@ async def test_flush_only_touches_buffered_messages(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_empty_thinking_part_leaves_no_widget(tmp_path: Path):
+    """Providers sometimes emit empty ThinkingParts between tools. Live stream
+    must match replay (which already skips empty content): no bare 'Thinking:'
+    label should remain in the transcript."""
+    import types
+
+    from pydantic_ai.messages import PartStartEvent, TextPart, ThinkingPart
+
+    from marim_harness.interfaces.tui.widgets import AssistantMessage, ThinkingWidget
+
+    ctx = types.SimpleNamespace(usage=types.SimpleNamespace(total_tokens=0))
+
+    async def gen():
+        # Empty thought, then real reply — the empty start must not leave a widget.
+        yield PartStartEvent(index=0, part=ThinkingPart(content=""))
+        yield PartStartEvent(index=1, part=TextPart(content="the answer"))
+        # Whitespace-only is also empty for display purposes.
+        yield PartStartEvent(index=2, part=ThinkingPart(content="   \n"))
+        yield PartStartEvent(index=3, part=TextPart(content=" more"))
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.stream.on_events(ctx, gen())
+        await pilot.pause()
+
+        assert list(app.query(ThinkingWidget)) == []
+        texts = [w.text for w in app.query(AssistantMessage)]
+        assert any("the answer" in t for t in texts)
+
+
+@pytest.mark.anyio
+async def test_thinking_delta_after_empty_start_still_mounts(tmp_path: Path):
+    """An empty ThinkingPart start that later gets deltas must still render."""
+    import types
+
+    from pydantic_ai.messages import (
+        PartDeltaEvent,
+        PartStartEvent,
+        ThinkingPart,
+        ThinkingPartDelta,
+    )
+
+    from marim_harness.interfaces.tui.widgets import ThinkingWidget
+
+    ctx = types.SimpleNamespace(usage=types.SimpleNamespace(total_tokens=0))
+
+    async def gen():
+        yield PartStartEvent(index=0, part=ThinkingPart(content=""))
+        yield PartDeltaEvent(index=0, delta=ThinkingPartDelta(content_delta="later"))
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.stream.on_events(ctx, gen())
+        await pilot.pause()
+
+        thinking = list(app.query(ThinkingWidget))
+        assert len(thinking) == 1
+        assert thinking[0].text == "later"
+
+
+@pytest.mark.anyio
 async def test_thinking_stream_renders_inline_widget(tmp_path: Path):
     """A streamed ThinkingPart mounts an inline ThinkingWidget and its deltas
     accumulate in the widget's text — reasoning is shown as its own styled block,
