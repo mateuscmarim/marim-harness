@@ -22,6 +22,7 @@ from pathlib import Path
 from pydantic_ai.messages import ModelMessagesTypeAdapter
 
 from ..atomic_io import atomic_write_text
+from ..compaction import repair_masked_narrowed_returns
 from ..images import externalize_images, rehydrate_images
 from ..workspace import cap_transcript
 
@@ -113,6 +114,10 @@ class TranscriptStore:
             # A missing cache file degrades that one image to a placeholder
             # string (never a read failure) — same contract as session load.
             raw = rehydrate_images(raw, self._session_id)
+            # Same pre-validation repair as session load: without it a sidecar
+            # holding a masked typed tool-return fails validation and the whole
+            # sub-agent transcript is dropped on the floor below.
+            repair_masked_narrowed_returns(raw)
             return list(ModelMessagesTypeAdapter.validate_python(raw))
         except Exception as exc:  # noqa: BLE001 - a corrupt sidecar must not crash resume
             logger.warning(

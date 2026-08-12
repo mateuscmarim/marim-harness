@@ -1,3 +1,5 @@
+import dataclasses
+
 import pytest
 from pydantic_ai.messages import (
     BinaryContent,
@@ -23,6 +25,7 @@ from marim_harness.compaction import (
     estimate_tokens,
     mask_stale_observations,
     render_transcript,
+    repair_masked_narrowed_returns,
     revalidate_elided_pointers,
     summary_text,
     will_compact,
@@ -815,3 +818,128 @@ def test_revalidate_mixed_pointer_and_handle_counts_both():
     assert n == 2
     assert new_history[0].parts[0].content == MASKED_OBSERVATION  # replaced
     assert new_history[1].parts[0].content == h + OFFLOAD_GONE_NOTE  # annotated
+
+
+# --- typed tool-return subclasses (pydantic-ai >= 2.28) -----------------------
+# pydantic-ai narrows `content` to a TypedDict on `ToolReturnPart` subclasses
+# like `ToolSearchReturnPart` (discriminated by `tool_kind`). Swapping such a
+# content for a placeholder *string* silently breaks the part's declared schema:
+# pydantic emits serializer warnings on every dump, `parse_discovered_tools`
+# raises `TypeError: string indices must be integers`, and the persisted session
+# no longer round-trips through `ModelMessagesTypeAdapter`. Masking must leave
+# these parts alone — their payload is load-bearing reveal state, not bulk.
+
+
+@dataclasses.dataclass(repr=False)
+class _NarrowedReturn(ToolReturnPart):
+    """Stand-in for a typed subclass, so the guard is covered on any 2.x.
+
+    Mirrors what `ToolSearchReturnPart` does: pin `tool_kind` to a literal and
+    narrow `content` to a mapping. Built locally because the real class only
+    exists on pydantic-ai >= 2.28, while this repo supports >= 2.8.
+    """
+
+    tool_kind: str = "tool-search"
+
+
+def test_mask_skips_typed_tool_return_subclasses():
+    payload = {"discovered_tools": [{"name": "n" * 400, "description": "d" * 400}]}
+    history = [
+        ModelRequest(
+            parts=[
+                _NarrowedReturn(
+                    tool_name="search_tools", content=payload, tool_call_id="s1"
+                )
+            ]
+        )
+    ]
+    new_history, masked = mask_stale_observations(history, keep_recent=0, min_chars=10)
+
+    assert masked == 0
+    assert new_history[0].parts[0].content == payload
+
+
+def test_mask_still_elides_plain_returns_alongside_typed_ones():
+    """The guard is narrow: an ordinary bulky return next to a typed one is
+    still masked, so skipping typed parts doesn't disable masking wholesale."""
+    payload = {"discovered_tools": [{"name": "x" * 400}]}
+    history = [
+        ModelRequest(
+            parts=[
+                _NarrowedReturn(
+                    tool_name="search_tools", content=payload, tool_call_id="s1"
+                ),
+                ToolReturnPart(
+                    tool_name="read_file", content="y" * 400, tool_call_id="r1"
+                ),
+            ]
+        )
+    ]
+    new_history, masked = mask_stale_observations(history, keep_recent=0, min_chars=10)
+
+    assert masked == 1
+    assert new_history[0].parts[0].content == payload
+    assert new_history[0].parts[1].content == MASKED_OBSERVATION
+
+
+def test_repair_strips_tool_kind_from_masked_typed_returns():
+    """Sessions masked before the guard existed must load again."""
+    raw = [
+        {
+            "parts": [
+                {
+                    "part_kind": "tool-return",
+                    "tool_kind": "tool-search",
+                    "tool_name": "search_tools",
+                    "content": MASKED_OBSERVATION,
+                    "tool_call_id": "s1",
+                },
+                {
+                    "part_kind": "tool-return",
+                    "tool_kind": "tool-search",
+                    "tool_name": "search_tools",
+                    "content": _elided_pointer("/tmp/pad/1.txt"),
+                    "tool_call_id": "s2",
+                },
+            ]
+        }
+    ]
+    assert repair_masked_narrowed_returns(raw) == 2
+    assert all("tool_kind" not in p for p in raw[0]["parts"])
+
+
+def test_repair_leaves_healthy_and_foreign_parts_alone():
+    """Only marim's own placeholders are demoted: an intact typed return keeps
+    its tool_kind, and an unrelated shape still fails validation loudly."""
+    raw = [
+        {
+            "parts": [
+                {  # healthy typed return
+                    "part_kind": "tool-return",
+                    "tool_kind": "tool-search",
+                    "content": {"discovered_tools": [{"name": "x"}]},
+                    "tool_call_id": "s1",
+                },
+                {  # plain return that happens to be masked
+                    "part_kind": "tool-return",
+                    "content": MASKED_OBSERVATION,
+                    "tool_call_id": "r1",
+                },
+                {  # typed return corrupted by something that isn't us
+                    "part_kind": "tool-return",
+                    "tool_kind": "tool-search",
+                    "content": "some other string",
+                    "tool_call_id": "s2",
+                },
+            ]
+        }
+    ]
+    assert repair_masked_narrowed_returns(raw) == 0
+    assert raw[0]["parts"][0]["tool_kind"] == "tool-search"
+    assert raw[0]["parts"][2]["tool_kind"] == "tool-search"
+
+
+def test_repair_tolerates_malformed_raw_input():
+    assert repair_masked_narrowed_returns(None) == 0
+    assert repair_masked_narrowed_returns([]) == 0
+    assert repair_masked_narrowed_returns(["not a dict", {}, {"parts": None}]) == 0

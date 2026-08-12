@@ -37,7 +37,12 @@ import dataclasses
 
 from pydantic_ai.messages import ModelMessage, ToolReturnPart
 
-from ..compaction import MASKED_OBSERVATION, estimate_tokens, mask_stale_observations
+from ..compaction import (
+    MASKED_OBSERVATION,
+    estimate_tokens,
+    has_narrowed_content,
+    mask_stale_observations,
+)
 
 
 class ObservationMasker:
@@ -88,10 +93,16 @@ class ObservationMasker:
             new_parts = list(parts)
             changed = False
             for pidx, part in enumerate(parts):
+                # `has_narrowed_content` is re-checked here, not just inside
+                # `mask_stale_observations`: this path re-masks by tool_call_id
+                # from the committed set, so a typed return sharing an id with a
+                # previously-masked plain one would otherwise be rewritten
+                # without ever passing through the masker's own guard.
                 if (
                     isinstance(part, ToolReturnPart)
                     and part.tool_call_id in self._masked_ids
                     and part.content != MASKED_OBSERVATION
+                    and not has_narrowed_content(part)
                 ):
                     new_parts[pidx] = dataclasses.replace(
                         part, content=MASKED_OBSERVATION

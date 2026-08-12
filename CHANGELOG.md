@@ -15,6 +15,22 @@ pre-1.0, minor versions may contain breaking changes.
   auto-detects Claude's per-project store or takes `--from`, and skips anything
   that would overwrite an existing marim memory unless `--force` is passed.
 
+### Fixed
+
+- Context masking no longer corrupts tool-search observations. pydantic-ai
+  narrows `content` to a typed payload on `ToolReturnPart` subclasses like
+  `ToolSearchReturnPart`, and the masker — which matched every `ToolReturnPart`
+  — was swapping that payload for its "observation elided" placeholder. A
+  session that compacted after a tool search then spewed
+  `PydanticSerializationUnexpectedValue` warnings on every history dump, died
+  on the *next* turn with `TypeError: string indices must be integers` (pydantic-ai
+  reads `content['discovered_tools']` on each request to decide which tools are
+  visible), and could no longer be resumed at all — the part failed validation,
+  so loading it raised `SessionLoadError`. Typed returns are now left alone;
+  they carry reveal state, not the bulk masking exists to shed. Sessions and
+  sub-agent transcripts already written in the broken shape are repaired on
+  load instead of failing.
+
 ## [0.3.0] - 2026-07-31
 
 - The approval panel now shows what you are approving. A long `write_file`

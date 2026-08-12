@@ -291,6 +291,33 @@ def _is_masked(content) -> bool:
     )
 
 
+def has_narrowed_content(part) -> bool:
+    """True when *part* is a ``ToolReturnPart`` subclass that narrows ``content``.
+
+    pydantic-ai (>= 2.28) discriminates typed tool-return subclasses on
+    ``tool_kind``: ``ToolSearchReturnPart`` pins it to ``'tool-search'`` and
+    re-declares ``content`` as a ``ToolSearchReturnContent`` TypedDict, while
+    ``tool_kind`` stays ``None`` for every plain/user-defined tool return. So the
+    attribute is an exact, version-portable stand-in for "this part's ``content``
+    has a declared shape" — on 2.8, which predates the field entirely, ``getattr``
+    yields ``None`` and every return is treated as plain, exactly as before.
+
+    Such a payload must never be swapped for a placeholder string. Three things
+    break at once if it is: pydantic emits ``PydanticSerializationUnexpectedValue``
+    warnings on every history dump, pydantic-ai's ``parse_discovered_tools`` reads
+    ``part.content['discovered_tools']`` on each request and dies with ``TypeError:
+    string indices must be integers``, and the persisted session stops validating
+    (the discriminated union demands an object), which turns a resume into a hard
+    ``SessionLoadError``.
+
+    Skipping them costs us nothing: a tool-search return is a short list of
+    revealed tool names, not the bulk masking exists to shed, and it is *derived
+    state* — pydantic-ai replays it to decide which tools are currently visible.
+    Eliding it would silently un-reveal tools even if the schema allowed it.
+    """
+    return getattr(part, "tool_kind", None) is not None
+
+
 # The suffix _elided_pointer appends after the path; also the parse anchor for
 # elided_pointer_path. A path containing this exact string would truncate the
 # parse, but persist_elided generates the paths (scratchpad + counter + slug),
@@ -310,6 +337,47 @@ def elided_pointer_path(content) -> str | None:
     body = content[len(ELIDED_POINTER_PREFIX):]
     path, sep, _ = body.partition(_ELIDED_POINTER_SUFFIX)
     return path if sep else None
+
+
+def repair_masked_narrowed_returns(raw_messages) -> int:
+    """Strip ``tool_kind`` from raw parts an older marim masked into invalidity.
+
+    Runs on the *raw* JSON, before ``ModelMessagesTypeAdapter`` validation, and
+    mutates ``raw_messages`` in place; returns how many parts it repaired.
+
+    Before :func:`has_narrowed_content` existed, the masker would replace a typed
+    tool-return's ``content`` (e.g. ``ToolSearchReturnPart``'s
+    ``ToolSearchReturnContent`` TypedDict) with a placeholder string. Those
+    sessions are already on disk, and they no longer validate at all — the
+    discriminated union selects the typed member from ``tool_kind`` and then
+    demands an object for ``content`` — so resuming one raises
+    ``SessionLoadError`` instead of loading.
+
+    Dropping ``tool_kind`` demotes the part to a plain ``ToolReturnPart``, which
+    is what it honestly is now: its typed payload is gone and only the
+    "re-run the tool" placeholder remains. The reveal state it used to carry is
+    lost either way; under-counting there is safe by pydantic-ai's own contract
+    (a redundant tool search is idempotent, whereas over-counting would claim a
+    tool is visible when it is not).
+
+    Deliberately narrow: only parts whose content is one of *our* placeholders
+    are touched. Any other typed-content mismatch is a corruption marim did not
+    cause, and must keep failing loudly rather than being silently reshaped.
+    """
+    repaired = 0
+    if not isinstance(raw_messages, list):
+        return 0
+    for message in raw_messages:
+        if not isinstance(message, dict):
+            continue
+        for part in message.get("parts") or []:
+            if not isinstance(part, dict) or part.get("tool_kind") is None:
+                continue
+            if not _is_masked(part.get("content")):
+                continue
+            part.pop("tool_kind", None)
+            repaired += 1
+    return repaired
 
 
 def _annotate_dangling_handles(
@@ -439,7 +507,7 @@ def _mask_part(
     persist: Callable[[str, str], str | None] | None,
 ) -> str | None:
     """Determine the replacement content for a part, or None if it should not be masked."""
-    if _is_masked(part.content):
+    if has_narrowed_content(part) or _is_masked(part.content):
         return None
     content = part.content
     if isinstance(content, BinaryContent) or (

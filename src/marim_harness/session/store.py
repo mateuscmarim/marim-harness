@@ -19,6 +19,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.usage import RunUsage
 
 from ..atomic_io import atomic_write_text, file_lock
+from ..compaction import repair_masked_narrowed_returns
 from ..images import externalize_images, rehydrate_images
 
 logger = logging.getLogger(__name__)
@@ -302,6 +303,14 @@ class SessionStore:
                 f"start a fresh session."
             ) from exc
         raw_messages = rehydrate_images(data.get("messages", []), self.session_id)
+        # Sessions written before the typed-tool-return guard can hold a masked
+        # ToolSearchReturnPart, which no longer validates. Repair it here rather
+        # than letting the load fail — the alternative is telling the user to
+        # move a perfectly recoverable session aside.
+        if repaired := repair_masked_narrowed_returns(raw_messages):
+            logger.debug(
+                "repaired %d masked typed tool-return(s) in %s", repaired, self.path
+            )
         try:
             messages = ModelMessagesTypeAdapter.validate_python(raw_messages)
         except ValidationError as exc:
