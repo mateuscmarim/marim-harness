@@ -8,12 +8,25 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-12
+
 ### Added
 
 - `marim import claude` — import a Claude Code CLI memory store into the
   workspace's `.marim/memory`. Dry-run by default (`--apply` to write),
   auto-detects Claude's per-project store or takes `--from`, and skips anything
   that would overwrite an existing marim memory unless `--force` is passed.
+
+- `marim update` — upgrade the installed package in place. Bare, it upgrades
+  via `uv tool upgrade` and falls back to `pip install --upgrade` when marim
+  was not installed as a uv tool; `--check` only reports the installed version
+  against the latest on PyPI and leaves the install alone.
+
+- The Tools settings page is navigable rather than a flat wall of switches.
+  Controls are grouped into aligned compact rows, a docked help line explains
+  whichever field holds focus, and controls that depend on a disabled parent
+  (the LSP nav tools under `lsp_enabled`, the advisor token knobs under a
+  configured advisor) dim and go unclickable instead of silently doing nothing.
 
 ### Fixed
 
@@ -30,6 +43,16 @@ pre-1.0, minor versions may contain breaking changes.
   they carry reveal state, not the bulk masking exists to shed. Sessions and
   sub-agent transcripts already written in the broken shape are repaired on
   load instead of failing.
+
+- Killing a spawned process now kills its deep descendants. MCP servers started
+  under `claude-cli` call `start_new_session=True`, so they landed in their own
+  process groups and survived a group-only kill — leaking a server process per
+  spawn. `kill_process_tree` walks `/proc` for every descendant, groups them by
+  PGID, and SIGKILLs each group, falling back to the old group-only behavior if
+  the walk cannot run.
+
+- Empty `Thinking:` labels no longer appear in the TUI transcript when a model
+  emits a reasoning part with no text.
 
 ### Changed
 
