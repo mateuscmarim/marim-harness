@@ -77,14 +77,21 @@ def _cli_timeout() -> float:
 
 
 def _kill_process_group(proc) -> None:
-    """SIGKILL the spawn's whole process group so any children (Claude's own tool
-    subprocesses) die with it, falling back to killing just the child when the
-    group signal can't be delivered. Mirrors ``tools/shell.py``'s timeout kill."""
+    """SIGKILL the spawn and all descendants (deep child cleanup).
+
+    Walks ``/proc`` to find every descendant process — including MCP servers
+    in their own process groups that ``os.killpg`` on the parent alone
+    wouldn't reach — and kills each group.  Falls back to the plain group
+    kill when the tree walk fails (non-Linux, unreadable ``/proc``)."""
     if proc.returncode is not None:
         return
+    from ..tools.impl.process import kill_process_tree
+
     try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
+        kill_process_tree(proc.pid)
+    except Exception:  # noqa: BLE001 - best-effort: degrade to group-only
+        with contextlib.suppress(OSError):
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
 

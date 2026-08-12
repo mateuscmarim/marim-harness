@@ -176,10 +176,18 @@ async def _read_until(
 
 
 def _kill_group(proc: "asyncio.subprocess.Process") -> None:
-    """Kill the whole process group (best-effort) so children die too."""
+    """Kill the whole process tree (best-effort) so deep descendants die too.
+
+    Walks ``/proc`` to find every descendant — including MCP servers in their
+    own process groups — and kills each group.  Falls back to the plain group
+    kill when the tree walk fails."""
+    from .process import kill_process_tree
+
     try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
+        kill_process_tree(proc.pid)
+    except Exception:  # noqa: BLE001 - best-effort: degrade to group-only
+        with contextlib.suppress(OSError):
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
 
@@ -334,10 +342,14 @@ class BashProcess:
         return _truncate_middle(head + tail, self._max_output)
 
     def kill(self) -> None:
-        """Kill the process group (best-effort; already-dead is fine)."""
+        """Kill the process tree (best-effort; already-dead is fine)."""
+        from .process import kill_process_tree
+
         try:
-            os.killpg(os.getpgid(self._proc.pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
+            kill_process_tree(self._proc.pid)
+        except Exception:  # noqa: BLE001 - best-effort: degrade to group-only
+            with contextlib.suppress(OSError):
+                os.killpg(os.getpgid(self._proc.pid), signal.SIGKILL)
             with contextlib.suppress(ProcessLookupError):
                 self._proc.kill()
 
