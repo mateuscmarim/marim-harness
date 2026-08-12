@@ -31,6 +31,14 @@ pre-1.0, minor versions may contain breaking changes.
   sub-agent transcripts already written in the broken shape are repaired on
   load instead of failing.
 
+### Changed
+
+- Minimum `pydantic-ai-slim` raised to `>=2.28,<3`. The lockfile had drifted to
+  2.8 while the range admitted 2.28, so CI was not testing the version installs
+  actually resolved — which is how the masking bug above shipped. `defer_loading`
+  also changed shape in 2.28: a deferred capability tool is now withheld from the
+  request entirely rather than listed and flagged.
+
 ## [0.3.0] - 2026-07-31
 
 - The approval panel now shows what you are approving. A long `write_file`

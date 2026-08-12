@@ -147,7 +147,10 @@ async def test_defer_loading_marks_the_tool_deferred_until_loaded():
         ],
     )
     await agent.run("hi")
-    # defer_loading=True marks the advisor ToolDefinition itself as deferred...
-    assert seen["defs"]["advisor"].defer_loading is True
-    # ...and adds a load_capability tool to bring it in when needed
+    # defer_loading=True withholds the advisor tool from the request entirely —
+    # the model cannot see or call it until load_capability brings it in. (On
+    # pydantic-ai < 2.28 the tool was instead *listed* with defer_loading=True;
+    # that older shape is why the pin floor is >=2.28.)
+    assert "advisor" not in seen["defs"]
+    # ...and a load_capability tool is offered to bring it in when needed.
     assert any("load_capability" in name for name in seen["defs"])
