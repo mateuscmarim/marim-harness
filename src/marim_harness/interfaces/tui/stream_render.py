@@ -1043,17 +1043,41 @@ class StreamRenderer:
         part = cast(TextPart, event.part)
         sink.set_run(None, None)  # assistant text ends the run of tools
         sink.on_text()  # live title status, useful while collapsed
+        # Defer mounting until the part has *visible* content, mirroring
+        # _on_thinking_start. Some providers open the reply with a whitespace-only
+        # content delta before the first reasoning delta (deepseek-v4 via
+        # OpenRouter: pydantic-ai only skips leading whitespace for R1, so a lone
+        # " " is truthy and starts the TextPart). That blank part would otherwise
+        # mount an empty message *above* the thinking block that follows it, and
+        # every real token would then stream in above the reasoning that produced
+        # it. Waiting for content lets the thought mount first and keeps the
+        # transcript in causal order. The widget still sits on the sink so deltas
+        # can mount+append it.
         msg = AssistantMessage()
         sink.set_assistant(msg)
-        await container.mount(msg)
-        if part.content:
+        if part.content and part.content.strip():
+            await container.mount(msg)
             self.append_stream(msg, part.content)
+        elif part.content:
+            # Whitespace-only: buffer it (unmounted, so flush holds off) rather than
+            # drop it, so it still prefixes the reply once real content arrives.
+            msg.append(part.content)
 
     async def _on_text_delta(self, event: PartDeltaEvent, sink: "_StreamSink") -> None:
         delta = cast(TextPartDelta, event.delta)
         msg = sink.get_assistant()
-        if msg is not None:
-            self.append_stream(msg, delta.content_delta or "")
+        if msg is None:
+            return
+        chunk = delta.content_delta or ""
+        # First visible content mounts the deferred widget (see start).
+        if not msg.is_mounted:
+            if not (msg.text + chunk).strip():
+                if chunk:
+                    msg.append(chunk)
+                return
+            if sink.container is not None:
+                await sink.container.mount(msg)
+        self.append_stream(msg, chunk)
 
     async def _on_thinking_start(
         self, event: PartStartEvent, sink: "_StreamSink", container: Widget

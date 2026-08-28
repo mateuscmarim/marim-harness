@@ -6,6 +6,9 @@ outside a turn's own stream — auto-rename, compaction, advisories. Behavior on
 — it holds no state; it reaches the app, status bar, and stream renderer through
 ``self.app``."""
 
+from collections.abc import Sequence
+from typing import Any
+
 from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Static
 
@@ -24,6 +27,59 @@ from .widgets import (
     UserMessage,
 )
 from .widgets.compact_notice import CompactNotice
+
+
+def order_response_parts(parts: Sequence[Any]) -> list:
+    """Reorder one ``ModelResponse``'s parts so reasoning replays above the reply it
+    produced. Pure — returns a new list, never mutates ``parts``.
+
+    Stored order is not always causal order. Some providers open the reply with a
+    whitespace-only content delta *before* the first reasoning delta (deepseek-v4
+    via OpenRouter), so pydantic-ai starts the TextPart first and the response
+    persists as ``[text, thinking]``. Replaying that verbatim puts the answer above
+    the thought that produced it — and disagrees with the live path, which mounts
+    the thinking block first (see ``_on_text_start``'s deferred mount).
+
+    The reorder is keyed to that bug's *fingerprint*, not applied blanket: a reply
+    whose stored content begins with whitespace is one the provider opened with a
+    blank delta. Text that is real from its first character genuinely preceded the
+    thought, so it is left alone — replay then matches what the live path rendered
+    instead of hoisting a thought above text that truly came first.
+
+    Tool calls anchor the segments: within each run of text/thinking parts between
+    tool calls, a hoist is decided independently. So a thought that follows a tool
+    round-trip stays with its own reply rather than moving to the top of the
+    message.
+    """
+    from pydantic_ai.messages import TextPart, ThinkingPart
+
+    def ordered_segment(segment: list) -> list:
+        first_thought = next(
+            (i for i, p in enumerate(segment) if isinstance(p, ThinkingPart)), None
+        )
+        # Nothing to hoist, or reasoning already leads the segment.
+        if not first_thought:
+            return segment
+        # Only the blank-opener shape reorders (see above). ``content[:1]`` is
+        # whitespace for the " " opener and empty for a bare TextPart; real text
+        # from char 0 keeps its recorded position.
+        if any(p.content[:1].strip() for p in segment[:first_thought]):
+            return segment
+        return [p for p in segment if isinstance(p, ThinkingPart)] + [
+            p for p in segment if not isinstance(p, ThinkingPart)
+        ]
+
+    ordered: list = []
+    segment: list = []
+    for part in parts:
+        if isinstance(part, (TextPart, ThinkingPart)):
+            segment.append(part)
+        else:
+            ordered.extend(ordered_segment(segment))
+            ordered.append(part)
+            segment = []
+    ordered.extend(ordered_segment(segment))
+    return ordered
 
 
 class SessionView:
@@ -259,7 +315,14 @@ class SessionView:
         for message in self.app.harness.session.history:
             if not isinstance(message, (ModelRequest, ModelResponse)):
                 continue
-            for part in message.parts:
+            # Replay reasoning above the reply it produced, matching the live path
+            # even when the provider persisted them the other way round.
+            parts = (
+                order_response_parts(message.parts)
+                if isinstance(message, ModelResponse)
+                else message.parts
+            )
+            for part in parts:
                 if isinstance(part, UserPromptPart):
                     group = None
                     solo = None
@@ -295,7 +358,13 @@ class SessionView:
         solo: ToolCallWidget | None = None
         for message in messages:
             if isinstance(message, (ModelRequest, ModelResponse)):
-                for part in message.parts:
+                # Same causal reordering as replay_history (see order_response_parts).
+                parts = (
+                    order_response_parts(message.parts)
+                    if isinstance(message, ModelResponse)
+                    else message.parts
+                )
+                for part in parts:
                     group, solo = await self._replay_parts(
                         part, pane, pane.add, tool_widgets, group, solo,
                         parent_id=parent_id,
