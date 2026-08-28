@@ -90,6 +90,30 @@ def test_order_response_parts_keeps_post_tool_thinking_with_its_own_reply():
     ] == ["first thought", " first reply", "CALL", "second thought", " second reply"]
 
 
+def test_order_response_parts_keeps_interleaved_thoughts_in_place():
+    """Only the leading part was mis-opened by the blank delta; everything after it
+    is in true causal order. A blanket hoist would drag the second thought above the
+    first reply — output the model never produced."""
+    parts = [
+        TextPart(content=" first reply"),
+        ThinkingPart(content="first thought"),
+        TextPart(content=" second reply"),
+        ThinkingPart(content="second thought"),
+    ]
+    assert [p.content for p in order_response_parts(parts)] == [
+        "first thought",
+        " first reply",
+        " second reply",
+        "second thought",
+    ]
+
+
+def test_order_response_parts_leaves_blank_opener_with_no_reasoning_after_it():
+    """Nothing was displaced if no reasoning directly follows the leading part."""
+    parts = [TextPart(content=" a"), TextPart(content=" b"), ThinkingPart(content="t")]
+    assert order_response_parts(parts) == parts
+
+
 def test_order_response_parts_is_pure():
     parts = [TextPart(content="hi"), ThinkingPart(content="hmm")]
     before = list(parts)
@@ -205,6 +229,23 @@ async def test_genuine_text_first_agrees_between_live_and_replay(tmp_path):
         assert [
             "thinking" if isinstance(p, ThinkingPart) else "text" for p in replayed
         ] == live
+
+
+@pytest.mark.anyio
+async def test_replay_of_whitespace_only_reply_mounts_nothing(tmp_path):
+    """The live path defers the mount until a reply has visible content, so replay
+    must not resurrect that blank message after a resume. Mirrors
+    test_whitespace_only_reply_mounts_nothing on the replay side."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        log = app.query_one("#log")
+        app.harness.session.history.append(
+            ModelResponse(parts=[TextPart(content="   "), ThinkingPart(content="hmm")])
+        )
+        await app.session.replay_history(log)
+        await pilot.pause()
+
+        assert _kinds(log.children) == ["thinking"]
 
 
 @pytest.mark.anyio

@@ -46,28 +46,37 @@ def order_response_parts(parts: Sequence[Any]) -> list:
     thought, so it is left alone — replay then matches what the live path rendered
     instead of hoisting a thought above text that truly came first.
 
+    Only the *leading* text part can have been opened early this way; everything
+    after it was recorded in true causal order. So the fix moves that one part
+    down past the reasoning that immediately follows it, rather than hoisting
+    every thought in the segment to the front. A blanket hoist would reorder
+    genuinely interleaved output — in ``[text, think, text, think]`` it drags the
+    second thought above the first reply, which the model never did.
+
     Tool calls anchor the segments: within each run of text/thinking parts between
-    tool calls, a hoist is decided independently. So a thought that follows a tool
-    round-trip stays with its own reply rather than moving to the top of the
+    tool calls, a reorder is decided independently. So a thought that follows a
+    tool round-trip stays with its own reply rather than moving to the top of the
     message.
     """
     from pydantic_ai.messages import TextPart, ThinkingPart
 
     def ordered_segment(segment: list) -> list:
-        first_thought = next(
-            (i for i, p in enumerate(segment) if isinstance(p, ThinkingPart)), None
-        )
-        # Nothing to hoist, or reasoning already leads the segment.
-        if not first_thought:
+        # Only a leading TextPart is a candidate: reasoning already leads, or
+        # there is nothing to move.
+        if not segment or not isinstance(segment[0], TextPart):
             return segment
         # Only the blank-opener shape reorders (see above). ``content[:1]`` is
         # whitespace for the " " opener and empty for a bare TextPart; real text
         # from char 0 keeps its recorded position.
-        if any(p.content[:1].strip() for p in segment[:first_thought]):
+        if segment[0].content[:1].strip():
             return segment
-        return [p for p in segment if isinstance(p, ThinkingPart)] + [
-            p for p in segment if not isinstance(p, ThinkingPart)
-        ]
+        # The contiguous reasoning run that the blank opener jumped ahead of.
+        run = 1
+        while run < len(segment) and isinstance(segment[run], ThinkingPart):
+            run += 1
+        if run == 1:  # no reasoning directly after it — nothing was displaced
+            return segment
+        return segment[1:run] + [segment[0]] + segment[run:]
 
     ordered: list = []
     segment: list = []
@@ -91,7 +100,11 @@ class SessionView:
 
     async def _replay_text_part(self, part, mount_fn, group, solo):
         """TextPart arm of ``_replay_parts``."""
-        if part.content:
+        # Match live stream: a whitespace-only reply leaves no empty bubble.
+        # _on_text_start defers the mount until the part has visible content, so
+        # replaying on `part.content` alone would resurrect after a resume the
+        # very blank message the live path now refuses to mount.
+        if part.content and part.content.strip():
             # Text output ends the current tool burst in both the main log and
             # sub-agent panes. Without this reset, a tool after text would be
             # incorrectly grouped with tools before it (original
