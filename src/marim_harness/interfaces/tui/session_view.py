@@ -100,17 +100,24 @@ class SessionView:
 
     async def _replay_text_part(self, part, mount_fn, group, solo):
         """TextPart arm of ``_replay_parts``."""
+        # Text output ends the current tool burst in both the main log and
+        # sub-agent panes. Without this reset, a tool after text would be
+        # incorrectly grouped with tools before it (original
+        # replay_messages_into omitted this reset, which was a bug).
+        #
+        # The reset is *outside* the visibility check on purpose: live,
+        # _on_text_start calls sink.set_run(None, None) before it decides
+        # whether to mount, so the run breaks even for a whitespace-only part.
+        # Gating it on visible content would regroup tools around a blank
+        # opener after a resume — the same live/replay disagreement in a
+        # different guise.
+        group = None
+        solo = None
         # Match live stream: a whitespace-only reply leaves no empty bubble.
         # _on_text_start defers the mount until the part has visible content, so
         # replaying on `part.content` alone would resurrect after a resume the
         # very blank message the live path now refuses to mount.
         if part.content and part.content.strip():
-            # Text output ends the current tool burst in both the main log and
-            # sub-agent panes. Without this reset, a tool after text would be
-            # incorrectly grouped with tools before it (original
-            # replay_messages_into omitted this reset, which was a bug).
-            group = None
-            solo = None
             msg = AssistantMessage()
             await mount_fn(msg)
             self.app.stream.append_stream(msg, part.content)
@@ -118,11 +125,13 @@ class SessionView:
 
     async def _replay_thinking_part(self, part, mount_fn, group, solo):
         """ThinkingPart arm of ``_replay_parts``."""
+        # Same reasoning as TextPart, reset included: _on_thinking_start breaks
+        # the run before its own content check, so an empty ThinkingPart (common
+        # between tool calls) still ends the burst live and must here too.
+        group = None
+        solo = None
         # Match live stream: whitespace-only thoughts leave no bare label.
         if part.content and part.content.strip():
-            # Same reasoning as TextPart: thinking output breaks a tool run.
-            group = None
-            solo = None
             widget = ThinkingWidget()
             await mount_fn(widget)
             self.app.stream.append_stream(widget.body, part.content)

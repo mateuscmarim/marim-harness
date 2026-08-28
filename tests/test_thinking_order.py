@@ -249,6 +249,34 @@ async def test_replay_of_whitespace_only_reply_mounts_nothing(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_replay_blank_reply_still_breaks_the_tool_run(tmp_path):
+    """Deferring the mount must not defer the *run break*. Live, ``_on_text_start``
+    calls ``sink.set_run(None, None)`` before it decides whether to mount, so even a
+    whitespace-only reply ends the tool burst. If replay only reset the run when it
+    mounted a widget, two tools separated by a blank opener would fold into one
+    ToolGroupWidget after a resume — a different grouping than the user saw live."""
+    from marim_harness.interfaces.tui.widgets import ToolCallWidget, ToolGroupWidget
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        log = app.query_one("#log")
+        app.harness.session.history.append(
+            ModelResponse(
+                parts=[
+                    ToolCallPart(tool_name="read_file", args={}, tool_call_id="t1"),
+                    TextPart(content=" "),
+                    ToolCallPart(tool_name="read_file", args={}, tool_call_id="t2"),
+                ]
+            )
+        )
+        await app.session.replay_history(log)
+        await pilot.pause()
+
+        assert not log.query(ToolGroupWidget)
+        assert len(log.query(ToolCallWidget)) == 2
+
+
+@pytest.mark.anyio
 async def test_replay_renders_thinking_above_text(tmp_path):
     """Replaying a persisted ``[text, thinking]`` response matches the live order."""
     app = _app(tmp_path)
