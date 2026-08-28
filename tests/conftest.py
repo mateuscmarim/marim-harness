@@ -1,8 +1,10 @@
 import json as _json_capture
 import os
 import stat as _stat_capture
+import time
 from pathlib import Path
 
+import anyio
 import pytest
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
@@ -12,6 +14,25 @@ from marim_harness.runtime.harness import Harness
 from marim_harness.runtime.permissions import Mode
 from marim_harness.tools.provider import BuiltinToolProvider
 from marim_harness.trust import project_trusted
+
+
+async def _settle(pilot, predicate, *, what: str, timeout: float = 10.0) -> None:
+    """Pump the app until ``predicate`` holds, or fail naming what never happened.
+
+    A fixed count of ``pilot.pause()`` calls is not a wait. A pause yields to the
+    message pump and returns, so a spin of fifty can be over in microseconds and
+    never hand a loaded runner the slice it was short of — which is exactly how
+    the fixed spin this replaces passed on a fast machine and failed twice on CI.
+    Bounded by the clock, with a real sleep between attempts, it waits for the
+    condition rather than for a number of trips round the loop.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        await pilot.pause()
+        if predicate():
+            return
+        await anyio.sleep(0.01)
+    raise AssertionError(f"timed out after {timeout}s waiting for {what}")
 
 
 def _capture_script(tmp_path, name: str, outfile) -> str:

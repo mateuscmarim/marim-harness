@@ -5,7 +5,7 @@ import pytest
 from marim_harness.interfaces.tui.app import HarnessApp
 from marim_harness.interfaces.tui.widgets import NoticeMessage
 from marim_harness.runtime.permissions import Mode
-from tests.conftest import _make_deps
+from tests.conftest import _make_deps, _settle
 
 
 def _app(tmp_path: Path) -> HarnessApp:
@@ -3590,11 +3590,34 @@ async def test_ask_user_escape_cancels_only_the_question(tmp_path: Path):
         # the escape landed on the panel rather than falling through to
         # cancel_turn.
         worker = app.run_worker(app._ask_user(qs))
-        await pilot.pause()
+        # Being in the DOM is not being ready for a key. AskUserPanel.on_mount
+        # spawns a worker, and _show_question awaits remove_children() *and*
+        # mount() before it ever calls focus() — so the panel is queryable
+        # several async hops before it can receive one. Pressing in that gap
+        # sends escape to the PromptInput, it falls through to the app's
+        # cancel_turn binding, and the question is never cancelled. Wait for
+        # focus to actually be inside the panel, not for the query to answer.
+        await _settle(
+            pilot,
+            lambda: app.focused is not None
+            and any(isinstance(w, AskUserPanel) for w in app.focused.ancestors_with_self),
+            what="focus to move inside AskUserPanel",
+        )
         await pilot.press("escape")
-        await pilot.pause()
+        # WorkerState, not `result is None`: an unfinished worker also has a
+        # None result, so the old assertion passed vacuously in exactly the
+        # case it was meant to catch — the keypress being lost.
+        await _settle(
+            pilot,
+            lambda: worker.is_finished,
+            what="the _ask_user worker to finish after escape",
+        )
         assert worker.result is None
-        assert not app.query(AskUserPanel)
+        await _settle(
+            pilot,
+            lambda: not app.query(AskUserPanel),
+            what="the AskUserPanel to be removed",
+        )
         assert app.is_running
 
 

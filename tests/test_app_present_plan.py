@@ -2,9 +2,7 @@
 choice flips the session mode end to end."""
 
 import json
-import time
 
-import anyio
 import pytest
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
@@ -13,7 +11,7 @@ from textual.widgets import OptionList
 from marim_harness.interfaces.tui.app import HarnessApp
 from marim_harness.interfaces.tui.interactions.plan_card import PlanCard
 from marim_harness.runtime.permissions import Mode
-from tests.conftest import _make_deps, _make_harness
+from tests.conftest import _make_deps, _make_harness, _settle
 
 pytestmark = pytest.mark.anyio
 
@@ -52,25 +50,6 @@ def _plan_then_done_model() -> FunctionModel:
             yield "executing now"
 
     return FunctionModel(fn, stream_function=stream_fn)
-
-
-async def _settle(pilot, predicate, *, what: str, timeout: float = 10.0) -> None:
-    """Pump the app until ``predicate`` holds, or fail naming what never happened.
-
-    A fixed count of ``pilot.pause()`` calls is not a wait. A pause yields to the
-    message pump and returns, so a spin of fifty can be over in microseconds and
-    never hand a loaded runner the slice it was short of — which is exactly how
-    the fixed spin this replaces passed on a fast machine and failed twice on CI.
-    Bounded by the clock, with a real sleep between attempts, it waits for the
-    condition rather than for a number of trips round the loop.
-    """
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        await pilot.pause()
-        if predicate():
-            return
-        await anyio.sleep(0.01)
-    raise AssertionError(f"timed out after {timeout}s waiting for {what}")
 
 
 async def test_present_plan_mounts_card_and_flips_mode(tmp_path):
