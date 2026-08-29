@@ -74,6 +74,27 @@ _SHELL_RESULTS_BUDGET = 20_000
 # that a turn blocked on it still feels responsive.
 _CONTENTION_BACKOFF_SECONDS = 2.0
 
+# The fragment every pydantic-ai output-retry exhaustion carries: the message is
+# `Exceeded maximum output retries (n)` at all three raise sites
+# (_agent_graph.consume_output_retry and both wraps in _tool_execution), and no
+# other site emits it. See TurnController._is_structured_exhaustion for why the
+# message — not a ValidationError in the cause chain — is the discriminator.
+_OUTPUT_RETRY_EXHAUSTED = "maximum output retries"
+
+
+def _exhaustion_errors(exc: BaseException) -> list[str]:
+    """The `errors` payload for a structured-exhaustion outcome: the
+    UnexpectedModelBehavior message plus, when pydantic-ai chained one, the
+    underlying detail it raised `from`. The message alone is just
+    `Exceeded maximum output retries (2)` — true but content-free; the cause is
+    where the actual per-field ValidationError (or ToolRetryError) text lives,
+    which is what an embedder needs to see. Capped at those two: deeper links
+    are pydantic-ai internals, not schema feedback."""
+    errors = [str(exc)]
+    if exc.__cause__ is not None:
+        errors.append(str(exc.__cause__))
+    return errors
+
 
 @dataclass
 class _ConsumedContext:
@@ -371,18 +392,27 @@ class TurnController:
         """Validation-exhaustion of a structured turn: pydantic-ai retried the
         model's output against the schema and gave up. Only meaningful when a
         structured output is active; every other UnexpectedModelBehavior keeps
-        the generic failure path."""
-        from pydantic import ValidationError
+        the generic failure path.
+
+        Matched on the MESSAGE, not on a ValidationError in the cause chain.
+        The cause is not the discriminator it looks like: pydantic-ai's
+        ToolManager._check_max_retries raises `Tool 'x' exceeded max retries
+        count of N` **from** the tool's *argument* ValidationError, so a cause
+        walk swallows a plain tool-argument failure — infra-shaped, nothing to
+        do with the output schema — and robs it of the error note, the provider
+        dump and the overflow reclassification _handle_run_failure applies.
+        Conversely a genuine output exhaustion may carry NO ValidationError at
+        all (consume_output_retry after repeated empty / thinking-only
+        responses: the cause is a ToolRetryError or None). The message is
+        unambiguous where the cause is not: all three output-retry raise sites
+        (_agent_graph.consume_output_retry, and both wraps in _tool_execution)
+        emit `Exceeded maximum output retries (n)`, and no other site in
+        pydantic-ai emits that phrase."""
         from pydantic_ai.exceptions import UnexpectedModelBehavior
 
         if self._structured_type is None or not isinstance(exc, UnexpectedModelBehavior):
             return False
-        cause: BaseException | None = exc.__cause__
-        while cause is not None:
-            if isinstance(cause, ValidationError):
-                return True
-            cause = cause.__cause__
-        return "Exceeded retries" in str(exc)
+        return _OUTPUT_RETRY_EXHAUSTED in str(exc)
 
     def _run_output_type(self) -> list[Any] | None:
         """The per-run output override for structured harnesses, else None.
@@ -1039,7 +1069,7 @@ class TurnController:
                             subtype="error_max_structured_output_retries",
                             result=None,
                             structured_output=None,
-                            errors=[str(exc)],
+                            errors=_exhaustion_errors(exc),
                         )
                     retry = await self._handle_run_failure(
                         exc, captured, resumable, deferred_results, round_usage, retried

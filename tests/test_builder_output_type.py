@@ -38,6 +38,36 @@ def test_build_rejects_non_object_rooted_dict(tmp_path):
     assert any("object-rooted" in p for p in exc_info.value.problems)
 
 
+def test_build_rejects_malformed_json_schema(tmp_path):
+    """Object-rooted but not a valid JSON Schema (typo'd `type`). Without the
+    well-formedness check this builds fine and dies mid-turn with a raw
+    jsonschema error, after the token spend."""
+    schema = {"type": "object", "properties": {"a": {"type": "intger"}}}
+    with pytest.raises(BuilderError) as exc_info:
+        (HarnessBuilder(workspace=tmp_path, model=TestModel())
+         .with_output_type(schema)
+         .build())
+    assert any("malformed JSON Schema" in p for p in exc_info.value.problems)
+
+
+def test_build_rejects_recursive_ref_schema(tmp_path):
+    """A recursive `$defs` schema is well-formed JSON Schema but unsupported by
+    pydantic-ai's StructuredDict — it must surface as a BuilderError, not a raw
+    pydantic_ai UserError out of build()."""
+    schema = {
+        "type": "object",
+        "$defs": {
+            "Node": {"type": "object", "properties": {"child": {"$ref": "#/$defs/Node"}}}
+        },
+        "properties": {"root": {"$ref": "#/$defs/Node"}},
+    }
+    with pytest.raises(BuilderError) as exc_info:
+        (HarnessBuilder(workspace=tmp_path, model=TestModel())
+         .with_output_type(schema)
+         .build())
+    assert any("with_output_type" in p and "recursive" in p for p in exc_info.value.problems)
+
+
 def test_build_rejects_other_types(tmp_path):
     with pytest.raises(BuilderError) as exc_info:
         (HarnessBuilder(workspace=tmp_path, model=TestModel())

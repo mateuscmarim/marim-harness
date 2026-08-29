@@ -138,6 +138,81 @@ async def test_exhaustion_on_continuation_round_clears_approval_latch(tmp_path):
     assert h.deps.approval_round_active is False
 
 
+def _controller(tmp_path, *, structured: bool):
+    builder = HarnessBuilder(workspace=tmp_path, model=TestModel(call_tools=[]))
+    if structured:
+        builder = builder.with_output_type(Point)
+    return builder.build().turn_controller
+
+
+def _validation_error() -> Exception:
+    """A real pydantic ValidationError, the cause pydantic-ai attaches to BOTH
+    output-retry exhaustion and tool-argument retry exhaustion."""
+    try:
+        Point.model_validate({"a": "not-an-int"})
+    except Exception as exc:  # noqa: BLE001 - re-raised shape is the point
+        return exc
+    raise AssertionError("Point accepted an invalid payload")
+
+
+def test_exhaustion_predicate_matches_output_retry_without_validation_cause(tmp_path):
+    """`consume_output_retry` (pydantic_ai/_agent_graph.py:371) raises after
+    repeated empty / thinking-only responses with a ToolRetryError or None as
+    the cause — no ValidationError anywhere in the chain. The documented
+    contract says that is still schema exhaustion."""
+    from pydantic_ai.exceptions import UnexpectedModelBehavior
+
+    controller = _controller(tmp_path, structured=True)
+    assert controller._is_structured_exhaustion(
+        UnexpectedModelBehavior("Exceeded maximum output retries (2)")
+    )
+
+
+def test_exhaustion_predicate_ignores_tool_arg_retry_exhaustion(tmp_path):
+    """`ToolManager._check_max_retries` (pydantic_ai/tool_manager.py:237) raises
+    `from` the tool's argument ValidationError. That is an infra-shaped failure
+    and must keep the generic failure path (error note + provider dump)."""
+    from pydantic_ai.exceptions import UnexpectedModelBehavior
+
+    controller = _controller(tmp_path, structured=True)
+    exc = UnexpectedModelBehavior(
+        "Tool 'bash' exceeded max retries count of 1. Consider raising the retry limit"
+    )
+    exc.__cause__ = _validation_error()
+    assert not controller._is_structured_exhaustion(exc)
+
+
+def test_exhaustion_predicate_ignores_non_model_behavior_errors(tmp_path):
+    controller = _controller(tmp_path, structured=True)
+    assert not controller._is_structured_exhaustion(ValueError("boom"))
+
+
+def test_exhaustion_predicate_off_for_plain_harness(tmp_path):
+    from pydantic_ai.exceptions import UnexpectedModelBehavior
+
+    controller = _controller(tmp_path, structured=False)
+    assert not controller._is_structured_exhaustion(
+        UnexpectedModelBehavior("Exceeded maximum output retries (2)")
+    )
+
+
+def test_exhaustion_errors_carry_the_validation_detail():
+    from pydantic_ai.exceptions import UnexpectedModelBehavior
+
+    from marim_harness.runtime.controller import _exhaustion_errors
+
+    exc = UnexpectedModelBehavior("Exceeded maximum output retries (2)")
+    exc.__cause__ = _validation_error()
+    errors = _exhaustion_errors(exc)
+    assert len(errors) == 2
+    assert errors[0].startswith("Exceeded maximum output retries")
+    assert "not-an-int" in errors[1] or "int" in errors[1]
+
+    assert _exhaustion_errors(UnexpectedModelBehavior("Exceeded maximum output retries (2)")) == [
+        "Exceeded maximum output retries (2)"
+    ]
+
+
 DICT_SCHEMA = {
     "type": "object",
     "properties": {"a": {"type": "integer"}},

@@ -335,10 +335,46 @@ class HarnessBuilder:
                 problems.append(
                     "with_output_type: JSON Schema must be object-rooted "
                     f"(got type {schema.get('type')!r})")
+                return
+            self._check_dict_schema(schema, problems)
         elif not (isinstance(schema, type) and issubclass(schema, BaseModel)):
             problems.append(
                 "with_output_type: expected a pydantic BaseModel subclass or "
                 f"an object-rooted JSON Schema dict, got {schema!r}")
+
+    @staticmethod
+    def _check_dict_schema(schema: dict, problems: list[str]) -> None:
+        """Both remaining ways an object-rooted dict can still be unusable —
+        checked HERE, at build(), because the alternative is discovering them
+        mid-turn after the token spend: the schema only meets its validator in
+        _correct_dict_output, and StructuredDict is only constructed when the
+        TurnController is built inside build().
+
+        1. Not well-formed JSON Schema (a typo'd `type`, say). Same guard the
+           workflows path applies before spending a spawn
+           (workflows/schema.py's check_valid_schema) — for the same reason.
+        2. Well-formed but unsupported by pydantic-ai: a recursive `$ref`/`$defs`
+           schema makes StructuredDict raise UserError. Pre-resolving it here
+           (rather than wrapping the TurnController construction) keeps the
+           translation in the one place that already speaks BuilderError, and
+           costs only a discarded duplicate construction; every other builder
+           misconfiguration in this codebase is a BuilderError at build()."""
+        import jsonschema
+        import jsonschema.validators
+        from pydantic_ai import StructuredDict
+        from pydantic_ai.exceptions import UserError
+
+        try:
+            jsonschema.validators.validator_for(schema).check_schema(schema)
+        except jsonschema.SchemaError as exc:
+            problems.append(
+                f"with_output_type: malformed JSON Schema: {exc.message} "
+                f"(at {exc.json_path})")
+            return
+        try:
+            StructuredDict(schema)
+        except UserError as exc:
+            problems.append(f"with_output_type: {exc}")
 
     def _open_sessions(
         self, problems: list[str]
