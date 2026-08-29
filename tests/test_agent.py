@@ -90,11 +90,11 @@ async def test_actionable_failure_is_surfaced_to_model_next_turn(tmp_path: Path)
     with pytest.raises(UnexpectedModelBehavior):
         await harness.run_turn("first request")
     echoed = await harness.run_turn("second request")
-    assert "did not complete" in echoed  # the note rode along
-    assert "second request" in echoed  # ...prepended to the real prompt
+    assert "did not complete" in echoed.result  # the note rode along
+    assert "second request" in echoed.result  # ...prepended to the real prompt
     # And it is one-shot: a third, clean turn carries no stale note.
     again = await harness.run_turn("third request")
-    assert "did not complete" not in again
+    assert "did not complete" not in again.result
 
 
 @pytest.mark.anyio
@@ -106,10 +106,10 @@ async def test_non_actionable_failure_leaves_no_note(tmp_path: Path):
     with pytest.raises(RuntimeError):
         await harness.run_turn("first request")
     echoed = await harness.run_turn("second request")
-    assert "did not complete" not in echoed
+    assert "did not complete" not in echoed.result
     # The date envelope wraps every turn now; the important thing is that no
     # error note from the failed first turn leaked into the second prompt.
-    assert echoed.endswith("second request")
+    assert echoed.result.endswith("second request")
 
 
 @pytest.mark.anyio
@@ -294,7 +294,7 @@ async def test_set_model_switches_model_and_label(tmp_path: Path):
     assert h.model_label == "fake/openai/gpt-5.2"
     assert src.built == ["openai/gpt-5.2"]
     out = await h.run_turn("hello")
-    assert out == "from openai/gpt-5.2"  # the new model actually ran the turn
+    assert out.result == "from openai/gpt-5.2"  # the new model actually ran the turn
 
 
 @pytest.mark.anyio

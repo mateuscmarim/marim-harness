@@ -43,4 +43,4 @@ async def test_run_turn_returns_real_model_output(tmp_path):
 
     out = await harness.run_turn("Reply with exactly the word: pong")
 
-    assert "pong" in out.lower()
+    assert "pong" in out.result.lower()

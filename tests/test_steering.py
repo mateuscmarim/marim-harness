@@ -204,7 +204,7 @@ async def test_steer_during_approval_gap_buffers_not_stale_ctx(tmp_path):
 
     out = await harness.run_turn("change foo to bar", event_stream_handler=handler)
 
-    assert out == "done"
+    assert out.result == "done"
     assert observed["ctx"] is None  # stale ctx cleared before the approval gap
     assert observed["buffered"] == [("mid-approval steer", None)]
 
@@ -419,7 +419,7 @@ async def test_steer_reaches_a_later_model_request(tmp_path):
         h.run_turn("hello", event_stream_handler=handler),
         steerer(),
     )
-    assert out == "done"
+    assert out.result == "done"
     flat = [str(c) for c in calls]
     assert any("STEER NOW" in c for c in flat), f"steer not injected: {calls}"
 

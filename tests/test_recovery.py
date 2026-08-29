@@ -261,7 +261,7 @@ async def test_resume_strips_nameless_tool_call_then_runs(tmp_path):
 
     output = await harness.run_turn("continue")  # must NOT raise
 
-    assert output == "resumed"
+    assert output.result == "resumed"
     calls = [
         p
         for m in harness.session.history
@@ -295,7 +295,7 @@ async def test_nameless_call_stripped_before_every_request_not_just_resume(tmp_p
     harness = _harness(FunctionModel(fn), deps)
     output = await harness.run_turn("go")
 
-    assert output == "done"
+    assert output.result == "done"
     # The continuation request the model saw must not carry the nameless call.
     nameless = [
         p
@@ -323,7 +323,7 @@ async def test_resume_heals_dangling_tool_call_then_runs(tmp_path):
 
     output = await harness.run_turn("continue")  # must NOT raise
 
-    assert output == "resumed"
+    assert output.result == "resumed"
     assert not _has_unanswered_tool_calls(harness.session.history)
 
 
@@ -352,7 +352,7 @@ async def test_checkpoint_records_sanitized_length_for_clean_rewind(tmp_path):
     harness.session.history = _dangling_history()
 
     out = await harness.run_turn("continue")
-    assert out == "resumed"
+    assert out.result == "resumed"
 
     cps = harness.checkpoints.list()
     assert len(cps) == 1
@@ -691,7 +691,7 @@ async def test_approval_round_latch_raised_during_wait_then_lowered(tmp_path):
 
     assert deps.approval_round_active is False  # down before the turn
     out = await harness.run_turn("change foo to bar")
-    assert out == "done"
+    assert out.result == "done"
     assert seen["during"] is True, "latch must be raised while awaiting approval"
     assert deps.approval_round_active is False, "latch must be lowered after the round"
 

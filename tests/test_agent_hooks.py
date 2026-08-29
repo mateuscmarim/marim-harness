@@ -134,7 +134,7 @@ async def test_no_hooks_runs_turn_normally(tmp_path):
     sink: list = []
     harness = _make_harness(_prompt_capturing_model(sink), deps)
     out = await harness.run_turn("hello")
-    assert out == "ok"
+    assert out.result == "ok"
     # The date envelope wraps every turn now; verify the typed text is present
     # and no hook modified it.
     assert sink[0].endswith("hello")
@@ -350,7 +350,7 @@ async def test_stop_fires_at_turn_end(tmp_path):
     sink: list = []
     harness = _make_harness(_prompt_capturing_model(sink), deps)
     out = await harness.run_turn("anything")
-    assert out == "ok"
+    assert out.result == "ok"
     assert '"hook_event_name": "Stop"' in log.read_text()
 
 

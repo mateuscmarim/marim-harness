@@ -100,11 +100,11 @@ async def test_actionable_failure_is_surfaced_to_model_next_turn(tmp_path):
     with pytest.raises(UnexpectedModelBehavior):
         await tc.run_turn("first request")
     echoed = await tc.run_turn("second request")
-    assert "did not complete" in echoed
-    assert "second request" in echoed
+    assert "did not complete" in echoed.result
+    assert "second request" in echoed.result
     # One-shot: a third clean turn carries no stale note.
     again = await tc.run_turn("third request")
-    assert "did not complete" not in again
+    assert "did not complete" not in again.result
 
 
 def _minimal_harness(tmp_path):
@@ -150,10 +150,10 @@ async def test_non_actionable_failure_leaves_no_note(tmp_path):
     with pytest.raises(RuntimeError):
         await tc.run_turn("first request")
     echoed = await tc.run_turn("second request")
-    assert "did not complete" not in echoed
+    assert "did not complete" not in echoed.result
     # The date envelope wraps every turn now; the important thing is that no
     # error note from the failed first turn leaked into the second prompt.
-    assert echoed.endswith("second request")
+    assert echoed.result.endswith("second request")
 
 
 # --- new encapsulation methods ---

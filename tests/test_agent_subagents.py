@@ -438,7 +438,7 @@ async def test_spawn_agent_tool_runs_subagent_end_to_end(tmp_path: Path):
     deps = _make_deps(tmp_path)
     h = _make_harness(_spawn_then_done_model(), deps)
     out = await h.run_turn("investigate")
-    assert out == "done: SUBREPORT"
+    assert out.result == "done: SUBREPORT"
 
 
 def test_parallel_tool_calls_enabled_on_main_agent(tmp_path):

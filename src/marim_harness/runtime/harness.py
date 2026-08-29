@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from ..forge.backend import ForgeBackend
     from ..stats.ledger import StatsLedger
     from ..trust_surface import ProjectSurface
+    from .outcome import TurnOutcome
 
 from ..compaction import (
     Summarizer,
@@ -163,9 +164,9 @@ class HarnessConfig:
     forge_backend: object | None = None
     # Structured output for embedder turns (HarnessBuilder.with_output_type).
     # A pydantic BaseModel subclass or an object-rooted JSON Schema dict;
-    # None ⇒ turns return plain text. Typed Any (like capabilities) to keep
-    # this dataclass's imports light; TurnController resolves it into the
-    # per-run output_type override.
+    # None ⇒ turns return plain text. Left loosely typed (like forge_backend's
+    # `object | None`) to keep this dataclass's imports light; TurnController
+    # resolves it into the per-run output_type override.
     output_type: Any = None
     # Autonomous wake-on-completion knobs, surfaced to the TUI app. Defaults
     # match ModelConfig: wake on, cap 8.
@@ -1046,9 +1047,15 @@ class Harness:
         self, prompt: str,
         event_stream_handler: EventStreamHandler[Deps] | None = None,
         attachments: list[tuple[bytes, str]] | None = None,
-    ) -> str:
-        """Run the agent until it produces a final text answer, looping through
-        any approval rounds. Returns the final text output."""
+    ) -> TurnOutcome:
+        """Run the agent until it produces a final answer, looping through
+        any approval rounds.
+
+        Returns:
+            The terminal TurnOutcome: subtype, final text (result), validated
+            structured data (structured_output, when built with_output_type),
+            and failure detail.
+        """
         return await self.turn_controller.run_turn(prompt, event_stream_handler, attachments)
 
     async def manual_compact(self, instructions: str | None = None) -> bool:

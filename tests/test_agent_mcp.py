@@ -132,7 +132,7 @@ async def test_run_turn_forwards_live_toolsets(tmp_path: Path):
 
     h.agent.run = fake_run
     out = await h.run_turn("hi")
-    assert out == "ok"
+    assert out.result == "ok"
     # Live servers reach agent.run, prefixed with the server name at compose time.
     (forwarded,) = captured["toolsets"]
     assert isinstance(forwarded, PrefixedToolset)

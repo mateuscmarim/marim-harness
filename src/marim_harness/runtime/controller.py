@@ -54,6 +54,7 @@ from .errors import (
     is_context_overflow_error,
     overflow_is_contention,
 )
+from .outcome import TurnOutcome
 from .permissions import Mode, resolve_approvals
 from .toolsets import compose_turn_toolsets
 from .ttft import TtftTrackingModel
@@ -304,8 +305,9 @@ class TurnController:
         # Structured output for embedder turns (HarnessBuilder.with_output_type).
         # Resolved ONCE here: a dict schema becomes StructuredDict (the
         # provider-constrained dict type pydantic-ai uses for structured
-        # output), a BaseModel subclass passes through. Task 4 turns this
-        # into the per-run output_type override on every agent.run round.
+        # output), a BaseModel subclass passes through. _run_output_type
+        # turns it into the per-run output_type override carried by every
+        # agent.run round of the turn.
         self._output_type_dict = output_type if isinstance(output_type, dict) else None
         self._structured_type: Any = (
             StructuredDict(output_type) if isinstance(output_type, dict) else output_type
@@ -363,6 +365,19 @@ class TurnController:
         from .harness import _DEFAULT_MODEL_SETTINGS
 
         return settings_for(self.get_thinking(), _DEFAULT_MODEL_SETTINGS)
+
+    def _run_output_type(self) -> list[Any] | None:
+        """The per-run output override for structured harnesses, else None.
+
+        None leaves the agent's own ``[str, DeferredToolRequests]`` in place,
+        so a plain harness is byte-identical to pre-structured behavior.
+        The override always carries the deferred arm: without
+        DeferredToolRequests, pydantic-ai raises UserError at the first gated
+        tool call instead of deferring it — and the override rides EVERY
+        round, so an approval continuation keeps the same output schema."""
+        if self._structured_type is None:
+            return None
+        return [self._structured_type, DeferredToolRequests]
 
     def apply_session_start_context(self, ctx: str) -> None:
         """Stash SessionStart-injected context for the next turn's prompt."""
@@ -874,9 +889,10 @@ class TurnController:
             raise
         return deferred_results
 
-    async def _finish_turn(self, output: str) -> str:
+    async def _finish_turn(self, output: Any) -> TurnOutcome:
         """The post-persist turn tail: Stop hook (must never crash a completed
-        turn) and the non-blocking autoname schedule. Returns the final text."""
+        turn) and the non-blocking autoname schedule. Turns end in a
+        TurnOutcome."""
         # The turn has already succeeded and persisted; a failing Stop hook
         # must not turn that into a turn-level exception. Degrade like the
         # approval notification above.
@@ -889,7 +905,16 @@ class TurnController:
         # busy state / queued-prompt drain behind it) must not block on it.
         # Headless settles the task before teardown via wait_autoname.
         self.session.schedule_autoname()
-        return output
+        if isinstance(output, str):
+            return TurnOutcome(subtype="success", result=output,
+                               structured_output=None, errors=None)
+        # DeferredToolRequests reaching here is the ask-mode-no-UI case
+        # (deferrals returned as-is); preserve the historical str() shape.
+        if not isinstance(output, DeferredToolRequests):
+            return TurnOutcome(subtype="success", result=None,
+                               structured_output=output, errors=None)
+        return TurnOutcome(subtype="success", result=str(output),
+                           structured_output=None, errors=None)
 
     async def _run_with_approval(
         self,
@@ -898,10 +923,10 @@ class TurnController:
         toolsets: Sequence[AbstractToolset[Any]] | None,
         event_stream_handler: EventStreamHandler[Deps] | None,
         resumable: list[ModelMessage],
-    ) -> str:
+    ) -> TurnOutcome:
         """Drive the agent.run loop, handling DeferredToolRequests approval rounds,
         persisting on success, and rolling back to ``resumable`` on interrupt.
-        Returns the final text output."""
+        Returns the terminal TurnOutcome."""
         # One-shot retry latches, one per _RunRetry kind — see _RunRetry and
         # _handle_run_failure for why each recovery path gets exactly one shot
         # and why they don't consume each other.
@@ -935,6 +960,10 @@ class TurnController:
                         event_stream_handler=event_stream_handler,
                         toolsets=toolsets,
                         usage=round_usage,
+                        # None ⇒ keep the agent's own [str, DeferredToolRequests];
+                        # a structured harness overrides it on every round,
+                        # continuations included (see _run_output_type).
+                        output_type=self._run_output_type(),
                     )
                 except BaseException as exc:
                     retry = await self._handle_run_failure(
@@ -1025,9 +1054,9 @@ class TurnController:
         prompt: str,
         event_stream_handler: EventStreamHandler[Deps] | None = None,
         attachments: list[tuple[bytes, str]] | None = None,
-    ) -> str:
-        """Run the agent until it produces a final text answer, looping through
-        any approval rounds. Returns the final text output."""
+    ) -> TurnOutcome:
+        """Run the agent until it produces a final answer, looping through any
+        approval rounds. Returns the terminal TurnOutcome."""
         # Fresh per-turn advisor budget: the cap is per TURN, but Deps is
         # session-lived, so the counter must be re-zeroed as each turn starts.
         self.deps.advisor_uses = 0
