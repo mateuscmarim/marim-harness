@@ -36,8 +36,8 @@ async def main() -> None:
         model="anthropic:claude-sonnet-4-6",    # any pydantic-ai model string
     ).build()
 
-    reply = await harness.run_turn("list the files in this directory")
-    print(reply)
+    outcome = await harness.run_turn("list the files in this directory")
+    print(outcome.result)
 
 
 asyncio.run(main())

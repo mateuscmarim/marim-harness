@@ -174,7 +174,8 @@ elements:
 def run_agent_turn(project_root, workspace, repo_names, prompt) -> str:
     """Seam for tests: build the harness and drive the single report turn."""
     harness = build_reporter_harness(project_root, workspace, repo_names)
-    return asyncio.run(harness.run_turn(prompt))
+    outcome = asyncio.run(harness.run_turn(prompt))
+    return outcome.result or ""
 ```
 
 Every CLI test monkeypatches this one name and asserts orchestration
@@ -196,10 +197,11 @@ if not out_path.exists():
     return 1
 ```
 
-`run_turn` returns the model's *text*; whether the gated write actually
-happened is a filesystem fact. For an unattended agent, post-turn
-verification of the intended side effect is the difference between a cron
-job that fails loudly and one that silently emails you nothing for a week.
+`run_turn` returns a `TurnOutcome` whose `result` field contains the model's
+*text*; whether the gated write actually happened is a filesystem fact. For
+an unattended agent, post-turn verification of the intended side effect is
+the difference between a cron job that fails loudly and one that silently
+emails you nothing for a week.
 
 ## Testing
 
@@ -226,7 +228,7 @@ async def test_harness_turn_writes_report_via_gated_write(tmp_path):
         repo_names=frozenset({"twm"}), model=FunctionModel(script),
     )
     out = await harness.run_turn("write the report")
-    assert out == "report written"
+    assert out.result == "report written"
     assert (project / relpath).read_text().startswith("# Daily report")
 ```
 
