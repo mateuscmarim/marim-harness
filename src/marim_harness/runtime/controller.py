@@ -366,6 +366,23 @@ class TurnController:
 
         return settings_for(self.get_thinking(), _DEFAULT_MODEL_SETTINGS)
 
+    def _is_structured_exhaustion(self, exc: BaseException) -> bool:
+        """Validation-exhaustion of a structured turn: pydantic-ai retried the
+        model's output against the schema and gave up. Only meaningful when a
+        structured output is active; every other UnexpectedModelBehavior keeps
+        the generic failure path."""
+        from pydantic import ValidationError
+        from pydantic_ai.exceptions import UnexpectedModelBehavior
+
+        if self._structured_type is None or not isinstance(exc, UnexpectedModelBehavior):
+            return False
+        cause: BaseException | None = exc.__cause__
+        while cause is not None:
+            if isinstance(cause, ValidationError):
+                return True
+            cause = cause.__cause__
+        return "Exceeded retries" in str(exc)
+
     def _run_output_type(self) -> list[Any] | None:
         """The per-run output override for structured harnesses, else None.
 
@@ -908,13 +925,10 @@ class TurnController:
         if isinstance(output, str):
             return TurnOutcome(subtype="success", result=output,
                                structured_output=None, errors=None)
-        # DeferredToolRequests reaching here is the ask-mode-no-UI case
-        # (deferrals returned as-is); preserve the historical str() shape.
-        if not isinstance(output, DeferredToolRequests):
-            return TurnOutcome(subtype="success", result=None,
-                               structured_output=output, errors=None)
-        return TurnOutcome(subtype="success", result=str(output),
-                           structured_output=None, errors=None)
+        # Structured-output terminal: the deferred arm never reaches here —
+        # _run_with_approval intercepts DeferredToolRequests mid-loop.
+        return TurnOutcome(subtype="success", result=None,
+                           structured_output=output, errors=None)
 
     async def _run_with_approval(
         self,
@@ -966,6 +980,22 @@ class TurnController:
                         output_type=self._run_output_type(),
                     )
                 except BaseException as exc:
+                    if self._is_structured_exhaustion(exc):
+                        # Validation exhaustion is a terminal turn result, not an
+                        # infra failure: bank the spend, persist the (resumable)
+                        # history, and report through the outcome. No error note —
+                        # there is nothing the model can act on next turn.
+                        self.session.add_usage(round_usage)
+                        self._reclaim_undelivered_steers()
+                        if self.session.history:
+                            await self._flush_resumable(captured, resumable)
+                            await asyncio.to_thread(self.session.persist)
+                        return TurnOutcome(
+                            subtype="error_max_structured_output_retries",
+                            result=None,
+                            structured_output=None,
+                            errors=[str(exc)],
+                        )
                     retry = await self._handle_run_failure(
                         exc, captured, resumable, deferred_results, round_usage, retried
                     )

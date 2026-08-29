@@ -82,3 +82,16 @@ async def test_structured_turn_survives_approval_round(tmp_path):
     assert calls  # the gated tool really ran (auto mode approves)
     assert outcome.subtype == "success"
     assert outcome.structured_output == Point(a=7)
+
+
+async def test_basemodel_exhaustion_returns_error_subtype(tmp_path):
+    """custom_output_args violates the model on every attempt, so pydantic-ai
+    exhausts its retries and the turn ends as an error outcome, not a raise."""
+    h = (HarnessBuilder(workspace=tmp_path,
+                        model=TestModel(call_tools=[], custom_output_args={"a": "not-an-int"}))
+         .with_output_type(Point)
+         .build())
+    outcome = await _run(h, "give me the point")
+    assert outcome.subtype == "error_max_structured_output_retries"
+    assert outcome.structured_output is None
+    assert outcome.errors
