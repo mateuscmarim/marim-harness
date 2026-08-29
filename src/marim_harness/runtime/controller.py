@@ -56,6 +56,7 @@ from .errors import (
 )
 from .outcome import TurnOutcome
 from .permissions import Mode, resolve_approvals
+from .structured import validate_dict_output
 from .toolsets import compose_turn_toolsets
 from .ttft import TtftTrackingModel
 
@@ -395,6 +396,46 @@ class TurnController:
         if self._structured_type is None:
             return None
         return [self._structured_type, DeferredToolRequests]
+
+    async def _correct_dict_output(
+        self,
+        outcome: TurnOutcome,
+        toolsets: Sequence[AbstractToolset[Any]] | None,
+        event_stream_handler: EventStreamHandler[Deps] | None,
+    ) -> TurnOutcome:
+        """Dict-schema enforcement after a clean turn: validate the emitted
+        object, and if it fails, run ONE corrective round through the same
+        approval machinery (its own persist/flush/rollback comes with it).
+        A second failure reports the validation errors through the outcome.
+        BaseModel schemas never reach here — pydantic-ai already validated
+        them in-run."""
+        if self._output_type_dict is None or outcome.subtype != "success":
+            return outcome
+        errors = validate_dict_output(outcome.structured_output, self._output_type_dict)
+        if not errors:
+            return outcome
+        corrective = (
+            "Your previous response failed schema validation:\n"
+            + "\n".join(f"- {e}" for e in errors)
+            + "\nRespond again with ONLY a JSON object matching the schema."
+        )
+        resumable = list(self.session.history)
+        retry_outcome = await self._run_with_approval(
+            corrective, deferred_results=None, toolsets=toolsets,
+            event_stream_handler=event_stream_handler, resumable=resumable,
+        )
+        if retry_outcome.subtype != "success":
+            return retry_outcome
+        errors = validate_dict_output(retry_outcome.structured_output,
+                                      self._output_type_dict)
+        if errors:
+            return TurnOutcome(
+                subtype="error_max_structured_output_retries",
+                result=retry_outcome.result,
+                structured_output=None,
+                errors=errors,
+            )
+        return retry_outcome
 
     def apply_session_start_context(self, ctx: str) -> None:
         """Stash SessionStart-injected context for the next turn's prompt."""
@@ -1182,10 +1223,11 @@ class TurnController:
             # history in self.session.history, so this must NOT be recomputed from it
             # per iteration (that poisoned the rollback baseline across rounds).
             resumable = list(self.session.history)
-            return await self._run_with_approval(
+            outcome = await self._run_with_approval(
                 user_prompt, deferred_results=None, toolsets=toolsets,
                 event_stream_handler=event_stream_handler, resumable=resumable,
             )
+            return await self._correct_dict_output(outcome, toolsets, event_stream_handler)
         except BaseException:
             # The run never reached the model (it failed before the first round
             # returned, so _run_with_approval left _consumed_this_turn set). The

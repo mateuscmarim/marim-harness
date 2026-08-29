@@ -136,3 +136,57 @@ async def test_exhaustion_on_continuation_round_clears_approval_latch(tmp_path):
     outcome = await _run(h, "touch the file, then report")
     assert outcome.subtype == "error_max_structured_output_retries"
     assert h.deps.approval_round_active is False
+
+
+DICT_SCHEMA = {
+    "type": "object",
+    "properties": {"a": {"type": "integer"}},
+    "required": ["a"],
+}
+
+
+async def test_dict_schema_happy_path(tmp_path):
+    h = (HarnessBuilder(workspace=tmp_path,
+                        model=TestModel(call_tools=[], custom_output_args={"a": 5}))
+         .with_output_type(DICT_SCHEMA)
+         .build())
+    outcome = await _run(h, "give me a")
+    assert outcome.subtype == "success"
+    assert outcome.structured_output == {"a": 5}
+
+
+async def test_dict_schema_corrective_retry_succeeds(tmp_path):
+    """First response violates the schema; the corrective round fixes it."""
+    from pydantic_ai.messages import ModelResponse, ToolCallPart
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+    state = {"calls": 0}
+
+    def fn(messages, info: AgentInfo) -> ModelResponse:
+        state["calls"] += 1
+        args = {"a": "not-an-int"} if state["calls"] == 1 else {"a": 1}
+        # StructuredDict output rides the output tool; its default name is
+        # 'final_result' in pydantic-ai (pydantic_ai/_output.py).
+        return ModelResponse(parts=[ToolCallPart(tool_name="final_result", args=args)])
+
+    h = (HarnessBuilder(workspace=tmp_path, model=FunctionModel(fn))
+         .with_output_type(DICT_SCHEMA)
+         .build())
+    outcome = await _run(h, "give me a")
+    assert outcome.subtype == "success"
+    assert outcome.structured_output == {"a": 1}
+    assert state["calls"] == 2
+
+
+async def test_dict_schema_exhaustion(tmp_path):
+    """TestModel emits the same invalid object every round, so the single
+    corrective attempt also fails and the turn ends as an error outcome."""
+    h = (HarnessBuilder(workspace=tmp_path,
+                        model=TestModel(call_tools=[], custom_output_args={"a": "bad"}))
+         .with_output_type(DICT_SCHEMA)
+         .build())
+    outcome = await _run(h, "give me a")
+    assert outcome.subtype == "error_max_structured_output_retries"
+    assert outcome.structured_output is None
+    assert outcome.errors
+    assert any("a" in e for e in outcome.errors)
