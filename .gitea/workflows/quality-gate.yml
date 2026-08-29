@@ -57,6 +57,33 @@ jobs:
           git fetch --no-tags --force origin master:refs/remotes/origin/master
           echo "origin/master is $(git rev-parse --short origin/master)"
 
+      # The gate fails closed when `--baseline-ref` names a ref whose baseline
+      # it cannot read, and that is the right default everywhere except exactly
+      # once: the PR that ADDS quality-baseline.json, where master genuinely has
+      # no bar to score against and there is nothing to fall back FROM. Probing
+      # for the file rather than hardcoding an exemption keeps that carve-out
+      # alive for precisely as long as the fact that justifies it — the first
+      # merge to master publishes the baseline, and every run after it takes the
+      # ref again with no further edit here.
+      #
+      # The path mirrors `baseline_path` in quality-gate.toml; git has no way to
+      # ask the gate for it. A `git cat-file -e` failure is only ever read as
+      # "absent", never as "unreadable, proceed anyway": when the file IS on
+      # master the flag is passed and the gate does its own fail-closed check.
+      - name: Resolve reference baseline
+        run: |
+          set -uo pipefail
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "push build: the checkout is master, so it is its own reference"
+            echo "BASELINE_REF_ARG=" >> "$GITHUB_ENV"
+          elif git cat-file -e origin/master:quality-baseline.json 2>/dev/null; then
+            echo "scoring against the stricter of this branch and origin/master"
+            echo "BASELINE_REF_ARG=--baseline-ref origin/master" >> "$GITHUB_ENV"
+          else
+            echo "::warning::origin/master has no quality-baseline.json yet — scoring against this branch's baseline alone. Expected only on the PR that adopts the gate."
+            echo "BASELINE_REF_ARG=" >> "$GITHUB_ENV"
+          fi
+
       # Installed via the official script rather than a marketplace action, so
       # this job doesn't depend on the Gitea runner mirroring third-party
       # actions. Same reasoning as ci.yml.
@@ -187,12 +214,14 @@ jobs:
       # still counts and can still be promoted after merge.
       #
       # Not passed on push-to-master: there the checkout IS master, so the
-      # reference is the file already being read.
+      # reference is the file already being read. Which of the two applies is
+      # decided in "Resolve reference baseline" above, not here — unquoted on
+      # purpose, so an empty value contributes no argument at all.
       - name: Run quality gate
         run: |
           $GATE check \
             --summary-out .quality/summary.md \
-            ${{ github.event_name == 'pull_request' && '--baseline-ref origin/master' || '' }}
+            $BASELINE_REF_ARG
 
       # ---------- Ratchet (master only) ----------
       # `always()` is load-bearing. Inheriting the gate step's failure would mean
