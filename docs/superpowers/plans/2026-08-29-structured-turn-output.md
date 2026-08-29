@@ -754,10 +754,10 @@ In `src/marim_harness/runtime/controller.py`:
 
 (Adjust the `"Exceeded retries"` string only if step 2 showed a different message and no ValidationError in the chain.)
 
-2. In `_run_with_approval`'s `while True`, split the exception handling — the new clause comes FIRST (it must win over the generic `except Exception`):
+2. In `_run_with_approval`'s `while True`, split the exception handling — the new branch goes at the TOP of the existing `except BaseException as exc:` body (the real clause; it also catches cancellation — the classifier's `isinstance(UnexpectedModelBehavior)` keeps that path safe):
 
 ```python
-            except Exception as exc:
+            except BaseException as exc:
                 if self._is_structured_exhaustion(exc):
                     # Validation exhaustion is a terminal turn result, not an
                     # infra failure: bank the spend, persist the (resumable)
@@ -765,10 +765,12 @@ In `src/marim_harness/runtime/controller.py`:
                     # there is nothing the model can act on next turn.
                     self.session.add_usage(round_usage)
                     self._reclaim_undelivered_steers()
-                    self._clear_stash()
-                    if self.session.history:
-                        await self._flush_resumable(deadline=0.5)
-                        await asyncio.to_thread(self.session.persist)
+                    await self._flush_resumable(captured, resumable)
+                    # The flush wrote a repaired, resumable history — the
+                    # dirty-history latch (if exhaustion struck on a
+                    # continuation round after an approval) no longer applies.
+                    # Same reset the terminal _handle_run_failure path performs.
+                    self.deps.approval_round_active = False
                     return TurnOutcome(
                         subtype="error_max_structured_output_retries",
                         result=None,
@@ -781,7 +783,7 @@ In `src/marim_harness/runtime/controller.py`:
                 ...
 ```
 
-(the existing `_handle_run_failure` call and everything after it stay exactly as they are — only the new `if` block is inserted at the top of the `except Exception` body).
+(the existing `_handle_run_failure` call and everything after it stay exactly as they are — only the new `if` block is inserted at the top of the `except BaseException` body. `_flush_resumable` takes `(captured, resumable)` and persists internally — no separate persist call, and NEVER guard the flush on a non-empty session history: a brand-new session's first turn starts empty and its exchange must still be flushed).
 
 - [ ] **Step 4: Run the feature tests**
 
