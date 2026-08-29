@@ -2,7 +2,11 @@
 
 Date: 2026-08-29
 Branch: `feat/structured-turn-output` (off master at b269097, v0.4.0)
-Status: approved pending user review
+Status: approved 2026-08-29 — implemented on `feat/structured-turn-output`
+(plan: `docs/superpowers/plans/2026-08-29-structured-turn-output.md`, executed
+via subagent-driven development; two post-approval amendments landed: dict
+validator resolves drafts via `validator_for`, exhaustion classification is
+message-based — both reflected below)
 
 ## Goal
 
@@ -120,7 +124,10 @@ not import it).
 - Infra/provider errors raise out of `run_turn` exactly as today. Only
   schema failures become outcomes.
 - BaseModel exhaustion: the controller classifies `UnexpectedModelBehavior`
-  raised with a validation cause while a structured output is active into
+  whose message carries pydantic-ai's output-retry-exhaustion phrase
+  ("maximum output retries" — message-matching, NOT cause-chain walking:
+  tool-arg retry exhaustion also chains a `ValidationError` but must keep
+  the infra failure path) while a structured output is active into
   `TurnOutcome("error_max_structured_output_retries", result=None,
   structured_output=None, errors=[...])`. `_handle_run_failure`'s one-shot
   recovery latches must NOT treat this exception as retryable infra failure.
