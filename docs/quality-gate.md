@@ -70,6 +70,21 @@ uvx ratchet-gate@0.5.0 check          # exit 1 on any regression
 baseline; CI adds `--baseline-ref origin/master` on PRs so a branch cannot
 raise its own bar in the same commit that regresses.
 
+## Three jobs, and why
+
+| Job | Permissions | Runs repository code? |
+|---|---|---|
+| `gate` | `contents: read` | **Yes** — `uv sync` and `pytest` |
+| `report` | `pull-requests: write` | No — downloads the summary, posts a comment |
+| `promote` | `contents: write` | No — master only, after the merge |
+
+The split is a security boundary, not tidiness. `gate` runs the pull request's
+own code, so it holds no write scope and cannot push anywhere. Everything that
+needs to write is in a job that runs no repository code, and `promote` is
+additionally reachable only from a push to `master`. Keep it that way: moving
+the promote steps back into `gate` would hand every PR author a write-scoped
+token inside a process they control.
+
 On the PR that first adds `quality-baseline.json` the workflow probes for the
 file on `origin/master` and omits the flag when it is absent — the gate fails
 closed on an unreadable reference, which would otherwise make the adoption PR
@@ -89,6 +104,11 @@ A local `check` showing coverage a shade *above* baseline is therefore normal an
 not an improvement to promote. It also means CI never exercises those
 permission-failure paths; closing that gap means running the job as a non-root
 user, which is a runner change, not a gate change.
+
+The same rule covers the interpreter: the gate job pins the 3.12 *series*,
+and the runner currently supplies 3.12.3. Do not record an exact patch
+anywhere without re-measuring on it — the baseline once claimed 3.12.13,
+which no runner has ever run.
 
 ## The secrets allowlist
 

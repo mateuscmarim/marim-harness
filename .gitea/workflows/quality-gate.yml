@@ -17,13 +17,25 @@ concurrency:
   group: quality-gate-${{ github.ref }}
   cancel-in-progress: true
 
+# Read-only by default. Every write scope is granted per-job below, to a job
+# that does not run repository code — see the note on `gate`.
 permissions:
-  contents: write # the baseline ratchet commit on master
-  pull-requests: write # the sticky summary comment
+  contents: read
 
 jobs:
+  # Runs the analysers, which means it runs the PR's own code: `uv sync` executes
+  # arbitrary build hooks and `pytest` executes arbitrary tests. So this job gets
+  # NO write scope and NO credentials.
+  #
+  # It previously had workflow-level `contents: write` while checkout persisted
+  # the token into .git/config, which handed every PR author a write-scoped token
+  # inside a process they control — enough to push to master, which this repo
+  # does not protect. The promote and comment steps that needed those scopes are
+  # now their own jobs, neither of which runs repository code.
   gate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       # One pin read by every step that scores or adopts a number. Split across
       # two versions, a later step could adopt a value the earlier one never
@@ -35,14 +47,28 @@ jobs:
       # boolean_must_be_zero, that turns every run red at once.
       GITLEAKS_VERSION: "8.30.1"
     steps:
-      # ref: the PR head, not the merge commit — the summary has to describe the
-      # branch someone is looking at.
+      # The PR head, not the merge commit — the summary has to describe the branch
+      # someone is actually looking at.
+      #
+      # `refs/pull/N/head` rather than `head.ref`. A head ref is a branch name in
+      # the HEAD repository, and for a PR from a fork no such branch exists here:
+      # checkout would fail, or silently check out an unrelated same-named branch
+      # in this repo and score that instead. Gitea publishes the pull ref in the
+      # base repo, so it resolves for fork and same-repo PRs alike.
+      #
+      # Credentials ARE persisted here, and deliberately so: this is a private
+      # repo, so the "Fetch master" step below cannot authenticate without them.
+      # What makes that safe is the job's `contents: read` — the persisted token
+      # grants read on a repository the PR author can already read, which is the
+      # standard posture. The defect this replaced was not persistence, it was
+      # persisting a token carrying `contents: write`.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.ref || github.ref }}
-          # Explicit, so the ratchet commit below has credentials to push with.
-          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: >-
+            ${{ github.event_name == 'pull_request'
+                && format('refs/pull/{0}/head', github.event.pull_request.number)
+                || github.ref }}
 
       # `--baseline-ref origin/master` reads quality-baseline.json out of this
       # ref, so it has to be master's CURRENT tip. checkout's fetch-depth: 0
@@ -100,11 +126,14 @@ jobs:
           restore-keys: |
             uv-gate-${{ runner.os }}-
 
-      # 3.12, matching the version quality-baseline.json was seeded on. Coverage
-      # is version-sensitive — measured at seeding, lines held at 92.51 across
-      # 3.12/3.13 but branches moved 87.24 -> 87.22. That drift fits inside the
-      # 0.1 tolerance, so this pin is belt and braces rather than the only thing
-      # holding the number still.
+      # Pinned to the 3.12 series, which is what quality-baseline.json's coverage
+      # rows were measured on — by THIS job, at CPython 3.12.3, whatever patch the
+      # runner image supplies. Deliberately not pinned to an exact patch: uv would
+      # then download a second interpreter on every run to satisfy a precision the
+      # baseline does not actually need, since the 0.1 tolerance covers the drift
+      # a patch bump produces. Do not write an exact patch into a comment here
+      # without re-measuring — an earlier version of this file claimed 3.12.13,
+      # which no runner has ever used.
       - name: Sync dependencies
         run: uv sync --python 3.12
 
@@ -175,6 +204,18 @@ jobs:
           # and a finding belongs in a red row rather than an aborted run. That
           # also swallows a crash, so check the artifact rather than the exit
           # code: an audit that never ran is not an audit that found nothing.
+          # --all-extras first. `uv sync` installs the base deps plus the `dev`
+          # group, and dev happens to duplicate most extras — but not all: the
+          # `lsp-python` extra's basedpyright and nodejs-wheel-binaries are
+          # installed by nothing else, so freezing the test environment audited
+          # 113 of the project's 115 declared packages and reported the result as
+          # if it covered everything. A security metric that silently skips a
+          # dependency tree is worse than no metric.
+          #
+          # Safe to run here: this step is after the test run, so it cannot move
+          # the coverage numbers, and the two extra packages add no advisories
+          # today (measured: 9 either way).
+          uv sync --python 3.12 --all-extras
           uv pip freeze > /tmp/freeze.txt
           uvx pip-audit -f json -r /tmp/freeze.txt -o .quality/pip-audit.json || true
           if [ ! -s .quality/pip-audit.json ]; then
@@ -223,71 +264,6 @@ jobs:
             --summary-out .quality/summary.md \
             $BASELINE_REF_ARG
 
-      # ---------- Ratchet (master only) ----------
-      # `always()` is load-bearing. Inheriting the gate step's failure would mean
-      # one stuck red row freezes promotion for EVERY metric — the ratchet
-      # quietly stops ratcheting while everything else improves. A regression is
-      # still a red run; it just no longer holds the improvements hostage.
-      # --monotonic can only tighten, so this is safe to run unattended and the
-      # commit it produces re-runs to a no-op.
-      - name: Promote baseline (monotonic)
-        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/master'
-        run: $GATE promote --monotonic
-
-      - name: Commit ratcheted baseline
-        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/master'
-        run: |
-          set -euo pipefail
-          git add quality-baseline.json
-          if git diff --cached --quiet; then
-            echo "baseline unchanged"
-            exit 0
-          fi
-          git -c user.name="quality-gate-bot" \
-              -c user.email="quality-gate-bot@marim.dev" \
-              commit -m "chore(quality-gate): ratchet baseline after merge"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
-
-      # ---------- Report ----------
-      # Sticky by hand: find the marker, edit that comment if it exists, post a
-      # new one otherwise. Without the marker search every push appends another
-      # wall of metrics to the PR. continue-on-error is deliberate — the verdict
-      # is already the job's status, and a comment hiccup must not repaint it.
-      - name: Post summary to PR
-        if: always() && github.event_name == 'pull_request'
-        continue-on-error: true
-        env:
-          GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ ! -s .quality/summary.md ]; then
-            echo "::warning::no summary to post"
-            exit 0
-          fi
-          # Exported because the search below reads it from the environment; a
-          # bare shell var reaches python as an empty string, and every run then
-          # posts a fresh comment instead of editing one.
-          export MARKER="<!-- marim-harness-quality-gate -->"
-          API="${{ github.server_url }}/api/v1/repos/${{ github.repository }}"
-          PR="${{ github.event.pull_request.number }}"
-          BODY=$(printf '%s\n%s' "$MARKER" "$(cat .quality/summary.md)")
-          PAYLOAD=$(python3 -c 'import json,sys; print(json.dumps({"body": sys.stdin.read()}))' <<< "$BODY")
-
-          EXISTING=$(curl -sf -H "Authorization: token ${GITEA_TOKEN}" \
-            "${API}/issues/${PR}/comments" \
-            | python3 -c 'import json,sys,os; cs=json.load(sys.stdin); print(next((str(c["id"]) for c in cs if os.environ["MARKER"] in (c.get("body") or "")), ""))' \
-            ) || EXISTING=""
-
-          if [ -n "$EXISTING" ]; then
-            curl -sf -X PATCH -H "Authorization: token ${GITEA_TOKEN}" \
-              -H 'Content-Type: application/json' -d "$PAYLOAD" \
-              "${API}/issues/comments/${EXISTING}" > /dev/null
-          else
-            curl -sf -X POST -H "Authorization: token ${GITEA_TOKEN}" \
-              -H 'Content-Type: application/json' -d "$PAYLOAD" \
-              "${API}/issues/${PR}/comments" > /dev/null
-          fi
-
       # Staged out of the dotted directory first. upload-artifact@v3 pointed
       # straight at `.quality/` has been observed to report "No files were
       # found" and still go GREEN — a run that stores nothing while claiming
@@ -308,3 +284,129 @@ jobs:
           name: quality-artifacts
           path: quality-artifacts/
           retention-days: 14
+
+  # ---------- Report (PR only) ----------
+  # Its own job because posting a comment needs `pull-requests: write`, and the
+  # job that runs the PR's code must not hold any write scope. This one runs no
+  # repository code at all: it downloads the summary the gate produced and posts
+  # it. Nothing here is checked out.
+  report:
+    runs-on: ubuntu-latest
+    needs: gate
+    # always() — a red gate is exactly when the table is most worth reading.
+    if: always() && github.event_name == 'pull_request'
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Download quality artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: quality-artifacts
+          path: quality
+
+      # Sticky by hand: find the marker, edit that comment if it exists, post a
+      # new one otherwise. Without the marker search every push appends another
+      # wall of metrics to the PR. continue-on-error is deliberate — the verdict
+      # is already the gate job's status, and a comment hiccup must not repaint it.
+      - name: Post summary to PR
+        continue-on-error: true
+        env:
+          GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ ! -s quality/summary.md ]; then
+            echo "::warning::no summary to post"
+            exit 0
+          fi
+          # Exported because the search below reads it from the environment; a
+          # bare shell var reaches python as an empty string, and every run then
+          # posts a fresh comment instead of editing one.
+          export MARKER="<!-- marim-harness-quality-gate -->"
+          API="${{ github.server_url }}/api/v1/repos/${{ github.repository }}"
+          PR="${{ github.event.pull_request.number }}"
+          BODY=$(printf '%s\n%s' "$MARKER" "$(cat quality/summary.md)")
+          PAYLOAD=$(python3 -c 'import json,sys; print(json.dumps({"body": sys.stdin.read()}))' <<< "$BODY")
+
+          EXISTING=$(curl -sf -H "Authorization: token ${GITEA_TOKEN}" \
+            "${API}/issues/${PR}/comments" \
+            | python3 -c 'import json,sys,os; cs=json.load(sys.stdin); print(next((str(c["id"]) for c in cs if os.environ["MARKER"] in (c.get("body") or "")), ""))' \
+            ) || EXISTING=""
+
+          if [ -n "$EXISTING" ]; then
+            curl -sf -X PATCH -H "Authorization: token ${GITEA_TOKEN}" \
+              -H 'Content-Type: application/json' -d "$PAYLOAD" \
+              "${API}/issues/comments/${EXISTING}" > /dev/null
+          else
+            curl -sf -X POST -H "Authorization: token ${GITEA_TOKEN}" \
+              -H 'Content-Type: application/json' -d "$PAYLOAD" \
+              "${API}/issues/${PR}/comments" > /dev/null
+          fi
+
+  # ---------- Ratchet (master only) ----------
+  # The only job with `contents: write`, and it runs ONLY on a push to master —
+  # where the code being built is master itself, already reviewed and merged.
+  # No pull_request run ever reaches it, so no PR author's code shares a process
+  # with a write-scoped token.
+  #
+  # It reuses the gate's reports via the artifact instead of re-running the
+  # analysers: a second measurement would be a different measurement, and
+  # promoting numbers nobody scored is precisely what the ratchet exists to stop.
+  promote:
+    runs-on: ubuntu-latest
+    needs: gate
+    # always() is load-bearing. Inheriting the gate's failure would mean one
+    # stuck red row freezes promotion for EVERY metric — the ratchet quietly
+    # stops ratcheting while everything else improves. A regression is still a
+    # red run; it just no longer holds the improvements hostage.
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/master'
+    permissions:
+      contents: write
+    env:
+      GATE: uvx ratchet-gate@0.5.0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Download quality artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: quality-artifacts
+          path: .quality
+
+      # promote reads the staged reports; without them `collect_current` would
+      # hard-fail anyway, but failing here says why in one line instead of a
+      # parser traceback.
+      - name: Check the reports arrived
+        run: |
+          set -euo pipefail
+          count=$(find .quality -type f | wc -l)
+          echo "restored $count report file(s)"
+          if [ "$count" -eq 0 ]; then
+            echo "::error::no reports in the artifact — refusing to promote a baseline from nothing"
+            exit 1
+          fi
+
+      # --monotonic can only tighten, so this is safe to run unattended and the
+      # commit it produces re-runs to a no-op (no promote loop).
+      - name: Promote baseline (monotonic)
+        run: $GATE promote --monotonic
+
+      - name: Commit ratcheted baseline
+        run: |
+          set -euo pipefail
+          git add quality-baseline.json
+          if git diff --cached --quiet; then
+            echo "baseline unchanged"
+            exit 0
+          fi
+          git -c user.name="quality-gate-bot" \
+              -c user.email="quality-gate-bot@marim.dev" \
+              commit -m "chore(quality-gate): ratchet baseline after merge"
+          git push origin HEAD:master
