@@ -86,7 +86,9 @@ def _poll_idle(tc, base, timeout=10.0):
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if tc.get(base, headers=AUTH).json()["status"] == "idle":
+        resp = tc.get(base, headers=AUTH)
+        assert resp.status_code == 200, f"{base} returned {resp.status_code}: {resp.text}"
+        if resp.json()["status"] == "idle":
             return
         time.sleep(0.02)
     raise AssertionError("session never reached idle")
