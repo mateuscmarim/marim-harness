@@ -11,8 +11,9 @@ def _engine(tmp_path, spawn, **kw):
     return WorkflowEngine(deps, spawn, **kw), deps
 
 
-async def _echo_spawn(type, task, stream_id, mcp_names, max_output_chars,
-                      model, isolation, caller_depth, **kw):
+async def _echo_spawn(
+    type, task, stream_id, mcp_names, max_output_chars, model, isolation, caller_depth, **kw
+):
     await asyncio.sleep(0)
     return f"[{type}@{caller_depth}] {task}"
 
@@ -95,11 +96,7 @@ async def test_on_workflow_spawn_fires_before_each_child(tmp_path):
 
     eng, deps = _engine(tmp_path, _echo_spawn)
     deps.ui.on_workflow_spawn = on_spawn
-    script = (
-        "import asyncio\n"
-        'await asyncio.gather(agent("t1"), agent("t2"))\n'
-        '"done"'
-    )
+    script = 'import asyncio\nawait asyncio.gather(agent("t1"), agent("t2"))\n"done"'
     await eng.run(script, None, "tcX")
     ids = sorted(a[0] for a in announced)
     assert ids == ["tcX::wf1", "tcX::wf2"]
@@ -154,8 +151,7 @@ FINDINGS = {
 }
 
 SCHEMA_SCRIPT = (
-    'r = await agent("review", type="explore", schema=' + repr(FINDINGS) + ")\n"
-    'r["findings"]'
+    'r = await agent("review", type="explore", schema=' + repr(FINDINGS) + ')\nr["findings"]'
 )
 
 
@@ -334,11 +330,7 @@ async def test_agent_failure_is_catchable_in_script(tmp_path):
 
     eng, _ = _engine(tmp_path, spawn)
     script = (
-        "try:\n"
-        '    r = await agent("x")\n'
-        "except Exception as e:\n"
-        '    r = "recovered: " + str(e)\n'
-        "r"
+        'try:\n    r = await agent("x")\nexcept Exception as e:\n    r = "recovered: " + str(e)\nr'
     )
     out = await eng.run(script, None, "tc1")
     assert "recovered:" in out and "spawn exploded" in out
@@ -420,16 +412,17 @@ def test_effective_timeout_clamps_to_ceiling():
     because the 300s default is unobservable in a fast integration test."""
     from marim_harness.workflows.engine import _effective_timeout
 
-    assert _effective_timeout(None, 1800.0) == 300.0      # omitted -> default
-    assert _effective_timeout(60.0, 1800.0) == 60.0       # under ceiling -> honored
-    assert _effective_timeout(9999.0, 1800.0) == 1800.0   # over ceiling -> clamped
-    assert _effective_timeout(None, 10.0) == 10.0         # tiny ceiling clamps the default too
+    assert _effective_timeout(None, 1800.0) == 300.0  # omitted -> default
+    assert _effective_timeout(60.0, 1800.0) == 60.0  # under ceiling -> honored
+    assert _effective_timeout(9999.0, 1800.0) == 1800.0  # over ceiling -> clamped
+    assert _effective_timeout(None, 10.0) == 10.0  # tiny ceiling clamps the default too
 
 
 @pytest.mark.anyio
 async def test_requested_timeout_over_ceiling_reports_the_clamped_value(tmp_path):
     """A clamped request must be visible: the timeout message reports the
     EFFECTIVE duration, not the requested one."""
+
     async def slow_spawn(*a, **kw):
         await asyncio.sleep(60)
         return "never"
@@ -447,6 +440,7 @@ async def test_requested_timeout_extends_past_the_default(tmp_path):
     """A run whose requested timeout exceeds the old 300s-style bound (scaled
     down here) survives, proving the per-call request really widens the VM
     duration limit and the outer wait together."""
+
     async def slow_spawn(*a, **kw):
         await asyncio.sleep(0.2)
         return "ok"
@@ -491,11 +485,7 @@ async def test_cancelling_the_run_aborts_children_and_reraises(tmp_path):
         return "never"
 
     eng, _ = _engine(tmp_path, slow_spawn)
-    script = (
-        "import asyncio\n"
-        'await asyncio.gather(agent("a"), agent("b"))\n'
-        '"done"'
-    )
+    script = 'import asyncio\nawait asyncio.gather(agent("a"), agent("b"))\n"done"'
     run = asyncio.ensure_future(eng.run(script, None, "tc1"))
     await started.wait()
     run.cancel()

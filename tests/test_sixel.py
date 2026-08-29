@@ -29,7 +29,7 @@ def decode(payload: str) -> list[list[int]]:
     assert raster, "the payload must declare its raster size"
     width, height = int(raster.group(1)), int(raster.group(2))
     # Palette definitions out of the way, `#<n>` can only mean "select color n".
-    body = re.sub(r"#\d+;\d+;\d+;\d+;\d+", "", body[raster.end():])
+    body = re.sub(r"#\d+;\d+;\d+;\d+;\d+", "", body[raster.end() :])
     pixels = [[0] * width for _ in range(height)]
     color, top, x, index = 0, 0, 0, 0
     while index < len(body):
@@ -89,11 +89,14 @@ def test_the_image_decodes_back_to_the_matrix(scale):
 def test_a_real_pairing_payload_survives_the_round_trip():
     from marim_harness.interfaces.qr import encode
 
-    matrix = encode("marim://pair?v=1&url=http%3A%2F%2F192.168.0.3%3A8642"
-                    "&token=" + "a" * 43 + "&name=workstation")
+    matrix = encode(
+        "marim://pair?v=1&url=http%3A%2F%2F192.168.0.3%3A8642"
+        "&token=" + "a" * 43 + "&name=workstation"
+    )
     pixels = decode(render(matrix, scale=4))
-    assert [[pixels[y * 4][x * 4] for x in range(len(matrix[0]))] for y in range(len(matrix))] \
-        == [list(row) for row in matrix]
+    assert [[pixels[y * 4][x * 4] for x in range(len(matrix[0]))] for y in range(len(matrix))] == [
+        list(row) for row in matrix
+    ]
 
 
 def test_the_image_is_square_and_declares_its_own_size():
@@ -129,15 +132,18 @@ def test_empty_matrix_renders_nothing():
     assert render([], scale=6) == ""
 
 
-@pytest.mark.parametrize("reply,expected", [
-    ("\033[?62;4;6;9;22c", True),
-    ("\033[?62;4c", True),
-    ("\033[?64;22c", False),          # no sixel among the parameters
-    ("\033[?62;44c", False),          # 44 is not 4
-    ("", False),                      # nothing answered
-    ("\033[?62;4", False),            # truncated: no terminator
-    ("garbage", False),
-])
+@pytest.mark.parametrize(
+    "reply,expected",
+    [
+        ("\033[?62;4;6;9;22c", True),
+        ("\033[?62;4c", True),
+        ("\033[?64;22c", False),  # no sixel among the parameters
+        ("\033[?62;44c", False),  # 44 is not 4
+        ("", False),  # nothing answered
+        ("\033[?62;4", False),  # truncated: no terminator
+        ("garbage", False),
+    ],
+)
 def test_sixel_is_read_from_the_device_attributes_reply(reply, expected):
     assert supports_sixel(reply) is expected
 

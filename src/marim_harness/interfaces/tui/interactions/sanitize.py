@@ -20,9 +20,7 @@ import re
 # so no ESC survives regardless of what follows it. ``[\s\S]`` rather than ``.``
 # deliberately: ``.`` does not match a newline, so ``ESC\n`` would leave a bare
 # ESC in the output.
-_ESCAPES = re.compile(
-    r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[\s\S]"
-)
+_ESCAPES = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[\s\S]")
 
 # Every C0 control except the two that are legitimate content in a command, a
 # file, or a script, plus the C1 range (\x80-\x9f). \r is excluded deliberately:

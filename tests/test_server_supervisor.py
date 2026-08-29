@@ -22,8 +22,14 @@ from marim_harness.tools.provider import BuiltinToolProvider
 pytestmark = pytest.mark.anyio
 
 _UI_HOOK_FIELDS = {
-    "request_approval", "ask_user", "on_subagent_event", "on_subagent_notice",
-    "on_subagent_model", "on_subagent_usage", "detach_fanout", "interactive",
+    "request_approval",
+    "ask_user",
+    "on_subagent_event",
+    "on_subagent_notice",
+    "on_subagent_model",
+    "on_subagent_usage",
+    "detach_fanout",
+    "interactive",
     "notifier",
 }
 
@@ -38,8 +44,13 @@ def _make_deps(root: Path, mode: Mode = Mode.auto, **kw) -> Deps:
 
 
 def _make_harness(model, deps, **config_kwargs) -> Harness:
-    return Harness(model=model, provider=BuiltinToolProvider(), deps=deps,
-                   instructions="You are a coding agent.", **config_kwargs)
+    return Harness(
+        model=model,
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="You are a coding agent.",
+        **config_kwargs,
+    )
 
 
 def _model() -> FunctionModel:
@@ -62,8 +73,9 @@ def _factory(created: list):
 
 def _record(tmp_path) -> WorkspaceRecord:
     (tmp_path / "ws").mkdir(exist_ok=True)
-    return WorkspaceRecord(id="ws", name="ws", path=str(tmp_path / "ws"),
-                           kind="registered", created="2026-07-06")
+    return WorkspaceRecord(
+        id="ws", name="ws", path=str(tmp_path / "ws"), kind="registered", created="2026-07-06"
+    )
 
 
 async def test_host_for_creates_once_and_reuses(tmp_path):

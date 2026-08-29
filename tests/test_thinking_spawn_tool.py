@@ -24,9 +24,7 @@ async def test_spawn_forwards_thinking_to_service(tmp_path):
         return "done"
 
     ctx = _ctx(tmp_path, run_subagent)
-    out = await spawn_tools.spawn_agent(
-        ctx, "coder", "do it", thinking="high"
-    )
+    out = await spawn_tools.spawn_agent(ctx, "coder", "do it", thinking="high")
     assert out == "done"
     # thinking rides at the tail of the positional dispatch (mirrors tier).
     assert "high" in seen["args"]

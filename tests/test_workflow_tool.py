@@ -24,15 +24,18 @@ async def test_delegates_script_args_and_tool_call_id(tmp_path):
     seen = {}
 
     async def fake_runner(script, args, tool_call_id, timeout_secs):
-        seen.update(script=script, args=args, tool_call_id=tool_call_id,
-                    timeout_secs=timeout_secs)
+        seen.update(script=script, args=args, tool_call_id=tool_call_id, timeout_secs=timeout_secs)
         return "result"
 
     deps.services.run_workflow = fake_runner
     out = await run_workflow(_ctx(deps, "abc"), "1 + 1", args={"k": 1})
     assert out == "result"
-    assert seen == {"script": "1 + 1", "args": {"k": 1}, "tool_call_id": "abc",
-                    "timeout_secs": None}
+    assert seen == {
+        "script": "1 + 1",
+        "args": {"k": 1},
+        "tool_call_id": "abc",
+        "timeout_secs": None,
+    }
 
 
 @pytest.mark.anyio

@@ -31,9 +31,7 @@ def _fake_harness():
     from types import SimpleNamespace
 
     h = SimpleNamespace(
-        deps=SimpleNamespace(
-            workspace=SimpleNamespace(mode=Mode.auto), trust=TrustState()
-        ),
+        deps=SimpleNamespace(workspace=SimpleNamespace(mode=Mode.auto), trust=TrustState()),
         model_label="openrouter/x",
         model_id="x",
         model_source=None,  # disables the model-change picker path
@@ -836,9 +834,7 @@ async def test_settings_has_advisor_row_defaulting_off():
 
 
 @pytest.mark.anyio
-async def test_advisor_choice_saves_env_and_refreshes_catalog(
-    isolated_env, monkeypatch, tmp_path
-):
+async def test_advisor_choice_saves_env_and_refreshes_catalog(isolated_env, monkeypatch, tmp_path):
     from marim_harness.config.model import MultiModelSource
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))

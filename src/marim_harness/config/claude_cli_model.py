@@ -77,9 +77,7 @@ def latest_user_text(messages: list[ModelMessage]) -> str:
 
     for msg in reversed(messages):
         if isinstance(msg, ModelRequest):
-            texts = [
-                _part_text(p.content) for p in msg.parts if isinstance(p, UserPromptPart)
-            ]
+            texts = [_part_text(p.content) for p in msg.parts if isinstance(p, UserPromptPart)]
             if texts:
                 return "\n".join(t for t in texts if t)
     return ""
@@ -166,9 +164,7 @@ def flatten_history(messages: list[ModelMessage]) -> str:
     return "\n\n".join(lines)
 
 
-def request_usage_from_cli(
-    cli_usage: dict | None, total_cost_usd: float | None
-) -> RequestUsage:
+def request_usage_from_cli(cli_usage: dict | None, total_cost_usd: float | None) -> RequestUsage:
     """Build a ``RequestUsage`` from the CLI ``result`` event's usage block.
 
     Mirrors ``cli_backend.synth_usage`` (which returns a RunUsage for sub-agents):
@@ -276,9 +272,7 @@ def _flatten_result_content(content) -> str:
         return content
     if isinstance(content, list):
         return "".join(
-            b.get("text", "")
-            for b in content
-            if isinstance(b, dict) and b.get("type") == "text"
+            b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
         )
     return "" if content is None else str(content)
 
@@ -754,9 +748,7 @@ class ClaudeCliModel(Model):
             # Per-response timestamp (see request()): stamped when the stream is
             # opened, not once at model construction.
             _ts=datetime.now(tz=timezone.utc),
-            _set_session=(
-                None if self.ephemeral else lambda sid: setattr(self, "session_id", sid)
-            ),
+            _set_session=(None if self.ephemeral else lambda sid: setattr(self, "session_id", sid)),
             _on_activity=self.on_activity,
             _on_subagent=self.on_subagent,
             _on_subagent_model=self.on_subagent_model,
@@ -795,9 +787,7 @@ class _TextFolder:
         self.folded_any = False
 
     async def _emit(self, content: str, part_id: str):
-        for event in self._parts_manager.handle_text_delta(
-            vendor_part_id=part_id, content=content
-        ):
+        for event in self._parts_manager.handle_text_delta(vendor_part_id=part_id, content=content):
             yield event
 
     async def emit_text(self, delta: str):

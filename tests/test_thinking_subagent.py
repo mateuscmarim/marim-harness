@@ -17,8 +17,7 @@ from marim_harness.workspace.agents import AgentDef, _parse_agent
 def test_frontmatter_thinking_field_parses(tmp_path):
     p = tmp_path / "coder.md"
     p.write_text(
-        "---\ndescription: careful coder\nthinking: high\ntools: read_file\n"
-        "---\nBe careful.\n",
+        "---\ndescription: careful coder\nthinking: high\ntools: read_file\n---\nBe careful.\n",
         encoding="utf-8",
     )
     defn = _parse_agent("project", p)
@@ -51,7 +50,11 @@ def test_frontmatter_unknown_thinking_is_dropped(tmp_path):
 def _runner(tmp_path, **kwargs) -> SubagentRunner:
     deps = Deps(workspace=WorkspaceConfig(root=tmp_path, mode=Mode.auto))
     return SubagentRunner(
-        BuiltinToolProvider(), MagicMock(), deps, MagicMock(), MagicMock(),
+        BuiltinToolProvider(),
+        MagicMock(),
+        deps,
+        MagicMock(),
+        MagicMock(),
         get_model=lambda: TestModel(call_tools=[]),
         model_settings=ModelSettings(parallel_tool_calls=True),
         **kwargs,
@@ -60,8 +63,12 @@ def _runner(tmp_path, **kwargs) -> SubagentRunner:
 
 def _spec(thinking: str | None) -> AgentDef:
     return AgentDef(
-        name="coder", description="", prompt="Go.",
-        tools=frozenset({"read_file"}), source="built-in", thinking=thinking,
+        name="coder",
+        description="",
+        prompt="Go.",
+        tools=frozenset({"read_file"}),
+        source="built-in",
+        thinking=thinking,
     )
 
 

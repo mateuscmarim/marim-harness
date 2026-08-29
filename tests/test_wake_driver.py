@@ -56,9 +56,9 @@ def test_maybe_wake_suppressed_without_pending_digest():
 
 def test_depth_cap_bounds_the_chain():
     driver, fired = _driver()
-    assert driver.maybe_wake() is True   # depth 0 -> 1
-    assert driver.maybe_wake() is True   # depth 1 -> 2
-    assert driver.maybe_wake() is True   # depth 2 -> 3
+    assert driver.maybe_wake() is True  # depth 0 -> 1
+    assert driver.maybe_wake() is True  # depth 1 -> 2
+    assert driver.maybe_wake() is True  # depth 2 -> 3
     assert driver.maybe_wake() is False  # depth 3 == cap -> capped
     assert fired == [1, 1, 1]
 
@@ -69,7 +69,7 @@ def test_note_user_turn_resets_the_chain():
         driver.maybe_wake()
     assert fired == [1, 1, 1]
     assert driver.maybe_wake() is False  # at cap
-    assert fired == [1, 1, 1]            # capped call did not enqueue
+    assert fired == [1, 1, 1]  # capped call did not enqueue
     driver.note_user_turn()
-    assert driver.maybe_wake() is True   # chain reset -> wakes again
-    assert fired == [1, 1, 1, 1]         # reset re-enabled the enqueue effect
+    assert driver.maybe_wake() is True  # chain reset -> wakes again
+    assert fired == [1, 1, 1, 1]  # reset re-enabled the enqueue effect

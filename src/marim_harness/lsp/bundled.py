@@ -43,8 +43,11 @@ def bundled_lsp_providers() -> list[LspProvider]:
         try:
             out.extend(
                 parse_lsp_providers(
-                    block, bundled=True, source="bundled",
-                    plugin_root=d, strict=True,
+                    block,
+                    bundled=True,
+                    source="bundled",
+                    plugin_root=d,
+                    strict=True,
                 )
             )
         except Exception as exc:  # noqa: BLE001 — bad bundled manifest ⇒ skip

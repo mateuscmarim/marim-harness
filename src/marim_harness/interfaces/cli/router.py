@@ -11,7 +11,15 @@ from ...config import load_environment
 # Reserved first-token keywords. argparse subparsers would claim the workspace
 # positional, so we route manually before any parser sees the args.
 _MANAGEMENT = {
-    "sessions", "config", "models", "plugin", "mcp", "serve", "trust", "import", "update",
+    "sessions",
+    "config",
+    "models",
+    "plugin",
+    "mcp",
+    "serve",
+    "trust",
+    "import",
+    "update",
 }
 
 # Keyword -> submodule name, for the cases where they differ. ``trust`` maps to
@@ -54,9 +62,7 @@ def route_logging_to_file():
         handler = logging.FileHandler(path, encoding="utf-8")
     except OSError:
         return None  # can't open the file — leave logging as-is rather than crash
-    handler.setFormatter(
-        logging.Formatter("%(asctime)s %(name)s %(levelname)s: %(message)s")
-    )
+    handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s: %(message)s"))
     # Drop the stderr StreamHandler(s) basicConfig installed; closing a
     # StreamHandler flushes it without closing the underlying sys.stderr.
     for existing in root.handlers[:]:

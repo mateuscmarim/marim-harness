@@ -66,8 +66,14 @@ async def test_diagnostics_tool_delegates(tmp_path):
 
 
 def test_lsp_tool_names_are_read_tools():
-    expected = {"goto_definition", "find_references", "hover",
-                "document_symbols", "workspace_symbols", "diagnostics"}
+    expected = {
+        "goto_definition",
+        "find_references",
+        "hover",
+        "document_symbols",
+        "workspace_symbols",
+        "diagnostics",
+    }
     assert expected <= names.LSP_TOOLS
     assert expected <= names.READ_TOOLS  # subagents granted read get LSP too
 
@@ -84,8 +90,14 @@ def test_lsp_tools_registered_on_main_agent(tmp_path):
 
 
 def test_lsp_tools_in_subagent_fns():
-    for name in ("goto_definition", "find_references", "hover",
-                 "document_symbols", "workspace_symbols", "diagnostics"):
+    for name in (
+        "goto_definition",
+        "find_references",
+        "hover",
+        "document_symbols",
+        "workspace_symbols",
+        "diagnostics",
+    ):
         assert name in provider._SUBAGENT_FNS
 
 
@@ -106,6 +118,7 @@ async def test_edit_appends_diagnostics(tmp_path):
     lsp = _DiagLsp("m.py:1:1: error: bad")
     ctx = _Ctx(_make_deps(tmp_path, mode=Mode.ask, services=HarnessServices(lsp=lsp)))
     from marim_harness.tools.impl import fs
+
     await fs_tools.read_file(ctx, "m.py")  # read-before-edit guard
     out = await edit_tools.edit_file(ctx, "m.py", [fs.Edit(old_string="x = 1", new_string="y = 2")])
     assert "edited m.py" in out
@@ -129,6 +142,7 @@ async def test_edit_no_diagnostics_block_when_clean(tmp_path):
     lsp = _DiagLsp("m.py: no diagnostics")
     ctx = _Ctx(_make_deps(tmp_path, mode=Mode.ask, services=HarnessServices(lsp=lsp)))
     from marim_harness.tools.impl import fs
+
     await fs_tools.read_file(ctx, "m.py")  # read-before-edit guard
     out = await edit_tools.edit_file(ctx, "m.py", [fs.Edit(old_string="x = 1", new_string="y = 2")])
     # A clean file adds no noise.
@@ -146,6 +160,7 @@ async def test_write_without_lsp_is_unchanged(tmp_path):
 @pytest.mark.anyio
 async def test_diagnostics_exception_returns_unchanged_result(tmp_path):
     """Exception in lsp.diagnostics must not fail the write/edit."""
+
     class _FailingLsp:
         async def diagnostics(self, path, *, settle=1.5, deep=False):
             raise RuntimeError("boom")

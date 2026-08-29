@@ -27,8 +27,9 @@ def repo(tmp_path: Path) -> Path:
 
 
 def _branch_exists(repo: Path, branch: str) -> bool:
-    out = subprocess.run(["git", "branch", "--list", branch], cwd=repo,
-                         capture_output=True, text=True).stdout
+    out = subprocess.run(
+        ["git", "branch", "--list", branch], cwd=repo, capture_output=True, text=True
+    ).stdout
     return out.strip() != ""
 
 
@@ -53,11 +54,12 @@ def test_close_commits_changes_and_reports_the_branch(repo: Path):
     wt, _ = SpawnWorktree.open(repo, "subagent/tc1")
     fs.write_file(wt.path, "new.txt", "from sub-agent\n")
     note = wt.close()
-    assert "subagent/tc1" in note        # branch named
-    assert "new.txt" in note             # diffstat included
-    assert not wt.path.exists()          # worktree torn down
-    show = subprocess.run(["git", "show", "--stat", "subagent/tc1"], cwd=repo,
-                          capture_output=True, text=True)
+    assert "subagent/tc1" in note  # branch named
+    assert "new.txt" in note  # diffstat included
+    assert not wt.path.exists()  # worktree torn down
+    show = subprocess.run(
+        ["git", "show", "--stat", "subagent/tc1"], cwd=repo, capture_output=True, text=True
+    )
     assert show.returncode == 0 and "new.txt" in show.stdout
 
 
@@ -71,7 +73,7 @@ def test_close_with_no_changes_drops_the_branch(repo: Path):
 
 def test_teardown_after_fresh_failure_drops_worktree_and_branch(repo: Path):
     wt, _ = SpawnWorktree.open(repo, "subagent/tc1")
-    fs.write_file(wt.path, "partial.txt", "half\n")   # dirty, unwanted
+    fs.write_file(wt.path, "partial.txt", "half\n")  # dirty, unwanted
     wt.teardown_after_failure(resumed=False)
     assert not _branch_exists(repo, "subagent/tc1")
     assert not wt.path.exists()
@@ -82,8 +84,8 @@ def test_teardown_after_resumed_failure_keeps_the_branch(repo: Path):
     wt, _ = SpawnWorktree.reopen(repo, "subagent/sg6")
     fs.write_file(wt.path, "partial.txt", "half\n")
     wt.teardown_after_failure(resumed=True)
-    assert _branch_exists(repo, "subagent/sg6")       # deliverable survives
-    assert not wt.path.exists()                        # checkout gone
+    assert _branch_exists(repo, "subagent/sg6")  # deliverable survives
+    assert not wt.path.exists()  # checkout gone
 
 
 def test_reopen_an_existing_branch(repo: Path):

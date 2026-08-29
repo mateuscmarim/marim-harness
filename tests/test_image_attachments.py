@@ -11,8 +11,7 @@ def _harness(tmp_path):
     from pydantic_ai.models.test import TestModel
 
     deps = _make_deps(tmp_path)
-    return Harness(TestModel(call_tools=[]), BuiltinToolProvider(), deps,
-                   instructions="test")
+    return Harness(TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test")
 
 
 def _last_user_content(harness):
@@ -29,8 +28,7 @@ async def test_run_turn_attaches_binary_content(tmp_path):
     await harness.run_turn("describe this", attachments=[(b"\x89PNGx", "image/png")])
     content = _last_user_content(harness)
     assert isinstance(content, list)
-    assert any(isinstance(c, BinaryContent) and c.media_type == "image/png"
-               for c in content)
+    assert any(isinstance(c, BinaryContent) and c.media_type == "image/png" for c in content)
 
 
 @pytest.mark.anyio

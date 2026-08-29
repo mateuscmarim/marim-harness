@@ -16,9 +16,7 @@ def _fake_provider():
         "command": f"{sys.executable} {fake}",
         "rootMarkers": ["fake.toml"],
     }
-    (p,) = parse_lsp_providers(
-        block, bundled=False, source="global", plugin_root=None, strict=True
-    )
+    (p,) = parse_lsp_providers(block, bundled=False, source="global", plugin_root=None, strict=True)
     return p
 
 

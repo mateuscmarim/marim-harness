@@ -41,8 +41,7 @@ class PromptInput(TextArea):
         """Posted when the user presses Enter; carries the box's full text and
         any attached images as (bytes, media_type) tuples."""
 
-        def __init__(self, value: str,
-                     attachments: list[tuple[bytes, str]] | None = None) -> None:
+        def __init__(self, value: str, attachments: list[tuple[bytes, str]] | None = None) -> None:
             self.value = value
             self.attachments = attachments or []
             super().__init__()
@@ -51,20 +50,21 @@ class PromptInput(TextArea):
         """Posted when the user presses Alt+Enter; carries the box's full text
         and any attached images, to inject into the running turn."""
 
-        def __init__(self, value: str,
-                     attachments: list[tuple[bytes, str]] | None = None) -> None:
+        def __init__(self, value: str, attachments: list[tuple[bytes, str]] | None = None) -> None:
             self.value = value
             self.attachments = attachments or []
             super().__init__()
 
     class SlashChanged(Message):
         """Posted when the first line starts with ``/``."""
+
         def __init__(self, value: str) -> None:
             self.value = value
             super().__init__()
 
     class SlashDismissed(Message):
         """Posted when text stops starting with ``/``."""
+
         def __init__(self) -> None:
             super().__init__()
 
@@ -392,10 +392,8 @@ class PromptInput(TextArea):
         (the two kinds number independently). Returns True when it consumed
         the edit, False to fall through to the normal TextArea editing."""
         text = self.text
-        image_spans = [(m.start(), m.end(), int(m.group(1)))
-                       for m in _IMAGE_MARKER.finditer(text)]
-        paste_spans = [(m.start(), m.end(), int(m.group(1)))
-                       for m in _PASTE_MARKER.finditer(text)]
+        image_spans = [(m.start(), m.end(), int(m.group(1))) for m in _IMAGE_MARKER.finditer(text)]
+        paste_spans = [(m.start(), m.end(), int(m.group(1))) for m in _PASTE_MARKER.finditer(text)]
         if not image_spans and not paste_spans:
             return False
         edit_range = self._expand_edit_range(

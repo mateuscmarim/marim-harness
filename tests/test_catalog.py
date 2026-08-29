@@ -177,9 +177,7 @@ def test_filter_entries_matches_id_and_name_case_insensitively():
     entries = parse_models(_SAMPLE)
     assert [e.id for e in filter_entries(entries, "gpt")] == ["openai/gpt-5.2"]
     # matches against the display name too
-    assert [e.id for e in filter_entries(entries, "claude")] == [
-        "anthropic/claude-sonnet-4-6"
-    ]
+    assert [e.id for e in filter_entries(entries, "claude")] == ["anthropic/claude-sonnet-4-6"]
     # blank query returns everything
     assert filter_entries(entries, "") == entries
     assert filter_entries(entries, "   ") == entries
@@ -188,13 +186,17 @@ def test_filter_entries_matches_id_and_name_case_insensitively():
 
 
 def test_parse_models_reads_image_modality():
-    payload = {"data": [
-        {"id": "a/vision", "name": "V",
-         "architecture": {"input_modalities": ["text", "image"]}},
-        {"id": "b/text", "name": "T",
-         "architecture": {"input_modalities": ["text"]}},
-        {"id": "c/unknown", "name": "U"},
-    ]}
+    payload = {
+        "data": [
+            {
+                "id": "a/vision",
+                "name": "V",
+                "architecture": {"input_modalities": ["text", "image"]},
+            },
+            {"id": "b/text", "name": "T", "architecture": {"input_modalities": ["text"]}},
+            {"id": "c/unknown", "name": "U"},
+        ]
+    }
     by_id = {e.id: e for e in parse_models(payload)}
     assert by_id["a/vision"].supports_images is True
     assert by_id["b/text"].supports_images is False
@@ -202,9 +204,13 @@ def test_parse_models_reads_image_modality():
 
 
 def test_model_supports_images_lookup():
-    entries = parse_models({"data": [
-        {"id": "a/vision", "architecture": {"input_modalities": ["image"]}},
-    ]})
+    entries = parse_models(
+        {
+            "data": [
+                {"id": "a/vision", "architecture": {"input_modalities": ["image"]}},
+            ]
+        }
+    )
     assert model_supports_images(entries, "a/vision") is True
     assert model_supports_images(entries, "missing/model") is None
 
@@ -228,11 +234,13 @@ def test_filter_entries_matches_provider():
 
 
 def test_parse_models_keeps_openrouter_context_length():
-    payload = {"data": [
-        {"id": "anthropic/claude-opus-4-8", "name": "Opus", "context_length": 200000},
-        {"id": "some/other", "name": "Other"},                    # field absent
-        {"id": "bad/ctx", "name": "Bad", "context_length": "big"},  # non-int ignored
-    ]}
+    payload = {
+        "data": [
+            {"id": "anthropic/claude-opus-4-8", "name": "Opus", "context_length": 200000},
+            {"id": "some/other", "name": "Other"},  # field absent
+            {"id": "bad/ctx", "name": "Bad", "context_length": "big"},  # non-int ignored
+        ]
+    }
     entries = {e.id: e for e in parse_models(payload)}
     assert entries["anthropic/claude-opus-4-8"].context_window == 200000
     assert entries["some/other"].context_window is None
@@ -240,11 +248,16 @@ def test_parse_models_keeps_openrouter_context_length():
 
 
 def test_parse_google_models_keeps_input_token_limit():
-    payload = {"models": [
-        {"name": "models/gemini-2.5-pro", "displayName": "Gemini",
-         "supportedGenerationMethods": ["generateContent"],
-         "inputTokenLimit": 1048576},
-    ]}
+    payload = {
+        "models": [
+            {
+                "name": "models/gemini-2.5-pro",
+                "displayName": "Gemini",
+                "supportedGenerationMethods": ["generateContent"],
+                "inputTokenLimit": 1048576,
+            },
+        ]
+    }
     (entry,) = parse_google_models(payload)
     assert entry.context_window == 1048576
 
@@ -262,16 +275,21 @@ def test_parse_lmstudio_models_reports_only_the_served_window():
     smaller loaded window — requests overflowed while the gauge read 12%. So a
     row without loaded_context_length is omitted (window unknown → the caller
     falls back to its conservative default threshold)."""
-    payload = {"data": [
-        {"id": "qwen/qwen3.5-9b", "state": "loaded",
-         "max_context_length": 262144, "loaded_context_length": 101039},
-        {"id": "ornith-1.0-35b", "state": "not-loaded",
-         "max_context_length": 262144},
-        {"id": "junk", "max_context_length": "nope"},
-    ]}
+    payload = {
+        "data": [
+            {
+                "id": "qwen/qwen3.5-9b",
+                "state": "loaded",
+                "max_context_length": 262144,
+                "loaded_context_length": 101039,
+            },
+            {"id": "ornith-1.0-35b", "state": "not-loaded", "max_context_length": 262144},
+            {"id": "junk", "max_context_length": "nope"},
+        ]
+    }
     windows = parse_lmstudio_models(payload)
-    assert windows["qwen/qwen3.5-9b"] == 101039   # the served window
-    assert "ornith-1.0-35b" not in windows        # weights-max is not servable
+    assert windows["qwen/qwen3.5-9b"] == 101039  # the served window
+    assert "ornith-1.0-35b" not in windows  # weights-max is not servable
     assert "junk" not in windows
 
 
@@ -372,12 +390,13 @@ async def test_openrouter_strict_without_key_skips_probe(openrouter_stub):
 
 
 def test_parse_models_reads_supported_parameters_reasoning():
-    payload = {"data": [
-        {"id": "a/thinks", "name": "Thinks",
-         "supported_parameters": ["reasoning", "tools"]},
-        {"id": "b/plain", "name": "Plain", "supported_parameters": ["tools"]},
-        {"id": "c/unknown", "name": "Unknown"},
-    ]}
+    payload = {
+        "data": [
+            {"id": "a/thinks", "name": "Thinks", "supported_parameters": ["reasoning", "tools"]},
+            {"id": "b/plain", "name": "Plain", "supported_parameters": ["tools"]},
+            {"id": "c/unknown", "name": "Unknown"},
+        ]
+    }
     entries = {e.id: e for e in parse_models(payload)}
     assert entries["a/thinks"].supports_thinking is True
     assert entries["b/plain"].supports_thinking is False
@@ -387,22 +406,26 @@ def test_parse_models_reads_supported_parameters_reasoning():
 def test_model_supports_thinking_lookup():
     from marim_harness.workspace.catalog import model_supports_thinking
 
-    payload = {"data": [
-        {"id": "a/thinks", "name": "T", "supported_parameters": ["reasoning"]},
-    ]}
+    payload = {
+        "data": [
+            {"id": "a/thinks", "name": "T", "supported_parameters": ["reasoning"]},
+        ]
+    }
     entries = parse_models(payload)
     assert model_supports_thinking(entries, "a/thinks") is True
     assert model_supports_thinking(entries, "missing") is None
 
 
 def test_parse_zen_models_filters_non_openai_families():
-    payload = {"data": [
-        {"id": "mimo-v2.5-free", "object": "model"},
-        {"id": "big-pickle", "object": "model"},
-        {"id": "claude-sonnet-5", "object": "model"},
-        {"id": "gemini-3.5-flash", "object": "model"},
-        {"id": "gpt-5.5", "object": "model"},
-    ]}
+    payload = {
+        "data": [
+            {"id": "mimo-v2.5-free", "object": "model"},
+            {"id": "big-pickle", "object": "model"},
+            {"id": "claude-sonnet-5", "object": "model"},
+            {"id": "gemini-3.5-flash", "object": "model"},
+            {"id": "gpt-5.5", "object": "model"},
+        ]
+    }
     entries = parse_zen_models(payload)
     ids = [e.id for e in entries]
     assert ids == ["big-pickle", "gpt-5.5", "mimo-v2.5-free"]  # sorted, filtered
@@ -459,8 +482,7 @@ async def test_fetch_zen_models_honors_url_override(monkeypatch):
             return FakeResponse()
 
     monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
-    entries = await catalog.fetch_zen_models(
-        "sk-x", url="https://opencode.ai/zen/go/v1/models")
+    entries = await catalog.fetch_zen_models("sk-x", url="https://opencode.ai/zen/go/v1/models")
     assert captured["url"] == "https://opencode.ai/zen/go/v1/models"
     assert [e.id for e in entries] == ["glm-5.2"]
 

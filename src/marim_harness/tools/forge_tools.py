@@ -47,9 +47,7 @@ async def _list_prs(
     return "\n".join(f"#{p.number} [{p.state}] {p.title} (ci: {p.ci})" for p in prs)
 
 
-async def _view_pr(
-    backend: ForgeBackend, ctx: RunContext[Deps], number: int | None = None
-) -> str:
+async def _view_pr(backend: ForgeBackend, ctx: RunContext[Deps], number: int | None = None) -> str:
     """Show one pull request. With no `number`, resolves the PR for the
     current branch. Reports head→base, mergeability, CI conclusion, and URL."""
     branch = None
@@ -63,9 +61,11 @@ async def _view_pr(
     if pr is None:
         what = f"#{number}" if number is not None else f"branch '{branch}'"
         return f"No PR found for {what}."
-    return (f"#{pr.number} [{pr.state}] {pr.title}\n"
-            f"{pr.head} → {pr.base}\n"
-            f"mergeable: {pr.mergeable} | ci: {pr.ci}\n{pr.url}")
+    return (
+        f"#{pr.number} [{pr.state}] {pr.title}\n"
+        f"{pr.head} → {pr.base}\n"
+        f"mergeable: {pr.mergeable} | ci: {pr.ci}\n{pr.url}"
+    )
 
 
 async def _ci_status(
@@ -85,8 +85,12 @@ async def _ci_status(
 
 
 async def _create_pr(
-    backend: ForgeBackend, ctx: RunContext[Deps], title: str, body: str = "",
-    base: str | None = None, draft: bool = False,
+    backend: ForgeBackend,
+    ctx: RunContext[Deps],
+    title: str,
+    body: str = "",
+    base: str | None = None,
+    draft: bool = False,
 ) -> str:
     """Open a pull request from the current branch. Requires the branch to be
     pushed first (it will not push for you) and refuses if an open PR already
@@ -104,8 +108,7 @@ async def _create_pr(
         # open a duplicate over it.
         existing = await backend.find_open_pr_for_branch(branch)
         if existing is not None:
-            return (f"An open PR already exists for '{branch}': "
-                    f"#{existing.number} {existing.url}")
+            return f"An open PR already exists for '{branch}': #{existing.number} {existing.url}"
         return await backend.create_pr(title, body, base, draft, branch)
 
     result = await _forge_call(_open())
@@ -142,16 +145,17 @@ def build_forge_toolset(backend: ForgeBackend) -> FunctionToolset[Deps]:
     ci_status.__doc__ = _ci_status.__doc__
 
     async def create_pr(
-        ctx: RunContext[Deps], title: str, body: str = "", base: str | None = None,
+        ctx: RunContext[Deps],
+        title: str,
+        body: str = "",
+        base: str | None = None,
         draft: bool = False,
     ) -> str:
         return await _create_pr(backend, ctx, title, body, base, draft)
 
     create_pr.__doc__ = _create_pr.__doc__
 
-    async def checkout_pr(
-        ctx: RunContext[Deps], number: int, create_branch: bool = True
-    ) -> str:
+    async def checkout_pr(ctx: RunContext[Deps], number: int, create_branch: bool = True) -> str:
         return await _checkout_pr(backend, ctx, number, create_branch)
 
     checkout_pr.__doc__ = _checkout_pr.__doc__

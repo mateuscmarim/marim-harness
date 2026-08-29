@@ -153,6 +153,7 @@ async def test_empty_remote_catalog_allows_free_text_after_load():
 async def test_allow_free_text_stays_on_after_catalog_loads_when_is_local():
     """When is_local=True, allow_free_text must remain True even after a non-empty
     catalog is loaded — so the user can type a qualified provider:model_id."""
+
     async def fetch():
         return _ENTRIES
 

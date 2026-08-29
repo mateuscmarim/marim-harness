@@ -159,8 +159,7 @@ class SessionView:
         )
         widget.stream_id = part.tool_call_id
         widget.parent_id = parent_id
-        if all(w.stream_id != widget.stream_id
-               for w in self.app.stream.subagents):
+        if all(w.stream_id != widget.stream_id for w in self.app.stream.subagents):
             self.app.stream.subagents.append(widget)
         tool_widgets[part.tool_call_id] = widget
         await mount_fn(widget)
@@ -168,7 +167,14 @@ class SessionView:
         # main-log-only; replay_history handles them after this call returns.
 
     async def _replay_tool_call_part(
-        self, part, container, mount_fn, tool_widgets, group, solo, parent_id,
+        self,
+        part,
+        container,
+        mount_fn,
+        tool_widgets,
+        group,
+        solo,
+        parent_id,
     ):
         """ToolCallPart arm of ``_replay_parts``."""
         if part.tool_name == "spawn_agent":
@@ -178,12 +184,16 @@ class SessionView:
         else:
             args = part.args_as_dict()
             widget = ToolCallWidget(
-                part.tool_name, args,
+                part.tool_name,
+                args,
                 workspace_root=self.app.harness.deps.workspace.root,
             )
             tool_widgets[part.tool_call_id] = widget
             group, solo = await self.app.stream.add_tool_to_run(
-                widget, container, group, solo,
+                widget,
+                container,
+                group,
+                solo,
             )
         return group, solo
 
@@ -207,11 +217,7 @@ class SessionView:
             # A failed spawn returns its error as a normal tool result;
             # detect the runner's failure text so the card shows failed,
             # not a misleading ✓ (mirrors the live path).
-            if (
-                isinstance(widget, SubAgentWidget)
-                and status == "done"
-                and subagent_failed(content)
-            ):
+            if isinstance(widget, SubAgentWidget) and status == "done" and subagent_failed(content):
                 status = "failed"
             widget.finish(content, status=status)
         return group, solo
@@ -249,7 +255,13 @@ class SessionView:
             group, solo = await self._replay_thinking_part(part, mount_fn, group, solo)
         elif isinstance(part, ToolCallPart):
             group, solo = await self._replay_tool_call_part(
-                part, container, mount_fn, tool_widgets, group, solo, parent_id,
+                part,
+                container,
+                mount_fn,
+                tool_widgets,
+                group,
+                solo,
+                parent_id,
             )
         elif isinstance(part, ToolReturnPart):
             group, solo = await self._replay_tool_return_part(part, tool_widgets, group, solo)
@@ -261,10 +273,7 @@ class SessionView:
         if isinstance(content, str):
             text = content
         elif isinstance(content, list):
-            text = " ".join(
-                item for item in content
-                if isinstance(item, str)
-            )
+            text = " ".join(item for item in content if isinstance(item, str))
         else:
             text = str(content)
         # A compaction summary renders as its own collapsed block, not as a
@@ -286,7 +295,8 @@ class SessionView:
         tool group on a resumed session."""
         args = part.args_as_dict()
         widget = ToolCallWidget(
-            part.tool_name, args,
+            part.tool_name,
+            args,
             workspace_root=self.app.harness.deps.workspace.root,
         )
         tool_widgets[part.tool_call_id] = widget
@@ -299,9 +309,7 @@ class SessionView:
         load on resume, and falls back to harness.model_label when the spawn
         didn't specify a model explicitly."""
         args = part.args_as_dict()
-        model_label = str(
-            args.get("model") or self.app.harness.model_label or ""
-        )
+        model_label = str(args.get("model") or self.app.harness.model_label or "")
         widget = tool_widgets.get(part.tool_call_id)
         if isinstance(widget, SubAgentWidget):
             widget.model_label = model_label
@@ -355,16 +363,21 @@ class SessionView:
                     await self._replay_ask_user(part, log, tool_widgets)
                 else:
                     group, solo = await self._replay_parts(
-                        part, log, log.mount, tool_widgets, group, solo,
+                        part,
+                        log,
+                        log.mount,
+                        tool_widgets,
+                        group,
+                        solo,
                     )
-                    if (
-                        isinstance(part, ToolCallPart)
-                        and part.tool_name == "spawn_agent"
-                    ):
+                    if isinstance(part, ToolCallPart) and part.tool_name == "spawn_agent":
                         await self._finish_replayed_spawn_pane(part, tool_widgets)
 
     async def replay_messages_into(
-        self, pane, messages, parent_id: str | None = None,
+        self,
+        pane,
+        messages,
+        parent_id: str | None = None,
     ) -> None:
         """Render resumed sub-agent transcript messages into ``pane``.
 
@@ -388,7 +401,12 @@ class SessionView:
                 )
                 for part in parts:
                     group, solo = await self._replay_parts(
-                        part, pane, pane.add, tool_widgets, group, solo,
+                        part,
+                        pane,
+                        pane.add,
+                        tool_widgets,
+                        group,
+                        solo,
                         parent_id=parent_id,
                     )
         self.app.stream.flush_streams()
@@ -448,9 +466,7 @@ class SessionView:
             # There is nothing to resume — resume_spawn refuses a card with
             # no meta — so finish it "failed" rather than a forever-pending
             # "interrupted" ghost that dangles a dead press-r affordance.
-            card.finish(
-                "spawn never ran (no transcript recorded)", status="failed"
-            )
+            card.finish("spawn never ran (no transcript recorded)", status="failed")
 
     async def _settle_replayed_card(self, card, running, settled, metas, transcripts) -> None:
         """Settle one replayed sub-agent card from the persisted record."""
@@ -468,8 +484,7 @@ class SessionView:
             await self._restore_pending_card_stats(card, meta)
         if card.status == "pending":
             self._settle_pending_card(card, job, meta_status, transcripts)
-        elif (meta_status == "running" and job is None
-              and self._REPAIR_STUB_MARKER in card.report):
+        elif meta_status == "running" and job is None and self._REPAIR_STUB_MARKER in card.report:
             # A foreground spawn cut down mid-run: the main history's repair
             # stub finished the card "done", but the sidecar (whose final
             # write never happened) knows it never completed.
@@ -484,15 +499,21 @@ class SessionView:
             if meta.get("status") != "running" or sid in have or sid in settled:
                 continue
             widget = SubAgentWidget(
-                str(meta.get("type", "")), str(meta.get("task", "")),
+                str(meta.get("type", "")),
+                str(meta.get("task", "")),
                 str(meta.get("model") or self.app.harness.model_label or ""),
             )
             widget.stream_id = sid
             self.app.stream.subagents.append(widget)
             await log.mount(widget)
             host = self.app.query_one(SubAgentDetailHost)
-            pane = host.add_pane(sid, widget.agent_type, widget.model_label,
-                                 widget.display_title(), widget.agent_task)
+            pane = host.add_pane(
+                sid,
+                widget.agent_type,
+                widget.model_label,
+                widget.display_title(),
+                widget.agent_task,
+            )
             widget.pane = pane  # transcript_loaded stays False → lazy sidecar load
             widget.finish("", status="interrupted")
 
@@ -518,8 +539,7 @@ class SessionView:
         # card would be flagged interrupted — dangling the `r` key and never
         # updating on settle (replay doesn't re-register tool_widgets/_detached
         # cards). Re-arm such a card via the very path a fresh resume uses.
-        running = {j.stream_id: j for j in jobs.list()
-                   if j.stream_id and j.status == "running"}
+        running = {j.stream_id: j for j in jobs.list() if j.stream_id and j.status == "running"}
         for card in list(self.app.stream.subagents):
             await self._settle_replayed_card(card, running, settled, metas, transcripts)
         log = self.app.query_one("#log", VerticalScroll)
@@ -587,9 +607,7 @@ class SessionView:
         if before == after:
             self.app.status.refresh_status()
             return
-        log.mount(
-            NoticeMessage(f"compacted history: {before} → {after} messages")
-        )
+        log.mount(NoticeMessage(f"compacted history: {before} → {after} messages"))
         # Surface the just-created summary as its own collapsed block so the
         # condensed context is legible immediately, not just on the next resume.
         body = self._latest_summary()
@@ -671,6 +689,4 @@ class SessionView:
         n = self.app.harness.switch_session(session_id)
         await self.app.harness.session_start("resume")
         label = self.app.harness.session.session_name or session_id
-        await self.render_session(
-            f"**Switched to** `{label}` — {n} messages restored."
-        )
+        await self.render_session(f"**Switched to** `{label}` — {n} messages restored.")

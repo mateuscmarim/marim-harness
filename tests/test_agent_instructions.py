@@ -37,7 +37,9 @@ async def test_project_instructions_injected_and_dynamic(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
     deps = _make_deps(tmp_path)
     harness = Harness(
-        model=FunctionModel(fn), provider=BuiltinToolProvider(), deps=deps,
+        model=FunctionModel(fn),
+        provider=BuiltinToolProvider(),
+        deps=deps,
         instructions="BASE PROMPT",
     )
 
@@ -73,7 +75,9 @@ async def test_claude_md_fallback_injected(tmp_path: Path, monkeypatch: pytest.M
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
     deps = _make_deps(tmp_path)
     harness = Harness(
-        model=FunctionModel(fn), provider=BuiltinToolProvider(), deps=deps,
+        model=FunctionModel(fn),
+        provider=BuiltinToolProvider(),
+        deps=deps,
         instructions="BASE PROMPT",
     )
 
@@ -116,7 +120,9 @@ async def test_global_instructions_injected_and_dynamic(
 
     deps = _make_deps(workspace)
     harness = Harness(
-        model=FunctionModel(fn), provider=BuiltinToolProvider(), deps=deps,
+        model=FunctionModel(fn),
+        provider=BuiltinToolProvider(),
+        deps=deps,
         instructions="BASE PROMPT",
     )
 
@@ -152,7 +158,9 @@ async def test_memory_indexes_injected_and_dynamic(tmp_path: Path):
 
     deps = _make_deps(tmp_path)
     harness = Harness(
-        model=FunctionModel(fn), provider=BuiltinToolProvider(), deps=deps,
+        model=FunctionModel(fn),
+        provider=BuiltinToolProvider(),
+        deps=deps,
         instructions="BASE PROMPT",
     )
 
@@ -162,8 +170,12 @@ async def test_memory_indexes_injected_and_dynamic(tmp_path: Path):
 
     # Saving a project memory makes the very next turn see the index.
     memory.save_memory(
-        memory.project_scope(tmp_path), name="Build tool",
-        description="uses uv", mem_type="project", body="b", title="Build tool",
+        memory.project_scope(tmp_path),
+        name="Build tool",
+        description="uses uv",
+        mem_type="project",
+        body="b",
+        title="Build tool",
     )
     await harness.run_turn("hi again")
     instr = captured["instructions"]
@@ -190,7 +202,9 @@ async def test_skill_index_injected_and_dynamic(tmp_path: Path, monkeypatch):
 
     deps = _make_deps(tmp_path)
     harness = Harness(
-        model=FunctionModel(fn), provider=BuiltinToolProvider(), deps=deps,
+        model=FunctionModel(fn),
+        provider=BuiltinToolProvider(),
+        deps=deps,
         instructions="BASE PROMPT",
     )
 
@@ -224,7 +238,9 @@ async def test_task_checklist_rides_in_turn_context_not_instructions(tmp_path: P
 
     deps = _make_deps(tmp_path)
     harness = Harness(
-        model=FunctionModel(fn), provider=BuiltinToolProvider(), deps=deps,
+        model=FunctionModel(fn),
+        provider=BuiltinToolProvider(),
+        deps=deps,
         instructions="BASE PROMPT",
     )
 
@@ -235,10 +251,12 @@ async def test_task_checklist_rides_in_turn_context_not_instructions(tmp_path: P
 
     # Setting tasks makes the next turn surface them in the user prompt
     # (turn-context), and keeps them OUT of the cached system instructions.
-    deps.tasks.replace([
-        {"text": "read the code", "status": "done"},
-        {"text": "write the test", "status": "in_progress"},
-    ])
+    deps.tasks.replace(
+        [
+            {"text": "read the code", "status": "done"},
+            {"text": "write the test", "status": "in_progress"},
+        ]
+    )
     await harness.run_turn("hi again")
     assert "write the test" in captured["prompt"]
     assert "read the code" in captured["prompt"]

@@ -28,9 +28,7 @@ def plan_slug(session_id: str, summary: str) -> str:
     return f"{sid}-{prefix}"
 
 
-def format_plan(
-    summary: str, steps: list[str], *, created: str, session_id: str
-) -> str:
+def format_plan(summary: str, steps: list[str], *, created: str, session_id: str) -> str:
     """Render the plan markdown: frontmatter, summary, then a step checklist."""
     lines = [
         "---",
@@ -66,7 +64,5 @@ def write_plan(
     directory = plans_dir(workspace_root)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{plan_slug(session_id, summary)}.md"
-    atomic_write_text(
-        path, format_plan(summary, steps, created=created, session_id=session_id)
-    )
+    atomic_write_text(path, format_plan(summary, steps, created=created, session_id=session_id))
     return path

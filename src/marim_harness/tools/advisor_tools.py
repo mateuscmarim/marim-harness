@@ -18,9 +18,7 @@ from pydantic_ai.tools import ToolDefinition
 from ..runtime.deps import Deps
 
 
-async def prepare_advisor(
-    ctx: RunContext[Deps], tool_def: ToolDefinition
-) -> ToolDefinition | None:
+async def prepare_advisor(ctx: RunContext[Deps], tool_def: ToolDefinition) -> ToolDefinition | None:
     """Omit the advisor tool from the run schema when no advisor is
     configured. Reads the live seam per request, so toggling the advisor
     mid-session applies on the next request."""
@@ -48,9 +46,6 @@ async def advisor(ctx: RunContext[Deps]) -> str:
         return "No advisor is configured. Continue without advice."
     cap = ctx.deps.advisor_max_uses
     if cap is not None and ctx.deps.advisor_uses >= cap:
-        return (
-            f"Advisor call limit reached for this turn ({cap}). "
-            "Continue without further advice."
-        )
+        return f"Advisor call limit reached for this turn ({cap}). Continue without further advice."
     ctx.deps.advisor_uses += 1
     return await advise(list(ctx.messages))

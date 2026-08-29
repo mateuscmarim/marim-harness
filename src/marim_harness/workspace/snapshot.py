@@ -30,8 +30,10 @@ logger = logging.getLogger(__name__)
 # whole session. worktree.py solves the same problem the same way (its
 # ``_SUBAGENT_IDENTITY``); this is the snapshot-side twin.
 _COMMITTER_IDENTITY = (
-    "-c", "user.name=marim checkpoint",
-    "-c", "user.email=checkpoint@marim.local",
+    "-c",
+    "user.name=marim checkpoint",
+    "-c",
+    "user.email=checkpoint@marim.local",
 )
 
 
@@ -115,9 +117,7 @@ class GitSnapshotter:
                 return True
         return False
 
-    def _run(
-        self, *args: str, env: dict[str, str] | None = None, input: str | None = None
-    ) -> str:
+    def _run(self, *args: str, env: dict[str, str] | None = None, input: str | None = None) -> str:
         """Run a git command with cwd=workspace_root (the actual working tree).
 
         For linked worktrees this is the linked worktree directory, NOT the
@@ -125,8 +125,13 @@ class GitSnapshotter:
         are shared across all worktrees, so update-ref/read-tree/etc. still
         resolve correctly from here."""
         return subprocess.run(
-            ["git", *args], cwd=self.workspace_root, env=env, input=input,
-            capture_output=True, text=True, check=True,
+            ["git", *args],
+            cwd=self.workspace_root,
+            env=env,
+            input=input,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout.strip()
 
     def capture(self, ref: str, message: str) -> str | None:
@@ -203,8 +208,9 @@ class GitSnapshotter:
             self._run("update-ref", ref, commit)
             return commit
         except subprocess.CalledProcessError as exc:
-            logger.debug("checkpoint fast-path reuse failed, forcing full capture: %s",
-                         exc.stderr or exc)
+            logger.debug(
+                "checkpoint fast-path reuse failed, forcing full capture: %s", exc.stderr or exc
+            )
             self._last_clean_head = None
             self._last_commit = None
             return None
@@ -235,8 +241,12 @@ class GitSnapshotter:
         if not present:
             return
         self._run(
-            "update-index", "--add", "-z", "--stdin",
-            env=env, input="\0".join(present) + "\0",
+            "update-index",
+            "--add",
+            "-z",
+            "--stdin",
+            env=env,
+            input="\0".join(present) + "\0",
         )
 
     @staticmethod
@@ -279,8 +289,10 @@ class GitSnapshotter:
             return
         # Best-effort: deleting an already-absent ref is fine.
         subprocess.run(
-            ["git", "update-ref", "-d", ref], cwd=self.workspace_root,
-            capture_output=True, text=True,
+            ["git", "update-ref", "-d", ref],
+            cwd=self.workspace_root,
+            capture_output=True,
+            text=True,
         )
 
     def _remove_extra_files(self, target: set[str]) -> list[str]:
@@ -346,9 +358,7 @@ class GitSnapshotter:
             # 2. Remove files that exist now but not in the target snapshot.
             failed = self._remove_extra_files(self._tree_files(commit))
             if failed:
-                logger.debug(
-                    "checkpoint restore left %d file(s) behind: %s", len(failed), failed
-                )
+                logger.debug("checkpoint restore left %d file(s) behind: %s", len(failed), failed)
                 return False
             return True
         except subprocess.CalledProcessError as exc:
@@ -368,7 +378,10 @@ def delete_checkpoint_refs(workspace_root, session_id: str) -> None:
     try:
         out = subprocess.run(
             ["git", "for-each-ref", "--format=%(refname)", prefix],
-            cwd=workspace_root, capture_output=True, text=True, check=True,
+            cwd=workspace_root,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
     except (OSError, subprocess.CalledProcessError):
         return
@@ -380,5 +393,7 @@ def delete_checkpoint_refs(workspace_root, session_id: str) -> None:
             continue
         subprocess.run(
             ["git", "update-ref", "-d", ref],
-            cwd=workspace_root, capture_output=True, text=True,
+            cwd=workspace_root,
+            capture_output=True,
+            text=True,
         )

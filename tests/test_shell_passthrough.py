@@ -74,9 +74,7 @@ async def test_run_passthrough_runs_plain_command(tmp_path: Path):
 
 
 @pytest.mark.anyio
-async def test_run_passthrough_password_feeds_stdin_never_output(
-    tmp_path: Path, monkeypatch
-):
+async def test_run_passthrough_password_feeds_stdin_never_output(tmp_path: Path, monkeypatch):
     """Real sudo can't run in tests: capture the run_bash call instead and
     assert the rewrite + stdin plumbing, and that the password can't leak into
     the returned text."""
@@ -88,9 +86,7 @@ async def test_run_passthrough_password_feeds_stdin_never_output(
         captured["stdin"] = stdin_data
         return "exit 0\nroot"
 
-    monkeypatch.setattr(
-        "marim_harness.interfaces.tui.shell_passthrough.run_bash", fake_run_bash
-    )
+    monkeypatch.setattr("marim_harness.interfaces.tui.shell_passthrough.run_bash", fake_run_bash)
     out = await run_passthrough(tmp_path, "sudo whoami", password="hunter2")
     assert captured["command"] == "sudo -S -p '' -k whoami"
     assert captured["stdin"] == b"hunter2\n"

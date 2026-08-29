@@ -21,6 +21,7 @@ def _edit(old: str, new: str) -> fs.Edit:
 
 # --- ReadLedger (pure unit) ---
 
+
 def test_ledger_reports_unread_file(tmp_path: Path):
     p = tmp_path / "a.txt"
     p.write_text("x")
@@ -76,6 +77,7 @@ def test_ledger_detects_mtime_change_at_same_size(tmp_path: Path):
 
 # --- edit_file integration ---
 
+
 def test_edit_without_read_is_blocked_and_leaves_file_untouched(tmp_path: Path):
     p = tmp_path / "a.txt"
     p.write_text("hello\n")
@@ -127,6 +129,7 @@ def test_edit_without_ledger_is_unguarded(tmp_path: Path):
 
 # --- write_file integration ---
 
+
 def test_write_new_file_allowed_without_read(tmp_path: Path):
     led = ReadLedger()
     fs.write_file(tmp_path, "new.txt", "hi", ledger=led)  # target doesn't exist
@@ -167,6 +170,7 @@ def test_write_without_ledger_is_unguarded(tmp_path: Path):
 
 
 # --- provider wiring: the guard is active through the real tool + Deps ledger ---
+
 
 class _Ctx:
     def __init__(self, deps):

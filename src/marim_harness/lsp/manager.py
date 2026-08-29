@@ -312,9 +312,7 @@ class LspManager:
         except Exception as exc:  # noqa: BLE001 — degrade to the settle ceiling
             logger.debug("failed to install diagnostics wakeup: %s", exc, exc_info=True)
 
-    async def _server_for(
-        self, path: str
-    ) -> tuple[Any | None, str | None, str | None]:
+    async def _server_for(self, path: str) -> tuple[Any | None, str | None, str | None]:
         """Return (server, language, error_message). On any problem the server is
         None and error_message is a string to hand back to the model."""
         language = self._registry.language_for(path)
@@ -419,9 +417,7 @@ class LspManager:
         for loc in items[:_MAX_RESULTS]:
             uri = str(loc.get("uri") or loc.get("absolutePath") or "")
             start = loc.get("range", {}).get("start", {})
-            rel = (
-                _uri_to_rel(self.root, uri) if uri.startswith("file:") else (uri or "<unknown>")
-            )
+            rel = _uri_to_rel(self.root, uri) if uri.startswith("file:") else (uri or "<unknown>")
             out.append(f"{rel}:{start.get('line', 0) + 1}:{start.get('character', 0) + 1}")
         extra = len(items) - _MAX_RESULTS
         if extra > 0:
@@ -462,9 +458,7 @@ class LspManager:
         server, err = await self._require_server(path, "hover")
         if err:
             return err
-        res, err = await self._call(
-            lambda: server.request_hover(path, line - 1, col - 1), "hover"
-        )
+        res, err = await self._call(lambda: server.request_hover(path, line - 1, col - 1), "hover")
         if err:
             return err
         return _clamp_hover(_hover_text(res)) or "No hover information."
@@ -598,9 +592,16 @@ def _stringify_markup(contents) -> str:
 
 # LSP SymbolKind -> short label (only the common ones; others fall back to the number).
 _SYMBOL_KIND = {
-    5: "class", 6: "method", 8: "field", 9: "constructor",
-    11: "interface", 12: "function", 13: "variable", 14: "constant",
-    23: "struct", 26: "type",
+    5: "class",
+    6: "method",
+    8: "field",
+    9: "constructor",
+    11: "interface",
+    12: "function",
+    13: "variable",
+    14: "constant",
+    23: "struct",
+    26: "type",
 }
 
 

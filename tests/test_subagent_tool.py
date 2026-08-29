@@ -170,9 +170,7 @@ def test_subagent_gated_tools_run_without_approval(tmp_path):
     with no deferred-approval round."""
     agent = Agent(TestModel(), deps_type=Deps)
     BuiltinToolProvider().register_subagent(agent, {"write_file"})
-    model, captured = _call_once(
-        "write_file", {"path": "out.txt", "content": "hello sub"}
-    )
+    model, captured = _call_once("write_file", {"path": "out.txt", "content": "hello sub"})
     with agent.override(model=model):
         result = agent.run_sync("go", deps=_make_deps(tmp_path, mode=Mode.ask))
     assert (tmp_path / "out.txt").read_text() == "hello sub"

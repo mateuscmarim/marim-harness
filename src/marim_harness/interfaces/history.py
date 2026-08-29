@@ -56,7 +56,7 @@ class PromptHistory:
             if isinstance(value, str):
                 entries.append(value)
         logger.debug("loaded %d prompt history entries from %s", len(entries), self.path)
-        return entries[-self.max_entries:]
+        return entries[-self.max_entries :]
 
     def add(self, text: str) -> None:
         """Record a submitted prompt. Blanks and consecutive duplicates are
@@ -68,7 +68,7 @@ class PromptHistory:
             return
         self.entries.append(text)
         if len(self.entries) > self.max_entries:
-            self.entries = self.entries[-self.max_entries:]
+            self.entries = self.entries[-self.max_entries :]
         self._save()
 
     def _save(self) -> bool:

@@ -54,8 +54,10 @@ def _mock_response(
             request=AsyncMock(),
             response=resp,
         )
+
         def _raise():
             raise exc
+
         resp.raise_for_status = _raise
     else:
         resp.raise_for_status = lambda: None  # type: ignore[assignment]
@@ -292,8 +294,9 @@ async def test_fetch_http_error_body_read_failure_falls_back_to_status_only():
     """If reading the error response body itself raises (network hiccup mid-read,
     a broken transport), the best-effort read must not mask the real HTTP error —
     the status line still comes back, just without a body snippet."""
-    resp = _mock_response(status_code=503, reason_phrase="Service Unavailable",
-                          raise_for_status_error=True)
+    resp = _mock_response(
+        status_code=503, reason_phrase="Service Unavailable", raise_for_status_error=True
+    )
     resp.aread = AsyncMock(side_effect=RuntimeError("boom"))
 
     with _patch_client(resp):
@@ -384,9 +387,7 @@ async def test_fetch_aborts_when_content_length_exceeds_limit(tmp_path):
 @pytest.mark.anyio
 async def test_fetch_within_content_length_limit_is_read():
     """A declared size under the limit is fetched normally."""
-    resp = _mock_response(
-        text="<p>Fine</p>", content_type="text/html", content_length=11
-    )
+    resp = _mock_response(text="<p>Fine</p>", content_type="text/html", content_length=11)
 
     with _patch_client(resp):
         result = await fetch_url("https://example.com/ok")
@@ -452,9 +453,7 @@ async def test_fetch_large_page_offloaded_to_file(tmp_path):
     """A large page is written to a gitignored workspace file; the tool returns a
     handle + preview (so read_file/grep can page through) rather than flooding
     context with the whole body."""
-    paras = "".join(
-        f"<p>Paragraph number {i} with several words here.</p>" for i in range(4000)
-    )
+    paras = "".join(f"<p>Paragraph number {i} with several words here.</p>" for i in range(4000))
     html = f"<html><body><h1>Big Doc</h1>{paras}</body></html>"
     resp = _mock_response(text=html, content_type="text/html")
 
@@ -479,6 +478,7 @@ async def test_fetch_large_page_offloaded_to_file(tmp_path):
 @pytest.mark.anyio
 async def test_fetch_offload_handle_has_title_and_saved_path(tmp_path):
     from marim_harness.tools.impl import fetch
+
     body = "# My Title\n" + "\n".join(f"para {i}" for i in range(50))
     out = fetch._offload(body, "https://example.com/x", tmp_path)
     assert out.startswith("# My Title")
@@ -492,9 +492,7 @@ async def test_fetch_offload_handle_has_title_and_saved_path(tmp_path):
 async def test_fetch_offload_handle_shows_absolute_path(tmp_path):
     """The path in the handle must be absolute so the agent can hand it straight
     to read_file/grep regardless of the offload directory's location."""
-    paras = "".join(
-        f"<p>Filler paragraph {i} with enough text to grow.</p>" for i in range(4000)
-    )
+    paras = "".join(f"<p>Filler paragraph {i} with enough text to grow.</p>" for i in range(4000))
     html = f"<html><body>{paras}</body></html>"
     resp = _mock_response(text=html, content_type="text/html")
 
@@ -515,9 +513,11 @@ async def test_fetch_offload_handle_shows_absolute_path(tmp_path):
 @pytest.mark.anyio
 async def test_fetch_refuses_loopback_ipv4(monkeypatch):
     """fetch_url must refuse to fetch 127.0.0.1 — local services are not a target."""
-    monkeypatch.setattr(socket, "getaddrinfo",
-                        lambda host, *_: [(socket.AF_INET, socket.SOCK_STREAM,
-                                          0, "", (host, 0))])
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda host, *_: [(socket.AF_INET, socket.SOCK_STREAM, 0, "", (host, 0))],
+    )
     result = await fetch_url("http://127.0.0.1/admin")
     assert "127.0.0.1" in result or "private" in result.lower() or "loopback" in result.lower()
     assert "Fetched" not in result
@@ -526,9 +526,11 @@ async def test_fetch_refuses_loopback_ipv4(monkeypatch):
 @pytest.mark.anyio
 async def test_fetch_refuses_private_rfc1918(monkeypatch):
     """RFC1918 ranges (10/8, 172.16/12, 192.168/16) are blocked too."""
-    monkeypatch.setattr(socket, "getaddrinfo",
-                        lambda host, *_: [(socket.AF_INET, socket.SOCK_STREAM,
-                                          0, "", (host, 0))])
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda host, *_: [(socket.AF_INET, socket.SOCK_STREAM, 0, "", (host, 0))],
+    )
     result = await fetch_url("http://10.0.0.5/internal")
     assert "Fetched" not in result
 
@@ -536,9 +538,11 @@ async def test_fetch_refuses_private_rfc1918(monkeypatch):
 @pytest.mark.anyio
 async def test_fetch_refuses_link_local_metadata(monkeypatch):
     """AWS/GCP instance metadata lives at 169.254.169.254 — must be blocked."""
-    monkeypatch.setattr(socket, "getaddrinfo",
-                        lambda host, *_: [(socket.AF_INET, socket.SOCK_STREAM,
-                                          0, "", (host, 0))])
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda host, *_: [(socket.AF_INET, socket.SOCK_STREAM, 0, "", (host, 0))],
+    )
     result = await fetch_url("http://169.254.169.254/latest/meta-data/")
     assert "Fetched" not in result
 
@@ -546,9 +550,11 @@ async def test_fetch_refuses_link_local_metadata(monkeypatch):
 @pytest.mark.anyio
 async def test_fetch_refuses_ipv6_loopback(monkeypatch):
     """[::1] must be blocked just like 127.0.0.1."""
-    monkeypatch.setattr(socket, "getaddrinfo",
-                        lambda host, *_: [(socket.AF_INET6, socket.SOCK_STREAM,
-                                          0, "", (host, 0, 0, 0))])
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda host, *_: [(socket.AF_INET6, socket.SOCK_STREAM, 0, "", (host, 0, 0, 0))],
+    )
     result = await fetch_url("http://[::1]/admin")
     assert "Fetched" not in result
 
@@ -564,8 +570,9 @@ def _getaddrinfo_returning(addr: str, *, family: int = socket.AF_INET):
 async def test_fetch_refuses_ipv4_mapped_loopback(monkeypatch):
     """``::ffff:127.0.0.1`` is loopback spelled in IPv4-mapped IPv6 form — it must
     be normalized to its v4 address and refused, not waved through the v6 nets."""
-    monkeypatch.setattr(socket, "getaddrinfo",
-                        _getaddrinfo_returning("::ffff:127.0.0.1", family=socket.AF_INET6))
+    monkeypatch.setattr(
+        socket, "getaddrinfo", _getaddrinfo_returning("::ffff:127.0.0.1", family=socket.AF_INET6)
+    )
     result = await fetch_url("http://mapped-loopback.example/admin")
     assert "Fetched" not in result
 
@@ -573,8 +580,9 @@ async def test_fetch_refuses_ipv4_mapped_loopback(monkeypatch):
 @pytest.mark.anyio
 async def test_fetch_refuses_ipv4_mapped_private(monkeypatch):
     """``::ffff:10.0.0.1`` maps to RFC1918 10/8 — refuse after normalization."""
-    monkeypatch.setattr(socket, "getaddrinfo",
-                        _getaddrinfo_returning("::ffff:10.0.0.1", family=socket.AF_INET6))
+    monkeypatch.setattr(
+        socket, "getaddrinfo", _getaddrinfo_returning("::ffff:10.0.0.1", family=socket.AF_INET6)
+    )
     result = await fetch_url("http://mapped-private.example/internal")
     assert "Fetched" not in result
 
@@ -590,8 +598,7 @@ async def test_fetch_refuses_unspecified_ipv4(monkeypatch):
 @pytest.mark.anyio
 async def test_fetch_refuses_unspecified_ipv6(monkeypatch):
     """:: (IPv6 unspecified) must be refused."""
-    monkeypatch.setattr(socket, "getaddrinfo",
-                        _getaddrinfo_returning("::", family=socket.AF_INET6))
+    monkeypatch.setattr(socket, "getaddrinfo", _getaddrinfo_returning("::", family=socket.AF_INET6))
     result = await fetch_url("http://zero6.example/")
     assert "Fetched" not in result
 
@@ -626,9 +633,11 @@ async def test_pinned_backend_connects_to_validated_ip(monkeypatch):
     swap in a private address between our check and the connect."""
     from marim_harness.tools.impl.fetch import _PinnedBackend
 
-    monkeypatch.setattr(socket, "getaddrinfo",
-                        lambda host, *_: [(socket.AF_INET, socket.SOCK_STREAM,
-                                          0, "", ("93.184.216.34", 0))])
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda host, *_: [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", 0))],
+    )
     inner = AsyncMock()
     inner.connect_tcp = AsyncMock(return_value="stream")
     backend = _PinnedBackend(inner)
@@ -650,9 +659,11 @@ async def test_pinned_backend_refuses_private_ip(monkeypatch):
 
     from marim_harness.tools.impl.fetch import _PinnedBackend
 
-    monkeypatch.setattr(socket, "getaddrinfo",
-                        lambda host, *_: [(socket.AF_INET, socket.SOCK_STREAM,
-                                          0, "", ("10.0.0.5", 0))])
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda host, *_: [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("10.0.0.5", 0))],
+    )
     backend = _PinnedBackend(AsyncMock())
 
     with pytest.raises(httpcore.ConnectError) as ei:
@@ -663,9 +674,11 @@ async def test_pinned_backend_refuses_private_ip(monkeypatch):
 def test_validated_ips_returns_public_addresses(monkeypatch):
     from marim_harness.tools.impl.fetch import _validated_ips
 
-    monkeypatch.setattr(socket, "getaddrinfo",
-                        lambda host, *_: [(socket.AF_INET, socket.SOCK_STREAM,
-                                          0, "", ("93.184.216.34", 0))])
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda host, *_: [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", 0))],
+    )
     assert _validated_ips("example.com") == ["93.184.216.34"]
 
 
@@ -673,10 +686,13 @@ def test_validated_ips_raises_when_any_address_blocked(monkeypatch):
     """If a name resolves to a mix of public and private, refuse outright."""
     from marim_harness.tools.impl.fetch import _validated_ips
 
-    monkeypatch.setattr(socket, "getaddrinfo",
-                        lambda host, *_: [
-                            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", 0)),
-                            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 0)),
-                        ])
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda host, *_: [
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 0)),
+        ],
+    )
     with pytest.raises(ValueError, match="private/loopback/link-local"):
         _validated_ips("rebind.example.com")

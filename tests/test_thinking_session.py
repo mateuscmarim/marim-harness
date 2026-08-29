@@ -46,6 +46,7 @@ def test_old_session_files_load_with_none(tmp_path):
     store = manager.create()
     store.save([], RunUsage())
     import json
+
     data = json.loads(store.path.read_text())
     data.pop("thinking", None)
     store.path.write_text(json.dumps(data))

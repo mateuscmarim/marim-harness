@@ -62,8 +62,16 @@ class SpawnLifecycle(Protocol):
     seam keeps arity/kwarg checking that ``Callable[...]`` would erase."""
 
     def __call__(
-        self, run_fn: Callable[[], Awaitable[SpawnRun]], *, iso: SpawnWorktree | None,
-        resumed: bool, background: bool, name: str, stop_task: str, note: str,
-        max_output_chars: int | None, stream_id: str,
+        self,
+        run_fn: Callable[[], Awaitable[SpawnRun]],
+        *,
+        iso: SpawnWorktree | None,
+        resumed: bool,
+        background: bool,
+        name: str,
+        stop_task: str,
+        note: str,
+        max_output_chars: int | None,
+        stream_id: str,
         timing: tuple[float, float, list[float]] | None = None,
     ) -> Awaitable[str]: ...

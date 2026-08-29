@@ -66,7 +66,7 @@ _BLOCKED_NETS = [
     ipaddress.ip_network("192.168.0.0/16"),
     ipaddress.ip_network("169.254.0.0/16"),
     ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("::/128"),          # IPv6 unspecified
+    ipaddress.ip_network("::/128"),  # IPv6 unspecified
     ipaddress.ip_network("fc00::/7"),
     ipaddress.ip_network("fe80::/10"),
 ]
@@ -100,9 +100,7 @@ def _validated_ips(host: str) -> list[str]:
         # exists only on IPv6Address (and is None for non-mapped v6), so guard.
         ip = getattr(ip, "ipv4_mapped", None) or ip
         if any(ip in net for net in _BLOCKED_NETS):
-            raise ValueError(
-                f"refusing to fetch {ip} (private/loopback/link-local address)"
-            )
+            raise ValueError(f"refusing to fetch {ip} (private/loopback/link-local address)")
         if bare not in ips:
             ips.append(bare)
     if not ips:
@@ -127,14 +125,16 @@ class _PinnedBackend(httpcore.AsyncNetworkBackend):
     def __init__(self, inner: httpcore.AsyncNetworkBackend) -> None:
         self._inner = inner
 
-    async def connect_tcp(self, host, port, timeout=None, local_address=None,
-                          socket_options=None):
+    async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
         try:
             ip = _validated_ips(host)[0]
         except ValueError as exc:
             raise httpcore.ConnectError(str(exc)) from exc
         return await self._inner.connect_tcp(
-            ip, port, timeout=timeout, local_address=local_address,
+            ip,
+            port,
+            timeout=timeout,
+            local_address=local_address,
             socket_options=socket_options,
         )
 
@@ -165,16 +165,20 @@ def _build_client(*, timeout: int) -> httpx.AsyncClient:
         headers={"User-Agent": _UA},
     )
 
+
 # Common markers for boilerplate we want to strip from the output.
 _BOILERPLATE_SELECTORS = (
-    "nav", "footer", "header", "aside",
-    "script", "style", "noscript", "iframe",
+    "nav",
+    "footer",
+    "header",
+    "aside",
+    "script",
+    "style",
+    "noscript",
+    "iframe",
 )
 
-_UA = (
-    "Mozilla/5.0 (compatible; marim-harness/1.0; "
-    "+https://github.com/marim-dev/marim-harness)"
-)
+_UA = "Mozilla/5.0 (compatible; marim-harness/1.0; +https://github.com/marim-dev/marim-harness)"
 
 
 def _normalise_url(url: str) -> str:
@@ -241,7 +245,8 @@ def _offload(body: str, url: str, offload_dir: Path) -> str:
     digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
     filename = f"fetch-{digest}.md"
     abs_path, preview, n_lines = write_preview_file(
-        body, filename=filename, offload_dir=offload_dir)
+        body, filename=filename, offload_dir=offload_dir
+    )
     return (
         f"# {_title_of(body, url)}\n"
         f"Fetched {url}\n\n"
@@ -275,16 +280,13 @@ def _validate_target(url: str) -> tuple[str | None, str | None]:
     return url, None
 
 
-async def _stream_body(
-    url: str, timeout: int
-) -> tuple[bytes, str, str | None, bool] | str:
+async def _stream_body(url: str, timeout: int) -> tuple[bytes, str, str | None, bool] | str:
     """Fetch *url*'s body, stopping at the read cap. Returns ``(raw, content_type,
     encoding, truncated)`` on success, or an error string on any failure (a
     declared-oversize body, an HTTP error status, or a transport error) — the
     caller branches on ``isinstance(result, str)``."""
     try:
-        async with _build_client(timeout=timeout) as client, \
-                client.stream("GET", url) as resp:
+        async with _build_client(timeout=timeout) as client, client.stream("GET", url) as resp:
             resp.raise_for_status()
             # --- size guard: refuse declared-huge bodies before reading ---
             declared = resp.headers.get("content-length")

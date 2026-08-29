@@ -31,7 +31,8 @@ async def prompt_project_trust(app: HarnessApp) -> None:
     trusted = bool(await run_panel(app, TrustPanel(surface)))
     try:
         record_decision(
-            app.harness.deps.workspace.root, trusted=trusted,
+            app.harness.deps.workspace.root,
+            trusted=trusted,
             fingerprint=surface.fingerprint,
             now=datetime.now(timezone.utc).isoformat(),
         )
@@ -40,9 +41,7 @@ async def prompt_project_trust(app: HarnessApp) -> None:
     if trusted:
         await apply_trust_and_confirm(app)
     else:
-        await app.post_system(
-            "Project config present but not trusted — `/trust on` to enable."
-        )
+        await app.post_system("Project config present but not trusted — `/trust on` to enable.")
 
 
 async def apply_trust_and_confirm(app: HarnessApp) -> None:

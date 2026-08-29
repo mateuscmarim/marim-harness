@@ -73,8 +73,8 @@ async def test_retries_a_transient_error_then_succeeds(tmp_path: Path):
     sub = _FlakySub(ModelHTTPError(504, "m", body="idle timeout"), fail_times=1)
     result = await runner._driver.run_to_completion(sub, "task", None, None, None)
     assert result.output == "ok"
-    assert sub.calls == 2          # one failure, one success
-    assert sleeps == [1]           # backed off once before the retry
+    assert sub.calls == 2  # one failure, one success
+    assert sleeps == [1]  # backed off once before the retry
 
 
 @pytest.mark.anyio
@@ -96,7 +96,7 @@ async def test_does_not_retry_a_permanent_error(tmp_path: Path):
     sub = _FlakySub(ModelHTTPError(400, "m", body=body), fail_times=99)
     with pytest.raises(ModelHTTPError):
         await runner._driver.run_to_completion(sub, "task", None, None, None)
-    assert sub.calls == 1          # failed once, never retried
+    assert sub.calls == 1  # failed once, never retried
     assert sleeps == []
 
 
@@ -113,8 +113,9 @@ async def test_resumes_after_transient_error_without_re_running_work(tmp_path: P
         has_return = any(type(p).__name__ == "ToolReturnPart" for p in parts)
         if not has_return:
             # Step 1: call the tool.
-            return ModelResponse(parts=[ToolCallPart(
-                tool_name="counter", args={}, tool_call_id="t1")])
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name="counter", args={}, tool_call_id="t1")]
+            )
         if not state["raised"]:
             # Step 2 of the first attempt: fail transiently *after* the tool ran.
             state["raised"] = True
@@ -131,8 +132,8 @@ async def test_resumes_after_transient_error_without_re_running_work(tmp_path: P
 
     result = await runner._driver.run_to_completion(sub, "go", None, None, None)
     assert result.output == "done"
-    assert state["tool_runs"] == 1     # resumed, not restarted from scratch
-    assert sleeps == [1]               # one transient retry
+    assert state["tool_runs"] == 1  # resumed, not restarted from scratch
+    assert sleeps == [1]  # one transient retry
 
 
 @pytest.mark.anyio
@@ -150,9 +151,7 @@ async def test_subagent_strips_a_nameless_tool_call_before_the_next_request(tmp_
         calls["n"] += 1
         if calls["n"] == 1:
             # A flaky provider streams a tool call whose function name never lands.
-            return ModelResponse(
-                parts=[ToolCallPart(tool_name="", args={}, tool_call_id="bad")]
-            )
+            return ModelResponse(parts=[ToolCallPart(tool_name="", args={}, tool_call_id="bad")])
         seen["messages"] = messages
         return ModelResponse(parts=[TextPart(content="done")])
 
@@ -210,8 +209,11 @@ async def test_no_ui_notice_when_there_is_no_stream(tmp_path: Path):
 
 def _overflow() -> ModelHTTPError:
     return ModelHTTPError(
-        400, "m", body={"message": "This model's maximum context length is "
-                                   "8192 tokens; your request used more."}
+        400,
+        "m",
+        body={
+            "message": "This model's maximum context length is 8192 tokens; your request used more."
+        },
     )
 
 
@@ -229,8 +231,9 @@ async def test_overflow_sheds_stale_observations_and_resumes(tmp_path: Path):
         parts = [p for m in messages for p in getattr(m, "parts", [])]
         returns = [p for p in parts if type(p).__name__ == "ToolReturnPart"]
         if len(returns) < 2:
-            return ModelResponse(parts=[ToolCallPart(
-                tool_name="blob", args={}, tool_call_id=f"t{len(returns)}")])
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name="blob", args={}, tool_call_id=f"t{len(returns)}")]
+            )
         if not state["raised"]:
             state["raised"] = True
             raise _overflow()
@@ -248,13 +251,15 @@ async def test_overflow_sheds_stale_observations_and_resumes(tmp_path: Path):
     assert sleeps == []  # overflow recovery resumes immediately, no backoff
 
     from marim_harness.compaction import MASKED_OBSERVATION
+
     contents = [
-        str(p.content) for m in seen["messages"]
+        str(p.content)
+        for m in seen["messages"]
         for p in getattr(m, "parts", [])
         if type(p).__name__ == "ToolReturnPart"
     ]
-    assert contents[0] == MASKED_OBSERVATION   # stale observation shed
-    assert contents[1] == "x" * 500            # newest spared (keep_recent=1)
+    assert contents[0] == MASKED_OBSERVATION  # stale observation shed
+    assert contents[1] == "x" * 500  # newest spared (keep_recent=1)
 
 
 @pytest.mark.anyio
@@ -268,8 +273,7 @@ async def test_overflow_with_nothing_to_shed_raises(tmp_path: Path):
         calls["n"] += 1
         parts = [p for m in messages for p in getattr(m, "parts", [])]
         if not any(type(p).__name__ == "ToolReturnPart" for p in parts):
-            return ModelResponse(parts=[ToolCallPart(
-                tool_name="blob", args={}, tool_call_id="t0")])
+            return ModelResponse(parts=[ToolCallPart(tool_name="blob", args={}, tool_call_id="t0")])
         raise _overflow()
 
     sub = Agent(FunctionModel(fn))
@@ -295,8 +299,9 @@ async def test_overflow_gives_up_after_one_shed(tmp_path: Path):
         parts = [p for m in messages for p in getattr(m, "parts", [])]
         returns = [p for p in parts if type(p).__name__ == "ToolReturnPart"]
         if len(returns) < 2:
-            return ModelResponse(parts=[ToolCallPart(
-                tool_name="blob", args={}, tool_call_id=f"t{len(returns)}")])
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name="blob", args={}, tool_call_id=f"t{len(returns)}")]
+            )
         raise _overflow()
 
     sub = Agent(FunctionModel(fn))
@@ -327,8 +332,9 @@ async def test_overflow_shed_emits_a_ui_notice_for_a_foreground_spawn(tmp_path: 
         parts = [p for m in messages for p in getattr(m, "parts", [])]
         returns = [p for p in parts if type(p).__name__ == "ToolReturnPart"]
         if len(returns) < 2:
-            return ModelResponse(parts=[ToolCallPart(
-                tool_name="blob", args={}, tool_call_id=f"t{len(returns)}")])
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name="blob", args={}, tool_call_id=f"t{len(returns)}")]
+            )
         if not state["raised"]:
             state["raised"] = True
             raise _overflow()
@@ -392,8 +398,9 @@ async def test_overflow_resume_inside_main_turn_capture_uses_the_subs_history(tm
         parts = [p for m in messages for p in getattr(m, "parts", [])]
         returns = [p for p in parts if type(p).__name__ == "ToolReturnPart"]
         if len(returns) < 2:
-            return ModelResponse(parts=[ToolCallPart(
-                tool_name="blob", args={}, tool_call_id=f"t{len(returns)}")])
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name="blob", args={}, tool_call_id=f"t{len(returns)}")]
+            )
         if not state["raised"]:
             state["raised"] = True
             raise _overflow()
@@ -409,8 +416,9 @@ async def test_overflow_resume_inside_main_turn_capture_uses_the_subs_history(tm
     def outer_fn(messages, info):
         parts = [p for m in messages for p in getattr(m, "parts", [])]
         if not any(type(p).__name__ == "ToolReturnPart" for p in parts):
-            return ModelResponse(parts=[ToolCallPart(
-                tool_name="delegate", args={}, tool_call_id="outer-t1")])
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name="delegate", args={}, tool_call_id="outer-t1")]
+            )
         return ModelResponse(parts=[TextPart(content="outer-done")])
 
     outer = Agent(FunctionModel(outer_fn))
@@ -433,29 +441,30 @@ async def test_overflow_resume_inside_main_turn_capture_uses_the_subs_history(tm
 
     def _texts(messages) -> str:
         return " ".join(
-            str(getattr(p, "content", ""))
-            for m in messages for p in getattr(m, "parts", [])
+            str(getattr(p, "content", "")) for m in messages for p in getattr(m, "parts", [])
         )
 
     def _tool_names(messages) -> set:
         return {
-            getattr(p, "tool_name", None)
-            for m in messages for p in getattr(m, "parts", [])
+            getattr(p, "tool_name", None) for m in messages for p in getattr(m, "parts", [])
         } - {None}
 
     # (b) The resumed history the sub's model saw is the SUB's conversation:
     # its task and its (shed-masked) tool round — none of the outer agent's.
     from marim_harness.compaction import MASKED_OBSERVATION
+
     sub_seen = seen["messages"]
     assert "sub task" in _texts(sub_seen)
     assert "orchestrate" not in _texts(sub_seen)
     assert "delegate" not in _tool_names(sub_seen)
     contents = [
-        str(p.content) for m in sub_seen for p in getattr(m, "parts", [])
+        str(p.content)
+        for m in sub_seen
+        for p in getattr(m, "parts", [])
         if type(p).__name__ == "ToolReturnPart"
     ]
-    assert contents[0] == MASKED_OBSERVATION   # stale observation shed
-    assert contents[1] == "x" * 500            # newest spared (keep_recent=1)
+    assert contents[0] == MASKED_OBSERVATION  # stale observation shed
+    assert contents[1] == "x" * 500  # newest spared (keep_recent=1)
 
     # (c) The outer captured list still holds the OUTER conversation, untouched
     # by the sub-agent's run and resume.
@@ -478,8 +487,9 @@ async def test_overflow_shed_resume_accumulates_usage_across_attempts(tmp_path: 
         parts = [p for m in messages for p in getattr(m, "parts", [])]
         returns = [p for p in parts if type(p).__name__ == "ToolReturnPart"]
         if len(returns) < 2:
-            return ModelResponse(parts=[ToolCallPart(
-                tool_name="blob", args={}, tool_call_id=f"t{len(returns)}")])
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name="blob", args={}, tool_call_id=f"t{len(returns)}")]
+            )
         if not state["raised"]:
             state["raised"] = True
             raise _overflow()
@@ -510,8 +520,9 @@ async def test_give_up_after_retries_banks_partial_usage_into_session(tmp_path: 
     def fn(messages, info):
         parts = [p for m in messages for p in getattr(m, "parts", [])]
         if not any(type(p).__name__ == "ToolReturnPart" for p in parts):
-            return ModelResponse(parts=[ToolCallPart(
-                tool_name="counter", args={}, tool_call_id="t1")])
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name="counter", args={}, tool_call_id="t1")]
+            )
         raise ModelHTTPError(503, "m", body="overloaded")
 
     sub = Agent(FunctionModel(fn))
@@ -536,9 +547,7 @@ async def test_foreground_overflow_failure_tells_orchestrator_to_split(tmp_path:
     runner, _ = _runner(tmp_path)
 
     async def _boom(*args, **kwargs):
-        raise ModelHTTPError(
-            400, "m", body={"message": "maximum context length exceeded"}
-        )
+        raise ModelHTTPError(400, "m", body={"message": "maximum context length exceeded"})
 
     runner._driver.run_to_completion = _boom
     out = await runner.run("general", "task", "sid-1")
@@ -568,8 +577,9 @@ async def test_contention_overflow_retries_as_transient_instead_of_shedding(tmp_
         parts = [p for m in messages for p in getattr(m, "parts", [])]
         returns = [p for p in parts if type(p).__name__ == "ToolReturnPart"]
         if len(returns) < 2:
-            return ModelResponse(parts=[ToolCallPart(
-                tool_name="blob", args={}, tool_call_id=f"t{len(returns)}")])
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name="blob", args={}, tool_call_id=f"t{len(returns)}")]
+            )
         if not state["raised"]:
             state["raised"] = True
             raise _overflow()
@@ -587,7 +597,8 @@ async def test_contention_overflow_retries_as_transient_instead_of_shedding(tmp_
     assert sleeps == [1]  # backed off like a transient error, not an instant shed
 
     contents = [
-        str(p.content) for m in seen["messages"]
+        str(p.content)
+        for m in seen["messages"]
         for p in getattr(m, "parts", [])
         if type(p).__name__ == "ToolReturnPart"
     ]

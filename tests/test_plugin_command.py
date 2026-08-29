@@ -32,8 +32,10 @@ def _install(plugins_dir: Path, name: str, enabled=True):
     (pdir / ".marim-plugin" / "plugin.json").write_text(
         json.dumps({"name": name, "description": "d"}), encoding="utf-8"
     )
-    save_state(plugins_dir, {name: InstalledPlugin(
-        name=name, version=None, source={"type": "local"}, enabled=enabled)})
+    save_state(
+        plugins_dir,
+        {name: InstalledPlugin(name=name, version=None, source={"type": "local"}, enabled=enabled)},
+    )
 
 
 def test_plugin_list(tmp_path, monkeypatch):

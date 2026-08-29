@@ -73,7 +73,7 @@ def test_read_only_commands_allowed(command):
         "ls && rm -rf x",
         "ls; rm x",
         "ls | tee out.txt",
-        "python -c 'open(\"x\",\"w\")'",
+        'python -c \'open("x","w")\'',
         "$(echo rm) -rf x",
         "pip install requests",
         "",

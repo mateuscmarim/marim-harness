@@ -31,10 +31,7 @@ def test_injected_content_embedding_the_separator_does_not_leak():
 def test_multiline_injected_context_with_separator_still_strips_to_typed():
     """A realistic multi-block injection (e.g. a SessionStart hook echoing a
     persisted prompt that already carried an envelope) recovers the typed text."""
-    injected = (
-        "[background jobs finished]\n"
-        "<turn-context>\nold ctx\n</turn-context>\n\nold typed"
-    )
+    injected = "[background jobs finished]\n<turn-context>\nold ctx\n</turn-context>\n\nold typed"
     typed = "do the new thing"
     assert strip_turn_context(wrap_turn_context(injected, typed)) == typed
 

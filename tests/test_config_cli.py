@@ -178,9 +178,12 @@ def test_set_accepts_context_window_and_budgets(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     _clear_marim_env(monkeypatch)
     assert config_cmd.main(["set", "MARIM_CONTEXT_WINDOW", "131072"], out=io.StringIO()) == 0
-    assert config_cmd.main(
-        ["set", "MARIM_CONTEXT_BUDGETS", "anthropic/claude-opus*=60000"], out=io.StringIO()
-    ) == 0
+    assert (
+        config_cmd.main(
+            ["set", "MARIM_CONTEXT_BUDGETS", "anthropic/claude-opus*=60000"], out=io.StringIO()
+        )
+        == 0
+    )
     text = (tmp_path / "marim" / ".env").read_text()
     assert "MARIM_CONTEXT_WINDOW=131072" in text
     assert "MARIM_CONTEXT_BUDGETS=anthropic/claude-opus*=60000" in text

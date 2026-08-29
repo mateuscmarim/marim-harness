@@ -114,8 +114,15 @@ def test_ask_user_fires_notification(tmp_path):
     agent = _agent()
     model, _ = _call_tool(
         "ask_user",
-        {"questions": [{"question": "Proceed?", "header": "go",
-                        "options": [{"label": "yes"}, {"label": "no"}]}]},
+        {
+            "questions": [
+                {
+                    "question": "Proceed?",
+                    "header": "go",
+                    "options": [{"label": "yes"}, {"label": "no"}],
+                }
+            ]
+        },
     )
     with agent.override(model=model):
         agent.run_sync("go", deps=deps)

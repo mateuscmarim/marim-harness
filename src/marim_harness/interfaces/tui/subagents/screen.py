@@ -91,9 +91,7 @@ class SubAgentsScreen:
         ordered = self._ordered()
         index = len(ordered) - 1
         if stream_id is not None:
-            index = next(
-                (i for i, w in enumerate(ordered) if w.stream_id == stream_id), index
-            )
+            index = next((i for i, w in enumerate(ordered) if w.stream_id == stream_id), index)
         self.open = True
         self.index = index
         view = app.query_one(SubAgentsView)
@@ -120,9 +118,7 @@ class SubAgentsScreen:
             return
         # Own group + exit_on_error=False, same rationale as the transcript
         # loader below: the default group belongs to the exclusive turn worker.
-        self._app.run_worker(
-            self._resume(card), group="subagent-resume", exit_on_error=False
-        )
+        self._app.run_worker(self._resume(card), group="subagent-resume", exit_on_error=False)
 
     async def _resume(self, card) -> None:
         resume = self._app.harness.deps.services.resume_subagent
@@ -211,6 +207,7 @@ class SubAgentsScreen:
         if store is None:
             return
         from ....session import TranscriptStore
+
         msgs = TranscriptStore(store.path, store.session_id).read(stream_id)
         if msgs is not None:
             await self._app.session.replay_messages_into(pane, msgs, parent_id=stream_id)
@@ -226,9 +223,8 @@ class SubAgentsScreen:
         else:
             from textual.content import Content
             from textual.widgets import Static
-            await pane.add(
-                Static(Content("transcript unavailable for this resumed sub-agent"))
-            )
+
+            await pane.add(Static(Content("transcript unavailable for this resumed sub-agent")))
 
     def _apply_view(self) -> None:
         """Open/navigate path: repaint the list AND flush the now-selected

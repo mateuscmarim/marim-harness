@@ -22,7 +22,9 @@ def _cli_harness(tmp_path: Path, output_text: str = "ok"):
     store = manager.create("cli")
     model = TestModel(call_tools=[], custom_output_text=output_text)
     return Harness(
-        model, BuiltinToolProvider(), deps,
+        model,
+        BuiltinToolProvider(),
+        deps,
         instructions="test",
         config=HarnessConfig(store=store, manager=manager),
     )
@@ -31,10 +33,10 @@ def _cli_harness(tmp_path: Path, output_text: str = "ok"):
 def test_is_headless_logic():
     from marim_harness.interfaces.cli.default_cmd import _is_headless
 
-    assert _is_headless("hi", stdin_isatty=True) is True   # -p with text
-    assert _is_headless(True, stdin_isatty=True) is True    # -p flag alone
-    assert _is_headless(None, stdin_isatty=False) is True   # piped stdin
-    assert _is_headless(None, stdin_isatty=True) is False   # tty, no -p -> TUI
+    assert _is_headless("hi", stdin_isatty=True) is True  # -p with text
+    assert _is_headless(True, stdin_isatty=True) is True  # -p flag alone
+    assert _is_headless(None, stdin_isatty=False) is True  # piped stdin
+    assert _is_headless(None, stdin_isatty=True) is False  # tty, no -p -> TUI
     # `textual serve` drives the TUI over pipes (stdin is NOT a tty) and signals
     # the web driver via TEXTUAL_DRIVER. That still wants the full TUI, so the
     # piped-stdin heuristic must not pull it into headless.
@@ -52,9 +54,7 @@ def test_parser_defaults_and_flags():
     assert args.workspace is None and args.prompt is None
     assert args.output_format == "text" and args.mode is None and args.resume is False
 
-    args = p.parse_args(
-        ["-p", "do it", "--output-format", "json", "--mode", "plan", "--resume"]
-    )
+    args = p.parse_args(["-p", "do it", "--output-format", "json", "--mode", "plan", "--resume"])
     assert args.prompt == "do it" and args.output_format == "json"
     assert args.mode == "plan" and args.resume is True
 
@@ -114,9 +114,7 @@ def test_router_falls_through_to_default(monkeypatch):
     # at its source module so the local `from .default_cmd import run_default` binds
     # the fake.
     monkeypatch.setattr(router, "load_environment", lambda: None)
-    monkeypatch.setattr(
-        default_cmd, "run_default", lambda argv: 0 if argv == ["-p", "hi"] else 99
-    )
+    monkeypatch.setattr(default_cmd, "run_default", lambda argv: 0 if argv == ["-p", "hi"] else 99)
     monkeypatch.setattr("sys.argv", ["marim", "-p", "hi"])
     with pytest.raises(SystemExit) as ei:
         router.main()
@@ -162,7 +160,8 @@ def test_piped_stdin_triggers_headless(monkeypatch, tmp_path: Path):
     import marim_harness.runtime.bootstrap as bootstrap
 
     monkeypatch.setattr(
-        bootstrap, "build_harness",
+        bootstrap,
+        "build_harness",
         lambda workspace, *, mode, resume: _cli_harness(tmp_path, "piped-ok"),
     )
     out = io.StringIO()
@@ -192,7 +191,8 @@ def test_run_default_tui_omits_mode_for_configured_default(monkeypatch, tmp_path
 
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))  # keep off the real file
     monkeypatch.setattr(
-        bootstrap, "build_harness",
+        bootstrap,
+        "build_harness",
         lambda workspace, *, mode=None, resume: captured.update(mode=mode) or object(),
     )
     monkeypatch.setattr(tui_app, "HarnessApp", FakeApp)
@@ -241,7 +241,8 @@ def test_headless_works_without_textual(monkeypatch, tmp_path: Path):
     import marim_harness.runtime.bootstrap as bootstrap
 
     monkeypatch.setattr(
-        bootstrap, "build_harness",
+        bootstrap,
+        "build_harness",
         lambda workspace, *, mode, resume: _cli_harness(tmp_path, "bare-ok"),
     )
     monkeypatch.setattr(default_cmd, "_tui_available", lambda: False)

@@ -14,8 +14,11 @@ from marim_harness.tools.provider import BuiltinToolProvider
 from marim_harness.workspace.agents import AgentDef
 
 REVIEWER = AgentDef(
-    name="reviewer", description="reviews diffs", prompt="You review diffs.",
-    tools=frozenset({"read_file", "grep"}), source="programmatic",
+    name="reviewer",
+    description="reviews diffs",
+    prompt="You review diffs.",
+    tools=frozenset({"read_file", "grep"}),
+    source="programmatic",
 )
 
 
@@ -35,8 +38,12 @@ def subagent_runner_factory(tmp_path: Path):
         hooks = MagicMock()
         session = MagicMock()
         return SubagentRunner(
-            provider=provider, mcp=mcp, deps=deps, hooks=hooks,
-            session=session, get_model=lambda: TestModel(),
+            provider=provider,
+            mcp=mcp,
+            deps=deps,
+            hooks=hooks,
+            session=session,
+            get_model=lambda: TestModel(),
             **kw,
         )
 

@@ -9,8 +9,11 @@ def _reg(*blocks_bundled):
     provs = []
     for block, bundled in blocks_bundled:
         provs += parse_lsp_providers(
-            block, bundled=bundled, source="bundled" if bundled else "global",
-            plugin_root=None, strict=True,
+            block,
+            bundled=bundled,
+            source="bundled" if bundled else "global",
+            plugin_root=None,
+            strict=True,
         )
     return LspRegistry(provs)
 
@@ -29,9 +32,12 @@ async def test_unsupported_file_message(tmp_path):
 
 @pytest.mark.anyio
 async def test_disabled_language_message(tmp_path):
-    reg = _reg((
-        {"language": "go", "extensions": [".go"], "command": "gopls"}, False,
-    ))
+    reg = _reg(
+        (
+            {"language": "go", "extensions": [".go"], "command": "gopls"},
+            False,
+        )
+    )
     mgr = LspManager(tmp_path, registry=reg, disabled=frozenset({"go"}))
     out = await mgr.hover("x.go", 1, 1)
     assert "disabled for go" in out
@@ -39,10 +45,18 @@ async def test_disabled_language_message(tmp_path):
 
 @pytest.mark.anyio
 async def test_python_diagnostics_routes_to_checks(tmp_path, monkeypatch):
-    reg = _reg((
-        {"language": "python", "extensions": [".py"], "backend": "basedpyright",
-         "diagnostics": "python-checks", "probe": ["basedpyright-langserver"]}, True,
-    ))
+    reg = _reg(
+        (
+            {
+                "language": "python",
+                "extensions": [".py"],
+                "backend": "basedpyright",
+                "diagnostics": "python-checks",
+                "probe": ["basedpyright-langserver"],
+            },
+            True,
+        )
+    )
     called = {}
 
     async def fake_python_diagnostics(root, path, *, deep):

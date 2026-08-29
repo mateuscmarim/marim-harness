@@ -24,11 +24,11 @@ if TYPE_CHECKING:
 
 @dataclass
 class Checkpoint:
-    index: int            # monotonic ordinal, unique within a session
-    history_len: int      # len(history) captured before this turn ran
-    commit: str | None # shadow commit sha (restore target), or None
-    created: str          # ISO-8601 UTC timestamp
-    prompt_preview: str   # first ~80 chars of the turn's user prompt
+    index: int  # monotonic ordinal, unique within a session
+    history_len: int  # len(history) captured before this turn ran
+    commit: str | None  # shadow commit sha (restore target), or None
+    created: str  # ISO-8601 UTC timestamp
+    prompt_preview: str  # first ~80 chars of the turn's user prompt
 
     def to_dict(self) -> dict:
         return {
@@ -84,7 +84,7 @@ def _now() -> str:
 @dataclass
 class RewindResult:
     history_len: int
-    restored_files: bool         # files were actually restored from the snapshot
+    restored_files: bool  # files were actually restored from the snapshot
     restore_failed: bool = False  # a file restore was attempted but git failed
     # The pre-rewind working tree, captured so the rewind is undoable; None when
     # the checkpoint had no file state (conversation-only) or capture failed.
@@ -181,9 +181,7 @@ class CheckpointManager:
         except (OSError, json.JSONDecodeError) as exc:
             logger.debug("ignoring unreadable checkpoint sidecar %s: %s", path, exc)
             return
-        self._checkpoints = [
-            Checkpoint.from_dict(d) for d in data.get("checkpoints", [])
-        ]
+        self._checkpoints = [Checkpoint.from_dict(d) for d in data.get("checkpoints", [])]
 
     # --- operations ------------------------------------------------------
 
@@ -288,9 +286,7 @@ class CheckpointManager:
         # which may reuse one of theirs, is captured).
         self._discard_undo_stash()
         index = (self._checkpoints[-1].index + 1) if self._checkpoints else 0
-        commit = self.snapshotter.capture(
-            self._ref(index), f"marim checkpoint {index}"
-        )
+        commit = self.snapshotter.capture(self._ref(index), f"marim checkpoint {index}")
         self._checkpoints.append(
             Checkpoint(
                 index=index,
@@ -416,16 +412,12 @@ class CheckpointManager:
             # if that snapshot can't be captured (git failure), refuse the
             # destructive restore rather than wipe the new work with no recovery
             # path. Mirrors how rewind() guards its own restore.
-            pre_undo = self.snapshotter.capture(
-                self._pre_undo_ref(), "pre-undo safety snapshot"
-            )
+            pre_undo = self.snapshotter.capture(self._pre_undo_ref(), "pre-undo safety snapshot")
             if pre_undo is not None:
                 if self.snapshotter.restore(self._pre_restore_commit):
                     undone = True
             else:
-                logger.debug(
-                    "skipping undo file restore: pre-undo safety snapshot failed"
-                )
+                logger.debug("skipping undo file restore: pre-undo safety snapshot failed")
             self._pre_restore_commit = None
         # Bring the dropped later checkpoints back into the list (their refs were kept
         # alive for exactly this), so after undoing a rewind the user can rewind to a

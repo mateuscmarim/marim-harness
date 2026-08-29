@@ -8,7 +8,7 @@ from pydantic_ai.models.function import FunctionModel
 
 from tests.conftest import _make_deps, _make_harness
 
-_FAKE_CLI = '''#!{python}
+_FAKE_CLI = """#!{python}
 import json, sys
 for o in [
     {{"type": "assistant", "message": {{"content": [{{"type": "text", "text": "hi"}}]}}}},
@@ -16,7 +16,7 @@ for o in [
       "num_turns": 1, "usage": {{"input_tokens": 7, "output_tokens": 4}}}},
 ]:
     sys.stdout.write(json.dumps(o) + "\\n")
-'''
+"""
 
 
 def _fake_cli(tmp_path: Path) -> str:
@@ -39,6 +39,7 @@ def _write_cli_agent(tmp_path: Path) -> None:
 def _dummy_model() -> FunctionModel:
     async def fn(messages, info):
         return ModelResponse(parts=[TextPart(content="unused")])
+
     return FunctionModel(fn)
 
 
@@ -46,9 +47,7 @@ def _dummy_model() -> FunctionModel:
 async def test_cli_backend_spawn_returns_report(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", _fake_cli(tmp_path))
     _write_cli_agent(tmp_path)
-    runner = _make_harness(
-        _dummy_model(), _make_deps(tmp_path)
-    ).subagents
+    runner = _make_harness(_dummy_model(), _make_deps(tmp_path)).subagents
     out = await runner.run("cli-worker", "do the thing", stream_id="s1")
     assert "Done: report body" in out
     assert runner.session.usage.output_tokens == 4
@@ -58,9 +57,7 @@ async def test_cli_backend_spawn_returns_report(tmp_path: Path, monkeypatch):
 async def test_cli_backend_missing_binary_is_contained(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", "no-such-claude-binary")
     _write_cli_agent(tmp_path)
-    runner = _make_harness(
-        _dummy_model(), _make_deps(tmp_path)
-    ).subagents
+    runner = _make_harness(_dummy_model(), _make_deps(tmp_path)).subagents
     out = await runner.run("cli-worker", "do the thing", stream_id="s1")
     assert "failed" in out.lower()  # contained, not raised
 
@@ -69,9 +66,7 @@ async def test_cli_backend_missing_binary_is_contained(tmp_path: Path, monkeypat
 async def test_cli_backend_notes_unforwarded_mcp(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", _fake_cli(tmp_path))
     _write_cli_agent(tmp_path)
-    runner = _make_harness(
-        _dummy_model(), _make_deps(tmp_path)
-    ).subagents
+    runner = _make_harness(_dummy_model(), _make_deps(tmp_path)).subagents
     out = await runner.run("cli-worker", "t", stream_id="s1", mcp_names=["mddocs"])
     assert "mddocs" in out and "not forwarded" in out.lower()
 
@@ -103,9 +98,7 @@ async def test_cli_backend_fires_usage_callback(tmp_path: Path, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_cli_backend_skips_usage_callback_without_stream_id(
-    tmp_path: Path, monkeypatch
-):
+async def test_cli_backend_skips_usage_callback_without_stream_id(tmp_path: Path, monkeypatch):
     """No stream_id means headless / background: no card to update, so the
     callback must not fire."""
     monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", _fake_cli(tmp_path))
@@ -125,7 +118,7 @@ async def test_cli_backend_skips_usage_callback_without_stream_id(
     assert received == []
 
 
-_FAKE_CLI_CHILD = '''#!{python}
+_FAKE_CLI_CHILD = """#!{python}
 import json, sys
 for o in [
     {{"type": "assistant", "message": {{"id": "m1", "content": [
@@ -141,7 +134,7 @@ for o in [
       "usage": {{"input_tokens": 1, "output_tokens": 1}}}},
 ]:
     sys.stdout.write(json.dumps(o) + "\\n")
-'''
+"""
 
 
 def _fake_cli_child(tmp_path: Path) -> str:
@@ -160,7 +153,8 @@ async def test_cli_backend_persists_child_transcripts(tmp_path: Path, monkeypatc
     saved: list[str] = []
     real_save = runner._transcripts.save
     monkeypatch.setattr(
-        runner._transcripts, "save",
+        runner._transcripts,
+        "save",
         lambda sid, msgs, meta=None, cap_reasoning=False: (
             saved.append(sid),
             real_save(sid, msgs, meta=meta, cap_reasoning=cap_reasoning),
@@ -190,8 +184,14 @@ async def test_cli_runner_times_out_on_hung_cli(tmp_path: Path, monkeypatch):
     start = _time.monotonic()
     with pytest.raises(CliRunError) as exc:
         await runner.run(
-            binary=str(script), prompt="p", system_prompt="s", cwd=str(tmp_path),
-            allow_gated=False, allowed_tools=[], model=None, stream_id="s1",
+            binary=str(script),
+            prompt="p",
+            system_prompt="s",
+            cwd=str(tmp_path),
+            allow_gated=False,
+            allowed_tools=[],
+            model=None,
+            stream_id="s1",
         )
     elapsed = _time.monotonic() - start
     assert "timed out" in str(exc.value)
@@ -226,7 +226,9 @@ async def test_cli_backend_schema_appends_prompt_contract(tmp_path: Path, monkey
 
     monkeypatch.setattr(runner._cli, "execute", fake_execute)
     out = await runner.run(
-        "cli-worker", "do the thing", "s1",
+        "cli-worker",
+        "do the thing",
+        "s1",
         output_schema={"type": "object", "properties": {"ok": {"type": "boolean"}}},
     )
     assert out == "ok"

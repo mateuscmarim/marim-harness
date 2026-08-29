@@ -75,8 +75,9 @@ def test_load_tolerates_garbage():
 
 
 def test_render_uses_status_symbols():
-    out = render_tasks([Task("done one", "done"), Task("now", "in_progress"),
-                        Task("later", "pending")])
+    out = render_tasks(
+        [Task("done one", "done"), Task("now", "in_progress"), Task("later", "pending")]
+    )
     assert out == "✔ done one\n▸ now\n○ later"
 
 
@@ -85,8 +86,9 @@ def test_render_empty_is_empty_string():
 
 
 def test_summarize_counts_by_status():
-    s = summarize([Task("a", "done"), Task("b", "in_progress"),
-                   Task("c", "pending"), Task("d", "pending")])
+    s = summarize(
+        [Task("a", "done"), Task("b", "in_progress"), Task("c", "pending"), Task("d", "pending")]
+    )
     assert s == "4 tasks: 1 done, 1 in progress, 2 pending"
 
 

@@ -15,8 +15,9 @@ def _app(tmp_path):
     deps = _make_deps(tmp_path)
     from marim_harness.interfaces.tui.app import HarnessApp
 
-    return HarnessApp(Harness(TestModel(call_tools=[]), BuiltinToolProvider(),
-                              deps, instructions="test"))
+    return HarnessApp(
+        Harness(TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test")
+    )
 
 
 @pytest.mark.anyio

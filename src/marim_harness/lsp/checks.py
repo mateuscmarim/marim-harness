@@ -157,9 +157,7 @@ async def python_diagnostics(root: Path, path: str, *, deep: bool) -> list[Diag]
     if ruff is not None:
         # Invoke the resolved path, not a bare "ruff" — the probe's answer is
         # the one binary we verified exists.
-        out = await _run(
-            [ruff, "check", "--output-format=json", "--", path], root, _RUFF_TIMEOUT
-        )
+        out = await _run([ruff, "check", "--output-format=json", "--", path], root, _RUFF_TIMEOUT)
         if out is not None:
             diags.extend(_parse_ruff(out))
     if deep:

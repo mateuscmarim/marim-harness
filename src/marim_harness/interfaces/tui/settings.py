@@ -176,9 +176,7 @@ class SettingsScreen(Screen[None]):
 
     active_section: reactive[str] = reactive("session")
 
-    def __init__(
-        self, *, harness: Harness, current_theme: str, env_cfg: ModelConfig
-    ) -> None:
+    def __init__(self, *, harness: Harness, current_theme: str, env_cfg: ModelConfig) -> None:
         super().__init__()
         self.harness = harness
         self.current_theme = current_theme
@@ -358,9 +356,7 @@ class SettingsScreen(Screen[None]):
         """Mark the current theme's row with an ``active`` badge + bold name."""
         for i, name in enumerate(THEME_NAMES):
             is_current = name == self.current_theme
-            self.query_one(f"#theme-active-{i}", Static).update(
-                "active" if is_current else ""
-            )
+            self.query_one(f"#theme-active-{i}", Static).update("active" if is_current else "")
             self.query_one(f"#theme-{i}").set_class(is_current, "-active")
 
     def _move_section(self, delta: int) -> None:
@@ -419,9 +415,7 @@ class SettingsScreen(Screen[None]):
         rid = event.radio_set.id or ""
         if rid == "mode-set":
             self.harness.set_mode(Mode(MODES[event.index]))
-            self.query_one("#badge-session", Static).update(
-                self.harness.deps.workspace.mode.value
-            )
+            self.query_one("#badge-session", Static).update(self.harness.deps.workspace.mode.value)
             self.app.status.refresh_status()  # type: ignore[attr-defined]
             return
         if not self._ready:
@@ -552,9 +546,7 @@ class SettingsScreen(Screen[None]):
     def _open_model_picker(self) -> None:
         source = self.harness.model_source
         if source is None:
-            self.query_one("#model-label", Static).update(
-                "Model switching isn't available here."
-            )
+            self.query_one("#model-label", Static).update("Model switching isn't available here.")
             return
         self.app.push_screen(
             ModelPickerModal(
@@ -570,9 +562,7 @@ class SettingsScreen(Screen[None]):
             return
         self.harness.set_model(chosen)
         self.app.status.refresh_status()  # type: ignore[attr-defined]
-        self.query_one("#model-label", Static).update(
-            f"Model: {self.harness.model_label}"
-        )
+        self.query_one("#model-label", Static).update(f"Model: {self.harness.model_label}")
 
     def _open_tier_picker(self, tier: str) -> None:
         """Open the model picker for one sub-agent tier row, current-seeded
@@ -623,9 +613,7 @@ class SettingsScreen(Screen[None]):
         is /advisor. Typing ``off`` in the picker clears the default."""
         source = self.harness.model_source
         if source is None:
-            self.query_one("#advisor-value", Static).update(
-                "Model switching isn't available here."
-            )
+            self.query_one("#advisor-value", Static).update("Model switching isn't available here.")
             return
         self.app.push_screen(
             ModelPickerModal(

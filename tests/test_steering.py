@@ -25,8 +25,10 @@ def _harness(tmp_path: Path):
     from marim_harness.tools.provider import BuiltinToolProvider
 
     return Harness(
-        TestModel(call_tools=[]), BuiltinToolProvider(),
-        _make_deps(tmp_path), instructions="test",
+        TestModel(call_tools=[]),
+        BuiltinToolProvider(),
+        _make_deps(tmp_path),
+        instructions="test",
     )
 
 
@@ -170,8 +172,7 @@ async def test_steer_during_approval_gap_buffers_not_stale_ctx(tmp_path):
                 0: DeltaToolCall(
                     name="edit_file",
                     json_args=json.dumps(
-                        {"path": "a.txt",
-                         "edits": [{"old_string": "foo", "new_string": "bar"}]}
+                        {"path": "a.txt", "edits": [{"old_string": "foo", "new_string": "bar"}]}
                     ),
                     tool_call_id="tc-edit",
                 )
@@ -230,8 +231,10 @@ async def test_steer_flushed_into_failing_round_is_reclaimed(tmp_path):
         raise RuntimeError("round boom")
 
     harness = Harness(
-        FunctionModel(fn, stream_function=stream_fn), BuiltinToolProvider(),
-        _make_deps(tmp_path), instructions="test",
+        FunctionModel(fn, stream_function=stream_fn),
+        BuiltinToolProvider(),
+        _make_deps(tmp_path),
+        instructions="test",
     )
 
     steered = {"done": False}
@@ -281,8 +284,7 @@ def _tui_app(tmp_path):
     from marim_harness.tools.provider import BuiltinToolProvider
 
     deps = _make_deps(tmp_path)
-    harness = Harness(TestModel(call_tools=[]), BuiltinToolProvider(), deps,
-                      instructions="test")
+    harness = Harness(TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test")
     return HarnessApp(harness)
 
 
@@ -386,8 +388,10 @@ def _recording_streaming_harness(tmp_path, calls):
             yield "done"
 
     h = Harness(
-        FunctionModel(stream_function=stream_fn), BuiltinToolProvider(),
-        _make_deps(tmp_path), instructions="test",
+        FunctionModel(stream_function=stream_fn),
+        BuiltinToolProvider(),
+        _make_deps(tmp_path),
+        instructions="test",
     )
 
     @h.agent.tool_plain

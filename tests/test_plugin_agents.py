@@ -46,9 +46,7 @@ def test_plugin_agent_is_namespaced(tmp_path, monkeypatch):
     assert "explore" in names and "general" in names
     found = find_agent(ws, "myplugin:reviewer")
     assert found is not None and found.plugin == "myplugin"
-    assert "- myplugin:reviewer — plugin agent" in agents_index_text(
-        discover_agents(ws)
-    )
+    assert "- myplugin:reviewer — plugin agent" in agents_index_text(discover_agents(ws))
 
 
 def test_project_plugin_agent_requires_project_trust(tmp_path, monkeypatch):

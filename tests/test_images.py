@@ -91,9 +91,25 @@ def test_media_type_for_path():
 
 
 def _binary_message(data_b64, media_type="image/png"):
-    return [{"parts": [{"part_kind": "user-prompt", "content": [
-        "hi", {"kind": "binary", "data": data_b64, "media_type": media_type,
-               "identifier": "x", "vendor_metadata": None}]}]}]
+    return [
+        {
+            "parts": [
+                {
+                    "part_kind": "user-prompt",
+                    "content": [
+                        "hi",
+                        {
+                            "kind": "binary",
+                            "data": data_b64,
+                            "media_type": media_type,
+                            "identifier": "x",
+                            "vendor_metadata": None,
+                        },
+                    ],
+                }
+            ]
+        }
+    ]
 
 
 def test_externalize_then_rehydrate_round_trips(tmp_path, monkeypatch):
@@ -111,10 +127,25 @@ def test_externalize_then_rehydrate_round_trips(tmp_path, monkeypatch):
 
 def test_rehydrate_degrades_when_cache_missing(tmp_path, monkeypatch):
     monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path))
-    msgs = [{"parts": [{"part_kind": "user-prompt", "content": [
-        "hi", {"kind": "binary", "data": "marim-image-cache://deadbeef",
-               "media_type": "image/png", "identifier": "x",
-               "vendor_metadata": None}]}]}]
+    msgs = [
+        {
+            "parts": [
+                {
+                    "part_kind": "user-prompt",
+                    "content": [
+                        "hi",
+                        {
+                            "kind": "binary",
+                            "data": "marim-image-cache://deadbeef",
+                            "media_type": "image/png",
+                            "identifier": "x",
+                            "vendor_metadata": None,
+                        },
+                    ],
+                }
+            ]
+        }
+    ]
     back = images.rehydrate_images(msgs, "sess")
     assert back[0]["parts"][0]["content"][1] == "[image unavailable]"
 
@@ -148,6 +179,7 @@ def test_read_clipboard_image_macos(monkeypatch):
 
 def test_read_clipboard_image_windows_missing_helper(monkeypatch):
     import sys
+
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
     monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.setattr(sys, "platform", "win32")
@@ -202,13 +234,28 @@ def test_traversal_session_id_round_trips(tmp_path, monkeypatch):
 
 
 def _tool_return_message(content):
-    return [{"parts": [{"part_kind": "tool-return", "tool_name": "read_file",
-                        "tool_call_id": "t1", "content": content}]}]
+    return [
+        {
+            "parts": [
+                {
+                    "part_kind": "tool-return",
+                    "tool_name": "read_file",
+                    "tool_call_id": "t1",
+                    "content": content,
+                }
+            ]
+        }
+    ]
 
 
 def _binary_item(data):
-    return {"kind": "binary", "data": data, "media_type": "image/png",
-            "identifier": "x", "vendor_metadata": None}
+    return {
+        "kind": "binary",
+        "data": data,
+        "media_type": "image/png",
+        "identifier": "x",
+        "vendor_metadata": None,
+    }
 
 
 def test_externalize_tool_return_scalar_binary_round_trips(tmp_path, monkeypatch):

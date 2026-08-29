@@ -29,7 +29,8 @@ def _overflow_exc() -> APIError:
     """An overflow rejection shaped like a provider's context-length error."""
     req = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
     return APIError(
-        "too long", req,
+        "too long",
+        req,
         body={"error": {"code": "context_length_exceeded", "message": "too long"}},
     )
 
@@ -41,12 +42,21 @@ def _make_tc(tmp_path):
     model = FunctionModel(fn)
     deps = _make_deps(tmp_path)
     collabs = build_collaborators(
-        model, BuiltinToolProvider(), deps, "You are a coding agent.",
-        HarnessConfig(), get_model=lambda: model,
+        model,
+        BuiltinToolProvider(),
+        deps,
+        "You are a coding agent.",
+        HarnessConfig(),
+        get_model=lambda: model,
     )
     return TurnController(
-        agent=collabs.agent, session=collabs.session, checkpoints=collabs.checkpoints,
-        hooks=collabs.hooks, mcp=collabs.mcp, deps=deps, get_model=lambda: model,
+        agent=collabs.agent,
+        session=collabs.session,
+        checkpoints=collabs.checkpoints,
+        hooks=collabs.hooks,
+        mcp=collabs.mcp,
+        deps=deps,
+        get_model=lambda: model,
     )
 
 
@@ -74,9 +84,7 @@ async def test_overflow_banks_round_usage_once_and_returns_compacted(tmp_path):
 
     round_usage = RunUsage(requests=1, input_tokens=100, output_tokens=5)
     retried: set[_RunRetry] = set()
-    result = await tc._handle_run_failure(
-        _overflow_exc(), [], [], None, round_usage, retried
-    )
+    result = await tc._handle_run_failure(_overflow_exc(), [], [], None, round_usage, retried)
 
     assert result is _RunRetry.COMPACTED
     assert _RunRetry.COMPACTED in retried
@@ -132,8 +140,8 @@ async def test_contention_backs_off_and_retries_without_compacting(tmp_path):
 
     assert result is _RunRetry.CONTENTION
     assert _RunRetry.CONTENTION in retried
-    assert backoffs == [1]           # backed off once before retrying in place
-    assert compacts == []            # history left untouched — never force-compacted
+    assert backoffs == [1]  # backed off once before retrying in place
+    assert compacts == []  # history left untouched — never force-compacted
     assert tc.session.usage.input_tokens == 200  # spend banked once
 
 
@@ -145,9 +153,7 @@ async def test_contention_retry_is_one_shot(tmp_path):
 
     retried = {_RunRetry.CONTENTION}
     with pytest.raises(ContextWindowExceededError):
-        await tc._handle_run_failure(
-            _overflow_exc(), [], [], None, RunUsage(requests=1), retried
-        )
+        await tc._handle_run_failure(_overflow_exc(), [], [], None, RunUsage(requests=1), retried)
     assert backoffs == []  # latch spent → no second backoff
 
 
@@ -165,8 +171,12 @@ async def test_dirty_continuation_round_is_not_force_compacted(tmp_path):
     deferred_results = object()  # a non-None continuation payload
     with pytest.raises(ContextWindowExceededError):
         await tc._handle_run_failure(
-            _overflow_exc(), [], [], deferred_results,
-            RunUsage(requests=1, input_tokens=75), set(),
+            _overflow_exc(),
+            [],
+            [],
+            deferred_results,
+            RunUsage(requests=1, input_tokens=75),
+            set(),
         )
     assert compacts == []  # guard short-circuits before any compaction
     assert tc.session.usage.input_tokens == 75  # spend still banked once

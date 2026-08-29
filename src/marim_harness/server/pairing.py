@@ -28,9 +28,7 @@ _PROBE_TARGET = ("192.0.2.1", 80)
 def pairing_uri(url: str, token: str, name: str) -> str:
     """The scannable URI. Values are percent-escaped; the client parses it with
     any standard URI parser."""
-    query = urllib.parse.urlencode(
-        {"v": PAIR_VERSION, "url": url, "token": token, "name": name}
-    )
+    query = urllib.parse.urlencode({"v": PAIR_VERSION, "url": url, "token": token, "name": name})
     return f"marim://pair?{query}"
 
 

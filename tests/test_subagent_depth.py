@@ -50,8 +50,12 @@ def _make_runner(tmp_path: Path, max_depth: int = 3) -> SubagentRunner:
     hooks = MagicMock()
     session = MagicMock()
     return SubagentRunner(
-        provider=provider, mcp=mcp, deps=deps, hooks=hooks,
-        session=session, get_model=lambda: TestModel(),
+        provider=provider,
+        mcp=mcp,
+        deps=deps,
+        hooks=hooks,
+        session=session,
+        get_model=lambda: TestModel(),
         max_depth=max_depth,
     )
 
@@ -147,9 +151,7 @@ def test_spawn_agent_refuses_background_at_depth():
     deps = _make_deps(Path("/tmp"), subagent_depth=1)
     ctx = SimpleNamespace(deps=deps, tool_call_id="tc1")
 
-    result = asyncio.run(spawn_agent(
-        ctx, type="explore", task="do thing", background=True
-    ))
+    result = asyncio.run(spawn_agent(ctx, type="explore", task="do thing", background=True))
     assert "Background spawning is only available to the top-level agent" in result
 
 
@@ -163,9 +165,7 @@ def test_spawn_agent_allows_background_at_depth_zero():
     deps = _make_deps(Path("/tmp"), subagent_depth=0)
     ctx = SimpleNamespace(deps=deps, tool_call_id="tc1")
 
-    result = asyncio.run(spawn_agent(
-        ctx, type="explore", task="do thing", background=True
-    ))
+    result = asyncio.run(spawn_agent(ctx, type="explore", task="do thing", background=True))
     # Should NOT be refused — it should either succeed or fail for infra reasons
     # (no run_background_agent wired), but NOT because of the depth guard.
     assert "Background spawning is only available" not in result
@@ -178,6 +178,7 @@ async def test_nested_spawn_integration(tmp_path: Path):
     The main agent spawns a sub-agent (depth 1). The sub-agent spawns
     a grandchild (depth 2). The grandchild cannot spawn further.
     """
+
     def fn(messages, info):
         return ModelResponse(parts=[TextPart(content="ok")])
 
@@ -231,6 +232,7 @@ async def test_run_uses_caller_depth_not_runner_deps(tmp_path: Path):
     A depth-1 sub-agent spawning means caller_depth=1, so the child must run at
     subagent_depth == 2. Before the fix run() read self.deps.subagent_depth (0)
     and produced depth 1 — silently collapsing the chain by a level."""
+
     def fn(messages, info):
         return ModelResponse(parts=[TextPart(content="done")])
 
@@ -264,10 +266,12 @@ async def test_nested_spawn_runtime_chain_propagates_depth(tmp_path: Path):
         )
         if "spawn_agent" in tool_names and not already_spawned:
             return ModelResponse(
-                parts=[ToolCallPart(
-                    tool_name="spawn_agent",
-                    args={"type": "explore", "task": "nested work"},
-                )]
+                parts=[
+                    ToolCallPart(
+                        tool_name="spawn_agent",
+                        args={"type": "explore", "task": "nested work"},
+                    )
+                ]
             )
         return ModelResponse(parts=[TextPart(content="done")])
 
@@ -287,6 +291,7 @@ async def test_child_deps_carry_runner_ceiling(tmp_path: Path):
     """The runner's configured ceiling reaches the child through Deps
     (subagent_max_depth) — the replacement for the old partial-bound tool
     parameter, which the model could override with its own kwarg."""
+
     def fn(messages, info):
         return ModelResponse(parts=[TextPart(content="done")])
 

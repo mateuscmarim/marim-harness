@@ -25,7 +25,7 @@ def _format_value(value: str) -> str:
     comment) and trims surrounding whitespace, so a value containing whitespace,
     ``#``, or quote chars must be double-quoted (with ``\\`` and ``"`` escaped).
     Simple values (model ids, booleans, keys) stay unquoted as before."""
-    if any(c in value for c in ' \t#"\'\n\r'):
+    if any(c in value for c in " \t#\"'\n\r"):
         escaped = value.replace("\\", "\\\\").replace('"', '\\"')
         return f'"{escaped}"'
     return value
@@ -39,9 +39,7 @@ def _line_key(raw: str) -> str:
     return head.split("=", 1)[0].strip()
 
 
-def write_env_values(
-    values: dict[str, str], target: Path, *, drop: Iterable[str] = ()
-) -> None:
+def write_env_values(values: dict[str, str], target: Path, *, drop: Iterable[str] = ()) -> None:
     """Write each ``key=value`` in ``values`` into the dotenv file at ``target``,
     updating a key's line in place if it already exists and preserving every
     other line (comments and unmanaged keys). Any key in ``drop`` has its line

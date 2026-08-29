@@ -31,10 +31,14 @@ class CliSpawnOrchestrator:
     ``_run_spawn_lifecycle`` (the shared run+failure+finalize tail);
     ``resolve_agent`` is the runner's bound ``_resolve_agent``."""
 
-    def __init__(self, deps: Deps, hooks: TurnHooks,
-                 transcripts: SpawnTranscripts,
-                 lifecycle: SpawnLifecycle,
-                 resolve_agent: Callable[[str], AgentDef | None]) -> None:
+    def __init__(
+        self,
+        deps: Deps,
+        hooks: TurnHooks,
+        transcripts: SpawnTranscripts,
+        lifecycle: SpawnLifecycle,
+        resolve_agent: Callable[[str], AgentDef | None],
+    ) -> None:
         self.deps = deps
         self.hooks = hooks
         self._transcripts = transcripts
@@ -42,11 +46,21 @@ class CliSpawnOrchestrator:
         self._resolve_agent = resolve_agent
 
     async def execute(
-        self, defn: AgentDef, task: str, work_root: Path | None, iso: SpawnWorktree | None,
-        mcp_names: list[str] | None, max_output_chars: int | None,
-        model: str | None, stream_id: str, *, background: bool,
-        resume_session_id: str | None = None, original_task: str | None = None,
-        depth: int = 1, transcript_prefix: list[Any] | None = None,
+        self,
+        defn: AgentDef,
+        task: str,
+        work_root: Path | None,
+        iso: SpawnWorktree | None,
+        mcp_names: list[str] | None,
+        max_output_chars: int | None,
+        model: str | None,
+        stream_id: str,
+        *,
+        background: bool,
+        resume_session_id: str | None = None,
+        original_task: str | None = None,
+        depth: int = 1,
+        transcript_prefix: list[Any] | None = None,
     ) -> str:
         """Run a ``backend: claude-cli`` agent inside the same lifecycle the native
         path uses: hooks bracketing, output cap/spill, worktree close, background
@@ -74,8 +88,12 @@ class CliSpawnOrchestrator:
             # template between checkpoints is safe — TranscriptStore.write
             # snapshots the dict before stamping.
             meta = {
-                "stream_id": stream_id, "type": defn.name, "task": hook_task,
-                "model": model, "mcp": None, "depth": depth,
+                "stream_id": stream_id,
+                "type": defn.name,
+                "task": hook_task,
+                "model": model,
+                "mcp": None,
+                "depth": depth,
                 "max_output_chars": max_output_chars,
                 "isolation": iso.branch if iso else None,
                 "status": "running",
@@ -83,8 +101,7 @@ class CliSpawnOrchestrator:
                 "cli_session_id": resume_session_id,
             }
 
-            def _checkpoint(messages: list, session_id: str | None,
-                           _meta=meta) -> None:
+            def _checkpoint(messages: list, session_id: str | None, _meta=meta) -> None:
                 if session_id:
                     _meta["cli_session_id"] = session_id
                 # The resumed process's stream carries only the CONTINUATION —
@@ -95,8 +112,9 @@ class CliSpawnOrchestrator:
                 # spawn transcript_prefix is None, so this is a plain passthrough.
                 # cap_transcript (inside TranscriptStore.write) bounds the combined
                 # payload.
-                self._transcripts.save(stream_id, (transcript_prefix or []) + messages,
-                                       meta=_meta, cap_reasoning=True)
+                self._transcripts.save(
+                    stream_id, (transcript_prefix or []) + messages, meta=_meta, cap_reasoning=True
+                )
 
             checkpoint = _checkpoint
 
@@ -104,10 +122,16 @@ class CliSpawnOrchestrator:
         # A resumed CLI spawn (resume_session_id set) keeps its branch on failure —
         # native-resume parity; a fresh spawn's branch is throwaway.
         resumed = resume_session_id is not None
+
         async def _run() -> SpawnRun:
             result = await self.run_cli(
-                defn, task, work_root, model, stream_id,
-                checkpoint=checkpoint, resume_session_id=resume_session_id,
+                defn,
+                task,
+                work_root,
+                model,
+                stream_id,
+                checkpoint=checkpoint,
+                resume_session_id=resume_session_id,
             )
             # Same prefix rule as the checkpoint above: the final write is also
             # tail-only for a resumed run, so prepend the pre-interrupt segment.
@@ -118,8 +142,10 @@ class CliSpawnOrchestrator:
                     **meta,
                     "status": "finished",
                     "cli_session_id": result.session_id or meta["cli_session_id"],
-                    "usage": {"input": result.usage.input_tokens,
-                              "output": result.usage.output_tokens},
+                    "usage": {
+                        "input": result.usage.input_tokens,
+                        "output": result.usage.output_tokens,
+                    },
                     "tool_count": count_tool_calls(full_transcript),
                     "duration": time.perf_counter() - t0,
                 }
@@ -140,9 +166,16 @@ class CliSpawnOrchestrator:
         # in-progress work, keeping the branch) instead of discard()ing it — fixing
         # the resume-after-cancel divergence.
         return await self._lifecycle(
-            _run, iso=iso, resumed=resumed, background=background, name=defn.name,
-            stop_task=hook_task, note=self._mcp_note(mcp_names),
-            max_output_chars=max_output_chars, stream_id=stream_id, timing=None,
+            _run,
+            iso=iso,
+            resumed=resumed,
+            background=background,
+            name=defn.name,
+            stop_task=hook_task,
+            note=self._mcp_note(mcp_names),
+            max_output_chars=max_output_chars,
+            stream_id=stream_id,
+            timing=None,
         )
 
     @staticmethod
@@ -158,10 +191,16 @@ class CliSpawnOrchestrator:
             "sub-agents; configure them in the CLI's own settings]\n\n"
         )
 
-    async def run_cli(self, defn: AgentDef, task: str, work_root: Path | None,
-                      model: str | None, stream_id: str,
-                      checkpoint: Callable[[list, str | None], None] | None = None,
-                      resume_session_id: str | None = None) -> CliResult:
+    async def run_cli(
+        self,
+        defn: AgentDef,
+        task: str,
+        work_root: Path | None,
+        model: str | None,
+        stream_id: str,
+        checkpoint: Callable[[list, str | None], None] | None = None,
+        resume_session_id: str | None = None,
+    ) -> CliResult:
         """Resolve binary, tool reach, model, and cwd for a CLI spawn, then run it.
         Raises CliUnavailable when no `claude` binary is found so the caller's
         contained-error path reports it. Reach mirrors the native gate — gated
@@ -180,8 +219,7 @@ class CliSpawnOrchestrator:
         binary = resolve_cli_binary()
         if binary is None:
             raise CliUnavailable(
-                "no `claude` binary found (set MARIM_CLAUDE_CLI_BIN or install "
-                "Claude Code)"
+                "no `claude` binary found (set MARIM_CLAUDE_CLI_BIN or install Claude Code)"
             )
         # Same spawn-time mode snapshot as the native path (SubagentRunner.build):
         # reach is fixed when the CLI process launches; a mode flip affects the
@@ -207,10 +245,16 @@ class CliSpawnOrchestrator:
             cbs.on_subagent_event, cbs.on_subagent_notice, cbs.on_subagent_model
         )
         result = await runner.run(
-            binary=binary, prompt=task, system_prompt=defn.prompt, cwd=cwd,
-            allow_gated=allow_gated, allowed_tools=tools, model=model_name,
+            binary=binary,
+            prompt=task,
+            system_prompt=defn.prompt,
+            cwd=cwd,
+            allow_gated=allow_gated,
+            allowed_tools=tools,
+            model=model_name,
             disallowed_tools=map_tools_to_cc(NET_TOOLS) if deny_net else None,
-            stream_id=stream_id, checkpoint=checkpoint,
+            stream_id=stream_id,
+            checkpoint=checkpoint,
             resume_session_id=resume_session_id,
         )
         if stream_id and cbs.on_subagent_usage is not None:
@@ -227,17 +271,21 @@ class CliSpawnOrchestrator:
         error on the failed job instead of a brittle path probe here."""
         session_id = meta.get("cli_session_id")
         if not session_id:
-            return None, ("The CLI session id was never recorded (the spawn died "
-                          "before its session started) — nothing to resume; "
-                          "spawn it again instead.")
+            return None, (
+                "The CLI session id was never recorded (the spawn died "
+                "before its session started) — nothing to resume; "
+                "spawn it again instead."
+            )
         type_ = str(meta.get("type") or "")
         task = str(meta.get("task") or "")
         defn = self._resolve_agent(type_)
         if defn is None:
             return None, f"No sub-agent type {type_!r} anymore — can't resume."
         if defn.backend != "claude-cli":
-            return None, (f"Sub-agent type {type_!r} is no longer claude-cli "
-                          "backed — can't resume its CLI session.")
+            return None, (
+                f"Sub-agent type {type_!r} is no longer claude-cli "
+                "backed — can't resume its CLI session."
+            )
         iso = None
         branch = meta.get("isolation")
         if branch:
@@ -255,13 +303,21 @@ class CliSpawnOrchestrator:
         prior = self._transcripts.read(stream_id) or []
         label = f"{type_}: resumed — {task}"
         job_id = self.deps.jobs.register(
-            "agent", label,
+            "agent",
+            label,
             self.execute(
-                defn, CONTINUATION_PROMPT,
-                iso.path if iso else None, iso,
-                None, meta.get("max_output_chars"), meta.get("model"), stream_id,
-                background=True, resume_session_id=session_id,
-                original_task=task, depth=int(meta.get("depth") or 1),
+                defn,
+                CONTINUATION_PROMPT,
+                iso.path if iso else None,
+                iso,
+                None,
+                meta.get("max_output_chars"),
+                meta.get("model"),
+                stream_id,
+                background=True,
+                resume_session_id=session_id,
+                original_task=task,
+                depth=int(meta.get("depth") or 1),
                 transcript_prefix=prior,
             ),
             stream_id=stream_id,

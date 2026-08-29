@@ -93,7 +93,7 @@ class _BoundedOutput:
         # One oversized chunk could blow the tail by itself — keep only its last
         # ``tail_cap`` so a single chunk can't exceed it.
         if n > self._tail_cap:
-            chunk = chunk[n - self._tail_cap:]
+            chunk = chunk[n - self._tail_cap :]
             n = self._tail_cap
         self._tail.append(chunk)
         self._tail_len += n
@@ -142,8 +142,12 @@ async def _feed_stdin(proc: "asyncio.subprocess.Process", stdin_data: bytes | No
 
 
 async def _read_until(
-    stream, deadline: float, acc: "_BoundedOutput", *,
-    per_read_cap: float | None = None, catch_oserror: bool = False,
+    stream,
+    deadline: float,
+    acc: "_BoundedOutput",
+    *,
+    per_read_cap: float | None = None,
+    catch_oserror: bool = False,
 ) -> bool:
     """Read from ``stream`` into ``acc`` until EOF or ``deadline`` (an
     ``event_loop.time()`` value) is reached. Returns whether the deadline was
@@ -267,9 +271,11 @@ async def run_bash(
         # never exceeded the budget. A chunk boundary can fall mid-multibyte-char, so
         # an end may show a stray replacement char at the seam; harmless, and only in
         # output already past the multi-MB truncation threshold.
-        text = (head_b.decode(errors="replace")
-                + _TRUNC_MARKER.format(dropped=dropped)
-                + tail_b.decode(errors="replace"))
+        text = (
+            head_b.decode(errors="replace")
+            + _TRUNC_MARKER.format(dropped=dropped)
+            + tail_b.decode(errors="replace")
+        )
     else:
         # Nothing dropped: decode the full byte string at once so output is identical
         # to the pre-cap behavior (no boundary re-decode).
@@ -294,7 +300,9 @@ async def run_bash(
     # output/`, so two different roots already land in physically different
     # directories and can't collide regardless of what's in `key`.
     return offload_if_large(
-        body, kind="bash", key=key,
+        body,
+        kind="bash",
+        key=key,
         offload_dir=offload_dir or root / LEGACY_OFFLOAD_DIR,
         capped=dropped > 0,
     )
@@ -306,8 +314,14 @@ class BashProcess:
     output to completion and returns the final ``exit N\\n<output>`` text.
     :meth:`kill` terminates the whole process group so children die too."""
 
-    def __init__(self, proc: asyncio.subprocess.Process, max_output: int,
-                 root: Path, command: str, offload_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        proc: asyncio.subprocess.Process,
+        max_output: int,
+        root: Path,
+        command: str,
+        offload_dir: Path | None = None,
+    ) -> None:
         self._proc = proc
         self._max_output = max_output
         self._root = root
@@ -337,7 +351,7 @@ class BashProcess:
             return (
                 head[:head_cap]
                 + _TRUNC_MARKER.format(dropped=dropped)
-                + (tail[-(self._max_output - head_cap):] if head_cap < self._max_output else "")
+                + (tail[-(self._max_output - head_cap) :] if head_cap < self._max_output else "")
             )
         return _truncate_middle(head + tail, self._max_output)
 
@@ -385,14 +399,18 @@ class BashProcess:
             capped = False
         body = f"exit {self._proc.returncode}\n{text}"
         return offload_if_large(
-            body, kind="bash", key=self._command,
+            body,
+            kind="bash",
+            key=self._command,
             offload_dir=self._offload_dir or self._root / LEGACY_OFFLOAD_DIR,
             capped=capped,
         )
 
 
 async def start_bash(
-    root: Path, command: str, max_output: int = _DEFAULT_MAX_OUTPUT,
+    root: Path,
+    command: str,
+    max_output: int = _DEFAULT_MAX_OUTPUT,
     offload_dir: Path | None = None,
 ) -> BashProcess:
     """Launch a shell command detached (no timeout) and return a BashProcess to

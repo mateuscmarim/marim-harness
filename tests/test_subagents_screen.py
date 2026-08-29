@@ -160,9 +160,7 @@ async def test_claim_workflow_spawn_registers_a_card_and_routes_events(tmp_path)
         # creates it): the streamed text lands in this stream's own assistant
         # buffer, and the resulting widget is actually mounted into this card's
         # pane (not dropped, and not some other stream's state).
-        await r.on_subagent_event(
-            "tc1::wf1", PartStartEvent(index=0, part=TextPart(content="hi"))
-        )
+        await r.on_subagent_event("tc1::wf1", PartStartEvent(index=0, part=TextPart(content="hi")))
         await pilot.pause()
         state = r._sub_streams["tc1::wf1"]
         assert state.assistant is not None
@@ -265,9 +263,9 @@ async def test_detached_spawn_streams_live_with_bg_marker(tmp_path):
         )
         await pilot.pause()
         assert kept is True
-        assert w.detached is True                     # marked as a background run
-        assert "bg" in str(w._header.render())         # bg marker on the card
-        assert row_cells(w)[1].startswith("bg · ")     # bg marker on the list row
+        assert w.detached is True  # marked as a background run
+        assert "bg" in str(w._header.render())  # bg marker on the card
+        assert row_cells(w)[1].startswith("bg · ")  # bg marker on the list row
 
 
 @pytest.mark.anyio
@@ -391,8 +389,12 @@ async def test_subagent_usage_priced_once_per_flush_tick(tmp_path, monkeypatch):
         await pilot.pause()
 
         usage = SimpleNamespace(
-            total_tokens=100, input_tokens=80, output_tokens=20,
-            cache_read_tokens=0, cache_write_tokens=0, details={},
+            total_tokens=100,
+            input_tokens=80,
+            output_tokens=20,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+            details={},
         )
         # Many deltas in one frame stash only — no pricing yet.
         for _ in range(5):
@@ -410,10 +412,17 @@ async def test_subagent_usage_priced_once_per_flush_tick(tmp_path, monkeypatch):
         assert calls["n"] == 1
 
         # A new token total reprices exactly once.
-        r.note_subagent_usage(w, SimpleNamespace(
-            total_tokens=250, input_tokens=200, output_tokens=50,
-            cache_read_tokens=0, cache_write_tokens=0, details={},
-        ))
+        r.note_subagent_usage(
+            w,
+            SimpleNamespace(
+                total_tokens=250,
+                input_tokens=200,
+                output_tokens=50,
+                cache_read_tokens=0,
+                cache_write_tokens=0,
+                details={},
+            ),
+        )
         r.flush_streams()
         assert calls["n"] == 2
         assert w.tokens == 250
@@ -582,10 +591,10 @@ async def test_nested_spawn_registers_child_card_in_parent_pane(tmp_path):
 
         assert claimed is True
         child = r.tool_widgets["call-child"]
-        assert child.parent_id == "call-parent"     # tagged for the tree
-        assert child in r.subagents                  # shows in the list
-        assert child.pane is not None                # its own detail pane exists
-        assert child in parent_pane.children         # card mounted in parent's pane
+        assert child.parent_id == "call-parent"  # tagged for the tree
+        assert child in r.subagents  # shows in the list
+        assert child.pane is not None  # its own detail pane exists
+        assert child in parent_pane.children  # card mounted in parent's pane
 
 
 @pytest.mark.anyio
@@ -602,7 +611,7 @@ async def test_nested_non_spawn_tool_not_claimed(tmp_path):
         claimed = await sink.intercept_tool(
             _FakeToolEvent("read_file", "call-read"), {"path": "x"}, parent_pane
         )
-        assert claimed is False                      # only spawn_agent is claimed
+        assert claimed is False  # only spawn_agent is claimed
 
 
 @pytest.mark.anyio
@@ -633,8 +642,8 @@ async def test_list_renders_child_indented_under_parent(tmp_path):
 
         # Row 0 = parent, row 1 = its child (indented), row 2 = sibling.
         assert cell(0).startswith("general —")
-        assert cell(1).startswith("└─ explore —")   # nested under parent
-        assert cell(2).startswith("coding —")        # sibling root, not indented
+        assert cell(1).startswith("└─ explore —")  # nested under parent
+        assert cell(2).startswith("coding —")  # sibling root, not indented
 
 
 @pytest.mark.anyio
@@ -654,11 +663,13 @@ async def test_claude_cli_spawn_events_drive_a_native_card(tmp_path):
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:
-        call = FunctionToolCallEvent(part=ToolCallPart(
-            tool_name="spawn_agent",
-            args={"type": "Explore", "task": "What is 2+2?", "description": "math"},
-            tool_call_id="tsub",
-        ))
+        call = FunctionToolCallEvent(
+            part=ToolCallPart(
+                tool_name="spawn_agent",
+                args={"type": "Explore", "task": "What is 2+2?", "description": "math"},
+                tool_call_id="tsub",
+            )
+        )
         await app.stream.on_cli_activity([call])
         await pilot.pause()
         assert len(app.stream.subagents) == 1
@@ -666,15 +677,22 @@ async def test_claude_cli_spawn_events_drive_a_native_card(tmp_path):
         assert card.stream_id == "tsub" and card.agent_type == "Explore"
 
         await app.stream.on_subagent_event(
-            "tsub", PartStartEvent(index=0, part=TextPart(content="")))
+            "tsub", PartStartEvent(index=0, part=TextPart(content=""))
+        )
         await app.stream.on_subagent_event(
-            "tsub", PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="4")))
+            "tsub", PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="4"))
+        )
         await pilot.pause()
 
-        ret = FunctionToolResultEvent(part=ToolReturnPart(
-            tool_name="spawn_agent", content="4", tool_call_id="tsub",
-            timestamp=datetime.now(tz=timezone.utc), outcome="success",
-        ))
+        ret = FunctionToolResultEvent(
+            part=ToolReturnPart(
+                tool_name="spawn_agent",
+                content="4",
+                tool_call_id="tsub",
+                timestamp=datetime.now(tz=timezone.utc),
+                outcome="success",
+            )
+        )
         await app.stream.on_cli_activity([ret])
         await pilot.pause()
         assert card.status == "done"
@@ -722,14 +740,19 @@ async def test_summary_bar_shows_waiting_segment_only_when_nonzero():
     app = _ListApp()
     async with app.run_test():
         summ = app.query_one(SubAgentSummary)
-        summ.refresh_totals(aggregate(
-            [FakeAgent(status="pending", waiting=True), FakeAgent(status="done")],
-            cost_of=lambda a: 0.0,
-        ))
+        summ.refresh_totals(
+            aggregate(
+                [FakeAgent(status="pending", waiting=True), FakeAgent(status="done")],
+                cost_of=lambda a: 0.0,
+            )
+        )
         assert "1 waiting" in str(summ.render())
-        summ.refresh_totals(aggregate(
-            [FakeAgent(status="done")], cost_of=lambda a: 0.0,
-        ))
+        summ.refresh_totals(
+            aggregate(
+                [FakeAgent(status="done")],
+                cost_of=lambda a: 0.0,
+            )
+        )
         assert "waiting" not in str(summ.render())
 
 
@@ -746,10 +769,13 @@ async def test_after_dependent_card_waits_then_flips(tmp_path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         r = app.stream
-        w = r.mount_spawn_widget({
-            "type": "merge", "description": "combine reports",
-            "after": ["job-1"],
-        })
+        w = r.mount_spawn_widget(
+            {
+                "type": "merge",
+                "description": "combine reports",
+                "after": ["job-1"],
+            }
+        )
         w.stream_id = "call_1"
         r.tool_widgets["call_1"] = w
         r.ensure_pane(w)
@@ -758,8 +784,9 @@ async def test_after_dependent_card_waits_then_flips(tmp_path):
         assert w.after_ids == ["job-1"]
 
         prereq = {"status": "running"}
-        jobs = SimpleNamespace(get=lambda jid: SimpleNamespace(**prereq)
-                               if jid == "job-1" else None)
+        jobs = SimpleNamespace(
+            get=lambda jid: SimpleNamespace(**prereq) if jid == "job-1" else None
+        )
         kept = r.note_detached_spawn(
             "Started detached sub-agent job-2, running in the background.", w, jobs
         )
@@ -787,9 +814,13 @@ async def test_failed_prerequisite_attributes_blocker(tmp_path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         r = app.stream
-        w = r.mount_spawn_widget({
-            "type": "merge", "description": "combine reports", "after": ["job-1"],
-        })
+        w = r.mount_spawn_widget(
+            {
+                "type": "merge",
+                "description": "combine reports",
+                "after": ["job-1"],
+            }
+        )
         w.stream_id = "call_1"
         r.tool_widgets["call_1"] = w
         r.ensure_pane(w)

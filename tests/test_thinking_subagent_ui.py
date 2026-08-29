@@ -47,7 +47,11 @@ def _runner(tmp_path, on_thinking, **kwargs) -> SubagentRunner:
     deps = Deps(workspace=WorkspaceConfig(root=tmp_path, mode=Mode.auto))
     deps.ui.on_subagent_thinking = on_thinking
     return SubagentRunner(
-        BuiltinToolProvider(), MagicMock(), deps, MagicMock(), MagicMock(),
+        BuiltinToolProvider(),
+        MagicMock(),
+        deps,
+        MagicMock(),
+        MagicMock(),
         get_model=lambda: TestModel(call_tools=[]),
         model_settings=ModelSettings(parallel_tool_calls=True),
         **kwargs,
@@ -56,8 +60,12 @@ def _runner(tmp_path, on_thinking, **kwargs) -> SubagentRunner:
 
 def _spec(thinking: str | None) -> AgentDef:
     return AgentDef(
-        name="coder", description="", prompt="Go.",
-        tools=frozenset({"read_file"}), source="built-in", thinking=thinking,
+        name="coder",
+        description="",
+        prompt="Go.",
+        tools=frozenset({"read_file"}),
+        source="built-in",
+        thinking=thinking,
     )
 
 

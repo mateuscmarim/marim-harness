@@ -106,7 +106,10 @@ def test_resolve_spawn_model_id_slug_out_of_allowlist_falls_back():
 def test_resolve_spawn_model_id_no_tiers_configured_passes_slug_through():
     # Legacy behavior: with no tiers set, any slug override is honored as-is.
     got = _resolve_spawn_model_id(
-        override_tier=None, slug="p:anything", spec_tier=None, read_only=True,
+        override_tier=None,
+        slug="p:anything",
+        spec_tier=None,
+        read_only=True,
         tiers=SubagentTiers(),
     )
     assert got == "p:anything"
@@ -114,7 +117,10 @@ def test_resolve_spawn_model_id_no_tiers_configured_passes_slug_through():
 
 def test_resolve_spawn_model_id_no_tiers_read_only_inherits_main():
     got = _resolve_spawn_model_id(
-        override_tier=None, slug=None, spec_tier=None, read_only=True,
+        override_tier=None,
+        slug=None,
+        spec_tier=None,
+        read_only=True,
         tiers=SubagentTiers(),
     )
     assert got is None

@@ -1,6 +1,7 @@
 """A minimal LSP server over stdio for tests: answers initialize, acks
 initialized/shutdown, and returns one definition location. Speaks the
 Content-Length framing multilspy's client uses. No third-party deps."""
+
 import json
 import sys
 
@@ -38,19 +39,37 @@ def main():
         method = msg.get("method")
         mid = msg.get("id")
         if method == "initialize":
-            _write_message(stdout, {
-                "jsonrpc": "2.0", "id": mid,
-                "result": {"capabilities": {"definitionProvider": True,
-                                            "referencesProvider": True,
-                                            "documentSymbolProvider": True}},
-            })
+            _write_message(
+                stdout,
+                {
+                    "jsonrpc": "2.0",
+                    "id": mid,
+                    "result": {
+                        "capabilities": {
+                            "definitionProvider": True,
+                            "referencesProvider": True,
+                            "documentSymbolProvider": True,
+                        }
+                    },
+                },
+            )
         elif method == "textDocument/definition":
-            _write_message(stdout, {
-                "jsonrpc": "2.0", "id": mid,
-                "result": [{"uri": msg["params"]["textDocument"]["uri"],
-                            "range": {"start": {"line": 0, "character": 0},
-                                      "end": {"line": 0, "character": 1}}}],
-            })
+            _write_message(
+                stdout,
+                {
+                    "jsonrpc": "2.0",
+                    "id": mid,
+                    "result": [
+                        {
+                            "uri": msg["params"]["textDocument"]["uri"],
+                            "range": {
+                                "start": {"line": 0, "character": 0},
+                                "end": {"line": 0, "character": 1},
+                            },
+                        }
+                    ],
+                },
+            )
         elif method == "shutdown":
             _write_message(stdout, {"jsonrpc": "2.0", "id": mid, "result": None})
         elif method == "exit":

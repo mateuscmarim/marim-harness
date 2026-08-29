@@ -253,9 +253,7 @@ class HarnessApp(App):
         # warning can fire even before the user opens the model picker.
         source = self.harness.model_source
         if source is not None:
-            self.run_worker(
-                self.pickers.refresh_vision_caps(source.list_models), exclusive=False
-            )
+            self.run_worker(self.pickers.refresh_vision_caps(source.list_models), exclusive=False)
         # Coalesce streaming text deltas: render buffered AssistantMessages on a
         # shared interval instead of re-parsing the markdown on every token.
         self.set_interval(_STREAM_FLUSH_INTERVAL, self.stream.flush_streams)
@@ -271,26 +269,20 @@ class HarnessApp(App):
         # Land focus on the prompt so the user can type immediately.
         self.query_one(PromptInput).focus()
         await self._connect_mcp(log)
-        await self.harness.session_start(
-            "resume" if self.harness.session.history else "startup"
-        )
+        await self.harness.session_start("resume" if self.harness.session.history else "startup")
         # First-open trust prompt: bootstrap only sets trust_prompt when the
         # project ships a gated surface AND no decision (env/store) already
         # resolved it. Kicked off as its own worker (not awaited inline) so
         # on_mount itself isn't held hostage to the user answering the panel.
         if getattr(self.harness, "trust_prompt", None) is not None:
-            self.run_worker(
-                prompt_project_trust(self), group="trust", exit_on_error=False
-            )
+            self.run_worker(prompt_project_trust(self), group="trust", exit_on_error=False)
 
     def _announce_session_defaults(self) -> None:
         """One-line advisor/thinking status at session start, so a setting
         inherited from .env or restored with the session is visible without
         opening settings. An off/unset level stays silent — that's the default."""
         if self.harness.advisor_model_id is not None:
-            self.append_log(
-                NoticeMessage(f"Advisor: {self.harness.advisor_model_id} · /advisor")
-            )
+            self.append_log(NoticeMessage(f"Advisor: {self.harness.advisor_model_id} · /advisor"))
         level = self.harness.thinking_level_id
         if level is not None and level != "off":
             self.append_log(NoticeMessage(f"Thinking: {level} · /think"))
@@ -325,9 +317,7 @@ class HarnessApp(App):
             return
         status = await self.harness.connect()
         if status["connected"]:
-            await log.mount(
-                NoticeMessage(f"MCP connected: {', '.join(status['connected'])}")
-            )
+            await log.mount(NoticeMessage(f"MCP connected: {', '.join(status['connected'])}"))
         for name, error in status["failed"]:
             await log.mount(ErrorMessage(f"MCP {name} failed: {error}"))
 
@@ -416,12 +406,11 @@ class HarnessApp(App):
 
         plan = self.harness.deps.plan
         if plan is None:
-            self.notify("No plan yet — the agent presents one in plan mode.",
-                        severity="information")
+            self.notify(
+                "No plan yet — the agent presents one in plan mode.", severity="information"
+            )
             return
-        self.push_screen(
-            PlanScreen(plan.summary, plan.path, self.harness.deps.tasks.items)
-        )
+        self.push_screen(PlanScreen(plan.summary, plan.path, self.harness.deps.tasks.items))
 
     def on_data_table_row_highlighted(self, event) -> None:
         # Textual bubbles the DataTable message to the App; forward to the viewer.
@@ -453,9 +442,7 @@ class HarnessApp(App):
             log = self.query_one("#log", VerticalScroll)
             await log.mount(UserMessage(text))
             self.stream.current_assistant = None
-            self._turn_worker = self.run_worker(
-                self._run_turn(text, attachments), exclusive=True
-            )
+            self._turn_worker = self.run_worker(self._run_turn(text, attachments), exclusive=True)
         finally:
             self._turn_starting = False
 
@@ -471,9 +458,7 @@ class HarnessApp(App):
         started."""
         if self.turn_busy:
             self.query_one("#log", VerticalScroll).mount(
-                NoticeMessage(
-                    "A turn is already running — wait for it to finish or press Esc."
-                )
+                NoticeMessage("A turn is already running — wait for it to finish or press Esc.")
             )
             return False
         # Mirror start_turn's discipline: keep the spawn exception-safe. This path
@@ -490,9 +475,7 @@ class HarnessApp(App):
             self._turn_worker = None
             self.log.error("failed to start system turn")
             logger.warning("failed to start system turn: %s", exc, exc_info=True)
-            self.append_log(
-                NoticeMessage("Couldn't start the command — please try again.")
-            )
+            self.append_log(NoticeMessage("Couldn't start the command — please try again."))
             return False
         return True
 
@@ -526,9 +509,7 @@ class HarnessApp(App):
             # only; cancelled/errored turns surface an ErrorMessage instead).
             elapsed = format_duration(time.monotonic() - self.status.turn_start, precise=True)
             await log.mount(TurnMeta(elapsed))
-            self.activity.desktop_notify(
-                "Turn complete", f"Finished in {elapsed}", "turn_complete"
-            )
+            self.activity.desktop_notify("Turn complete", f"Finished in {elapsed}", "turn_complete")
         except CancelledError:
             # User pressed escape; mount synchronously (we are unwinding) and
             # let the worker finish as cancelled.
@@ -582,10 +563,7 @@ class HarnessApp(App):
         warns on the first attempt, even with an empty queue — a stray keypress
         is just as disruptive either way."""
         now = time.monotonic()
-        if (
-            self._quit_warned_at is not None
-            and now - self._quit_warned_at <= _QUIT_CONFIRM_WINDOW
-        ):
+        if self._quit_warned_at is not None and now - self._quit_warned_at <= _QUIT_CONFIRM_WINDOW:
             return False
         self._quit_warned_at = now
         if self.queue:
@@ -687,9 +665,7 @@ class HarnessApp(App):
         Both flows below tear down or rebind the session store, so both have to
         wait out a running turn *and* an in-flight compaction."""
         if self.turn_busy:
-            await self.post_system(
-                f"Can't {what} while a turn is running. Press Esc first."
-            )
+            await self.post_system(f"Can't {what} while a turn is running. Press Esc first.")
             return True
         if self.compact_busy:
             await self.post_system("Compaction in progress — wait for it to finish.")
@@ -726,9 +702,7 @@ class HarnessApp(App):
         the conversation changed. Refused mid-turn (same double-flag check as
         ``rewind_to_checkpoint``)."""
         if self.turn_busy or self.status.busy:
-            await self.post_system(
-                "Can't undo a rewind while a turn is running. Press Esc first."
-            )
+            await self.post_system("Can't undo a rewind while a turn is running. Press Esc first.")
             return
         if self.harness.checkpoints.undo_rewind():
             await self.session.render_session(
@@ -791,9 +765,7 @@ class HarnessApp(App):
             f"Tool: {call.tool_name}",
             "approval_needed",
         )
-        approved = await run_panel(
-            self, ApprovalPanel(call.tool_name, call.args_as_dict())
-        )
+        approved = await run_panel(self, ApprovalPanel(call.tool_name, call.args_as_dict()))
         return True if approved else ToolDenied("denied by user")
 
     async def _ask_user(self, questions):
@@ -864,16 +836,12 @@ class HarnessApp(App):
             return False
         return self._autocomplete.accept_highlighted()
 
-    def on_prompt_input_slash_changed(
-        self, event: PromptInput.SlashChanged
-    ) -> None:
+    def on_prompt_input_slash_changed(self, event: PromptInput.SlashChanged) -> None:
         first_line = event.value.split("\n", 1)[0]
         query = first_line[1:]  # strip the leading /
         self._show_autocomplete(query)
 
-    def on_prompt_input_slash_dismissed(
-        self, _event: PromptInput.SlashDismissed
-    ) -> None:
+    def on_prompt_input_slash_dismissed(self, _event: PromptInput.SlashDismissed) -> None:
         self._hide_autocomplete()
 
     def on_command_autocomplete_command_selected(
@@ -936,9 +904,7 @@ class HarnessApp(App):
             # Refuse (don't enqueue) so the turn isn't silently lost or run against
             # a session the compact worker is mid-summarize on. Symmetric with the
             # notice /compact posts when a turn is running.
-            self.append_log(
-                NoticeMessage("Compaction in progress — wait for it to finish.")
-            )
+            self.append_log(NoticeMessage("Compaction in progress — wait for it to finish."))
             return
         if self.turn_busy:
             # turn_busy (not _turn_worker) so a submit landing in the start-up gap
@@ -963,10 +929,9 @@ class HarnessApp(App):
             )
             return
         if self.turn_busy:
-            self.append_log(NoticeMessage(
-                "Can't run a shell command while a turn is running. "
-                "Press Esc first."
-            ))
+            self.append_log(
+                NoticeMessage("Can't run a shell command while a turn is running. Press Esc first.")
+            )
             return
         # group="shell-passthrough": Textual's WorkerManager cancels every worker
         # sharing a group when a new *exclusive* worker joins that group. The turn
@@ -998,9 +963,7 @@ class HarnessApp(App):
                 self.append_log(NoticeMessage("sudo command cancelled"))
                 return
         try:
-            output = await run_passthrough(
-                self.harness.deps.workspace.root, command, password
-            )
+            output = await run_passthrough(self.harness.deps.workspace.root, command, password)
         except OSError as exc:
             self.append_log(ErrorMessage(f"! {command} failed to start: {exc}"))
             return

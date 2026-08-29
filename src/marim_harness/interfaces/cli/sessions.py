@@ -20,7 +20,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_list = sub.add_parser("list", help="list saved sessions for a workspace")
     p_list.add_argument(
-        "workspace", nargs="?", default=".",
+        "workspace",
+        nargs="?",
+        default=".",
         help="workspace directory (default: current directory)",
     )
     p_list.add_argument("--json", action="store_true", help="emit JSON instead of a table")
@@ -28,7 +30,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_delete = sub.add_parser("delete", help="delete a saved session by id")
     p_delete.add_argument("id", help="id of the session to delete")
     p_delete.add_argument(
-        "workspace", nargs="?", default=".",
+        "workspace",
+        nargs="?",
+        default=".",
         help="workspace directory (default: current directory)",
     )
 
@@ -65,14 +69,17 @@ def _cmd_list(args, *, out, err) -> int:
         return format_duration(d) if d else "-"
 
     rows = [
-        (info.id, info.name, info.updated, str(info.message_count),
-         str(info.tokens), _fmt_duration(info.duration_seconds))
+        (
+            info.id,
+            info.name,
+            info.updated,
+            str(info.message_count),
+            str(info.tokens),
+            _fmt_duration(info.duration_seconds),
+        )
         for info in infos
     ]
-    widths = [
-        max(len(_COLUMNS[i]), *(len(row[i]) for row in rows))
-        for i in range(len(_COLUMNS))
-    ]
+    widths = [max(len(_COLUMNS[i]), *(len(row[i]) for row in rows)) for i in range(len(_COLUMNS))]
     for cells in (_COLUMNS, *rows):
         print("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(cells)), file=out)
     return 0

@@ -37,9 +37,7 @@ _ZEN_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
 # Every provider load_config knows how to wire. An unknown value falls through to
 # the OpenRouter branch (the historical default), but we warn first so a typo
 # like MARIM_PROVIDER=azure doesn't masquerade as a confusing "missing API key".
-KNOWN_PROVIDERS = frozenset({
-    "openrouter", "local", "google", "claude-cli", "zen", "zen-go"
-})
+KNOWN_PROVIDERS = frozenset({"openrouter", "local", "google", "claude-cli", "zen", "zen-go"})
 
 
 def parse_qualified(
@@ -378,8 +376,11 @@ def _provider_config(provider: str, common: dict[str, Any]) -> ModelConfig:
             provider="google",
             model=os.getenv("MARIM_MODEL", _DEFAULT_GOOGLE_MODEL),
             base_url=None,
-            api_key=(os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-                     or os.getenv("MARIM_API_KEY")),
+            api_key=(
+                os.getenv("GOOGLE_API_KEY")
+                or os.getenv("GEMINI_API_KEY")
+                or os.getenv("MARIM_API_KEY")
+            ),
             **common,
         )
     if provider == "claude-cli":
@@ -447,9 +448,9 @@ def load_config() -> ModelConfig:
     provider = os.getenv("MARIM_PROVIDER", "openrouter").lower()
     if provider not in KNOWN_PROVIDERS:
         logger.warning(
-            "Unknown MARIM_PROVIDER=%r; falling back to 'openrouter' "
-            "(known providers: %s).",
-            provider, ", ".join(sorted(KNOWN_PROVIDERS)),
+            "Unknown MARIM_PROVIDER=%r; falling back to 'openrouter' (known providers: %s).",
+            provider,
+            ", ".join(sorted(KNOWN_PROVIDERS)),
         )
         provider = "openrouter"
     return _provider_config(provider, _common_kwargs())
@@ -486,7 +487,10 @@ def _enum_env(name: str, default: str, valid: frozenset[str]) -> str:
     if value not in valid:
         logger.warning(
             "Ignoring invalid %s=%r (expected one of %s); using %r.",
-            name, raw, ", ".join(sorted(valid)), default,
+            name,
+            raw,
+            ", ".join(sorted(valid)),
+            default,
         )
         return default
     return value
@@ -575,7 +579,8 @@ class ModelSource:
             return await fetch_zen_models(self.cfg.api_key, strict=strict)
         if self.cfg.provider == "zen-go":
             return await fetch_zen_models(
-                self.cfg.api_key, strict=strict, url=_ZEN_GO_BASE_URL + "/models")
+                self.cfg.api_key, strict=strict, url=_ZEN_GO_BASE_URL + "/models"
+            )
         if self.cfg.provider == "claude-cli":
             return [
                 ModelEntry(id="sonnet", name="sonnet", provider="claude-cli"),
@@ -645,7 +650,5 @@ class MultiModelSource:
                 return []
             return [replace(e, provider=provider) for e in entries]
 
-        results = await asyncio.gather(
-            *[_one(p, s) for p, s in self.sources.items()]
-        )
+        results = await asyncio.gather(*[_one(p, s) for p, s in self.sources.items()])
         return [e for group in results for e in group]

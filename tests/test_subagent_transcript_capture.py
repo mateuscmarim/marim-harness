@@ -9,7 +9,7 @@ from pydantic_ai.models.function import FunctionModel
 from marim_harness.session import SessionStore, TranscriptStore
 from tests.conftest import _make_deps, _make_harness
 
-_FAKE_CLI = '''#!{python}
+_FAKE_CLI = """#!{python}
 import json, sys
 for o in [
     {{"type": "system", "subtype": "init", "session_id": "sess-abc",
@@ -25,7 +25,7 @@ for o in [
       "num_turns": 1, "usage": {{"input_tokens": 1, "output_tokens": 1}}}},
 ]:
     sys.stdout.write(json.dumps(o) + "\\n")
-'''
+"""
 
 
 def _fake_cli(tmp_path: Path) -> str:
@@ -68,11 +68,13 @@ async def test_cli_spawn_writes_transcript_sidecar(tmp_path, monkeypatch):
 async def test_cli_spawn_checkpoints_with_backend_meta(tmp_path, monkeypatch):
     monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", _fake_cli(tmp_path))
     _cli_agent(tmp_path)
-    store = SessionStore(path=tmp_path / "sessions" / "t.json", workspace_root=tmp_path,
-                         session_id="t", name="t")
+    store = SessionStore(
+        path=tmp_path / "sessions" / "t.json", workspace_root=tmp_path, session_id="t", name="t"
+    )
     harness = _make_harness(
         FunctionModel(lambda m, i: ModelResponse(parts=[TextPart(content="x")])),
-        _make_deps(tmp_path), store=store,
+        _make_deps(tmp_path),
+        store=store,
     )
     statuses: list[str | None] = []
     orig = harness.subagents._transcripts.save
@@ -111,11 +113,13 @@ async def test_killed_cli_spawn_rests_at_running_with_session_id(tmp_path, monke
     dead.chmod(dead.stat().st_mode | stat.S_IEXEC | stat.S_IRWXU)
     monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", str(dead))
     _cli_agent(tmp_path)
-    store = SessionStore(path=tmp_path / "sessions" / "t.json", workspace_root=tmp_path,
-                         session_id="t", name="t")
+    store = SessionStore(
+        path=tmp_path / "sessions" / "t.json", workspace_root=tmp_path, session_id="t", name="t"
+    )
     harness = _make_harness(
         FunctionModel(lambda m, i: ModelResponse(parts=[TextPart(content="x")])),
-        _make_deps(tmp_path), store=store,
+        _make_deps(tmp_path),
+        store=store,
     )
     out = await harness.subagents.run("cli-worker", "do it", stream_id="sg-dead")
     assert "failed" in out  # foreground containment
@@ -130,13 +134,15 @@ async def test_cli_final_meta_records_tool_count_and_duration(tmp_path, monkeypa
     (tool_count/duration), so their cards rehydrate identically on resume."""
     monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", _fake_cli(tmp_path))
     _cli_agent(tmp_path)
-    store = SessionStore(path=tmp_path / "sessions" / "t.json", workspace_root=tmp_path,
-                         session_id="t", name="t")
+    store = SessionStore(
+        path=tmp_path / "sessions" / "t.json", workspace_root=tmp_path, session_id="t", name="t"
+    )
     harness = _make_harness(
         FunctionModel(lambda m, i: ModelResponse(parts=[TextPart(content="x")])),
-        _make_deps(tmp_path), store=store,
+        _make_deps(tmp_path),
+        store=store,
     )
     await harness.subagents.run("cli-worker", "do it", stream_id="sg-cli-stats")
     meta = TranscriptStore(store.path, store.session_id).read_meta("sg-cli-stats")
-    assert meta["tool_count"] == 1          # the fake CLI's single Read call
+    assert meta["tool_count"] == 1  # the fake CLI's single Read call
     assert meta["duration"] > 0

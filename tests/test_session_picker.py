@@ -6,12 +6,30 @@ from marim_harness.interfaces.tui.session_picker import SessionPickerModal
 from marim_harness.session import SessionInfo
 
 _SESSIONS = [
-    SessionInfo(id="s-alpha", name="Fix auth bug", updated="2026-07-03T10:00:00",
-                message_count=5, tokens=1200, duration_seconds=125.0),
-    SessionInfo(id="s-beta", name="Refactor session store", updated="2026-07-02T09:00:00",
-                message_count=12, tokens=8300, duration_seconds=None),
-    SessionInfo(id="s-gamma", name="20260701-120000", updated="2026-07-01T12:00:00",
-                message_count=1, tokens=0, duration_seconds=5.0),
+    SessionInfo(
+        id="s-alpha",
+        name="Fix auth bug",
+        updated="2026-07-03T10:00:00",
+        message_count=5,
+        tokens=1200,
+        duration_seconds=125.0,
+    ),
+    SessionInfo(
+        id="s-beta",
+        name="Refactor session store",
+        updated="2026-07-02T09:00:00",
+        message_count=12,
+        tokens=8300,
+        duration_seconds=None,
+    ),
+    SessionInfo(
+        id="s-gamma",
+        name="20260701-120000",
+        updated="2026-07-01T12:00:00",
+        message_count=1,
+        tokens=0,
+        duration_seconds=5.0,
+    ),
 ]
 
 
@@ -182,9 +200,10 @@ async def test_active_session_cannot_be_armed():
         await pilot.pause()
         opts = modal.query_one("#session-options", OptionList)
         assert opts.option_count == len(_SESSIONS)
-        assert "can't delete the active session" in str(
-            modal.query_one("#session-status").render()
-        ).lower()
+        assert (
+            "can't delete the active session"
+            in str(modal.query_one("#session-status").render()).lower()
+        )
 
 
 @pytest.mark.anyio

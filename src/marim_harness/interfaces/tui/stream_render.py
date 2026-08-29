@@ -134,10 +134,10 @@ def _detached_job_id(content: str) -> str | None:
     not a sub-agent card. Round-trip tests pin both formats."""
     text = content.lstrip()
     if text.startswith(_DETACH_PREFIX):
-        job_id, sep, _ = text[len(_DETACH_PREFIX):].partition(",")
+        job_id, sep, _ = text[len(_DETACH_PREFIX) :].partition(",")
         return job_id.strip() if sep and job_id.strip() else None
     if text.startswith(_BG_PREFIX):
-        rest = text[len(_BG_PREFIX):]
+        rest = text[len(_BG_PREFIX) :]
         idx = rest.find(_BG_AGENT_MARK)
         if idx > 0:
             return rest[:idx].strip() or None
@@ -173,10 +173,7 @@ def _deps_pending(after_ids: list[str], jobs) -> bool:
     """True while any prerequisite job is still running. A missing/pruned id
     counts as settled so a card can never block forever on a forgotten job —
     mirrors JobRegistry.await_settled's semantics for display purposes."""
-    return any(
-        (job := jobs.get(jid)) is not None and job.status == "running"
-        for jid in after_ids
-    )
+    return any((job := jobs.get(jid)) is not None and job.status == "running" for jid in after_ids)
 
 
 _PREREQ_RE = re.compile(r"prerequisite (job-\d+) (?:failed|cancelled|no longer exists)")
@@ -210,6 +207,7 @@ def _stream_hidden(widget: Widget, host: "SubAgentDetailHost | None") -> bool:
 @dataclass
 class _SubStreamState:
     """Per-stream state for one nested sub-agent — replaces four parallel dicts."""
+
     group: "ToolGroupWidget | None" = field(default=None)
     solo: "ToolCallWidget | None" = field(default=None)
     assistant: "AssistantMessage | None" = field(default=None)
@@ -343,7 +341,8 @@ class _TopLevelSink(_StreamSink):
         # case above).
         if event.part.tool_name in _STANDALONE_TOOLS:
             widget = ToolCallWidget(
-                event.part.tool_name, args,
+                event.part.tool_name,
+                args,
                 workspace_root=self._r.app.harness.deps.workspace.root,
             )
             self._r.tool_widgets[event.part.tool_call_id] = widget
@@ -370,8 +369,7 @@ class _SubAgentSink(_StreamSink):
     ``stream_id``, and pushes live text/tool activity into the (collapsed) widget
     title."""
 
-    def __init__(self, renderer: "StreamRenderer", parent: SubAgentWidget,
-                 stream_id: str) -> None:
+    def __init__(self, renderer: "StreamRenderer", parent: SubAgentWidget, stream_id: str) -> None:
         self._r = renderer
         self._parent = parent
         self._sid = stream_id
@@ -412,9 +410,7 @@ class _SubAgentSink(_StreamSink):
         # spawn's tool_call_id (subagents/runner.py); registering the card here is
         # what lets on_subagent_event find it instead of dropping the stream.
         if event.part.tool_name == "spawn_agent":
-            await self._claim_spawn(
-                event, args, container, parent_id=self._parent.stream_id
-            )
+            await self._claim_spawn(event, args, container, parent_id=self._parent.stream_id)
             return True
         return False
 
@@ -609,7 +605,8 @@ class StreamRenderer:
         the Ctrl+X viewer, which is meant to show every foreground sub-agent of the
         session — so its growth is intended, not a leak."""
         self.tool_widgets = {
-            tid: w for tid, w in self.tool_widgets.items()
+            tid: w
+            for tid, w in self.tool_widgets.items()
             if getattr(w, "status", None) == "pending"
         }
         for sid in list(self._sub_streams):
@@ -740,7 +737,9 @@ class StreamRenderer:
             cost, _ = resolve_cost(usage, self.app.harness.model_id)
             cost_text = _format_cost(cost) if cost is not None else None
             card.set_usage(
-                usage.total_tokens, cost_text, _format_token_split(usage),
+                usage.total_tokens,
+                cost_text,
+                _format_token_split(usage),
                 cost_value=cost,  # numeric cost for the summary roll-up
             )
 
@@ -928,8 +927,11 @@ class StreamRenderer:
         if widget.pane is not None:
             return widget.pane
         pane = self.detail_host.add_pane(
-            widget.stream_id, widget.agent_type, widget.model_label,
-            widget.display_title(), widget.agent_task,
+            widget.stream_id,
+            widget.agent_type,
+            widget.model_label,
+            widget.display_title(),
+            widget.agent_task,
         )
         # This pane is fed by the live stream, so its transcript is already on
         # screen — mark it loaded so the resume-time lazy-load never fires on it.
@@ -953,9 +955,7 @@ class StreamRenderer:
         async for event in events:
             # ctx.usage carries the run's live running total (ctx is None in some
             # unit tests); fold it into the status counter via the flush tick.
-            self.live_run_tokens = (
-                getattr(getattr(ctx, "usage", None), "total_tokens", 0) or 0
-            )
+            self.live_run_tokens = getattr(getattr(ctx, "usage", None), "total_tokens", 0) or 0
             await self.dispatch_stream_event(event, sink)
         # A round that ends on a thought (no following text/tool to trigger the
         # per-event cap) still collapses to its preview.
@@ -1126,7 +1126,8 @@ class StreamRenderer:
         args = self._with_wait_label(event.part.tool_name, args)
         sink.on_tool(event.part.tool_name, args)  # live card status
         widget = ToolCallWidget(
-            event.part.tool_name, args,
+            event.part.tool_name,
+            args,
             workspace_root=self.app.harness.deps.workspace.root,
         )
         self.tool_widgets[event.part.tool_call_id] = widget

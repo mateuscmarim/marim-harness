@@ -27,7 +27,7 @@ def test_per_server_cap_truncates_with_more_suffix():
     row = [ln for ln in out.splitlines() if ln.startswith("- big:")][0]
     assert "(+5 more)" in row
     assert "t00" in row and "t11" in row  # first 12 shown (t00..t11)
-    assert "t12" not in row               # capped
+    assert "t12" not in row  # capped
 
 
 def test_no_more_suffix_when_under_cap():
@@ -69,6 +69,3 @@ async def test_catalog_text_shown_when_auto_above_threshold():
     mcp = _FakeMcp({"s": [f"t{i}" for i in range(20)]})  # 20 tools
     text = await tool_catalog_text(mcp, "auto", 15)  # 20 > 15 -> deferred
     assert text.startswith("Additional MCP tools")
-
-
-

@@ -11,7 +11,10 @@ from tests.conftest import _make_deps  # same helper test_provider uses
 
 def _harness(tmp_path: Path, **cfg_kwargs) -> Harness:
     return Harness(
-        TestModel(), BuiltinToolProvider(), _make_deps(tmp_path), "instructions",
+        TestModel(),
+        BuiltinToolProvider(),
+        _make_deps(tmp_path),
+        "instructions",
         config=HarnessConfig(lsp_enabled=False, **cfg_kwargs),
     )
 
@@ -94,9 +97,7 @@ def test_global_instructions_gate(tmp_path, monkeypatch):
     import marim_harness.runtime.instructions as instr
 
     calls = []
-    monkeypatch.setattr(
-        instr, "load_global_instructions", lambda: calls.append(1) or "global text"
-    )
+    monkeypatch.setattr(instr, "load_global_instructions", lambda: calls.append(1) or "global text")
 
     h_on = _harness(tmp_path, global_instructions=True)
     h_off = _harness(tmp_path, global_instructions=False)
@@ -112,7 +113,8 @@ def test_global_instructions_gate(tmp_path, monkeypatch):
     def _closure(agent, name):
         return next(
             (
-                fn for fn in agent._instructions
+                fn
+                for fn in agent._instructions
                 if callable(fn) and getattr(fn, "__name__", None) == name
             ),
             None,
@@ -155,7 +157,8 @@ def test_scratchpad_instructions_gate_on_files_write_group(tmp_path):
     def _closure(agent, name):
         return next(
             (
-                fn for fn in agent._instructions  # noqa: SLF001
+                fn
+                for fn in agent._instructions  # noqa: SLF001
                 if callable(fn) and getattr(fn, "__name__", None) == name
             ),
             None,

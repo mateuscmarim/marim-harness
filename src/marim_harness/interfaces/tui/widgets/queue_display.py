@@ -1,5 +1,6 @@
 """Reactive queue display — renders queued user messages. Replaces the
 manual QueuePanel.show_queue() / _render_queue() pattern."""
+
 from __future__ import annotations
 
 from textual.content import Content
@@ -47,6 +48,4 @@ class QueueDisplay(Static):
         if not self.items:
             return
         header = "Queued — paused" if self.paused else "Queued"
-        self.update(
-            Content.from_markup(f"[bold]{header}[/]\n") + render_queue(self.items)
-        )
+        self.update(Content.from_markup(f"[bold]{header}[/]\n") + render_queue(self.items))

@@ -22,6 +22,7 @@ def _retry_content(messages: list[ModelMessage], index: int = 0) -> str:
     assert isinstance(part.content, str)
     return part.content
 
+
 # The available tool list from the real incident, abbreviated.
 _AVAILABLE = [
     "activate_skill",

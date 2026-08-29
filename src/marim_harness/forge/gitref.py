@@ -14,8 +14,11 @@ async def _git(args: list[str], root: Path) -> str | None:
     (missing git, non-zero exit). Best-effort — never raises into a tool."""
     try:
         proc = await asyncio.create_subprocess_exec(
-            "git", *args, cwd=str(root),
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            "git",
+            *args,
+            cwd=str(root),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
         )
     except (FileNotFoundError, OSError):
         return None
@@ -44,7 +47,5 @@ async def current_branch(root: Path) -> str | None:
 async def branch_pushed(root: Path, branch: str) -> bool:
     """True if the local remote-tracking ref ``origin/<branch>`` exists — i.e.
     the branch has been pushed (as of the last fetch/push). No network."""
-    raw = await _git(
-        ["rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}"], root
-    )
+    raw = await _git(["rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}"], root)
     return bool(raw and raw.strip())

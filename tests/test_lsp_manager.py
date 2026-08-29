@@ -39,8 +39,12 @@ class _FakeServer:
 
     async def request_definition(self, relpath, line, col):
         self.calls.append(("def", relpath, line, col))
-        return [{"uri": (self.root / "target.py").as_uri(),
-                 "range": {"start": {"line": 9, "character": 4}}}]
+        return [
+            {
+                "uri": (self.root / "target.py").as_uri(),
+                "range": {"start": {"line": 9, "character": 4}},
+            }
+        ]
 
     async def request_references(self, relpath, line, col):
         self.calls.append(("ref", relpath, line, col))
@@ -59,9 +63,16 @@ class _FakeServer:
 
     async def request_workspace_symbol(self, query):
         self.calls.append(("ws", query))
-        return [{"name": "foo", "kind": 12,
-                 "location": {"uri": (self.root / "a.py").as_uri(),
-                              "range": {"start": {"line": 3, "character": 0}}}}]
+        return [
+            {
+                "name": "foo",
+                "kind": 12,
+                "location": {
+                    "uri": (self.root / "a.py").as_uri(),
+                    "range": {"start": {"line": 3, "character": 0}},
+                },
+            }
+        ]
 
 
 @pytest.fixture
@@ -85,6 +96,7 @@ def _manager(tmp_path, fake_holder):
         srv = _FakeServer(root)
         fake_holder.append(srv)
         return srv
+
     return LspManager(tmp_path, registry=_bundled_reg(), server_factory=factory)
 
 
@@ -159,7 +171,8 @@ async def test_request_cancelled_twice_reports_transient(tmp_path):
             raise _CancelledError()
 
     mgr = LspManager(
-        tmp_path, registry=_bundled_reg(),
+        tmp_path,
+        registry=_bundled_reg(),
         server_factory=lambda language, root: _AlwaysCancelled(root),
     )
     out = await mgr.find_references("m.py", 1, 1)
@@ -191,8 +204,12 @@ async def test_unsupported_filetype(tmp_path):
 @pytest.mark.anyio
 async def test_disabled_language(tmp_path):
     (tmp_path / "m.py").write_text("x = 1\n")
-    mgr = LspManager(tmp_path, registry=_bundled_reg(), disabled=frozenset({"python"}),
-                     server_factory=lambda lang, root: None)
+    mgr = LspManager(
+        tmp_path,
+        registry=_bundled_reg(),
+        disabled=frozenset({"python"}),
+        server_factory=lambda lang, root: None,
+    )
     out = await mgr.goto_definition("m.py", 1, 1)
     assert "disabled" in out.lower()
     await mgr.aclose()
@@ -213,8 +230,12 @@ async def test_diagnostics_honor_disabled_python(tmp_path, monkeypatch):
         return "[]"
 
     monkeypatch.setattr(checks, "_run", spy_run)
-    mgr = LspManager(tmp_path, registry=_bundled_reg(), disabled=frozenset({"python"}),
-                     server_factory=lambda lang, root: None)
+    mgr = LspManager(
+        tmp_path,
+        registry=_bundled_reg(),
+        disabled=frozenset({"python"}),
+        server_factory=lambda lang, root: None,
+    )
     out = await mgr.diagnostics("m.py")
     assert "disabled" in out.lower()
     assert ran == [], "external checkers ran despite python LSP being disabled"
@@ -278,8 +299,12 @@ async def test_request_timeout_degrades(tmp_path):
             await asyncio.sleep(5)
 
     (tmp_path / "m.py").write_text("x = 1\n")
-    mgr = LspManager(tmp_path, registry=_bundled_reg(), request_timeout=0.05,
-                     server_factory=lambda lang, root: _Slow(tmp_path))
+    mgr = LspManager(
+        tmp_path,
+        registry=_bundled_reg(),
+        request_timeout=0.05,
+        server_factory=lambda lang, root: _Slow(tmp_path),
+    )
     out = await mgr.goto_definition("m.py", 1, 1)
     assert "timed out" in out.lower()
     await mgr.aclose()
@@ -340,9 +365,7 @@ async def test_startup_does_not_block_across_languages(tmp_path, monkeypatch):
     mgr = LspManager(
         tmp_path, registry=_bundled_reg(), server_factory=lambda lang, root: _Gated(root, lang)
     )
-    monkeypatch.setattr(
-        mgr._registry, "availability", lambda lang: registry.Availability(True, "")
-    )
+    monkeypatch.setattr(mgr._registry, "availability", lambda lang: registry.Availability(True, ""))
     (tmp_path / "m.py").write_text("x = 1\n")
     (tmp_path / "m.ts").write_text("const x = 1\n")
 
@@ -414,9 +437,7 @@ async def test_start_racing_aclose_leaves_no_registered_server(tmp_path, monkeyp
     mgr = LspManager(
         tmp_path, registry=_bundled_reg(), server_factory=lambda lang, root: _Cold(tmp_path)
     )
-    monkeypatch.setattr(
-        mgr._registry, "availability", lambda lang: registry.Availability(True, "")
-    )
+    monkeypatch.setattr(mgr._registry, "availability", lambda lang: registry.Availability(True, ""))
 
     start = asyncio.create_task(mgr.goto_definition("m.py", 1, 1))
     await in_start.wait()  # the cold start is in flight
@@ -469,9 +490,7 @@ async def test_dead_server_is_evicted_and_restarted(tmp_path, monkeypatch):
 
     (tmp_path / "m.py").write_text("x = 1\n")
     mgr = LspManager(tmp_path, registry=_bundled_reg(), server_factory=factory)
-    monkeypatch.setattr(
-        mgr._registry, "availability", lambda lang: registry.Availability(True, "")
-    )
+    monkeypatch.setattr(mgr._registry, "availability", lambda lang: registry.Availability(True, ""))
 
     await mgr.goto_definition("m.py", 1, 1)
     assert len(fakes) == 1  # one server started
@@ -518,9 +537,7 @@ async def test_crashed_process_is_evicted_though_server_started_stays_true(tmp_p
 
     (tmp_path / "m.py").write_text("x = 1\n")
     mgr = LspManager(tmp_path, registry=_bundled_reg(), server_factory=factory)
-    monkeypatch.setattr(
-        mgr._registry, "availability", lambda lang: registry.Availability(True, "")
-    )
+    monkeypatch.setattr(mgr._registry, "availability", lambda lang: registry.Availability(True, ""))
 
     await mgr.goto_definition("m.py", 1, 1)
     assert len(fakes) == 1

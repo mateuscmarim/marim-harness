@@ -89,9 +89,7 @@ def test_system_prompt_part_survives_load(tmp_path: Path, caplog):
     transcript is marim's own, and stripping it would silently mutate a
     resumed conversation (and warn on every load)."""
     history = [
-        ModelRequest(
-            parts=[SystemPromptPart(content="be helpful"), UserPromptPart(content="hi")]
-        ),
+        ModelRequest(parts=[SystemPromptPart(content="be helpful"), UserPromptPart(content="hi")]),
         ModelResponse(parts=[TextPart(content="hello")]),
     ]
     with caplog.at_level(logging.WARNING, logger="marim_harness.session.store"):

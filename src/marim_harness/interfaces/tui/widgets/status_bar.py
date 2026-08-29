@@ -7,6 +7,7 @@ The rest of the bar — context size, token split, cost, session duration — is
 still read straight off live harness/session state in ``render``, so it has no
 reactive to change and something must still poke the widget: hence the surviving
 ``refresh_status`` below and the idle ``_CLOCK_TICK_INTERVAL`` repaint."""
+
 from __future__ import annotations
 
 import time

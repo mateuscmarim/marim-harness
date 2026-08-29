@@ -33,7 +33,11 @@ class WakeController:
         return self._depth_cap
 
     def should_wake(
-        self, *, enabled: bool, turn_busy: bool, has_finished_pending: bool,
+        self,
+        *,
+        enabled: bool,
+        turn_busy: bool,
+        has_finished_pending: bool,
         all_jobs_settled: bool,
     ) -> bool:
         """True iff an idle TUI should fire one autonomous digest turn now: wake

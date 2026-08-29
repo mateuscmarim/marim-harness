@@ -31,9 +31,7 @@ def test_resolves_ref_before_decoding():
 def test_decodes_under_nullable_anyof():
     schema = {
         "type": "object",
-        "properties": {
-            "items": {"anyOf": [{"type": "array", "items": _OBJ}, {"type": "null"}]}
-        },
+        "properties": {"items": {"anyOf": [{"type": "array", "items": _OBJ}, {"type": "null"}]}},
     }
     out = coerce_by_schema({"items": '[{"n": 3}]'}, schema)
     assert out == {"items": [{"n": 3}]}

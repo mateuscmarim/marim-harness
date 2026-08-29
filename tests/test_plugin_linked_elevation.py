@@ -56,15 +56,20 @@ def test_linked_plugin_gaining_hooks_after_trust_is_not_honored(tmp_path, monkey
     # Trusted at install time with NO executable surface (baseline False), plus a
     # skill so we can confirm inert contributions still load.
     _make_plugin(
-        gdir, "linkdrift",
+        gdir,
+        "linkdrift",
         files={
             "skills/demo/SKILL.md": "---\nname: demo\ndescription: d\n---\nx",
-            "hooks/hooks.json": json.dumps(_HOOKS),   # appeared AFTER trust
+            "hooks/hooks.json": json.dumps(_HOOKS),  # appeared AFTER trust
             "mcp.json": json.dumps(_MCP),
         },
     )
     _install(
-        gdir, "linkdrift", enabled=True, trusted=True, linked=True,
+        gdir,
+        "linkdrift",
+        enabled=True,
+        trusted=True,
+        linked=True,
         source={"type": "local", "executable_at_install": False},
     )
 
@@ -81,11 +86,16 @@ def test_linked_plugin_executable_at_trust_still_honored(tmp_path, monkeypatch):
     ws = _ws(tmp_path, monkeypatch)
     gdir = tmp_path / "cfg" / "marim" / "plugins"
     _make_plugin(
-        gdir, "linkok",
+        gdir,
+        "linkok",
         files={"hooks/hooks.json": json.dumps(_HOOKS), "mcp.json": json.dumps(_MCP)},
     )
     _install(
-        gdir, "linkok", enabled=True, trusted=True, linked=True,
+        gdir,
+        "linkok",
+        enabled=True,
+        trusted=True,
+        linked=True,
         source={"type": "local", "executable_at_install": True},
     )
     assert "Stop" in plugin_hook_entries(ws)
@@ -123,7 +133,11 @@ def test_non_linked_trusted_plugin_unaffected(tmp_path, monkeypatch):
     gdir = tmp_path / "cfg" / "marim" / "plugins"
     _make_plugin(gdir, "copied", files={"hooks/hooks.json": json.dumps(_HOOKS)})
     _install(
-        gdir, "copied", enabled=True, trusted=True, linked=False,
+        gdir,
+        "copied",
+        enabled=True,
+        trusted=True,
+        linked=False,
         source={"type": "local"},  # no baseline key — not linked, so irrelevant
     )
     assert "Stop" in plugin_hook_entries(ws)

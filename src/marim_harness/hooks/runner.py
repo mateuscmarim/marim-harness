@@ -50,9 +50,7 @@ def _kill(proc) -> None:
             proc.kill()
 
 
-def base_payload(
-    event: str, *, session_id: str, cwd: str, transcript_path: str, **extra
-) -> dict:
+def base_payload(event: str, *, session_id: str, cwd: str, transcript_path: str, **extra) -> dict:
     """Assemble a hook payload with the common Claude-Code fields plus any
     event-specific extras."""
     payload = {

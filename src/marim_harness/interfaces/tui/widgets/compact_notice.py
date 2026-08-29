@@ -2,6 +2,7 @@
 (_on_compact_start → _on_compact → clear_compacting_notice) with reactive
 state. Setting ``compacting = False`` always hides the notice, so there are
 no dangling refs or manual cleanup paths."""
+
 from __future__ import annotations
 
 from textual.reactive import reactive

@@ -40,10 +40,7 @@ class BuilderError(ValueError):
 
     def __init__(self, problems: list[str]) -> None:
         self.problems = list(problems)
-        super().__init__(
-            "invalid harness composition:\n"
-            + "\n".join(f"  - {p}" for p in problems)
-        )
+        super().__init__("invalid harness composition:\n" + "\n".join(f"  - {p}" for p in problems))
 
 
 class HarnessBuilder:
@@ -119,8 +116,9 @@ class HarnessBuilder:
         self._combined_job_tool = combined
         return self
 
-    def with_lsp(self, *, enabled: bool = True, tools: bool = True,
-                 registry: LspRegistry | None = None) -> HarnessBuilder:
+    def with_lsp(
+        self, *, enabled: bool = True, tools: bool = True, registry: LspRegistry | None = None
+    ) -> HarnessBuilder:
         """Turn the LSP manager on (default) or off; ``tools`` (only meaningful
         when ``enabled``) additionally registers the six navigation tools.
         ``enabled=False`` is the escape hatch the CLI preset needs to honor its
@@ -164,16 +162,18 @@ class HarnessBuilder:
         self._custom_tools.append((fn, requires_approval))
         return self
 
-    def with_instructions(self, *, extra: str | None = None,
-                          replace: str | None = None) -> HarnessBuilder:
+    def with_instructions(
+        self, *, extra: str | None = None, replace: str | None = None
+    ) -> HarnessBuilder:
         if replace is not None:
             self._instructions_replace = replace
         if extra is not None:
             self._instructions_extra.append(extra)
         return self
 
-    def with_sessions(self, dir: Path | None = None, *, stats: bool = True,
-                      stats_dir: Path | None = None) -> HarnessBuilder:
+    def with_sessions(
+        self, dir: Path | None = None, *, stats: bool = True, stats_dir: Path | None = None
+    ) -> HarnessBuilder:
         """Turn on persisted sessions. ``stats`` (on by default when sessions
         are on) additionally records per-turn usage into the stats ledger
         under ``stats_dir`` (default: alongside the sessions dir — see
@@ -193,8 +193,9 @@ class HarnessBuilder:
         self._hook_runner = runner
         return self
 
-    def with_advisor(self, model: str, *, max_tokens: int = 2048,
-                     max_uses: int | None = None) -> HarnessBuilder:
+    def with_advisor(
+        self, model: str, *, max_tokens: int = 2048, max_uses: int | None = None
+    ) -> HarnessBuilder:
         """Configure an advisor: a model the main agent can consult mid-task
         via the ``advisor`` tool (the full transcript is forwarded to it).
         ``model`` is a pydantic-ai model string, or a qualified
@@ -301,18 +302,19 @@ class HarnessBuilder:
         for defn in self._subagents:
             unknown = defn.tools - SUBAGENT_TOOLS
             if unknown:
-                problems.append(
-                    f"sub-agent {defn.name!r} grants unknown tools: {sorted(unknown)}")
+                problems.append(f"sub-agent {defn.name!r} grants unknown tools: {sorted(unknown)}")
             missing = (defn.tools & SUBAGENT_TOOLS) - grantable
             if missing:
                 lsp_missing = missing & LSP_TOOLS
                 hint = (
                     " (LSP tools are disabled — call with_lsp(tools=True))"
-                    if lsp_missing and not self._lsp_tools else ""
+                    if lsp_missing and not self._lsp_tools
+                    else ""
                 )
                 problems.append(
                     f"sub-agent {defn.name!r} grants tools from disabled groups: "
-                    f"{sorted(missing)}{hint}")
+                    f"{sorted(missing)}{hint}"
+                )
 
     def _open_sessions(
         self, problems: list[str]
@@ -355,17 +357,17 @@ class HarnessBuilder:
         from .harness import Harness, HarnessConfig
 
         if self._built:
-            raise RuntimeError("this HarnessBuilder already built a Harness; "
-                               "create a new builder for a second one")
+            raise RuntimeError(
+                "this HarnessBuilder already built a Harness; create a new builder for a second one"
+            )
 
         problems: list[str] = []
 
         model = self._resolve_model(problems)
 
-        groups = ToolGroups(**{
-            f.name: self._groups.get(f.name, False)
-            for f in dataclasses.fields(ToolGroups)
-        })
+        groups = ToolGroups(
+            **{f.name: self._groups.get(f.name, False) for f in dataclasses.fields(ToolGroups)}
+        )
         builtin_names = groups.enabled_tool_names()
         # The full set of names actually loaded on the main agent, for the
         # custom-tool collision check just below. builtin_names alone missed
@@ -418,16 +420,19 @@ class HarnessBuilder:
 
         deps = self._deps_override
         if deps is None:
-            deps = Deps(workspace=WorkspaceConfig(
-                root=self._workspace,
-                mode=self._mode,
-                command_policy=self._command_policy or CommandPolicy(),
-                memory_root=self._memory_root,
-                skill_dirs=self._skill_dirs,
-            ))
+            deps = Deps(
+                workspace=WorkspaceConfig(
+                    root=self._workspace,
+                    mode=self._mode,
+                    command_policy=self._command_policy or CommandPolicy(),
+                    memory_root=self._memory_root,
+                    skill_dirs=self._skill_dirs,
+                )
+            )
             deps.hooks = self._hook_runner
 
         from .instructions import DEFAULT_INSTRUCTIONS
+
         instructions = self._instructions_replace or DEFAULT_INSTRUCTIONS
         if self._instructions_extra:
             instructions = "\n\n".join([instructions, *self._instructions_extra])
@@ -476,8 +481,7 @@ class HarnessBuilder:
         config_fields.update(self._config_overrides)
 
         self._built = True
-        return Harness(model, provider, deps, instructions,
-                       config=HarnessConfig(**config_fields))
+        return Harness(model, provider, deps, instructions, config=HarnessConfig(**config_fields))
 
 
 class _ComposedProvider(BuiltinToolProvider):
@@ -486,8 +490,9 @@ class _ComposedProvider(BuiltinToolProvider):
     the full permission model (auto runs, ask prompts, plan denies)."""
 
     def __init__(self, groups, extra_tools, *, register_lsp_tools, combined_job_tool):
-        super().__init__(groups, register_lsp_tools=register_lsp_tools,
-                         combined_job_tool=combined_job_tool)
+        super().__init__(
+            groups, register_lsp_tools=register_lsp_tools, combined_job_tool=combined_job_tool
+        )
         self._extra_tools = extra_tools
 
     def register(self, agent) -> None:

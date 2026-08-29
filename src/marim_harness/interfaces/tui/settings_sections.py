@@ -240,18 +240,14 @@ def _tier_widgets(env_cfg: ModelConfig) -> ComposeResult:
                 id=f"tier-value-{tier}",
                 classes="row-value",
             )
-            yield Button(
-                "change", id=f"tier-change-{tier}", variant="primary", compact=True
-            )
+            yield Button("change", id=f"tier-change-{tier}", variant="primary", compact=True)
 
 
 def _advisor_widgets(env_cfg: ModelConfig) -> ComposeResult:
     yield from group_header("Advisor")
     with Horizontal(classes="srow"):
         yield Static("Advisor", classes="row-label")
-        yield Static(
-            advisor_value_text(env_cfg), id="advisor-value", classes="row-value"
-        )
+        yield Static(advisor_value_text(env_cfg), id="advisor-value", classes="row-value")
         yield Button("change", id="advisor-change", variant="primary", compact=True)
     with Horizontal(id="row-advisor-tokens", classes="frow dep-row"):
         yield Label("Advisor max tokens")
@@ -275,9 +271,7 @@ def _thinking_widgets(env_cfg: ModelConfig) -> ComposeResult:
     yield from group_header("Thinking")
     with Horizontal(classes="srow"):
         yield Static("Thinking", classes="row-label")
-        yield Static(
-            thinking_value_text(env_cfg), id="thinking-value", classes="row-value"
-        )
+        yield Static(thinking_value_text(env_cfg), id="thinking-value", classes="row-value")
         yield Button("change", id="thinking-change", variant="primary", compact=True)
 
 

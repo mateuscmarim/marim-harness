@@ -23,14 +23,11 @@ def output_contract(schema: dict) -> str:
     sub-agent must respond with ONLY a JSON object matching the schema."""
     return (
         "\n\nOutput contract: respond with ONLY a JSON object matching this "
-        "JSON Schema — no prose before or after it:\n"
-        + json.dumps(schema, indent=2)
+        "JSON Schema — no prose before or after it:\n" + json.dumps(schema, indent=2)
     )
 
 
-def resolve_output_schema(
-    schema: dict | None, backend: str | None
-) -> tuple[dict | None, str]:
+def resolve_output_schema(schema: dict | None, backend: str | None) -> tuple[dict | None, str]:
     """Decide the enforcement path for a spawn's output schema. Returns
     ``(schema, "")`` when the spawn can ride structured output (native
     backend, object-rooted schema), or ``(None, contract)`` for the prompt

@@ -278,6 +278,7 @@ async def test_normal_text_does_not_trigger_slash():
 @pytest.mark.anyio
 async def test_escape_dismisses_slash_autocomplete():
     """Pressing Escape while in slash mode posts SlashDismissed."""
+
     class H(App):
         def __init__(self):
             super().__init__()

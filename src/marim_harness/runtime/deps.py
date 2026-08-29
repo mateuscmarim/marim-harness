@@ -38,8 +38,19 @@ ApprovalFn = Callable[[object], Awaitable[DeferredToolApprovalResult | bool]]
 # ``thinking`` unset. ``thinking`` is the spawn-call reasoning-effort
 # override (None ⇒ inherit spec/session).
 SubAgentRunner = Callable[
-    [str, str, str, list[str] | None, int | None, str | None,
-     str | None, int, str | None, dict | None, str | None],
+    [
+        str,
+        str,
+        str,
+        list[str] | None,
+        int | None,
+        str | None,
+        str | None,
+        int,
+        str | None,
+        dict | None,
+        str | None,
+    ],
     Awaitable[str],
 ]
 # (stream_id, event, usage) -> None. Forwards a sub-agent's run events to the UI
@@ -72,8 +83,18 @@ SubAgentUsageCb = Callable[[str, object], Awaitable[None]]
 # has no ``output_schema`` param between ``tier`` and ``thinking``, so
 # ``thinking`` is a plain trailing positional here.
 BackgroundAgentRunner = Callable[
-    [str, str, list[str] | None, int | None, str | None, str | None, str, int,
-     str | None, str | None],
+    [
+        str,
+        str,
+        list[str] | None,
+        int | None,
+        str | None,
+        str | None,
+        str,
+        int,
+        str | None,
+        str | None,
+    ],
     Awaitable[str],
 ]
 # (stream_id) -> (job_id, message). Lets the sub-agents screen resume an
