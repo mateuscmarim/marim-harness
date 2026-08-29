@@ -103,22 +103,47 @@ class _ConsumedContext:
     jobs_digest: str | None = None
 
 
+def _dangling_tool_call_slots(history: list[ModelMessage]) -> set[tuple[int, int]]:
+    """The ``(message index, part index)`` of every ToolCallPart in ``history``
+    that nothing later answers — exactly the parts a provider rejects with
+    "unprocessed tool calls".
+
+    Matching is an ORDERED walk, not a flat "which ids have a return" set,
+    because a ``tool_call_id`` is not unique within a history. pydantic-ai's
+    output-tool retry loop reuses ONE id across every attempt: a rejected
+    ``final_result`` call is answered by a RetryPromptPart carrying the same
+    ``tool_call_id``, and the next attempt re-emits the call under that id
+    again. Under a flat set the FIRST attempt's answer vouches for the LAST
+    attempt's still-open call, so the trailing dangling call survives the repair
+    and wedges the session on the next request. Here a result closes the OLDEST
+    still-open call bearing its id, and a result with no open call is an orphan
+    that vouches for nothing — the same rule pydantic-ai's own
+    ``_repair_dangling_tool_calls`` applies.
+
+    A ``RetryPromptPart`` counts as an answer alongside ``ToolReturnPart``: to
+    every provider it *is* the tool's (error) result. Counting only returns made
+    the repair synthesize a second, bogus result for a call a retry prompt had
+    already closed."""
+    from pydantic_ai.messages import RetryPromptPart, ToolCallPart, ToolReturnPart
+
+    open_calls: dict[str, list[tuple[int, int]]] = {}
+    for message_index, message in enumerate(history):
+        for part_index, part in enumerate(getattr(message, "parts", [])):
+            if isinstance(part, ToolCallPart):
+                open_calls.setdefault(part.tool_call_id, []).append((message_index, part_index))
+            elif isinstance(part, (ToolReturnPart, RetryPromptPart)):
+                pending = open_calls.get(part.tool_call_id)
+                if pending:
+                    pending.pop(0)
+    return {slot for pending in open_calls.values() for slot in pending}
+
+
 def _has_unanswered_tool_calls(history: list[ModelMessage]) -> bool:
-    """True when some ToolCallPart in ``history`` has no matching ToolReturnPart.
-    Such a history ends an exchange mid-flight, and every provider rejects an
+    """True when some ToolCallPart in ``history`` is never answered. Such a
+    history ends an exchange mid-flight, and every provider rejects an
     unanswered tool_use on the next request — so persisting one makes the
     session unresumable until it's manually cleared."""
-    from pydantic_ai.messages import ToolCallPart, ToolReturnPart
-
-    calls: set[str] = set()
-    returns: set[str] = set()
-    for message in history:
-        for part in getattr(message, "parts", []):
-            if isinstance(part, ToolCallPart):
-                calls.add(part.tool_call_id)
-            elif isinstance(part, ToolReturnPart):
-                returns.add(part.tool_call_id)
-    return bool(calls - returns)
+    return bool(_dangling_tool_call_slots(history))
 
 
 def _tool_call_is_unusable(part) -> bool:
@@ -229,31 +254,23 @@ def _repair_unanswered_tool_calls(history: list[ModelMessage]) -> list[ModelMess
     in that state is unresumable until repaired. The synthesized return is placed
     in a ModelRequest right after the response that made the call, so it stays
     valid for providers that require results to immediately follow their call.
+    Which calls are dangling is decided by ``_dangling_tool_call_slots`` — read
+    its docstring before touching this: the answer is positional, because one
+    ``tool_call_id`` can legitimately appear on several calls in one history.
     Returns the input list unchanged when nothing is dangling, so callers can
     skip a redundant persist."""
-    from pydantic_ai.messages import (
-        ModelRequest,
-        ModelResponse,
-        ToolCallPart,
-        ToolReturnPart,
-    )
+    from pydantic_ai.messages import ModelRequest, ToolReturnPart
 
-    answered = {
-        part.tool_call_id
-        for message in history
-        for part in getattr(message, "parts", [])
-        if isinstance(part, ToolReturnPart)
-    }
+    dangling = _dangling_tool_call_slots(history)
+    if not dangling:
+        return history
     repaired: list[ModelMessage] = []
-    changed = False
-    for message in history:
+    for message_index, message in enumerate(history):
         repaired.append(message)
-        if not isinstance(message, ModelResponse):
-            continue
         missing = [
             part
-            for part in message.parts
-            if isinstance(part, ToolCallPart) and part.tool_call_id not in answered
+            for part_index, part in enumerate(getattr(message, "parts", []))
+            if (message_index, part_index) in dangling
         ]
         if not missing:
             continue
@@ -269,9 +286,7 @@ def _repair_unanswered_tool_calls(history: list[ModelMessage]) -> list[ModelMess
                 ]
             )
         )
-        answered.update(part.tool_call_id for part in missing)
-        changed = True
-    return repaired if changed else history
+    return repaired
 
 
 class _RunRetry(Enum):

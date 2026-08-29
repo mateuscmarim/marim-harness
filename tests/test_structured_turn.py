@@ -144,6 +144,132 @@ async def test_exhaustion_on_continuation_round_clears_approval_latch(tmp_path):
     assert h.deps.approval_round_active is False
 
 
+async def test_exhausted_turn_leaves_a_resumable_history(tmp_path):
+    """The turn AFTER an exhaustion must still be requestable.
+
+    pydantic-ai retries the output tool under ONE reused `tool_call_id`, so the
+    exhausted turn's history interleaves call/retry-prompt pairs and ends on a
+    third, unanswered call. The flush's repair used to compute "answered" as a
+    flat set of ids: the first attempt's answer vouched for the last attempt's
+    dangling call, the repair found nothing to do, and the next `run_turn`
+    raised `UserError: ... message history contains unprocessed tool calls`.
+    """
+    from pydantic_ai.messages import ModelResponse, ToolCallPart, UserPromptPart
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+    def fn(messages, info: AgentInfo) -> ModelResponse:
+        # Invalid until the second turn's prompt is in the history, so turn one
+        # exhausts and turn two — running on top of the persisted wreckage —
+        # succeeds.
+        valid = any(
+            isinstance(part, UserPromptPart) and "second turn" in str(part.content)
+            for message in messages
+            for part in getattr(message, "parts", [])
+        )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="final_result",
+                    args={"a": 11} if valid else {"a": "not-an-int"},
+                    # Pinned, mirroring a real provider's output-retry loop:
+                    # every attempt re-uses the same id. This is the exact shape
+                    # the flat-set repair mis-read as already answered.
+                    tool_call_id="reused-output-call",
+                )
+            ]
+        )
+
+    h = HarnessBuilder(workspace=tmp_path, model=FunctionModel(fn)).with_output_type(Point).build()
+    await h.connect()
+    try:
+        first = await h.run_turn("give me the point")
+        assert first.subtype == "error_max_structured_output_retries"
+        second = await h.run_turn("second turn: give me the point")
+    finally:
+        await h.aclose()
+    assert second.subtype == "success"
+    assert second.structured_output == Point(a=11)
+
+
+def test_repair_closes_the_trailing_call_of_a_retried_output_tool():
+    """Unit-level, on the arrangement the exhaustion turn really produces (see
+    the test above): three `final_result` calls sharing one `tool_call_id`, the
+    first two closed by RetryPromptParts, the third dangling. Exactly one
+    synthesized return belongs at the end — the retry prompts already answered
+    the other two."""
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ModelResponse,
+        RetryPromptPart,
+        ToolCallPart,
+        ToolReturnPart,
+        UserPromptPart,
+    )
+
+    from marim_harness.runtime.controller import (
+        _has_unanswered_tool_calls,
+        _repair_unanswered_tool_calls,
+    )
+
+    cid = "pyd_ai_tool_call_id__final_result"
+
+    def call() -> ModelResponse:
+        return ModelResponse(
+            parts=[ToolCallPart(tool_name="final_result", args={"a": "bad"}, tool_call_id=cid)]
+        )
+
+    def retry() -> ModelRequest:
+        return ModelRequest(
+            parts=[RetryPromptPart(content="bad", tool_name="final_result", tool_call_id=cid)]
+        )
+
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="give me the point")]),
+        call(),
+        retry(),
+        call(),
+        retry(),
+        call(),
+    ]
+    assert _has_unanswered_tool_calls(history)
+    repaired = _repair_unanswered_tool_calls(history)
+    assert not _has_unanswered_tool_calls(repaired)
+    # One synthesized return, appended after the LAST (dangling) call — the two
+    # retry prompts already closed their own calls, so nothing is inserted
+    # between them and the calls they answer.
+    assert len(repaired) == len(history) + 1
+    tail = repaired[-1]
+    assert isinstance(tail, ModelRequest)
+    assert [type(p).__name__ for p in tail.parts] == ["ToolReturnPart"]
+    assert isinstance(tail.parts[0], ToolReturnPart)
+    assert tail.parts[0].tool_call_id == cid
+    # The repair is idempotent: re-running it on its own output changes nothing.
+    assert _repair_unanswered_tool_calls(repaired) is repaired
+
+
+def test_repair_does_not_duplicate_an_answer_a_retry_prompt_already_gave():
+    """A call closed only by a RetryPromptPart is answered. Counting just
+    ToolReturnParts made the repair inject a second, contradictory result for
+    it — two results for one tool_use, which providers reject in their own
+    way."""
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ModelResponse,
+        RetryPromptPart,
+        ToolCallPart,
+    )
+
+    from marim_harness.runtime.controller import _repair_unanswered_tool_calls
+
+    history = [
+        ModelResponse(parts=[ToolCallPart(tool_name="bash", args={}, tool_call_id="t1")]),
+        ModelRequest(
+            parts=[RetryPromptPart(content="bad args", tool_name="bash", tool_call_id="t1")]
+        ),
+    ]
+    assert _repair_unanswered_tool_calls(history) is history
+
+
 def _controller(tmp_path, *, structured: bool):
     builder = HarnessBuilder(workspace=tmp_path, model=TestModel(call_tools=[]))
     if structured:

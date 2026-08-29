@@ -23,6 +23,13 @@ from .permissions import Mode
 
 logger = logging.getLogger(__name__)
 
+# The tool name pydantic-ai gives a structured output schema
+# (``pydantic_ai._output.DEFAULT_OUTPUT_TOOL_NAME``). Mirrored rather than
+# imported: it lives behind a private module, and `with_output_type` never
+# passes a `name=` override, so a structured harness always registers exactly
+# this one. See _check_custom_tools for what it guards.
+_OUTPUT_TOOL_NAME = "final_result"
+
 if TYPE_CHECKING:
     from pydantic_ai.models import Model
 
@@ -291,6 +298,19 @@ class HarnessBuilder:
             name = fn.__name__
             if name in loaded_names:
                 problems.append(f"custom tool {name!r} collides with a built-in tool")
+            if self._output_type is not None and name == _OUTPUT_TOOL_NAME:
+                # A structured harness registers pydantic-ai's output tool under
+                # this name on EVERY run round (TurnController._run_output_type),
+                # so a same-named custom tool makes the combined toolset raise
+                # UserError at the first request — build() would otherwise hand
+                # back a harness whose every turn is dead on arrival. Scoped to
+                # a structured composition on purpose: a plain harness's output
+                # is text, no output tool exists, and `final_result` is then a
+                # perfectly ordinary tool name we must not reject.
+                problems.append(
+                    f"with_output_type: custom tool {name!r} collides with pydantic-ai's "
+                    "output tool — rename the tool"
+                )
             if name in seen_custom:
                 problems.append(f"custom tool {name!r} registered twice")
             seen_custom.add(name)
