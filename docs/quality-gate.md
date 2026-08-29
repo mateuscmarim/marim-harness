@@ -58,6 +58,12 @@ uv run ruff check --select C901,PLR0911,PLR0912,PLR0913,PLR0915 --no-cache \
 uv run ruff format --check src tests && echo 0 > $out/format.txt || echo 1 > $out/format.txt
 uv run pytest --cov-branch --cov-report=json:$out/coverage.json || true
 uvx bandit -r src -f json -o $out/bandit.json -q || true
+# --all-extras, matching CI: pip_audit_findings counts DECLARED packages, and a
+# plain sync omits the optional extras (lsp-python alone adds basedpyright and
+# nodejs-wheel-binaries), so a bare freeze audits a smaller set than the gate
+# scored and can read green on a finding CI will see. Note this does mutate
+# your .venv to include the extras.
+uv sync --python 3.12 --all-extras
 uv pip freeze > /tmp/freeze.txt
 uvx pip-audit -f json -r /tmp/freeze.txt -o .quality/pip-audit.json || true
 gitleaks detect --config .gitleaks.toml --report-format=json \
@@ -112,17 +118,34 @@ which no runner has ever run.
 
 ## The secrets allowlist
 
-The first scan reported **1345** `generic-api-key` hits — every one a provider
-key *fixture* (`sk-or-test-1234abcd`, `gm-key-12345678`) re-counted across each
-commit that touched one of three files. `secret_findings` is scored
-`boolean_must_be_zero`, so that would have failed the gate permanently.
+A default-rules scan reports well over a thousand `generic-api-key` hits —
+**1367** as of 2026-08-29 — every one a provider key *fixture* re-counted across
+each commit that touched one of three files. The count climbs as history grows,
+so treat it as a reading, not a constant. `secret_findings` is scored
+`boolean_must_be_zero`, so unaddressed it would have failed the gate permanently.
 
-`.gitleaks.toml` allowlists those three paths. It is scoped by **path, not by
-value**: matching the stub patterns themselves would silently cover any future
-file using the same shape. Naming the files means a new fixture file fails the
-gate until someone decides which it is — a stub to allowlist, or a real key that
-just got caught. Note that `non_ratcheted_dirs` does **not** apply here; global
-metrics are counted unscoped.
+`.gitleaks.toml` is scoped by **value, not by path** — and the difference is not
+cosmetic. A `paths` entry makes gitleaks skip the file *before scanning it*, so
+every rule is suppressed for that whole file and a genuine credential committed
+there would never be reported again. That was measured, not assumed: with a
+`paths` allowlist gitleaks reported scanning 32 bytes of a 158-byte tree, and a
+real-shaped `sk-or-v1-…` key planted in the fixture file went unreported, while
+the same tree under default rules caught it. `condition = "AND"` does not rescue
+it — once the file is skipped there is no extracted value left to intersect
+against.
+
+So the config names the **four** distinct stub values instead
+(`sk-or-test-1234abcd`, `sk-or-verify-1234`, `gm-key-12345678`,
+`zen-key-12345678`), each anchored and literal — never `sk-or-test-.*`, which
+would wave through a real key that merely starts the same way. Every file stays
+fully scanned, fixtures included. The tradeoff, stated plainly: those four
+strings are excused anywhere in the repo, not just in the fixtures. That is the
+right trade — they are self-evidently fake, and staying silent about a fake
+value is correct behaviour, whereas staying silent about three entire files is
+not.
+
+Adding a fifth fixture value means adding a line here, deliberately. Note that
+`non_ratcheted_dirs` does **not** apply; global metrics are counted unscoped.
 
 ## After a merge
 

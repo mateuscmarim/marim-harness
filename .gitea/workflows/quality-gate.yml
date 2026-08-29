@@ -149,6 +149,13 @@ jobs:
       # must not fail the job before the gate has read what it wrote. The gate
       # decides the verdict. Where "wrote nothing" and "found nothing" would be
       # indistinguishable, an explicit guard fails the step instead.
+      #
+      # `-s` (non-empty), not `-f` (exists), for every tool that writes to a
+      # SHELL REDIRECT: `>` creates the file before the tool runs, so the file
+      # exists even when the tool died without emitting a byte. A clean ruff
+      # pass writes `[]`, which is non-empty, so `-s` separates the two cases
+      # exactly. Only pytest, which is handed a path via --cov-report and so
+      # creates nothing itself, uses `-f`.
       - name: Collect — ruff, pytest, bandit
         run: |
           set -euo pipefail
@@ -156,6 +163,10 @@ jobs:
           mkdir -p "$out"
 
           uv run ruff check src tests --output-format=json > "$out/ruff.json" || true
+          if [ ! -s "$out/ruff.json" ]; then
+            echo "::error::ruff wrote no lint report — refusing to score lint_errors as 0"
+            exit 1
+          fi
 
           # A separate pass with the complexity rules force-selected. pyproject
           # selects only C901; the gate measures PLR0911/0912/0913/0915 as its
@@ -166,6 +177,10 @@ jobs:
             --select C901,PLR0911,PLR0912,PLR0913,PLR0915 \
             --no-cache \
             --output-format=json src tests > "$out/ruff-complexity.json" || true
+          if [ ! -s "$out/ruff-complexity.json" ]; then
+            echo "::error::ruff wrote no complexity report — refusing to score complexity_violations as 0"
+            exit 1
+          fi
 
           # ci.yml enforces this hard; the row exists so the summary table is
           # self-contained.

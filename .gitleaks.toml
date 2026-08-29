@@ -5,8 +5,14 @@
 # clean, which means the known-false matches have to be named here.
 #
 # gitleaks scans full git history, so one fixture line is re-reported once per
-# commit that touched its file. Three files accounted for all 1356 findings on
-# first run, and between them they contain exactly FIVE distinct stub values.
+# commit that touched its file. That count therefore GROWS as history grows: a
+# default-rules scan measured 1367 findings on 2026-08-29, up from ~1345 when
+# this file was first written, without a single new fixture being added. Do not
+# treat the number as a fixture. What is stable is the shape: three files
+# (`tests/test_providers_section.py`, `tests/test_settings_screen.py`,
+# `docs/superpowers/plans/2026-07-11-providers-settings.md`) and, between them,
+# exactly FOUR distinct stub values -- the four listed below, which is why the
+# list is complete rather than merely long enough.
 
 [extend]
 useDefault = true
@@ -20,17 +26,17 @@ useDefault = true
 # rescue that — there is no value left to intersect against once the file is
 # skipped.
 #
-# So the five stub values are named exactly instead. Each is anchored and
+# So the four stub values are named exactly instead. Each is anchored and
 # literal, never `sk-or-test-.*`, which would wave through a real key that
 # merely started the same way. Every file stays fully scanned, including the
 # three fixture files.
 #
-# The tradeoff, stated plainly: these five strings are now excused anywhere in
+# The tradeoff, stated plainly: these four strings are now excused anywhere in
 # the repo, not just in the fixtures. That is the right trade — they are
 # self-evidently fake, and staying silent about a fake value is the correct
 # behaviour, whereas staying silent about three entire files is not.
 [[allowlists]]
-description = "Provider-key fixtures: five known stub values, excused by value."
+description = "Provider-key fixtures: the four known stub values, excused by value."
 regexes = [
   '''^sk-or-test-1234abcd$''',
   '''^sk-or-verify-1234$''',
