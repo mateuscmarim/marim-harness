@@ -3,15 +3,16 @@
 ``StructuredDict`` attaches a JSON Schema for provider-side constrained
 generation but never validates the emitted object, so a dict-schema turn
 gets checked here after the run. Lives in core (not workflows/schema.py)
-because core must not import the extra-gated workflows package; the
-draft-07 semantics match the workflow validator.
+because core must not import the extra-gated workflows package; validator
+class resolution matches it — validator_for(schema), which honors the
+schema's own $schema and defaults to the latest draft.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from jsonschema import Draft7Validator
+from jsonschema.validators import validator_for
 
 
 def validate_dict_output(output: Any, schema: dict) -> list[str]:
@@ -22,7 +23,7 @@ def validate_dict_output(output: Any, schema: dict) -> list[str]:
     """
     if not isinstance(output, dict):
         return [f"structured output is not a JSON object: {type(output).__name__}"]
-    validator = Draft7Validator(schema)
+    validator = validator_for(schema)(schema)
     errors = sorted(validator.iter_errors(output), key=lambda e: list(e.path))
     return [
         f"{'/'.join(str(p) for p in e.path) or '<root>'}: {e.message}"
