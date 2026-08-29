@@ -1,0 +1,17 @@
+# Repo-side configuration for the ratchet quality gate (`ratchet-gate` on PyPI).
+# The program lives in git.marim.dev/mateuscmarim/quality-gate; everything that
+# legitimately differs per repo lives here. See docs/quality-gate.md.
+
+[gate]
+artifacts_dir = ".quality"
+baseline_path = "quality-baseline.json"
+
+# Findings in these directories stay in the uploaded artifacts — they just do
+# not gate. `tests` is the usual exclusion; `examples` holds the bundled plugin
+# samples (read top-to-bottom, run by hand) and `docs` carries fenced snippets.
+non_ratcheted_dirs = ["tests", "docs", "examples"]
+
+# This repo's default branch is `master`, not `main`. The gate fails closed when
+# the ref is unreadable rather than falling back to the working-tree baseline,
+# so a wrong name here is loud, not silent.
+default_baseline_ref = "origin/master"

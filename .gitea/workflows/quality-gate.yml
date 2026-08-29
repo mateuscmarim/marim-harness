@@ -1,0 +1,281 @@
+# Ratchet quality gate. Reads what the tools already wrote, compares every
+# metric to quality-baseline.json, and fails the run if any of them got worse.
+#
+# It does NOT replace ci.yml. ci.yml enforces the absolutes — ruff, ruff format
+# and pyright must all be clean, on three Python versions. This scores the
+# numbers nothing else watches: coverage, complexity beyond C901, bandit,
+# pip-audit and secrets. A metric that ci.yml already pins at zero appears here
+# as a row for a consistent summary table, not as the thing enforcing it.
+name: quality-gate
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+concurrency:
+  group: quality-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write # the baseline ratchet commit on master
+  pull-requests: write # the sticky summary comment
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    env:
+      # One pin read by every step that scores or adopts a number. Split across
+      # two versions, a later step could adopt a value the earlier one never
+      # measured.
+      GATE: uvx ratchet-gate@0.5.0
+      # Pinned, and the same version the baseline was seeded with. gitleaks
+      # changes its default ruleset between minors, so an unpinned scan can
+      # discover new "findings" that are really a new rule — on a metric scored
+      # boolean_must_be_zero, that turns every run red at once.
+      GITLEAKS_VERSION: "8.30.1"
+    steps:
+      # ref: the PR head, not the merge commit — the summary has to describe the
+      # branch someone is looking at.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+          # Explicit, so the ratchet commit below has credentials to push with.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # `--baseline-ref origin/master` reads quality-baseline.json out of this
+      # ref, so it has to be master's CURRENT tip. checkout's fetch-depth: 0
+      # populates refs/remotes/origin/* only as a side effect, and a stale master
+      # is still a valid baseline — just the wrong one. Fetch it by name so a
+      # failure to obtain it fails the step instead of silently scoring against
+      # whatever happened to be there.
+      - name: Fetch master (reference baseline)
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --force origin master:refs/remotes/origin/master
+          echo "origin/master is $(git rev-parse --short origin/master)"
+
+      # Installed via the official script rather than a marketplace action, so
+      # this job doesn't depend on the Gitea runner mirroring third-party
+      # actions. Same reasoning as ci.yml.
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Cache uv
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-gate-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            uv-gate-${{ runner.os }}-
+
+      # 3.12, matching the version quality-baseline.json was seeded on. Coverage
+      # is version-sensitive — measured at seeding, lines held at 92.51 across
+      # 3.12/3.13 but branches moved 87.24 -> 87.22. That drift fits inside the
+      # 0.1 tolerance, so this pin is belt and braces rather than the only thing
+      # holding the number still.
+      - name: Sync dependencies
+        run: uv sync --python 3.12
+
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      # ---------- Collect ----------
+      # Every tool runs under `|| true`: a tool that exits non-zero on findings
+      # must not fail the job before the gate has read what it wrote. The gate
+      # decides the verdict. Where "wrote nothing" and "found nothing" would be
+      # indistinguishable, an explicit guard fails the step instead.
+      - name: Collect — ruff, pytest, bandit
+        run: |
+          set -euo pipefail
+          out=".quality/marim_harness"
+          mkdir -p "$out"
+
+          uv run ruff check src tests --output-format=json > "$out/ruff.json" || true
+
+          # A separate pass with the complexity rules force-selected. pyproject
+          # selects only C901; the gate measures PLR0911/0912/0913/0915 as its
+          # own concern, so the repo does not have to opt into rules it has not
+          # chosen to lint for. --no-cache because the selection differs from
+          # the cached one above.
+          uv run ruff check \
+            --select C901,PLR0911,PLR0912,PLR0913,PLR0915 \
+            --no-cache \
+            --output-format=json src tests > "$out/ruff-complexity.json" || true
+
+          # ci.yml enforces this hard; the row exists so the summary table is
+          # self-contained.
+          if uv run ruff format --check src tests; then
+            echo 0 > "$out/format.txt"
+          else
+            echo 1 > "$out/format.txt"
+          fi
+
+          # pyproject's addopts already carry --cov=marim_harness and
+          # --cov-fail-under=90, so this exits non-zero whenever coverage dips
+          # below the floor — which must reach the gate as a red row, not abort
+          # collection. Hence `|| true`, and hence the guard below: `|| true`
+          # also swallows pytest never getting far enough to write a report at
+          # all, and a missing report makes the parser return {} so the gate
+          # scores the BASELINE as current — a green +0 on a number nobody
+          # measured.
+          uv run pytest --cov-branch --cov-report=json:"$out/coverage.json" || true
+          if [ ! -f "$out/coverage.json" ]; then
+            echo "::error::pytest wrote no coverage.json — refusing to score coverage from the baseline"
+            exit 1
+          fi
+
+          uvx bandit -r src -f json -o "$out/bandit.json" -q || true
+          if [ ! -s "$out/bandit.json" ]; then
+            echo "::error::bandit wrote no report — refusing to score bandit_high/medium as 0"
+            exit 1
+          fi
+
+      - name: Collect — pip-audit, gitleaks
+        run: |
+          set -euo pipefail
+          mkdir -p .quality
+
+          # `|| true` because pip-audit exits non-zero when it FINDS something,
+          # and a finding belongs in a red row rather than an aborted run. That
+          # also swallows a crash, so check the artifact rather than the exit
+          # code: an audit that never ran is not an audit that found nothing.
+          uv pip freeze > /tmp/freeze.txt
+          uvx pip-audit -f json -r /tmp/freeze.txt -o .quality/pip-audit.json || true
+          if [ ! -s .quality/pip-audit.json ]; then
+            echo "::error::pip-audit wrote no report — refusing to score pip_audit_findings as 0"
+            exit 1
+          fi
+
+          # gitleaks exits 1 when it FINDS leaks and >1 when it fails, so a
+          # blanket `|| true` would make a broken scan indistinguishable from a
+          # clean one. Only >1 aborts. --config is explicit: the allowlist in
+          # .gitleaks.toml is what keeps this metric at 0 (see the note there),
+          # and a silently-unloaded config would turn the run red with 1345
+          # fixture matches.
+          set +e
+          gitleaks detect \
+            --config .gitleaks.toml \
+            --report-format=json \
+            --report-path .quality/gitleaks.json \
+            --no-banner --redact
+          status=$?
+          set -e
+          if [ "$status" -gt 1 ]; then
+            echo "::error::gitleaks failed (exit $status) — refusing to score secret_findings as 0"
+            exit 1
+          fi
+          if [ ! -s .quality/gitleaks.json ]; then
+            echo "::error::gitleaks wrote no report — refusing to score secret_findings as 0"
+            exit 1
+          fi
+
+      # ---------- Score ----------
+      # --baseline-ref on PRs only. quality-baseline.json is a tracked file on
+      # the branch being scored, so without it a branch supplies its own bar:
+      # the same commit that adds 47 lint errors can raise lint_errors to 47 and
+      # pass. This scores each metric against the STRICTER of the branch's
+      # baseline and master's, so loosening is a no-op while a real improvement
+      # still counts and can still be promoted after merge.
+      #
+      # Not passed on push-to-master: there the checkout IS master, so the
+      # reference is the file already being read.
+      - name: Run quality gate
+        run: |
+          $GATE check \
+            --summary-out .quality/summary.md \
+            ${{ github.event_name == 'pull_request' && '--baseline-ref origin/master' || '' }}
+
+      # ---------- Ratchet (master only) ----------
+      # `always()` is load-bearing. Inheriting the gate step's failure would mean
+      # one stuck red row freezes promotion for EVERY metric — the ratchet
+      # quietly stops ratcheting while everything else improves. A regression is
+      # still a red run; it just no longer holds the improvements hostage.
+      # --monotonic can only tighten, so this is safe to run unattended and the
+      # commit it produces re-runs to a no-op.
+      - name: Promote baseline (monotonic)
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: $GATE promote --monotonic
+
+      - name: Commit ratcheted baseline
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          git add quality-baseline.json
+          if git diff --cached --quiet; then
+            echo "baseline unchanged"
+            exit 0
+          fi
+          git -c user.name="quality-gate-bot" \
+              -c user.email="quality-gate-bot@marim.dev" \
+              commit -m "chore(quality-gate): ratchet baseline after merge"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      # ---------- Report ----------
+      # Sticky by hand: find the marker, edit that comment if it exists, post a
+      # new one otherwise. Without the marker search every push appends another
+      # wall of metrics to the PR. continue-on-error is deliberate — the verdict
+      # is already the job's status, and a comment hiccup must not repaint it.
+      - name: Post summary to PR
+        if: always() && github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ ! -s .quality/summary.md ]; then
+            echo "::warning::no summary to post"
+            exit 0
+          fi
+          # Exported because the search below reads it from the environment; a
+          # bare shell var reaches python as an empty string, and every run then
+          # posts a fresh comment instead of editing one.
+          export MARKER="<!-- marim-harness-quality-gate -->"
+          API="${{ github.server_url }}/api/v1/repos/${{ github.repository }}"
+          PR="${{ github.event.pull_request.number }}"
+          BODY=$(printf '%s\n%s' "$MARKER" "$(cat .quality/summary.md)")
+          PAYLOAD=$(python3 -c 'import json,sys; print(json.dumps({"body": sys.stdin.read()}))' <<< "$BODY")
+
+          EXISTING=$(curl -sf -H "Authorization: token ${GITEA_TOKEN}" \
+            "${API}/issues/${PR}/comments" \
+            | python3 -c 'import json,sys,os; cs=json.load(sys.stdin); print(next((str(c["id"]) for c in cs if os.environ["MARKER"] in (c.get("body") or "")), ""))' \
+            ) || EXISTING=""
+
+          if [ -n "$EXISTING" ]; then
+            curl -sf -X PATCH -H "Authorization: token ${GITEA_TOKEN}" \
+              -H 'Content-Type: application/json' -d "$PAYLOAD" \
+              "${API}/issues/comments/${EXISTING}" > /dev/null
+          else
+            curl -sf -X POST -H "Authorization: token ${GITEA_TOKEN}" \
+              -H 'Content-Type: application/json' -d "$PAYLOAD" \
+              "${API}/issues/${PR}/comments" > /dev/null
+          fi
+
+      # Staged out of the dotted directory first. upload-artifact@v3 pointed
+      # straight at `.quality/` has been observed to report "No files were
+      # found" and still go GREEN — a run that stores nothing while claiming
+      # success, which is the exact failure mode this gate exists to prevent.
+      # v3 and not v4: v4 uses the @actions/artifact v2 API, which the Gitea
+      # act_runner rejects outright with GHESNotSupportedError (see ci.yml).
+      - name: Stage artifacts for upload
+        if: always()
+        run: |
+          rm -rf quality-artifacts
+          cp -r .quality quality-artifacts
+          echo "staged $(find quality-artifacts -type f | wc -l) file(s)"
+
+      - name: Upload quality artifacts
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: quality-artifacts
+          path: quality-artifacts/
+          retention-days: 14

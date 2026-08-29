@@ -1,0 +1,45 @@
+{
+  "version": 2,
+  "seeded_at": "2026-08-29",
+  "seeded_on": "CPython 3.12.13, the version the gate job pins",
+  "why_pip_audit_findings_is_9_2026_08_29": "Nine advisories across five transitive deps at seeding: cryptography 49.0.0, requests 2.32.3, mcp 1.27.2, pyasn1 0.6.3, pydantic-settings 2.14.1. Severity-agnostic by design — OSV often reports none. Ratchets down as the lock is refreshed.",
+  "why_secret_findings_is_0_2026_08_29": "First scan reported 1345 generic-api-key hits, every one a provider-key fixture stub re-counted across the commits that touched three files. Allowlisted by path in .gitleaks.toml; see the note there.",
+  "policy": {
+    "comment": "Higher-is-better metrics may not drop; lower-is-better may not rise; boolean_must_be_zero fails on any non-zero value regardless of baseline. Tolerance absorbs measurement noise, not regressions. See docs/quality-gate.md.",
+    "tolerance": {
+      "coverage_lines_pct": 0.1,
+      "coverage_branches_pct": 0.1
+    },
+    "directions": {
+      "coverage_lines_pct": "higher_is_better",
+      "coverage_branches_pct": "higher_is_better",
+      "lint_errors": "lower_is_better",
+      "complexity_violations": "lower_is_better",
+      "bandit_high": "lower_is_better",
+      "bandit_medium": "lower_is_better",
+      "format_drift": "lower_is_better",
+      "pip_audit_findings": "lower_is_better",
+      "secret_findings": "boolean_must_be_zero"
+    }
+  },
+  "packages": {
+    "marim_harness": {
+      "language": "python",
+      "why_no_mypy_errors_2026_08_29": "This repo type-checks with pyright, which ci.yml enforces at zero — stricter than any ratchet. The gate ships no pyright parser, and bolting mypy on purely to feed this row would mean a second type checker with its own config and a large starting error count. Revisit if a pyright parser lands upstream.",
+      "why_complexity_is_61_2026_08_29": "The gate force-selects C901 plus PLR0911/0912/0913/0915. ruff.toml only selects C901 (max-complexity 10), so the other three rules were never enforced here: 48 PLR0913 (too many arguments) and 13 PLR0911 (too many returns), all in src. 30 further findings in tests/ are excluded by non_ratcheted_dirs and stay visible in the artifact.",
+      "metrics": {
+        "coverage_lines_pct": 92.51,
+        "coverage_branches_pct": 87.24,
+        "lint_errors": 0,
+        "complexity_violations": 61,
+        "bandit_high": 0,
+        "bandit_medium": 0,
+        "format_drift": 0
+      }
+    }
+  },
+  "global": {
+    "pip_audit_findings": 9,
+    "secret_findings": 0
+  }
+}

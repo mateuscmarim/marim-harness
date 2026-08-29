@@ -20,14 +20,23 @@ uv run pytest --no-cov tests/test_x.py       # skip coverage for a fast single r
 uv run pytest -n 0 ...                       # serial (for --pdb/-x or cross-test interactions)
 uv run ruff check src tests      # lint
 uv run ruff check --fix src tests
+uv run ruff format src tests     # format (enforced by CI via --check)
 uv run pyright                   # type-check (standard mode, src only)
 uv run marim serve --port 8642   # HTTP daemon (REST + WebSocket); needs the [serve] extra
 ```
 
-CI (`.gitea/workflows/ci.yml`) runs ruff → pyright → pytest on Python 3.10, 3.12,
-and 3.14 (plus a `uv build` packaging check on the 3.12 leg). Match that order
-locally before claiming work is done. `requires-python` is `>=3.10`, so avoid
-3.11+ only syntax.
+CI (`.gitea/workflows/ci.yml`) runs ruff check → ruff format --check → pyright →
+pytest on Python 3.10, 3.12, and 3.14 (plus a `uv build` packaging check on the
+3.12 leg). Match that order locally before claiming work is done.
+`requires-python` is `>=3.10`, so avoid 3.11+ only syntax.
+
+A second workflow (`.gitea/workflows/quality-gate.yml`) runs the **ratchet
+quality gate**: it scores coverage, complexity beyond `C901`, bandit, pip-audit
+and secrets against `quality-baseline.json` and fails if any number moved the
+wrong way. It does not duplicate `ci.yml` — that enforces the absolutes (lint,
+format, types at zero); the gate watches the numbers nothing else does. Adding
+an argument to an already-wide function or dropping coverage will turn it red
+without breaking `ci.yml`. See `docs/quality-gate.md` to run it locally.
 
 Set `MARIM_DEBUG=1` for DEBUG logging. Provider config lives in env vars / `.env`
 (see `.env.example`): `MARIM_PROVIDER` (`openrouter`|`local`|`google`|`claude-cli`|`zen`|`zen-go`), `MARIM_MODEL`,
@@ -217,7 +226,11 @@ to avoid import cycles.
 - Use `uv` for everything (`uv run …`, `uv sync`). Don't invoke `pip` or a bare
   `python`/`pytest`.
 - Ruff line length is 100; lint set is `E,F,I,UP,B,SIM,C901` (import sorting
-  enforced; pyupgrade, bugbear, and flake8-simplify also on).
+  enforced; pyupgrade, bugbear, and flake8-simplify also on). `ruff format` is
+  the formatter and CI enforces it with `--check` — run it before pushing.
+  Note it does not split long lambda signatures, so a reformat can leave E501
+  behind; and it can detach a trailing `# pyright: ignore[...]` from the
+  argument it suppressed when it splits a call across lines.
 - Cyclomatic complexity is capped at 10 (`C901`, mccabe). CI rejects any function
   above it. When a function trips the ceiling, extract cohesive branch-clusters into
   named helpers (or a small state value-object where locals mutate across the region)

@@ -1,0 +1,26 @@
+# Secret-scanning config for the quality gate's `secret_findings` metric.
+#
+# That metric is scored `boolean_must_be_zero`: any non-zero value fails the
+# build, and no baseline can ever grant a budget for it. So the scan has to be
+# clean, which means the known-false matches have to be named here.
+#
+# gitleaks scans full git history, so one fixture line is re-reported once per
+# commit that touched its file. The three paths below accounted for all 1345
+# findings on first run: provider-key fixtures using obvious stubs
+# (`sk-or-test-1234abcd`, `gm-key-12345678`) plus one design doc quoting them.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Provider-key fixtures: stub values, never real credentials."
+# Path-scoped rather than value-scoped on purpose. Matching the stub patterns
+# themselves (`sk-or-test-*`, `*-12345678`) would quietly cover any future file
+# that happened to use the same shape. Naming the files means a new fixture file
+# fails the gate until someone decides which it is — a stub to allowlist here,
+# or a real key that just got caught.
+paths = [
+  '''tests/test_providers_section\.py''',
+  '''tests/test_settings_screen\.py''',
+  '''docs/superpowers/plans/2026-07-11-providers-settings\.md''',
+]
