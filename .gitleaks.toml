@@ -5,22 +5,35 @@
 # clean, which means the known-false matches have to be named here.
 #
 # gitleaks scans full git history, so one fixture line is re-reported once per
-# commit that touched its file. The three paths below accounted for all 1345
-# findings on first run: provider-key fixtures using obvious stubs
-# (`sk-or-test-1234abcd`, `gm-key-12345678`) plus one design doc quoting them.
+# commit that touched its file. Three files accounted for all 1356 findings on
+# first run, and between them they contain exactly FIVE distinct stub values.
 
 [extend]
 useDefault = true
 
+# Value-scoped, NOT path-scoped. A `paths` entry makes gitleaks skip the file
+# before scanning it, so every rule is suppressed for that whole file and a real
+# credential committed there would never be reported again. Verified, not
+# assumed: with a `paths` allowlist gitleaks reported scanning 32 bytes of a
+# 158-byte tree, having skipped the fixture file outright, and a genuine
+# `sk-or-v1-...` key planted in it went unreported. `condition = "AND"` does not
+# rescue that — there is no value left to intersect against once the file is
+# skipped.
+#
+# So the five stub values are named exactly instead. Each is anchored and
+# literal, never `sk-or-test-.*`, which would wave through a real key that
+# merely started the same way. Every file stays fully scanned, including the
+# three fixture files.
+#
+# The tradeoff, stated plainly: these five strings are now excused anywhere in
+# the repo, not just in the fixtures. That is the right trade — they are
+# self-evidently fake, and staying silent about a fake value is the correct
+# behaviour, whereas staying silent about three entire files is not.
 [[allowlists]]
-description = "Provider-key fixtures: stub values, never real credentials."
-# Path-scoped rather than value-scoped on purpose. Matching the stub patterns
-# themselves (`sk-or-test-*`, `*-12345678`) would quietly cover any future file
-# that happened to use the same shape. Naming the files means a new fixture file
-# fails the gate until someone decides which it is — a stub to allowlist here,
-# or a real key that just got caught.
-paths = [
-  '''tests/test_providers_section\.py''',
-  '''tests/test_settings_screen\.py''',
-  '''docs/superpowers/plans/2026-07-11-providers-settings\.md''',
+description = "Provider-key fixtures: five known stub values, excused by value."
+regexes = [
+  '''^sk-or-test-1234abcd$''',
+  '''^sk-or-verify-1234$''',
+  '''^gm-key-12345678$''',
+  '''^zen-key-12345678$''',
 ]
