@@ -26,8 +26,14 @@ def _agent() -> Agent:
     return agent
 
 
-def _make_skill(root: Path, name: str, *, description="A skill.", body="Do it.",
-                files: dict[str, str] | None = None) -> None:
+def _make_skill(
+    root: Path,
+    name: str,
+    *,
+    description="A skill.",
+    body="Do it.",
+    files: dict[str, str] | None = None,
+) -> None:
     d = root / name
     d.mkdir(parents=True, exist_ok=True)
     (d / "SKILL.md").write_text(
@@ -80,7 +86,8 @@ def test_activate_skill_unknown_name(tmp_path: Path):
 
 def test_read_skill_file_returns_bundled_content(tmp_path: Path):
     _make_skill(
-        tmp_path / ".marim" / "skills", "withref",
+        tmp_path / ".marim" / "skills",
+        "withref",
         files={"references/REFERENCE.md": "the deep detail"},
     )
     agent = _agent()
@@ -97,7 +104,8 @@ def test_read_skill_file_reaches_global_skill(tmp_path: Path, monkeypatch):
     their bundled files (the read_file sandbox can't)."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
     _make_skill(
-        tmp_path / "cfg" / "marim" / "skills", "glob-skill",
+        tmp_path / "cfg" / "marim" / "skills",
+        "glob-skill",
         files={"references/N.md": "global bundled note"},
     )
     agent = _agent()
@@ -129,14 +137,13 @@ def test_read_file_reaches_global_skill_bundled_file(tmp_path: Path, monkeypatch
     ws.mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
     _make_skill(
-        tmp_path / "cfg" / "marim" / "skills", "sdd",
+        tmp_path / "cfg" / "marim" / "skills",
+        "sdd",
         files={"implementer-prompt.md": "implementer instructions here"},
     )
     skill_dir = (tmp_path / "cfg" / "marim" / "skills" / "sdd").resolve()
     agent = _agent()
-    model, captured = _call_tool(
-        "read_file", {"path": str(skill_dir / "implementer-prompt.md")}
-    )
+    model, captured = _call_tool("read_file", {"path": str(skill_dir / "implementer-prompt.md")})
     with agent.override(model=model):
         agent.run_sync("go", deps=_make_deps(ws, mode=Mode.ask))
     assert "implementer instructions here" in captured["ret"]
@@ -163,13 +170,12 @@ def test_read_skill_file_offloads_large_bundled_file(tmp_path: Path):
     dumped whole into the turn."""
     big = "reference detail line\n" * 3000 + "UNIQUE_TAIL_MARKER_BUNDLED"
     _make_skill(
-        tmp_path / ".marim" / "skills", "bigref",
+        tmp_path / ".marim" / "skills",
+        "bigref",
         files={"references/BIG.md": big},
     )
     agent = _agent()
-    model, captured = _call_tool(
-        "read_skill_file", {"name": "bigref", "path": "references/BIG.md"}
-    )
+    model, captured = _call_tool("read_skill_file", {"name": "bigref", "path": "references/BIG.md"})
     with agent.override(model=model):
         agent.run_sync("go", deps=_make_deps(tmp_path, mode=Mode.ask))
     ret = captured["ret"]

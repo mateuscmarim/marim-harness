@@ -85,6 +85,7 @@ class _FakeProc:
 def _patch_exec(monkeypatch, out=b"", err=b"", code=0):
     async def fake_exec(*args, **kwargs):
         return _FakeProc(out, err, code)
+
     monkeypatch.setattr(tb.asyncio, "create_subprocess_exec", fake_exec)
 
 
@@ -106,6 +107,7 @@ async def test_run_tea_raises_with_stderr_on_nonzero(monkeypatch):
 async def test_run_tea_raises_when_tea_missing(monkeypatch):
     async def boom(*a, **k):
         raise FileNotFoundError("tea")
+
     monkeypatch.setattr(tb.asyncio, "create_subprocess_exec", boom)
     with pytest.raises(ForgeError):
         await tb._run_tea(["pr", "list"], Path("."))
@@ -132,6 +134,7 @@ async def test_backend_list_prs_maps(monkeypatch):
     async def fake_run(args, cwd, timeout=20.0):
         page = int(args[args.index("--page") + 1])
         return PR_JSON if page == 1 else "[]"
+
     monkeypatch.setattr(tb, "_run_tea", fake_run)
     prs = await tb.TeaBackend(Path(".")).list_prs("all", 30)
     assert len(prs) == 1 and prs[0].number == 51
@@ -141,6 +144,7 @@ async def test_backend_list_prs_maps(monkeypatch):
 async def test_backend_view_pr_by_branch(monkeypatch):
     async def fake_run(args, cwd, timeout=20.0):
         return PR_JSON
+
     monkeypatch.setattr(tb, "_run_tea", fake_run)
     pr = await tb.TeaBackend(Path(".")).view_pr(None, "refactor/tools")
     assert pr is not None and pr.number == 51
@@ -152,6 +156,7 @@ async def test_backend_view_pr_by_branch(monkeypatch):
 async def test_backend_ci_status_overall_from_pr(monkeypatch):
     async def fake_run(args, cwd, timeout=20.0):
         return RUNS_JSON if args[0] == "actions" else PR_JSON
+
     monkeypatch.setattr(tb, "_run_tea", fake_run)
     st = await tb.TeaBackend(Path(".")).ci_status("refactor/tools")
     assert st.overall == "success"
@@ -168,6 +173,7 @@ async def test_backend_create_pr_refetches_by_head(monkeypatch):
         if args[:2] == ["pr", "create"]:
             return "created PR text output"  # tea prints text, not JSON; ignored
         return PR_JSON  # the re-fetch (list) call
+
     monkeypatch.setattr(tb, "_run_tea", fake_run)
     pr = await tb.TeaBackend(Path(".")).create_pr("T", "B", None, False, "refactor/tools")
     assert pr.number == 51
@@ -180,6 +186,7 @@ async def test_backend_create_pr_raises_when_not_refetchable(monkeypatch):
         if args[:2] == ["pr", "create"]:
             return ""
         return PR_JSON  # only head 'refactor/tools' present; 'missing-branch' absent
+
     monkeypatch.setattr(tb, "_run_tea", fake_run)
     with pytest.raises(ForgeError):
         await tb.TeaBackend(Path(".")).create_pr("T", "B", None, False, "missing-branch")
@@ -189,6 +196,7 @@ async def test_backend_create_pr_raises_when_not_refetchable(monkeypatch):
 async def test_backend_checkout_pr_returns_confirmation(monkeypatch):
     async def fake_run(args, cwd, timeout=20.0):
         return ""
+
     monkeypatch.setattr(tb, "_run_tea", fake_run)
     msg = await tb.TeaBackend(Path(".")).checkout_pr(7, True)
     assert "#7" in msg
@@ -203,6 +211,7 @@ def _patch_run(monkeypatch, raw, *, only_actions=None):
         if only_actions is not None and args[0] == "actions":
             return only_actions
         return raw
+
     monkeypatch.setattr(tb, "_run_tea", fake_run)
 
 
@@ -253,9 +262,18 @@ async def test_backend_ci_status_null_runs_raises_forgeerror(monkeypatch):
 
 def _pr_rows(indices):
     return [
-        {"index": str(i), "title": f"pr{i}", "state": "open", "author": "a",
-         "head": f"b{i}", "base": "master", "mergeable": "true",
-         "url": f"u{i}", "updated": "t", "ci": "success"}
+        {
+            "index": str(i),
+            "title": f"pr{i}",
+            "state": "open",
+            "author": "a",
+            "head": f"b{i}",
+            "base": "master",
+            "mergeable": "true",
+            "url": f"u{i}",
+            "updated": "t",
+            "ci": "success",
+        }
         for i in indices
     ]
 
@@ -267,12 +285,14 @@ def _paging_run(rows, *, cap=50):
     that clamped page size — a growing ``--limit`` with no ``--page`` therefore
     keeps re-fetching the very same newest-``cap`` window. ``rows`` are
     newest-first."""
+
     async def fake_run(args, cwd, timeout=20.0):
         requested = int(args[args.index("--limit") + 1])
         page = int(args[args.index("--page") + 1]) if "--page" in args else 1
         size = min(requested, cap)
         start = (page - 1) * size
-        return json.dumps(rows[start:start + size])
+        return json.dumps(rows[start : start + size])
+
     return fake_run
 
 

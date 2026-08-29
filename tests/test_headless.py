@@ -29,7 +29,9 @@ def _harness(tmp_path: Path, output_text: str = "hello from the model", *, hooks
     from marim_harness.runtime.harness import HarnessConfig
 
     return Harness(
-        model, BuiltinToolProvider(), deps,
+        model,
+        BuiltinToolProvider(),
+        deps,
         instructions="test",
         config=HarnessConfig(store=store, manager=manager),
     )
@@ -66,7 +68,9 @@ async def test_headless_settles_background_autoname_before_exit(tmp_path: Path):
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     store = manager.create()  # unnamed -> eligible for autonaming
     harness = Harness(
-        TestModel(call_tools=[], custom_output_text="done"), BuiltinToolProvider(), deps,
+        TestModel(call_tools=[], custom_output_text="done"),
+        BuiltinToolProvider(),
+        deps,
         instructions="test",
         config=HarnessConfig(store=store, manager=manager, titler=titler),
     )
@@ -132,9 +136,14 @@ async def test_json_format_emits_structured_object(tmp_path: Path):
     assert obj["session_id"] == harness.session.store.session_id
     assert obj["name"] == "headless"
     assert set(obj["usage"]) == {
-        "input_tokens", "output_tokens", "total_tokens",
-        "uncached_input_tokens", "cache_read_tokens", "cache_write_tokens",
-        "cost_usd", "cost_is_exact",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "uncached_input_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "cost_usd",
+        "cost_is_exact",
     }
 
 
@@ -193,10 +202,12 @@ async def test_headless_fires_session_start_and_end(tmp_path: Path):
         encoding="utf-8",
     )
     cmd = _hook_script(tmp_path, "lifecycle.sh", f"python3 {str(helper)}\n")
-    runner = HookRunner({
-        hook_events.SESSION_START: [{"hooks": [{"type": "command", "command": cmd}]}],
-        hook_events.SESSION_END: [{"hooks": [{"type": "command", "command": cmd}]}],
-    })
+    runner = HookRunner(
+        {
+            hook_events.SESSION_START: [{"hooks": [{"type": "command", "command": cmd}]}],
+            hook_events.SESSION_END: [{"hooks": [{"type": "command", "command": cmd}]}],
+        }
+    )
 
     out = io.StringIO()
     harness = _harness(tmp_path, "lifecycle reply", hooks=runner)

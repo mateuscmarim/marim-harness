@@ -36,7 +36,8 @@ def test_full_surface_enumerated(tmp_path):
         tmp_path,
         hooks={"SessionStart": [{"hooks": [{"type": "command", "command": "echo hi"}]}]},
         mcp={"docs": {"command": "python", "args": ["-m", "server"]}},
-        skills=("deploy",), agents=("reviewer",),
+        skills=("deploy",),
+        agents=("reviewer",),
     )
     s = scan_project_surface(tmp_path)
     assert not s.empty

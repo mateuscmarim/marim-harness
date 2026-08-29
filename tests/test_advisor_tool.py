@@ -26,7 +26,8 @@ def _tool_capture_agent(seen: list):
         return ModelResponse(parts=[TextPart("done")])
 
     agent = Agent(
-        FunctionModel(fn), deps_type=Deps,
+        FunctionModel(fn),
+        deps_type=Deps,
         output_type=[str, DeferredToolRequests],
     )
     BuiltinToolProvider().register(agent)

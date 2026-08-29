@@ -91,13 +91,14 @@ def render(matrix: list[tuple[int, ...]], *, scale: int) -> str:
     if not matrix:
         return ""
     height, width = len(matrix) * scale, len(matrix[0]) * scale
-    bands = [_band(matrix, top, width=width, height=height, scale=scale)
-             for top in range(0, height, _BAND)]
+    bands = [
+        _band(matrix, top, width=width, height=height, scale=scale)
+        for top in range(0, height, _BAND)
+    ]
     return f'\033Pq"1;1;{width};{height}{_PALETTE}' + "-".join(bands) + "\033\\"
 
 
-def _band(matrix: list[tuple[int, ...]], top: int, *,
-          width: int, height: int, scale: int) -> str:
+def _band(matrix: list[tuple[int, ...]], top: int, *, width: int, height: int, scale: int) -> str:
     """One band of six pixel rows, as a color pass per palette entry."""
     dark = [0] * width
     for offset in range(_BAND):
@@ -109,10 +110,12 @@ def _band(matrix: list[tuple[int, ...]], top: int, *,
             if row[x // scale]:
                 dark[x] |= 1 << offset
     full = (1 << min(_BAND, height - top)) - 1
-    return "$".join([
-        f"#{_WHITE}" + _run_length(full ^ value for value in dark),
-        f"#{_BLACK}" + _run_length(iter(dark)),
-    ])
+    return "$".join(
+        [
+            f"#{_WHITE}" + _run_length(full ^ value for value in dark),
+            f"#{_BLACK}" + _run_length(iter(dark)),
+        ]
+    )
 
 
 def _run_length(values) -> str:

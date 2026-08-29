@@ -33,8 +33,9 @@ def test_list_text(monkeypatch):
         monkeypatch,
         [
             ModelEntry(id="openai/gpt-5.2", name="GPT-5.2", provider="openrouter"),
-            ModelEntry(id="anthropic/claude-sonnet-4-6", name="Claude Sonnet 4.6",
-                       provider="openrouter"),
+            ModelEntry(
+                id="anthropic/claude-sonnet-4-6", name="Claude Sonnet 4.6", provider="openrouter"
+            ),
         ],
     )
     out = io.StringIO()
@@ -51,8 +52,9 @@ def test_list_json(monkeypatch):
         monkeypatch,
         [
             ModelEntry(id="openai/gpt-5.2", name="GPT-5.2", provider="openrouter"),
-            ModelEntry(id="anthropic/claude-sonnet-4-6", name="Claude Sonnet 4.6",
-                       provider="openrouter"),
+            ModelEntry(
+                id="anthropic/claude-sonnet-4-6", name="Claude Sonnet 4.6", provider="openrouter"
+            ),
         ],
     )
     out = io.StringIO()
@@ -60,8 +62,11 @@ def test_list_json(monkeypatch):
     arr = json.loads(out.getvalue())
     assert arr == [
         {"id": "openai/gpt-5.2", "name": "GPT-5.2", "provider": "openrouter"},
-        {"id": "anthropic/claude-sonnet-4-6", "name": "Claude Sonnet 4.6",
-         "provider": "openrouter"},
+        {
+            "id": "anthropic/claude-sonnet-4-6",
+            "name": "Claude Sonnet 4.6",
+            "provider": "openrouter",
+        },
     ]
 
 

@@ -95,8 +95,10 @@ def test_builtin_general_has_full_set(isolated_home):
 def test_discover_custom_agent(isolated_home):
     ws = isolated_home / "ws"
     _make_agent(
-        ws / ".marim" / "agents", "reviewer",
-        description="Reviews a diff.", body="You review diffs for bugs.",
+        ws / ".marim" / "agents",
+        "reviewer",
+        description="Reviews a diff.",
+        body="You review diffs for bugs.",
         extra_fm="tools: read_file, grep\n",
     )
     reviewer = find_agent(ws, "reviewer")
@@ -119,7 +121,9 @@ def test_custom_agent_without_tools_defaults_read_only(isolated_home):
 def test_custom_tools_intersect_known_set(isolated_home):
     ws = isolated_home / "ws"
     _make_agent(
-        ws / ".marim" / "agents", "writer", description="Writes code.",
+        ws / ".marim" / "agents",
+        "writer",
+        description="Writes code.",
         extra_fm="tools: read_file, write_file, telepathy\n",
     )
     # Unknown 'telepathy' is dropped; known names (incl. gated) are kept.
@@ -129,8 +133,10 @@ def test_custom_tools_intersect_known_set(isolated_home):
 def test_custom_agent_overrides_builtin(isolated_home):
     ws = isolated_home / "ws"
     _make_agent(
-        ws / ".marim" / "agents", "explore",
-        description="My custom explorer.", body="Custom explore prompt.",
+        ws / ".marim" / "agents",
+        "explore",
+        description="My custom explorer.",
+        body="Custom explore prompt.",
     )
     explore = find_agent(ws, "explore")
     assert explore.source == "project"
@@ -141,7 +147,8 @@ def test_precedence_project_over_global(isolated_home):
     ws = isolated_home / "ws"
     _make_agent(ws / ".marim" / "agents", "dup", description="project version")
     _make_agent(
-        isolated_home / "xdg" / "marim" / "agents", "dup",
+        isolated_home / "xdg" / "marim" / "agents",
+        "dup",
         description="global version",
     )
     dup = find_agent(ws, "dup")
@@ -191,9 +198,7 @@ def test_effective_tools_drops_gated_without_auto():
     # Without auto, only the mutating (gated) tools are dropped — local reads and
     # network tools survive (ask mode: the user still approves the main agent's
     # own net calls, and a spawn's grant follows the definition).
-    assert effective_tools(general, allow_gated=False, allow_net=True) == (
-        READ_TOOLS | NET_TOOLS
-    )
+    assert effective_tools(general, allow_gated=False, allow_net=True) == (READ_TOOLS | NET_TOOLS)
     assert effective_tools(general, allow_gated=True, allow_net=True) == SUBAGENT_TOOLS
 
 
@@ -201,8 +206,11 @@ def test_effective_tools_keeps_net_but_drops_gated_without_auto():
     """With allow_net, network tools ride the definition — only workspace
     mutators are stripped outside auto."""
     defn = AgentDef(
-        "net-writer", "d", "p",
-        frozenset({"read_file", "web_search", "fetch_url", "write_file"}), "p",
+        "net-writer",
+        "d",
+        "p",
+        frozenset({"read_file", "web_search", "fetch_url", "write_file"}),
+        "p",
     )
     assert effective_tools(defn, allow_gated=False, allow_net=True) == frozenset(
         {"read_file", "web_search", "fetch_url"}
@@ -216,12 +224,13 @@ def test_effective_tools_strips_net_when_disallowed():
     unapproved exfiltration path when the main agent's own net tools are denied
     (see runtime/permissions._plan_decision)."""
     defn = AgentDef(
-        "net-writer", "d", "p",
-        frozenset({"read_file", "web_search", "fetch_url", "write_file"}), "p",
+        "net-writer",
+        "d",
+        "p",
+        frozenset({"read_file", "web_search", "fetch_url", "write_file"}),
+        "p",
     )
-    assert effective_tools(defn, allow_gated=False, allow_net=False) == frozenset(
-        {"read_file"}
-    )
+    assert effective_tools(defn, allow_gated=False, allow_net=False) == frozenset({"read_file"})
     # allow_gated without allow_net is not a combination any current mode
     # produces (plan implies no gated tools either), but the axes are
     # independent — each strips only its own set.
@@ -257,9 +266,7 @@ def test_effective_tools_keeps_only_known_gated():
     assert effective_tools(writer, allow_gated=True, allow_net=True) == frozenset(
         {"read_file", "write_file"}
     )
-    assert effective_tools(writer, allow_gated=False, allow_net=True) == frozenset(
-        {"read_file"}
-    )
+    assert effective_tools(writer, allow_gated=False, allow_net=True) == frozenset({"read_file"})
     assert GATED_TOOLS  # sanity: the gated set is non-empty
 
 
@@ -432,6 +439,7 @@ def test_subagent_instructions_omit_scratchpad_when_none_regardless_of_writable(
 
 def test_parse_agent_reads_valid_tier(tmp_path):
     from marim_harness.workspace.agents import _parse_agent
+
     p = tmp_path / "researcher.md"
     p.write_text(
         "---\ndescription: deep read\ntier: med\n---\nDo research.\n",
@@ -444,10 +452,9 @@ def test_parse_agent_reads_valid_tier(tmp_path):
 
 def test_parse_agent_drops_invalid_tier(tmp_path):
     from marim_harness.workspace.agents import _parse_agent
+
     p = tmp_path / "bad.md"
-    p.write_text(
-        "---\ndescription: x\ntier: enormous\n---\nBody.\n", encoding="utf-8"
-    )
+    p.write_text("---\ndescription: x\ntier: enormous\n---\nBody.\n", encoding="utf-8")
     defn = _parse_agent("project", p)
     assert defn is not None
     assert defn.tier is None
@@ -455,6 +462,7 @@ def test_parse_agent_drops_invalid_tier(tmp_path):
 
 def test_parse_agent_tier_absent_is_none(tmp_path):
     from marim_harness.workspace.agents import _parse_agent
+
     p = tmp_path / "plain.md"
     p.write_text("---\ndescription: x\n---\nBody.\n", encoding="utf-8")
     defn = _parse_agent("project", p)

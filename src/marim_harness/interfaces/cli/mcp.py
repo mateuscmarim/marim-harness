@@ -48,8 +48,9 @@ def _build_stdio_spec(*, rest: list[str], headers: list[str], envs: list[str]) -
     return spec
 
 
-def _build_remote_spec(*, transport: str, rest: list[str], headers: list[str],
-                       envs: list[str]) -> dict:
+def _build_remote_spec(
+    *, transport: str, rest: list[str], headers: list[str], envs: list[str]
+) -> dict:
     """Build the http/sse-transport portion of a server spec: url, headers, type.
     Raises :class:`SpecError` if env vars are given (stdio only) or extra positional
     arguments follow the url."""
@@ -65,8 +66,9 @@ def _build_remote_spec(*, transport: str, rest: list[str], headers: list[str],
     return spec
 
 
-def _build_spec(*, transport: str, rest: list[str], headers: list[str],
-                envs: list[str], trust: bool) -> dict:
+def _build_spec(
+    *, transport: str, rest: list[str], headers: list[str], envs: list[str], trust: bool
+) -> dict:
     """Build a server spec dict from parsed CLI pieces. ``rest`` is the positional
     remainder after the name: ``[command, *args]`` for stdio, ``[url]`` for remote.
     Raises :class:`SpecError` on invalid flag/transport combinations."""
@@ -94,7 +96,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="marim mcp", add_help=True)
     # Like ``git -C``: choose the workspace root for project-scoped servers.
     parser.add_argument(
-        "-C", "--workspace", default=None, metavar="DIR",
+        "-C",
+        "--workspace",
+        default=None,
+        metavar="DIR",
         help="Workspace root for project-scoped servers (default: current directory).",
     )
     sub = parser.add_subparsers(dest="cmd")
@@ -102,19 +107,38 @@ def _build_parser() -> argparse.ArgumentParser:
     add = sub.add_parser("add", help="Add an MCP server.")
     add.add_argument("name")
     add.add_argument(
-        "-t", "--transport", choices=("stdio", "http", "sse"), default="stdio",
+        "-t",
+        "--transport",
+        choices=("stdio", "http", "sse"),
+        default="stdio",
         help="Transport (default: stdio).",
     )
     add.add_argument(
-        "-s", "--scope", choices=("user", "project"), default="project",
+        "-s",
+        "--scope",
+        choices=("user", "project"),
+        default="project",
         help="user = global config; project = .marim/mcp.json (default: project).",
     )
-    add.add_argument("-H", "--header", action="append", default=[], metavar="NAME: VALUE",
-                     help="HTTP header (repeatable; http/sse only).")
-    add.add_argument("-e", "--env", action="append", default=[], metavar="KEY=VALUE",
-                     help="Environment variable (repeatable; stdio only).")
-    add.add_argument("--trust", action="store_true",
-                     help="Bypass tool-call approval for this server.")
+    add.add_argument(
+        "-H",
+        "--header",
+        action="append",
+        default=[],
+        metavar="NAME: VALUE",
+        help="HTTP header (repeatable; http/sse only).",
+    )
+    add.add_argument(
+        "-e",
+        "--env",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Environment variable (repeatable; stdio only).",
+    )
+    add.add_argument(
+        "--trust", action="store_true", help="Bypass tool-call approval for this server."
+    )
 
     lst = sub.add_parser("list", help="List configured MCP servers.")
     lst.add_argument("--json", action="store_true", help="Emit JSON.")
@@ -124,8 +148,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     rm = sub.add_parser("remove", help="Remove an MCP server.")
     rm.add_argument("name")
-    rm.add_argument("-s", "--scope", choices=("user", "project"), default=None,
-                    help="Limit removal to one scope (default: search project then user).")
+    rm.add_argument(
+        "-s",
+        "--scope",
+        choices=("user", "project"),
+        default=None,
+        help="Limit removal to one scope (default: search project then user).",
+    )
     return parser
 
 
@@ -136,21 +165,30 @@ def _workspace_root(args) -> Path:
 def _cmd_add(args, rest, *, out, err) -> int:
     try:
         spec = _build_spec(
-            transport=args.transport, rest=rest, headers=args.header,
-            envs=args.env, trust=args.trust,
+            transport=args.transport,
+            rest=rest,
+            headers=args.header,
+            envs=args.env,
+            trust=args.trust,
         )
     except SpecError as exc:
         print(f"error: {exc}", file=err)
         return 2
     path = _scope_path(args.scope, _workspace_root(args))
     if not add_server(path, args.name, spec):
-        print(f"error: server {args.name!r} already exists in {path} "
-              f"(remove it first, or pick another name)", file=err)
+        print(
+            f"error: server {args.name!r} already exists in {path} "
+            f"(remove it first, or pick another name)",
+            file=err,
+        )
         return 1
     print(f"Added MCP server {args.name!r} ({args.transport}) to {path}", file=out)
     if args.scope == "project":
-        print("note: project servers in .marim/mcp.json load only when the project "
-              "is trusted ('marim trust grant' or MARIM_TRUST_PROJECT_HOOKS).", file=err)
+        print(
+            "note: project servers in .marim/mcp.json load only when the project "
+            "is trusted ('marim trust grant' or MARIM_TRUST_PROJECT_HOOKS).",
+            file=err,
+        )
     return 0
 
 

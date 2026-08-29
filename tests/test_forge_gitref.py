@@ -8,6 +8,7 @@ from marim_harness.forge import gitref
 def _patch_git(monkeypatch, out: str | None):
     async def fake_git(args, root):
         return out
+
     monkeypatch.setattr(gitref, "_git", fake_git)
 
 

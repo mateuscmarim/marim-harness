@@ -52,15 +52,25 @@ def test_should_wake_is_pure():
 def test_does_not_wake_while_a_job_is_still_running():
     wc = WakeController(depth_cap=3)
     # A finished job is pending, but another is still running → hold off.
-    assert wc.should_wake(
-        enabled=True, turn_busy=False,
-        has_finished_pending=True, all_jobs_settled=False,
-    ) is False
+    assert (
+        wc.should_wake(
+            enabled=True,
+            turn_busy=False,
+            has_finished_pending=True,
+            all_jobs_settled=False,
+        )
+        is False
+    )
 
 
 def test_wakes_once_all_jobs_settled():
     wc = WakeController(depth_cap=3)
-    assert wc.should_wake(
-        enabled=True, turn_busy=False,
-        has_finished_pending=True, all_jobs_settled=True,
-    ) is True
+    assert (
+        wc.should_wake(
+            enabled=True,
+            turn_busy=False,
+            has_finished_pending=True,
+            all_jobs_settled=True,
+        )
+        is True
+    )

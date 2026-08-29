@@ -357,6 +357,4 @@ def apply_plan(
             # its own slug, so under a title conflict this is the incumbent's
             # slug rather than `entry.slug` — see ImportResult.
             imported.append(written.stem)
-    return ImportResult(
-        imported=tuple(imported), skipped=tuple(skipped), failed=tuple(failed)
-    )
+    return ImportResult(imported=tuple(imported), skipped=tuple(skipped), failed=tuple(failed))

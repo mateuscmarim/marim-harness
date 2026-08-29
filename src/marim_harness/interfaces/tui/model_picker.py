@@ -76,7 +76,8 @@ class ModelPickerModal(ModalScreen[str | None]):
                 title += f"  (current: {self.current})"
             yield Static(title, id="model-title")
             placeholder = (
-                "type a model id" if self.allow_free_text and not self.entries
+                "type a model id"
+                if self.allow_free_text and not self.entries
                 else "filter… (Tab to navigate, Enter to pick)"
             )
             yield Input(placeholder=placeholder, id="model-filter")

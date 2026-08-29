@@ -133,8 +133,9 @@ def _atomic_write_core(path: Path, open_kwargs: dict, write_fn, *, durable: bool
         _sweep_stale_temps(directory, path.name)
 
 
-def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8",
-                      durable: bool = True) -> None:
+def atomic_write_text(
+    path: Path, text: str, *, encoding: str = "utf-8", durable: bool = True
+) -> None:
     """Write ``text`` to ``path`` atomically and durably.
 
     Writes to a uniquely named temp file in the same directory (so concurrent
@@ -147,8 +148,9 @@ def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8",
     stays atomic, but the fsyncs and the stale-temp sweep are skipped, so a hot
     write path isn't taxed for durability the caller doesn't need.
     """
-    _atomic_write_core(Path(path), {"mode": "w", "encoding": encoding},
-                       lambda f: f.write(text), durable=durable)
+    _atomic_write_core(
+        Path(path), {"mode": "w", "encoding": encoding}, lambda f: f.write(text), durable=durable
+    )
 
 
 def atomic_write_bytes(path: Path, data: bytes) -> None:

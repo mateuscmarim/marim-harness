@@ -1,4 +1,5 @@
 """Durable usage ledger + pure stats queries (no TUI)."""
+
 from .ledger import (
     StatsLedger,
     default_sessions_base,

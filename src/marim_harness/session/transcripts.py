@@ -62,8 +62,15 @@ class TranscriptStore:
     def _file(self, stream_id: str) -> Path:
         return self._dir / f"{_safe(stream_id)}.json"
 
-    def write(self, stream_id: str, messages: list, cap: int,
-              meta: dict | None = None, *, cap_reasoning: bool = False) -> None:
+    def write(
+        self,
+        stream_id: str,
+        messages: list,
+        cap: int,
+        meta: dict | None = None,
+        *,
+        cap_reasoning: bool = False,
+    ) -> None:
         """Persist one spawn's transcript. With ``meta`` the file is a v2 envelope
         ``{"v": 2, "meta": ..., "messages": [...]}`` — the meta carries what a
         resumed session needs to rebuild the card and (for an interrupted spawn)

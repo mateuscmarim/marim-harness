@@ -1,4 +1,5 @@
 """Pure stats aggregations — no filesystem."""
+
 from __future__ import annotations
 
 from datetime import date
@@ -191,7 +192,10 @@ def test_models_series_all_range_spans_min_day_through_today():
     today = date(2026, 7, 28)
     r = models([_e("2026-07-25")], "all", today=today)
     assert [d.day for d in r.series] == [
-        "2026-07-25", "2026-07-26", "2026-07-27", "2026-07-28",
+        "2026-07-25",
+        "2026-07-26",
+        "2026-07-27",
+        "2026-07-28",
     ]
 
 

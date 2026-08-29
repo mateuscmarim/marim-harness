@@ -49,7 +49,10 @@ class SummaryWidget(Collapsible):
         # A literal Content title bypasses Textual's markup parsing, matching the
         # other Collapsible titles in this module.
         super().__init__(
-            self._body, title=Content("≡ Conversation summary"), collapsed=True  # pyright: ignore[reportArgumentType]
+            self._body,
+            # Textual types `title` as str; a Content title is deliberate (see above).
+            title=Content("≡ Conversation summary"),  # pyright: ignore[reportArgumentType]
+            collapsed=True,
         )
 
 

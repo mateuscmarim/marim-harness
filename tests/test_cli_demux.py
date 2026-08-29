@@ -9,22 +9,38 @@ from pydantic_ai.messages import (
 from marim_harness.subagents.cli_demux import SPAWN_TOOL_NAMES, CliSubagentDemux
 
 
-def _spawn_obj(tid="t1", name="Agent", stype="Explore", desc="find it", prompt="do it",
-               extra_blocks=(), parent=None):
-    obj = {"type": "assistant", "message": {"model": "claude-haiku-4-5", "id": "msg_p1",
-           "content": [
-               {"type": "tool_use", "id": tid, "name": name,
-                "input": {"description": desc, "subagent_type": stype, "prompt": prompt}},
-               *extra_blocks,
-           ]}}
+def _spawn_obj(
+    tid="t1",
+    name="Agent",
+    stype="Explore",
+    desc="find it",
+    prompt="do it",
+    extra_blocks=(),
+    parent=None,
+):
+    obj = {
+        "type": "assistant",
+        "message": {
+            "model": "claude-haiku-4-5",
+            "id": "msg_p1",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": tid,
+                    "name": name,
+                    "input": {"description": desc, "subagent_type": stype, "prompt": prompt},
+                },
+                *extra_blocks,
+            ],
+        },
+    }
     if parent:
         obj["parent_tool_use_id"] = parent
     return obj
 
 
 def _child_text(parent="t1", text="4", mid="msg_c1", usage=None, model="claude-haiku-4-5"):
-    msg = {"model": model, "id": mid,
-           "content": [{"type": "text", "text": text}]}
+    msg = {"model": model, "id": mid, "content": [{"type": "text", "text": text}]}
     if usage is not None:
         msg["usage"] = usage
     return {"type": "assistant", "parent_tool_use_id": parent, "message": msg}
@@ -51,7 +67,9 @@ def test_spawn_tool_use_becomes_spawn_agent_call():
     part = r.event.part
     assert part.tool_name == "spawn_agent" and part.tool_call_id == "t1"
     assert part.args_as_dict() == {
-        "type": "Explore", "task": "do it", "description": "find it",
+        "type": "Explore",
+        "task": "do it",
+        "description": "find it",
     }
 
 
@@ -87,8 +105,7 @@ def test_child_messages_route_to_child_stream():
 
 
 def test_child_usage_accumulates_once_per_message_id():
-    usage = {"input_tokens": 10, "output_tokens": 5,
-             "cache_creation_input_tokens": 10066}
+    usage = {"input_tokens": 10, "output_tokens": 5, "cache_creation_input_tokens": 10066}
     d = CliSubagentDemux()
     d.route(_spawn_obj())
     # stream-json repeats the same message.usage on both events of one message
@@ -115,12 +132,23 @@ def test_async_launch_tool_result_is_suppressed():
     d = CliSubagentDemux()
     d.route(_spawn_obj())
     events, passthrough = d.route(
-        {"type": "system", "subtype": "task_started", "tool_use_id": "t1"})
+        {"type": "system", "subtype": "task_started", "tool_use_id": "t1"}
+    )
     assert events == [] and passthrough is None
-    events, passthrough = d.route({"type": "user", "message": {"content": [
-        {"type": "tool_result", "tool_use_id": "t1",
-         "content": "Async agent launched successfully..."},
-    ]}})
+    events, passthrough = d.route(
+        {
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t1",
+                        "content": "Async agent launched successfully...",
+                    },
+                ]
+            },
+        }
+    )
     assert events == [] and passthrough is None  # launch metadata: fully swallowed
 
 
@@ -129,9 +157,15 @@ def test_task_notification_finishes_spawn():
     d.route(_spawn_obj())
     d.route({"type": "system", "subtype": "task_started", "tool_use_id": "t1"})
     events, passthrough = d.route(
-        {"type": "system", "subtype": "task_notification", "tool_use_id": "t1",
-         "status": "completed", "summary": "4",
-         "usage": {"total_tokens": 10086, "tool_uses": 0, "duration_ms": 2073}})
+        {
+            "type": "system",
+            "subtype": "task_notification",
+            "tool_use_id": "t1",
+            "status": "completed",
+            "summary": "4",
+            "usage": {"total_tokens": 10086, "tool_uses": 0, "duration_ms": 2073},
+        }
+    )
     assert passthrough is None
     (r,) = events
     assert r.stream_id is None and isinstance(r.event, FunctionToolResultEvent)
@@ -140,8 +174,14 @@ def test_task_notification_finishes_spawn():
     assert r.event.part.content == "4" and r.event.part.outcome == "success"
     # a duplicate notification does not double-finish
     events, _ = d.route(
-        {"type": "system", "subtype": "task_notification", "tool_use_id": "t1",
-         "status": "completed", "summary": "4"})
+        {
+            "type": "system",
+            "subtype": "task_notification",
+            "tool_use_id": "t1",
+            "status": "completed",
+            "summary": "4",
+        }
+    )
     assert events == []
 
 
@@ -149,8 +189,14 @@ def test_task_notification_failed_status_marks_failed():
     d = CliSubagentDemux()
     d.route(_spawn_obj())
     events, _ = d.route(
-        {"type": "system", "subtype": "task_notification", "tool_use_id": "t1",
-         "status": "failed", "summary": ""})
+        {
+            "type": "system",
+            "subtype": "task_notification",
+            "tool_use_id": "t1",
+            "status": "failed",
+            "summary": "",
+        }
+    )
     assert events[0].event.part.outcome == "failed"
     assert "failed" in events[0].event.part.content
 
@@ -158,8 +204,14 @@ def test_task_notification_failed_status_marks_failed():
 def test_notification_for_unknown_spawn_is_dropped():
     d = CliSubagentDemux()
     events, passthrough = d.route(
-        {"type": "system", "subtype": "task_notification", "tool_use_id": "nope",
-         "status": "completed", "summary": "x"})
+        {
+            "type": "system",
+            "subtype": "task_notification",
+            "tool_use_id": "nope",
+            "status": "completed",
+            "summary": "x",
+        }
+    )
     assert events == [] and passthrough is None
 
 
@@ -167,9 +219,16 @@ def test_sync_tool_result_finishes_spawn():
     # Legacy CLIs: no task_started; the spawn's tool_result IS the report.
     d = CliSubagentDemux()
     d.route(_spawn_obj())
-    events, passthrough = d.route({"type": "user", "message": {"content": [
-        {"type": "tool_result", "tool_use_id": "t1", "content": "the report"},
-    ]}})
+    events, passthrough = d.route(
+        {
+            "type": "user",
+            "message": {
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "the report"},
+                ]
+            },
+        }
+    )
     assert passthrough is None
     (r,) = events
     assert isinstance(r.event, FunctionToolResultEvent)
@@ -179,9 +238,14 @@ def test_sync_tool_result_finishes_spawn():
 
 def test_unrelated_tool_result_passes_through():
     d = CliSubagentDemux()
-    obj = {"type": "user", "message": {"content": [
-        {"type": "tool_result", "tool_use_id": "other", "content": "x"},
-    ]}}
+    obj = {
+        "type": "user",
+        "message": {
+            "content": [
+                {"type": "tool_result", "tool_use_id": "other", "content": "x"},
+            ]
+        },
+    }
     events, passthrough = d.route(obj)
     assert events == [] and passthrough is obj
 

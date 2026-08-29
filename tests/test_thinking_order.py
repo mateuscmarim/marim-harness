@@ -226,9 +226,7 @@ async def test_genuine_text_first_agrees_between_live_and_replay(tmp_path):
             [TextPart(content="Hello"), ThinkingPart(content="afterthought")]
         )
         assert live == ["text", "thinking"]
-        assert [
-            "thinking" if isinstance(p, ThinkingPart) else "text" for p in replayed
-        ] == live
+        assert ["thinking" if isinstance(p, ThinkingPart) else "text" for p in replayed] == live
 
 
 @pytest.mark.anyio

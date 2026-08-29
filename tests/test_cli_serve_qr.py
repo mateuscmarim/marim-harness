@@ -62,9 +62,10 @@ def test_qr_refuses_under_no_color(state, monkeypatch):
 
 def test_qr_advertise_overrides_the_probe(state):
     out = _Tty()
-    assert serve.main(
-        ["qr", "--advertise", "https://marim.example.com"], out=out, err=io.StringIO()
-    ) == 0
+    assert (
+        serve.main(["qr", "--advertise", "https://marim.example.com"], out=out, err=io.StringIO())
+        == 0
+    )
     assert "https://marim.example.com" in out.getvalue()
     assert "192.168.0.3" not in out.getvalue()
 
@@ -150,14 +151,14 @@ def test_serve_qr_flag_honors_wide(state, stub_uvicorn):
 @pytest.fixture
 def sixel_terminal(monkeypatch):
     """A terminal that answers the DA1 probe with sixel among its attributes."""
-    monkeypatch.setattr(serve.terminal, "device_attributes",
-                        lambda stream, **kw: "\033[?62;4;22c")
+    monkeypatch.setattr(serve.terminal, "device_attributes", lambda stream, **kw: "\033[?62;4;22c")
     monkeypatch.setattr(serve.terminal, "cell_pixels", lambda stream: (8, 17))
 
 
 @pytest.fixture
 def unprobeable_terminal(monkeypatch):
     """A probe that fails the test if anything asks it a question."""
+
     def never(*args, **kwargs):
         raise AssertionError("the terminal was probed when the flag had already answered")
 
@@ -230,6 +231,7 @@ def test_qr_reports_a_broken_pairing_block_without_leaking_the_token(state, monk
     (a ValueError subclass) or any other exception raised while building the
     block must exit 1 with a stderr note naming the exception's type, and the
     real token must reach neither stream."""
+
     def boom(**kwargs):
         raise ValueError(f"leaked token in the message: {kwargs['token']}")
 
@@ -270,9 +272,12 @@ def test_serve_qr_flag_skips_the_code_but_still_serves_when_refused(state, stub_
 
 def test_serve_qr_flag_honors_advertise(state, stub_uvicorn):
     out = _Tty()
-    assert serve.main(
-        ["--qr", "--advertise", "10.1.2.3:9000", "--no-banner"], out=out, err=io.StringIO()
-    ) == 0
+    assert (
+        serve.main(
+            ["--qr", "--advertise", "10.1.2.3:9000", "--no-banner"], out=out, err=io.StringIO()
+        )
+        == 0
+    )
     assert "http://10.1.2.3:9000" in out.getvalue()
 
 
@@ -283,6 +288,7 @@ def test_serve_qr_flag_survives_a_broken_pairing_block(state, stub_uvicorn, monk
     still returning 0 instead of the exception escaping), and the stderr note
     must not echo the exception's message — it could contain the token-bearing
     pairing URI that choked the encoder."""
+
     def boom(**kwargs):
         raise ValueError(f"leaked token in the message: {kwargs['token']}")
 

@@ -143,8 +143,8 @@ def test_atomic_write_durable_false_skips_fsync_and_sweep(tmp_path: Path, monkey
     p = tmp_path / "cache.txt"
     atomic_write_text(p, "regenerable", durable=False)
     assert p.read_text() == "regenerable"  # atomic swap still happened
-    assert fsyncs == []                     # no file/dir fsync
-    assert swept == []                      # no glob sweep
+    assert fsyncs == []  # no file/dir fsync
+    assert swept == []  # no glob sweep
 
 
 def test_atomic_write_durable_true_fsyncs_and_sweeps(tmp_path: Path, monkeypatch):
@@ -158,7 +158,7 @@ def test_atomic_write_durable_true_fsyncs_and_sweeps(tmp_path: Path, monkeypatch
     monkeypatch.setattr(aio, "_sweep_stale_temps", lambda d, n: swept.append((d, n)))
 
     atomic_write_text(tmp_path / "session.json", "durable")
-    assert len(fsyncs) >= 1   # at least the file fsync (dir fsync is best-effort)
+    assert len(fsyncs) >= 1  # at least the file fsync (dir fsync is best-effort)
     assert len(swept) == 1
 
 

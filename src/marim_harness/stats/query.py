@@ -3,6 +3,7 @@
 Day boundaries are UTC. Token totals are ``input_tokens + output_tokens``;
 cache tokens are a subset of input tokens and are never added again.
 """
+
 from __future__ import annotations
 
 from collections import defaultdict
@@ -128,6 +129,7 @@ def _longest_session(events: Iterable[TurnEvent]) -> float | None:
             session_max[e.session_id] = e.session_duration_seconds
     return max(session_max.values()) if session_max else None
 
+
 def _window_days(range: Range, active_ranged: set[date]) -> int:
     if range == "7d":
         return 7
@@ -187,9 +189,7 @@ def _model_totals(ranged: list[TurnEvent]) -> list[ModelTotal]:
     return totals
 
 
-def _series_window(
-    ranged: list[TurnEvent], range: Range, today: date
-) -> tuple[date, date] | None:
+def _series_window(ranged: list[TurnEvent], range: Range, today: date) -> tuple[date, date] | None:
     """The inclusive ``(start, end)`` day span the model series must cover.
 
     A bounded range covers its whole window — every day from the window start
@@ -231,9 +231,7 @@ def _day_model_series(ranged: list[TurnEvent], range: Range, today: date) -> lis
     series: list[DayModelSeries] = []
     d = start
     while d <= end:
-        series.append(
-            DayModelSeries(day=d.isoformat(), by_model=dict(day_model_totals.get(d, {})))
-        )
+        series.append(DayModelSeries(day=d.isoformat(), by_model=dict(day_model_totals.get(d, {}))))
         d += timedelta(days=1)
     return series
 

@@ -12,9 +12,7 @@ def _make_source(src: Path, name: str, *, with_hooks: bool = False, with_lsp: bo
         # A declarative third-party lsp block launches ``command`` on connect —
         # executable surface in the same risk class as hooks/MCP.
         manifest["lsp"] = {"language": "go", "extensions": [".go"], "command": "gopls"}
-    (src / ".marim-plugin" / "plugin.json").write_text(
-        json.dumps(manifest), encoding="utf-8"
-    )
+    (src / ".marim-plugin" / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
     sk = src / "skills" / "demo"
     sk.mkdir(parents=True, exist_ok=True)
     (sk / "SKILL.md").write_text("---\nname: demo\ndescription: d\n---\nx", encoding="utf-8")

@@ -331,9 +331,7 @@ class SessionController:
                 version = self.history_version
                 if not force and version == self._last_persisted_version:
                     return
-                elapsed = (
-                    (time.monotonic() - self._segment_start) if self._segment_start else 0.0
-                )
+                elapsed = (time.monotonic() - self._segment_start) if self._segment_start else 0.0
                 # Snapshot the history list (not deep-copy the messages —
                 # just freeze the list's own length) right before it's handed
                 # to the serializer. `_persist_lock` above only serializes
@@ -363,7 +361,9 @@ class SessionController:
                 tasks_snapshot = self.deps.tasks.to_payload()
                 jobs_snapshot = self.deps.jobs.export_settled()
                 self.store.save(
-                    history_snapshot, self.usage, tasks_snapshot,
+                    history_snapshot,
+                    self.usage,
+                    tasks_snapshot,
                     duration_seconds=self.duration_seconds + elapsed,
                     jobs=jobs_snapshot,
                 )
@@ -482,13 +482,12 @@ class SessionController:
         # Dangling offload HANDLES instead get a gone-note appended (their
         # inline preview is worth keeping); base resolves legacy relative
         # handle paths against the workspace root.
-        history, n_dangling = revalidate_elided_pointers(
-            history, base=self.deps.workspace.root
-        )
+        history, n_dangling = revalidate_elided_pointers(history, base=self.deps.workspace.root)
         if n_dangling:
             logger.debug(
                 "session load: rewrote %d dangling scratchpad reference(s) "
-                "(elided pointers masked, offload handles annotated)", n_dangling,
+                "(elided pointers masked, offload handles annotated)",
+                n_dangling,
             )
         self.store = store
         self._repoint_stats(store.session_id)
@@ -623,9 +622,7 @@ class SessionController:
 
         return persist
 
-    async def _dispatch_pre_compact(
-        self, trigger: str, instructions: str | None
-    ) -> HookVerdict:
+    async def _dispatch_pre_compact(self, trigger: str, instructions: str | None) -> HookVerdict:
         if self.deps.hooks is None:
             return HookVerdict()
         return await self.deps.hooks.dispatch_verdict(
@@ -766,21 +763,31 @@ class SessionController:
         if not (manual or force or still_over):
             return False
         tail_start = _plan_tail_start(
-            self.history, threshold, self.keep_last_messages,
-            force=force or manual, measured_tokens=measured,
+            self.history,
+            threshold,
+            self.keep_last_messages,
+            force=force or manual,
+            measured_tokens=measured,
         )
         if tail_start is None:
             return False
         if self.summarizer is not None:
             new_history, did = await compact_history_with_summary(
-                self.history, threshold, self.summarizer,
-                self.keep_last_messages, force=force or manual,
-                tail_start=tail_start, instructions=instructions,
+                self.history,
+                threshold,
+                self.summarizer,
+                self.keep_last_messages,
+                force=force or manual,
+                tail_start=tail_start,
+                instructions=instructions,
             )
         else:
             new_history, did = compact_history(
-                self.history, threshold, self.keep_last_messages,
-                force=force or manual, tail_start=tail_start,
+                self.history,
+                threshold,
+                self.keep_last_messages,
+                force=force or manual,
+                tail_start=tail_start,
             )
         if did:
             self.history = new_history
@@ -821,8 +828,11 @@ class SessionController:
         if self._stage_mask(force=force, manual=manual):
             stages.append("micro")
         if await self._stage_summarize(
-            threshold, manual=manual, force=force,
-            has_masked="micro" in stages, instructions=instructions,
+            threshold,
+            manual=manual,
+            force=force,
+            has_masked="micro" in stages,
+            instructions=instructions,
         ):
             stages.append("summary")
         compacted = bool(stages)

@@ -17,8 +17,10 @@ class _Harness(App):
 
 
 async def test_plan_screen_shows_summary_path_and_progress():
-    tasks = [Task(text="Extract tokenizer", status="done"),
-             Task(text="Add tests", status="in_progress")]
+    tasks = [
+        Task(text="Extract tokenizer", status="done"),
+        Task(text="Add tests", status="in_progress"),
+    ]
     app = _Harness()
     async with app.run_test() as pilot:
         app.push_screen(PlanScreen("Refactor the parser", "/tmp/plan.md", tasks))
@@ -27,8 +29,8 @@ async def test_plan_screen_shows_summary_path_and_progress():
         assert "Refactor the parser" in text
         assert "/tmp/plan.md" in text
         assert "Extract tokenizer" in text
-        assert "✔" in text   # done marker
-        assert "▸" in text   # in-progress marker
+        assert "✔" in text  # done marker
+        assert "▸" in text  # in-progress marker
 
 
 async def test_escape_dismisses():

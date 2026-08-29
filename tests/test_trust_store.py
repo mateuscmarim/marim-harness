@@ -26,8 +26,9 @@ def test_store_round_trip(tmp_path):
     ws.mkdir()
     record_decision(ws, trusted=True, fingerprint="fp1", now="2026-07-26T00:00:00+00:00")
     got = stored_decision(ws)
-    assert got == StoredDecision(trusted=True, fingerprint="fp1",
-                                 decided_at="2026-07-26T00:00:00+00:00")
+    assert got == StoredDecision(
+        trusted=True, fingerprint="fp1", decided_at="2026-07-26T00:00:00+00:00"
+    )
 
 
 def test_decline_is_remembered(tmp_path):
@@ -140,8 +141,7 @@ def test_resolution_malformed_entry_reads_as_absent(tmp_path):
     path = trusted_projects_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     key = str(tmp_path.resolve())
-    path.write_text(json.dumps({key: {"trusted": "yes", "fingerprint": "fp"}}),
-                    encoding="utf-8")
+    path.write_text(json.dumps({key: {"trusted": "yes", "fingerprint": "fp"}}), encoding="utf-8")
     assert stored_decision(tmp_path) is None
     r = resolve_project_trust(tmp_path, explicit=None, fingerprint="fp", surface_empty=False)
     assert r == TrustResolution(trusted=False, source="default", prompt_needed=True)

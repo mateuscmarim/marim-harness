@@ -13,8 +13,16 @@ def test_normalize_ci_maps_known_and_unknown():
 
 
 def test_pullrequest_is_frozen_with_defaults():
-    pr = PullRequest(number=51, title="t", state="open", head="feat",
-                     base="master", mergeable=True, url="http://x", ci="success")
+    pr = PullRequest(
+        number=51,
+        title="t",
+        state="open",
+        head="feat",
+        base="master",
+        mergeable=True,
+        url="http://x",
+        ci="success",
+    )
     assert pr.author == "" and pr.updated == ""
     assert pr.number == 51 and pr.mergeable is True
 

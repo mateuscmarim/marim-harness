@@ -145,9 +145,7 @@ class ApprovalPanel(InteractionPanel):
         # "evil[/bold]" would otherwise raise MarkupError and crash the panel
         # before it ever mounts — leaving the approval unresolved instead of
         # just spoofed.
-        yield Static(
-            f"Approve  {safe_text(self.tool_name)}?", id="approval-title", markup=False
-        )
+        yield Static(f"Approve  {safe_text(self.tool_name)}?", id="approval-title", markup=False)
         with VerticalScroll(id="approval-detail"):
             yield Static(format_detail(self.tool_name, self.args), id="approval-detail-content")
         # A scrollbar alone is easy to miss on a panel that authorizes shell

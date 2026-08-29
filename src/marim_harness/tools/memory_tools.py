@@ -49,8 +49,12 @@ def remember(
     is needed — this only writes inside marim's own memory directory."""
     sc = resolve_scope(ctx, "global" if scope == "global" else "project")
     path = save_memory(
-        sc, name=title, description=description,
-        mem_type=type, body=body, title=title,
+        sc,
+        name=title,
+        description=description,
+        mem_type=type,
+        body=body,
+        title=title,
     )
     # save_memory fails soft (returns None) rather than raising — an unhandled
     # exception here would abort the whole pydantic-ai run, so a read-only
@@ -62,7 +66,8 @@ def remember(
 
 
 def recall(
-    ctx: RunContext[Deps], name: str,
+    ctx: RunContext[Deps],
+    name: str,
     scope: Literal["project", "global"] = "project",
 ) -> str:
     """Read the full body of a saved memory by `name` (its title or slug,
@@ -77,7 +82,8 @@ def recall(
 
 
 def forget(
-    ctx: RunContext[Deps], name: str,
+    ctx: RunContext[Deps],
+    name: str,
     scope: Literal["project", "global"] = "project",
 ) -> str:
     """Permanently delete a saved memory by `name` (its title or slug, as

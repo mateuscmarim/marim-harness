@@ -39,15 +39,19 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("workspace", nargs="?", default=".", help="Project root (default: cwd).")
     parser.add_argument(
-        "--from", dest="from_dir", default=None,
+        "--from",
+        dest="from_dir",
+        default=None,
         help="Claude memory dir (or the project dir containing it), skipping auto-detection.",
     )
     parser.add_argument(
-        "--apply", action="store_true",
+        "--apply",
+        action="store_true",
         help="Perform the import. Without this the command only reports what it would do.",
     )
     parser.add_argument(
-        "--force", action="store_true",
+        "--force",
+        action="store_true",
         help="Overwrite marim memories that conflict with an imported one.",
     )
     return parser

@@ -42,9 +42,7 @@ def test_collector_handler_tolerates_extra_leading_arg():
     c = DiagnosticsCollector()
     c.attach(srv)
     # Simulate a handler(server, params) call shape via the public feed method.
-    c.feed(
-        object(), {"uri": "file:///y.py", "diagnostics": [{"severity": 2, "message": "warn"}]}
-    )
+    c.feed(object(), {"uri": "file:///y.py", "diagnostics": [{"severity": 2, "message": "warn"}]})
     assert c.latest("file:///y.py") == [{"severity": 2, "message": "warn"}]
 
 

@@ -95,7 +95,10 @@ class SubAgentWidget(Vertical):
     to the ``SubAgentPane`` where the streamed transcript lives."""
 
     def __init__(
-        self, agent_type: str, agent_task: str, model_label: str = "",
+        self,
+        agent_type: str,
+        agent_task: str,
+        model_label: str = "",
         description: str = "",
     ) -> None:
         self.agent_type = agent_type
@@ -304,9 +307,7 @@ class SubAgentWidget(Vertical):
             if self.waiting and self.after_ids:
                 # Blocked on prerequisites: say so instead of "working…", so a
                 # stalled dependent is tellable from a busy one at a glance.
-                self._activity.update(
-                    Content(f"↳ waiting on {', '.join(self.after_ids)}")
-                )
+                self._activity.update(Content(f"↳ waiting on {', '.join(self.after_ids)}"))
             else:
                 # Show the current tool while running; "working…" before the
                 # first call.
@@ -319,18 +320,17 @@ class SubAgentWidget(Vertical):
             if self._expanded and expandable:
                 reason = self._full_reason
             else:
-                reason = self._fail_reason or (
-                    "denied" if self.status == "denied" else "failed"
-                )
+                reason = self._fail_reason or ("denied" if self.status == "denied" else "failed")
             marker = ("  ▾" if self._expanded else "  ▸") if expandable else ""
             # Let the line grow + wrap only while expanded; otherwise it stays one row.
             self._activity.set_class(self._expanded and expandable, "-expanded")
             self._activity.update(Content.assemble((f"↳ {reason}", "red"), (marker, "dim")))
         elif self.status == "interrupted":
-            self._activity.update(Content.assemble(
-                ("↳ interrupted — press r in the sub-agents screen (ctrl+x) to resume",
-                 "dim"),
-            ))
+            self._activity.update(
+                Content.assemble(
+                    ("↳ interrupted — press r in the sub-agents screen (ctrl+x) to resume", "dim"),
+                )
+            )
         else:
             # Done: collapse to the run summary (tool tally + frozen duration). A
             # background agent streams its steps too, so its tally is real.
@@ -352,7 +352,10 @@ class SubAgentWidget(Vertical):
         self.tokens = n
 
     def set_usage(
-        self, total: int, cost_text: str | None, split_text: str,
+        self,
+        total: int,
+        cost_text: str | None,
+        split_text: str,
         cost_value: float | None = None,
     ) -> None:
         """Fold a full usage reading in: the running ``total`` (and ``cost_text``)
@@ -369,8 +372,9 @@ class SubAgentWidget(Vertical):
                 detail = f"{detail} · {cost_text}" if detail else cost_text
             self.pane.set_usage_line(detail)
 
-    def restore_stats(self, tool_count: int = 0, tokens: int = 0,
-                      duration: float | None = None) -> None:
+    def restore_stats(
+        self, tool_count: int = 0, tokens: int = 0, duration: float | None = None
+    ) -> None:
         """Rehydrate the run stats a resumed spawn's sidecar meta persisted
         (see the runner's _final_meta): the tool tally and token total the live
         stream would have accumulated, and the real run duration to show instead

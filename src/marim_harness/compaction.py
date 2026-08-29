@@ -134,10 +134,7 @@ class CompactionBreaker:
             self.turns_since_compact += 1
 
     def note_compact(self) -> None:
-        if (
-            self.turns_since_compact is not None
-            and self.turns_since_compact <= self.rapid_turns
-        ):
+        if self.turns_since_compact is not None and self.turns_since_compact <= self.rapid_turns:
             self.consecutive_rapid_refills += 1
         else:
             self.consecutive_rapid_refills = 0
@@ -179,7 +176,11 @@ def _measured_or_estimated(history: list, measured_tokens: int | None) -> int:
 
 
 def _plan_tail_start(
-    history: list, max_tokens: int, keep_last_messages: int, *, force: bool = False,
+    history: list,
+    max_tokens: int,
+    keep_last_messages: int,
+    *,
+    force: bool = False,
     measured_tokens: int | None = None,
 ) -> int | None:
     """Index where the kept tail should begin, or None if no compaction is needed.
@@ -223,9 +224,7 @@ def will_compact(
     omits it can reach the opposite verdict on a history the estimate
     undershoots."""
     return (
-        _plan_tail_start(
-            history, max_tokens, keep_last_messages, measured_tokens=measured_tokens
-        )
+        _plan_tail_start(history, max_tokens, keep_last_messages, measured_tokens=measured_tokens)
         is not None
     )
 
@@ -262,7 +261,8 @@ def compact_history(
         logger.debug(
             "compaction left history at ~%d tokens, still over the %d budget "
             "(likely one oversized turn the tail planner can't split)",
-            estimate_tokens(compacted), max_tokens,
+            estimate_tokens(compacted),
+            max_tokens,
         )
     return compacted, True
 
@@ -334,7 +334,7 @@ def elided_pointer_path(content) -> str | None:
     structured returns, a prefix with no suffix) yields None."""
     if not isinstance(content, str) or not content.startswith(ELIDED_POINTER_PREFIX):
         return None
-    body = content[len(ELIDED_POINTER_PREFIX):]
+    body = content[len(ELIDED_POINTER_PREFIX) :]
     path, sep, _ = body.partition(_ELIDED_POINTER_SUFFIX)
     return path if sep else None
 
@@ -632,13 +632,10 @@ def render_transcript(messages: list, max_part_chars: int = 2000) -> str:
                     lines.append(f"Assistant: {_clip(part.content, max_part_chars)}")
             elif isinstance(part, ThinkingPart):
                 if part.content:
-                    lines.append(
-                        f"Assistant (thinking): {_clip(part.content, max_part_chars)}"
-                    )
+                    lines.append(f"Assistant (thinking): {_clip(part.content, max_part_chars)}")
             elif isinstance(part, ToolCallPart):
                 lines.append(
-                    f"Assistant called {part.tool_name}"
-                    f"({_clip(part.args, max_part_chars)})"
+                    f"Assistant called {part.tool_name}({_clip(part.args, max_part_chars)})"
                 )
             elif isinstance(part, ToolReturnPart):
                 lines.append(_render_tool_return(part, max_part_chars))
@@ -674,14 +671,12 @@ def summary_text(content) -> str | None:
     else ``None``. The single source of truth for detecting/parsing a summary."""
     if not isinstance(content, str) or not content.startswith(SUMMARY_PREFIX):
         return None
-    body = content[len(SUMMARY_PREFIX):].strip()
+    body = content[len(SUMMARY_PREFIX) :].strip()
     return body or None
 
 
 def _summary_message(summary: str) -> ModelRequest:
-    return ModelRequest(
-        parts=[UserPromptPart(content=f"{SUMMARY_PREFIX}\n\n{summary}")]
-    )
+    return ModelRequest(parts=[UserPromptPart(content=f"{SUMMARY_PREFIX}\n\n{summary}")])
 
 
 async def compact_history_with_summary(
@@ -807,7 +802,7 @@ def clean_title(raw: str) -> str:
     lines = [line.strip() for line in (raw or "").splitlines()]
     text = next((line for line in lines if line), "")
     if text.lower().startswith("title:"):
-        text = text[len("title:"):].strip()
+        text = text[len("title:") :].strip()
     text = text.strip("\"'`").strip().rstrip(".!?,;:").strip()
     if len(text) > _MAX_TITLE_CHARS:
         text = text[:_MAX_TITLE_CHARS].rstrip() + "…"

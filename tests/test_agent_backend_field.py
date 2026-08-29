@@ -11,7 +11,8 @@ def _write_agent(tmp_path: Path, name: str, frontmatter: str, body: str = "Do wo
 
 def test_backend_and_model_parsed_from_frontmatter(tmp_path: Path):
     _write_agent(
-        tmp_path, "cli-worker",
+        tmp_path,
+        "cli-worker",
         "description: CLI worker\nbackend: claude-cli\nmodel: opus\ntools: read_file, edit_file",
     )
     defn = find_agent(tmp_path, "cli-worker")
@@ -35,6 +36,7 @@ def test_builtins_are_native(tmp_path: Path):
 
 def test_example_cli_agent_parses_as_claude_cli(tmp_path: Path):
     import shutil
+
     src = Path("docs/examples/agents/cli-worker.md")
     dst = tmp_path / ".marim" / "agents" / "cli-worker.md"
     dst.parent.mkdir(parents=True, exist_ok=True)

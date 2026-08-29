@@ -85,10 +85,13 @@ def test_hooks_and_mcp_require_trust(tmp_path, monkeypatch):
     gdir = tmp_path / "cfg" / "marim" / "plugins"
     hooks = {"hooks": {"Stop": [{"type": "command", "command": "${MARIM_PLUGIN_ROOT}/x.sh"}]}}
     _make_plugin(
-        gdir, "untrusted",
+        gdir,
+        "untrusted",
         manifest={},
-        files={"hooks/hooks.json": json.dumps(hooks),
-               "mcp.json": json.dumps({"mcpServers": {"web": {"url": "https://u"}}})},
+        files={
+            "hooks/hooks.json": json.dumps(hooks),
+            "mcp.json": json.dumps({"mcpServers": {"web": {"url": "https://u"}}}),
+        },
     )
     _install(gdir, "untrusted", enabled=True, trusted=False)
     assert plugin_hook_entries(ws) == {}
@@ -114,7 +117,9 @@ def test_plugin_mcp_skips_invalid_server_name(tmp_path, monkeypatch, caplog):
         "good_one": {"url": "https://ok"},
     }
     _make_plugin(
-        gdir, "px", manifest={},
+        gdir,
+        "px",
+        manifest={},
         files={"mcp.json": json.dumps({"mcpServers": servers})},
     )
     _install(gdir, "px", enabled=True, trusted=True)
@@ -182,10 +187,10 @@ def test_project_plugin_inert_contributions_require_project_trust(tmp_path, monk
     ws = _ws(tmp_path, monkeypatch)
     pdir = ws / ".marim" / "plugins"
     _make_plugin(
-        pdir, "shared",
+        pdir,
+        "shared",
         manifest={},
-        files={**_EXEC_FILES, "skills/s/SKILL.md": "x", "agents/a.md": "x",
-               "AGENTS.md": "read me"},
+        files={**_EXEC_FILES, "skills/s/SKILL.md": "x", "agents/a.md": "x", "AGENTS.md": "read me"},
     )
     _install(pdir, "shared", enabled=True, trusted=True)
 
@@ -230,7 +235,9 @@ def test_global_plugin_inert_ignores_project_trust(tmp_path, monkeypatch):
     ws = _ws(tmp_path, monkeypatch)
     gdir = tmp_path / "cfg" / "marim" / "plugins"
     _make_plugin(
-        gdir, "mine", manifest={},
+        gdir,
+        "mine",
+        manifest={},
         files={"skills/.keep": "", "agents/.keep": "", "AGENTS.md": "hi"},
     )
     _install(gdir, "mine", enabled=True)
@@ -266,7 +273,8 @@ def test_instruction_texts(tmp_path, monkeypatch):
 
 def test_bundle_summary_and_has_executable(tmp_path):
     pdir = _make_plugin(
-        tmp_path, "p",
+        tmp_path,
+        "p",
         manifest={},
         files={"skills/s/SKILL.md": "x", "hooks/hooks.json": json.dumps({"hooks": {"Stop": [{}]}})},
     )
@@ -284,10 +292,9 @@ def test_bundle_summary_and_has_executable_lsp_only(tmp_path):
     # its command is the SAME arbitrary-code-execution risk class as a hook or
     # an MCP server, so it must count as executable surface too.
     pdir = _make_plugin(
-        tmp_path, "lsp-only",
-        manifest={
-            "lsp": {"language": "go", "extensions": [".go"], "command": "gopls"}
-        },
+        tmp_path,
+        "lsp-only",
+        manifest={"lsp": {"language": "go", "extensions": [".go"], "command": "gopls"}},
         files={},
     )
     m = load_manifest(pdir)

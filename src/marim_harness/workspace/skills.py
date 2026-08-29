@@ -114,9 +114,7 @@ def _parse_skill(source: str, directory: Path, plugin: str | None = None) -> Ski
     )
 
 
-def _all_skill_roots(
-    workspace_root, *, trust_project: bool
-) -> list[tuple[str, Path, str | None]]:
+def _all_skill_roots(workspace_root, *, trust_project: bool) -> list[tuple[str, Path, str | None]]:
     """Discovery roots in precedence order as ``(source, root, plugin)``: user
     roots (project, then global) first, then plugin roots as ``plugin:name``.
 
@@ -172,7 +170,9 @@ def _discovery_signature(roots: list[tuple[str, Path, str | None]]) -> tuple:
 
 
 def discover_skills(
-    workspace_root, *, trust_project: bool | None = None,
+    workspace_root,
+    *,
+    trust_project: bool | None = None,
     dirs: "Sequence[Path] | None" = None,
 ) -> list[Skill]:
     """All effective skills for a workspace, deduped by qualified name with the
@@ -193,13 +193,12 @@ def discover_skills(
     unchanged (by name/mtime/size), so repeated calls within a turn — and across
     turns that didn't touch a skill — don't re-walk and re-parse them."""
     if dirs is not None:
-        roots: list[tuple[str, Path, str | None]] = [
-            ("explicit", Path(d), None) for d in dirs
-        ]
+        roots: list[tuple[str, Path, str | None]] = [("explicit", Path(d), None) for d in dirs]
     else:
         roots = _all_skill_roots(workspace_root, trust_project=_project_trusted(trust_project))
     return cached_discover(
-        workspace_root, roots,
+        workspace_root,
+        roots,
         _discovery_signature,
         _collect_skills,
         lambda s: s.qualified_name,
@@ -222,7 +221,10 @@ def _collect_skills(seen: dict, source: str, root: Path, plugin: str | None) -> 
 
 
 def find_skill(
-    workspace_root, name: str, *, trust_project: bool | None = None,
+    workspace_root,
+    name: str,
+    *,
+    trust_project: bool | None = None,
     dirs: "Sequence[Path] | None" = None,
 ) -> Skill | None:
     """The effective skill whose qualified name is ``name``, or None. Honors the
@@ -266,8 +268,6 @@ def skills_index_text(skills: list[Skill]) -> str:
     model-invocable skill. Skills marked ``disable-model-invocation`` are left
     out so the agent won't auto-activate them. Empty string when none qualify."""
     lines = [
-        f"- {s.qualified_name} — {s.description}"
-        for s in skills
-        if not s.disable_model_invocation
+        f"- {s.qualified_name} — {s.description}" for s in skills if not s.disable_model_invocation
     ]
     return "\n".join(lines)

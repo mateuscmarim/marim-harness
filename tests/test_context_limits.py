@@ -35,13 +35,11 @@ def test_provider_prefixes_mirrors_known_providers():
 
 
 def test_parse_budget_overrides_patterns_and_unbudgeted_forms():
-    parsed = parse_budget_overrides(
-        "anthropic/claude-opus*=60000, openrouter/*free*=0, local/*="
-    )
+    parsed = parse_budget_overrides("anthropic/claude-opus*=60000, openrouter/*free*=0, local/*=")
     assert parsed == [
         ("anthropic/claude-opus*", 60000),
-        ("openrouter/*free*", None),   # 0 ⇒ unbudgeted
-        ("local/*", None),             # empty ⇒ unbudgeted
+        ("openrouter/*free*", None),  # 0 ⇒ unbudgeted
+        ("local/*", None),  # empty ⇒ unbudgeted
     ]
     assert parse_budget_overrides("") == []
     assert parse_budget_overrides("garbage-no-equals, x=notanum") == []
@@ -50,7 +48,7 @@ def test_parse_budget_overrides_patterns_and_unbudgeted_forms():
 def test_bare_id_survives_ollama_style_tags():
     """Model ids CAN contain colons (Ollama tags like ``qwen2.5-coder:7b``) —
     only a known provider name before the first colon is a qualifier."""
-    assert _bare_id("qwen2.5-coder:7b") == "qwen2.5-coder:7b"      # tag, not provider
+    assert _bare_id("qwen2.5-coder:7b") == "qwen2.5-coder:7b"  # tag, not provider
     assert _bare_id("local:qwen/qwen3.5-9b") == "qwen/qwen3.5-9b"  # real qualifier
     assert _bare_id("local:qwen2.5-coder:7b") == "qwen2.5-coder:7b"
 
@@ -66,7 +64,7 @@ def test_budget_precedence_first_match_wins_then_global():
     )
     assert limits.budget_for("anthropic/claude-opus-4-8") == 60_000  # first match
     assert limits.budget_for("anthropic/claude-sonnet-5") == 90_000
-    assert limits.budget_for("qwen/qwen3.5-9b") == 100_000           # global
+    assert limits.budget_for("qwen/qwen3.5-9b") == 100_000  # global
 
 
 def test_override_matches_qualified_and_bare_ids():
@@ -83,9 +81,9 @@ def test_threshold_unknown_window_is_budget_alone():
 
 def test_threshold_known_window_applies_safety_ratio():
     limits = ContextLimits(budget=None, window_override=200_000)
-    assert limits.threshold("m") == 160_000                 # 0.8 * window
+    assert limits.threshold("m") == 160_000  # 0.8 * window
     capped = ContextLimits(budget=60_000, window_override=200_000)
-    assert capped.threshold("m") == 60_000                  # budget wins when lower
+    assert capped.threshold("m") == 60_000  # budget wins when lower
 
 
 @pytest.mark.anyio
@@ -94,20 +92,20 @@ async def test_resolve_discovers_windows_from_catalog_once():
 
     async def fake_catalog():
         calls["n"] += 1
-        return [ModelEntry(id="anthropic/claude-opus-4-8", name="Opus",
-                           context_window=200_000)]
+        return [ModelEntry(id="anthropic/claude-opus-4-8", name="Opus", context_window=200_000)]
 
     limits = ContextLimits(budget=None, fetch_catalog=fake_catalog)
     assert await limits.resolve("anthropic/claude-opus-4-8") == 160_000
     assert limits.threshold("anthropic/claude-opus-4-8") == 160_000  # cached, sync
     await limits.resolve("anthropic/claude-opus-4-8")
-    assert calls["n"] == 1                                   # fetched once
+    assert calls["n"] == 1  # fetched once
 
 
 @pytest.mark.anyio
 async def test_resolve_lmstudio_loaded_window_beats_large_budget():
     """The motivating failure: model advertises 262k, LM Studio loaded it at
     ~101k, user budget was 180k — the trigger MUST follow the loaded window."""
+
     async def fake_local():
         return {"qwen/qwen3.5-9b": 101_039}
 
@@ -126,7 +124,7 @@ async def test_invalidate_forces_a_fresh_probe():
 
     limits = ContextLimits(budget=None, fetch_local=fake_local)
     assert await limits.resolve("m") == int(0.8 * 8_192)
-    windows["m"] = 32_768                                    # user reloads the model
+    windows["m"] = 32_768  # user reloads the model
     limits.invalidate()
     assert await limits.resolve("m") == int(0.8 * 32_768)
     assert calls["n"] == 2
@@ -137,8 +135,7 @@ async def test_env_window_override_beats_discovery():
     async def fake_local():
         return {"m": 500_000}
 
-    limits = ContextLimits(budget=None, window_override=10_000,
-                           fetch_local=fake_local)
+    limits = ContextLimits(budget=None, window_override=10_000, fetch_local=fake_local)
     assert await limits.resolve("m") == 8_000  # 0.8 * override, discovery ignored
 
 
@@ -158,6 +155,7 @@ async def test_discovery_failure_falls_back_silently():
 async def test_resolve_merges_windows_from_all_fetchers():
     """Several active providers ⇒ several discovery sources; a /model switch may
     land on any of them, so resolve() must merge every source's windows."""
+
     async def source_a():
         return {"m1": 100_000}
 
@@ -190,8 +188,7 @@ async def test_build_context_limits_probes_all_active_providers(monkeypatch):
     from marim_harness.workspace import catalog
 
     async def fake_openrouter(api_key=None, timeout=10.0):
-        return [ModelEntry(id="anthropic/claude-opus-4-8", name="Opus",
-                           context_window=200_000)]
+        return [ModelEntry(id="anthropic/claude-opus-4-8", name="Opus", context_window=200_000)]
 
     async def fake_lmstudio(base_url, api_key=None, timeout=10.0):
         return {"qwen/qwen3.5-9b": 101_039}
@@ -234,7 +231,7 @@ async def test_concurrent_resolves_share_one_fetch_and_both_see_the_window():
     gate.set()
     assert await first == 8_000
     assert await second == 8_000  # NOT 100_000 from empty windows
-    assert calls["n"] == 1        # single flight
+    assert calls["n"] == 1  # single flight
 
 
 @pytest.mark.anyio
@@ -255,12 +252,12 @@ async def test_invalidate_mid_fetch_discards_the_stale_result():
 
     limits = ContextLimits(budget=50_000, fetchers=[gated])
     stale = asyncio.create_task(limits.resolve("m"))
-    await asyncio.sleep(0)      # the first fetch is parked on the gate
-    limits.invalidate()         # model switched while the fetch is in flight
+    await asyncio.sleep(0)  # the first fetch is parked on the gate
+    limits.invalidate()  # model switched while the fetch is in flight
     gate.set()
-    await stale                 # old resolve completes without committing
-    assert limits.threshold("m") == 50_000       # stale window NOT resurrected
-    assert await limits.resolve("m") == 8_000    # fresh re-fetch after invalidate
+    await stale  # old resolve completes without committing
+    assert limits.threshold("m") == 50_000  # stale window NOT resurrected
+    assert await limits.resolve("m") == 8_000  # fresh re-fetch after invalidate
     assert calls["n"] == 2
 
 
@@ -274,12 +271,13 @@ def test_window_for_returns_the_override():
 async def test_window_for_returns_the_discovered_window_or_none():
     """The raw KNOWN window (no safety ratio, no budget) — the number the
     contention classifier compares a rejected request's size against."""
+
     async def fake_local():
         return {"ornith-1.0-9b": 102_206}
 
     limits = ContextLimits(budget=100_000, fetch_local=fake_local)
-    assert limits.window_for("ornith-1.0-9b") is None       # not discovered yet
+    assert limits.window_for("ornith-1.0-9b") is None  # not discovered yet
     await limits.resolve("ornith-1.0-9b")
-    assert limits.window_for("ornith-1.0-9b") == 102_206    # raw, not 0.8x
+    assert limits.window_for("ornith-1.0-9b") == 102_206  # raw, not 0.8x
     assert limits.window_for("local:ornith-1.0-9b") == 102_206  # qualified id
     assert limits.window_for("unknown-model") is None

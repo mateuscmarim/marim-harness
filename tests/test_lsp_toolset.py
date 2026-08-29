@@ -1,8 +1,12 @@
 from marim_harness.tools.lsp_tools import build_lsp_toolset
 
 _EXPECTED = {
-    "goto_definition", "find_references", "hover",
-    "document_symbols", "workspace_symbols", "diagnostics",
+    "goto_definition",
+    "find_references",
+    "hover",
+    "document_symbols",
+    "workspace_symbols",
+    "diagnostics",
 }
 
 

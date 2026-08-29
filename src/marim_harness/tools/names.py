@@ -19,10 +19,16 @@ SUBAGENT_MAX_DEPTH = 3
 #                 (where they run un-prompted).
 # Memory, skill, task, and spawn tools are main-agent only — a sub-agent's job is
 # its task, not the session's bookkeeping.
-LSP_TOOLS = frozenset({
-    "goto_definition", "find_references", "hover",
-    "document_symbols", "workspace_symbols", "diagnostics",
-})
+LSP_TOOLS = frozenset(
+    {
+        "goto_definition",
+        "find_references",
+        "hover",
+        "document_symbols",
+        "workspace_symbols",
+        "diagnostics",
+    }
+)
 READ_TOOLS = frozenset({"read_file", "glob", "tree", "grep"}) | LSP_TOOLS
 NET_TOOLS = frozenset({"web_search", "fetch_url"})
 GATED_TOOLS = frozenset({"write_file", "edit_file", "bash"})

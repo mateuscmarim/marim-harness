@@ -38,11 +38,13 @@ def test_update_tasks_mutates_deps(tmp_path):
     agent = _agent()
     model, captured = _call_tool(
         "update_tasks",
-        {"todos": [
-            {"text": "first", "status": "done"},
-            {"text": "second", "status": "in_progress"},
-            {"text": "third"},
-        ]},
+        {
+            "todos": [
+                {"text": "first", "status": "done"},
+                {"text": "second", "status": "in_progress"},
+                {"text": "third"},
+            ]
+        },
     )
     with agent.override(model=model):
         agent.run_sync("go", deps=deps)
@@ -99,9 +101,13 @@ def test_update_tasks_fires_task_completed_for_newly_done(tmp_path):
     agent = _agent()
     model, _ = _call_tool(
         "update_tasks",
-        {"todos": [{"text": "a", "status": "done"},
-                   {"text": "b", "status": "in_progress"},
-                   {"text": "c"}]},
+        {
+            "todos": [
+                {"text": "a", "status": "done"},
+                {"text": "b", "status": "in_progress"},
+                {"text": "c"},
+            ]
+        },
     )
     with agent.override(model=model):
         agent.run_sync("go", deps=deps)
@@ -116,8 +122,7 @@ def test_update_tasks_does_not_refire_already_done(tmp_path):
     agent = _agent()
     model, _ = _call_tool(
         "update_tasks",
-        {"todos": [{"text": "a", "status": "done"},
-                   {"text": "b", "status": "done"}]},
+        {"todos": [{"text": "a", "status": "done"}, {"text": "b", "status": "done"}]},
     )
     with agent.override(model=model):
         agent.run_sync("go", deps=deps)

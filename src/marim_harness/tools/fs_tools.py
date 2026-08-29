@@ -60,13 +60,18 @@ async def read_file(
     # reaches for a skill's bundled file by absolute path succeeds even when the
     # skill lives outside the workspace (discover_skills is cached per workspace).
     skills = discover_skills(
-        ctx.deps.workspace.root, trust_project=ctx.deps.trust.project,
+        ctx.deps.workspace.root,
+        trust_project=ctx.deps.trust.project,
         dirs=ctx.deps.workspace.skill_dirs,
     )
     skill_roots = tuple(s.root for s in skills)
     out = fs.read_file(
-        ctx.deps.workspace.root, path, offset=offset, limit=limit,
-        extra_read_roots=skill_roots + scratch_roots(ctx), ledger=ctx.deps.reads,
+        ctx.deps.workspace.root,
+        path,
+        offset=offset,
+        limit=limit,
+        extra_read_roots=skill_roots + scratch_roots(ctx),
+        ledger=ctx.deps.reads,
     )
     if isinstance(out, str):
         return out
@@ -97,15 +102,13 @@ async def _model_accepts_images(ctx: RunContext[Deps]) -> bool | None:
 
 def glob(ctx: RunContext[Deps], pattern: str) -> str:
     """List files matching a glob pattern (e.g. `**/*.py`)."""
-    return fs.glob_files(ctx.deps.workspace.root, pattern,
-                         offload_dir=offload_dir(ctx))
+    return fs.glob_files(ctx.deps.workspace.root, pattern, offload_dir=offload_dir(ctx))
 
 
 def tree(ctx: RunContext[Deps], path: str = ".", depth: int = 2) -> str:
     """Show a directory tree. `depth=1` lists one level (like ls); higher
     descends further. Noise dirs (.git, node_modules, …) aren't expanded."""
-    return fs.tree(ctx.deps.workspace.root, path, depth,
-                   offload_dir=offload_dir(ctx))
+    return fs.tree(ctx.deps.workspace.root, path, depth, offload_dir=offload_dir(ctx))
 
 
 def _grep_int_flag(key: str, val: object) -> int:

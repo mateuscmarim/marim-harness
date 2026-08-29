@@ -16,6 +16,7 @@ class TreeRow:
     """One agent placed in the display tree: the agent, its nesting ``depth``
     (0 = a top-level spawn / list root), and whether it is the last of its
     siblings (drives the └─ vs ├─ connector)."""
+
     agent: object
     depth: int
     is_last: bool

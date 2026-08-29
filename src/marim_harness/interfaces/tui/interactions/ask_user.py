@@ -5,7 +5,6 @@ a SelectionList with a Confirm button; a free-text Input is always visible so
 "Other" is offered on every question. Mounted above the status bar (not a
 modal) so the transcript stays scrollable while the question is pending."""
 
-
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
@@ -96,8 +95,7 @@ class AskUserPanel(InteractionPanel):
         with Horizontal(id="ask-confirm-row"):
             # compact: one row instead of the default three-row bevelled
             # block — vertical space is scarce while a panel is up.
-            yield Button("Confirm selection", id="ask-confirm", variant="primary",
-                         compact=True)
+            yield Button("Confirm selection", id="ask-confirm", variant="primary", compact=True)
 
     def on_mount(self) -> None:
         self.run_worker(self._show_question())
@@ -148,9 +146,7 @@ class AskUserPanel(InteractionPanel):
             options.highlighted = 0
             options.focus()
 
-    def on_selection_list_selected_changed(
-        self, event: SelectionList.SelectedChanged
-    ) -> None:
+    def on_selection_list_selected_changed(self, event: SelectionList.SelectedChanged) -> None:
         """Live feedback on the confirm button: how many options are checked."""
         n = len(event.selection_list.selected)
         label = f"Confirm selection ({n})" if n else "Confirm selection"

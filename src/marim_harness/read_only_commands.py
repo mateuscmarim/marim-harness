@@ -27,9 +27,22 @@ _UNSAFE = re.compile(r"[;&|<>`\n]|\$\(")
 # reserved for programs with no mutating invocation to screen for.
 _ALLOWED_PROGRAMS = frozenset(
     {
-        "ls", "cat", "head", "tail", "wc", "stat", "pwd",
-        "whoami", "uname", "which", "type", "grep",
-        "find", "ack", "echo", "printf",
+        "ls",
+        "cat",
+        "head",
+        "tail",
+        "wc",
+        "stat",
+        "pwd",
+        "whoami",
+        "uname",
+        "which",
+        "type",
+        "grep",
+        "find",
+        "ack",
+        "echo",
+        "printf",
     }
 )
 
@@ -37,8 +50,7 @@ _ALLOWED_PROGRAMS = frozenset(
 # already caught by the `;` in _UNSAFE, but the `+` terminator and -delete are
 # not — so screen find's arguments explicitly. Conservative by design.
 _FIND_MUTATING = frozenset(
-    {"-delete", "-exec", "-execdir", "-ok", "-okdir",
-     "-fprint", "-fprint0", "-fls", "-fprintf"}
+    {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fls", "-fprintf"}
 )
 
 # fd flags that execute a program per match (`-x`/`--exec`, `-X`/`--exec-batch`),
@@ -69,8 +81,18 @@ _DATE_VALUE_FLAGS = frozenset({"-d", "--date", "-r", "--reference", "-f", "--fil
 # ``_git_is_read_only`` screens their arguments instead of trusting the name.
 _ALLOWED_GIT_SUBCMDS = frozenset(
     {
-        "status", "log", "diff", "show", "branch", "remote", "tag",
-        "describe", "blame", "rev-parse", "ls-files", "shortlog",
+        "status",
+        "log",
+        "diff",
+        "show",
+        "branch",
+        "remote",
+        "tag",
+        "describe",
+        "blame",
+        "rev-parse",
+        "ls-files",
+        "shortlog",
     }
 )
 
@@ -79,8 +101,7 @@ _ALLOWED_GIT_SUBCMDS = frozenset(
 # move flag, even a flag that takes a separate value — is treated as mutating.
 # Conservative by design; research needs no more than these.
 _BRANCH_SAFE_FLAGS = frozenset(
-    {"-a", "--all", "-r", "--remotes", "-v", "-vv", "--verbose",
-     "-l", "--list", "--show-current"}
+    {"-a", "--all", "-r", "--remotes", "-v", "-vv", "--verbose", "-l", "--list", "--show-current"}
 )
 _TAG_SAFE_FLAGS = frozenset({"-l", "--list"})
 

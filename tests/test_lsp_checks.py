@@ -99,9 +99,7 @@ async def test_python_diagnostics_merges_ruff_and_pyright(tmp_path, monkeypatch)
 @pytest.mark.anyio
 async def test_python_diagnostics_skips_pyright_when_absent(tmp_path, monkeypatch):
     """No pyright binary, or a non-deep check, means ruff-only — no pyright call."""
-    monkeypatch.setattr(
-        checks.shutil, "which", lambda b: "/usr/bin/ruff" if b == "ruff" else None
-    )
+    monkeypatch.setattr(checks.shutil, "which", lambda b: "/usr/bin/ruff" if b == "ruff" else None)
     calls: list = []
 
     async def fake_run(cmd, cwd, timeout):

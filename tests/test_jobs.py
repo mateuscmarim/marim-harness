@@ -91,9 +91,7 @@ async def test_cancel_stops_job():
 async def test_cancel_runs_kill_callback():
     reg = JobRegistry()
     killed = []
-    job_id = reg.register(
-        "bash", "sleep", _sleep_then("x", 5), kill=lambda: killed.append(True)
-    )
+    job_id = reg.register("bash", "sleep", _sleep_then("x", 5), kill=lambda: killed.append(True))
     await reg.cancel(job_id)
     assert killed == [True]
 
@@ -121,9 +119,7 @@ async def test_output_running_vs_done():
 async def test_output_uses_live_buffer_for_bash_style_job():
     reg = JobRegistry()
     buf = ["line1\n"]
-    job_id = reg.register(
-        "bash", "cmd", _sleep_then("done", 0.2), output_fn=lambda: "".join(buf)
-    )
+    job_id = reg.register("bash", "cmd", _sleep_then("done", 0.2), output_fn=lambda: "".join(buf))
     assert "line1" in reg.output(job_id)  # live buffer while running
     buf.append("line2\n")
     assert "line2" in reg.output(job_id)
@@ -186,9 +182,7 @@ async def test_finished_digest_includes_result_tail():
     the verdict inline, without spending a separate job_output pull."""
     reg = JobRegistry()
     result = (
-        "exit 0\n"
-        + "\n".join(f"noise{i}" for i in range(300))
-        + "\n=== 717 passed in 12.3s ==="
+        "exit 0\n" + "\n".join(f"noise{i}" for i in range(300)) + "\n=== 717 passed in 12.3s ==="
     )
     reg.register("bash", "tests", _sleep_then(result, 0.01))
     await _settled(reg)
@@ -244,35 +238,34 @@ def test_render_jobs_agent_row_shows_type_and_clips_to_one_line():
     # composed prompt. The row must surface the type and collapse the title to one
     # clipped line — no spill into the panel.
     job = Job(
-        id="job-1", kind="agent",
+        id="job-1",
+        kind="agent",
         label="explore: Review the TUI subsystem\n\n## Scope\nlots of detail here",
         status="running",
     )
     out = render_jobs([job])
-    assert "\n" not in out                      # one line for the one job
-    assert "explore" in out                     # the agent type is surfaced
+    assert "\n" not in out  # one line for the one job
+    assert "explore" in out  # the agent type is surfaced
     assert "Review the TUI subsystem" in out
-    assert "## Scope" not in out                # the multi-line body is dropped
-    assert "agent" not in out                   # kind column replaced by the type
+    assert "## Scope" not in out  # the multi-line body is dropped
+    assert "agent" not in out  # kind column replaced by the type
 
 
 def test_render_jobs_clips_an_overlong_label():
-    job = Job(id="job-1", kind="agent", label="explore: " + "x" * 300,
-              status="running")
+    job = Job(id="job-1", kind="agent", label="explore: " + "x" * 300, status="running")
     out = render_jobs([job])
     assert "\n" not in out
-    assert len(out) < 120          # bounded
-    assert "…" in out              # truncation marker
+    assert len(out) < 120  # bounded
+    assert "…" in out  # truncation marker
 
 
 def test_render_jobs_bash_keeps_its_kind_and_clips():
-    job = Job(id="job-2", kind="bash", label="uv run pytest\n--verbose",
-              status="running")
+    job = Job(id="job-2", kind="bash", label="uv run pytest\n--verbose", status="running")
     out = render_jobs([job])
     assert "\n" not in out
     assert "bash" in out
-    assert "uv run pytest" in out      # first line shown
-    assert "--verbose" not in out      # the body line is dropped
+    assert "uv run pytest" in out  # first line shown
+    assert "--verbose" not in out  # the body line is dropped
 
 
 @pytest.mark.anyio
@@ -402,7 +395,7 @@ async def test_digest_inlines_full_agent_report():
     reg.register("agent", "explore: x", _work())
     await _settled(reg)
     digest = reg.take_finished_digest()
-    assert "FULL-REPORT-BODY-VERDICT" in digest        # full body, not just tail
+    assert "FULL-REPORT-BODY-VERDICT" in digest  # full body, not just tail
     assert "full report" in digest
 
 
@@ -718,11 +711,21 @@ async def _noop() -> str:
 
 def test_import_history_is_not_live():
     reg = JobRegistry()
-    reg.import_history([{"id": "job-1", "kind": "agent", "label": "l",
-                         "status": "done", "result_tail": "r",
-                         "stream_id": "sg", "finished_at": "t"}])
-    assert reg.get("job-1") is None          # not pollable/killable
-    assert not reg.has_finished_pending()    # never enters the digest
+    reg.import_history(
+        [
+            {
+                "id": "job-1",
+                "kind": "agent",
+                "label": "l",
+                "status": "done",
+                "result_tail": "r",
+                "stream_id": "sg",
+                "finished_at": "t",
+            }
+        ]
+    )
+    assert reg.get("job-1") is None  # not pollable/killable
+    assert not reg.has_finished_pending()  # never enters the digest
     reg.clear_history()
     assert reg.history == []
 
@@ -749,9 +752,16 @@ def test_export_settled_includes_prompt():
 
     reg = JobRegistry()
     reg.history = [
-        Job(id="job-1", kind="agent", label="explore: x", status="done",
-            result="done", stream_id="s1", finished_at="2026-07-23T00:00:00+00:00",
-            prompt="the task prompt")
+        Job(
+            id="job-1",
+            kind="agent",
+            label="explore: x",
+            status="done",
+            result="done",
+            stream_id="s1",
+            finished_at="2026-07-23T00:00:00+00:00",
+            prompt="the task prompt",
+        )
     ]
     entry = reg.export_settled()[0]
     assert entry["prompt"] == "the task prompt"

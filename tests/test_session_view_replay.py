@@ -4,6 +4,7 @@ Verifies that the helper used by both replay_history and replay_messages_into
 dispatches each shared part type to the correct widget, so behavioral parity
 between the two call sites is enforced at the unit level.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -42,8 +43,12 @@ def _app_with_store(tmp_path: Path):
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     store = manager.create("main")
     harness = Harness(
-        TestModel(call_tools=[]), BuiltinToolProvider(), deps,
-        instructions="test", store=store, manager=manager,
+        TestModel(call_tools=[]),
+        BuiltinToolProvider(),
+        deps,
+        instructions="test",
+        store=store,
+        manager=manager,
     )
     return HarnessApp(harness)
 
@@ -53,8 +58,14 @@ def _spawn_meta(stream_id: str, task: str, status: str = "running") -> dict:
     produces (spec 2026-07-03-subagent-resume, Task 2) — the minimum shape
     ``scan_meta``/``finish_replayed_cards`` read."""
     return {
-        "stream_id": stream_id, "type": "general", "task": task, "model": None,
-        "mcp": None, "depth": 1, "max_output_chars": None, "isolation": None,
+        "stream_id": stream_id,
+        "type": "general",
+        "task": task,
+        "model": None,
+        "mcp": None,
+        "depth": 1,
+        "max_output_chars": None,
+        "isolation": None,
         "status": status,
     }
 
@@ -105,7 +116,12 @@ async def test_replay_parts_empty_text_mounts_nothing(tmp_path: Path):
 
         sentinel = object()
         group, solo = await sv._replay_parts(
-            TextPart(content=""), None, record, {}, sentinel, sentinel  # type: ignore[arg-type]
+            TextPart(content=""),
+            None,
+            record,
+            {},
+            sentinel,
+            sentinel,  # type: ignore[arg-type]
         )
         assert len(mounted) == 0
         assert group is None
@@ -215,14 +231,16 @@ async def test_parity_replay_history_and_replay_messages_into(tmp_path: Path):
         sv = app.session
 
         messages = [
-            ModelResponse(parts=[
-                TextPart(content="hello"),
-                ToolCallPart(
-                    tool_name="read_file",
-                    args={"path": "foo.py"},
-                    tool_call_id="call-parity-1",
-                ),
-            ])
+            ModelResponse(
+                parts=[
+                    TextPart(content="hello"),
+                    ToolCallPart(
+                        tool_name="read_file",
+                        args={"path": "foo.py"},
+                        tool_call_id="call-parity-1",
+                    ),
+                ]
+            )
         ]
 
         # -- replay_history path: mount to a fresh VerticalScroll --
@@ -287,16 +305,24 @@ async def test_background_spawn_replays_as_card_and_joins_subagents(tmp_path: Pa
     async with app.run_test() as pilot:
         await pilot.pause()
         app.harness.session.history = [
-            ModelResponse(parts=[ToolCallPart(
-                tool_name="spawn_agent",
-                args={"type": "general", "task": "t", "background": True},
-                tool_call_id="sg-bg",
-            )]),
-            ModelRequest(parts=[ToolReturnPart(
-                tool_name="spawn_agent",
-                content="Started job-3 (agent) — general: t",
-                tool_call_id="sg-bg",
-            )]),
+            ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="spawn_agent",
+                        args={"type": "general", "task": "t", "background": True},
+                        tool_call_id="sg-bg",
+                    )
+                ]
+            ),
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name="spawn_agent",
+                        content="Started job-3 (agent) — general: t",
+                        tool_call_id="sg-bg",
+                    )
+                ]
+            ),
         ]
         await app.session.render_session("note")
         await pilot.pause()
@@ -317,22 +343,38 @@ async def test_background_spawn_settles_from_jobs_history(tmp_path: Path):
     async with app.run_test() as pilot:
         await pilot.pause()
         app.harness.session.history = [
-            ModelResponse(parts=[ToolCallPart(
-                tool_name="spawn_agent",
-                args={"type": "general", "task": "t", "background": True},
-                tool_call_id="sg-bg",
-            )]),
-            ModelRequest(parts=[ToolReturnPart(
-                tool_name="spawn_agent",
-                content="Started job-3 (agent) — general: t",
-                tool_call_id="sg-bg",
-            )]),
+            ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="spawn_agent",
+                        args={"type": "general", "task": "t", "background": True},
+                        tool_call_id="sg-bg",
+                    )
+                ]
+            ),
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name="spawn_agent",
+                        content="Started job-3 (agent) — general: t",
+                        tool_call_id="sg-bg",
+                    )
+                ]
+            ),
         ]
-        app.harness.deps.jobs.import_history([{
-            "id": "job-3", "kind": "agent", "label": "general: t",
-            "status": "done", "result_tail": "all good",
-            "stream_id": "sg-bg", "finished_at": "t",
-        }])
+        app.harness.deps.jobs.import_history(
+            [
+                {
+                    "id": "job-3",
+                    "kind": "agent",
+                    "label": "general: t",
+                    "status": "done",
+                    "result_tail": "all good",
+                    "stream_id": "sg-bg",
+                    "finished_at": "t",
+                }
+            ]
+        )
         await app.session.render_session("note")
         await pilot.pause()
 
@@ -369,14 +411,24 @@ async def test_foreground_spawn_with_running_sidecar_flips_to_interrupted(tmp_pa
             "was aborted). Re-issue it if you still need the result."
         )
         app.harness.session.history = [
-            ModelResponse(parts=[ToolCallPart(
-                tool_name="spawn_agent",
-                args={"type": "general", "task": "t"},
-                tool_call_id="sg-fg",
-            )]),
-            ModelRequest(parts=[ToolReturnPart(
-                tool_name="spawn_agent", content=repair_stub, tool_call_id="sg-fg",
-            )]),
+            ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="spawn_agent",
+                        args={"type": "general", "task": "t"},
+                        tool_call_id="sg-fg",
+                    )
+                ]
+            ),
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name="spawn_agent",
+                        content=repair_stub,
+                        tool_call_id="sg-fg",
+                    )
+                ]
+            ),
         ]
         await app.session.render_session("note")
         await pilot.pause()
@@ -433,14 +485,24 @@ async def test_replayed_foreground_card_joins_subagents_list(tmp_path: Path):
     async with app.run_test() as pilot:
         await pilot.pause()
         app.harness.session.history = [
-            ModelResponse(parts=[ToolCallPart(
-                tool_name="spawn_agent",
-                args={"type": "general", "task": "t"},
-                tool_call_id="sg-fg2",
-            )]),
-            ModelRequest(parts=[ToolReturnPart(
-                tool_name="spawn_agent", content="final report", tool_call_id="sg-fg2",
-            )]),
+            ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="spawn_agent",
+                        args={"type": "general", "task": "t"},
+                        tool_call_id="sg-fg2",
+                    )
+                ]
+            ),
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name="spawn_agent",
+                        content="final report",
+                        tool_call_id="sg-fg2",
+                    )
+                ]
+            ),
         ]
         await app.session.render_session("note")
         await pilot.pause()
@@ -482,14 +544,24 @@ async def test_startup_resume_settles_interrupted_card(tmp_path: Path):
         "was aborted). Re-issue it if you still need the result."
     )
     app.harness.session.history = [
-        ModelResponse(parts=[ToolCallPart(
-            tool_name="spawn_agent",
-            args={"type": "general", "task": "long task"},
-            tool_call_id="sg-killed",
-        )]),
-        ModelRequest(parts=[ToolReturnPart(
-            tool_name="spawn_agent", content=repair_stub, tool_call_id="sg-killed",
-        )]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="spawn_agent",
+                    args={"type": "general", "task": "long task"},
+                    tool_call_id="sg-killed",
+                )
+            ]
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="spawn_agent",
+                    content=repair_stub,
+                    tool_call_id="sg-killed",
+                )
+            ]
+        ),
     ]
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -512,11 +584,15 @@ async def test_render_session_twice_with_spawn_no_duplicate_panes(tmp_path: Path
     async with app.run_test() as pilot:
         await pilot.pause()
         app.harness.session.history = [
-            ModelResponse(parts=[ToolCallPart(
-                tool_name="spawn_agent",
-                args={"type": "general", "task": "t"},
-                tool_call_id="sg-dup",
-            )]),
+            ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="spawn_agent",
+                        args={"type": "general", "task": "t"},
+                        tool_call_id="sg-dup",
+                    )
+                ]
+            ),
         ]
         await app.session.render_session("first")
         await pilot.pause()
@@ -553,8 +629,12 @@ async def test_still_running_job_card_rearmed_not_interrupted(tmp_path: Path):
         store = app.harness.session.store
         assert store is not None
         ts = TranscriptStore(store.path, store.session_id)
-        ts.write("sg-live", [ModelRequest(parts=[])], 2000,
-                 meta=_spawn_meta("sg-live", "t", status="running"))
+        ts.write(
+            "sg-live",
+            [ModelRequest(parts=[])],
+            2000,
+            meta=_spawn_meta("sg-live", "t", status="running"),
+        )
 
         gate = asyncio.Event()
 
@@ -565,16 +645,24 @@ async def test_still_running_job_card_rearmed_not_interrupted(tmp_path: Path):
         jobs = app.harness.deps.jobs
         job_id = jobs.register("agent", "general: t", coro(), stream_id="sg-live")
         app.harness.session.history = [
-            ModelResponse(parts=[ToolCallPart(
-                tool_name="spawn_agent",
-                args={"type": "general", "task": "t", "background": True},
-                tool_call_id="sg-live",
-            )]),
-            ModelRequest(parts=[ToolReturnPart(
-                tool_name="spawn_agent",
-                content=f"Started {job_id} (agent) — general: t",
-                tool_call_id="sg-live",
-            )]),
+            ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="spawn_agent",
+                        args={"type": "general", "task": "t", "background": True},
+                        tool_call_id="sg-live",
+                    )
+                ]
+            ),
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name="spawn_agent",
+                        content=f"Started {job_id} (agent) — general: t",
+                        tool_call_id="sg-live",
+                    )
+                ]
+            ),
         ]
         await app.session.render_session("note")
         await pilot.pause()
@@ -608,23 +696,43 @@ async def test_nested_pane_replay_settles_child_from_jobs_history(tmp_path: Path
         store = app.harness.session.store
         assert store is not None
         ts = TranscriptStore(store.path, store.session_id)
-        ts.write("sg-parent", [
-            ModelResponse(parts=[ToolCallPart(
-                tool_name="spawn_agent",
-                args={"type": "general", "task": "child", "background": True},
-                tool_call_id="sg-child",
-            )]),
-            ModelRequest(parts=[ToolReturnPart(
-                tool_name="spawn_agent",
-                content="Started job-9 (agent) — general: child",
-                tool_call_id="sg-child",
-            )]),
-        ], 2000)
-        app.harness.deps.jobs.import_history([{
-            "id": "job-9", "kind": "agent", "label": "general: child",
-            "status": "done", "result_tail": "child done",
-            "stream_id": "sg-child", "finished_at": "t",
-        }])
+        ts.write(
+            "sg-parent",
+            [
+                ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="spawn_agent",
+                            args={"type": "general", "task": "child", "background": True},
+                            tool_call_id="sg-child",
+                        )
+                    ]
+                ),
+                ModelRequest(
+                    parts=[
+                        ToolReturnPart(
+                            tool_name="spawn_agent",
+                            content="Started job-9 (agent) — general: child",
+                            tool_call_id="sg-child",
+                        )
+                    ]
+                ),
+            ],
+            2000,
+        )
+        app.harness.deps.jobs.import_history(
+            [
+                {
+                    "id": "job-9",
+                    "kind": "agent",
+                    "label": "general: child",
+                    "status": "done",
+                    "result_tail": "child done",
+                    "stream_id": "sg-child",
+                    "finished_at": "t",
+                }
+            ]
+        )
         host = app.query_one(SubAgentDetailHost)
         pane = host.add_pane("sg-parent", "general", "", "parent", "parent task")
 
@@ -650,11 +758,15 @@ async def test_never_ran_spawn_card_finishes_failed_not_interrupted(tmp_path: Pa
     async with app.run_test() as pilot:
         await pilot.pause()
         app.harness.session.history = [
-            ModelResponse(parts=[ToolCallPart(
-                tool_name="spawn_agent",
-                args={"type": "general", "task": "t"},
-                tool_call_id="sg-never",
-            )]),
+            ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="spawn_agent",
+                        args={"type": "general", "task": "t"},
+                        tool_call_id="sg-never",
+                    )
+                ]
+            ),
         ]
         await app.session.render_session("note")
         await pilot.pause()
@@ -687,19 +799,28 @@ async def test_v1_sidecar_spawn_settles_done_not_never_ran(tmp_path: Path):
         store = app.harness.session.store
         assert store is not None
         ts = TranscriptStore(store.path, store.session_id)
-        ts.write("sg-legacy", [ModelResponse(parts=[TextPart(content="did it")])],
-                 2000)  # no meta → v1 bare list, exactly what pre-envelope code wrote
+        ts.write(
+            "sg-legacy", [ModelResponse(parts=[TextPart(content="did it")])], 2000
+        )  # no meta → v1 bare list, exactly what pre-envelope code wrote
         app.harness.session.history = [
-            ModelResponse(parts=[ToolCallPart(
-                tool_name="spawn_agent",
-                args={"type": "general", "task": "t", "background": True},
-                tool_call_id="sg-legacy",
-            )]),
-            ModelRequest(parts=[ToolReturnPart(
-                tool_name="spawn_agent",
-                content="Started job-1 (agent) — general: t",
-                tool_call_id="sg-legacy",
-            )]),
+            ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="spawn_agent",
+                        args={"type": "general", "task": "t", "background": True},
+                        tool_call_id="sg-legacy",
+                    )
+                ]
+            ),
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name="spawn_agent",
+                        content="Started job-1 (agent) — general: t",
+                        tool_call_id="sg-legacy",
+                    )
+                ]
+            ),
         ]
         await app.session.render_session("note")
         await pilot.pause()
@@ -731,22 +852,32 @@ async def test_settle_rehydrates_card_stats_from_meta(tmp_path: Path):
         store = app.harness.session.store
         assert store is not None
         ts = TranscriptStore(store.path, store.session_id)
-        meta = {**_spawn_meta("sg-stats", "t", status="finished"),
-                "usage": {"input": 900, "output": 100},
-                "tool_count": 7, "duration": 65.0}
-        ts.write("sg-stats", [ModelResponse(parts=[TextPart(content="done")])],
-                 2000, meta=meta)
+        meta = {
+            **_spawn_meta("sg-stats", "t", status="finished"),
+            "usage": {"input": 900, "output": 100},
+            "tool_count": 7,
+            "duration": 65.0,
+        }
+        ts.write("sg-stats", [ModelResponse(parts=[TextPart(content="done")])], 2000, meta=meta)
         app.harness.session.history = [
-            ModelResponse(parts=[ToolCallPart(
-                tool_name="spawn_agent",
-                args={"type": "general", "task": "t", "background": True},
-                tool_call_id="sg-stats",
-            )]),
-            ModelRequest(parts=[ToolReturnPart(
-                tool_name="spawn_agent",
-                content="Started job-1 (agent) — general: t",
-                tool_call_id="sg-stats",
-            )]),
+            ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="spawn_agent",
+                        args={"type": "general", "task": "t", "background": True},
+                        tool_call_id="sg-stats",
+                    )
+                ]
+            ),
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name="spawn_agent",
+                        content="Started job-1 (agent) — general: t",
+                        tool_call_id="sg-stats",
+                    )
+                ]
+            ),
         ]
         await app.session.render_session("note")
         await pilot.pause()

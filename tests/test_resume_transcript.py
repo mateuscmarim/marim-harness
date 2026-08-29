@@ -1,4 +1,5 @@
 """Tests for lazy-loading and replaying sub-agent transcripts on resume."""
+
 from __future__ import annotations
 
 import pytest
@@ -46,6 +47,7 @@ def test_old_session_without_sidecars_resumes_report_only():
     import tempfile
 
     from marim_harness.session import TranscriptStore
+
     with tempfile.TemporaryDirectory() as td:
         store = TranscriptStore(pathlib.Path(td) / "sessions" / "old.json", "old")
         assert store.read("anything") is None  # no dir -> None, no crash

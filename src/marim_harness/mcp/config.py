@@ -52,8 +52,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _bound_tool_result(result, *, label: str, name: str, args: dict | None,
-                       offload_dir: Path | None):
+def _bound_tool_result(
+    result, *, label: str, name: str, args: dict | None, offload_dir: Path | None
+):
     """Bound an MCP tool result so a huge server response can't flood context.
 
     MCP results are an open union (``str | BinaryContent | dict | list | …``).
@@ -88,9 +89,7 @@ def _bound_tool_result(result, *, label: str, name: str, args: dict | None,
         arg_key = repr(args)
     key = f"{label}/{name}\0{arg_key}"
     if isinstance(result, str):
-        return offload_if_large(
-            result, kind="mcp", key=key, offload_dir=offload_dir
-        )
+        return offload_if_large(result, kind="mcp", key=key, offload_dir=offload_dir)
     # Don't touch binary payloads — they aren't a text flood and must reach the
     # model intact. Import lazily so this module stays cheap to import.
     from pydantic_ai.messages import BinaryContent
@@ -104,7 +103,10 @@ def _bound_tool_result(result, *, label: str, name: str, args: dict | None,
             return result  # can't measure safely — leave the structure intact
         if len(serialized) > _INLINE_CHAR_LIMIT:
             return offload_if_large(
-                serialized, kind="mcp", key=key, offload_dir=offload_dir,
+                serialized,
+                kind="mcp",
+                key=key,
+                offload_dir=offload_dir,
             )
     return result
 
@@ -380,8 +382,10 @@ def make_approval_hook(label: str, trusted: bool, *, schema_holder: dict | None 
         getter = getattr(getattr(deps, "services", None), "get_scratchpad", None)
         scratchpad = getter() if getter is not None else None
         from ..tools.impl.offload import LEGACY_OFFLOAD_DIR
+
         offld = (
-            scratchpad if scratchpad is not None
+            scratchpad
+            if scratchpad is not None
             else (root / LEGACY_OFFLOAD_DIR if root is not None else None)
         )
         if mode is Mode.plan:
@@ -392,9 +396,7 @@ def make_approval_hook(label: str, trusted: bool, *, schema_holder: dict | None 
         args = await coercer.coerce_args(name, args)
         if mode is Mode.auto or trusted:
             result = await call_tool(name, args)
-            return _bound_tool_result(
-                result, label=label, name=name, args=args, offload_dir=offld
-            )
+            return _bound_tool_result(result, label=label, name=name, args=args, offload_dir=offld)
         # ask mode against an untrusted server: prompt the user.
         ui = getattr(deps, "ui", None)
         approve = getattr(ui, "request_approval", None) if ui is not None else None
@@ -403,9 +405,7 @@ def make_approval_hook(label: str, trusted: bool, *, schema_holder: dict | None 
         decision = await approve(_McpApprovalCall(display, args or {}))
         if decision is True:
             result = await call_tool(name, args)
-            return _bound_tool_result(
-                result, label=label, name=name, args=args, offload_dir=offld
-            )
+            return _bound_tool_result(result, label=label, name=name, args=args, offload_dir=offld)
         return f"Denied: the user rejected {display}."
 
     # Function attribute, not a wrapper class: the hook must stay a plain
@@ -464,9 +464,7 @@ def build_mcp_servers(specs: dict) -> tuple[list, list[str]]:
             notes.append(f"MCP server {name!r}: spec must be an object; skipped.")
             continue
         holder: dict = {}
-        hook = make_approval_hook(
-            name, bool(spec.get("trust", False)), schema_holder=holder
-        )
+        hook = make_approval_hook(name, bool(spec.get("trust", False)), schema_holder=holder)
         transport: StdioTransport | SSETransport | StreamableHttpTransport
         if "command" in spec:
             transport = StdioTransport(
@@ -478,16 +476,10 @@ def build_mcp_servers(specs: dict) -> tuple[list, list[str]]:
                 log_file=_mcp_stderr_log_target(),
             )
         elif "url" in spec:
-            kind = (
-                SSETransport
-                if spec.get("type") == "sse"
-                else StreamableHttpTransport
-            )
+            kind = SSETransport if spec.get("type") == "sse" else StreamableHttpTransport
             transport = kind(url=spec["url"], headers=spec.get("headers"))
         else:
-            notes.append(
-                f"MCP server {name!r}: needs 'command' or 'url'; skipped."
-            )
+            notes.append(f"MCP server {name!r}: needs 'command' or 'url'; skipped.")
             continue
         server = MCPToolset(transport, id=name, process_tool_call=hook)
         # The hook needs the server to read tool inputSchemas, but the server

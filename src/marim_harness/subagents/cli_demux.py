@@ -221,11 +221,13 @@ class CliSubagentDemux:
                 continue
             if spawn.async_started:
                 continue  # launch metadata — drop
-            out.extend(self._finish(
-                tid,
-                _flatten_tool_result(block.get("content")),
-                failed=bool(block.get("is_error")),
-            ))
+            out.extend(
+                self._finish(
+                    tid,
+                    _flatten_tool_result(block.get("content")),
+                    failed=bool(block.get("is_error")),
+                )
+            )
         if len(kept) == len(blocks):
             return obj
         if not kept:
@@ -272,8 +274,4 @@ class CliSubagentDemux:
         stream id, for sidecar persistence — so the sub-agents screen can
         replay a Claude-side child after a session resume. Empty streams are
         omitted."""
-        return {
-            sid: t.transcript()
-            for sid, t in self._translators.items()
-            if t.transcript()
-        }
+        return {sid: t.transcript() for sid, t in self._translators.items() if t.transcript()}

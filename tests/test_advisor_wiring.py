@@ -14,9 +14,7 @@ from marim_harness.tools.provider import BuiltinToolProvider
 
 def _harness(tmp_path, **kwargs) -> Harness:
     deps = Deps(workspace=WorkspaceConfig(root=tmp_path, mode=Mode.auto))
-    return Harness(
-        TestModel(call_tools=[]), BuiltinToolProvider(), deps, "Be helpful.", **kwargs
-    )
+    return Harness(TestModel(call_tools=[]), BuiltinToolProvider(), deps, "Be helpful.", **kwargs)
 
 
 def test_config_default_activates_the_seam(tmp_path):
@@ -63,9 +61,7 @@ def test_set_advisor_model_switches_and_persists(tmp_path):
 def test_set_advisor_model_none_disables_and_persists_sentinel(tmp_path):
     manager = SessionManager(tmp_path)
     store = manager.create()
-    h = _harness(
-        tmp_path, store=store, manager=manager, advisor_model="openrouter:opus"
-    )
+    h = _harness(tmp_path, store=store, manager=manager, advisor_model="openrouter:opus")
     h.set_advisor_model(None)
     assert h.advisor_model_id is None
     assert h.deps.services.advise is None

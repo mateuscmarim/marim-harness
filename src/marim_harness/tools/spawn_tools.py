@@ -81,9 +81,7 @@ async def _run_after(
     # the full composed (multi-section) task when `description` was omitted,
     # so without _one_line a dependent would receive its prerequisite's entire
     # prompt embedded inside its own "### job-N — ..." heading.
-    sections = [
-        f"### {j.id} — {_one_line(j.label)}\n{j.result or '(no output)'}" for j in settled
-    ]
+    sections = [f"### {j.id} — {_one_line(j.label)}\n{j.result or '(no output)'}" for j in settled]
     full_task = task + "\n\n## Results of prerequisite jobs\n\n" + "\n\n".join(sections)
     state["waiting"] = False
     return await start_inner(full_task)
@@ -95,7 +93,7 @@ def _detach_handoff(job_id: str) -> str:
     return (
         f"Started detached sub-agent {job_id}, running in the background. "
         f"End your turn to let it run — its report will be "
-        f"delivered to you when it finishes — or wait_for_job(\"{job_id}\") if you "
+        f'delivered to you when it finishes — or wait_for_job("{job_id}") if you '
         f"need the result in this turn. For a fan-out, ending the turn is better."
     )
 
@@ -192,12 +190,21 @@ async def _spawn_background(
 
         def _start_inner(full_task: str) -> "Awaitable[str]":
             return run_bg(
-                type, full_task, mcp_names, budget, model, isolation,
-                ctx.tool_call_id or "", ctx.deps.subagent_depth, tier, thinking,
+                type,
+                full_task,
+                mcp_names,
+                budget,
+                model,
+                isolation,
+                ctx.tool_call_id or "",
+                ctx.deps.subagent_depth,
+                tier,
+                thinking,
             )
 
         job_id = ctx.deps.jobs.register(
-            "agent", label,
+            "agent",
+            label,
             _run_after(ctx.deps.jobs, after_ids, task, _start_inner, state),
             output_fn=_waiting_output,
             stream_id=ctx.tool_call_id or None,
@@ -205,10 +212,19 @@ async def _spawn_background(
         )
     else:
         job_id = ctx.deps.jobs.register(
-            "agent", label,
+            "agent",
+            label,
             ctx.deps.services.run_background_agent(
-                type, task, mcp_names, budget, model, isolation,
-                ctx.tool_call_id or "", ctx.deps.subagent_depth, tier, thinking,
+                type,
+                task,
+                mcp_names,
+                budget,
+                model,
+                isolation,
+                ctx.tool_call_id or "",
+                ctx.deps.subagent_depth,
+                tier,
+                thinking,
             ),
             stream_id=ctx.tool_call_id or None,
             prompt=task,
@@ -346,9 +362,7 @@ async def spawn_agent(
         ctx, background=background, auto_detached=auto_detached, after_ids=after_ids
     ):
         return r
-    task = compose_subagent_task(
-        task, returns=returns, constraints=constraints, context=context
-    )
+    task = compose_subagent_task(task, returns=returns, constraints=constraints, context=context)
     if background or auto_detached:
         return await _spawn_background(
             ctx,
@@ -375,6 +389,15 @@ async def spawn_agent(
     # and dropping this placeholder would silently shift ``thinking`` onto
     # ``output_schema`` instead of the runner's ``thinking`` param.
     return await ctx.deps.services.run_subagent(
-        type, task, ctx.tool_call_id or "", mcp_names, max_output_chars, model,
-        isolation, ctx.deps.subagent_depth, tier, None, thinking,
+        type,
+        task,
+        ctx.tool_call_id or "",
+        mcp_names,
+        max_output_chars,
+        model,
+        isolation,
+        ctx.deps.subagent_depth,
+        tier,
+        None,
+        thinking,
     )

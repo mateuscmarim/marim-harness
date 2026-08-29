@@ -49,7 +49,7 @@ async def test_falls_back_to_ask_user_when_no_present_plan(tmp_path):
 
     await present_plan(ctx, "s", ["one"])
     assert deps.workspace.mode is Mode.ask  # ask_user answer honored
-    assert deps.plan is not None            # plan still recorded
+    assert deps.plan is not None  # plan still recorded
 
 
 async def test_headless_saves_and_stays_in_plan_mode(tmp_path):
@@ -58,7 +58,7 @@ async def test_headless_saves_and_stays_in_plan_mode(tmp_path):
 
     result = await present_plan(ctx, "s", ["one"])
     assert deps.workspace.mode is Mode.plan  # unchanged
-    assert deps.plan is not None             # narrative still stored
+    assert deps.plan is not None  # narrative still stored
     assert "plan mode" in result.lower()
 
 
@@ -81,9 +81,9 @@ async def test_feedback_keeps_planning_and_returns_feedback(tmp_path):
     ctx = SimpleNamespace(deps=deps)
 
     result = await present_plan(ctx, "s", ["one"])
-    assert deps.workspace.mode is Mode.plan            # not approved → no flip
-    assert "use a dataclass not a dict" in result      # feedback threaded to the model
-    assert "revise" in result.lower()                  # instructed to revise
+    assert deps.workspace.mode is Mode.plan  # not approved → no flip
+    assert "use a dataclass not a dict" in result  # feedback threaded to the model
+    assert "revise" in result.lower()  # instructed to revise
 
 
 async def test_ask_user_freetext_answer_becomes_feedback(tmp_path):
@@ -95,6 +95,6 @@ async def test_ask_user_freetext_answer_becomes_feedback(tmp_path):
     ctx = SimpleNamespace(deps=deps)
 
     result = await present_plan(ctx, "s", ["one"])
-    assert deps.workspace.mode is Mode.plan                     # free text → no execute
-    assert "please use pytest fixtures instead" in result       # threaded as feedback
+    assert deps.workspace.mode is Mode.plan  # free text → no execute
+    assert "please use pytest fixtures instead" in result  # threaded as feedback
     assert "revise" in result.lower()

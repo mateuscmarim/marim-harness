@@ -4,6 +4,7 @@ The harness clears the OUTGOING session's job context when switching; the bug wa
 doing that AFTER importing the incoming session's history, wiping the fresh import
 (and re-persisting jobs=[] over the file). See harness.switch_session.
 """
+
 from __future__ import annotations
 
 import json
@@ -18,8 +19,12 @@ from marim_harness.tools.provider import BuiltinToolProvider
 from tests.conftest import _make_deps
 
 _ENTRY = {
-    "id": "job-1", "kind": "agent", "label": "general: seeded",
-    "status": "done", "result_tail": "seeded tail", "stream_id": "sg-seed",
+    "id": "job-1",
+    "kind": "agent",
+    "label": "general: seeded",
+    "status": "done",
+    "result_tail": "seeded tail",
+    "stream_id": "sg-seed",
     "finished_at": "2026-07-03T00:00:00+00:00",
 }
 
@@ -31,8 +36,12 @@ async def test_switch_roundtrip_keeps_incoming_jobs_history(tmp_path: Path):
     store_a = manager.create("A")
     a_id, a_path = store_a.session_id, store_a.path
     harness = Harness(
-        TestModel(call_tools=[]), BuiltinToolProvider(), _make_deps(ws),
-        instructions="t", store=store_a, manager=manager,
+        TestModel(call_tools=[]),
+        BuiltinToolProvider(),
+        _make_deps(ws),
+        instructions="t",
+        store=store_a,
+        manager=manager,
     )
     # Seed A with a settled-jobs history and persist it to A's file.
     harness.deps.jobs.import_history([_ENTRY])
@@ -68,8 +77,12 @@ async def test_failed_switch_restores_outgoing_jobs_history(tmp_path: Path):
     store_a = manager.create("A")
     a_path = store_a.path
     harness = Harness(
-        TestModel(call_tools=[]), BuiltinToolProvider(), _make_deps(ws),
-        instructions="t", store=store_a, manager=manager,
+        TestModel(call_tools=[]),
+        BuiltinToolProvider(),
+        _make_deps(ws),
+        instructions="t",
+        store=store_a,
+        manager=manager,
     )
     harness.deps.jobs.import_history([_ENTRY])
     harness.session.persist(force=True)

@@ -158,9 +158,7 @@ async def resolve_approvals(
         # approval pins the resolved path (see _scratchpad_approval) rather than a
         # bare True. Computed once per call so the elif chain reads a value.
         scratch_ok = (
-            _scratchpad_approval(call, workspace_root, scratchpad)
-            if mode is Mode.ask
-            else None
+            _scratchpad_approval(call, workspace_root, scratchpad) if mode is Mode.ask else None
         )
         if mode is Mode.auto:
             results.approvals[call.tool_call_id] = True
@@ -170,9 +168,7 @@ async def resolve_approvals(
             # ask mode + a scratchpad write: the resolved-path-pinned approval.
             results.approvals[call.tool_call_id] = scratch_ok
         elif request_approval is None:
-            results.approvals[call.tool_call_id] = ToolDenied(
-                "no approver available; denied"
-            )
+            results.approvals[call.tool_call_id] = ToolDenied("no approver available; denied")
         else:  # Mode.ask
             results.approvals[call.tool_call_id] = await request_approval(call)
     return results

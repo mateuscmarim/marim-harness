@@ -49,9 +49,7 @@ class ToolCallWidget(Collapsible):
     """A single tool call: the (clickable) title shows a summary line; expanding
     reveals the arguments and the result."""
 
-    def __init__(
-        self, tool_name: str, args: dict, *, workspace_root: Path | None = None
-    ) -> None:
+    def __init__(self, tool_name: str, args: dict, *, workspace_root: Path | None = None) -> None:
         self.tool_name = tool_name
         self.args = args
         # update_tasks renders as a flat one-line breadcrumb, not a card: the live
@@ -284,9 +282,7 @@ class ToolCallWidget(Collapsible):
         old/new-string diff."""
         if self._old_text is not None and self._new_text is not None:
             lexer = _LEXERS.get(Path(str(self.args.get("path", ""))).suffix.lower())
-            return render_file_diff(
-                self._old_text, self._new_text, cap=cap, lexer=lexer
-            )
+            return render_file_diff(self._old_text, self._new_text, cap=cap, lexer=lexer)
         return render_edit_diff(self.args.get("edits", []), cap=cap)
 
     def _reversed_file_text(self) -> "tuple[str, str] | None":
@@ -469,7 +465,10 @@ class ToolGroupWidget(Collapsible):
         self.body = Vertical(classes="tool-group-body")
         # Open while the run is in flight (live rows visible); folds on finish.
         super().__init__(
-            self.body, title=self._summary(), collapsed=False  # pyright: ignore[reportArgumentType]
+            self.body,
+            # Textual types `title` as str; _summary() returns Content on purpose.
+            title=self._summary(),  # pyright: ignore[reportArgumentType]
+            collapsed=False,
         )
 
     def _summary(self) -> Content:

@@ -12,9 +12,7 @@ def _app(tmp_path):
     from marim_harness.tools.provider import BuiltinToolProvider
 
     deps = _make_deps(tmp_path)
-    harness = Harness(
-        TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test"
-    )
+    harness = Harness(TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test")
     return HarnessApp(harness)
 
 
@@ -24,8 +22,7 @@ async def test_ctrl_v_caches_image_and_inserts_token(tmp_path, monkeypatch):
     from marim_harness import images
     from marim_harness.interfaces.tui.widgets import PromptInput
 
-    monkeypatch.setattr(images, "read_clipboard_image",
-                        lambda: (b"\x89PNGbytes", "image/png"))
+    monkeypatch.setattr(images, "read_clipboard_image", lambda: (b"\x89PNGbytes", "image/png"))
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -45,8 +42,7 @@ async def test_submit_forwards_attachments_to_run_turn(tmp_path, monkeypatch):
     from marim_harness import images
     from marim_harness.interfaces.tui.widgets import PromptInput
 
-    monkeypatch.setattr(images, "read_clipboard_image",
-                        lambda: (b"\x89PNGbytes", "image/png"))
+    monkeypatch.setattr(images, "read_clipboard_image", lambda: (b"\x89PNGbytes", "image/png"))
     seen = {}
 
     async def fake_run_turn(prompt, event_stream_handler=None, attachments=None):
@@ -111,8 +107,7 @@ async def test_text_only_model_blocks_image_submit_with_warning(tmp_path, monkey
     from marim_harness import images
     from marim_harness.interfaces.tui.widgets import NoticeMessage, PromptInput
 
-    monkeypatch.setattr(images, "read_clipboard_image",
-                        lambda: (b"\x89PNGbytes", "image/png"))
+    monkeypatch.setattr(images, "read_clipboard_image", lambda: (b"\x89PNGbytes", "image/png"))
     called = {"run": False}
 
     async def fake_run_turn(*a, **k):
@@ -142,6 +137,7 @@ async def test_startup_seeds_vision_caps(tmp_path):
 
     class _FakeSource:
         is_local = False
+
         async def list_models(self):
             return [ModelEntry(id="x/text", name="X", supports_images=False)]
 
@@ -159,8 +155,7 @@ async def test_unknown_capability_allows_image_submit(tmp_path, monkeypatch):
     from marim_harness import images
     from marim_harness.interfaces.tui.widgets import PromptInput
 
-    monkeypatch.setattr(images, "read_clipboard_image",
-                        lambda: (b"\x89PNGbytes", "image/png"))
+    monkeypatch.setattr(images, "read_clipboard_image", lambda: (b"\x89PNGbytes", "image/png"))
     called = {"run": False}
 
     async def fake_run_turn(*a, **k):
@@ -187,8 +182,7 @@ async def test_backspace_after_marker_removes_marker_and_attachment(tmp_path, mo
     from marim_harness import images
     from marim_harness.interfaces.tui.widgets import PromptInput
 
-    monkeypatch.setattr(images, "read_clipboard_image",
-                        lambda: (b"\x89PNGbytes", "image/png"))
+    monkeypatch.setattr(images, "read_clipboard_image", lambda: (b"\x89PNGbytes", "image/png"))
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -210,8 +204,7 @@ async def test_delete_on_marker_start_removes_whole_marker(tmp_path, monkeypatch
     from marim_harness import images
     from marim_harness.interfaces.tui.widgets import PromptInput
 
-    monkeypatch.setattr(images, "read_clipboard_image",
-                        lambda: (b"\x89PNGbytes", "image/png"))
+    monkeypatch.setattr(images, "read_clipboard_image", lambda: (b"\x89PNGbytes", "image/png"))
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -233,8 +226,7 @@ async def test_deleting_middle_marker_renumbers_remaining(tmp_path, monkeypatch)
     from marim_harness.interfaces.tui.widgets import PromptInput
 
     seq = iter([b"img1", b"img2", b"img3"])
-    monkeypatch.setattr(images, "read_clipboard_image",
-                        lambda: (next(seq), "image/png"))
+    monkeypatch.setattr(images, "read_clipboard_image", lambda: (next(seq), "image/png"))
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()

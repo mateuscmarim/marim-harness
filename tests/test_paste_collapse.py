@@ -63,8 +63,8 @@ async def test_small_pastes_insert_normally():
         pi = app.query_one(PromptInput)
         pi.focus()
         await pilot.pause()
-        await _paste(pilot, pi, "a\nb\nc")     # 3 lines: at the threshold, not over
-        await _paste(pilot, pi, "y" * 600)      # 600 chars: at the threshold, not over
+        await _paste(pilot, pi, "a\nb\nc")  # 3 lines: at the threshold, not over
+        await _paste(pilot, pi, "y" * 600)  # 600 chars: at the threshold, not over
         assert pi.text == "a\nb\nc" + "y" * 600
         assert pi.pastes == []
 
@@ -202,9 +202,9 @@ async def test_image_and_paste_markers_number_independently(tmp_path):
         await pilot.pause()
         img = tmp_path / "shot.png"
         img.write_bytes(b"\x89PNGbytes")
-        await _paste(pilot, pi, str(img))          # -> [Image #1]
+        await _paste(pilot, pi, str(img))  # -> [Image #1]
         blob = "\n".join(f"l{i}" for i in range(9))
-        await _paste(pilot, pi, blob)              # -> [Pasted text #1 +9 lines]
+        await _paste(pilot, pi, blob)  # -> [Pasted text #1 +9 lines]
         assert pi.text == "[Image #1][Pasted text #1 +9 lines]"
         # Deleting the paste marker must not touch the image attachment.
         await pilot.press("backspace")

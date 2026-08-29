@@ -33,8 +33,9 @@ class ProjectSurface:
 
     @property
     def empty(self) -> bool:
-        return not (self.hook_events or self.mcp_servers or self.skills
-                    or self.agents or self.plugins)
+        return not (
+            self.hook_events or self.mcp_servers or self.skills or self.agents or self.plugins
+        )
 
     def summary(self) -> str:
         """One line for the trust dialog / status readouts, naming counts and
@@ -66,8 +67,7 @@ def _project_plugin_dirs(workspace_root: Path) -> list[Path]:
 def _skill_names(workspace_root: Path) -> list[str]:
     root = Path(workspace_root) / ".marim" / "skills"
     try:
-        return sorted(d.name for d in root.iterdir()
-                      if d.is_dir() and (d / "SKILL.md").is_file())
+        return sorted(d.name for d in root.iterdir() if d.is_dir() and (d / "SKILL.md").is_file())
     except OSError:
         return []
 
@@ -75,8 +75,7 @@ def _skill_names(workspace_root: Path) -> list[str]:
 def _agent_names(workspace_root: Path) -> list[str]:
     root = Path(workspace_root) / ".marim" / "agents"
     try:
-        return sorted(p.stem for p in root.iterdir()
-                      if p.is_file() and p.suffix == ".md")
+        return sorted(p.stem for p in root.iterdir() if p.is_file() and p.suffix == ".md")
     except OSError:
         return []
 
@@ -92,7 +91,8 @@ def scan_project_surface(workspace_root) -> ProjectSurface:
             "mcpServers": servers,
             "plugins": {p.name: plugin_surface_fingerprint(p) for p in plugin_dirs},
         },
-        sort_keys=True, default=str,
+        sort_keys=True,
+        default=str,
     )
     return ProjectSurface(
         hook_events=sorted(hooks),

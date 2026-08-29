@@ -38,9 +38,7 @@ def test_config_dir_defaults_to_dot_claude_in_home():
 
 
 def test_memory_dir_composes_projects_slug_memory(tmp_path: Path):
-    got = claude_import.claude_memory_dir(
-        "/home/x/Projects/app", config_dir=tmp_path / "cc"
-    )
+    got = claude_import.claude_memory_dir("/home/x/Projects/app", config_dir=tmp_path / "cc")
     assert got == tmp_path / "cc" / "projects" / "-home-x-Projects-app" / "memory"
 
 
@@ -106,9 +104,7 @@ def test_read_source_recovers_titles_from_the_index(tmp_path: Path):
     _write_source(src, "alpha", "First fact.", "Alpha body.")
     _write_source(src, "beta", "Second fact.", "Beta body.")
     (src / "MEMORY.md").write_text(
-        "# Memory Index\n\n"
-        "- [Alpha Fact](alpha.md) — first\n"
-        "- [Beta Fact](beta.md) — second\n",
+        "# Memory Index\n\n- [Alpha Fact](alpha.md) — first\n- [Beta Fact](beta.md) — second\n",
         encoding="utf-8",
     )
     scan = claude_import.read_source(src)
@@ -127,8 +123,7 @@ def test_read_source_does_not_misattribute_a_title_containing_a_link(tmp_path: P
     _write_source(src, "alpha", "First fact.", "Alpha body.")
     _write_source(src, "beta", "Second fact.", "Beta body.")
     (src / "MEMORY.md").write_text(
-        "- [Alpha Fact](alpha.md) — see also [Beta](beta.md)\n"
-        "- [Beta Fact](beta.md) — second\n",
+        "- [Alpha Fact](alpha.md) — see also [Beta](beta.md)\n- [Beta Fact](beta.md) — second\n",
         encoding="utf-8",
     )
     scan = claude_import.read_source(src)
@@ -261,9 +256,7 @@ def test_plan_import_force_turns_conflicts_into_overwrites():
 
 
 def test_plan_import_preserves_source_order():
-    plan = claude_import.plan_import(
-        [_mem("c", "C"), _mem("a", "A")], state=_state(), force=False
-    )
+    plan = claude_import.plan_import([_mem("c", "C"), _mem("a", "A")], state=_state(), force=False)
     assert [p.slug for p in plan] == ["c", "a"]
 
 
@@ -357,7 +350,11 @@ def test_apply_plan_does_not_write_skipped_memories(tmp_path: Path):
 
     scope = memory.project_scope(tmp_path)
     memory.save_memory(
-        scope, name="alpha", description="mine", mem_type="project", body="marim body",
+        scope,
+        name="alpha",
+        description="mine",
+        mem_type="project",
+        body="marim body",
         title="Alpha Fact",
     )
     sources = [_mem("alpha", "Alpha Fact")]
@@ -373,7 +370,11 @@ def test_apply_plan_overwrites_under_force(tmp_path: Path):
 
     scope = memory.project_scope(tmp_path)
     memory.save_memory(
-        scope, name="alpha", description="mine", mem_type="project", body="marim body",
+        scope,
+        name="alpha",
+        description="mine",
+        mem_type="project",
+        body="marim body",
         title="Alpha Fact",
     )
     sources = [_mem("alpha", "Alpha Fact")]
@@ -414,16 +415,18 @@ def _marim_memory(tmp_path: Path, *, slug: str, title: str, body: str):
 
     scope = memory.project_scope(tmp_path)
     memory.save_memory(
-        scope, name=slug, description="marim's own note", mem_type="project",
-        body=body, title=title,
+        scope,
+        name=slug,
+        description="marim's own note",
+        mem_type="project",
+        body=body,
+        title=title,
     )
     return scope
 
 
 def _import(scope, sources, *, force=False):
-    plan = claude_import.plan_import(
-        sources, state=claude_import.target_state(scope), force=force
-    )
+    plan = claude_import.plan_import(sources, state=claude_import.target_state(scope), force=force)
     return plan, claude_import.apply_plan(plan, sources, scope)
 
 
@@ -487,8 +490,9 @@ def test_import_does_not_let_two_sources_overwrite_each_other(tmp_path: Path):
     from marim_harness.workspace import memory
 
     scope = memory.project_scope(tmp_path)
-    sources = _source_store(tmp_path, [("auth-old", "Auth (v2)", "BODY B"),
-                                       ("auth-v2", "Auth v2", "BODY A")])
+    sources = _source_store(
+        tmp_path, [("auth-old", "Auth (v2)", "BODY B"), ("auth-v2", "Auth v2", "BODY A")]
+    )
 
     plan, result = _import(scope, sources)
 

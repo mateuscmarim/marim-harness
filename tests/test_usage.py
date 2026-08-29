@@ -26,8 +26,10 @@ def test_resolve_cost_prefers_billed_over_estimate():
     # A billed detail must win over the genai-prices estimate, and be flagged
     # exact. Use an implausible billed value so it can't coincide with the model.
     u = RunUsage(
-        input_tokens=56000, output_tokens=2000,
-        cache_read_tokens=50000, cache_write_tokens=5000,
+        input_tokens=56000,
+        output_tokens=2000,
+        cache_read_tokens=50000,
+        cache_write_tokens=5000,
         details={COST_DETAIL_KEY: 999_999},
     )
     value, is_exact = resolve_cost(u, "claude-sonnet-4-6")
@@ -49,8 +51,7 @@ def test_resolve_cost_none_when_unpriced_and_no_billed():
 
 
 def test_usage_summary_marks_estimate_vs_billed():
-    estimated = usage_summary(RunUsage(input_tokens=5000, output_tokens=500),
-                              "claude-sonnet-4-6")
+    estimated = usage_summary(RunUsage(input_tokens=5000, output_tokens=500), "claude-sonnet-4-6")
     assert estimated["cost_is_exact"] is False
     billed = usage_summary(
         RunUsage(input_tokens=5000, output_tokens=500, details={COST_DETAIL_KEY: 200}),
@@ -62,8 +63,10 @@ def test_usage_summary_marks_estimate_vs_billed():
 
 def test_usage_summary_carries_split_totals_and_cost():
     u = RunUsage(
-        input_tokens=56000, output_tokens=2000,
-        cache_read_tokens=50000, cache_write_tokens=5000,
+        input_tokens=56000,
+        output_tokens=2000,
+        cache_read_tokens=50000,
+        cache_write_tokens=5000,
     )
     d = usage_summary(u, "claude-sonnet-4-6")
     assert d["input_tokens"] == 56000
@@ -87,8 +90,10 @@ def test_split_separates_uncached_input_cache_and_output():
     # input_tokens is the inclusive total (cached + uncached), per pydantic-ai's
     # normalization — so the uncached remainder is input minus the cache buckets.
     u = RunUsage(
-        input_tokens=56000, output_tokens=2000,
-        cache_read_tokens=50000, cache_write_tokens=5000,
+        input_tokens=56000,
+        output_tokens=2000,
+        cache_read_tokens=50000,
+        cache_write_tokens=5000,
     )
     s = split_tokens(u)
     assert isinstance(s, TokenSplit)
@@ -120,8 +125,10 @@ def test_split_clamps_when_provider_reports_input_excluding_cache():
 
 def test_estimate_cost_known_model_is_positive():
     u = RunUsage(
-        input_tokens=56000, output_tokens=2000,
-        cache_read_tokens=50000, cache_write_tokens=5000,
+        input_tokens=56000,
+        output_tokens=2000,
+        cache_read_tokens=50000,
+        cache_write_tokens=5000,
     )
     cost = estimate_cost(u, "claude-sonnet-4-6")
     assert cost is not None and cost > 0
@@ -129,8 +136,10 @@ def test_estimate_cost_known_model_is_positive():
 
 def test_estimate_cost_strips_openrouter_provider_prefix():
     u = RunUsage(
-        input_tokens=56000, output_tokens=2000,
-        cache_read_tokens=50000, cache_write_tokens=5000,
+        input_tokens=56000,
+        output_tokens=2000,
+        cache_read_tokens=50000,
+        cache_write_tokens=5000,
     )
     bare = estimate_cost(u, "claude-sonnet-4-6")
     prefixed = estimate_cost(u, "anthropic/claude-sonnet-4-6")
@@ -143,12 +152,9 @@ def test_estimate_cost_strips_openrouter_provider_prefix():
 def test_estimate_cost_reflects_cache_discount():
     # The same total token count costs less when most of the input is cached
     # reads (priced ~0.1x), proving cache tokens are costed separately.
-    cached = RunUsage(input_tokens=56000, output_tokens=2000,
-                      cache_read_tokens=55000)
+    cached = RunUsage(input_tokens=56000, output_tokens=2000, cache_read_tokens=55000)
     uncached = RunUsage(input_tokens=56000, output_tokens=2000)
-    assert estimate_cost(cached, "claude-sonnet-4-6") < estimate_cost(
-        uncached, "claude-sonnet-4-6"
-    )
+    assert estimate_cost(cached, "claude-sonnet-4-6") < estimate_cost(uncached, "claude-sonnet-4-6")
 
 
 def test_estimate_cost_strips_colon_provider_qualifier():

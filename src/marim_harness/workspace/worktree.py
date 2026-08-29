@@ -21,16 +21,14 @@ class WorktreeError(Exception):
 
 @dataclass(frozen=True)
 class WorktreeInfo:
-    path: Path        # absolute worktree path
-    branch: str       # branch name without refs/heads/, or "" if detached
-    head: str         # commit sha
+    path: Path  # absolute worktree path
+    branch: str  # branch name without refs/heads/, or "" if detached
+    head: str  # commit sha
     is_current: bool  # True if path == the `current` arg passed to list_worktrees
 
 
 def _git(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", *args], cwd=repo_root, capture_output=True, text=True
-    )
+    return subprocess.run(["git", *args], cwd=repo_root, capture_output=True, text=True)
 
 
 def _check(result: subprocess.CompletedProcess[str]) -> subprocess.CompletedProcess[str]:
@@ -49,7 +47,9 @@ def repo_root(path: Path) -> Path | None:
     try:
         result = subprocess.run(
             ["git", "worktree", "list", "--porcelain"],
-            cwd=path, capture_output=True, text=True,
+            cwd=path,
+            capture_output=True,
+            text=True,
         )
     except (FileNotFoundError, NotADirectoryError):
         return None
@@ -57,7 +57,7 @@ def repo_root(path: Path) -> Path | None:
         return None
     for line in result.stdout.splitlines():
         if line.startswith("worktree "):
-            return Path(line[len("worktree "):])
+            return Path(line[len("worktree ") :])
     return None
 
 
@@ -91,9 +91,9 @@ def _validate_branch(branch: str) -> None:
 
 
 def branch_exists(repo_root: Path, branch: str) -> bool:
-    return _git(
-        repo_root, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"
-    ).returncode == 0
+    return (
+        _git(repo_root, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}").returncode == 0
+    )
 
 
 def list_worktrees(repo_root: Path, current: Path | None = None) -> list[WorktreeInfo]:
@@ -109,22 +109,24 @@ def list_worktrees(repo_root: Path, current: Path | None = None) -> list[Worktre
     def flush() -> None:
         nonlocal path, head, branch
         if path is not None:
-            infos.append(WorktreeInfo(
-                path=path,
-                branch=branch,
-                head=head,
-                is_current=cur is not None and path.resolve() == cur,
-            ))
+            infos.append(
+                WorktreeInfo(
+                    path=path,
+                    branch=branch,
+                    head=head,
+                    is_current=cur is not None and path.resolve() == cur,
+                )
+            )
         path, head, branch = None, "", ""
 
     for line in result.stdout.splitlines():
         if line.startswith("worktree "):
             flush()
-            path = Path(line[len("worktree "):])
+            path = Path(line[len("worktree ") :])
         elif line.startswith("HEAD "):
-            head = line[len("HEAD "):]
+            head = line[len("HEAD ") :]
         elif line.startswith("branch "):
-            branch = line[len("branch "):].removeprefix("refs/heads/")
+            branch = line[len("branch ") :].removeprefix("refs/heads/")
         elif line == "detached":
             branch = ""
     flush()
@@ -154,8 +156,10 @@ def create_or_reuse_worktree(repo_root: Path, branch: str) -> Path:
 # Identity used for sub-agent commits, passed inline so a commit succeeds even
 # when neither the worktree nor the global git config sets user.name/user.email.
 _SUBAGENT_IDENTITY = (
-    "-c", "user.name=marim sub-agent",
-    "-c", "user.email=subagent@marim.local",
+    "-c",
+    "user.name=marim sub-agent",
+    "-c",
+    "user.email=subagent@marim.local",
 )
 
 
@@ -171,9 +175,7 @@ def commit_worktree(worktree_path: Path, message: str) -> str | None:
     if _git(worktree_path, "diff", "--cached", "--quiet").returncode == 0:
         return None
     _check(_git(worktree_path, *_SUBAGENT_IDENTITY, "commit", "-q", "-m", message))
-    return _check(
-        _git(worktree_path, "show", "--stat", "--format=", "HEAD")
-    ).stdout.strip()
+    return _check(_git(worktree_path, "show", "--stat", "--format=", "HEAD")).stdout.strip()
 
 
 def remove_worktree(repo_root: Path, branch: str, *, force: bool = False) -> None:

@@ -28,8 +28,10 @@ def count_tool_calls(messages: list) -> int:
 
     return sum(
         1
-        for m in messages if isinstance(m, ModelResponse)
-        for p in m.parts if isinstance(p, ToolCallPart)
+        for m in messages
+        if isinstance(m, ModelResponse)
+        for p in m.parts
+        if isinstance(p, ToolCallPart)
     )
 
 
@@ -55,17 +57,23 @@ class SpawnTranscripts:
         if store is None:
             return None
         from ..session import TranscriptStore
+
         return TranscriptStore(store.path, store.session_id)
 
-    def save(self, stream_id: str, messages: list, meta: dict | None = None, *,
-             cap_reasoning: bool = False) -> None:
+    def save(
+        self,
+        stream_id: str,
+        messages: list,
+        meta: dict | None = None,
+        *,
+        cap_reasoning: bool = False,
+    ) -> None:
         """Persist one spawn's transcript (best-effort). No-op without a store, an
         empty ``stream_id``, or empty ``messages``."""
         try:
             store = self._store()
             if stream_id and messages and store is not None:
-                store.write(stream_id, messages, self._cap, meta=meta,
-                            cap_reasoning=cap_reasoning)
+                store.write(stream_id, messages, self._cap, meta=meta, cap_reasoning=cap_reasoning)
         except Exception as exc:  # noqa: BLE001 - persistence is best-effort
             logger.warning("Failed to save transcript %s: %s", stream_id, exc)
 
@@ -79,8 +87,9 @@ class SpawnTranscripts:
         store = self._store()
         return store.read_meta(stream_id) if store is not None else None
 
-    def final_meta(self, template: dict | None, status: str, usage, t0: float,
-                   messages: list | None = None) -> dict | None:
+    def final_meta(
+        self, template: dict | None, status: str, usage, t0: float, messages: list | None = None
+    ) -> dict | None:
         """The terminal sidecar meta for a finished spawn: the ``template`` stamped
         with its terminal status, total spend, and run stats (tool tally +
         wall-clock duration measured from ``t0``) so a resumed session can rehydrate

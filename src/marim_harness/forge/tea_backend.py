@@ -30,14 +30,24 @@ def _list_prs_page_args(state: str, page: int) -> list[str]:
     installed tea CLI's ``--help``). The only argv builder for reads: every PR
     fetch pages through ``_walk_pr_pages`` with a page-offset flag rather than a
     growing ``--limit`` — see ``_PAGE_SIZE``'s comment for why."""
-    return ["pr", "list", "--state", state, "--limit", str(_PAGE_SIZE), "--page", str(page),
-            "-o", "json", "--fields", PR_FIELDS]
+    return [
+        "pr",
+        "list",
+        "--state",
+        state,
+        "--limit",
+        str(_PAGE_SIZE),
+        "--page",
+        str(page),
+        "-o",
+        "json",
+        "--fields",
+        PR_FIELDS,
+    ]
 
 
-def _create_pr_args(title: str, body: str, base: str | None, draft: bool,
-                    head: str) -> list[str]:
-    args = ["pr", "create", "--head", head, "--title", title, "--description",
-            body]
+def _create_pr_args(title: str, body: str, base: str | None, draft: bool, head: str) -> list[str]:
+    args = ["pr", "create", "--head", head, "--title", title, "--description", body]
     if base:
         args += ["--base", base]
     if draft:
@@ -109,14 +119,10 @@ def _loads_dict_list(raw: str, what: str) -> list[dict[str, Any]]:
     slip past the ForgeError-only tool handler."""
     payload = _loads(raw)
     if not isinstance(payload, list):
-        raise ForgeError(
-            f"expected a JSON list of {what} from tea, got {type(payload).__name__}"
-        )
+        raise ForgeError(f"expected a JSON list of {what} from tea, got {type(payload).__name__}")
     for elem in payload:
         if not isinstance(elem, dict):
-            raise ForgeError(
-                f"expected {what} objects from tea, got a {type(elem).__name__}"
-            )
+            raise ForgeError(f"expected {what} objects from tea, got a {type(elem).__name__}")
     return payload
 
 
@@ -126,8 +132,11 @@ async def _run_tea(args: list[str], cwd: Path, timeout: float = 20.0) -> str:
     launch failure, timeout, or non-zero exit (message = tea's stderr)."""
     try:
         proc = await asyncio.create_subprocess_exec(
-            "tea", *args, cwd=str(cwd),
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            "tea",
+            *args,
+            cwd=str(cwd),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
     except (FileNotFoundError, OSError) as exc:
         raise ForgeError(f"could not launch tea: {exc}") from exc
@@ -227,9 +236,7 @@ class TeaBackend:
         a duplicate isn't opened over it."""
         return await self._find_pr("open", lambda p: p.head == branch)
 
-    async def view_pr(
-        self, number: int | None, branch: str | None
-    ) -> PullRequest | None:
+    async def view_pr(self, number: int | None, branch: str | None) -> PullRequest | None:
         def match(pr: PullRequest) -> bool:
             if number is not None:
                 return pr.number == number
@@ -242,9 +249,7 @@ class TeaBackend:
         overall = pr.ci if pr else "unknown"
         raw = await _run_tea(_runs_args(), self._root)
         runs = tuple(
-            _map_run(o)
-            for o in _loads_dict_list(raw, "action runs")
-            if o.get("branch") == branch
+            _map_run(o) for o in _loads_dict_list(raw, "action runs") if o.get("branch") == branch
         )
         return CiStatus(overall=overall, runs=runs)
 

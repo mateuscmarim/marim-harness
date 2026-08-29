@@ -28,18 +28,23 @@ from tests.conftest import _make_deps, _make_harness
 
 def _session_store(tmp_path: Path) -> SessionStore:
     return SessionStore(
-        path=tmp_path / "sessions" / "test.json", workspace_root=tmp_path,
-        session_id="test-session", name="test",
+        path=tmp_path / "sessions" / "test.json",
+        workspace_root=tmp_path,
+        session_id="test-session",
+        name="test",
     )
 
 
 def _tool_then_text_model() -> FunctionModel:
     """First request: call list_files. Second: final report."""
+
     def fn(messages, info):
         if len(messages) == 1:
-            return ModelResponse(parts=[ToolCallPart(
-                tool_name="list_files", args={"path": "."}, tool_call_id="t1")])
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name="list_files", args={"path": "."}, tool_call_id="t1")]
+            )
         return ModelResponse(parts=[TextPart(content="report")])
+
     return FunctionModel(fn)
 
 
@@ -75,10 +80,12 @@ async def test_spawn_checkpoints_running_then_finalizes(tmp_path):
 async def test_failed_spawn_leaves_sidecar_marked_running(tmp_path):
     """A spawn that dies mid-run gets no final write — its sidecar stays
     status=running, which is exactly what the resume scan treats as interrupted."""
+
     def fn(messages, info):
         if len(messages) == 1:
-            return ModelResponse(parts=[ToolCallPart(
-                tool_name="list_files", args={"path": "."}, tool_call_id="t1")])
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name="list_files", args={"path": "."}, tool_call_id="t1")]
+            )
         raise RuntimeError("boom")  # permanent → no retry, spawn fails
 
     store = _session_store(tmp_path)
@@ -90,29 +97,42 @@ async def test_failed_spawn_leaves_sidecar_marked_running(tmp_path):
 
 
 def _interrupted_meta(sid: str) -> dict:
-    return {"stream_id": sid, "type": "general", "task": "original task",
-            "model": None, "mcp": None, "depth": 1, "max_output_chars": None,
-            "isolation": None, "status": "running"}
+    return {
+        "stream_id": sid,
+        "type": "general",
+        "task": "original task",
+        "model": None,
+        "mcp": None,
+        "depth": 1,
+        "max_output_chars": None,
+        "isolation": None,
+        "status": "running",
+    }
 
 
 def _dangling_history() -> list:
     """A transcript that died mid-tool-call — the resume must repair it."""
     return [
         ModelRequest(parts=[UserPromptPart(content="original task")]),
-        ModelResponse(parts=[ToolCallPart(
-            tool_name="read_file", args={"path": "x"}, tool_call_id="dangling")]),
+        ModelResponse(
+            parts=[ToolCallPart(tool_name="read_file", args={"path": "x"}, tool_call_id="dangling")]
+        ),
     ]
 
 
 def _resume_model() -> FunctionModel:
     """Asserts the incoming history was repaired (the dangling call has a
     synthesized return), then finishes."""
+
     def fn(messages, info):
-        returns = [p for m in messages for p in getattr(m, "parts", [])
-                   if isinstance(p, ToolReturnPart)]
-        assert any(p.tool_call_id == "dangling" for p in returns), \
+        returns = [
+            p for m in messages for p in getattr(m, "parts", []) if isinstance(p, ToolReturnPart)
+        ]
+        assert any(p.tool_call_id == "dangling" for p in returns), (
             "resume must synthesize a return for the dangling tool call"
+        )
         return ModelResponse(parts=[TextPart(content="resumed-ok")])
+
     return FunctionModel(fn)
 
 
@@ -141,8 +161,12 @@ async def test_resume_refuses_v1_finished_and_double_resume(tmp_path):
     job_id, msg = await harness.subagents.resume_spawn("sg-v1")
     assert job_id is None and "resumable" in msg.lower()
     # finished spawn → refuse
-    ts.write("sg-done", _dangling_history(), 2000,
-             meta={**_interrupted_meta("sg-done"), "status": "finished"})
+    ts.write(
+        "sg-done",
+        _dangling_history(),
+        2000,
+        meta={**_interrupted_meta("sg-done"), "status": "finished"},
+    )
     job_id, msg = await harness.subagents.resume_spawn("sg-done")
     assert job_id is None
     # already resuming → refuse the second call
@@ -212,12 +236,14 @@ async def test_checkpoint_clips_oversized_reasoning(tmp_path):
 
     def fn(messages, info):
         if len(messages) == 1:
-            return ModelResponse(parts=[
-                ThinkingPart(content="T" * 6000, signature="sig-123",
-                             provider_name="anthropic"),
-                ToolCallPart(tool_name="list_files", args={"path": "."},
-                             tool_call_id="t1"),
-            ])
+            return ModelResponse(
+                parts=[
+                    ThinkingPart(
+                        content="T" * 6000, signature="sig-123", provider_name="anthropic"
+                    ),
+                    ToolCallPart(tool_name="list_files", args={"path": "."}, tool_call_id="t1"),
+                ]
+            )
         raise RuntimeError("stop")  # permanent → no final write; checkpoint rests
 
     store = _session_store(tmp_path)
@@ -226,8 +252,7 @@ async def test_checkpoint_clips_oversized_reasoning(tmp_path):
     assert "failed" in out  # foreground contains the crash
 
     msgs = TranscriptStore(store.path, store.session_id).read("sg-think")
-    thoughts = [p for m in msgs for p in getattr(m, "parts", [])
-                if isinstance(p, ThinkingPart)]
+    thoughts = [p for m in msgs for p in getattr(m, "parts", []) if isinstance(p, ThinkingPart)]
     assert thoughts, "the checkpoint must have captured the thinking part"
     assert all(len(str(p.content)) < 6000 for p in thoughts)
     assert any("truncated, 6000 chars" in str(p.content) for p in thoughts)
@@ -283,8 +308,7 @@ async def test_resume_build_failure_keeps_isolation_branch(tmp_path, monkeypatch
     import subprocess
 
     def git(*args):
-        subprocess.run(["git", *args], cwd=tmp_path, check=True,
-                       capture_output=True)
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
 
     git("init", "-q", "-b", "main")
     git("config", "user.email", "t@example.com")
@@ -302,25 +326,38 @@ async def test_resume_build_failure_keeps_isolation_branch(tmp_path, monkeypatch
 
     # Force the sub-agent build to fail during resume (e.g. the agent definition
     # was deleted since, or a model override no longer resolves).
-    monkeypatch.setattr(harness.subagents, "build",
-                        lambda *a, **k: (None, "build failed"))
+    monkeypatch.setattr(harness.subagents, "build", lambda *a, **k: (None, "build failed"))
 
     job_id, msg = await harness.subagents.resume_spawn("sg-keep")
     assert job_id is None and "build failed" in msg
     branches = subprocess.run(
         ["git", "branch", "--list", "subagent/sg-keep"],
-        cwd=tmp_path, capture_output=True, text=True).stdout
-    assert branches.strip() != "", \
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert branches.strip() != "", (
         "the failed resume destroyed the prior-work branch it was meant to keep"
-    assert not (tmp_path / ".worktrees" / "subagent" / "sg-keep").exists(), \
+    )
+    assert not (tmp_path / ".worktrees" / "subagent" / "sg-keep").exists(), (
         "the checkout must still be torn down on failure"
+    )
 
 
 def _cli_meta(sid: str, session: str | None = "sess-abc") -> dict:
-    return {"stream_id": sid, "type": "cli-worker", "task": "original cli task",
-            "model": None, "mcp": None, "depth": 1, "max_output_chars": None,
-            "isolation": None, "status": "running",
-            "backend": "claude-cli", "cli_session_id": session}
+    return {
+        "stream_id": sid,
+        "type": "cli-worker",
+        "task": "original cli task",
+        "model": None,
+        "mcp": None,
+        "depth": 1,
+        "max_output_chars": None,
+        "isolation": None,
+        "status": "running",
+        "backend": "claude-cli",
+        "cli_session_id": session,
+    }
 
 
 def _cli_agent(tmp_path):
@@ -372,6 +409,7 @@ async def test_resume_cli_spawn_relaunches_with_resume_flag(tmp_path, monkeypatc
     report = await harness.deps.jobs.wait(job_id)
     assert report == "resumed-cli-ok"
     import json as _json
+
     argv = _json.loads(argv_file.read_text())
     assert "--resume" in argv and argv[argv.index("--resume") + 1] == "sess-abc"
     assert "--append-system-prompt" not in argv
@@ -401,14 +439,14 @@ async def test_resume_cli_preserves_prior_transcript(tmp_path, monkeypatch):
     assert job_id is not None, message
     await harness.deps.jobs.wait(job_id)
     msgs = ts.read("sg-keep")
-    calls = [p for m in msgs for p in getattr(m, "parts", [])
-             if isinstance(p, ToolCallPart)]
-    texts = [p for m in msgs for p in getattr(m, "parts", [])
-             if isinstance(p, TextPart)]
-    assert any(p.tool_call_id == "dangling" for p in calls), \
+    calls = [p for m in msgs for p in getattr(m, "parts", []) if isinstance(p, ToolCallPart)]
+    texts = [p for m in msgs for p in getattr(m, "parts", []) if isinstance(p, TextPart)]
+    assert any(p.tool_call_id == "dangling" for p in calls), (
         "the pre-interrupt segment must survive the resume's checkpoints"
-    assert any("resuming" in str(p.content) for p in texts), \
+    )
+    assert any("resuming" in str(p.content) for p in texts), (
         "the continuation's content must be present too"
+    )
     assert ts.read_meta("sg-keep")["status"] == "finished"
 
 
@@ -434,20 +472,19 @@ async def test_resume_cli_refusals(tmp_path, monkeypatch):
     harness = _make_harness(_resume_model(), _make_deps(tmp_path), store=store)
     ts = TranscriptStore(store.path, store.session_id)
     # No session id recorded (killed before init) → refuse, don't run the CLI.
-    ts.write("sg-nosid", _dangling_history(), 2000,
-             meta=_cli_meta("sg-nosid", session=None))
+    ts.write("sg-nosid", _dangling_history(), 2000, meta=_cli_meta("sg-nosid", session=None))
     job_id, msg = await harness.subagents.resume_spawn("sg-nosid")
     assert job_id is None and "never recorded" in msg
     # Agent type vanished → refuse.
-    ts.write("sg-gone", _dangling_history(), 2000,
-             meta={**_cli_meta("sg-gone"), "type": "no-such-agent"})
+    ts.write(
+        "sg-gone", _dangling_history(), 2000, meta={**_cli_meta("sg-gone"), "type": "no-such-agent"}
+    )
     job_id, msg = await harness.subagents.resume_spawn("sg-gone")
     assert job_id is None and "no-such-agent" in msg
     # Backend changed out from under the sidecar → refuse.
     d = tmp_path / ".marim" / "agents"
     (d / "flipped.md").write_text("---\ndescription: w\ntools: read_file\n---\nWork.\n")
-    ts.write("sg-flip", _dangling_history(), 2000,
-             meta={**_cli_meta("sg-flip"), "type": "flipped"})
+    ts.write("sg-flip", _dangling_history(), 2000, meta={**_cli_meta("sg-flip"), "type": "flipped"})
     job_id, msg = await harness.subagents.resume_spawn("sg-flip")
     assert job_id is None and "no longer claude-cli" in msg
 
@@ -462,5 +499,5 @@ async def test_final_meta_records_tool_count_and_duration(tmp_path):
     await harness.subagents.run("general", "look around", stream_id="sg-stats")
     meta = TranscriptStore(store.path, store.session_id).read_meta("sg-stats")
     assert meta["status"] == "finished"
-    assert meta["tool_count"] == 1          # the single list_files call
+    assert meta["tool_count"] == 1  # the single list_files call
     assert meta["duration"] > 0

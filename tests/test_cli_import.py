@@ -278,7 +278,8 @@ def test_repo_tracks_target_is_false_when_git_cannot_answer(tmp_path, monkeypatc
     assert import_cmd._repo_tracks_target(ws) is False
 
     monkeypatch.setattr(
-        import_cmd.subprocess, "run",
+        import_cmd.subprocess,
+        "run",
         lambda *a, **k: subprocess.CompletedProcess(a[0] if a else [], 128, b"", b""),
     )
     assert import_cmd._repo_tracks_target(ws) is False
@@ -300,15 +301,17 @@ def _marim_memory(ws: Path, *, slug: str, title: str, body: str):
 
     scope = memory.project_scope(ws)
     memory.save_memory(
-        scope, name=slug, description="marim's own note", mem_type="project",
-        body=body, title=title,
+        scope,
+        name=slug,
+        description="marim's own note",
+        mem_type="project",
+        body=body,
+        title=title,
     )
     return scope
 
 
-def test_apply_does_not_clobber_a_marim_memory_on_a_normalized_title(
-    tmp_path, capsys, monkeypatch
-):
+def test_apply_does_not_clobber_a_marim_memory_on_a_normalized_title(tmp_path, capsys, monkeypatch):
     """The C1 repro, at the CLI level: no --force, exit 0 is only honest if the
     marim-authored memory is still on disk afterward."""
     ws = tmp_path / "ws"

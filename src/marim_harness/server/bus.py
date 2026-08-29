@@ -55,9 +55,7 @@ class EventBus:
     # before compaction.finished. So the seq of the latest such event is a safe
     # watermark for "everything <= this seq is durably on disk" — see
     # history_seq.
-    _PERSISTED_BOUNDARIES = frozenset(
-        {"turn.finished", "turn.error", "compaction.finished"}
-    )
+    _PERSISTED_BOUNDARIES = frozenset({"turn.finished", "turn.error", "compaction.finished"})
 
     def __init__(self, ring_size: int = 1000) -> None:
         self._ring: deque[Event] = deque(maxlen=ring_size)

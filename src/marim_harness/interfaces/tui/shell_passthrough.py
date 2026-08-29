@@ -65,9 +65,7 @@ def format_transcript_block(command: str, output: str) -> str:
     return f"`! {command}`\n\n{fence}text\n{output}\n{fence}"
 
 
-async def run_passthrough(
-    root: Path, command: str, password: str | None = None
-) -> str:
+async def run_passthrough(root: Path, command: str, password: str | None = None) -> str:
     """Execute a `!` command in the workspace root and return run_bash's
     ``exit N\\n<output>`` text. A ``password`` (the sudo case) rewrites the
     command via :func:`rewrite_sudo` and feeds it through the stdin pipe; it
@@ -77,8 +75,7 @@ async def run_passthrough(
     if password is not None:
         to_run = rewrite_sudo(command)
         stdin_data = (password + "\n").encode()
-    return await run_bash(root, to_run, timeout=PASSTHROUGH_TIMEOUT,
-                          stdin_data=stdin_data)
+    return await run_bash(root, to_run, timeout=PASSTHROUGH_TIMEOUT, stdin_data=stdin_data)
 
 
 class SudoPasswordModal(ModalScreen[str | None]):

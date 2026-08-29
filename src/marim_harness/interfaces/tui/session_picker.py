@@ -28,9 +28,7 @@ _DELETE_CONFIRM_WINDOW = 2.0
 def _format_row(info: SessionInfo, active: str | None) -> str:
     name = info.name if len(info.name) <= _NAME_WIDTH else info.name[: _NAME_WIDTH - 1] + "…"
     when = info.updated[:16].replace("T", " ") if info.updated else "—"
-    duration = (
-        format_duration(info.duration_seconds) if info.duration_seconds is not None else "—"
-    )
+    duration = format_duration(info.duration_seconds) if info.duration_seconds is not None else "—"
     # A fixed-width leading marker (rather than a trailing suffix) survives
     # the OptionList's ellipsis truncation at narrow terminal widths — a
     # trailing "← active" gets clipped off entirely, making the active row
@@ -110,8 +108,7 @@ class SessionPickerModal(ModalScreen[str | None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="session-box"):
             yield Static("Switch session", id="session-title")
-            yield Input(placeholder="filter… (Tab to navigate, Enter to pick)",
-                        id="session-filter")
+            yield Input(placeholder="filter… (Tab to navigate, Enter to pick)", id="session-filter")
             yield Static("", id="session-status")
             yield OptionList(id="session-options")
 

@@ -16,6 +16,18 @@ from marim_harness.tools.impl import fs
 from tests.conftest import _last_instructions, _make_deps, _make_harness, _text_model
 
 
+def _stub_build(agent_factory):
+    """A ``SubagentRunner.build`` replacement handing back a fresh stub agent.
+
+    Takes ``*args, **kwargs`` rather than restating build's eleven parameters.
+    Seven call sites here spelled that signature out in full, so every keyword
+    build grew had to be added to all seven or the stub raised TypeError -- for
+    a stub that never reads an argument. The factory (not an instance) keeps the
+    original behaviour of constructing a new agent per call.
+    """
+    return lambda *_args, **_kwargs: (agent_factory(), None)
+
+
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
     """A real git repo with one commit, on branch main."""
@@ -37,9 +49,7 @@ def _capture_deps(h):
             cap["workspace_root"] = kwargs["deps"].workspace.root
             return SimpleNamespace(output="ok", usage=RunUsage(), all_messages=list)
 
-    h.subagents.build = lambda type, max_output_chars=None, model=None, \
-        workspace_root=None, defn=None, depth=0, mask_trigger=None, \
-        checkpoint=None, output_schema=None, tier=None, thinking=None: (_StubAgent(), None)
+    h.subagents.build = _stub_build(_StubAgent)
     return cap
 
 
@@ -79,19 +89,19 @@ async def test_isolated_spawn_commits_changes_and_reports_branch(repo: Path):
             fs.write_file(root, "new.txt", "from sub-agent\n")
             return SimpleNamespace(output="wrote new.txt", usage=RunUsage(), all_messages=list)
 
-    h.subagents.build = lambda type, max_output_chars=None, model=None, \
-        workspace_root=None, defn=None, depth=0, mask_trigger=None, \
-        checkpoint=None, output_schema=None, tier=None, thinking=None: (_WritingAgent(), None)
+    h.subagents.build = _stub_build(_WritingAgent)
 
     out = await h.subagents.run("general", "add a file", "tc1", isolation="worktree")
     assert "wrote new.txt" in out
-    assert "subagent/tc1" in out          # branch named in the report
-    assert "new.txt" in out               # diffstat included
+    assert "subagent/tc1" in out  # branch named in the report
+    assert "new.txt" in out  # diffstat included
     # The worktree is cleaned up, but the branch carries the committed change.
     assert not (repo / ".worktrees" / "subagent" / "tc1").exists()
     show = subprocess.run(
-        ["git", "show", "--stat", "subagent/tc1"], cwd=repo,
-        capture_output=True, text=True,
+        ["git", "show", "--stat", "subagent/tc1"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
     )
     assert show.returncode == 0
     assert "new.txt" in show.stdout
@@ -136,23 +146,38 @@ async def test_spawn_agent_tool_forwards_isolation(repo: Path):
 
     captured: dict = {}
 
-    async def fake_run(type, task, stream_id, mcp_names=None,
-                       max_output_chars=None, model=None, isolation=None,
-                       caller_depth: int = 0, tier=None, output_schema=None,
-                       thinking=None):
+    async def fake_run(
+        type,
+        task,
+        stream_id,
+        mcp_names=None,
+        max_output_chars=None,
+        model=None,
+        isolation=None,
+        caller_depth: int = 0,
+        tier=None,
+        output_schema=None,
+        thinking=None,
+    ):
         captured["isolation"] = isolation
         return "REPORT"
 
     def main(messages, info):
         for m in messages:
             for p in getattr(m, "parts", []):
-                if type(p).__name__ == "ToolReturnPart" and \
-                        getattr(p, "tool_name", "") == "spawn_agent":
+                if (
+                    type(p).__name__ == "ToolReturnPart"
+                    and getattr(p, "tool_name", "") == "spawn_agent"
+                ):
                     return ModelResponse(parts=[TextPart(content="done")])
-        return ModelResponse(parts=[ToolCallPart(
-            tool_name="spawn_agent",
-            args={"type": "general", "task": "x", "isolation": "worktree"},
-        )])
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="spawn_agent",
+                    args={"type": "general", "task": "x", "isolation": "worktree"},
+                )
+            ]
+        )
 
     deps = _make_deps(repo)
     h = _make_harness(FunctionModel(main), deps)
@@ -162,8 +187,9 @@ async def test_spawn_agent_tool_forwards_isolation(repo: Path):
 
 
 def _branch_exists(repo: Path, branch: str) -> bool:
-    out = subprocess.run(["git", "branch", "--list", branch], cwd=repo,
-                         capture_output=True, text=True).stdout
+    out = subprocess.run(
+        ["git", "branch", "--list", branch], cwd=repo, capture_output=True, text=True
+    ).stdout
     return out.strip() != ""
 
 
@@ -193,9 +219,7 @@ async def test_isolated_spawn_crash_cleans_up_worktree_and_branch(repo: Path):
             fs.write_file(kwargs["deps"].workspace.root, "partial.txt", "half\n")
             raise RuntimeError("boom mid-run")
 
-    h.subagents.build = lambda type, max_output_chars=None, model=None, \
-        workspace_root=None, defn=None, depth=0, mask_trigger=None, \
-        checkpoint=None, output_schema=None, tier=None, thinking=None: (_CrashAgent(), None)
+    h.subagents.build = _stub_build(_CrashAgent)
 
     out = await h.subagents.run("general", "do it", "tc1", isolation="worktree")
     assert "boom" in out  # contained, not raised
@@ -205,13 +229,12 @@ async def test_isolated_spawn_crash_cleans_up_worktree_and_branch(repo: Path):
 
 def _crash_build(h):
     """Stub build so the spawned agent always crashes mid-run."""
+
     class _CrashAgent:
         async def run(self, task, **kwargs):
             raise RuntimeError("boom mid-run")
 
-    h.subagents.build = lambda type, max_output_chars=None, model=None, \
-        workspace_root=None, defn=None, depth=0, mask_trigger=None, \
-        checkpoint=None, output_schema=None, tier=None, thinking=None: (_CrashAgent(), None)
+    h.subagents.build = _stub_build(_CrashAgent)
 
 
 def _dangling_resume_history():
@@ -219,8 +242,9 @@ def _dangling_resume_history():
 
     return [
         ModelRequest(parts=[UserPromptPart(content="original task")]),
-        ModelResponse(parts=[ToolCallPart(
-            tool_name="read_file", args={"path": "x"}, tool_call_id="d")]),
+        ModelResponse(
+            parts=[ToolCallPart(tool_name="read_file", args={"path": "x"}, tool_call_id="d")]
+        ),
     ]
 
 
@@ -234,18 +258,30 @@ async def test_failed_resumed_isolated_spawn_keeps_its_branch(repo: Path):
     subprocess.run(["git", "branch", "subagent/sg6"], cwd=repo, check=True)
     assert _branch_exists(repo, "subagent/sg6")
 
-    store = SessionStore(path=repo / "sessions" / "s.json", workspace_root=repo,
-                         session_id="s", name="s")
+    store = SessionStore(
+        path=repo / "sessions" / "s.json", workspace_root=repo, session_id="s", name="s"
+    )
     deps = _make_deps(repo)
     h = _make_harness(_text_model(), deps, store=store)
     _crash_build(h)
 
     ts = TranscriptStore(store.path, store.session_id)
-    ts.write("sg6", _dangling_resume_history(), 2000, meta={
-        "stream_id": "sg6", "type": "general", "task": "t", "model": None,
-        "mcp": None, "depth": 1, "max_output_chars": None,
-        "isolation": "subagent/sg6", "status": "running",
-    })
+    ts.write(
+        "sg6",
+        _dangling_resume_history(),
+        2000,
+        meta={
+            "stream_id": "sg6",
+            "type": "general",
+            "task": "t",
+            "model": None,
+            "mcp": None,
+            "depth": 1,
+            "max_output_chars": None,
+            "isolation": "subagent/sg6",
+            "status": "running",
+        },
+    )
 
     job_id, message = await h.subagents.resume_spawn("sg6")
     assert job_id is not None, message
@@ -264,7 +300,10 @@ async def test_failed_fresh_isolated_background_spawn_drops_branch(repo: Path):
 
     with pytest.raises(RuntimeError):
         await h.subagents.run_background(
-            "general", "do it", isolation="worktree", stream_id="frb6",
+            "general",
+            "do it",
+            isolation="worktree",
+            stream_id="frb6",
         )
     assert not _branch_exists(repo, "subagent/frb6")
 
@@ -287,9 +326,7 @@ async def test_isolated_spawn_cancel_preserves_in_progress_work(repo: Path):
             fs.write_file(kwargs["deps"].workspace.root, "partial.txt", "half\n")
             raise asyncio.CancelledError
 
-    h.subagents.build = lambda type, max_output_chars=None, model=None, \
-        workspace_root=None, defn=None, depth=0, mask_trigger=None, \
-        checkpoint=None, output_schema=None, tier=None, thinking=None: (_CancelAgent(), None)
+    h.subagents.build = _stub_build(_CancelAgent)
 
     with pytest.raises(asyncio.CancelledError):
         await h.subagents.run("general", "do it", "tc1", isolation="worktree")
@@ -298,8 +335,10 @@ async def test_isolated_spawn_cancel_preserves_in_progress_work(repo: Path):
     assert not (repo / ".worktrees" / "subagent" / "tc1").exists()
     assert _branch_exists(repo, "subagent/tc1")
     show = subprocess.run(
-        ["git", "show", "--stat", "subagent/tc1"], cwd=repo,
-        capture_output=True, text=True,
+        ["git", "show", "--stat", "subagent/tc1"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
     )
     assert show.returncode == 0
     assert "partial.txt" in show.stdout
@@ -319,9 +358,7 @@ async def test_isolated_spawn_cancel_with_no_changes_drops_branch(repo: Path):
         async def run(self, task, **kwargs):
             raise asyncio.CancelledError
 
-    h.subagents.build = lambda type, max_output_chars=None, model=None, \
-        workspace_root=None, defn=None, depth=0, mask_trigger=None, \
-        checkpoint=None, output_schema=None, tier=None, thinking=None: (_CancelAgent(), None)
+    h.subagents.build = _stub_build(_CancelAgent)
 
     with pytest.raises(asyncio.CancelledError):
         await h.subagents.run("general", "do it", "tc1", isolation="worktree")
@@ -345,20 +382,23 @@ async def test_isolated_background_spawn_cancel_preserves_in_progress_work(repo:
             fs.write_file(kwargs["deps"].workspace.root, "partial.txt", "half\n")
             raise asyncio.CancelledError
 
-    h.subagents.build = lambda type, max_output_chars=None, model=None, \
-        workspace_root=None, defn=None, depth=0, mask_trigger=None, \
-        checkpoint=None, output_schema=None, tier=None, thinking=None: (_CancelAgent(), None)
+    h.subagents.build = _stub_build(_CancelAgent)
 
     with pytest.raises(asyncio.CancelledError):
         await h.subagents.run_background(
-            "general", "do it", isolation="worktree", stream_id="bgc6",
+            "general",
+            "do it",
+            isolation="worktree",
+            stream_id="bgc6",
         )
     # Checkout gone, branch kept with the committed work — reopen() can resume it.
     assert not (repo / ".worktrees" / "subagent" / "bgc6").exists()
     assert _branch_exists(repo, "subagent/bgc6")
     show = subprocess.run(
-        ["git", "show", "--stat", "subagent/bgc6"], cwd=repo,
-        capture_output=True, text=True,
+        ["git", "show", "--stat", "subagent/bgc6"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
     )
     assert show.returncode == 0 and "partial.txt" in show.stdout
 
@@ -383,8 +423,9 @@ async def test_isolated_cli_spawn_cancel_preserves_in_progress_work(repo: Path):
     deps = _make_deps(repo)
     h = _make_harness(_text_model(), deps)
 
-    async def _cancel_cli(defn, task, work_root, model, stream_id,
-                          checkpoint=None, resume_session_id=None):
+    async def _cancel_cli(
+        defn, task, work_root, model, stream_id, checkpoint=None, resume_session_id=None
+    ):
         # Produce work in the worktree, then cancel mid-run (BaseException).
         fs.write_file(work_root, "partial.txt", "half\n")
         raise asyncio.CancelledError
@@ -393,14 +434,19 @@ async def test_isolated_cli_spawn_cancel_preserves_in_progress_work(repo: Path):
 
     with pytest.raises(asyncio.CancelledError):
         await h.subagents.run_background(
-            "cli-worker", "do it", isolation="worktree", stream_id="clic6",
+            "cli-worker",
+            "do it",
+            isolation="worktree",
+            stream_id="clic6",
         )
     # Checkout gone, branch kept with the committed work — reopen() can resume it.
     # (Before the fix this branch was discarded.)
     assert not (repo / ".worktrees" / "subagent" / "clic6").exists()
     assert _branch_exists(repo, "subagent/clic6")
     show = subprocess.run(
-        ["git", "show", "--stat", "subagent/clic6"], cwd=repo,
-        capture_output=True, text=True,
+        ["git", "show", "--stat", "subagent/clic6"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
     )
     assert show.returncode == 0 and "partial.txt" in show.stdout

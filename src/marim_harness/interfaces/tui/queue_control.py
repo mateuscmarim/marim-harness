@@ -50,9 +50,7 @@ class QueueController:
     def __bool__(self) -> bool:
         return bool(self._queue)
 
-    def enqueue(
-        self, text: str, attachments: list[tuple[bytes, str]] | None = None
-    ) -> None:
+    def enqueue(self, text: str, attachments: list[tuple[bytes, str]] | None = None) -> None:
         """Buffer a submission to run after the current turn."""
         self._queue.enqueue(text, attachments)
         self.render()

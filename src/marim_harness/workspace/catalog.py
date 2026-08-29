@@ -131,10 +131,15 @@ def parse_models(payload: dict) -> list[ModelEntry]:
         supports_thinking: bool | None = None
         if isinstance(params, list):
             supports_thinking = "reasoning" in params
-        entries.append(ModelEntry(id=model_id, name=display,
-                                  supports_images=supports_images,
-                                  context_window=context_window,
-                                  supports_thinking=supports_thinking))
+        entries.append(
+            ModelEntry(
+                id=model_id,
+                name=display,
+                supports_images=supports_images,
+                context_window=context_window,
+                supports_thinking=supports_thinking,
+            )
+        )
     entries.sort(key=lambda e: e.id)
     return entries
 
@@ -146,7 +151,8 @@ def filter_entries(entries: list[ModelEntry], query: str) -> list[ModelEntry]:
     if not q:
         return entries
     return [
-        e for e in entries
+        e
+        for e in entries
         if q in e.id.lower()
         or q in e.name.lower()
         or (e.provider is not None and q in e.provider.lower())
@@ -178,8 +184,11 @@ def parse_google_models(payload: dict) -> list[ModelEntry]:
         # submission, same as the OpenRouter parser does for rows lacking the field.
         limit = row.get("inputTokenLimit")
         context_window = limit if isinstance(limit, int) and limit > 0 else None
-        entries.append(ModelEntry(id=model_id, name=display, supports_images=None,
-                                  context_window=context_window))
+        entries.append(
+            ModelEntry(
+                id=model_id, name=display, supports_images=None, context_window=context_window
+            )
+        )
     entries.sort(key=lambda e: e.id)
     return entries
 
@@ -242,8 +251,11 @@ async def fetch_openrouter_models(
 
 
 async def fetch_local_models(
-    base_url: str | None, api_key: str | None = None, timeout: float = 10.0,
-    *, strict: bool = False,
+    base_url: str | None,
+    api_key: str | None = None,
+    timeout: float = 10.0,
+    *,
+    strict: bool = False,
 ) -> list[ModelEntry]:
     """Fetch the catalog from a local OpenAI-compatible server (LM Studio, Ollama,
     …) by GETting ``{base_url}/models``. The response is the standard OpenAI
@@ -276,10 +288,7 @@ def parse_zen_models(payload: dict) -> list[ModelEntry]:
     """Turn Zen's ``/models`` response (standard OpenAI list shape, id-only —
     no pricing/context metadata) into sorted entries, dropping ids that route
     to non-OpenAI endpoint shapes (see _ZEN_EXCLUDED_PREFIXES)."""
-    return [
-        e for e in parse_models(payload)
-        if not e.id.startswith(_ZEN_EXCLUDED_PREFIXES)
-    ]
+    return [e for e in parse_models(payload) if not e.id.startswith(_ZEN_EXCLUDED_PREFIXES)]
 
 
 async def fetch_zen_models(

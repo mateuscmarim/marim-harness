@@ -93,7 +93,4 @@ def summarize(items: list[Task]) -> str:
     done = sum(1 for t in items if t.status == "done")
     in_progress = sum(1 for t in items if t.status == "in_progress")
     pending = sum(1 for t in items if t.status == "pending")
-    return (
-        f"{len(items)} tasks: {done} done, {in_progress} in progress, "
-        f"{pending} pending"
-    )
+    return f"{len(items)} tasks: {done} done, {in_progress} in progress, {pending} pending"

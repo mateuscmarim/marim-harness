@@ -1,6 +1,7 @@
 """Persist should skip the encode/decode round-trip and the disk write when
 history hasn't changed between calls — saves several MB per turn on long
 sessions."""
+
 import threading
 
 from pydantic_ai.messages import ModelRequest, UserPromptPart

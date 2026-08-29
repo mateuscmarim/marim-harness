@@ -77,7 +77,9 @@ async def test_web_search_http_error():
     mock_resp.status_code = 500
     mock_resp.text = ""
     exc = httpx.HTTPStatusError(
-        "Server Error", request=AsyncMock(), response=mock_resp,
+        "Server Error",
+        request=AsyncMock(),
+        response=mock_resp,
     )
 
     def _raise():
@@ -123,8 +125,11 @@ async def test_web_search_max_results_clamped():
     payload = {
         "results": [
             {
-                "url": f"https://example.com/{i}", "title": f"R{i}",
-                "content": "", "engines": [], "publishedDate": None,
+                "url": f"https://example.com/{i}",
+                "title": f"R{i}",
+                "content": "",
+                "engines": [],
+                "publishedDate": None,
             }
             for i in range(20)
         ]
@@ -236,8 +241,11 @@ async def test_web_search_snippet_truncated():
     payload = {
         "results": [
             {
-                "url": "https://example.com", "title": "Long",
-                "content": "y" * 1000, "engines": [], "publishedDate": None,
+                "url": "https://example.com",
+                "title": "Long",
+                "content": "y" * 1000,
+                "engines": [],
+                "publishedDate": None,
             }
         ]
     }
@@ -352,10 +360,12 @@ async def test_web_search_max_results_capped_at_50():
     """max_results above 50 should be clamped to 50."""
     with patch("marim_harness.tools.impl.web.httpx.AsyncClient") as mock_cls:
         client = AsyncMock()
-        client.get = AsyncMock(return_value=AsyncMock(
-            raise_for_status=lambda: None,
-            json=lambda: {"results": []},
-        ))
+        client.get = AsyncMock(
+            return_value=AsyncMock(
+                raise_for_status=lambda: None,
+                json=lambda: {"results": []},
+            )
+        )
         client.__aenter__ = AsyncMock(return_value=client)
         client.__aexit__ = AsyncMock(return_value=False)
         mock_cls.return_value = client

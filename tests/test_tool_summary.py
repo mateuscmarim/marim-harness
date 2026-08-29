@@ -43,10 +43,15 @@ def test_read_range_appends_after_clip_so_it_survives_long_paths():
 
 
 def test_spawn_agent_preview_prefers_description():
-    s = summarize("spawn_agent", {
-        "type": "explore", "task": "a very long task body that we don't want shown",
-        "description": "review core loop", "background": True,
-    })
+    s = summarize(
+        "spawn_agent",
+        {
+            "type": "explore",
+            "task": "a very long task body that we don't want shown",
+            "description": "review core loop",
+            "background": True,
+        },
+    )
     assert s.label == "Spawn Agent"
     assert s.target == "review core loop"
 
@@ -54,8 +59,9 @@ def test_spawn_agent_preview_prefers_description():
 def test_spawn_agent_preview_falls_back_to_task_never_a_bare_bool():
     # Regression: with no `description` and an early boolean arg, the old
     # "first meaningful arg" fallback surfaced "True" instead of the task.
-    s = summarize("spawn_agent", {"background": True, "type": "explore",
-                                   "task": "review the parser"})
+    s = summarize(
+        "spawn_agent", {"background": True, "type": "explore", "task": "review the parser"}
+    )
     assert s.target == "review the parser"
     assert s.target != "True"
 
@@ -86,10 +92,13 @@ def test_bash_command_clips_middle_keeping_the_tail():
 def test_bash_prefers_description_as_headline():
     # The human-written description headlines the row; the command itself stays
     # visible in the expanded body (arg_lines) and the approval modal.
-    s = summarize("bash", {
-        "command": "uv run pytest --no-cov -q 2>&1 | tail -1",
-        "description": "Run the test suite",
-    })
+    s = summarize(
+        "bash",
+        {
+            "command": "uv run pytest --no-cov -q 2>&1 | tail -1",
+            "description": "Run the test suite",
+        },
+    )
     assert s.label == "Bash"
     assert s.target == "Run the test suite"
 
@@ -114,10 +123,14 @@ def test_bash_description_head_clips_as_prose_not_middle():
 
 
 def test_bash_description_with_background_keeps_bg_badge():
-    s = summarize("bash", {
-        "command": "npm run dev", "description": "Start the dev server",
-        "background": True,
-    })
+    s = summarize(
+        "bash",
+        {
+            "command": "npm run dev",
+            "description": "Start the dev server",
+            "background": True,
+        },
+    )
     assert s.target == "Start the dev server"
     assert s.badges == ("bg",)
 

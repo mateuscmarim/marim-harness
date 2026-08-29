@@ -23,8 +23,10 @@ def _cmd_list(args, *, out, err) -> int:
     entries = asyncio.run(source.list_models())
 
     if args.json:
-        print(json.dumps([{"id": e.id, "name": e.name, "provider": e.provider}
-                          for e in entries]), file=out)
+        print(
+            json.dumps([{"id": e.id, "name": e.name, "provider": e.provider} for e in entries]),
+            file=out,
+        )
         return 0
 
     if not entries:

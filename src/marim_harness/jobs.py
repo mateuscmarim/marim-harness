@@ -52,6 +52,7 @@ def _validated_status(raw: object) -> Status:
     guard against a session file written by a newer/older version)."""
     return raw if raw in _SETTLED_STATUSES else "done"
 
+
 # How many trailing chars of a finished job's output to inline in the next-turn
 # digest. The tail carries the verdict (a test summary, a final error), so a
 # short tail lets the model read the result without a separate job_output pull,
@@ -177,10 +178,16 @@ class JobRegistry:
         """Schedule ``coro`` as a background job and return its id. The coroutine's
         return value becomes the job's result; an exception marks it failed; being
         cancelled marks it cancelled. Fires ``on_change`` on launch and finish."""
-        job = Job(id=self._next_id(), kind=kind, label=label,
-                  kill=kill, output_fn=output_fn, stream_id=stream_id,
-                  prompt=prompt,
-                  started_at=datetime.now(timezone.utc).isoformat())
+        job = Job(
+            id=self._next_id(),
+            kind=kind,
+            label=label,
+            kill=kill,
+            output_fn=output_fn,
+            stream_id=stream_id,
+            prompt=prompt,
+            started_at=datetime.now(timezone.utc).isoformat(),
+        )
 
         # Drive the caller's coroutine directly as the task and settle from a
         # done-callback. A wrapper coroutine that merely `await`s ``coro`` would,
@@ -272,9 +279,7 @@ class JobRegistry:
             if not job.task.cancelled():
                 raise  # the waiter itself was cancelled — propagate
         except Exception as exc:
-            logger.debug(
-                "wait for job %s: %s (already settled)", job_id, exc, exc_info=True
-            )
+            logger.debug("wait for job %s: %s (already settled)", job_id, exc, exc_info=True)
         # The done-callback that settles the job runs *after* the await returns
         # — and on 3.12+ ``asyncio.wait_for`` on an already-done task doesn't
         # yield to the event loop at all, so the callback may still be queued.
@@ -385,9 +390,7 @@ class JobRegistry:
                 if not job.task.cancelled():
                     raise
             except Exception as exc:
-                logger.debug(
-                    "cancel job %s: %s (already settled)", job_id, exc, exc_info=True
-                )
+                logger.debug("cancel job %s: %s (already settled)", job_id, exc, exc_info=True)
         # A task cancelled before it began running never hits the wrapper's
         # except, so settle here; _settle is a no-op if it already landed.
         self._settle(job, "cancelled")
@@ -444,11 +447,18 @@ class JobRegistry:
         long-lived session doesn't accrete unboundedly. Results are persisted as
         tails, not full reports: the session payload must not balloon (full
         reports were already delivered via the digest or spill files)."""
+
         def entry(j: Job) -> dict:
-            return {"id": j.id, "kind": j.kind, "label": j.label,
-                    "status": j.status, "result_tail": _result_tail(j.result),
-                    "stream_id": j.stream_id, "finished_at": j.finished_at,
-                    "prompt": j.prompt}
+            return {
+                "id": j.id,
+                "kind": j.kind,
+                "label": j.label,
+                "status": j.status,
+                "result_tail": _result_tail(j.result),
+                "stream_id": j.stream_id,
+                "finished_at": j.finished_at,
+                "prompt": j.prompt,
+            }
 
         settled = [entry(j) for j in self._jobs.values() if j.status != "running"]
         prior = [entry(j) for j in self.history]
@@ -459,11 +469,16 @@ class JobRegistry:
         seeds the id counter past any imported ``job-N`` so a job launched this
         process never shares an id with a history row on the panel."""
         self.history = [
-            Job(id=str(e.get("id", "?")), kind=str(e.get("kind", "agent")),
-                label=str(e.get("label", "")), status=_validated_status(e.get("status")),
+            Job(
+                id=str(e.get("id", "?")),
+                kind=str(e.get("kind", "agent")),
+                label=str(e.get("label", "")),
+                status=_validated_status(e.get("status")),
                 result=e.get("result_tail") or None,
-                stream_id=e.get("stream_id"), finished_at=e.get("finished_at"),
-                prompt=e.get("prompt"))
+                stream_id=e.get("stream_id"),
+                finished_at=e.get("finished_at"),
+                prompt=e.get("prompt"),
+            )
             for e in entries
             if isinstance(e, dict)
         ]
@@ -505,13 +520,9 @@ class JobRegistry:
                 # auto-detach path defaults a budget so those reports are capped +
                 # spilled before the result lands here; an explicit background=True
                 # spawn with no max_output_chars is inlined in full.
-                parts.append(
-                    f"{job.id} ({job.kind}) {job.status} — full report:\n{job.result}"
-                )
+                parts.append(f"{job.id} ({job.kind}) {job.status} — full report:\n{job.result}")
             else:
-                parts.append(
-                    f"{job.id} ({job.kind}) {job.status}{self._digest_tail(job)}"
-                )
+                parts.append(f"{job.id} ({job.kind}) {job.status}{self._digest_tail(job)}")
         if not parts:
             return ""
         return (

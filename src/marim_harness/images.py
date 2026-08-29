@@ -59,8 +59,10 @@ def _read_wayland() -> tuple[bytes, str] | None:
     if not types:
         return None
     available = types.decode("utf-8", "replace").splitlines()
-    target = "image/png" if "image/png" in available else next(
-        (t for t in available if t.startswith("image/")), None
+    target = (
+        "image/png"
+        if "image/png" in available
+        else next((t for t in available if t.startswith("image/")), None)
     )
     if target is None:
         return None
@@ -77,8 +79,11 @@ def _read_x11() -> tuple[bytes, str] | None:
     if not targets:
         return None
     available = targets.decode("utf-8", "replace").split()
-    target = "image/png" if "image/png" in available else next(
-        (t for t in available if t.startswith("image/")), None)
+    target = (
+        "image/png"
+        if "image/png" in available
+        else next((t for t in available if t.startswith("image/")), None)
+    )
     if target is None:
         return None
     data = _run(["xclip", "-selection", "clipboard", "-t", target, "-o"])
@@ -288,7 +293,7 @@ def rehydrate_images(messages: list[Any], session_id: str) -> list[Any]:
         data = item.get("data")
         if not (isinstance(data, str) and data.startswith(_REF_PREFIX)):
             continue
-        sha = data[len(_REF_PREFIX):]
+        sha = data[len(_REF_PREFIX) :]
         ext = media_ext(item.get("media_type", "image/png"))
         path = image_cache_root() / _safe_session_segment(session_id) / f"{sha}.{ext}"
         try:

@@ -112,7 +112,8 @@ def _minimal_harness(tmp_path):
         return ModelResponse(parts=[TextPart(content="ok")])
 
     return Harness(
-        FunctionModel(fn), BuiltinToolProvider(),
+        FunctionModel(fn),
+        BuiltinToolProvider(),
         _make_deps(tmp_path),
         instructions="test",
     )
@@ -158,8 +159,10 @@ async def test_non_actionable_failure_leaves_no_note(tmp_path):
 
 # --- new encapsulation methods ---
 
+
 def test_apply_session_start_context_sets_field(tmp_path):
     """apply_session_start_context writes the pending hook context."""
+
     def fn(messages, info):
         return ModelResponse(parts=[TextPart(content="ok")])
 
@@ -171,6 +174,7 @@ def test_apply_session_start_context_sets_field(tmp_path):
 
 def test_clear_pending_jobs_digest_clears_field(tmp_path):
     """clear_pending_jobs_digest sets _pending_jobs_digest to None."""
+
     def fn(messages, info):
         return ModelResponse(parts=[TextPart(content="ok")])
 
@@ -210,6 +214,7 @@ async def test_assemble_prompt_no_preamble_outside_plan_mode(tmp_path):
 def test_session_id_getter_reads_live_store(tmp_path):
     """build_services threads a getter that reads the session controller's store
     live, so a session switch is reflected without rewiring."""
+
     def fn(messages, info):
         return ModelResponse(parts=[TextPart(content="ok")])
 
@@ -370,9 +375,7 @@ def test_harness_add_shell_result_delegates(tmp_path):
     from pydantic_ai.models.test import TestModel
 
     deps = _make_deps(tmp_path)
-    harness = Harness(
-        TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="t"
-    )
+    harness = Harness(TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="t")
     harness.add_shell_result("echo hi", "exit 0\nhi")
     assert harness.turn_controller._pending_shell_results == [("echo hi", "exit 0\nhi")]
 
@@ -384,9 +387,7 @@ def test_clear_job_context_drops_pending_shell_results(tmp_path):
     from pydantic_ai.models.test import TestModel
 
     deps = _make_deps(tmp_path)
-    harness = Harness(
-        TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="t"
-    )
+    harness = Harness(TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="t")
     harness.add_shell_result("echo hi", "exit 0\nhi")
     harness._clear_job_context()
     assert harness.turn_controller._pending_shell_results == []
@@ -400,9 +401,7 @@ def test_clear_job_context_drops_pending_error_note_and_hook_context(tmp_path):
     from pydantic_ai.models.test import TestModel
 
     deps = _make_deps(tmp_path)
-    harness = Harness(
-        TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="t"
-    )
+    harness = Harness(TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="t")
     tc = harness.turn_controller
     tc._pending_error_note = "Note: your previous turn did not complete."
     tc.apply_session_start_context("stale startup context")
@@ -560,9 +559,7 @@ async def test_harness_manual_compact_delegates_to_controller(tmp_path):
     from pydantic_ai.models.test import TestModel
 
     deps = _make_deps(tmp_path)
-    harness = Harness(
-        TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="t"
-    )
+    harness = Harness(TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="t")
     seen: dict = {}
 
     async def fake(instructions=None):

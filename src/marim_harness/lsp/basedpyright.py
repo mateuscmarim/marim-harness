@@ -54,9 +54,7 @@ def _is_null_response(exc: AssertionError) -> bool:
 class BasedPyrightServer(LanguageServer):
     """basedpyright over stdio, driven through multilspy's client plumbing."""
 
-    def __init__(
-        self, config: MultilspyConfig, logger: MultilspyLogger, repository_root_path: str
-    ):
+    def __init__(self, config: MultilspyConfig, logger: MultilspyLogger, repository_root_path: str):
         super().__init__(
             config,
             logger,
@@ -72,25 +70,28 @@ class BasedPyrightServer(LanguageServer):
         opt-in client capability, and multilspy's response handling accepts
         both the flat and hierarchical documentSymbol shapes."""
         root_uri = pathlib.Path(repository_absolute_path).as_uri()
-        return cast(InitializeParams, {
-            "processId": os.getpid(),
-            "rootPath": repository_absolute_path,
-            "rootUri": root_uri,
-            "capabilities": {
-                "textDocument": {
-                    "synchronization": {"didSave": True},
-                    "publishDiagnostics": {"versionSupport": True},
+        return cast(
+            InitializeParams,
+            {
+                "processId": os.getpid(),
+                "rootPath": repository_absolute_path,
+                "rootUri": root_uri,
+                "capabilities": {
+                    "textDocument": {
+                        "synchronization": {"didSave": True},
+                        "publishDiagnostics": {"versionSupport": True},
+                    },
+                    "workspace": {"workspaceFolders": True, "configuration": True},
                 },
-                "workspace": {"workspaceFolders": True, "configuration": True},
+                "initializationOptions": {},
+                "workspaceFolders": [
+                    {
+                        "uri": root_uri,
+                        "name": os.path.basename(repository_absolute_path),
+                    }
+                ],
             },
-            "initializationOptions": {},
-            "workspaceFolders": [
-                {
-                    "uri": root_uri,
-                    "name": os.path.basename(repository_absolute_path),
-                }
-            ],
-        })
+        )
 
     # The request_* overrides below normalize pyright's `null` no-result
     # answers (see _is_null_response) to the empty shapes multilspy's jedi

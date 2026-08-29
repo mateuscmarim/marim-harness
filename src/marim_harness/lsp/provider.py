@@ -98,15 +98,9 @@ def _validate_diagnostics(
 def _parse_optional_fields(raw: dict, command: str | None) -> tuple:
     """Parse optional environment, markers, args, and probe fields."""
     env_raw = raw.get("env")
-    env = (
-        tuple((str(k), str(v)) for k, v in env_raw.items())
-        if isinstance(env_raw, dict)
-        else ()
-    )
+    env = tuple((str(k), str(v)) for k, v in env_raw.items()) if isinstance(env_raw, dict) else ()
     markers_raw = raw.get("rootMarkers")
-    root_markers = (
-        tuple(str(m) for m in markers_raw) if isinstance(markers_raw, list) else ()
-    )
+    root_markers = tuple(str(m) for m in markers_raw) if isinstance(markers_raw, list) else ()
     args_raw = raw.get("args")
     args = tuple(str(a) for a in args_raw) if isinstance(args_raw, list) else ()
 
@@ -141,9 +135,7 @@ def _parse_one(
 
     backend = raw.get("backend")
     command = raw.get("command")
-    result = _validate_launch_config(
-        backend, command, bundled, language, fail
-    )
+    result = _validate_launch_config(backend, command, bundled, language, fail)
     if result is None:
         return None
     backend, command = result

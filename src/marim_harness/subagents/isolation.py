@@ -36,8 +36,7 @@ class SpawnWorktree:
     path: Path
 
     @classmethod
-    def open(cls, workspace_root: Path,
-             branch: str) -> tuple[SpawnWorktree | None, str | None]:
+    def open(cls, workspace_root: Path, branch: str) -> tuple[SpawnWorktree | None, str | None]:
         """Create an isolated worktree for a fresh spawn off the repo's HEAD.
         Returns ``(worktree, None)`` or ``(None, message)`` when the workspace
         isn't a git repo or git refuses — the message is surfaced to the
@@ -55,16 +54,16 @@ class SpawnWorktree:
         return cls(repo=repo, branch=branch, path=path), None
 
     @classmethod
-    def reopen(cls, workspace_root: Path,
-               branch: str) -> tuple[SpawnWorktree | None, str | None]:
+    def reopen(cls, workspace_root: Path, branch: str) -> tuple[SpawnWorktree | None, str | None]:
         """Reopen the worktree for a resumed spawn on its existing ``branch`` (the
         deliverable of a prior, interrupted run). Refuses — with a renderable
         message — when the branch is gone, so a resume never silently starts over
         on a fresh branch."""
         repo = repo_root(workspace_root)
         if repo is None or not branch_exists(repo, branch):
-            return None, (f"Isolation branch {branch!r} no longer exists — "
-                          "can't resume this isolated spawn.")
+            return None, (
+                f"Isolation branch {branch!r} no longer exists — can't resume this isolated spawn."
+            )
         try:
             path = create_or_reuse_worktree(repo, branch)
         except WorktreeError as exc:
@@ -78,8 +77,10 @@ class SpawnWorktree:
         try:
             summary = commit_worktree(self.path, f"sub-agent work on {self.branch}")
         except WorktreeError as exc:
-            return (f"\n\n[isolated run on branch {self.branch}: commit failed ({exc}); "
-                    f"worktree left at {self.path}]")
+            return (
+                f"\n\n[isolated run on branch {self.branch}: commit failed ({exc}); "
+                f"worktree left at {self.path}]"
+            )
         if summary is None:
             # Nothing was produced: drop the worktree (force, since gitignored
             # leftovers may remain) and the empty branch, so spawns that change
@@ -87,8 +88,10 @@ class SpawnWorktree:
             self._teardown(force=True, drop_branch=True)
             return "\n\n[isolated run made no file changes]"
         self._teardown()  # keep the branch — it's the deliverable
-        return (f"\n\n[isolated run committed to branch {self.branch}:\n{summary}\n"
-                f"merge with `git merge {self.branch}` or review `git diff {self.branch}`]")
+        return (
+            f"\n\n[isolated run committed to branch {self.branch}:\n{summary}\n"
+            f"merge with `git merge {self.branch}` or review `git diff {self.branch}`]"
+        )
 
     def discard(self) -> None:
         """Teardown for a spawn whose fresh worktree is throwaway: force-remove the

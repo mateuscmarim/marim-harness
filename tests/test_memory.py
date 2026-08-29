@@ -41,8 +41,8 @@ def test_slugify_empty_fallback_is_per_title():
     a = memory._slugify("日本語")
     b = memory._slugify("中文")
     assert a.startswith("memory-") and b.startswith("memory-")
-    assert a != b                              # distinct titles -> distinct files
-    assert a == memory._slugify("日本語")       # deterministic per title
+    assert a != b  # distinct titles -> distinct files
+    assert a == memory._slugify("日本語")  # deterministic per title
 
 
 def test_slugify_transliterates_accents():
@@ -161,17 +161,19 @@ def test_remember_tool_returns_error_string_on_unwritable_dir(tmp_path: Path):
 def test_save_memory_creates_missing_dir(tmp_path: Path):
     sc = memory.project_scope(tmp_path)
     assert not sc.root.exists()
-    memory.save_memory(
-        sc, name="x", description="d", mem_type="reference", body="b", title="X"
-    )
+    memory.save_memory(sc, name="x", description="d", mem_type="reference", body="b", title="X")
     assert sc.root.is_dir()
 
 
 def test_save_memory_appends_index_line(tmp_path: Path):
     sc = memory.project_scope(tmp_path)
     memory.save_memory(
-        sc, name="Build tool", description="d", mem_type="project",
-        body="b", title="Build tool",
+        sc,
+        name="Build tool",
+        description="d",
+        mem_type="project",
+        body="b",
+        title="Build tool",
     )
     index = (sc.root / "MEMORY.md").read_text()
     assert "[Build tool](build-tool.md)" in index
@@ -180,12 +182,20 @@ def test_save_memory_appends_index_line(tmp_path: Path):
 def test_save_memory_upserts_index_no_duplicate(tmp_path: Path):
     sc = memory.project_scope(tmp_path)
     memory.save_memory(
-        sc, name="Build tool", description="first", mem_type="project",
-        body="b1", title="Build tool",
+        sc,
+        name="Build tool",
+        description="first",
+        mem_type="project",
+        body="b1",
+        title="Build tool",
     )
     memory.save_memory(
-        sc, name="Build tool", description="second", mem_type="project",
-        body="b2", title="Build tool",
+        sc,
+        name="Build tool",
+        description="second",
+        mem_type="project",
+        body="b2",
+        title="Build tool",
     )
     index = (sc.root / "MEMORY.md").read_text()
     assert index.count("build-tool.md") == 1
@@ -206,8 +216,12 @@ def test_concurrent_save_memory_keeps_every_index_entry(tmp_path: Path):
 
     def save(name: str):
         memory.save_memory(
-            sc, name=name, description=f"desc {name}", mem_type="project",
-            body="b", title=name,
+            sc,
+            name=name,
+            description=f"desc {name}",
+            mem_type="project",
+            body="b",
+            title=name,
         )
 
     threads = [threading.Thread(target=save, args=(n,)) for n in names]
@@ -256,8 +270,12 @@ def test_upsert_index_still_refreshes_the_matching_entry(tmp_path: Path):
 def test_save_memory_index_line_carries_hook(tmp_path: Path):
     sc = memory.project_scope(tmp_path)
     memory.save_memory(
-        sc, name="API key", description="stored in .env", mem_type="reference",
-        body="b", title="API key",
+        sc,
+        name="API key",
+        description="stored in .env",
+        mem_type="reference",
+        body="b",
+        title="API key",
     )
     index = (sc.root / "MEMORY.md").read_text()
     assert "— stored in .env" in index
@@ -266,8 +284,12 @@ def test_save_memory_index_line_carries_hook(tmp_path: Path):
 def test_read_memory_returns_body(tmp_path: Path):
     sc = memory.project_scope(tmp_path)
     memory.save_memory(
-        sc, name="My name", description="hook", mem_type="user",
-        body="The user is Mateus Coutinho Marim.", title="My name",
+        sc,
+        name="My name",
+        description="hook",
+        mem_type="user",
+        body="The user is Mateus Coutinho Marim.",
+        title="My name",
     )
     # by title (what the index shows) and by raw slug — both resolve.
     assert "Mateus Coutinho Marim" in memory.read_memory(sc, "My name")
@@ -292,8 +314,12 @@ def test_read_memory_resolves_pasted_slug(tmp_path: Path):
 def test_read_memory_resolves_title_via_slugify(tmp_path: Path):
     sc = memory.project_scope(tmp_path)
     memory.save_memory(
-        sc, name="Nome do usuário", description="hook", mem_type="user",
-        body="O nome é Mateus.", title="Nome do usuário",
+        sc,
+        name="Nome do usuário",
+        description="hook",
+        mem_type="user",
+        body="O nome é Mateus.",
+        title="Nome do usuário",
     )
     # passing the human title (with accent) still finds the file
     assert "O nome é Mateus." in memory.read_memory(sc, "Nome do usuário")
@@ -302,14 +328,14 @@ def test_read_memory_resolves_title_via_slugify(tmp_path: Path):
 @pytest.mark.parametrize("scope_name", ["project", "global"])
 def test_round_trip_index_lists_saved_memory(tmp_path, monkeypatch, scope_name):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
-    sc = (
-        memory.global_scope()
-        if scope_name == "global"
-        else memory.project_scope(tmp_path)
-    )
+    sc = memory.global_scope() if scope_name == "global" else memory.project_scope(tmp_path)
     memory.save_memory(
-        sc, name="Note one", description="hook one", mem_type="user",
-        body="body", title="Note one",
+        sc,
+        name="Note one",
+        description="hook one",
+        mem_type="user",
+        body="body",
+        title="Note one",
     )
     index = memory.load_index(sc)
     assert index is not None
@@ -317,9 +343,7 @@ def test_round_trip_index_lists_saved_memory(tmp_path, monkeypatch, scope_name):
 
 
 def _save(sc, name: str, hook: str = "d", body: str = "b") -> None:
-    memory.save_memory(
-        sc, name=name, description=hook, mem_type="project", body=body, title=name
-    )
+    memory.save_memory(sc, name=name, description=hook, mem_type="project", body=body, title=name)
 
 
 def test_delete_memory_removes_file_and_index_line(tmp_path: Path):
@@ -477,17 +501,25 @@ def test_save_memory_collision_does_not_overwrite_other_entry(tmp_path: Path):
     overwrote the first's file AND replaced its index line (silent memory loss)."""
     sc = memory.project_scope(tmp_path)
     p1 = memory.save_memory(
-        sc, name="Foo Bar", description="first fact", mem_type="project",
-        body="body one", title="Foo Bar",
+        sc,
+        name="Foo Bar",
+        description="first fact",
+        mem_type="project",
+        body="body one",
+        title="Foo Bar",
     )
     p2 = memory.save_memory(
-        sc, name="foo bar", description="second fact", mem_type="project",
-        body="body two", title="foo bar",
+        sc,
+        name="foo bar",
+        description="second fact",
+        mem_type="project",
+        body="body two",
+        title="foo bar",
     )
     assert p1 is not None and p2 is not None
-    assert p1 != p2                       # distinct files, no overwrite
-    assert p1.name == "foo-bar.md"        # first writer keeps the clean slug
-    assert p2.name == "foo-bar-2.md"      # collision loser gets a suffix
+    assert p1 != p2  # distinct files, no overwrite
+    assert p1.name == "foo-bar.md"  # first writer keeps the clean slug
+    assert p2.name == "foo-bar-2.md"  # collision loser gets a suffix
     assert "body one" in p1.read_text()
     assert "body two" in p2.read_text()
     index = (sc.root / "MEMORY.md").read_text()
@@ -499,12 +531,20 @@ def test_save_memory_resave_reuses_slug_not_a_new_suffix(tmp_path: Path):
     allocate a new suffixed slug each time."""
     sc = memory.project_scope(tmp_path)
     first = memory.save_memory(
-        sc, name="Build tool", description="v1", mem_type="project",
-        body="b1", title="Build tool",
+        sc,
+        name="Build tool",
+        description="v1",
+        mem_type="project",
+        body="b1",
+        title="Build tool",
     )
     again = memory.save_memory(
-        sc, name="Build tool", description="v2", mem_type="project",
-        body="b2", title="Build tool",
+        sc,
+        name="Build tool",
+        description="v2",
+        mem_type="project",
+        body="b2",
+        title="Build tool",
     )
     assert first == again == sc.root / "build-tool.md"
     index = (sc.root / "MEMORY.md").read_text()
@@ -520,19 +560,27 @@ def test_save_memory_title_with_link_syntax_still_upserts(tmp_path: Path):
     tricky = "see [x](y.md) note"
     sc = memory.project_scope(tmp_path)
     memory.save_memory(
-        sc, name=tricky, description="first", mem_type="project",
-        body="b1", title=tricky,
+        sc,
+        name=tricky,
+        description="first",
+        mem_type="project",
+        body="b1",
+        title=tricky,
     )
     memory.save_memory(
-        sc, name=tricky, description="second", mem_type="project",
-        body="b2", title=tricky,
+        sc,
+        name=tricky,
+        description="second",
+        mem_type="project",
+        body="b2",
+        title=tricky,
     )
     index = (sc.root / "MEMORY.md").read_text()
     slug = memory._slugify(tricky)
     # exactly one entry for this memory, and its OWN link is the only ](…md) on it
     assert index.count(f"({slug}.md)") == 1
-    assert "](y.md)" not in index       # the forged second link was defused
-    assert "second" in index            # updated in place, not duplicated
+    assert "](y.md)" not in index  # the forged second link was defused
+    assert "second" in index  # updated in place, not duplicated
     lines = [ln for ln in index.splitlines() if f"({slug}.md)" in ln]
     assert len(lines) == 1
     assert memory._ENTRY_LINK_RE.match(lines[0]).group("slug") == slug
