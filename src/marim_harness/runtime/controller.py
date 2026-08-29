@@ -982,14 +982,18 @@ class TurnController:
                 except BaseException as exc:
                     if self._is_structured_exhaustion(exc):
                         # Validation exhaustion is a terminal turn result, not an
-                        # infra failure: bank the spend, persist the (resumable)
-                        # history, and report through the outcome. No error note —
-                        # there is nothing the model can act on next turn.
+                        # infra failure: bank the spend, flush what the run
+                        # produced, and report through the outcome. No error
+                        # note — there is nothing the model can act on next turn.
                         self.session.add_usage(round_usage)
                         self._reclaim_undelivered_steers()
-                        if self.session.history:
-                            await self._flush_resumable(captured, resumable)
-                            await asyncio.to_thread(self.session.persist)
+                        await self._flush_resumable(captured, resumable)
+                        # The flush wrote a repaired, resumable history —
+                        # the dirty-history latch (if exhaustion struck on a
+                        # continuation round after an approval) no longer
+                        # applies. Same reset the terminal _handle_run_failure
+                        # path performs.
+                        self.deps.approval_round_active = False
                         return TurnOutcome(
                             subtype="error_max_structured_output_retries",
                             result=None,

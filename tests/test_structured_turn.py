@@ -95,3 +95,44 @@ async def test_basemodel_exhaustion_returns_error_subtype(tmp_path):
     assert outcome.subtype == "error_max_structured_output_retries"
     assert outcome.structured_output is None
     assert outcome.errors
+
+
+async def test_basemodel_exhaustion_persists_first_turn_history(tmp_path):
+    """A brand-new session (empty history going in) that exhausts on its very
+    first turn must still end up with the exchange on disk — the exhaustion
+    branch used to gate the flush on `self.session.history` being non-empty,
+    which is exactly false on a first turn, silently dropping the user's
+    prompt and the model's failed attempts."""
+    h = (HarnessBuilder(workspace=tmp_path,
+                        model=TestModel(call_tools=[], custom_output_args={"a": "not-an-int"}))
+         .with_output_type(Point)
+         .build())
+    outcome = await _run(h, "give me the point")
+    assert outcome.subtype == "error_max_structured_output_retries"
+    assert len(h.session.history) >= 2
+
+
+async def test_exhaustion_on_continuation_round_clears_approval_latch(tmp_path):
+    """Exhaustion striking on the round *after* an approval round (rather than
+    on a first, clean round) must still drop the dirty-history latch — the
+    same reset _handle_run_failure's terminal path performs — so a later
+    background force-persist isn't suppressed forever."""
+
+    def touch_file(ctx: RunContext[Deps], path: str) -> str:
+        """Touch `path` in the workspace."""
+        return "touched"
+
+    h = (
+        HarnessBuilder(
+            workspace=tmp_path,
+            model=TestModel(
+                call_tools=["touch_file"], custom_output_args={"a": "not-an-int"}
+            ),
+        )
+        .with_tool(touch_file, requires_approval=True)
+        .with_output_type(Point)
+        .build()
+    )
+    outcome = await _run(h, "touch the file, then report")
+    assert outcome.subtype == "error_max_structured_output_retries"
+    assert h.deps.approval_round_active is False
