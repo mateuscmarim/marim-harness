@@ -1075,8 +1075,7 @@ Run: `uv run pyright`
 Run: `uv run pytest`
 Expected: all green. Then the docs check:
 
-Run: `uv run python docs.py`
-Expected: no broken links / render errors.
+Run: `uv run python docs.py` — AMENDED AT EXECUTION: docs.py does not exist in this repo (plan defect); the final gate is ruff → pyright → pytest only.
 
 - [ ] **Step 6: Commit**
 
