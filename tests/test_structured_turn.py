@@ -171,9 +171,14 @@ async def test_exhausted_turn_leaves_a_resumable_history(tmp_path):
                 ToolCallPart(
                     tool_name="final_result",
                     args={"a": 11} if valid else {"a": "not-an-int"},
-                    # Pinned, mirroring a real provider's output-retry loop:
-                    # every attempt re-uses the same id. This is the exact shape
-                    # the flat-set repair mis-read as already answered.
+                    # Pinned id reproduces TestModel's deterministic reuse
+                    # (models/test.py: pyd_ai_tool_call_id__<tool>) — the shape
+                    # the flat-set repair mis-read as already answered. Real
+                    # providers mint a fresh uuid4 per call; there the pre-fix
+                    # bug failed differently (a synthesized return DUPLICATING
+                    # the answer a tool-bound retry prompt had already given —
+                    # two results for one tool_use). Both shapes are fixed by
+                    # the ordered-slot rule.
                     tool_call_id="reused-output-call",
                 )
             ]

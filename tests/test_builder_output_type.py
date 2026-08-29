@@ -99,3 +99,16 @@ def test_build_without_output_type_leaves_none(tmp_path):
     h = HarnessBuilder(workspace=tmp_path, model=TestModel()).build()
     assert h.turn_controller._structured_type is None
     assert h.turn_controller._output_type_dict is None
+
+
+def test_output_tool_name_constant_tracks_pydantic_ai():
+    """The collision guard compares tool names to ``_OUTPUT_TOOL_NAME``, which
+    mirrors pydantic-ai's PRIVATE ``DEFAULT_OUTPUT_TOOL_NAME`` (no public
+    export path). An upstream rename would silently turn the guard into a
+    no-op — the collision test would keep failing to fire and nothing else
+    would notice. This equality is the tripwire."""
+    from pydantic_ai._output import DEFAULT_OUTPUT_TOOL_NAME
+
+    from marim_harness.runtime.builder import _OUTPUT_TOOL_NAME
+
+    assert _OUTPUT_TOOL_NAME == DEFAULT_OUTPUT_TOOL_NAME

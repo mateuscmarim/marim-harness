@@ -120,9 +120,12 @@ def _dangling_tool_call_slots(history: list[ModelMessage]) -> set[tuple[int, int
     that vouches for nothing — the same rule pydantic-ai's own
     ``_repair_dangling_tool_calls`` applies.
 
-    A ``RetryPromptPart`` counts as an answer alongside ``ToolReturnPart``: to
-    every provider it *is* the tool's (error) result. Counting only returns made
-    the repair synthesize a second, bogus result for a call a retry prompt had
+    A ``RetryPromptPart`` counts as an answer alongside ``ToolReturnPart``, but
+    only when it is tool-bound (``tool_name`` set): to every provider a
+    tool-bound retry *is* the tool's (error) result, while a nameless retry
+    renders as a plain user message and answers nothing — the same distinction
+    upstream's ``_is_tool_result_part`` draws. Counting only returns made the
+    repair synthesize a second, bogus result for a call a retry prompt had
     already closed."""
     from pydantic_ai.messages import RetryPromptPart, ToolCallPart, ToolReturnPart
 
@@ -131,7 +134,9 @@ def _dangling_tool_call_slots(history: list[ModelMessage]) -> set[tuple[int, int
         for part_index, part in enumerate(getattr(message, "parts", [])):
             if isinstance(part, ToolCallPart):
                 open_calls.setdefault(part.tool_call_id, []).append((message_index, part_index))
-            elif isinstance(part, (ToolReturnPart, RetryPromptPart)):
+            elif isinstance(part, ToolReturnPart) or (
+                isinstance(part, RetryPromptPart) and part.tool_name is not None
+            ):
                 pending = open_calls.get(part.tool_call_id)
                 if pending:
                     pending.pop(0)
