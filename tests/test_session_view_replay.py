@@ -86,7 +86,12 @@ async def test_replay_parts_text_mounts_assistant_message(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_replay_parts_empty_text_mounts_nothing(tmp_path: Path):
-    """Empty TextPart is skipped — no widget mounted, group/solo unchanged."""
+    """Empty TextPart mounts no widget — but still ends the tool run.
+
+    The mount is deferred on visible content; the run break is not. Live,
+    ``_on_text_start`` calls ``sink.set_run(None, None)`` before it decides whether
+    to mount, so replay clears group/solo here too — otherwise tools either side of
+    a blank part would regroup after a resume."""
     from pydantic_ai.messages import TextPart
 
     app = _app(tmp_path)
@@ -103,9 +108,8 @@ async def test_replay_parts_empty_text_mounts_nothing(tmp_path: Path):
             TextPart(content=""), None, record, {}, sentinel, sentinel  # type: ignore[arg-type]
         )
         assert len(mounted) == 0
-        # group/solo are unchanged when nothing is mounted
-        assert group is sentinel
-        assert solo is sentinel
+        assert group is None
+        assert solo is None
 
 
 @pytest.mark.anyio

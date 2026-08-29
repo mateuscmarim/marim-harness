@@ -6,6 +6,9 @@ outside a turn's own stream — auto-rename, compaction, advisories. Behavior on
 — it holds no state; it reaches the app, status bar, and stream renderer through
 ``self.app``."""
 
+from collections.abc import Sequence
+from typing import Any
+
 from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Static
 
@@ -26,6 +29,68 @@ from .widgets import (
 from .widgets.compact_notice import CompactNotice
 
 
+def order_response_parts(parts: Sequence[Any]) -> list:
+    """Reorder one ``ModelResponse``'s parts so reasoning replays above the reply it
+    produced. Pure — returns a new list, never mutates ``parts``.
+
+    Stored order is not always causal order. Some providers open the reply with a
+    whitespace-only content delta *before* the first reasoning delta (deepseek-v4
+    via OpenRouter), so pydantic-ai starts the TextPart first and the response
+    persists as ``[text, thinking]``. Replaying that verbatim puts the answer above
+    the thought that produced it — and disagrees with the live path, which mounts
+    the thinking block first (see ``_on_text_start``'s deferred mount).
+
+    The reorder is keyed to that bug's *fingerprint*, not applied blanket: a reply
+    whose stored content begins with whitespace is one the provider opened with a
+    blank delta. Text that is real from its first character genuinely preceded the
+    thought, so it is left alone — replay then matches what the live path rendered
+    instead of hoisting a thought above text that truly came first.
+
+    Only the *leading* text part can have been opened early this way; everything
+    after it was recorded in true causal order. So the fix moves that one part
+    down past the reasoning that immediately follows it, rather than hoisting
+    every thought in the segment to the front. A blanket hoist would reorder
+    genuinely interleaved output — in ``[text, think, text, think]`` it drags the
+    second thought above the first reply, which the model never did.
+
+    Tool calls anchor the segments: within each run of text/thinking parts between
+    tool calls, a reorder is decided independently. So a thought that follows a
+    tool round-trip stays with its own reply rather than moving to the top of the
+    message.
+    """
+    from pydantic_ai.messages import TextPart, ThinkingPart
+
+    def ordered_segment(segment: list) -> list:
+        # Only a leading TextPart is a candidate: reasoning already leads, or
+        # there is nothing to move.
+        if not segment or not isinstance(segment[0], TextPart):
+            return segment
+        # Only the blank-opener shape reorders (see above). ``content[:1]`` is
+        # whitespace for the " " opener and empty for a bare TextPart; real text
+        # from char 0 keeps its recorded position.
+        if segment[0].content[:1].strip():
+            return segment
+        # The contiguous reasoning run that the blank opener jumped ahead of.
+        run = 1
+        while run < len(segment) and isinstance(segment[run], ThinkingPart):
+            run += 1
+        if run == 1:  # no reasoning directly after it — nothing was displaced
+            return segment
+        return segment[1:run] + [segment[0]] + segment[run:]
+
+    ordered: list = []
+    segment: list = []
+    for part in parts:
+        if isinstance(part, (TextPart, ThinkingPart)):
+            segment.append(part)
+        else:
+            ordered.extend(ordered_segment(segment))
+            ordered.append(part)
+            segment = []
+    ordered.extend(ordered_segment(segment))
+    return ordered
+
+
 class SessionView:
     """Owns rebuilding/replaying the log for the active session. Constructed by the
     HarnessApp, which delegates new/switch/clear and the auto-rename callback here."""
@@ -35,13 +100,24 @@ class SessionView:
 
     async def _replay_text_part(self, part, mount_fn, group, solo):
         """TextPart arm of ``_replay_parts``."""
-        if part.content:
-            # Text output ends the current tool burst in both the main log and
-            # sub-agent panes. Without this reset, a tool after text would be
-            # incorrectly grouped with tools before it (original
-            # replay_messages_into omitted this reset, which was a bug).
-            group = None
-            solo = None
+        # Text output ends the current tool burst in both the main log and
+        # sub-agent panes. Without this reset, a tool after text would be
+        # incorrectly grouped with tools before it (original
+        # replay_messages_into omitted this reset, which was a bug).
+        #
+        # The reset is *outside* the visibility check on purpose: live,
+        # _on_text_start calls sink.set_run(None, None) before it decides
+        # whether to mount, so the run breaks even for a whitespace-only part.
+        # Gating it on visible content would regroup tools around a blank
+        # opener after a resume — the same live/replay disagreement in a
+        # different guise.
+        group = None
+        solo = None
+        # Match live stream: a whitespace-only reply leaves no empty bubble.
+        # _on_text_start defers the mount until the part has visible content, so
+        # replaying on `part.content` alone would resurrect after a resume the
+        # very blank message the live path now refuses to mount.
+        if part.content and part.content.strip():
             msg = AssistantMessage()
             await mount_fn(msg)
             self.app.stream.append_stream(msg, part.content)
@@ -49,11 +125,13 @@ class SessionView:
 
     async def _replay_thinking_part(self, part, mount_fn, group, solo):
         """ThinkingPart arm of ``_replay_parts``."""
+        # Same reasoning as TextPart, reset included: _on_thinking_start breaks
+        # the run before its own content check, so an empty ThinkingPart (common
+        # between tool calls) still ends the burst live and must here too.
+        group = None
+        solo = None
         # Match live stream: whitespace-only thoughts leave no bare label.
         if part.content and part.content.strip():
-            # Same reasoning as TextPart: thinking output breaks a tool run.
-            group = None
-            solo = None
             widget = ThinkingWidget()
             await mount_fn(widget)
             self.app.stream.append_stream(widget.body, part.content)
@@ -259,7 +337,14 @@ class SessionView:
         for message in self.app.harness.session.history:
             if not isinstance(message, (ModelRequest, ModelResponse)):
                 continue
-            for part in message.parts:
+            # Replay reasoning above the reply it produced, matching the live path
+            # even when the provider persisted them the other way round.
+            parts = (
+                order_response_parts(message.parts)
+                if isinstance(message, ModelResponse)
+                else message.parts
+            )
+            for part in parts:
                 if isinstance(part, UserPromptPart):
                     group = None
                     solo = None
@@ -295,7 +380,13 @@ class SessionView:
         solo: ToolCallWidget | None = None
         for message in messages:
             if isinstance(message, (ModelRequest, ModelResponse)):
-                for part in message.parts:
+                # Same causal reordering as replay_history (see order_response_parts).
+                parts = (
+                    order_response_parts(message.parts)
+                    if isinstance(message, ModelResponse)
+                    else message.parts
+                )
+                for part in parts:
                     group, solo = await self._replay_parts(
                         part, pane, pane.add, tool_widgets, group, solo,
                         parent_id=parent_id,
