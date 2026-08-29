@@ -3,7 +3,7 @@
   "seeded_at": "2026-08-29",
   "seeded_on": "CPython 3.12.3 — the interpreter the Gitea runner supplies for `uv sync --python 3.12`, and the one the gate job measured these numbers on. NOT a local run. See why_coverage_is_seeded_from_ci_2026_08_29.",
   "why_pip_audit_findings_is_9_2026_08_29": "Nine advisories across five transitive deps at seeding: cryptography 49.0.0, requests 2.32.3, mcp 1.27.2, pyasn1 0.6.3, pydantic-settings 2.14.1. Severity-agnostic by design — OSV often reports none. Ratchets down as the lock is refreshed.",
-  "why_secret_findings_is_0_2026_08_29": "First scan reported 1345 generic-api-key hits, every one a provider-key fixture stub re-counted across the commits that touched three files. Allowlisted by path in .gitleaks.toml; see the note there.",
+  "why_secret_findings_is_0_2026_08_29": "A default-rules scan reports well over a thousand generic-api-key hits (1367 on 2026-08-29), every one a provider-key fixture stub re-counted across the commits that touched three files; the total climbs as history grows, so treat it as a dated reading rather than a constant. The four distinct stub values are allowlisted BY EXACT VALUE in .gitleaks.toml, not by path: a path allowlist makes gitleaks skip the file before scanning, which would hide a real key committed there. See the note in .gitleaks.toml for the measurement that settled it.",
   "policy": {
     "comment": "Higher-is-better metrics may not drop; lower-is-better may not rise; boolean_must_be_zero fails on any non-zero value regardless of baseline. Tolerance absorbs measurement noise, not regressions. See docs/quality-gate.md.",
     "tolerance": {

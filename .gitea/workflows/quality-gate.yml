@@ -242,8 +242,9 @@ jobs:
           # blanket `|| true` would make a broken scan indistinguishable from a
           # clean one. Only >1 aborts. --config is explicit: the allowlist in
           # .gitleaks.toml is what keeps this metric at 0 (see the note there),
-          # and a silently-unloaded config would turn the run red with 1345
-          # fixture matches.
+          # and a silently-unloaded config would turn the run red with well
+          # over a thousand fixture matches (1367 on 2026-08-29, and climbing
+          # with history -- see .gitleaks.toml for why the figure is not fixed).
           set +e
           gitleaks detect \
             --config .gitleaks.toml \
