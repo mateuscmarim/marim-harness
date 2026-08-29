@@ -87,6 +87,7 @@ class HarnessBuilder:
         self._combined_job_tool = False
         self._deps_override = None
         self._config_overrides: dict[str, Any] = {}
+        self._output_type: Any = None
         self._built = False
 
     # -- composition setters (chainable, no I/O) ---------------------------
@@ -214,6 +215,15 @@ class HarnessBuilder:
         overrides this at runtime (harness.set_thinking_level switches it live)."""
         return self.with_config_overrides(thinking_level=level)
 
+    def with_output_type(self, schema: Any) -> HarnessBuilder:
+        """Structured output for every turn: a pydantic ``BaseModel`` subclass
+        or an object-rooted JSON Schema dict. ``run_turn`` then returns a
+        ``TurnOutcome`` whose ``structured_output`` is the validated object.
+        The schema is a property of this composition — one harness, one
+        schema."""
+        self._output_type = schema
+        return self
+
     def with_defaults(self) -> HarnessBuilder:
         """The full marim toolset: every group, LSP with tools, spawn, jobs,
         and the user-level global instructions. Workspace *scanning* (project
@@ -314,6 +324,22 @@ class HarnessBuilder:
                     f"sub-agent {defn.name!r} grants tools from disabled groups: "
                     f"{sorted(missing)}{hint}")
 
+    def _check_output_type(self, problems: list[str]) -> None:
+        from pydantic import BaseModel
+
+        schema = self._output_type
+        if schema is None:
+            return
+        if isinstance(schema, dict):
+            if schema.get("type") != "object":
+                problems.append(
+                    "with_output_type: JSON Schema must be object-rooted "
+                    f"(got type {schema.get('type')!r})")
+        elif not (isinstance(schema, type) and issubclass(schema, BaseModel)):
+            problems.append(
+                "with_output_type: expected a pydantic BaseModel subclass or "
+                f"an object-rooted JSON Schema dict, got {schema!r}")
+
     def _open_sessions(
         self, problems: list[str]
     ) -> tuple[SessionManager | None, SessionStore | None, StatsLedger | None]:
@@ -408,6 +434,8 @@ class HarnessBuilder:
 
         manager, store, stats_ledger = self._open_sessions(problems)
 
+        self._check_output_type(problems)
+
         if problems:
             raise BuilderError(problems)
 
@@ -472,6 +500,7 @@ class HarnessBuilder:
             stats_ledger=stats_ledger,
             summarizer=make_summarizer(model),
             titler=make_titler(model),
+            output_type=self._output_type,
         )
         config_fields.update(self._config_overrides)
 

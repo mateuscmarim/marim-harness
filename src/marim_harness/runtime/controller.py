@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any
 
-from pydantic_ai import DeferredToolRequests, capture_run_messages
+from pydantic_ai import DeferredToolRequests, StructuredDict, capture_run_messages
 from pydantic_ai.messages import BinaryContent, ModelMessage
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RunUsage
@@ -280,6 +280,7 @@ class TurnController:
         get_model: Callable[[], Model],
         get_thinking: Callable[[], str | None] = lambda: None,
         lsp_toolset: FunctionToolset[Deps] | None = None,
+        output_type: Any = None,
     ) -> None:
         self.agent = agent
         self.session = session
@@ -300,6 +301,15 @@ class TurnController:
         # to the next turn with no agent rebuild — the get_model pattern.
         self.get_thinking = get_thinking
         self.lsp_toolset = lsp_toolset
+        # Structured output for embedder turns (HarnessBuilder.with_output_type).
+        # Resolved ONCE here: a dict schema becomes StructuredDict (the
+        # provider-constrained dict type pydantic-ai uses for structured
+        # output), a BaseModel subclass passes through. Task 4 turns this
+        # into the per-run output_type override on every agent.run round.
+        self._output_type_dict = output_type if isinstance(output_type, dict) else None
+        self._structured_type: Any = (
+            StructuredDict(output_type) if isinstance(output_type, dict) else output_type
+        )
 
         # One-shot turn state (consumed by _assemble_prompt, restored on failure).
         self._pending_error_note: str | None = None

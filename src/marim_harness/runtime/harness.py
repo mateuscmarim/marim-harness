@@ -4,7 +4,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic_ai import Agent, DeferredToolRequests
 from pydantic_ai.capabilities import AbstractCapability, ProcessHistory
@@ -161,6 +161,12 @@ class HarnessConfig:
     # select_backend's tea-on-PATH auto-detection; forge_enabled must still be
     # True for it to attach.
     forge_backend: object | None = None
+    # Structured output for embedder turns (HarnessBuilder.with_output_type).
+    # A pydantic BaseModel subclass or an object-rooted JSON Schema dict;
+    # None ⇒ turns return plain text. Typed Any (like capabilities) to keep
+    # this dataclass's imports light; TurnController resolves it into the
+    # per-run output_type override.
+    output_type: Any = None
     # Autonomous wake-on-completion knobs, surfaced to the TUI app. Defaults
     # match ModelConfig: wake on, cap 8.
     autonomous_wake: bool = True
@@ -601,6 +607,7 @@ class Harness:
             lsp_toolset=self.provider.lsp_toolset(),
             get_model=lambda: self.current_model,
             get_thinking=lambda: self.thinking_level_id,
+            output_type=cfg.output_type,
         )
         # Advisor: build ONE advise callable for the harness lifetime; which
         # model it consults is re-resolved PER CALL through the closure over
