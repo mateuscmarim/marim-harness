@@ -27,8 +27,8 @@ failure is what actually holds those at zero. Treat those rows as bookkeeping.
 
 | Metric | Baseline at seeding | Notes |
 |---|---:|---|
-| `coverage_lines_pct` | 92.51 | ↑, ±0.1 tolerance |
-| `coverage_branches_pct` | 87.24 | ↑, ±0.1 |
+| `coverage_lines_pct` | 92.4 | ↑, ±0.1 tolerance |
+| `coverage_branches_pct` | 87.17 | ↑, ±0.1 |
 | `lint_errors` | 0 | already hard-enforced |
 | `complexity_violations` | 61 | `C901` + `PLR0911/0912/0913/0915`, `src` only |
 | `bandit_high` / `bandit_medium` | 0 / 0 | 45 LOW findings are not scored |
@@ -69,6 +69,26 @@ uvx ratchet-gate@0.5.0 check          # exit 1 on any regression
 `.quality/` is gitignored. A bare `check` scores against this checkout's own
 baseline; CI adds `--baseline-ref origin/master` on PRs so a branch cannot
 raise its own bar in the same commit that regresses.
+
+On the PR that first adds `quality-baseline.json` the workflow probes for the
+file on `origin/master` and omits the flag when it is absent — the gate fails
+closed on an unreadable reference, which would otherwise make the adoption PR
+impossible to pass. The probe expires by itself once the baseline is on master.
+
+### Expect the coverage rows to read low locally
+
+**Seed and re-seed coverage from a CI run, not from your machine.** The Gitea
+runner executes as root, and five tests skip on `geteuid() == 0` because `chmod`
+cannot provoke a permission failure for root (two in `test_history.py`, three in
+`test_memory.py`). Their lines are never covered in CI, so a laptop measures
+about 0.1 higher than the job that actually scores every run — enough to blow the
+0.1 tolerance. The baseline was seeded locally once and failed the gate's first
+real run for exactly this reason.
+
+A local `check` showing coverage a shade *above* baseline is therefore normal and
+not an improvement to promote. It also means CI never exercises those
+permission-failure paths; closing that gap means running the job as a non-root
+user, which is a runner change, not a gate change.
 
 ## The secrets allowlist
 
