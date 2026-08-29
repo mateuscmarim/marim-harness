@@ -112,6 +112,7 @@ class _SpawnPreflightError(RuntimeError):
 class _SpawnPrep:
     """Shared state returned by ``_prepare_spawn``: the built sub-agent and all
     context the foreground and background tails need to run it and finalize output."""
+
     sub: SubAgent
     granted: list[object]
     unknown: list[str]
@@ -135,19 +136,25 @@ class SubagentRunner:
     through ``get_model`` each spawn, so a runtime ``/model`` switch is picked
     up without rewiring."""
 
-    def __init__(self, provider: ToolProvider, mcp: McpManager, deps: Deps,
-                 hooks: TurnHooks, session: SessionController,
-                 get_model: Callable[[], Model],
-                 model_settings: ModelSettings | None = None,
-                 build_model: Callable[[str], Model] | None = None,
-                 concurrency: int | None = None,
-                 transcript_cap: int = 2000,
-                 max_depth: int = 3,
-                 retry: RetryPolicy | None = None,
-                 masking: MaskingPolicy | None = None,
-                 tiers: SubagentTiers | None = None,
-                 thinking_default: Callable[[], str | None] | None = None,
-                 extra_agents: tuple[AgentDef, ...] = ()) -> None:
+    def __init__(
+        self,
+        provider: ToolProvider,
+        mcp: McpManager,
+        deps: Deps,
+        hooks: TurnHooks,
+        session: SessionController,
+        get_model: Callable[[], Model],
+        model_settings: ModelSettings | None = None,
+        build_model: Callable[[str], Model] | None = None,
+        concurrency: int | None = None,
+        transcript_cap: int = 2000,
+        max_depth: int = 3,
+        retry: RetryPolicy | None = None,
+        masking: MaskingPolicy | None = None,
+        tiers: SubagentTiers | None = None,
+        thinking_default: Callable[[], str | None] | None = None,
+        extra_agents: tuple[AgentDef, ...] = (),
+    ) -> None:
         self.provider = provider
         self.mcp = mcp
         self.deps = deps
@@ -186,8 +193,11 @@ class SubagentRunner:
         # it rejoins this runner's _run_spawn_lifecycle (passed bound) so the
         # run+failure+finalize invariants stay written once.
         self._cli = CliSpawnOrchestrator(
-            deps=deps, hooks=hooks, transcripts=self._transcripts,
-            lifecycle=self._run_spawn_lifecycle, resolve_agent=self._resolve_agent,
+            deps=deps,
+            hooks=hooks,
+            transcripts=self._transcripts,
+            lifecycle=self._run_spawn_lifecycle,
+            resolve_agent=self._resolve_agent,
         )
         # Hard depth ceiling. Spawns that would produce a sub-agent at
         # depth >= max_depth are refused. Default 3: main → sub → grandchild.
@@ -212,8 +222,7 @@ class SubagentRunner:
         # The model-loop driver: retry/overflow/contention recovery lives there,
         # keeping this class the spawn-lifecycle coordinator. known_window is
         # passed as a callable because it reads the *current* session model.
-        self._driver = SpawnRunDriver(deps, session, self._retry,
-                                      self._known_window)
+        self._driver = SpawnRunDriver(deps, session, self._retry, self._known_window)
         # Stream ids of spawns whose resume is in flight but not yet registered as
         # a job. resume_spawn awaits (limits resolve, subagent_start hook, MCP
         # grants) between its guards and jobs.register, so two rapid `r` presses
@@ -245,9 +254,7 @@ class SubagentRunner:
         lifecycle (close/discard/teardown) lives on ``SpawnWorktree``; this method
         just owns the branch-naming counter."""
         self._iso_seq += 1
-        return SpawnWorktree.open(
-            self.deps.workspace.root, _iso_branch(stream_id, self._iso_seq)
-        )
+        return SpawnWorktree.open(self.deps.workspace.root, _iso_branch(stream_id, self._iso_seq))
 
     def handler(
         self,
@@ -330,16 +337,15 @@ class SubagentRunner:
         # settings_for needs a concrete mapping to copy.
         return settings_for(level, self._model_settings or ModelSettings())
 
-    async def _report_spawn_thinking(self, stream_id: str, override: str | None,
-                                     spawn_defn) -> None:
+    async def _report_spawn_thinking(
+        self, stream_id: str, override: str | None, spawn_defn
+    ) -> None:
         """Report the spawn's resolved thinking level to the UI, the same seam
         the model report uses — so the card can annotate the reasoning effort it
         actually ran with. Fires ONLY for a real level (off/none is the default;
         no annotation). Extracted so the resolve+fire is unit-testable without
         the full spawn machinery."""
-        inherited = (
-            self._thinking_default() if self._thinking_default is not None else None
-        )
+        inherited = self._thinking_default() if self._thinking_default is not None else None
         level = resolve_thinking(
             override, spawn_defn.thinking if spawn_defn is not None else None, inherited
         )
@@ -350,11 +356,18 @@ class SubagentRunner:
             await report(stream_id, level)
 
     def build(
-        self, type: str, max_output_chars: int | None = None,
-        model: str | None = None, workspace_root=None, *, defn=None,
-        depth: int = 0, mask_trigger: int | None = None,
+        self,
+        type: str,
+        max_output_chars: int | None = None,
+        model: str | None = None,
+        workspace_root=None,
+        *,
+        defn=None,
+        depth: int = 0,
+        mask_trigger: int | None = None,
         checkpoint: Callable[[list], None] | None = None,
-        output_schema: dict | None = None, tier: str | None = None,
+        output_schema: dict | None = None,
+        tier: str | None = None,
         thinking: str | None = None,
     ) -> tuple[SubAgent | None, str | None]:
         """Build an isolated sub-agent of ``type``, with its reach decided up
@@ -395,18 +408,20 @@ class SubagentRunner:
                 )
             )
             return None, f"No sub-agent type {type!r}. Available: {names}."
-        instr_root = (
-            workspace_root if workspace_root is not None else self.deps.workspace.root
-        )
+        instr_root = workspace_root if workspace_root is not None else self.deps.workspace.root
         read_only = not (defn.tools & GATED_TOOLS)
         model_id = _resolve_spawn_model_id(
-            override_tier=tier, slug=model, spec_tier=defn.tier,
-            read_only=read_only, tiers=self._tiers,
+            override_tier=tier,
+            slug=model,
+            spec_tier=defn.tier,
+            read_only=read_only,
+            tiers=self._tiers,
         )
         if model and model_id != model:
             logger.debug(
                 "sub-agent slug override %r not in tier allowlist; using %r",
-                model, model_id,
+                model,
+                model_id,
             )
         if model_id is None:
             model_obj = self._get_model()
@@ -484,8 +499,11 @@ class SubagentRunner:
             # _execute_native_spawn serializes a dict result.
             output_type=StructuredDict(output_schema) if output_schema else str,
             instructions=subagent_instructions(
-                defn, instr_root, max_output_chars,
-                scratchpad=scratch, scratchpad_writable=scratchpad_writable,
+                defn,
+                instr_root,
+                max_output_chars,
+                scratchpad=scratch,
+                scratchpad_writable=scratchpad_writable,
             ),
             # Match the main agent's tool-retry budget (agent.py builds it with
             # retries=2). pydantic-ai defaults to 1, which gives the model a single
@@ -511,6 +529,7 @@ class SubagentRunner:
         # passed its own max_depth could override the binding.
         if depth + 1 < self._max_depth:
             from ..tools.spawn_tools import spawn_agent
+
             sub.tool(spawn_agent)
         return sub, None
 
@@ -535,9 +554,17 @@ class SubagentRunner:
         return text
 
     async def _finalize_spawn(
-        self, run: SpawnRun, *, stream_id: str, name: str, stop_task: str,
-        note: str, iso: SpawnWorktree | None, max_output_chars: int | None,
-        persist_bg: bool, timing: tuple[float, float, list[float]] | None = None,
+        self,
+        run: SpawnRun,
+        *,
+        stream_id: str,
+        name: str,
+        stop_task: str,
+        note: str,
+        iso: SpawnWorktree | None,
+        max_output_chars: int | None,
+        persist_bg: bool,
+        timing: tuple[float, float, list[float]] | None = None,
     ) -> str:
         """The one success tail every spawn shares, regardless of backend or mode.
 
@@ -613,9 +640,17 @@ class SubagentRunner:
         return f"Sub-agent {name!r} failed: {exc.__class__.__name__}: {exc}"
 
     async def _run_spawn_lifecycle(
-        self, run_fn: Callable[[], Awaitable[SpawnRun]], *, iso: SpawnWorktree | None,
-        resumed: bool, background: bool, name: str, stop_task: str, note: str,
-        max_output_chars: int | None, stream_id: str,
+        self,
+        run_fn: Callable[[], Awaitable[SpawnRun]],
+        *,
+        iso: SpawnWorktree | None,
+        resumed: bool,
+        background: bool,
+        name: str,
+        stop_task: str,
+        note: str,
+        max_output_chars: int | None,
+        stream_id: str,
         timing: tuple[float, float, list[float]] | None = None,
     ) -> str:
         """The one run+failure+finalize lifecycle every spawn shares — native or
@@ -669,8 +704,14 @@ class SubagentRunner:
                 iso.close()
             raise
         return await self._finalize_spawn(
-            run, stream_id=stream_id, name=name, stop_task=stop_task, note=note,
-            iso=iso, max_output_chars=max_output_chars, persist_bg=background,
+            run,
+            stream_id=stream_id,
+            name=name,
+            stop_task=stop_task,
+            note=note,
+            iso=iso,
+            max_output_chars=max_output_chars,
+            persist_bg=background,
             timing=timing,
         )
 
@@ -686,10 +727,19 @@ class SubagentRunner:
         return self._sem
 
     async def _execute_spawn(
-        self, type: str, task: str, mcp_names: list[str] | None,
-        max_output_chars: int | None, model: str | None, isolation: str | None,
-        *, background: bool, stream_id: str, caller_depth: int = 0,
-        output_schema: dict | None = None, tier: str | None = None,
+        self,
+        type: str,
+        task: str,
+        mcp_names: list[str] | None,
+        max_output_chars: int | None,
+        model: str | None,
+        isolation: str | None,
+        *,
+        background: bool,
+        stream_id: str,
+        caller_depth: int = 0,
+        output_schema: dict | None = None,
+        tier: str | None = None,
         thinking: str | None = None,
     ) -> str:
         """Dispatch a spawn through shared setup then the shared run lifecycle.
@@ -738,18 +788,43 @@ class SubagentRunner:
         task = task + contract
         if defn is not None and defn.backend == "claude-cli":
             return await self._cli.execute(
-                defn, task, work_root, iso, mcp_names, max_output_chars,
-                model, stream_id, background=background, depth=depth,
+                defn,
+                task,
+                work_root,
+                iso,
+                mcp_names,
+                max_output_chars,
+                model,
+                stream_id,
+                background=background,
+                depth=depth,
             )
         prep = await self._prepare_spawn(
-            type, task, mcp_names, max_output_chars, model,
-            iso, work_root, stream_id, debug=debug, t0=t0, defn=defn, depth=depth,
-            output_schema=output_schema, tier=tier, thinking=thinking,
+            type,
+            task,
+            mcp_names,
+            max_output_chars,
+            model,
+            iso,
+            work_root,
+            stream_id,
+            debug=debug,
+            t0=t0,
+            defn=defn,
+            depth=depth,
+            output_schema=output_schema,
+            tier=tier,
+            thinking=thinking,
         )
         if isinstance(prep, str):
             return self._preflight_failure(prep, background)
         return await self._execute_native_spawn(
-            type, task, stream_id, max_output_chars, prep, background=background,
+            type,
+            task,
+            stream_id,
+            max_output_chars,
+            prep,
+            background=background,
         )
 
     def _preflight_failure(self, err: str, background: bool) -> str:
@@ -764,12 +839,24 @@ class SubagentRunner:
         return err
 
     async def _prepare_spawn(
-        self, type: str, task: str, mcp_names: list[str] | None,
-        max_output_chars: int | None, model: str | None,
-        iso: SpawnWorktree | None, work_root, stream_id: str,
-        *, debug: bool, t0: float, defn=None, depth: int = 0,
-        resumed: bool = False, output_schema: dict | None = None,
-        tier: str | None = None, thinking: str | None = None,
+        self,
+        type: str,
+        task: str,
+        mcp_names: list[str] | None,
+        max_output_chars: int | None,
+        model: str | None,
+        iso: SpawnWorktree | None,
+        work_root,
+        stream_id: str,
+        *,
+        debug: bool,
+        t0: float,
+        defn=None,
+        depth: int = 0,
+        resumed: bool = False,
+        output_schema: dict | None = None,
+        tier: str | None = None,
+        thinking: str | None = None,
     ) -> _SpawnPrep | str:
         """Build the sub-agent, grant MCP servers, fire the start hook, and wire the
         event handler. Returns a ``_SpawnPrep`` struct on success, or an error string
@@ -792,8 +879,11 @@ class SubagentRunner:
         spawn_defn = defn if defn is not None else self._resolve_agent(type)
         resolved_model = (
             _resolve_spawn_model_id(
-                override_tier=tier, slug=model, spec_tier=spawn_defn.tier,
-                read_only=not (spawn_defn.tools & GATED_TOOLS), tiers=self._tiers,
+                override_tier=tier,
+                slug=model,
+                spec_tier=spawn_defn.tier,
+                read_only=not (spawn_defn.tools & GATED_TOOLS),
+                tiers=self._tiers,
             )
             if spawn_defn is not None
             else None
@@ -820,11 +910,16 @@ class SubagentRunner:
             # prompt-contract path stored None and its contract already rides in
             # ``task`` above), so it re-feeds _prepare_spawn directly on resume.
             meta = {
-                "stream_id": stream_id, "type": type, "task": task,
-                "model": model, "mcp": mcp_names, "depth": depth,
+                "stream_id": stream_id,
+                "type": type,
+                "task": task,
+                "model": model,
+                "mcp": mcp_names,
+                "depth": depth,
                 "max_output_chars": max_output_chars,
                 "isolation": iso.branch if iso else None,
-                "output_schema": output_schema, "tier": tier,
+                "output_schema": output_schema,
+                "tier": tier,
                 "thinking": thinking,
                 "status": "running",
             }
@@ -834,14 +929,22 @@ class SubagentRunner:
                 # every model request as the conversation grows, so oversized
                 # text/thinking parts are clipped here (the final write leaves them
                 # in full). See cap_transcript.
-                self._transcripts.save(stream_id, messages, meta=_meta,
-                                       cap_reasoning=True)
+                self._transcripts.save(stream_id, messages, meta=_meta, cap_reasoning=True)
 
             checkpoint = _checkpoint
-        sub, err = self.build(type, max_output_chars, model, work_root, defn=defn,
-                              depth=depth, mask_trigger=mask_trigger,
-                              checkpoint=checkpoint, output_schema=output_schema,
-                              tier=tier, thinking=thinking)
+        sub, err = self.build(
+            type,
+            max_output_chars,
+            model,
+            work_root,
+            defn=defn,
+            depth=depth,
+            mask_trigger=mask_trigger,
+            checkpoint=checkpoint,
+            output_schema=output_schema,
+            tier=tier,
+            thinking=thinking,
+        )
         if sub is None:
             if iso:
                 # Own the failure teardown HERE rather than at the caller: a resumed
@@ -867,9 +970,7 @@ class SubagentRunner:
                 await report_model(stream_id, resolved_model)
         await self._report_spawn_thinking(stream_id, thinking, spawn_defn)
         t_built = time.perf_counter()
-        granted, unknown, mcp_withheld, ask_withheld = await self._spawn_mcp_grant(
-            mcp_names
-        )
+        granted, unknown, mcp_withheld, ask_withheld = await self._spawn_mcp_grant(mcp_names)
         if meta is not None:
             # Display-only, so a future resumed card/stats view can show that
             # THIS run's grant was (partly) withheld. Resume logic must never
@@ -887,14 +988,23 @@ class SubagentRunner:
         probe = (lambda: first_event_at.append(time.perf_counter())) if debug else None
         handler = self.handler(stream_id, on_first_event=probe)
         return _SpawnPrep(
-            sub=sub, granted=granted, unknown=unknown, handler=handler,
-            iso=iso, t0=t0, t_built=t_built, first_event_at=first_event_at,
-            depth=depth, meta=meta, mcp_withheld=mcp_withheld,
+            sub=sub,
+            granted=granted,
+            unknown=unknown,
+            handler=handler,
+            iso=iso,
+            t0=t0,
+            t_built=t_built,
+            first_event_at=first_event_at,
+            depth=depth,
+            meta=meta,
+            mcp_withheld=mcp_withheld,
             mcp_ask_withheld=ask_withheld,
         )
 
     async def _spawn_mcp_grant(
-        self, mcp_names: list[str] | None,
+        self,
+        mcp_names: list[str] | None,
     ) -> tuple[list[object], list[str], bool, tuple[str, ...]]:
         """The MCP toolsets a spawn is granted, decided ENTIRELY up front —
         a sub-agent's tools run with no approval round, so its reach is fixed
@@ -983,9 +1093,15 @@ class SubagentRunner:
         )
 
     async def _execute_native_spawn(
-        self, type: str, task: str, stream_id: str,
-        max_output_chars: int | None, prep: _SpawnPrep,
-        *, background: bool, history: list | None = None,
+        self,
+        type: str,
+        task: str,
+        stream_id: str,
+        max_output_chars: int | None,
+        prep: _SpawnPrep,
+        *,
+        background: bool,
+        history: list | None = None,
     ) -> str:
         """Run a native (in-process) spawn to completion through the shared
         ``_run_spawn_lifecycle``. Foreground and background differ only in three
@@ -1001,15 +1117,14 @@ class SubagentRunner:
           background-only; it also keeps a resumed spawn's branch on failure."""
         run_deps = replace(self.deps, tasks=TaskList()) if background else self.deps
         if prep.iso:
-            run_deps = replace(
-                run_deps, workspace=replace(run_deps.workspace, root=prep.iso.path)
-            )
+            run_deps = replace(run_deps, workspace=replace(run_deps.workspace, root=prep.iso.path))
         if prep.depth > 0:
             # Stamp the runner's ceiling alongside the depth: spawn_agent reads both
             # from Deps (see subagent_max_depth in runtime/deps.py for why it is not
             # a tool parameter).
             run_deps = replace(
-                run_deps, subagent_depth=prep.depth,
+                run_deps,
+                subagent_depth=prep.depth,
                 subagent_max_depth=self._max_depth,
             )
         # A resumed spawn (history set) keeps its branch on failure — it holds prior
@@ -1022,7 +1137,12 @@ class SubagentRunner:
 
         async def _run() -> SpawnRun:
             result = await self._driver.run_to_completion(
-                prep.sub, task, run_deps, prep.granted, prep.handler, stream_id,
+                prep.sub,
+                task,
+                run_deps,
+                prep.granted,
+                prep.handler,
+                stream_id,
                 history=history,
             )
             # The card accrues usage only from mid-stream events, which carry the
@@ -1046,7 +1166,8 @@ class SubagentRunner:
                 transcript=result.all_messages(),
                 usage=result.usage,
                 final_meta=self._transcripts.final_meta(
-                    prep.meta, "finished", result.usage, prep.t0, result.all_messages()),
+                    prep.meta, "finished", result.usage, prep.t0, result.all_messages()
+                ),
             )
 
         # (Background persist has a known asymmetry: a /switch mid-flight points
@@ -1054,16 +1175,26 @@ class SubagentRunner:
         # land in the current session's payload; jobs are process-scoped, so the
         # summary follows the active session — accepted.)
         return await self._run_spawn_lifecycle(
-            _run, iso=prep.iso, resumed=resumed, background=background, name=type,
+            _run,
+            iso=prep.iso,
+            resumed=resumed,
+            background=background,
+            name=type,
             stop_task=stop_task,
             note=self._withheld_mcp_note(prep) + self.mcp.grant_note(prep.unknown),
-            max_output_chars=max_output_chars, stream_id=stream_id,
+            max_output_chars=max_output_chars,
+            stream_id=stream_id,
             timing=(prep.t0, prep.t_built, prep.first_event_at),
         )
 
     def _log_spawn_timing(
-        self, type: str, t0: float, t_built: float,
-        first_event_at: list[float], *, failed: bool,
+        self,
+        type: str,
+        t0: float,
+        t_built: float,
+        first_event_at: list[float],
+        *,
+        failed: bool,
     ) -> None:
         """Emit a DEBUG line splitting a spawn's wall time into ``setup`` (all the
         harness-side work before the model is asked: worktree open, discovery,
@@ -1081,15 +1212,26 @@ class SubagentRunner:
         ttft = f"{(first_event_at[0] - t0) * 1000:.0f}ms" if first_event_at else "n/a"
         logger.debug(
             "spawn %r timing%s: setup=%.0fms ttft=%s total=%.0fms",
-            type, " (failed)" if failed else "", setup_ms, ttft, total_ms,
+            type,
+            " (failed)" if failed else "",
+            setup_ms,
+            ttft,
+            total_ms,
         )
 
     async def run(
-        self, type: str, task: str, stream_id: str,
-        mcp_names: list[str] | None = None, max_output_chars: int | None = None,
-        model: str | None = None, isolation: str | None = None,
-        caller_depth: int = 0, tier: str | None = None,
-        output_schema: dict | None = None, thinking: str | None = None,
+        self,
+        type: str,
+        task: str,
+        stream_id: str,
+        mcp_names: list[str] | None = None,
+        max_output_chars: int | None = None,
+        model: str | None = None,
+        isolation: str | None = None,
+        caller_depth: int = 0,
+        tier: str | None = None,
+        output_schema: dict | None = None,
+        thinking: str | None = None,
     ) -> str:
         """Spawn one isolated sub-agent of ``type``, run it to completion on
         ``task``, and return its final report — streaming its events to the UI
@@ -1121,16 +1263,31 @@ class SubagentRunner:
         leaves that resolution automatic.
         """
         return await self._execute_spawn(
-            type, task, mcp_names, max_output_chars, model, isolation,
-            background=False, stream_id=stream_id, caller_depth=caller_depth,
-            output_schema=output_schema, tier=tier, thinking=thinking,
+            type,
+            task,
+            mcp_names,
+            max_output_chars,
+            model,
+            isolation,
+            background=False,
+            stream_id=stream_id,
+            caller_depth=caller_depth,
+            output_schema=output_schema,
+            tier=tier,
+            thinking=thinking,
         )
 
     async def run_background(
-        self, type: str, task: str, mcp_names: list[str] | None = None,
-        max_output_chars: int | None = None, model: str | None = None,
-        isolation: str | None = None, stream_id: str = "",
-        caller_depth: int = 0, tier: str | None = None,
+        self,
+        type: str,
+        task: str,
+        mcp_names: list[str] | None = None,
+        max_output_chars: int | None = None,
+        model: str | None = None,
+        isolation: str | None = None,
+        stream_id: str = "",
+        caller_depth: int = 0,
+        tier: str | None = None,
         thinking: str | None = None,
     ) -> str:
         """Run a sub-agent as a detached background job: same isolation, mode-based
@@ -1156,9 +1313,17 @@ class SubagentRunner:
         thinking-level override, resolved override → spec ``thinking:`` →
         inherited session level; ``None`` leaves that resolution automatic."""
         return await self._execute_spawn(
-            type, task, mcp_names, max_output_chars, model, isolation,
-            background=True, stream_id=stream_id, caller_depth=caller_depth,
-            tier=tier, thinking=thinking,
+            type,
+            task,
+            mcp_names,
+            max_output_chars,
+            model,
+            isolation,
+            background=True,
+            stream_id=stream_id,
+            caller_depth=caller_depth,
+            tier=tier,
+            thinking=thinking,
         )
 
     def _resume_preconditions(self, stream_id: str) -> tuple[dict | None, str | None]:
@@ -1172,8 +1337,9 @@ class SubagentRunner:
             return None, "No session store — can't resume."
         meta = self._transcripts.read_meta(stream_id)
         if meta is None:
-            return None, ("No resumable transcript for this spawn (missing or "
-                          "pre-envelope sidecar).")
+            return None, (
+                "No resumable transcript for this spawn (missing or pre-envelope sidecar)."
+            )
         status = meta.get("status")
         if status not in ("running", "interrupted"):
             return None, f"Spawn already {status} — nothing to resume."
@@ -1239,11 +1405,21 @@ class SubagentRunner:
             # before these keys existed) resuming as a plain spawn rather than
             # KeyError-ing.
             prep = await self._prepare_spawn(
-                type_, task, meta.get("mcp"), meta.get("max_output_chars"),
-                meta.get("model"), iso, iso.path if iso else None, stream_id,
-                debug=logger.isEnabledFor(logging.DEBUG), t0=time.perf_counter(),
-                depth=int(meta.get("depth") or 1), resumed=True, defn=defn,
-                output_schema=meta.get("output_schema"), tier=meta.get("tier"),
+                type_,
+                task,
+                meta.get("mcp"),
+                meta.get("max_output_chars"),
+                meta.get("model"),
+                iso,
+                iso.path if iso else None,
+                stream_id,
+                debug=logger.isEnabledFor(logging.DEBUG),
+                t0=time.perf_counter(),
+                depth=int(meta.get("depth") or 1),
+                resumed=True,
+                defn=defn,
+                output_schema=meta.get("output_schema"),
+                tier=meta.get("tier"),
                 thinking=meta.get("thinking"),
             )
             if isinstance(prep, str):
@@ -1254,11 +1430,16 @@ class SubagentRunner:
                 return None, prep
             label = f"{type_}: resumed — {task}"
             job_id = self.deps.jobs.register(
-                "agent", label,
+                "agent",
+                label,
                 self._execute_native_spawn(
-                    type_, CONTINUATION_PROMPT, stream_id,
-                    meta.get("max_output_chars"), prep,
-                    background=True, history=history,
+                    type_,
+                    CONTINUATION_PROMPT,
+                    stream_id,
+                    meta.get("max_output_chars"),
+                    prep,
+                    background=True,
+                    history=history,
                 ),
                 stream_id=stream_id,
                 prompt=task,

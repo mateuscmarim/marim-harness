@@ -73,12 +73,9 @@ TIER_ENV: dict[str, str] = {tier: env_key for tier, env_key, _ in TIER_ROWS}
 # ``help_for`` against the focused widget's id-ancestor chain (leaf to root),
 # so a control's own id can win over its containing RadioSet/section.
 FIELD_HELP: dict[str, str] = {
-    "sw-lsp": (
-        "Language-server integration (diagnostics on edit). Applies next launch."
-    ),
+    "sw-lsp": ("Language-server integration (diagnostics on edit). Applies next launch."),
     "sw-lsp-tools": (
-        "Six navigation tools (definitions, references, …). Requires LSP. "
-        "Applies next launch."
+        "Six navigation tools (definitions, references, …). Requires LSP. Applies next launch."
     ),
     "toolsearch-set": (
         "Serve MCP/plugin tools via search_tools instead of up-front schemas. "
@@ -91,16 +88,10 @@ FIELD_HELP: dict[str, str] = {
         "One combined job tool instead of separate list/output/wait/cancel "
         "tools. Applies next launch."
     ),
-    "sw-workflows": (
-        "Model-authored Python workflows in a sandbox (run_workflow). "
-        "Applies live."
-    ),
-    "subagent-req-limit": (
-        "Maximum model requests per sub-agent run. Applies next launch."
-    ),
+    "sw-workflows": ("Model-authored Python workflows in a sandbox (run_workflow). Applies live."),
+    "subagent-req-limit": ("Maximum model requests per sub-agent run. Applies next launch."),
     "wake-depth-cap": (
-        "Maximum autonomous turns after a finished job wakes the agent. "
-        "Applies next launch."
+        "Maximum autonomous turns after a finished job wakes the agent. Applies next launch."
     ),
     "sw-tiering": (
         "Route new spawns to cheap/med/high tier models. Off sends every spawn "
@@ -124,9 +115,7 @@ FIELD_HELP: dict[str, str] = {
         "live. 'off' clears."
     ),
     "advisor-max-tokens": "Token cap on advisor replies. Applies next launch.",
-    "advisor-max-uses": (
-        "Advisor calls per turn; 0 = unlimited. Applies next launch."
-    ),
+    "advisor-max-uses": ("Advisor calls per turn; 0 = unlimited. Applies next launch."),
     "thinking-change": (
         "Reasoning effort (off/minimal/low/medium/high/xhigh). Saves the "
         "default to .env (new sessions); /think overrides per session, live."
@@ -218,9 +207,7 @@ class EnvAutoSave:
     def __init__(self, status: Callable[[str], None]) -> None:
         self._status = status
 
-    def save(
-        self, values: Mapping[str, str], *, drop: Iterable[str] = ()
-    ) -> bool:
+    def save(self, values: Mapping[str, str], *, drop: Iterable[str] = ()) -> bool:
         """Write ``values`` (and retire ``drop``), returning False and posting the
         failure if the write blew up. Reports nothing on success — the caller owns
         the confirmation wording, which differs per field."""

@@ -8,9 +8,9 @@ from marim_harness.plugins import InstalledPlugin, save_state
 def _install_plugin_with_mcp(plugins_dir: Path, plugin: str, trusted: bool):
     pdir = plugins_dir / plugin
     (pdir / ".marim-plugin").mkdir(parents=True, exist_ok=True)
-    (
-        pdir / ".marim-plugin" / "plugin.json"
-    ).write_text(json.dumps({"name": plugin}), encoding="utf-8")
+    (pdir / ".marim-plugin" / "plugin.json").write_text(
+        json.dumps({"name": plugin}), encoding="utf-8"
+    )
     (pdir / "mcp.json").write_text(
         json.dumps({"mcpServers": {"web": {"url": "https://plugin"}}}),
         encoding="utf-8",
@@ -60,9 +60,7 @@ def test_disabled_trusted_plugin_mcp_excluded(tmp_path, monkeypatch):
     gdir = tmp_path / "cfg" / "marim" / "plugins"
     pdir = gdir / "p"
     (pdir / ".marim-plugin").mkdir(parents=True, exist_ok=True)
-    (pdir / ".marim-plugin" / "plugin.json").write_text(
-        json.dumps({"name": "p"}), encoding="utf-8"
-    )
+    (pdir / ".marim-plugin" / "plugin.json").write_text(json.dumps({"name": "p"}), encoding="utf-8")
     (pdir / "mcp.json").write_text(
         json.dumps({"mcpServers": {"web": {"url": "https://plugin"}}}),
         encoding="utf-8",

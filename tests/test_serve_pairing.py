@@ -50,12 +50,14 @@ def test_advertise_accepts_host_and_port():
 
 def test_advertise_passes_a_full_url_through_untouched():
     """The reverse-proxy / tailnet case — no port is invented for https."""
-    assert parse_advertise(
-        "https://marim.example.com", default_port=8642
-    ) == "https://marim.example.com"
-    assert parse_advertise(
-        "https://marim.example.com/", default_port=8642
-    ) == "https://marim.example.com"
+    assert (
+        parse_advertise("https://marim.example.com", default_port=8642)
+        == "https://marim.example.com"
+    )
+    assert (
+        parse_advertise("https://marim.example.com/", default_port=8642)
+        == "https://marim.example.com"
+    )
 
 
 def test_advertise_brackets_a_bare_ipv6_and_respects_an_explicit_one():

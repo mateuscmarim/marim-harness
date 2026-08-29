@@ -1,4 +1,5 @@
 """Tests for the CompactNotice reactive widget."""
+
 from __future__ import annotations
 
 import pytest

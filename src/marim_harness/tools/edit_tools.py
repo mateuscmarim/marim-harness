@@ -68,7 +68,11 @@ async def write_file(ctx: RunContext[Deps], path: str, content: str) -> str:
     # the event loop). ``fs.write_file`` does a blocking read + atomic write + double
     # fsync, so run it in a worker thread to keep the loop free for other tool calls.
     result = await asyncio.to_thread(
-        fs.write_file, ctx.deps.workspace.root, path, content, ctx.deps.reads,
+        fs.write_file,
+        ctx.deps.workspace.root,
+        path,
+        content,
+        ctx.deps.reads,
         scratch_roots(ctx),
     )
     return await _with_diagnostics(ctx, path, result)
@@ -84,7 +88,11 @@ async def edit_file(ctx: RunContext[Deps], path: str, edits: LenientList[Lenient
     # signature exists only to ``await _with_diagnostics``, and would otherwise run the
     # read + atomic write + fsyncs directly on the event loop.
     result = await asyncio.to_thread(
-        fs.edit_file, ctx.deps.workspace.root, path, edits, ctx.deps.reads,
+        fs.edit_file,
+        ctx.deps.workspace.root,
+        path,
+        edits,
+        ctx.deps.reads,
         scratch_roots(ctx),
     )
     return await _with_diagnostics(ctx, path, result)
@@ -132,13 +140,17 @@ async def bash(
             "slow — or report back and let the main agent start it."
         )
     if background:
-        bp = await shell.start_bash(ctx.deps.workspace.root, command,
-                                      offload_dir=offload_dir(ctx))
+        bp = await shell.start_bash(ctx.deps.workspace.root, command, offload_dir=offload_dir(ctx))
         job_id = ctx.deps.jobs.register(
-            "bash", command, bp.wait(), kill=bp.kill, output_fn=bp.output,
+            "bash",
+            command,
+            bp.wait(),
+            kill=bp.kill,
+            output_fn=bp.output,
             prompt=command,
         )
         return f"Started {job_id} (bash) — {command[:60]}"
     timeout_s = _resolve_bash_timeout_seconds(timeout)
-    return await shell.run_bash(ctx.deps.workspace.root, command, timeout=timeout_s,
-                                 offload_dir=offload_dir(ctx))
+    return await shell.run_bash(
+        ctx.deps.workspace.root, command, timeout=timeout_s, offload_dir=offload_dir(ctx)
+    )

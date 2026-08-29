@@ -35,6 +35,8 @@
   the invariants behind the turn loop. Start here before contributing.
 - [`embedding.md`](embedding.md) — using `HarnessBuilder` to compose the agent
   loop as a library.
+- [`quality-gate.md`](quality-gate.md) — the ratchet quality gate: what CI
+  scores beyond `ci.yml`'s hard checks, and how to run it locally.
 - [`sdk/`](sdk/README.md) — the embedding SDK guide: getting started, custom
   tools, sessions, sub-agents, testing, and a full tutorial.
 - [`plugins.md`](plugins.md) — authoring plugins (skills, sub-agents, hooks,

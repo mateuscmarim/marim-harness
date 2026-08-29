@@ -51,8 +51,15 @@ class LivePanel(VerticalScroll):
     LivePanel .live-panel-body { height: auto; }
     """
 
-    def __init__(self, *, name: str, title: str, renderer: Callable[[list], str],
-                 markup: bool = False, collapsed: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        name: str,
+        title: str,
+        renderer: Callable[[list], str],
+        markup: bool = False,
+        collapsed: bool = False,
+    ) -> None:
         super().__init__(id=f"{name}-panel")
         self.display = False
         self._title = title
@@ -89,9 +96,7 @@ class LivePanel(VerticalScroll):
     def _update_header(self) -> None:
         glyph = "▸" if self._collapsed else "▾"
         self._header.update(
-            Content.from_markup(
-                f"[b $accent]{glyph} {self._title}[/] [dim]({self._count})[/]"
-            )
+            Content.from_markup(f"[b $accent]{glyph} {self._title}[/] [dim]({self._count})[/]")
         )
 
     def _render_items(self, items: list) -> None:

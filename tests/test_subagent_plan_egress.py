@@ -111,8 +111,16 @@ def _real_hook(name: str, trusted: bool):
 
 async def _prep(h, mcp_names):
     prep = await h.subagents._prepare_spawn(
-        "explore", "look around", mcp_names, None, None, None, None, "s1",
-        debug=False, t0=0.0,
+        "explore",
+        "look around",
+        mcp_names,
+        None,
+        None,
+        None,
+        None,
+        "s1",
+        debug=False,
+        t0=0.0,
     )
     assert not isinstance(prep, str), prep
     return prep
@@ -176,8 +184,17 @@ async def test_mcp_withholding_is_evaluated_at_spawn_and_resume_time(
     assert prep.granted == [srv]
     deps.workspace.mode = Mode.plan
     prep = await h.subagents._prepare_spawn(
-        "explore", "look around", ["mddocs"], None, None, None, None, "s1",
-        debug=False, t0=0.0, resumed=True,
+        "explore",
+        "look around",
+        ["mddocs"],
+        None,
+        None,
+        None,
+        None,
+        "s1",
+        debug=False,
+        t0=0.0,
+        resumed=True,
     )
     assert not isinstance(prep, str)
     assert prep.granted == [] and prep.mcp_withheld is True
@@ -304,15 +321,33 @@ async def test_ask_withholding_is_evaluated_at_spawn_and_resume_time(
     assert prep.granted == [srv]
     deps.workspace.mode = Mode.ask
     prep = await h.subagents._prepare_spawn(
-        "explore", "look around", ["mddocs"], None, None, None, None, "s1",
-        debug=False, t0=0.0, resumed=True,
+        "explore",
+        "look around",
+        ["mddocs"],
+        None,
+        None,
+        None,
+        None,
+        "s1",
+        debug=False,
+        t0=0.0,
+        resumed=True,
     )
     assert not isinstance(prep, str)
     assert prep.granted == [] and prep.mcp_withheld is True
     deps.workspace.mode = Mode.auto
     prep = await h.subagents._prepare_spawn(
-        "explore", "look around", ["mddocs"], None, None, None, None, "s1",
-        debug=False, t0=0.0, resumed=True,
+        "explore",
+        "look around",
+        ["mddocs"],
+        None,
+        None,
+        None,
+        None,
+        "s1",
+        debug=False,
+        t0=0.0,
+        resumed=True,
     )
     assert not isinstance(prep, str)
     assert prep.granted == [srv] and prep.mcp_withheld is False
@@ -340,7 +375,9 @@ def _write_cli_net_agent(ws: Path) -> None:
 
 
 async def _captured_cli_run_kwargs(
-    tmp_path: Path, monkeypatch, mode: Mode,
+    tmp_path: Path,
+    monkeypatch,
+    mode: Mode,
     mcp_names: list[str] | None = None,
 ) -> tuple[dict, str]:
     """Run a claude-cli spawn with ClaudeCliRunner.run stubbed out; return the
@@ -366,9 +403,7 @@ async def _captured_cli_run_kwargs(
     _write_cli_net_agent(tmp_path)
     deps = _make_deps(tmp_path, mode=mode)
     h = _make_harness(_text_model(), deps)
-    out = await h.subagents.run(
-        "cli-netter", "fetch the docs", stream_id="s1", mcp_names=mcp_names
-    )
+    out = await h.subagents.run("cli-netter", "fetch the docs", stream_id="s1", mcp_names=mcp_names)
     assert "done" in out
     return captured, out
 
@@ -383,7 +418,8 @@ async def test_cli_spawn_in_plan_mode_strips_net_tools(tmp_path: Path, monkeypat
 
 @pytest.mark.anyio
 async def test_cli_spawn_in_plan_mode_hard_denies_cc_web_tools(
-    tmp_path: Path, monkeypatch,
+    tmp_path: Path,
+    monkeypatch,
 ):
     """Allowlist absence is not a denial under CC's plan permission mode (it
     auto-allows web research tools), so the plan-mode spawn must ALSO pass the
@@ -396,7 +432,9 @@ async def test_cli_spawn_in_plan_mode_hard_denies_cc_web_tools(
 @pytest.mark.anyio
 @pytest.mark.parametrize("mode", [Mode.ask, Mode.auto])
 async def test_cli_spawn_in_non_plan_modes_keeps_net_tools(
-    tmp_path: Path, monkeypatch, mode: Mode,
+    tmp_path: Path,
+    monkeypatch,
+    mode: Mode,
 ):
     kwargs, _ = await _captured_cli_run_kwargs(tmp_path, monkeypatch, mode)
     assert set(kwargs["allowed_tools"]) >= NET_TOOLS
@@ -406,7 +444,8 @@ async def test_cli_spawn_in_non_plan_modes_keeps_net_tools(
 
 @pytest.mark.anyio
 async def test_cli_spawn_never_receives_marim_mcp_config(
-    tmp_path: Path, monkeypatch,
+    tmp_path: Path,
+    monkeypatch,
 ):
     """Marim's MCP grants are NOT forwarded to claude-cli spawns in ANY mode
     (the CLI uses its own MCP config; execute() emits a note instead), so
@@ -424,9 +463,7 @@ async def test_cli_spawn_never_receives_marim_mcp_config(
     # positive if a task or system prompt legitimately mentions "MCP" as
     # English text, while still pinning that no MCP config crosses into
     # ClaudeCliRunner.run.
-    structured = {
-        k: v for k, v in kwargs.items() if k not in {"prompt", "system_prompt"}
-    }
+    structured = {k: v for k, v in kwargs.items() if k not in {"prompt", "system_prompt"}}
     assert not any("mcp" in str(v).lower() for v in structured.values())
     assert "not forwarded" in out and "mddocs" in out
 
@@ -438,9 +475,14 @@ def test_cli_argv_carries_no_mcp_flags():
     from marim_harness.subagents.cli_backend import build_cli_argv
 
     argv = build_cli_argv(
-        binary="/bin/claude", prompt="do the task", permission_mode="plan",
-        system_prompt="role", allowed_tools=["Read"],
-        disallowed_tools=["WebFetch", "WebSearch"], model="opus",
-        resume_session_id="sid", safe_mode=True,
+        binary="/bin/claude",
+        prompt="do the task",
+        permission_mode="plan",
+        system_prompt="role",
+        allowed_tools=["Read"],
+        disallowed_tools=["WebFetch", "WebSearch"],
+        model="opus",
+        resume_session_id="sid",
+        safe_mode=True,
     )
     assert not any("mcp" in a.lower() for a in argv)

@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 MANIFEST_DIR = ".marim-plugin"
 MANIFEST_FILE = "plugin.json"
 
+
 class ManifestError(Exception):
     """A manifest is missing, unreadable, or invalid."""
 

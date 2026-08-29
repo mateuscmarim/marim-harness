@@ -48,9 +48,7 @@ class ModelPickers:
         if source is None:
             await self._app.post_system("Model switching isn't available here.")
             return
-        self._app.run_worker(
-            self.refresh_vision_caps(source.list_models), exclusive=False
-        )
+        self._app.run_worker(self.refresh_vision_caps(source.list_models), exclusive=False)
         self._app.push_screen(
             ModelPickerModal(
                 current=self._app.harness.model_id,
@@ -67,9 +65,7 @@ class ModelPickers:
             return
         self._app.harness.set_model(chosen)
         self._app.status.model_name = self._app.harness.model_label
-        self._app.append_log(
-            NoticeMessage(f"model: {self._app.harness.model_label}")
-        )
+        self._app.append_log(NoticeMessage(f"model: {self._app.harness.model_label}"))
 
     async def open_advisor(self) -> None:
         """Model picker for the advisor. Mirrors open_model, but the choice lands
@@ -130,6 +126,8 @@ class ModelPickers:
             return None
         model_id = self._app.harness.model_id
         if model_id is not None and self.vision_caps.get(model_id) is False:
-            return (f"{model_id} can't read images — "
-                    "switch to a vision model with /model or remove the image.")
+            return (
+                f"{model_id} can't read images — "
+                "switch to a vision model with /model or remove the image."
+            )
         return None

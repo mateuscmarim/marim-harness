@@ -61,17 +61,20 @@ async def test_apply_project_trust_flips_state_and_reloads(tmp_path, monkeypatch
     marim = tmp_path / ".marim"
     (marim / "skills" / "deploy").mkdir(parents=True)
     (marim / "skills" / "deploy" / "SKILL.md").write_text(
-        "---\nname: deploy\ndescription: d\n---\n")
-    (marim / "hooks.json").write_text(json.dumps(
-        {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "true"}]}]}}))
+        "---\nname: deploy\ndescription: d\n---\n"
+    )
+    (marim / "hooks.json").write_text(
+        json.dumps(
+            {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "true"}]}]}}
+        )
+    )
     monkeypatch.setenv("MARIM_PROVIDER", "local")
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))  # isolate sessions
     harness = build_harness(tmp_path)
     assert harness.trust_prompt is not None
     assert harness.deps.trust.project is False
     assert harness.deps.hooks is None
-    names = [s.name for s in discover_skills(
-        tmp_path, trust_project=harness.deps.trust.project)]
+    names = [s.name for s in discover_skills(tmp_path, trust_project=harness.deps.trust.project)]
     assert "deploy" not in names
 
     await harness.apply_project_trust()
@@ -79,8 +82,7 @@ async def test_apply_project_trust_flips_state_and_reloads(tmp_path, monkeypatch
     assert harness.deps.trust.project is True
     assert harness.trust_prompt is None
     assert harness.deps.hooks is not None
-    names = [s.name for s in discover_skills(
-        tmp_path, trust_project=harness.deps.trust.project)]
+    names = [s.name for s in discover_skills(tmp_path, trust_project=harness.deps.trust.project)]
     assert "deploy" in names
     # Idempotent: a second call is a no-op, not an error.
     await harness.apply_project_trust()
@@ -92,8 +94,11 @@ async def test_revoke_flips_state_and_drops_project_hooks(tmp_path, monkeypatch)
 
     marim = tmp_path / ".marim"
     marim.mkdir()
-    (marim / "hooks.json").write_text(json.dumps(
-        {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "true"}]}]}}))
+    (marim / "hooks.json").write_text(
+        json.dumps(
+            {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "true"}]}]}}
+        )
+    )
     monkeypatch.setenv("MARIM_PROVIDER", "local")
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setenv("MARIM_TRUST_PROJECT_HOOKS", "1")

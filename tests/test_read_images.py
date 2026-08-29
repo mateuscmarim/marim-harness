@@ -73,9 +73,7 @@ async def test_ctx_without_model_attr_stays_optimistic(tmp_path):
         raise AssertionError("gate must not be called without a model name")
 
     (tmp_path / "shot.png").write_bytes(PNG)
-    ctx = SimpleNamespace(
-        deps=_ctx(tmp_path).deps, model=SimpleNamespace(model_name=None)
-    )
+    ctx = SimpleNamespace(deps=_ctx(tmp_path).deps, model=SimpleNamespace(model_name=None))
     ctx.deps.services = HarnessServices(supports_images=gate)
     out = await fs_tools.read_file(ctx, "shot.png")
     assert isinstance(out, BinaryContent)

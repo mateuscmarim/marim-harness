@@ -8,10 +8,7 @@ _DEFAULT_BASE_URL = "https://searxng.marim.dev"
 _TIMEOUT = 15  # seconds
 # A descriptive UA, matching fetch.py — some SearXNG deployments (and the bot
 # filters in front of them) reject httpx's default User-Agent.
-_UA = (
-    "Mozilla/5.0 (compatible; marim-harness/1.0; "
-    "+https://github.com/marim-dev/marim-harness)"
-)
+_UA = "Mozilla/5.0 (compatible; marim-harness/1.0; +https://github.com/marim-dev/marim-harness)"
 # Per-result snippet cap. Snippets are attacker-controlled (see the egress note
 # below); SearXNG normally bounds them, but clamp defensively so one oversized
 # `content` can't dominate the turn's context.
@@ -54,8 +51,7 @@ async def _fetch_results(base_url: str, params: dict[str, str]) -> tuple[list, s
         # / Cloudflare interstitial) returns HTML with HTTP 200. Surface that
         # rather than letting the decode error escape into the turn.
         return [], (
-            "Search failed: response was not valid JSON "
-            "(is the SearXNG JSON format enabled?)"
+            "Search failed: response was not valid JSON (is the SearXNG JSON format enabled?)"
         )
 
     # A valid-JSON-but-wrong-shape response (bare array, null, …) would make the

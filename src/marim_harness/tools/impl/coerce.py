@@ -72,9 +72,7 @@ def _seed_defs(schema: dict) -> dict:
     return defs
 
 
-def _coerce_combinator(
-    value: object, branches: object, defs: dict
-) -> tuple[object, bool]:
+def _coerce_combinator(value: object, branches: object, defs: dict) -> tuple[object, bool]:
     """Handle one ``anyOf``/``oneOf`` schema node: a nullable/union schema. Use
     the first non-null branch — for the ubiquitous ``[{...}, {"type": "null"}]``
     pattern that is the real type. But if any non-null branch is string-typed, a

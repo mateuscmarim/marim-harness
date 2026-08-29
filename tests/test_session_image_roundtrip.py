@@ -34,21 +34,24 @@ def _isolated_cache(tmp_path: Path, monkeypatch):
 
 
 def _store(tmp_path: Path) -> SessionStore:
-    return SessionStore(path=tmp_path / "s.json", workspace_root=tmp_path,
-                        session_id="sid", name="s")
+    return SessionStore(
+        path=tmp_path / "s.json", workspace_root=tmp_path, session_id="sid", name="s"
+    )
 
 
 def _history(content):
     return [
         ModelRequest(parts=[UserPromptPart(content="look at the image")]),
-        ModelResponse(parts=[
-            ToolCallPart(tool_name="read_file", args={"path": "shot.png"},
-                         tool_call_id="c1"),
-        ]),
-        ModelRequest(parts=[
-            ToolReturnPart(tool_name="read_file", content=content,
-                           tool_call_id="c1"),
-        ]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(tool_name="read_file", args={"path": "shot.png"}, tool_call_id="c1"),
+            ]
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(tool_name="read_file", content=content, tool_call_id="c1"),
+            ]
+        ),
         ModelResponse(parts=[TextPart(content="a red square")]),
     ]
 

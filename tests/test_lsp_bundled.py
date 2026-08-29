@@ -5,8 +5,23 @@ def test_bundled_covers_expected_extensions():
     provs = bundled_lsp_providers()
     ext_to_lang = {e: p.language for p in provs for e in p.extensions}
     # Every extension the old _EXT_TO_LANG covered must still resolve.
-    for ext in [".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
-                ".java", ".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".hh"]:
+    for ext in [
+        ".py",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".mjs",
+        ".cjs",
+        ".java",
+        ".cpp",
+        ".cc",
+        ".cxx",
+        ".c",
+        ".h",
+        ".hpp",
+        ".hh",
+    ]:
         assert ext in ext_to_lang, ext
 
 

@@ -98,9 +98,7 @@ def test_tool_result_list_with_binary_content_is_placeholder_not_bytes():
     # text + image content) — the binary item must not reach json.dumps(default=str).
     img = BinaryContent(data=b"y" * 4096, media_type="image/jpeg")
     event = FunctionToolResultEvent(
-        part=ToolReturnPart(
-            tool_name="mcp_tool", content=["caption", img], tool_call_id="t4"
-        )
+        part=ToolReturnPart(tool_name="mcp_tool", content=["caption", img], tool_call_id="t4")
     )
     obj = event_to_dict(event)
     assert obj is not None

@@ -14,7 +14,10 @@ from ...trust_surface import scan_project_surface
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="marim trust", add_help=True)
     parser.add_argument(
-        "action", nargs="?", default="status", choices=["status", "grant", "revoke"],
+        "action",
+        nargs="?",
+        default="status",
+        choices=["status", "grant", "revoke"],
         help="status (default): show the resolved decision. grant/revoke: persist one.",
     )
     parser.add_argument("workspace", nargs="?", default=".", help="Project root (default: cwd).")

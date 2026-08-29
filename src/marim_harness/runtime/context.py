@@ -54,9 +54,7 @@ def wrap_turn_context(injected: str, typed: str) -> str:
     suffix by length rather than by searching for the separator — robust even
     when ``typed`` (or ``injected``) itself contains the ``</turn-context>``
     marker."""
-    return (
-        f'<turn-context len="{len(typed)}">\n{injected}\n{_TURN_CONTEXT_SEP}{typed}'
-    )
+    return f'<turn-context len="{len(typed)}">\n{injected}\n{_TURN_CONTEXT_SEP}{typed}'
 
 
 def strip_turn_context(content: str) -> str:
@@ -69,7 +67,7 @@ def strip_turn_context(content: str) -> str:
         # `content[-0:]` would wrongly return the whole string, so an empty
         # typed suffix (N == 0, e.g. a background-digest-only turn) short-circuits.
         n = int(m.group(1))
-        return content[len(content) - n:] if n else ""
+        return content[len(content) - n :] if n else ""
     if not content.startswith(_TURN_CONTEXT_OPEN_V1):
         return content
     # v1 (legacy) fallback: no length was recorded, so anchor on the LAST
@@ -81,7 +79,7 @@ def strip_turn_context(content: str) -> str:
     idx = content.rfind(_TURN_CONTEXT_SEP)
     if idx == -1:
         return content
-    return content[idx + len(_TURN_CONTEXT_SEP):]
+    return content[idx + len(_TURN_CONTEXT_SEP) :]
 
 
 _PLAN_MODE_PREAMBLE = (
@@ -115,15 +113,10 @@ def render_checklist_block(items: list[Task]) -> str:
     turns."""
     if not items:
         return ""
-    return (
-        "Task checklist (✔ done · ▸ active · ○ pending):\n\n"
-        + render_tasks(items)
-    )
+    return "Task checklist (✔ done · ▸ active · ○ pending):\n\n" + render_tasks(items)
 
 
-def render_shell_results_block(
-    results: Sequence[tuple[str, str]], dropped: int = 0
-) -> str:
+def render_shell_results_block(results: Sequence[tuple[str, str]], dropped: int = 0) -> str:
     """The ``<user-shell-commands>`` block for the turn-context envelope, or
     ``""`` when there is nothing to show (falsy-when-empty, matching
     :func:`render_checklist_block` so callers can ``if block:``).

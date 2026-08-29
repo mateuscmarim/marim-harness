@@ -257,6 +257,4 @@ def build_openrouter_model(model_id: str, api_key: str | None):
         openrouter_cache_tool_definitions="5m",
         openrouter_cache_messages="5m",
     )
-    return _CostOpenRouterModel(
-        model_id, provider=provider, settings=settings, profile=profile
-    )
+    return _CostOpenRouterModel(model_id, provider=provider, settings=settings, profile=profile)

@@ -80,8 +80,16 @@ def test_toolset_gating_flags():
 
 @pytest.mark.anyio
 async def test_list_prs_formats(monkeypatch, tmp_path):
-    pr = PullRequest(number=51, title="T", state="open", head="f", base="master",
-                     mergeable=True, url="u", ci="success")
+    pr = PullRequest(
+        number=51,
+        title="T",
+        state="open",
+        head="f",
+        base="master",
+        mergeable=True,
+        url="u",
+        ci="success",
+    )
     ts = ft.build_forge_toolset(StubBackend(prs=[pr]))
     out = await _tool(ts, "list_prs")(_Ctx(tmp_path), "open", 30)
     assert "#51" in out and "success" in out and "T" in out
@@ -90,8 +98,7 @@ async def test_list_prs_formats(monkeypatch, tmp_path):
 @pytest.mark.anyio
 async def test_ci_status_uses_current_branch(monkeypatch, tmp_path):
     monkeypatch.setattr(ft, "current_branch", _aret("feature/x"))
-    st = CiStatus(overall="failure",
-                  runs=(CiRun("build", "completed", "push", "feature/x", "t"),))
+    st = CiStatus(overall="failure", runs=(CiRun("build", "completed", "push", "feature/x", "t"),))
     ts = ft.build_forge_toolset(StubBackend(status=st))
     out = await _tool(ts, "ci_status")(_Ctx(tmp_path), None)
     assert "feature/x" in out and "failure" in out and "build" in out
@@ -110,8 +117,16 @@ async def test_create_pr_refuses_unpushed_branch(monkeypatch, tmp_path):
 async def test_create_pr_refuses_when_pr_exists(monkeypatch, tmp_path):
     monkeypatch.setattr(ft, "current_branch", _aret("feature/x"))
     monkeypatch.setattr(ft, "branch_pushed", _aret(True))
-    existing = PullRequest(number=9, title="old", state="open", head="feature/x",
-                           base="master", mergeable=True, url="u9", ci="pending")
+    existing = PullRequest(
+        number=9,
+        title="old",
+        state="open",
+        head="feature/x",
+        base="master",
+        mergeable=True,
+        url="u9",
+        ci="pending",
+    )
     ts = ft.build_forge_toolset(StubBackend(prs=[existing]))
     out = await _tool(ts, "create_pr")(_Ctx(tmp_path), "T", "B", None, False)
     assert "already exists" in out and "#9" in out
@@ -121,10 +136,26 @@ async def test_create_pr_refuses_when_pr_exists(monkeypatch, tmp_path):
 async def test_create_pr_allows_when_only_closed_pr_exists(monkeypatch, tmp_path):
     monkeypatch.setattr(ft, "current_branch", _aret("feature/x"))
     monkeypatch.setattr(ft, "branch_pushed", _aret(True))
-    old = PullRequest(number=9, title="old", state="merged", head="feature/x",
-                      base="master", mergeable=True, url="u9", ci="success")
-    created = PullRequest(number=52, title="T", state="open", head="feature/x",
-                          base="master", mergeable=True, url="u52", ci="pending")
+    old = PullRequest(
+        number=9,
+        title="old",
+        state="merged",
+        head="feature/x",
+        base="master",
+        mergeable=True,
+        url="u9",
+        ci="success",
+    )
+    created = PullRequest(
+        number=52,
+        title="T",
+        state="open",
+        head="feature/x",
+        base="master",
+        mergeable=True,
+        url="u52",
+        ci="pending",
+    )
     backend = StubBackend(prs=[old], created=created)
     ts = ft.build_forge_toolset(backend)
     out = await _tool(ts, "create_pr")(_Ctx(tmp_path), "T", "B", None, False)
@@ -135,8 +166,16 @@ async def test_create_pr_allows_when_only_closed_pr_exists(monkeypatch, tmp_path
 async def test_create_pr_happy_path(monkeypatch, tmp_path):
     monkeypatch.setattr(ft, "current_branch", _aret("feature/x"))
     monkeypatch.setattr(ft, "branch_pushed", _aret(True))
-    created = PullRequest(number=52, title="T", state="open", head="feature/x",
-                          base="master", mergeable=True, url="u52", ci="pending")
+    created = PullRequest(
+        number=52,
+        title="T",
+        state="open",
+        head="feature/x",
+        base="master",
+        mergeable=True,
+        url="u52",
+        ci="pending",
+    )
     backend = StubBackend(created=created)
     ts = ft.build_forge_toolset(backend)
     out = await _tool(ts, "create_pr")(_Ctx(tmp_path), "T", "B", None, False)
@@ -149,6 +188,7 @@ async def test_tool_surfaces_forge_error(monkeypatch, tmp_path):
     class Boom(StubBackend):
         async def list_prs(self, state, limit):
             raise ForgeError("network down")
+
     ts = ft.build_forge_toolset(Boom())
     out = await _tool(ts, "list_prs")(_Ctx(tmp_path), "open", 30)
     assert "network down" in out
@@ -180,9 +220,14 @@ async def test_create_pr_dup_check_pages_past_first_fifty(monkeypatch, tmp_path)
     monkeypatch.setattr(ft, "branch_pushed", _aret(True))
     prs = [
         PullRequest(
-            number=i, title=f"p{i}", state="open",
-            head=("feature/old" if i == 5 else f"b{i}"), base="master",
-            mergeable=True, url=f"u{i}", ci="success",
+            number=i,
+            title=f"p{i}",
+            state="open",
+            head=("feature/old" if i == 5 else f"b{i}"),
+            base="master",
+            mergeable=True,
+            url=f"u{i}",
+            ci="success",
         )
         for i in range(60, 0, -1)  # newest-first; the branch's PR is old (#5)
     ]
@@ -203,4 +248,5 @@ def test_forge_toolsets_gate(monkeypatch, tmp_path):
 def _aret(value):
     async def _f(*args, **kwargs):
         return value
+
     return _f

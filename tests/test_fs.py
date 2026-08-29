@@ -279,7 +279,8 @@ def test_edit_file_is_atomic_on_later_failure(tmp_path: Path):
     (tmp_path / "a.txt").write_text("keep this")
     with pytest.raises(ModelRetry) as exc:
         fs.edit_file(
-            tmp_path, "a.txt",
+            tmp_path,
+            "a.txt",
             [_edit("keep", "kept"), _edit("nonexistent", "x")],
         )
     assert "edit 2" in str(exc.value)  # failure names the offending edit
@@ -479,14 +480,13 @@ def test_tree_does_not_descend_symlinked_dir_out_of_workspace(tmp_path: Path):
 
     out = fs.tree(ws, ".", depth=3)
 
-    assert "real.txt" in out            # ordinary entries still shown
-    assert "link_out" in out            # the symlink itself is listed
-    assert "secret.txt" not in out      # its external target is NOT enumerated
+    assert "real.txt" in out  # ordinary entries still shown
+    assert "link_out" in out  # the symlink itself is listed
+    assert "secret.txt" not in out  # its external target is NOT enumerated
 
 
 def test_tree_empty_dir(tmp_path: Path):
     assert fs.tree(tmp_path, ".", depth=1) == "(empty)"
-
 
 
 def test_tree_lists_but_does_not_descend_worktrees(tmp_path: Path):
@@ -534,6 +534,7 @@ def test_glob_skips_worktrees(tmp_path: Path):
 
 def test_grep_offloads_large_result(tmp_path, monkeypatch):
     from marim_harness.tools.impl import offload
+
     monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 50)
     (tmp_path / "big.txt").write_text("\n".join(f"match {i}" for i in range(100)))
     out = fs.grep(tmp_path, "match")
@@ -623,6 +624,7 @@ def test_grep_multiline_gets_distinct_offload_key(tmp_path, monkeypatch):
 
 def test_glob_offloads_large_result(tmp_path, monkeypatch):
     from marim_harness.tools.impl import offload
+
     monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 50)
     for i in range(100):
         (tmp_path / f"f{i}.txt").write_text("x")
@@ -635,6 +637,7 @@ def test_glob_offloads_large_result(tmp_path, monkeypatch):
 
 def test_tree_offloads_large_listing(tmp_path, monkeypatch):
     from marim_harness.tools.impl import offload
+
     monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 50)
     for i in range(100):
         (tmp_path / f"f{i:03d}.txt").write_text("x")
@@ -791,10 +794,10 @@ def test_grep_multiline_honors_context(tmp_path: Path):
     dropped: a multiline match marks the lines it spans, so context wraps them."""
     (tmp_path / "a.txt").write_text("one\ntwo\nfoo\nbar\nfive\nsix\n")
     out = fs.grep(tmp_path, r"foo.bar", multiline=True, before_context=1, after_context=1)
-    assert "a.txt-2-two" in out      # before-context of the match start
-    assert "a.txt:3:foo" in out      # match lines
+    assert "a.txt-2-two" in out  # before-context of the match start
+    assert "a.txt:3:foo" in out  # match lines
     assert "a.txt:4:bar" in out
-    assert "a.txt-5-five" in out     # after-context of the match end
+    assert "a.txt-5-five" in out  # after-context of the match end
     assert "one" not in out and "six" not in out
 
 
@@ -858,9 +861,7 @@ class TestExtraWriteRoots:
         ws.mkdir()
         scratch.mkdir()
         with pytest.raises(ModelRetry):
-            fs.write_file(
-                ws, str(tmp_path / "elsewhere.txt"), "hi", None, (scratch,)
-            )
+            fs.write_file(ws, str(tmp_path / "elsewhere.txt"), "hi", None, (scratch,))
 
     def test_relative_path_still_lands_in_workspace(self, tmp_path):
         """A relative path must always resolve into the workspace — an extra
@@ -881,9 +882,7 @@ class TestExtraWriteRoots:
             d.mkdir()
         (scratch / "link").symlink_to(outside)
         with pytest.raises(ModelRetry):
-            fs.write_file(
-                ws, str(scratch / "link" / "x.txt"), "hi", None, (scratch,)
-            )
+            fs.write_file(ws, str(scratch / "link" / "x.txt"), "hi", None, (scratch,))
 
     def test_edit_file_reaches_extra_root(self, tmp_path):
         ws = tmp_path / "ws"

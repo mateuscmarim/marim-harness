@@ -88,8 +88,11 @@ class WorkspaceRegistry:
         if not resolved.is_dir():
             raise ValueError(f"not a directory: {resolved}")
         record = WorkspaceRecord(
-            id=self._unique_id(_slugify(name)), name=name, path=str(resolved),
-            kind="registered", created=_now(),
+            id=self._unique_id(_slugify(name)),
+            name=name,
+            path=str(resolved),
+            kind="registered",
+            created=_now(),
         )
         self._records[record.id] = record
         self._save()
@@ -103,7 +106,9 @@ class WorkspaceRegistry:
             try:
                 subprocess.run(
                     ["git", "clone", git_url, str(target)],
-                    check=True, capture_output=True, text=True,
+                    check=True,
+                    capture_output=True,
+                    text=True,
                     timeout=_CLONE_TIMEOUT_SECONDS,
                 )
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
@@ -111,7 +116,11 @@ class WorkspaceRegistry:
                 detail = getattr(exc, "stderr", "") or str(exc)
                 raise ValueError(f"git clone failed: {detail.strip()}") from exc
         record = WorkspaceRecord(
-            id=ws_id, name=name, path=str(target.resolve()), kind="managed", created=_now(),
+            id=ws_id,
+            name=name,
+            path=str(target.resolve()),
+            kind="managed",
+            created=_now(),
         )
         self._records[record.id] = record
         self._save()

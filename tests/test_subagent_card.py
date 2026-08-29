@@ -101,6 +101,7 @@ def test_finish_done_forwards_report_to_pane():
     the render guards (live pane, no streamed text), the card just forwards.
     Without this, a schema'd spawn's transcript ends at the tool cards: its
     whole answer left via the structured-output call, never as text."""
+
     class _Pane:
         def __init__(self):
             self.reports = []
@@ -125,9 +126,9 @@ def test_waiting_card_shows_hourglass_after_tag_and_waiting_line():
     w.after_ids = ["job-3", "job-4"]
     w.set_waiting(True)
     header = str(w._header.render())
-    assert "⧗" in header                      # static hourglass, not the spinner
-    assert "after job-3, job-4" in header     # dim prerequisite tag
-    assert "bg" in header                     # existing marker preserved
+    assert "⧗" in header  # static hourglass, not the spinner
+    assert "after job-3, job-4" in header  # dim prerequisite tag
+    assert "bg" in header  # existing marker preserved
     assert "waiting on job-3, job-4" in str(w._activity.render())
 
 

@@ -138,7 +138,9 @@ def discover_plugins(workspace_root) -> list[ResolvedPlugin]:
             if manifest is None:
                 logger.warning(
                     "plugin %r in registry (%s) has no loadable manifest at %s; skipping",
-                    name, scope, root,
+                    name,
+                    scope,
+                    root,
                 )
                 continue
             seen[name] = ResolvedPlugin(name, scope, root, record, manifest)
@@ -249,8 +251,10 @@ def _project_scope_untrusted(p: ResolvedPlugin, trust_project: bool) -> bool:
 
 def _enabled_trusted(workspace_root, *, trust_project: bool) -> list[ResolvedPlugin]:
     return [
-        p for p in discover_plugins(workspace_root)
-        if p.enabled and p.trusted
+        p
+        for p in discover_plugins(workspace_root)
+        if p.enabled
+        and p.trusted
         and not _linked_elevation_revokes_trust(p)
         and not _project_scope_untrusted(p, trust_project)
     ]
@@ -260,8 +264,7 @@ def plugin_skill_roots(
     workspace_root, *, trust_project: bool | None = None
 ) -> list[tuple[str, Path]]:
     return [
-        (p.name, p.manifest.skills_dir())
-        for p in _enabled_inert(workspace_root, trust_project)
+        (p.name, p.manifest.skills_dir()) for p in _enabled_inert(workspace_root, trust_project)
     ]
 
 
@@ -269,8 +272,7 @@ def plugin_agent_roots(
     workspace_root, *, trust_project: bool | None = None
 ) -> list[tuple[str, Path]]:
     return [
-        (p.name, p.manifest.agents_dir())
-        for p in _enabled_inert(workspace_root, trust_project)
+        (p.name, p.manifest.agents_dir()) for p in _enabled_inert(workspace_root, trust_project)
     ]
 
 
@@ -351,9 +353,7 @@ def plugin_hook_entries(workspace_root, *, trust_project: bool = False) -> dict:
         for event, entries in hooks.items():
             if not isinstance(entries, list):
                 continue
-            merged.setdefault(event, []).extend(
-                substitute_root(e, p.root) for e in entries
-            )
+            merged.setdefault(event, []).extend(substitute_root(e, p.root) for e in entries)
     return merged
 
 
@@ -401,9 +401,7 @@ def plugin_mcp_specs(workspace_root, *, trust_project: bool = False) -> dict:
     return merged
 
 
-def plugin_lsp_providers(
-    workspace_root, *, trust_project: bool = False
-) -> list[LspProvider]:
+def plugin_lsp_providers(workspace_root, *, trust_project: bool = False) -> list[LspProvider]:
     """LSP providers contributed by enabled+trusted plugins. Follows the exact
     trust rule as plugin_mcp_specs — an LSP server launches code on connect, so
     project-scope plugins need both the per-plugin trust bit AND the project
@@ -418,8 +416,11 @@ def plugin_lsp_providers(
         block = substitute_root(block, p.root)
         out.extend(
             parse_lsp_providers(
-                block, bundled=False, source=p.scope,
-                plugin_root=p.root, strict=False,
+                block,
+                bundled=False,
+                source=p.scope,
+                plugin_root=p.root,
+                strict=False,
             )
         )
     return out
@@ -439,11 +440,7 @@ def has_executable(summary: dict) -> bool:
     """Whether a bundle summary contains code-executing parts (hooks/MCP/lsp) —
     an LSP provider's declarative ``command`` launches a process on connect,
     the same risk class as a hook or an MCP server."""
-    return (
-        bool(summary.get("hooks"))
-        or bool(summary.get("mcpServers"))
-        or bool(summary.get("lsp"))
-    )
+    return bool(summary.get("hooks")) or bool(summary.get("mcpServers")) or bool(summary.get("lsp"))
 
 
 def _count_dirs_with(root: Path, marker: str) -> int:

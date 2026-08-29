@@ -112,25 +112,42 @@ def _qr_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="marim serve qr",
         description="Print a QR code that pairs a marim client with this machine's "
-                    "daemon. The code carries the bearer token, so it prints to a "
-                    "terminal only.",
+        "daemon. The code carries the bearer token, so it prints to a "
+        "terminal only.",
     )
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT,
-                        help=f"port the daemon listens on (default: {DEFAULT_PORT}); this "
-                             "command can't discover a running daemon's port")
-    parser.add_argument("--advertise", default=None, metavar="HOST[:PORT]",
-                        help="address to encode instead of the auto-detected one — a "
-                             "bare host, host:port, or a full URL (the way to encode a "
-                             "tailnet name or a reverse proxy)")
-    parser.add_argument("--name", default=None,
-                        help="profile name shown on the client (default: this machine's "
-                             "hostname)")
-    parser.add_argument("--wide", action="store_true",
-                        help="draw the code with half-blocks instead of sextants — five "
-                             "rows taller, but readable in fonts that predate Unicode 13")
-    parser.add_argument("--sixel", action=argparse.BooleanOptionalAction, default=None,
-                        help="draw the code as a sixel image, which is square and needs no "
-                             "font (default: use it when the terminal says it can)")
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=DEFAULT_PORT,
+        help=f"port the daemon listens on (default: {DEFAULT_PORT}); this "
+        "command can't discover a running daemon's port",
+    )
+    parser.add_argument(
+        "--advertise",
+        default=None,
+        metavar="HOST[:PORT]",
+        help="address to encode instead of the auto-detected one — a "
+        "bare host, host:port, or a full URL (the way to encode a "
+        "tailnet name or a reverse proxy)",
+    )
+    parser.add_argument(
+        "--name",
+        default=None,
+        help="profile name shown on the client (default: this machine's hostname)",
+    )
+    parser.add_argument(
+        "--wide",
+        action="store_true",
+        help="draw the code with half-blocks instead of sextants — five "
+        "rows taller, but readable in fonts that predate Unicode 13",
+    )
+    parser.add_argument(
+        "--sixel",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="draw the code as a sixel image, which is square and needs no "
+        "font (default: use it when the terminal says it can)",
+    )
     return parser
 
 
@@ -179,8 +196,15 @@ def _resolve_pair_url(advertise: str | None, port: int) -> str:
     return advertised_address(port)
 
 
-def _pairing_block(*, url: str, token: str, name: str, warning: str | None,
-                   terminal_lines: int, rendering: Rendering) -> str:
+def _pairing_block(
+    *,
+    url: str,
+    token: str,
+    name: str,
+    warning: str | None,
+    terminal_lines: int,
+    rendering: Rendering,
+) -> str:
     """The whole printed block: optional warning, the code (or a typed-URI
     fallback), and the facts under it."""
     uri = pairing_uri(url, token, name)
@@ -188,26 +212,30 @@ def _pairing_block(*, url: str, token: str, name: str, warning: str | None,
     try:
         matrix = encode(uri)
     except ImportError:
-        lines.extend([
-            "QR rendering needs segno. Install with:",
-            "  uv add 'marim-harness[serve]'   (or: pip install segno)",
-            "",
-            "or pair by hand with this URI:",
-            f"  {uri}",
-        ])
+        lines.extend(
+            [
+                "QR rendering needs segno. Install with:",
+                "  uv add 'marim-harness[serve]'   (or: pip install segno)",
+                "",
+                "or pair by hand with this URI:",
+                f"  {uri}",
+            ]
+        )
         return "\n".join(lines)
     code, rows = rendering.draw(matrix)
     note = height_note(rendered=rows, terminal_lines=terminal_lines)
     if note:
         lines.extend([note, ""])
-    lines.extend([
-        code,
-        "",
-        f"  {url}",
-        f"  {name} · token included — treat this like a password",
-        "",
-        "  wrong address?  marim serve qr --advertise <host>",
-    ])
+    lines.extend(
+        [
+            code,
+            "",
+            f"  {url}",
+            f"  {name} · token included — treat this like a password",
+            "",
+            "  wrong address?  marim serve qr --advertise <host>",
+        ]
+    )
     if rendering.needs_a_font_escape_hatch:
         # The sextants are Unicode 13; a font without them draws tofu, and a QR
         # made of empty boxes is a puzzle unless the way out is printed with it.
@@ -224,8 +252,11 @@ def _qr_main(argv: list[str], *, out, err) -> int:
     try:
         url = _resolve_pair_url(args.advertise, args.port)
     except (OSError, ValueError) as exc:
-        print(f"can't work out an address to encode: {exc}\n"
-              f"pass one explicitly:  marim serve qr --advertise <host>", file=err)
+        print(
+            f"can't work out an address to encode: {exc}\n"
+            f"pass one explicitly:  marim serve qr --advertise <host>",
+            file=err,
+        )
         return 1
     try:
         # load_or_create, not load: the token file is the contract the daemon reads
@@ -257,8 +288,11 @@ def _print_startup_qr(args, *, token: str, out, err) -> None:
     try:
         url = _resolve_pair_url(args.advertise, args.port)
     except (OSError, ValueError) as exc:
-        print(f"--qr skipped: can't work out an address to encode ({exc}); "
-              f"try marim serve qr --advertise <host>", file=err)
+        print(
+            f"--qr skipped: can't work out an address to encode ({exc}); "
+            f"try marim serve qr --advertise <host>",
+            file=err,
+        )
         return
     try:
         block = _pairing_block(
@@ -282,8 +316,11 @@ def _print_startup_qr(args, *, token: str, out, err) -> None:
         # stderr, which the stdout-isatty refusal above does not cover — a user
         # can redirect stderr to a file while stdout stays a terminal. So: no
         # `{exc}` here, only the exception's type name.
-        print(f"--qr skipped: couldn't build the pairing code ({type(exc).__name__}); "
-              f"try marim serve qr --advertise <host>", file=err)
+        print(
+            f"--qr skipped: couldn't build the pairing code ({type(exc).__name__}); "
+            f"try marim serve qr --advertise <host>",
+            file=err,
+        )
         return
     print(block, file=out, flush=True)
 
@@ -299,34 +336,56 @@ def main(argv: list[str], *, out=None, err=None) -> int:
     parser = argparse.ArgumentParser(
         prog="marim serve",
         description="Run the marim HTTP server daemon "
-                    "(sessions over REST + WebSocket). "
-                    "See `marim serve qr --help` to pair a client.",
+        "(sessions over REST + WebSocket). "
+        "See `marim serve qr --help` to pair a client.",
     )
-    parser.add_argument("--host", default="127.0.0.1",
-                        help="bind address (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT,
-                        help=f"bind port (default: {DEFAULT_PORT})")
-    parser.add_argument("--workspaces-root", type=Path, default=None,
-                        help="directory for managed workspaces "
-                             "(default: <state-dir>/workspaces)")
-    parser.add_argument("--idle-ttl", type=float, default=900.0,
-                        help="seconds before an idle session's harness is evicted "
-                             "(default: 900)")
-    parser.add_argument("--no-banner", action="store_true",
-                        help="skip the startup wordmark (also: MARIM_NO_BANNER=1); "
-                             "it is already skipped when stdout isn't a terminal")
-    parser.add_argument("--qr", action="store_true",
-                        help="also print a QR code that pairs a client with this daemon "
-                             "(encodes the bearer token; terminal only)")
-    parser.add_argument("--advertise", default=None, metavar="HOST[:PORT]",
-                        help="address for --qr to encode instead of the auto-detected "
-                             "one (see: marim serve qr --help)")
-    parser.add_argument("--wide", action="store_true",
-                        help="draw the --qr code with half-blocks instead of sextants, "
-                             "for fonts that predate Unicode 13")
-    parser.add_argument("--sixel", action=argparse.BooleanOptionalAction, default=None,
-                        help="draw the --qr code as a sixel image (default: use it when "
-                             "the terminal says it can)")
+    parser.add_argument("--host", default="127.0.0.1", help="bind address (default: 127.0.0.1)")
+    parser.add_argument(
+        "--port", type=int, default=DEFAULT_PORT, help=f"bind port (default: {DEFAULT_PORT})"
+    )
+    parser.add_argument(
+        "--workspaces-root",
+        type=Path,
+        default=None,
+        help="directory for managed workspaces (default: <state-dir>/workspaces)",
+    )
+    parser.add_argument(
+        "--idle-ttl",
+        type=float,
+        default=900.0,
+        help="seconds before an idle session's harness is evicted (default: 900)",
+    )
+    parser.add_argument(
+        "--no-banner",
+        action="store_true",
+        help="skip the startup wordmark (also: MARIM_NO_BANNER=1); "
+        "it is already skipped when stdout isn't a terminal",
+    )
+    parser.add_argument(
+        "--qr",
+        action="store_true",
+        help="also print a QR code that pairs a client with this daemon "
+        "(encodes the bearer token; terminal only)",
+    )
+    parser.add_argument(
+        "--advertise",
+        default=None,
+        metavar="HOST[:PORT]",
+        help="address for --qr to encode instead of the auto-detected "
+        "one (see: marim serve qr --help)",
+    )
+    parser.add_argument(
+        "--wide",
+        action="store_true",
+        help="draw the --qr code with half-blocks instead of sextants, "
+        "for fonts that predate Unicode 13",
+    )
+    parser.add_argument(
+        "--sixel",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="draw the --qr code as a sixel image (default: use it when the terminal says it can)",
+    )
     args = parser.parse_args(argv)
 
     try:

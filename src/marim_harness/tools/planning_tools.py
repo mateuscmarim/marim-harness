@@ -13,9 +13,7 @@ from .lenient import Lenient, LenientList
 logger = logging.getLogger(__name__)
 
 _ASK_USER_EMPTY = "ask_user needs at least one question, each with at least one option."
-_ASK_USER_NO_UI = (
-    "Can't ask the user — no interactive UI here. Proceed with your best judgment."
-)
+_ASK_USER_NO_UI = "Can't ask the user — no interactive UI here. Proceed with your best judgment."
 _ASK_USER_CANCELLED = "User dismissed the prompt without answering."
 
 
@@ -60,9 +58,7 @@ async def ask_user(ctx: RunContext[Deps], questions: LenientList[Lenient[Questio
         return _ASK_USER_NO_UI
     th = ctx.deps.services.turn_hooks
     if th is not None:
-        await th.notification(
-            "ask_user", "Question from agent", coerced[0].question
-        )
+        await th.notification("ask_user", "Question from agent", coerced[0].question)
     answers = await ctx.deps.ui.ask_user(coerced)
     if not answers:
         return _ASK_USER_CANCELLED
@@ -81,9 +77,7 @@ _PLAN_EXEC_MODES = {
 }
 
 
-async def present_plan(
-    ctx: RunContext[Deps], summary: str, steps: LenientList[str]
-) -> str:
+async def present_plan(ctx: RunContext[Deps], summary: str, steps: LenientList[str]) -> str:
     """Present your finished plan and let the user choose how to execute it. Call
     this at the END of a planning turn, once you have researched the task and have
     a concrete, ordered plan.
@@ -134,8 +128,13 @@ async def present_plan(
         choice, feedback = decision.choice, decision.feedback
     elif ctx.deps.ui.ask_user is not None:
         answers = await ctx.deps.ui.ask_user(
-            [Question(question="How should I execute this plan?", header="execution",
-                      options=_PLAN_CHOICES)]
+            [
+                Question(
+                    question="How should I execute this plan?",
+                    header="execution",
+                    options=_PLAN_CHOICES,
+                )
+            ]
         )
         choice = (answers or {}).get("execution", "Keep planning")
         # A free-text answer (not one of the known choice labels) is revise-feedback,

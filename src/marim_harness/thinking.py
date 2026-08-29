@@ -62,9 +62,7 @@ def settings_for(level: str | None, base: ModelSettings) -> ModelSettings:
     return ModelSettings({**base, "thinking": level})  # type: ignore[arg-type]
 
 
-def resolve_thinking(
-    override: str | None, spec: str | None, inherited: str | None
-) -> str | None:
+def resolve_thinking(override: str | None, spec: str | None, inherited: str | None) -> str | None:
     """Resolve a sub-agent's thinking level by precedence: the spawn-call
     ``override`` first, then the spec's ``thinking:`` frontmatter, then the
     ``inherited`` session level. Returns the first candidate that is a known

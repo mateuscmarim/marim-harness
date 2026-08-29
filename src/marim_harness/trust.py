@@ -115,7 +115,9 @@ def record_decision(workspace_root, *, trusted: bool, fingerprint: str, now: str
     with file_lock(path):
         store = _load_store()
         store[str(Path(workspace_root).resolve())] = {
-            "trusted": trusted, "fingerprint": fingerprint, "decided_at": now,
+            "trusted": trusted,
+            "fingerprint": fingerprint,
+            "decided_at": now,
         }
         atomic_write_text(path, json.dumps(store, indent=2, sort_keys=True))
 

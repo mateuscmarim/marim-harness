@@ -88,8 +88,13 @@ class SpawnRunDriver:
     contention recovery lives here, keeping ``SubagentRunner`` the
     spawn-lifecycle coordinator."""
 
-    def __init__(self, deps: Deps, session: SessionController,
-                 retry: RetryPolicy, known_window: Callable[[], int | None]) -> None:
+    def __init__(
+        self,
+        deps: Deps,
+        session: SessionController,
+        retry: RetryPolicy,
+        known_window: Callable[[], int | None],
+    ) -> None:
         self.deps = deps
         self.session = session
         self._retry = retry
@@ -104,11 +109,16 @@ class SpawnRunDriver:
         sleep — see test_subagent_retry."""
         await self._retry.backoff(attempt)
 
-    async def run_to_completion(self, sub: SubAgent, task: str, run_deps: Deps,
-                                granted: list[Any], handler: EventStreamHandler[Deps] | None,
-                                stream_id: str | None = None,
-                                history: list | None = None,
-                                ) -> AgentRunResult[str | dict[str, Any]]:
+    async def run_to_completion(
+        self,
+        sub: SubAgent,
+        task: str,
+        run_deps: Deps,
+        granted: list[Any],
+        handler: EventStreamHandler[Deps] | None,
+        stream_id: str | None = None,
+        history: list | None = None,
+    ) -> AgentRunResult[str | dict[str, Any]]:
         """Run a built sub-agent to its final result, retrying *transient* model
         errors (gateway/server hiccups, timeouts, rate limits) with backoff. A
         permanent error, or exhausting the retry budget, re-raises for the caller's
@@ -159,9 +169,9 @@ class SpawnRunDriver:
                 with _fresh_capture() as captured:
                     return await sub.run(
                         task if resume_history is None else None,
-                        message_history=(resume_history if resume_history is not None
-                                         else history),
-                        deps=run_deps, toolsets=granted,
+                        message_history=(resume_history if resume_history is not None else history),
+                        deps=run_deps,
+                        toolsets=granted,
                         event_stream_handler=handler,
                         usage=run_usage,
                         usage_limits=UsageLimits(request_limit=self._retry.request_limit),
@@ -217,15 +227,15 @@ class SpawnRunDriver:
                 attempt += 1
                 resume_history = _resumable_history(list(captured))
                 logger.info(
-                    "sub-agent hit a transient error (%s); resuming, retry %d/%d "
-                    "after backoff", exc.__class__.__name__, attempt,
+                    "sub-agent hit a transient error (%s); resuming, retry %d/%d after backoff",
+                    exc.__class__.__name__,
+                    attempt,
                     self._retry.attempts,
                 )
                 await self._notice_retry(stream_id, exc, attempt)
                 await self.backoff(attempt)
 
-    async def _notice_retry(self, stream_id: str | None, exc: Exception,
-                            attempt: int) -> None:
+    async def _notice_retry(self, stream_id: str | None, exc: Exception, attempt: int) -> None:
         """Surface a transient-error retry on a foreground spawn's card. A no-op for
         a background spawn (no card) or when no UI is listening."""
         cb = self.deps.ui.on_subagent_notice

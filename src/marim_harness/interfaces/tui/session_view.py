@@ -6,6 +6,9 @@ outside a turn's own stream — auto-rename, compaction, advisories. Behavior on
 — it holds no state; it reaches the app, status bar, and stream renderer through
 ``self.app``."""
 
+from collections.abc import Sequence
+from typing import Any
+
 from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Static
 
@@ -26,6 +29,68 @@ from .widgets import (
 from .widgets.compact_notice import CompactNotice
 
 
+def order_response_parts(parts: Sequence[Any]) -> list:
+    """Reorder one ``ModelResponse``'s parts so reasoning replays above the reply it
+    produced. Pure — returns a new list, never mutates ``parts``.
+
+    Stored order is not always causal order. Some providers open the reply with a
+    whitespace-only content delta *before* the first reasoning delta (deepseek-v4
+    via OpenRouter), so pydantic-ai starts the TextPart first and the response
+    persists as ``[text, thinking]``. Replaying that verbatim puts the answer above
+    the thought that produced it — and disagrees with the live path, which mounts
+    the thinking block first (see ``_on_text_start``'s deferred mount).
+
+    The reorder is keyed to that bug's *fingerprint*, not applied blanket: a reply
+    whose stored content begins with whitespace is one the provider opened with a
+    blank delta. Text that is real from its first character genuinely preceded the
+    thought, so it is left alone — replay then matches what the live path rendered
+    instead of hoisting a thought above text that truly came first.
+
+    Only the *leading* text part can have been opened early this way; everything
+    after it was recorded in true causal order. So the fix moves that one part
+    down past the reasoning that immediately follows it, rather than hoisting
+    every thought in the segment to the front. A blanket hoist would reorder
+    genuinely interleaved output — in ``[text, think, text, think]`` it drags the
+    second thought above the first reply, which the model never did.
+
+    Tool calls anchor the segments: within each run of text/thinking parts between
+    tool calls, a reorder is decided independently. So a thought that follows a
+    tool round-trip stays with its own reply rather than moving to the top of the
+    message.
+    """
+    from pydantic_ai.messages import TextPart, ThinkingPart
+
+    def ordered_segment(segment: list) -> list:
+        # Only a leading TextPart is a candidate: reasoning already leads, or
+        # there is nothing to move.
+        if not segment or not isinstance(segment[0], TextPart):
+            return segment
+        # Only the blank-opener shape reorders (see above). ``content[:1]`` is
+        # whitespace for the " " opener and empty for a bare TextPart; real text
+        # from char 0 keeps its recorded position.
+        if segment[0].content[:1].strip():
+            return segment
+        # The contiguous reasoning run that the blank opener jumped ahead of.
+        run = 1
+        while run < len(segment) and isinstance(segment[run], ThinkingPart):
+            run += 1
+        if run == 1:  # no reasoning directly after it — nothing was displaced
+            return segment
+        return segment[1:run] + [segment[0]] + segment[run:]
+
+    ordered: list = []
+    segment: list = []
+    for part in parts:
+        if isinstance(part, (TextPart, ThinkingPart)):
+            segment.append(part)
+        else:
+            ordered.extend(ordered_segment(segment))
+            ordered.append(part)
+            segment = []
+    ordered.extend(ordered_segment(segment))
+    return ordered
+
+
 class SessionView:
     """Owns rebuilding/replaying the log for the active session. Constructed by the
     HarnessApp, which delegates new/switch/clear and the auto-rename callback here."""
@@ -35,13 +100,24 @@ class SessionView:
 
     async def _replay_text_part(self, part, mount_fn, group, solo):
         """TextPart arm of ``_replay_parts``."""
-        if part.content:
-            # Text output ends the current tool burst in both the main log and
-            # sub-agent panes. Without this reset, a tool after text would be
-            # incorrectly grouped with tools before it (original
-            # replay_messages_into omitted this reset, which was a bug).
-            group = None
-            solo = None
+        # Text output ends the current tool burst in both the main log and
+        # sub-agent panes. Without this reset, a tool after text would be
+        # incorrectly grouped with tools before it (original
+        # replay_messages_into omitted this reset, which was a bug).
+        #
+        # The reset is *outside* the visibility check on purpose: live,
+        # _on_text_start calls sink.set_run(None, None) before it decides
+        # whether to mount, so the run breaks even for a whitespace-only part.
+        # Gating it on visible content would regroup tools around a blank
+        # opener after a resume — the same live/replay disagreement in a
+        # different guise.
+        group = None
+        solo = None
+        # Match live stream: a whitespace-only reply leaves no empty bubble.
+        # _on_text_start defers the mount until the part has visible content, so
+        # replaying on `part.content` alone would resurrect after a resume the
+        # very blank message the live path now refuses to mount.
+        if part.content and part.content.strip():
             msg = AssistantMessage()
             await mount_fn(msg)
             self.app.stream.append_stream(msg, part.content)
@@ -49,11 +125,13 @@ class SessionView:
 
     async def _replay_thinking_part(self, part, mount_fn, group, solo):
         """ThinkingPart arm of ``_replay_parts``."""
+        # Same reasoning as TextPart, reset included: _on_thinking_start breaks
+        # the run before its own content check, so an empty ThinkingPart (common
+        # between tool calls) still ends the burst live and must here too.
+        group = None
+        solo = None
         # Match live stream: whitespace-only thoughts leave no bare label.
         if part.content and part.content.strip():
-            # Same reasoning as TextPart: thinking output breaks a tool run.
-            group = None
-            solo = None
             widget = ThinkingWidget()
             await mount_fn(widget)
             self.app.stream.append_stream(widget.body, part.content)
@@ -81,8 +159,7 @@ class SessionView:
         )
         widget.stream_id = part.tool_call_id
         widget.parent_id = parent_id
-        if all(w.stream_id != widget.stream_id
-               for w in self.app.stream.subagents):
+        if all(w.stream_id != widget.stream_id for w in self.app.stream.subagents):
             self.app.stream.subagents.append(widget)
         tool_widgets[part.tool_call_id] = widget
         await mount_fn(widget)
@@ -90,7 +167,14 @@ class SessionView:
         # main-log-only; replay_history handles them after this call returns.
 
     async def _replay_tool_call_part(
-        self, part, container, mount_fn, tool_widgets, group, solo, parent_id,
+        self,
+        part,
+        container,
+        mount_fn,
+        tool_widgets,
+        group,
+        solo,
+        parent_id,
     ):
         """ToolCallPart arm of ``_replay_parts``."""
         if part.tool_name == "spawn_agent":
@@ -100,12 +184,16 @@ class SessionView:
         else:
             args = part.args_as_dict()
             widget = ToolCallWidget(
-                part.tool_name, args,
+                part.tool_name,
+                args,
                 workspace_root=self.app.harness.deps.workspace.root,
             )
             tool_widgets[part.tool_call_id] = widget
             group, solo = await self.app.stream.add_tool_to_run(
-                widget, container, group, solo,
+                widget,
+                container,
+                group,
+                solo,
             )
         return group, solo
 
@@ -129,11 +217,7 @@ class SessionView:
             # A failed spawn returns its error as a normal tool result;
             # detect the runner's failure text so the card shows failed,
             # not a misleading ✓ (mirrors the live path).
-            if (
-                isinstance(widget, SubAgentWidget)
-                and status == "done"
-                and subagent_failed(content)
-            ):
+            if isinstance(widget, SubAgentWidget) and status == "done" and subagent_failed(content):
                 status = "failed"
             widget.finish(content, status=status)
         return group, solo
@@ -171,7 +255,13 @@ class SessionView:
             group, solo = await self._replay_thinking_part(part, mount_fn, group, solo)
         elif isinstance(part, ToolCallPart):
             group, solo = await self._replay_tool_call_part(
-                part, container, mount_fn, tool_widgets, group, solo, parent_id,
+                part,
+                container,
+                mount_fn,
+                tool_widgets,
+                group,
+                solo,
+                parent_id,
             )
         elif isinstance(part, ToolReturnPart):
             group, solo = await self._replay_tool_return_part(part, tool_widgets, group, solo)
@@ -183,10 +273,7 @@ class SessionView:
         if isinstance(content, str):
             text = content
         elif isinstance(content, list):
-            text = " ".join(
-                item for item in content
-                if isinstance(item, str)
-            )
+            text = " ".join(item for item in content if isinstance(item, str))
         else:
             text = str(content)
         # A compaction summary renders as its own collapsed block, not as a
@@ -208,7 +295,8 @@ class SessionView:
         tool group on a resumed session."""
         args = part.args_as_dict()
         widget = ToolCallWidget(
-            part.tool_name, args,
+            part.tool_name,
+            args,
             workspace_root=self.app.harness.deps.workspace.root,
         )
         tool_widgets[part.tool_call_id] = widget
@@ -221,9 +309,7 @@ class SessionView:
         load on resume, and falls back to harness.model_label when the spawn
         didn't specify a model explicitly."""
         args = part.args_as_dict()
-        model_label = str(
-            args.get("model") or self.app.harness.model_label or ""
-        )
+        model_label = str(args.get("model") or self.app.harness.model_label or "")
         widget = tool_widgets.get(part.tool_call_id)
         if isinstance(widget, SubAgentWidget):
             widget.model_label = model_label
@@ -259,7 +345,14 @@ class SessionView:
         for message in self.app.harness.session.history:
             if not isinstance(message, (ModelRequest, ModelResponse)):
                 continue
-            for part in message.parts:
+            # Replay reasoning above the reply it produced, matching the live path
+            # even when the provider persisted them the other way round.
+            parts = (
+                order_response_parts(message.parts)
+                if isinstance(message, ModelResponse)
+                else message.parts
+            )
+            for part in parts:
                 if isinstance(part, UserPromptPart):
                     group = None
                     solo = None
@@ -270,16 +363,21 @@ class SessionView:
                     await self._replay_ask_user(part, log, tool_widgets)
                 else:
                     group, solo = await self._replay_parts(
-                        part, log, log.mount, tool_widgets, group, solo,
+                        part,
+                        log,
+                        log.mount,
+                        tool_widgets,
+                        group,
+                        solo,
                     )
-                    if (
-                        isinstance(part, ToolCallPart)
-                        and part.tool_name == "spawn_agent"
-                    ):
+                    if isinstance(part, ToolCallPart) and part.tool_name == "spawn_agent":
                         await self._finish_replayed_spawn_pane(part, tool_widgets)
 
     async def replay_messages_into(
-        self, pane, messages, parent_id: str | None = None,
+        self,
+        pane,
+        messages,
+        parent_id: str | None = None,
     ) -> None:
         """Render resumed sub-agent transcript messages into ``pane``.
 
@@ -295,9 +393,20 @@ class SessionView:
         solo: ToolCallWidget | None = None
         for message in messages:
             if isinstance(message, (ModelRequest, ModelResponse)):
-                for part in message.parts:
+                # Same causal reordering as replay_history (see order_response_parts).
+                parts = (
+                    order_response_parts(message.parts)
+                    if isinstance(message, ModelResponse)
+                    else message.parts
+                )
+                for part in parts:
                     group, solo = await self._replay_parts(
-                        part, pane, pane.add, tool_widgets, group, solo,
+                        part,
+                        pane,
+                        pane.add,
+                        tool_widgets,
+                        group,
+                        solo,
                         parent_id=parent_id,
                     )
         self.app.stream.flush_streams()
@@ -357,9 +466,7 @@ class SessionView:
             # There is nothing to resume — resume_spawn refuses a card with
             # no meta — so finish it "failed" rather than a forever-pending
             # "interrupted" ghost that dangles a dead press-r affordance.
-            card.finish(
-                "spawn never ran (no transcript recorded)", status="failed"
-            )
+            card.finish("spawn never ran (no transcript recorded)", status="failed")
 
     async def _settle_replayed_card(self, card, running, settled, metas, transcripts) -> None:
         """Settle one replayed sub-agent card from the persisted record."""
@@ -377,8 +484,7 @@ class SessionView:
             await self._restore_pending_card_stats(card, meta)
         if card.status == "pending":
             self._settle_pending_card(card, job, meta_status, transcripts)
-        elif (meta_status == "running" and job is None
-              and self._REPAIR_STUB_MARKER in card.report):
+        elif meta_status == "running" and job is None and self._REPAIR_STUB_MARKER in card.report:
             # A foreground spawn cut down mid-run: the main history's repair
             # stub finished the card "done", but the sidecar (whose final
             # write never happened) knows it never completed.
@@ -393,15 +499,21 @@ class SessionView:
             if meta.get("status") != "running" or sid in have or sid in settled:
                 continue
             widget = SubAgentWidget(
-                str(meta.get("type", "")), str(meta.get("task", "")),
+                str(meta.get("type", "")),
+                str(meta.get("task", "")),
                 str(meta.get("model") or self.app.harness.model_label or ""),
             )
             widget.stream_id = sid
             self.app.stream.subagents.append(widget)
             await log.mount(widget)
             host = self.app.query_one(SubAgentDetailHost)
-            pane = host.add_pane(sid, widget.agent_type, widget.model_label,
-                                 widget.display_title(), widget.agent_task)
+            pane = host.add_pane(
+                sid,
+                widget.agent_type,
+                widget.model_label,
+                widget.display_title(),
+                widget.agent_task,
+            )
             widget.pane = pane  # transcript_loaded stays False → lazy sidecar load
             widget.finish("", status="interrupted")
 
@@ -427,8 +539,7 @@ class SessionView:
         # card would be flagged interrupted — dangling the `r` key and never
         # updating on settle (replay doesn't re-register tool_widgets/_detached
         # cards). Re-arm such a card via the very path a fresh resume uses.
-        running = {j.stream_id: j for j in jobs.list()
-                   if j.stream_id and j.status == "running"}
+        running = {j.stream_id: j for j in jobs.list() if j.stream_id and j.status == "running"}
         for card in list(self.app.stream.subagents):
             await self._settle_replayed_card(card, running, settled, metas, transcripts)
         log = self.app.query_one("#log", VerticalScroll)
@@ -496,9 +607,7 @@ class SessionView:
         if before == after:
             self.app.status.refresh_status()
             return
-        log.mount(
-            NoticeMessage(f"compacted history: {before} → {after} messages")
-        )
+        log.mount(NoticeMessage(f"compacted history: {before} → {after} messages"))
         # Surface the just-created summary as its own collapsed block so the
         # condensed context is legible immediately, not just on the next resume.
         body = self._latest_summary()
@@ -580,6 +689,4 @@ class SessionView:
         n = self.app.harness.switch_session(session_id)
         await self.app.harness.session_start("resume")
         label = self.app.harness.session.session_name or session_id
-        await self.render_session(
-            f"**Switched to** `{label}` — {n} messages restored."
-        )
+        await self.render_session(f"**Switched to** `{label}` — {n} messages restored.")

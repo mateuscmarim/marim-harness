@@ -180,11 +180,18 @@ class SessionStore:
     across launches. Created by a :class:`SessionManager`, which decides the
     path, id, and name."""
 
-    def __init__(self, path, workspace_root, session_id: str, name: str,
-                 auto_named: bool = False, model: str | None = None,
-                 advisor_model: str | None = None,
-                 thinking: str | None = None,
-                 mode: str | None = None) -> None:
+    def __init__(
+        self,
+        path,
+        workspace_root,
+        session_id: str,
+        name: str,
+        auto_named: bool = False,
+        model: str | None = None,
+        advisor_model: str | None = None,
+        thinking: str | None = None,
+        mode: str | None = None,
+    ) -> None:
         self.path = Path(path)
         self.workspace_root = Path(workspace_root).resolve()
         self.session_id = session_id
@@ -207,10 +214,14 @@ class SessionStore:
         # neither sets nor reads it (its mode is a live, per-launch toggle).
         self.mode = mode
 
-    def save(self, history: list, usage: RunUsage,
-             tasks: list | None = None,
-             duration_seconds: float | None = None,
-             jobs: list | None = None) -> None:
+    def save(
+        self,
+        history: list,
+        usage: RunUsage,
+        tasks: list | None = None,
+        duration_seconds: float | None = None,
+        jobs: list | None = None,
+    ) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "id": self.session_id,
@@ -308,9 +319,7 @@ class SessionStore:
         # than letting the load fail — the alternative is telling the user to
         # move a perfectly recoverable session aside.
         if repaired := repair_masked_narrowed_returns(raw_messages):
-            logger.debug(
-                "repaired %d masked typed tool-return(s) in %s", repaired, self.path
-            )
+            logger.debug("repaired %d masked typed tool-return(s) in %s", repaired, self.path)
         try:
             messages = ModelMessagesTypeAdapter.validate_python(raw_messages)
         except ValidationError as exc:
@@ -338,8 +347,13 @@ class SessionStore:
             tool_calls=tok.get("tool_calls", 0),
             details=tok.get("details") or {},
         )
-        return (messages, usage, data.get("tasks", []),
-                data.get("duration_seconds"), data.get("jobs", []))
+        return (
+            messages,
+            usage,
+            data.get("tasks", []),
+            data.get("duration_seconds"),
+            data.get("jobs", []),
+        )
 
     def clear(self) -> None:
         self.path.unlink(missing_ok=True)
@@ -397,9 +411,7 @@ class SessionManager:
                     updated=data.get("updated", ""),
                     # Prefer the cheap header count written by save(); fall back to
                     # counting the messages array for files written before it.
-                    message_count=data.get(
-                        "message_count", len(data.get("messages", []))
-                    ),
+                    message_count=data.get("message_count", len(data.get("messages", []))),
                     tokens=_total_tokens(data.get("tokens", {})),
                     duration_seconds=data.get("duration_seconds"),
                     model=data.get("model"),
@@ -431,9 +443,15 @@ class SessionManager:
         mode = meta.get("mode")
         self._reserved.add(session_id)
         return SessionStore(
-            path, self.workspace_root, session_id, name,
-            auto_named=auto_named, model=model, advisor_model=advisor_model,
-            thinking=thinking, mode=mode,
+            path,
+            self.workspace_root,
+            session_id,
+            name,
+            auto_named=auto_named,
+            model=model,
+            advisor_model=advisor_model,
+            thinking=thinking,
+            mode=mode,
         )
 
     def create(self, name: str | None = None) -> SessionStore:

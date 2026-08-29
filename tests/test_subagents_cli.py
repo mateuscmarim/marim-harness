@@ -42,14 +42,25 @@ def test_tool_map_drops_unmapped_and_sorts():
     # map; tree and LSP names are dropped.
     assert map_tools_to_cc(READ_TOOLS) == ["Glob", "Grep", "Read"]
     assert map_tools_to_cc(SUBAGENT_TOOLS) == [
-        "Bash", "Edit", "Glob", "Grep", "Read", "WebFetch", "WebSearch", "Write",
+        "Bash",
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "WebFetch",
+        "WebSearch",
+        "Write",
     ]
 
 
 def test_build_argv_includes_required_flags():
     argv = build_cli_argv(
-        "/usr/bin/claude", "do the task", "You are a worker.",
-        "acceptEdits", ["Read", "Edit"], "opus",
+        "/usr/bin/claude",
+        "do the task",
+        "You are a worker.",
+        "acceptEdits",
+        ["Read", "Edit"],
+        "opus",
     )
     assert argv[:3] == ["/usr/bin/claude", "-p", "do the task"]
     assert "--output-format" in argv and "stream-json" in argv and "--verbose" in argv
@@ -80,8 +91,12 @@ def test_resolve_binary_none_when_missing(monkeypatch):
 
 def test_synth_usage_maps_token_fields():
     u = synth_usage(
-        {"input_tokens": 10, "output_tokens": 5,
-         "cache_read_input_tokens": 2, "cache_creation_input_tokens": 1},
+        {
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "cache_read_input_tokens": 2,
+            "cache_creation_input_tokens": 1,
+        },
         num_turns=3,
     )
     assert isinstance(u, RunUsage)
@@ -100,12 +115,16 @@ def test_synth_usage_uncached_split_is_nonzero():
     from marim_harness.usage import split_tokens
 
     u = synth_usage(
-        {"input_tokens": 35000, "output_tokens": 15000,
-         "cache_read_input_tokens": 200000, "cache_creation_input_tokens": 48000},
+        {
+            "input_tokens": 35000,
+            "output_tokens": 15000,
+            "cache_read_input_tokens": 200000,
+            "cache_creation_input_tokens": 48000,
+        },
         num_turns=1,
     )
     s = split_tokens(u)
-    assert s.uncached_input == 35000     # the genuine uncached prompt, not 0
+    assert s.uncached_input == 35000  # the genuine uncached prompt, not 0
     assert s.cache_read == 200000 and s.cache_write == 48000
     assert s.output == 15000
 
@@ -113,8 +132,7 @@ def test_synth_usage_uncached_split_is_nonzero():
 def test_synth_usage_captures_billed_cost():
     from marim_harness.usage import COST_DETAIL_KEY, exact_cost
 
-    u = synth_usage({"input_tokens": 10, "output_tokens": 5}, num_turns=1,
-                    total_cost_usd=0.001)
+    u = synth_usage({"input_tokens": 10, "output_tokens": 5}, num_turns=1, total_cost_usd=0.001)
     # Stored as integer micro-USD so exact_cost() returns the billed amount.
     assert u.details.get(COST_DETAIL_KEY) == 1000
     assert exact_cost(u) == pytest.approx(0.001, rel=1e-6)
@@ -133,15 +151,27 @@ def test_synth_usage_tolerates_none():
 
 
 def test_sum_result_usages_sums_tokens_and_keeps_last_cumulative_cost():
-    r1 = {"num_turns": 2, "total_cost_usd": 0.04,
-          "usage": {"input_tokens": 18, "output_tokens": 1083,
-                    "cache_read_input_tokens": 44348,
-                    "cache_creation_input_tokens": 10455,
-                    "cache_creation": {"ephemeral_1h_input_tokens": 10455}}}
-    r2 = {"num_turns": 1, "total_cost_usd": 0.05,
-          "usage": {"input_tokens": 10, "output_tokens": 48,
-                    "cache_read_input_tokens": 28039,
-                    "cache_creation_input_tokens": 1942}}
+    r1 = {
+        "num_turns": 2,
+        "total_cost_usd": 0.04,
+        "usage": {
+            "input_tokens": 18,
+            "output_tokens": 1083,
+            "cache_read_input_tokens": 44348,
+            "cache_creation_input_tokens": 10455,
+            "cache_creation": {"ephemeral_1h_input_tokens": 10455},
+        },
+    }
+    r2 = {
+        "num_turns": 1,
+        "total_cost_usd": 0.05,
+        "usage": {
+            "input_tokens": 10,
+            "output_tokens": 48,
+            "cache_read_input_tokens": 28039,
+            "cache_creation_input_tokens": 1942,
+        },
+    }
     summed, turns, cost = sum_result_usages([r1, r2])
     assert summed["input_tokens"] == 28 and summed["output_tokens"] == 1131
     assert summed["cache_read_input_tokens"] == 44348 + 28039
@@ -157,10 +187,12 @@ def test_sum_result_usages_tolerates_missing_fields():
 
 def test_translate_assistant_text_emits_start_then_full_delta():
     t = CliStreamTranslator()
-    events = t.translate({
-        "type": "assistant",
-        "message": {"content": [{"type": "text", "text": "Hello there"}]},
-    })
+    events = t.translate(
+        {
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "Hello there"}]},
+        }
+    )
     assert isinstance(events[0], PartStartEvent)
     assert isinstance(events[1], PartDeltaEvent)
     assert isinstance(events[1].delta, TextPartDelta)
@@ -173,13 +205,21 @@ def test_translate_tool_use_normalizes_to_harness_name():
     # A Claude Code `Read` (file_path) is normalized to the harness `read_file`
     # (path) so the TUI renders it with the native read widget.
     t = CliStreamTranslator()
-    events = t.translate({
-        "type": "assistant",
-        "message": {"content": [
-            {"type": "tool_use", "id": "toolu_1", "name": "Read",
-             "input": {"file_path": "x.py"}},
-        ]},
-    })
+    events = t.translate(
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "Read",
+                        "input": {"file_path": "x.py"},
+                    },
+                ]
+            },
+        }
+    )
     assert len(events) == 1
     ev = events[0]
     assert isinstance(ev, FunctionToolCallEvent)
@@ -193,15 +233,26 @@ def test_translate_edit_maps_to_edit_file_with_edits_list():
     # `edits` list of {old_string,new_string,replace_all} so the inline diff
     # renders instead of a raw-args dump.
     t = CliStreamTranslator()
-    events = t.translate({
-        "type": "assistant",
-        "message": {"content": [
-            {"type": "tool_use", "id": "toolu_2", "name": "Edit", "input": {
-                "file_path": "a.py", "old_string": "foo",
-                "new_string": "bar", "replace_all": True,
-            }},
-        ]},
-    })
+    events = t.translate(
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_2",
+                        "name": "Edit",
+                        "input": {
+                            "file_path": "a.py",
+                            "old_string": "foo",
+                            "new_string": "bar",
+                            "replace_all": True,
+                        },
+                    },
+                ]
+            },
+        }
+    )
     ev = events[0]
     assert ev.part.tool_name == "edit_file"
     args = ev.part.args_as_dict()
@@ -213,13 +264,21 @@ def test_translate_edit_maps_to_edit_file_with_edits_list():
 
 def test_translate_write_maps_to_write_file_path():
     t = CliStreamTranslator()
-    events = t.translate({
-        "type": "assistant",
-        "message": {"content": [
-            {"type": "tool_use", "id": "toolu_3", "name": "Write",
-             "input": {"file_path": "b.py", "content": "x = 1"}},
-        ]},
-    })
+    events = t.translate(
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_3",
+                        "name": "Write",
+                        "input": {"file_path": "b.py", "content": "x = 1"},
+                    },
+                ]
+            },
+        }
+    )
     ev = events[0]
     assert ev.part.tool_name == "write_file"
     assert ev.part.args_as_dict() == {"path": "b.py", "content": "x = 1"}
@@ -228,31 +287,56 @@ def test_translate_write_maps_to_write_file_path():
 def test_translate_unmapped_tool_passes_through():
     # A Claude Code tool with no harness equivalent keeps its name + args.
     t = CliStreamTranslator()
-    events = t.translate({
-        "type": "assistant",
-        "message": {"content": [
-            {"type": "tool_use", "id": "toolu_4", "name": "TodoWrite",
-             "input": {"todos": []}},
-        ]},
-    })
+    events = t.translate(
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_4",
+                        "name": "TodoWrite",
+                        "input": {"todos": []},
+                    },
+                ]
+            },
+        }
+    )
     assert events[0].part.tool_name == "TodoWrite"
 
 
 def test_translate_tool_result_labels_from_prior_call_and_marks_failure():
     t = CliStreamTranslator()
-    t.translate({
-        "type": "assistant",
-        "message": {"content": [
-            {"type": "tool_use", "id": "toolu_9", "name": "Bash", "input": {"command": "ls"}},
-        ]},
-    })
-    events = t.translate({
-        "type": "user",
-        "message": {"content": [
-            {"type": "tool_result", "tool_use_id": "toolu_9",
-             "content": [{"type": "text", "text": "boom"}], "is_error": True},
-        ]},
-    })
+    t.translate(
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_9",
+                        "name": "Bash",
+                        "input": {"command": "ls"},
+                    },
+                ]
+            },
+        }
+    )
+    events = t.translate(
+        {
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_9",
+                        "content": [{"type": "text", "text": "boom"}],
+                        "is_error": True,
+                    },
+                ]
+            },
+        }
+    )
     assert len(events) == 1
     ev = events[0]
     assert isinstance(ev, FunctionToolResultEvent)
@@ -261,8 +345,8 @@ def test_translate_tool_result_labels_from_prior_call_and_marks_failure():
     # result widget matches the call widget.
     assert part.tool_name == "bash"
     assert part.tool_call_id == "toolu_9"
-    assert part.content == "boom"            # list-of-blocks flattened to text
-    assert part.outcome == "failed"          # is_error → failed
+    assert part.content == "boom"  # list-of-blocks flattened to text
+    assert part.outcome == "failed"  # is_error → failed
 
 
 def test_translate_ignores_system_and_result():
@@ -273,13 +357,32 @@ def test_translate_ignores_system_and_result():
 
 def test_translator_accumulates_transcript_messages():
     t = CliStreamTranslator()
-    t.translate({"type": "assistant", "message": {"content": [
-        {"type": "text", "text": "reading"},
-        {"type": "tool_use", "id": "c1", "name": "Read", "input": {"file_path": "x.py"}},
-    ]}})
-    t.translate({"type": "user", "message": {"content": [
-        {"type": "tool_result", "tool_use_id": "c1", "content": "file body"},
-    ]}})
+    t.translate(
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "text", "text": "reading"},
+                    {
+                        "type": "tool_use",
+                        "id": "c1",
+                        "name": "Read",
+                        "input": {"file_path": "x.py"},
+                    },
+                ]
+            },
+        }
+    )
+    t.translate(
+        {
+            "type": "user",
+            "message": {
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "c1", "content": "file body"},
+                ]
+            },
+        }
+    )
     msgs = t.transcript()
     assert isinstance(msgs[0], ModelResponse)
     # tool_use was normalized to the harness name + arg shape.
@@ -294,9 +397,16 @@ def test_translator_accumulates_transcript_messages():
 
 def test_translate_thinking_block_emits_thinking_events():
     t = CliStreamTranslator()
-    events = t.translate({"type": "assistant", "message": {"content": [
-        {"type": "thinking", "thinking": "pondering...", "signature": "sig"},
-    ]}})
+    events = t.translate(
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "thinking", "thinking": "pondering...", "signature": "sig"},
+                ]
+            },
+        }
+    )
     assert isinstance(events[0], PartStartEvent)
     assert isinstance(events[0].part, ThinkingPart)
     assert isinstance(events[1], PartDeltaEvent)
@@ -309,13 +419,20 @@ def test_translate_thinking_block_emits_thinking_events():
 
 def test_record_call_and_return_append_transcript_pair():
     t = CliStreamTranslator()
-    t.record_call(ToolCallPart(tool_name="spawn_agent", args={"type": "Explore"},
-                               tool_call_id="t1"))
+    t.record_call(
+        ToolCallPart(tool_name="spawn_agent", args={"type": "Explore"}, tool_call_id="t1")
+    )
     from datetime import datetime, timezone
-    t.record_return(ToolReturnPart(
-        tool_name="spawn_agent", content="4", tool_call_id="t1",
-        timestamp=datetime.now(tz=timezone.utc), outcome="success",
-    ))
+
+    t.record_return(
+        ToolReturnPart(
+            tool_name="spawn_agent",
+            content="4",
+            tool_call_id="t1",
+            timestamp=datetime.now(tz=timezone.utc),
+            outcome="success",
+        )
+    )
     msgs = t.transcript()
     assert isinstance(msgs[0], ModelResponse)
     call = cast(ToolCallPart, msgs[0].parts[0])
@@ -329,7 +446,7 @@ def test_record_call_and_return_append_transcript_pair():
 # ClaudeCliRunner — fake-binary integration tests
 # ---------------------------------------------------------------------------
 
-_FAKE_CLI = '''#!{python}
+_FAKE_CLI = """#!{python}
 import json, sys
 lines = [
     {{"type": "system", "subtype": "init"}},
@@ -348,7 +465,7 @@ lines = [
 ]
 for o in lines:
     sys.stdout.write(json.dumps(o) + "\\n")
-'''
+"""
 
 
 def _make_fake_cli(tmp_path) -> str:
@@ -368,9 +485,14 @@ async def test_runner_streams_events_and_returns_result(tmp_path):
 
     runner = ClaudeCliRunner(on_event, None)
     result = await runner.run(
-        binary=binary, prompt="go", system_prompt="be a worker",
-        cwd=str(tmp_path), allow_gated=True, allowed_tools=frozenset({"read_file"}),
-        model=None, stream_id="s1",
+        binary=binary,
+        prompt="go",
+        system_prompt="be a worker",
+        cwd=str(tmp_path),
+        allow_gated=True,
+        allowed_tools=frozenset({"read_file"}),
+        model=None,
+        stream_id="s1",
     )
     assert result.output == "Done: found it"
     # input_tokens is inclusive of cache (10 uncached + 2 read + 1 write = 13).
@@ -381,7 +503,7 @@ async def test_runner_streams_events_and_returns_result(tmp_path):
     assert all(sid == "s1" for sid, _ in seen)
 
 
-_FAKE_CLI_WITH_MODEL = '''#!{python}
+_FAKE_CLI_WITH_MODEL = """#!{python}
 import json, sys
 for o in [
     {{"type": "system", "subtype": "init", "model": "claude-opus-4-8[1m]"}},
@@ -391,7 +513,7 @@ for o in [
       "num_turns": 1, "usage": {{"input_tokens": 1, "output_tokens": 1}}}},
 ]:
     sys.stdout.write(json.dumps(o) + "\\n")
-'''
+"""
 
 
 @pytest.mark.anyio
@@ -406,8 +528,14 @@ async def test_runner_surfaces_real_model_from_init_event(tmp_path):
 
     runner = ClaudeCliRunner(None, None, on_model)
     result = await runner.run(
-        binary=str(p), prompt="go", system_prompt="s", cwd=str(tmp_path),
-        allow_gated=False, allowed_tools=frozenset(), model=None, stream_id="s1",
+        binary=str(p),
+        prompt="go",
+        system_prompt="s",
+        cwd=str(tmp_path),
+        allow_gated=False,
+        allowed_tools=frozenset(),
+        model=None,
+        stream_id="s1",
     )
     assert result.output == "ok"
     # Surfaced exactly once, from the system/init event, tagged with the stream id.
@@ -427,8 +555,14 @@ async def test_runner_skips_model_callback_without_stream_id(tmp_path):
     # No stream_id (headless background) -> nothing to address, so no model push.
     runner = ClaudeCliRunner(None, None, on_model)
     await runner.run(
-        binary=str(p), prompt="go", system_prompt="s", cwd=str(tmp_path),
-        allow_gated=False, allowed_tools=frozenset(), model=None, stream_id="",
+        binary=str(p),
+        prompt="go",
+        system_prompt="s",
+        cwd=str(tmp_path),
+        allow_gated=False,
+        allowed_tools=frozenset(),
+        model=None,
+        stream_id="",
     )
     assert models == []
 
@@ -441,13 +575,19 @@ async def test_runner_raises_when_no_result(tmp_path):
     runner = ClaudeCliRunner(None, None)
     with pytest.raises(Exception) as exc:
         await runner.run(
-            binary=str(p), prompt="go", system_prompt="s", cwd=str(tmp_path),
-            allow_gated=False, allowed_tools=frozenset(), model=None, stream_id="",
+            binary=str(p),
+            prompt="go",
+            system_prompt="s",
+            cwd=str(tmp_path),
+            allow_gated=False,
+            allowed_tools=frozenset(),
+            model=None,
+            stream_id="",
         )
     assert "no result" in str(exc.value).lower()
 
 
-_FAKE_CLI_LARGE_STDERR = '''#!{python}
+_FAKE_CLI_LARGE_STDERR = """#!{python}
 import json, sys
 
 # Write a large blob to stderr BEFORE writing the stdout result line.
@@ -467,10 +607,10 @@ result = {{
 }}
 sys.stdout.write(json.dumps(result) + "\\n")
 sys.stdout.flush()
-'''
+"""
 
 
-_FAKE_CLI_SLEEPY = '''#!{python}
+_FAKE_CLI_SLEEPY = """#!{python}
 import json, os, sys, time
 
 pidfile = os.environ.get("FAKE_CLI_PIDFILE", "")
@@ -486,7 +626,7 @@ sys.stdout.write(json.dumps(event) + "\\n")
 sys.stdout.flush()
 
 time.sleep(30)
-'''
+"""
 
 
 @pytest.mark.anyio
@@ -517,8 +657,14 @@ async def test_runner_kills_subprocess_when_event_callback_raises(tmp_path, monk
     with pytest.raises(RuntimeError):
         await asyncio.wait_for(
             runner.run(
-                binary=str(p), prompt="go", system_prompt="s", cwd=str(tmp_path),
-                allow_gated=True, allowed_tools=frozenset(), model=None, stream_id="s1",
+                binary=str(p),
+                prompt="go",
+                system_prompt="s",
+                cwd=str(tmp_path),
+                allow_gated=True,
+                allowed_tools=frozenset(),
+                model=None,
+                stream_id="s1",
             ),
             timeout=15,
         )
@@ -561,8 +707,14 @@ async def test_runner_drains_stderr_concurrently_no_deadlock(tmp_path):
     runner = ClaudeCliRunner(None, None)
     result = await asyncio.wait_for(
         runner.run(
-            binary=str(p), prompt="go", system_prompt="s", cwd=str(tmp_path),
-            allow_gated=False, allowed_tools=frozenset(), model=None, stream_id="",
+            binary=str(p),
+            prompt="go",
+            system_prompt="s",
+            cwd=str(tmp_path),
+            allow_gated=False,
+            allowed_tools=frozenset(),
+            model=None,
+            stream_id="",
         ),
         timeout=15,
     )
@@ -573,7 +725,7 @@ async def test_runner_drains_stderr_concurrently_no_deadlock(tmp_path):
 # source file produces. `async for line in stream` caps lines at asyncio's 64 KiB
 # StreamReader buffer and raises "Separator is found, but chunk is longer than
 # limit"; the chunked reader removes that cap.
-_FAKE_CLI_HUGE_LINE = '''#!{python}
+_FAKE_CLI_HUGE_LINE = """#!{python}
 import json, sys
 big = "y" * 200_000   # ~200 KB, far past the 64 KiB readline limit
 for o in [
@@ -588,7 +740,7 @@ for o in [
 ]:
     sys.stdout.write(json.dumps(o) + "\\n")
 sys.stdout.flush()
-'''
+"""
 
 
 @pytest.mark.anyio
@@ -610,9 +762,14 @@ async def test_runner_handles_line_larger_than_64kib(tmp_path):
     runner = ClaudeCliRunner(on_event, None)
     result = await asyncio.wait_for(
         runner.run(
-            binary=str(p), prompt="go", system_prompt="s", cwd=str(tmp_path),
-            allow_gated=True, allowed_tools=frozenset({"read_file"}),
-            model=None, stream_id="s1",
+            binary=str(p),
+            prompt="go",
+            system_prompt="s",
+            cwd=str(tmp_path),
+            allow_gated=True,
+            allowed_tools=frozenset({"read_file"}),
+            model=None,
+            stream_id="s1",
         ),
         timeout=15,
     )
@@ -626,15 +783,20 @@ async def test_runner_returns_transcript(tmp_path):
     binary = _make_fake_cli(tmp_path)
     runner = ClaudeCliRunner(None, None)
     result = await runner.run(
-        binary=binary, prompt="go", system_prompt="s", cwd=str(tmp_path),
-        allow_gated=True, allowed_tools=frozenset({"read_file"}),
-        model=None, stream_id="s1",
+        binary=binary,
+        prompt="go",
+        system_prompt="s",
+        cwd=str(tmp_path),
+        allow_gated=True,
+        allowed_tools=frozenset({"read_file"}),
+        model=None,
+        stream_id="s1",
     )
     assert result.transcript
     assert any(isinstance(m, ModelResponse) for m in result.transcript)
 
 
-_FAKE_CLI_AGENT = '''#!{python}
+_FAKE_CLI_AGENT = """#!{python}
 import json, sys
 lines = [
     {{"type": "system", "subtype": "init", "model": "claude-opus-4-8"}},
@@ -673,7 +835,7 @@ lines = [
 ]
 for o in lines:
     sys.stdout.write(json.dumps(o) + "\\n")
-'''
+"""
 
 
 def _make_fake_cli_agent(tmp_path) -> str:
@@ -697,19 +859,27 @@ async def test_runner_demuxes_claude_side_subagents(tmp_path):
 
     runner = ClaudeCliRunner(on_event, None, on_model)
     result = await runner.run(
-        binary=binary, prompt="t", system_prompt="s", cwd=str(tmp_path),
-        allow_gated=False, allowed_tools=[], model=None, stream_id="parent",
+        binary=binary,
+        prompt="t",
+        system_prompt="s",
+        cwd=str(tmp_path),
+        allow_gated=False,
+        allowed_tools=[],
+        model=None,
+        stream_id="parent",
     )
     # Final report is the LAST result event's text; usage sums both segments
     # and keeps the last (cumulative) cost.
     assert result.output == "Four."
     assert result.usage.output_tokens == 1083 + 48
     from marim_harness.usage import COST_DETAIL_KEY
+
     assert result.usage.details[COST_DETAIL_KEY] == 50_000  # $0.05 in micro-USD
 
     # The spawn surfaced on the PARENT stream as a spawn_agent call…
     spawn_calls = [
-        (sid, ev) for sid, ev, _ in events
+        (sid, ev)
+        for sid, ev, _ in events
         if isinstance(ev, FunctionToolCallEvent) and ev.part.tool_name == "spawn_agent"
     ]
     assert spawn_calls and spawn_calls[0][0] == "parent"
@@ -720,8 +890,10 @@ async def test_runner_demuxes_claude_side_subagents(tmp_path):
     assert any(u is not None and u.output_tokens == 5 for _, _, u in child_events)
     # …and the notification settled the card with the summary.
     finishes = [
-        ev for sid, ev, _ in events
-        if sid == "parent" and isinstance(ev, FunctionToolResultEvent)
+        ev
+        for sid, ev, _ in events
+        if sid == "parent"
+        and isinstance(ev, FunctionToolResultEvent)
         and ev.part.tool_name == "spawn_agent"
     ]
     assert finishes and finishes[0].part.content == "4"
@@ -733,8 +905,12 @@ async def test_runner_demuxes_claude_side_subagents(tmp_path):
     # Parent transcript pairs the synthesized spawn call with its return;
     # the child transcript is captured for sidecar persistence.
     parent_parts = [p for m in result.transcript for p in m.parts]
-    assert any(getattr(p, "tool_name", "") == "spawn_agent"
-               and isinstance(p, ToolCallPart) for p in parent_parts)
-    assert any(getattr(p, "tool_name", "") == "spawn_agent"
-               and isinstance(p, ToolReturnPart) for p in parent_parts)
+    assert any(
+        getattr(p, "tool_name", "") == "spawn_agent" and isinstance(p, ToolCallPart)
+        for p in parent_parts
+    )
+    assert any(
+        getattr(p, "tool_name", "") == "spawn_agent" and isinstance(p, ToolReturnPart)
+        for p in parent_parts
+    )
     assert "tsub" in result.child_transcripts

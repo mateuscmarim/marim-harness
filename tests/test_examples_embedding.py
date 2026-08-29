@@ -56,9 +56,7 @@ async def test_gated_record_decision_writes_the_log(tmp_path: Path):
     reply = await assistant.run_agent_turn(
         "record a decision",
         tmp_path,
-        model=_scripted(
-            ("record_decision", {"title": "Use SQLite", "rationale": "Zero-ops."})
-        ),
+        model=_scripted(("record_decision", {"title": "Use SQLite", "rationale": "Zero-ops."})),
     )
     assert reply == "done"
     # Mode.auto approves the gated tool, so the decision reaches disk.

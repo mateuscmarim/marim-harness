@@ -82,9 +82,7 @@ def test_global_instructions_path_is_under_config_dir(
     assert global_instructions_path() == tmp_path / "marim" / "AGENTS.md"
 
 
-def test_load_global_instructions_reads_config_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
+def test_load_global_instructions_reads_config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     cfg = tmp_path / "marim"
     cfg.mkdir(parents=True)
@@ -202,9 +200,7 @@ def test_memory_index_block_cache_invalidates_on_edit(
     assert "fresh, different entry" in _memory_index_block(ctx)
 
 
-def test_memory_index_block_honors_memory_root(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
+def test_memory_index_block_honors_memory_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """When workspace.memory_root is set, the index block must reflect entries
     written under memory_root/{global,project} (what remember/recall actually
     read via resolve_scope), not the default XDG/.marim/memory locations —

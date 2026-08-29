@@ -102,13 +102,16 @@ def test_aggregate_empty_is_blank_cost():
 
 def test_tree_order_nests_children_after_parent_depth_first():
     a = FakeNode("a")
-    b = FakeNode("b", parent_id="a")       # child of a
-    c = FakeNode("c", parent_id="b")       # grandchild
-    d = FakeNode("d")                      # second root
+    b = FakeNode("b", parent_id="a")  # child of a
+    c = FakeNode("c", parent_id="b")  # grandchild
+    d = FakeNode("d")  # second root
     # Insertion order interleaves roots and descendants:
     rows = tree_order([a, d, b, c])
     assert [(r.agent.stream_id, r.depth) for r in rows] == [
-        ("a", 0), ("b", 1), ("c", 2), ("d", 0),
+        ("a", 0),
+        ("b", 1),
+        ("c", 2),
+        ("d", 0),
     ]
     # is_last is computed across roots too: `a` has a following root `d`, `d` doesn't.
     by_id = {r.agent.stream_id: r for r in rows}
@@ -124,7 +127,7 @@ def test_tree_order_marks_last_sibling():
     by_id = {r.agent.stream_id: r for r in rows}
     assert by_id["b"].is_last is False
     assert by_id["c"].is_last is True
-    assert by_id["a"].is_last is True      # only root
+    assert by_id["a"].is_last is True  # only root
 
 
 def test_tree_order_orphan_parent_becomes_root():
@@ -160,8 +163,7 @@ def test_row_cells_default_prefix_unchanged():
 def test_row_cells_prefix_precedes_detached_tag():
     # A nested-and-detached agent (unusual, but the ordering must be defined): the
     # tree prefix wraps the "bg · " tag, so the row still reads as nested.
-    n = FakeNode("b", parent_id="a", agent_type="explore", _title="probe",
-                 detached=True)
+    n = FakeNode("b", parent_id="a", agent_type="explore", _title="probe", detached=True)
     assert row_cells(n, prefix="└─ ")[1] == "└─ bg · explore — probe"
 
 

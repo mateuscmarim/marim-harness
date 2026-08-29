@@ -13,6 +13,7 @@ from tests.conftest import _last_instructions, _make_deps, _make_harness
 
 def _spawn_once_model() -> FunctionModel:
     """Main agent: emit one spawn_agent (background omitted), then finish."""
+
     def fn(messages, info):
         # Discriminate by the sub-agent prompt's workspace line — a bare
         # "sub-agent" substring also matches the main agent's spawn index.
@@ -20,11 +21,15 @@ def _spawn_once_model() -> FunctionModel:
             return ModelResponse(parts=[TextPart(content="SUB")])
         for m in messages:
             for p in getattr(m, "parts", []):
-                if type(p).__name__ == "ToolReturnPart" and \
-                        getattr(p, "tool_name", "") == "spawn_agent":
+                if (
+                    type(p).__name__ == "ToolReturnPart"
+                    and getattr(p, "tool_name", "") == "spawn_agent"
+                ):
                     return ModelResponse(parts=[TextPart(content="done")])
-        return ModelResponse(parts=[ToolCallPart(
-            tool_name="spawn_agent", args={"type": "explore", "task": "look"})])
+        return ModelResponse(
+            parts=[ToolCallPart(tool_name="spawn_agent", args={"type": "explore", "task": "look"})]
+        )
+
     return FunctionModel(fn)
 
 
@@ -66,8 +71,16 @@ async def test_auto_detach_defaults_output_budget(tmp_path: Path):
     recorded: list = []
 
     async def _stub_background(
-        type: str, task: str, mcp_names, max_output_chars, model, isolation,
-        stream_id: str = "", caller_depth: int = 0, tier=None, thinking=None,
+        type: str,
+        task: str,
+        mcp_names,
+        max_output_chars,
+        model,
+        isolation,
+        stream_id: str = "",
+        caller_depth: int = 0,
+        tier=None,
+        thinking=None,
     ) -> str:
         recorded.append(max_output_chars)
         return "ok"
@@ -100,8 +113,16 @@ async def test_subagent_unset_spawn_runs_inline_not_detached(tmp_path: Path):
     calls = {"inline": False, "bg": False}
 
     async def fake_runner(
-        type, task, tool_call_id, mcp_names, max_output_chars=None, model=None,
-        isolation=None, caller_depth: int = 0, tier=None, output_schema=None,
+        type,
+        task,
+        tool_call_id,
+        mcp_names,
+        max_output_chars=None,
+        model=None,
+        isolation=None,
+        caller_depth: int = 0,
+        tier=None,
+        output_schema=None,
         thinking=None,
     ):
         calls["inline"] = True
@@ -130,19 +151,22 @@ async def test_subagent_unset_spawn_runs_inline_not_detached(tmp_path: Path):
 
 def _nested_spawn_model() -> FunctionModel:
     """One model serving three roles by inspecting its instructions:
-      - main (depth 0): spawn a `general` child INLINE (background=False), then finish
-      - general (depth 1): spawn an `explore` child with background UNSET, then
-        report what it returned
-      - explore (depth 2): the leaf — return a marker
+    - main (depth 0): spawn a `general` child INLINE (background=False), then finish
+    - general (depth 1): spawn an `explore` child with background UNSET, then
+      report what it returned
+    - explore (depth 2): the leaf — return a marker
     """
+
     def fn(messages, info):
         instr = _last_instructions(messages)
 
         def spawn_return(msgs):
             for m in msgs:
                 for p in getattr(m, "parts", []):
-                    if type(p).__name__ == "ToolReturnPart" and \
-                            getattr(p, "tool_name", "") == "spawn_agent":
+                    if (
+                        type(p).__name__ == "ToolReturnPart"
+                        and getattr(p, "tool_name", "") == "spawn_agent"
+                    ):
                         return str(p.content)
             return None
 
@@ -153,17 +177,24 @@ def _nested_spawn_model() -> FunctionModel:
             child = spawn_return(messages)
             if child is not None:
                 return ModelResponse(parts=[TextPart(content=f"CHILD: {child}")])
-            return ModelResponse(parts=[ToolCallPart(
-                tool_name="spawn_agent",
-                args={"type": "explore", "task": "read"})])  # background UNSET
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(tool_name="spawn_agent", args={"type": "explore", "task": "read"})
+                ]
+            )  # background UNSET
 
         # main agent (depth 0)
         if spawn_return(messages) is not None:
             return ModelResponse(parts=[TextPart(content="done")])
-        return ModelResponse(parts=[ToolCallPart(
-            tool_name="spawn_agent",
-            args={"type": "general", "task": "spawn an explore child",
-                  "background": False})])  # inline, so the depth-1 spawn is observable
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="spawn_agent",
+                    args={"type": "general", "task": "spawn an explore child", "background": False},
+                )
+            ]
+        )  # inline, so the depth-1 spawn is observable
+
     return FunctionModel(fn)
 
 
@@ -207,20 +238,31 @@ def test_spawn_agent_accepts_a_description_param():
 def _bg_described_spawn_model() -> FunctionModel:
     """Main agent: emit one explicit background spawn with a short description,
     then finish. The sub-agent itself returns immediately."""
+
     def fn(messages, info):
         if "You are operating inside the workspace at" in _last_instructions(messages):
             return ModelResponse(parts=[TextPart(content="SUB")])
         for m in messages:
             for p in getattr(m, "parts", []):
-                if type(p).__name__ == "ToolReturnPart" and \
-                        getattr(p, "tool_name", "") == "spawn_agent":
+                if (
+                    type(p).__name__ == "ToolReturnPart"
+                    and getattr(p, "tool_name", "") == "spawn_agent"
+                ):
                     return ModelResponse(parts=[TextPart(content="done")])
-        return ModelResponse(parts=[ToolCallPart(
-            tool_name="spawn_agent",
-            args={"type": "explore",
-                  "task": "You are doing a thorough review of the TUI.\n\n## Scope\n…",
-                  "description": "Review TUI subsystem",
-                  "background": True})])
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="spawn_agent",
+                    args={
+                        "type": "explore",
+                        "task": "You are doing a thorough review of the TUI.\n\n## Scope\n…",
+                        "description": "Review TUI subsystem",
+                        "background": True,
+                    },
+                )
+            ]
+        )
+
     return FunctionModel(fn)
 
 

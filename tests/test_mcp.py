@@ -311,9 +311,7 @@ def test_build_http_server_from_url():
 def test_build_sse_server_when_type_sse():
     from fastmcp.client.transports import SSETransport
 
-    servers, _ = build_mcp_servers(
-        {"events": {"url": "https://example/sse", "type": "sse"}}
-    )
+    servers, _ = build_mcp_servers({"events": {"url": "https://example/sse", "type": "sse"}})
     (server,) = servers
     assert isinstance(server.client.transport, SSETransport)
     assert server.id == "events"
@@ -339,9 +337,7 @@ def test_server_prompts_in_ask_predicate():
 
 
 def test_build_skips_malformed_spec():
-    servers, warnings = build_mcp_servers(
-        {"good": {"command": "ok"}, "bad": {"nonsense": True}}
-    )
+    servers, warnings = build_mcp_servers({"good": {"command": "ok"}, "bad": {"nonsense": True}})
     assert len(servers) == 1  # only the good one built
     assert servers[0].id == "good"
     assert any("bad" in w for w in warnings)  # the bad one is reported, not fatal
@@ -666,8 +662,7 @@ def test_bound_tool_result_offloads_large_string(tmp_path: Path):
     from marim_harness.mcp.config import _bound_tool_result
 
     big = "x" * 60_000
-    out = _bound_tool_result(big, label="files", name="read", args={"p": "x"},
-                             offload_dir=tmp_path)
+    out = _bound_tool_result(big, label="files", name="read", args={"p": "x"}, offload_dir=tmp_path)
     assert isinstance(out, str)
     assert "saved to" in out and "preview" in out  # handle + preview, not the body
     assert len(out) < len(big)
@@ -687,8 +682,9 @@ def test_bound_tool_result_offloads_large_structured(tmp_path: Path):
     from marim_harness.mcp.config import _bound_tool_result
 
     payload = {"rows": ["y" * 100 for _ in range(1000)]}  # well over the inline limit
-    out = _bound_tool_result(payload, label="db", name="query", args={"q": "x"},
-                             offload_dir=tmp_path)
+    out = _bound_tool_result(
+        payload, label="db", name="query", args={"q": "x"}, offload_dir=tmp_path
+    )
     assert isinstance(out, str) and "saved to" in out
 
 
@@ -696,8 +692,9 @@ def test_bound_tool_result_keeps_small_structured(tmp_path: Path):
     from marim_harness.mcp.config import _bound_tool_result
 
     payload = {"ok": True, "n": 3}
-    out = _bound_tool_result(payload, label="db", name="query", args={"q": "x"},
-                             offload_dir=tmp_path)
+    out = _bound_tool_result(
+        payload, label="db", name="query", args={"q": "x"}, offload_dir=tmp_path
+    )
     assert out is payload  # small structured content reaches the model intact
 
 
@@ -739,10 +736,12 @@ def test_bound_tool_result_distinct_args_dont_collide(tmp_path: Path):
 
     a = "A" * 60_000
     b = "B" * 60_000
-    out_a = _bound_tool_result(a, label="db", name="query",
-                               args={"sql": "select a"}, offload_dir=tmp_path)
-    out_b = _bound_tool_result(b, label="db", name="query",
-                               args={"sql": "select b"}, offload_dir=tmp_path)
+    out_a = _bound_tool_result(
+        a, label="db", name="query", args={"sql": "select a"}, offload_dir=tmp_path
+    )
+    out_b = _bound_tool_result(
+        b, label="db", name="query", args={"sql": "select b"}, offload_dir=tmp_path
+    )
     files = sorted(tmp_path.glob("mcp-*.txt"))
     assert len(files) == 2  # not clobbered into one
     bodies = {f.read_text() for f in files}

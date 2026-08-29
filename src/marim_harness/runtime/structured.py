@@ -25,7 +25,4 @@ def validate_dict_output(output: Any, schema: dict) -> list[str]:
         return [f"structured output is not a JSON object: {type(output).__name__}"]
     validator = validator_for(schema)(schema)
     errors = sorted(validator.iter_errors(output), key=lambda e: list(e.path))
-    return [
-        f"{'/'.join(str(p) for p in e.path) or '<root>'}: {e.message}"
-        for e in errors
-    ]
+    return [f"{'/'.join(str(p) for p in e.path) or '<root>'}: {e.message}" for e in errors]

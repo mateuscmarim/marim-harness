@@ -16,9 +16,7 @@ _POLL_WARN_HEADLESS = (
 )
 
 
-def _guarded_poll_response(
-    ctx: RunContext[Deps], key: str, body: str, *, any_running: bool
-) -> str:
+def _guarded_poll_response(ctx: RunContext[Deps], key: str, body: str, *, any_running: bool) -> str:
     """Apply the poll guard (spec 2026-07-02-job-poll-guard-design) to one
     read-only jobs response. Counts only while something still runs — reading
     settled results is never polling. Interactive sessions escalate: the 2nd
@@ -150,7 +148,7 @@ async def job(
     if action == "list":
         return _jobs_listing(ctx)
     if not id:
-        return f"job: action {action!r} needs an id (use action=\"list\" to find it)."
+        return f'job: action {action!r} needs an id (use action="list" to find it).'
     if action == "output":
         return _job_output_read(ctx, id)
     if action == "wait":

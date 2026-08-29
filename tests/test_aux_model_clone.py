@@ -43,8 +43,14 @@ def test_aux_model_for_passes_other_providers_through_unchanged():
 def _controller(tmp_path, **kw):
     deps = _make_deps(tmp_path)
     return SessionController(
-        None, None, deps, 100_000, 20,
-        summarizer=lambda h: "sum", titler=lambda h: "tit", **kw,
+        None,
+        None,
+        deps,
+        100_000,
+        20,
+        summarizer=lambda h: "sum",
+        titler=lambda h: "tit",
+        **kw,
     )
 
 
@@ -54,11 +60,13 @@ def test_update_model_builds_aux_agents_on_a_clone_for_claude_cli(tmp_path, monk
     ctrl = _controller(tmp_path)
     seen: dict = {}
     monkeypatch.setattr(
-        ctrl_mod, "make_summarizer",
+        ctrl_mod,
+        "make_summarizer",
         lambda m: seen.__setitem__("summarizer", m) or "sum",
     )
     monkeypatch.setattr(
-        ctrl_mod, "make_titler",
+        ctrl_mod,
+        "make_titler",
         lambda m: seen.__setitem__("titler", m) or "tit",
     )
 
@@ -78,11 +86,13 @@ def test_update_model_reuses_the_model_for_non_claude_cli(tmp_path, monkeypatch)
     ctrl = _controller(tmp_path)
     seen: dict = {}
     monkeypatch.setattr(
-        ctrl_mod, "make_summarizer",
+        ctrl_mod,
+        "make_summarizer",
         lambda m: seen.__setitem__("summarizer", m) or "sum",
     )
     monkeypatch.setattr(
-        ctrl_mod, "make_titler",
+        ctrl_mod,
+        "make_titler",
         lambda m: seen.__setitem__("titler", m) or "tit",
     )
 

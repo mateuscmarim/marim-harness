@@ -26,6 +26,7 @@ from tests.conftest import _make_deps
 # NotificationConfig / parse_events
 # ---------------------------------------------------------------------------
 
+
 def test_parse_events_empty_yields_defaults():
     assert parse_events("") == set(DEFAULT_EVENTS)
     assert parse_events("   ") == set(DEFAULT_EVENTS)
@@ -53,6 +54,7 @@ def test_notification_config_disabled_factory():
 # ---------------------------------------------------------------------------
 # Notifier
 # ---------------------------------------------------------------------------
+
 
 def test_notifier_noop_when_disabled():
     n = Notifier(NotificationConfig.disabled())
@@ -156,11 +158,14 @@ def test_coalescing_disabled_by_default():
 # Platform backends (mocked)
 # ---------------------------------------------------------------------------
 
+
 def test_notify_send_linux_calls_notify_send():
     n = Notifier(NotificationConfig(enabled=True, events={"turn_complete"}))
     n._platform = "linux"
-    with patch("marim_harness.notifications.shutil.which", return_value="/usr/bin/notify-send"), \
-         patch("marim_harness.notifications.subprocess.run") as mock_run:
+    with (
+        patch("marim_harness.notifications.shutil.which", return_value="/usr/bin/notify-send"),
+        patch("marim_harness.notifications.subprocess.run") as mock_run,
+    ):
         n.send("Title", "Body", EVENT_TURN_COMPLETE)
         mock_run.assert_called_once()
         args = mock_run.call_args[0][0]
@@ -178,8 +183,10 @@ def test_notify_send_linux_missing_binary_is_silent():
 def test_notify_send_macos_calls_osascript():
     n = Notifier(NotificationConfig(enabled=True, events={"turn_complete"}))
     n._platform = "darwin"
-    with patch("marim_harness.notifications.shutil.which", return_value="/usr/bin/osascript"), \
-         patch("marim_harness.notifications.subprocess.run") as mock_run:
+    with (
+        patch("marim_harness.notifications.shutil.which", return_value="/usr/bin/osascript"),
+        patch("marim_harness.notifications.subprocess.run") as mock_run,
+    ):
         n.send("Title", "Body", EVENT_TURN_COMPLETE)
         mock_run.assert_called_once()
         # Script is passed on stdin, not as a CLI argument.
@@ -194,8 +201,10 @@ def test_notify_send_linux_uses_dashdash_separator():
     as a notify-send option: the ``--`` separator ends option parsing."""
     n = Notifier(NotificationConfig(enabled=True, events={"turn_complete"}))
     n._platform = "linux"
-    with patch("marim_harness.notifications.shutil.which", return_value="/usr/bin/notify-send"), \
-         patch("marim_harness.notifications.subprocess.run") as mock_run:
+    with (
+        patch("marim_harness.notifications.shutil.which", return_value="/usr/bin/notify-send"),
+        patch("marim_harness.notifications.subprocess.run") as mock_run,
+    ):
         n.send("--attacker-flag", "body", EVENT_TURN_COMPLETE)
         argv = mock_run.call_args[0][0]
         # The title/body sit AFTER a `--` terminator, positionally.
@@ -229,15 +238,16 @@ def test_osascript_body_cannot_break_out_of_string():
     n._platform = "darwin"
     # The classic break-out: close the string, then inject `do shell script`.
     body = 'pwned\\" & (do shell script "touch /tmp/pwned") & "'
-    with patch("marim_harness.notifications.shutil.which", return_value="/usr/bin/osascript"), \
-         patch("marim_harness.notifications.subprocess.run") as mock_run:
+    with (
+        patch("marim_harness.notifications.shutil.which", return_value="/usr/bin/osascript"),
+        patch("marim_harness.notifications.subprocess.run") as mock_run,
+    ):
         n.send("marim", body, EVENT_TURN_COMPLETE)
-        script = (mock_run.call_args.kwargs.get("input")
-                  or mock_run.call_args[1]["input"]).decode()
+        script = (mock_run.call_args.kwargs.get("input") or mock_run.call_args[1]["input"]).decode()
     # The whole body stays a single, properly-terminated string literal: after the
     # `display notification "` opener, its escaped payload has no bare quote.
     opener = 'display notification "'
-    tail = script[len(opener):]
+    tail = script[len(opener) :]
     body_segment = tail[: tail.index('" with title "marim"')]
     assert not _has_bare_quote(body_segment)
     # And the escaped payload preserves the (now-inert) injection text as data.
@@ -250,8 +260,10 @@ def test_notify_send_body_escapes_pango_markup():
     text must never escape its data slot."""
     n = Notifier(NotificationConfig(enabled=True, events={"turn_complete"}))
     n._platform = "linux"
-    with patch("marim_harness.notifications.shutil.which", return_value="/usr/bin/notify-send"), \
-         patch("marim_harness.notifications.subprocess.run") as mock_run:
+    with (
+        patch("marim_harness.notifications.shutil.which", return_value="/usr/bin/notify-send"),
+        patch("marim_harness.notifications.subprocess.run") as mock_run,
+    ):
         n.send("Title", "a < b & <b>bold</b>", EVENT_TURN_COMPLETE)
         argv = mock_run.call_args[0][0]
         body = argv[-1]
@@ -263,8 +275,10 @@ def test_powershell_missing_binary_is_silent():
     missing powershell is 'nothing to run', not a FileNotFoundError."""
     n = Notifier(NotificationConfig(enabled=True, events={"turn_complete"}))
     n._platform = "win32"
-    with patch("marim_harness.notifications.shutil.which", return_value=None), \
-         patch("marim_harness.notifications.subprocess.run") as mock_run:
+    with (
+        patch("marim_harness.notifications.shutil.which", return_value=None),
+        patch("marim_harness.notifications.subprocess.run") as mock_run,
+    ):
         n.send("Title", "Body", EVENT_TURN_COMPLETE)  # must not raise
     mock_run.assert_not_called()  # guarded before any spawn attempt
 
@@ -272,8 +286,10 @@ def test_powershell_missing_binary_is_silent():
 def test_powershell_present_builds_command():
     n = Notifier(NotificationConfig(enabled=True, events={"turn_complete"}))
     n._platform = "win32"
-    with patch("marim_harness.notifications.shutil.which", return_value="C:/powershell.exe"), \
-         patch("marim_harness.notifications.subprocess.run") as mock_run:
+    with (
+        patch("marim_harness.notifications.shutil.which", return_value="C:/powershell.exe"),
+        patch("marim_harness.notifications.subprocess.run") as mock_run,
+    ):
         n.send("Title", "Body", EVENT_TURN_COMPLETE)
         mock_run.assert_called_once()
         assert mock_run.call_args[0][0][0] == "powershell"
@@ -300,6 +316,7 @@ def test_unknown_platform_does_not_stamp_coalesce_timestamp():
 # ---------------------------------------------------------------------------
 # Config integration
 # ---------------------------------------------------------------------------
+
 
 def test_load_config_notifications_default_on(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
@@ -336,6 +353,7 @@ def test_load_config_notifications_enabled(monkeypatch):
 # Deps wiring
 # ---------------------------------------------------------------------------
 
+
 def test_deps_notifier_defaults_to_none(tmp_path: Path):
     d = _make_deps(tmp_path, mode=Mode.ask)
     assert d.ui.notifier is None
@@ -352,13 +370,16 @@ def test_deps_notifier_can_be_set(tmp_path: Path):
 # Headless _preview helper
 # ---------------------------------------------------------------------------
 
+
 def test_preview_short_text_unchanged():
     from marim_harness.interfaces.cli.headless import _preview
+
     assert _preview("hello world") == "hello world"
 
 
 def test_preview_long_text_truncated():
     from marim_harness.interfaces.cli.headless import _preview
+
     text = "a" * 100
     result = _preview(text)
     assert len(result) == 80
@@ -367,11 +388,13 @@ def test_preview_long_text_truncated():
 
 def test_preview_collapses_whitespace():
     from marim_harness.interfaces.cli.headless import _preview
+
     assert _preview("  hello  \n  world  ") == "hello world"
 
 
 def test_preview_empty_returns_fallback():
     from marim_harness.interfaces.cli.headless import _preview
+
     assert _preview("") == "(empty response)"
     assert _preview("   ") == "(empty response)"
     assert _preview(None) == "(empty response)"

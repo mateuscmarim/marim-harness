@@ -102,8 +102,11 @@ async def test_subagent_request_limit_bounds_runaway(tmp_path: Path):
 
     deps = _make_deps(tmp_path)
     h = Harness(
-        model=FunctionModel(fn), provider=BuiltinToolProvider(), deps=deps,
-        instructions="x", config=HarnessConfig(subagent_request_limit=2),
+        model=FunctionModel(fn),
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="x",
+        config=HarnessConfig(subagent_request_limit=2),
     )
     out = await h.subagents.run("explore", "loop forever", "sid")
     assert isinstance(out, str)

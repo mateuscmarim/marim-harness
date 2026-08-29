@@ -119,4 +119,3 @@ class CommandAutocomplete(Static):
             name = self._options[idx][0]
             self.visible = False
             self.post_message(self.CommandSelected(name))
-

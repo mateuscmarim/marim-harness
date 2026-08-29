@@ -161,7 +161,7 @@ def test_persist_elided_sanitizes_hint(tmp_path):
 
 def test_persist_elided_failure_returns_none(tmp_path):
     blocker = tmp_path / "elided"
-    blocker.write_text("not a directory")   # occupies the dir name with a file
+    blocker.write_text("not a directory")  # occupies the dir name with a file
     assert persist_elided(tmp_path, "x", "run_bash") is None
 
 

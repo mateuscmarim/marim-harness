@@ -53,9 +53,7 @@ def test_management_tools_on_main_agent(tmp_path):
 
 def test_management_tools_absent_on_subagent(tmp_path):
     agent = Agent(TestModel(), deps_type=Deps)
-    BuiltinToolProvider().register_subagent(
-        agent, _MANAGEMENT_TOOLS | {"read_file", "bash"}
-    )
+    BuiltinToolProvider().register_subagent(agent, _MANAGEMENT_TOOLS | {"read_file", "bash"})
     names = _tool_names(agent, _make_deps(tmp_path, mode=Mode.ask))
     assert names == {"read_file", "bash"}
 
@@ -96,13 +94,24 @@ async def test_bash_foreground_does_not_register_job(tmp_path):
 
 @pytest.mark.anyio
 async def test_spawn_agent_background_registers_job(tmp_path):
-    async def fake_bg(type: str, task: str, mcp_names=None, max_output_chars=None,
-                      model=None, isolation=None, stream_id: str = "",
-                      caller_depth: int = 0, tier=None, thinking=None) -> str:
+    async def fake_bg(
+        type: str,
+        task: str,
+        mcp_names=None,
+        max_output_chars=None,
+        model=None,
+        isolation=None,
+        stream_id: str = "",
+        caller_depth: int = 0,
+        tier=None,
+        thinking=None,
+    ) -> str:
         return f"report for {type}"
 
-    deps = Deps(workspace=WorkspaceConfig(root=tmp_path),
-                services=HarnessServices(run_background_agent=fake_bg))
+    deps = Deps(
+        workspace=WorkspaceConfig(root=tmp_path),
+        services=HarnessServices(run_background_agent=fake_bg),
+    )
     agent = _main_agent()
     model, captured = _call_once(
         "spawn_agent", {"type": "explore", "task": "look around", "background": True}

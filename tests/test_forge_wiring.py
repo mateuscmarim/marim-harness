@@ -5,11 +5,16 @@ from marim_harness.tools.forge_tools import build_forge_toolset
 
 
 class _StubBackend:
-    async def list_prs(self, state, limit): return []
-    async def view_pr(self, number, branch): return None
+    async def list_prs(self, state, limit):
+        return []
+
+    async def view_pr(self, number, branch):
+        return None
+
     async def ci_status(self, branch): ...
     async def create_pr(self, title, body, base, draft, head): ...
-    async def checkout_pr(self, number, create_branch): return ""
+    async def checkout_pr(self, number, create_branch):
+        return ""
 
 
 def test_marim_forge_env_default_on(monkeypatch):

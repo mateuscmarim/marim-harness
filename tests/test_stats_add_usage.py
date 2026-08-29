@@ -21,8 +21,11 @@ def _session(tmp_path: Path, rec=None) -> SessionController:
     # Deps only needs WorkspaceConfig(root=...); other fields default.
     deps = Deps(workspace=WorkspaceConfig(root=tmp_path))
     return SessionController(
-        store=None, manager=None, deps=deps,
-        max_context_tokens=100_000, keep_last_messages=10,
+        store=None,
+        manager=None,
+        deps=deps,
+        max_context_tokens=100_000,
+        keep_last_messages=10,
         stats_recorder=rec,
     )
 

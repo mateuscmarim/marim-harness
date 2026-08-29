@@ -63,6 +63,7 @@ async def test_reports_wait_spent_opening_the_stream():
     assert len(reported) == 1
     assert reported[0] >= 0.05
 
+
 async def test_aborted_consumer_still_reports_after_first_event():
     """A run cancelled mid-stream still stared at a first token; the report
     fires from the context teardown, not from stream completion."""

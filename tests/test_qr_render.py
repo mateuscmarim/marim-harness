@@ -54,7 +54,7 @@ def test_default_packing_is_three_module_rows_by_two_columns():
     #  dark  dark
     matrix = [(1, 0), (0, 1), (1, 1)]
     line = render_matrix(matrix).splitlines()[0]
-    cells = line[len(BLACK_ON_WHITE):-len(RESET)]
+    cells = line[len(BLACK_ON_WHITE) : -len(RESET)]
     assert len(cells) == 1
     assert unicodedata.name(cells) == "BLOCK SEXTANT-1456"
 
@@ -64,7 +64,7 @@ def test_default_packing_uses_the_block_elements_unicode_left_out():
     U+1FB00-block arithmetic would land on the wrong glyph."""
     columns = [(0, 0), (1, 0), (0, 1), (1, 1)]
     matrix = [tuple(bit for column in columns for bit in column)] * 3
-    cells = render_matrix(matrix).splitlines()[0][len(BLACK_ON_WHITE):-len(RESET)]
+    cells = render_matrix(matrix).splitlines()[0][len(BLACK_ON_WHITE) : -len(RESET)]
     assert cells == " ▌▐█"
 
 
@@ -72,9 +72,9 @@ def test_default_packing_pads_partial_cells_with_light_modules():
     """An odd column count and a row count off a multiple of three both pad with
     light — which widens the quiet zone rather than eating into it."""
     matrix = [(1, 1, 1), (1, 1, 1)]
-    cells = render_matrix(matrix).splitlines()[0][len(BLACK_ON_WHITE):-len(RESET)]
+    cells = render_matrix(matrix).splitlines()[0][len(BLACK_ON_WHITE) : -len(RESET)]
     assert unicodedata.name(cells[0]) == "BLOCK SEXTANT-1234"  # bottom row light
-    assert unicodedata.name(cells[1]) == "BLOCK SEXTANT-13"    # right column light too
+    assert unicodedata.name(cells[1]) == "BLOCK SEXTANT-13"  # right column light too
 
 
 def test_every_default_line_forces_its_own_colors():
@@ -104,8 +104,10 @@ def test_the_default_packing_fits_a_pairing_payload_on_a_short_terminal():
     """The point of the sextants. A realistic payload — LAN address, a 43-char
     token, a hostname — is 18 rows of code and 24 lines of block, so it clears a
     25-line terminal where the half-block form needs 33 and doesn't."""
-    uri = ("marim://pair?v=1&url=http%3A%2F%2F192.168.0.3%3A8642"
-           "&token=" + "a" * 43 + "&name=workstation")
+    uri = (
+        "marim://pair?v=1&url=http%3A%2F%2F192.168.0.3%3A8642"
+        "&token=" + "a" * 43 + "&name=workstation"
+    )
     matrix = encode(uri)
     assert rendered_rows(matrix) == 18
     assert height_note(rendered=rendered_rows(matrix), terminal_lines=25) is None

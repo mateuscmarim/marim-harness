@@ -39,8 +39,9 @@ def _manager(tmp_path: Path) -> SessionManager:
     return SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
 
 
-def _write_raw(mgr: SessionManager, session_id: str, *, name=None, updated="",
-               messages=None, tokens=None) -> None:
+def _write_raw(
+    mgr: SessionManager, session_id: str, *, name=None, updated="", messages=None, tokens=None
+) -> None:
     mgr.dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "id": session_id,
@@ -129,13 +130,20 @@ def test_image_bytes_survive_save_and_load(tmp_path: Path, monkeypatch):
     data on every resumed turn."""
     monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path / "imgcache"))
     # Bytes chosen so standard base64 yields '+'/'/' (URL-safe yields '-'/'_').
-    raw = bytes([0xff, 0xff, 0xff, 0xfb, 0xef, 0xbe]) * 4
+    raw = bytes([0xFF, 0xFF, 0xFF, 0xFB, 0xEF, 0xBE]) * 4
     mgr = _manager(tmp_path)
     store = mgr.create("Has Image")
     history = [
-        ModelRequest(parts=[UserPromptPart(content=[
-            "look at this", BinaryContent(data=raw, media_type="image/png"),
-        ])])
+        ModelRequest(
+            parts=[
+                UserPromptPart(
+                    content=[
+                        "look at this",
+                        BinaryContent(data=raw, media_type="image/png"),
+                    ]
+                )
+            ]
+        )
     ]
     store.save(history, RunUsage())
 
@@ -350,8 +358,12 @@ def test_list_sorted_by_recency(tmp_path: Path):
 def test_list_reports_counts_and_tokens(tmp_path: Path):
     mgr = _manager(tmp_path)
     _write_raw(
-        mgr, "s1", name="Session One", updated="2026-01-01T00:00:00+00:00",
-        messages=[{}, {}, {}], tokens={"input": 30, "output": 70},
+        mgr,
+        "s1",
+        name="Session One",
+        updated="2026-01-01T00:00:00+00:00",
+        messages=[{}, {}, {}],
+        tokens={"input": 30, "output": 70},
     )
     info = mgr.list()[0]
     assert info.name == "Session One"
@@ -477,7 +489,9 @@ def test_mode_persists_and_recovers(tmp_path: Path):
 def test_latest_model_returns_most_recent(tmp_path: Path):
     mgr = _manager(tmp_path)
     _write_raw(
-        mgr, "old", updated="2026-01-01T00:00:00+00:00",
+        mgr,
+        "old",
+        updated="2026-01-01T00:00:00+00:00",
         messages=[{}, {}],
     )
     # Write a session with a model set.
@@ -587,26 +601,28 @@ def test_resume_degrades_dangling_elided_pointers(tmp_path: Path):
     gone = pad / "002-run_bash.txt"  # never written — the scratchpad aged out
     history = [
         ModelRequest(parts=[UserPromptPart(content="go")]),
-        ModelResponse(parts=[
-            ToolCallPart(tool_name="read_file", args={"path": "a"}, tool_call_id="t1"),
-            ToolCallPart(tool_name="run_bash", args={"cmd": "ls"}, tool_call_id="t2"),
-        ]),
-        ModelRequest(parts=[
-            ToolReturnPart(
-                tool_name="read_file", content=_elided_pointer(str(live)), tool_call_id="t1"
-            ),
-            ToolReturnPart(
-                tool_name="run_bash", content=_elided_pointer(str(gone)), tool_call_id="t2"
-            ),
-        ]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(tool_name="read_file", args={"path": "a"}, tool_call_id="t1"),
+                ToolCallPart(tool_name="run_bash", args={"cmd": "ls"}, tool_call_id="t2"),
+            ]
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="read_file", content=_elided_pointer(str(live)), tool_call_id="t1"
+                ),
+                ToolReturnPart(
+                    tool_name="run_bash", content=_elided_pointer(str(gone)), tool_call_id="t2"
+                ),
+            ]
+        ),
         ModelResponse(parts=[TextPart(content="done")]),
     ]
     store.save(history, RunUsage())
 
     deps = _make_deps(tmp_path, mode=Mode.ask)
-    ctrl = SessionController(
-        store, mgr, deps, max_context_tokens=100_000, keep_last_messages=20
-    )
+    ctrl = SessionController(store, mgr, deps, max_context_tokens=100_000, keep_last_messages=20)
     ctrl.resume()
 
     returns = ctrl.history[2].parts
@@ -631,9 +647,7 @@ async def test_maybe_compact_gates_on_measured_last_request_tokens(tmp_path):
     deps = _make_deps(tmp_path, mode=Mode.ask)
 
     def _fresh_ctrl():
-        c = SessionController(
-            None, None, deps, max_context_tokens=1000, keep_last_messages=1
-        )
+        c = SessionController(None, None, deps, max_context_tokens=1000, keep_last_messages=1)
         c.history = [
             ModelRequest(parts=[UserPromptPart(content="a" * 400)]),
             ModelRequest(parts=[UserPromptPart(content="b" * 400)]),
@@ -643,11 +657,11 @@ async def test_maybe_compact_gates_on_measured_last_request_tokens(tmp_path):
 
     baseline = _fresh_ctrl()
     assert estimate_tokens(baseline.history) <= 1000  # estimate says it fits
-    assert await baseline.maybe_compact() is False     # so with no measurement: no-op
+    assert await baseline.maybe_compact() is False  # so with no measurement: no-op
 
     measured = _fresh_ctrl()
     measured.last_input_tokens = 5000  # provider reported the real context is huge
-    assert await measured.maybe_compact() is True      # gated on the real count
+    assert await measured.maybe_compact() is True  # gated on the real count
 
 
 @pytest.mark.anyio
@@ -660,9 +674,7 @@ async def test_maybe_compact_resets_last_input_tokens_after_firing(tmp_path):
     near the budget (detail loss, a busted prompt cache, an invalidated checkpoint —
     all for nothing)."""
     deps = _make_deps(tmp_path, mode=Mode.ask)
-    ctrl = SessionController(
-        None, None, deps, max_context_tokens=1000, keep_last_messages=1
-    )
+    ctrl = SessionController(None, None, deps, max_context_tokens=1000, keep_last_messages=1)
     ctrl.history = [
         ModelRequest(parts=[UserPromptPart(content="a" * 400)]),
         ModelRequest(parts=[UserPromptPart(content="b" * 400)]),
@@ -673,8 +685,8 @@ async def test_maybe_compact_resets_last_input_tokens_after_firing(tmp_path):
     # this history comfortably fits under the budget.
     ctrl.last_input_tokens = 5000
     assert await ctrl.maybe_compact() is True  # fires because of the measurement
-    assert ctrl.last_input_tokens is None      # stale measurement must not survive
-    assert len(ctrl.history) == 2              # compact_history(:1] + [2:]) fired
+    assert ctrl.last_input_tokens is None  # stale measurement must not survive
+    assert len(ctrl.history) == 2  # compact_history(:1] + [2:]) fired
 
     # Simulate turn N+1..N+5: ordinary small turns arrive, no new usage has been
     # reported yet (last_input_tokens stays None until the next real request).
@@ -755,7 +767,11 @@ async def test_pre_compact_fires_before_compaction_work(tmp_path):
 
     deps = _make_deps(tmp_path, mode=Mode.ask, hooks=_RecordingHooks())
     ctrl = SessionController(
-        None, None, deps, max_context_tokens=1, keep_last_messages=1,
+        None,
+        None,
+        deps,
+        max_context_tokens=1,
+        keep_last_messages=1,
         summarizer=_summarizer,
     )
     ctrl.history = [
@@ -820,9 +836,7 @@ async def test_forced_compaction_clears_indicator_even_without_shrink(tmp_path):
     # indicator must still be cleared: on_compact fires with before == after so
     # the UI just drops the notice instead of leaving a stuck spinner.
     deps = _make_deps(tmp_path, mode=Mode.ask)
-    ctrl = SessionController(
-        None, None, deps, max_context_tokens=100_000, keep_last_messages=20
-    )
+    ctrl = SessionController(None, None, deps, max_context_tokens=100_000, keep_last_messages=20)
     ctrl.history = [ModelRequest(parts=[UserPromptPart(content="small")])]
     events: list = []
     ctrl.on_compact_start = lambda: events.append("start")
@@ -880,7 +894,11 @@ async def test_compaction_masks_stale_observations_when_enabled(tmp_path):
 
     deps = _make_deps(tmp_path, mode=Mode.ask)
     ctrl = SessionController(
-        None, None, deps, max_context_tokens=1, keep_last_messages=20,
+        None,
+        None,
+        deps,
+        max_context_tokens=1,
+        keep_last_messages=20,
         mask_observations=True,
     )
 
@@ -888,20 +906,23 @@ async def test_compaction_masks_stale_observations_when_enabled(tmp_path):
         tid = f"t{n}"
         return [
             ModelRequest(parts=[UserPromptPart(content=f"prompt {n}")]),
-            ModelResponse(parts=[ToolCallPart(
-                tool_name="read_file", args={"p": n}, tool_call_id=tid)]),
-            ModelRequest(parts=[ToolReturnPart(
-                tool_name="read_file", content="DATA " + "z" * 500, tool_call_id=tid)]),
+            ModelResponse(
+                parts=[ToolCallPart(tool_name="read_file", args={"p": n}, tool_call_id=tid)]
+            ),
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name="read_file", content="DATA " + "z" * 500, tool_call_id=tid
+                    )
+                ]
+            ),
             ModelResponse(parts=[TextPart(content=f"answer {n}")]),
         ]
 
     ctrl.history = [m for n in range(8) for m in _turn(n)]
     await ctrl.maybe_compact()
 
-    returns = [
-        p.content for m in ctrl.history for p in m.parts
-        if isinstance(p, ToolReturnPart)
-    ]
+    returns = [p.content for m in ctrl.history for p in m.parts if isinstance(p, ToolReturnPart)]
     assert returns, "tail should still carry tool returns"
     assert MASKED_OBSERVATION in returns  # older observations elided
     assert any(c != MASKED_OBSERVATION for c in returns)  # recent ones kept
@@ -917,28 +938,37 @@ async def test_compaction_mask_keep_recent_threshold_threads_through(tmp_path):
 
     deps = _make_deps(tmp_path, mode=Mode.ask)
     ctrl = SessionController(
-        None, None, deps, max_context_tokens=1, keep_last_messages=20,
-        mask_observations=True, mask_keep_recent=1, mask_min_chars=50,
+        None,
+        None,
+        deps,
+        max_context_tokens=1,
+        keep_last_messages=20,
+        mask_observations=True,
+        mask_keep_recent=1,
+        mask_min_chars=50,
     )
 
     def _turn(n: int) -> list:
         tid = f"t{n}"
         return [
             ModelRequest(parts=[UserPromptPart(content=f"prompt {n}")]),
-            ModelResponse(parts=[ToolCallPart(
-                tool_name="read_file", args={"p": n}, tool_call_id=tid)]),
-            ModelRequest(parts=[ToolReturnPart(
-                tool_name="read_file", content="DATA " + "z" * 500, tool_call_id=tid)]),
+            ModelResponse(
+                parts=[ToolCallPart(tool_name="read_file", args={"p": n}, tool_call_id=tid)]
+            ),
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name="read_file", content="DATA " + "z" * 500, tool_call_id=tid
+                    )
+                ]
+            ),
             ModelResponse(parts=[TextPart(content=f"answer {n}")]),
         ]
 
     ctrl.history = [m for n in range(8) for m in _turn(n)]
     await ctrl.maybe_compact()
 
-    returns = [
-        p.content for m in ctrl.history for p in m.parts
-        if isinstance(p, ToolReturnPart)
-    ]
+    returns = [p.content for m in ctrl.history for p in m.parts if isinstance(p, ToolReturnPart)]
     kept = [c for c in returns if c != MASKED_OBSERVATION]
     assert len(kept) == 1  # keep_recent=1 honored
 
@@ -951,7 +981,11 @@ async def test_compaction_leaves_observations_intact_when_disabled(tmp_path):
 
     deps = _make_deps(tmp_path, mode=Mode.ask)
     ctrl = SessionController(
-        None, None, deps, max_context_tokens=1, keep_last_messages=20,
+        None,
+        None,
+        deps,
+        max_context_tokens=1,
+        keep_last_messages=20,
         mask_observations=False,
     )
 
@@ -959,20 +993,23 @@ async def test_compaction_leaves_observations_intact_when_disabled(tmp_path):
         tid = f"t{n}"
         return [
             ModelRequest(parts=[UserPromptPart(content=f"prompt {n}")]),
-            ModelResponse(parts=[ToolCallPart(
-                tool_name="read_file", args={"p": n}, tool_call_id=tid)]),
-            ModelRequest(parts=[ToolReturnPart(
-                tool_name="read_file", content="DATA " + "z" * 500, tool_call_id=tid)]),
+            ModelResponse(
+                parts=[ToolCallPart(tool_name="read_file", args={"p": n}, tool_call_id=tid)]
+            ),
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name="read_file", content="DATA " + "z" * 500, tool_call_id=tid
+                    )
+                ]
+            ),
             ModelResponse(parts=[TextPart(content=f"answer {n}")]),
         ]
 
     ctrl.history = [m for n in range(8) for m in _turn(n)]
     await ctrl.maybe_compact()
 
-    returns = [
-        p.content for m in ctrl.history for p in m.parts
-        if isinstance(p, ToolReturnPart)
-    ]
+    returns = [p.content for m in ctrl.history for p in m.parts if isinstance(p, ToolReturnPart)]
     assert returns
     assert MASKED_OBSERVATION not in returns  # default off: no masking
 
@@ -984,9 +1021,7 @@ async def test_compaction_persists_the_compacted_history(tmp_path):
     mgr = _manager(tmp_path)
     store = mgr.create("compact me")
     deps = _make_deps(tmp_path, mode=Mode.ask)
-    ctrl = SessionController(
-        store, mgr, deps, max_context_tokens=1, keep_last_messages=1
-    )
+    ctrl = SessionController(store, mgr, deps, max_context_tokens=1, keep_last_messages=1)
     ctrl.history = [
         ModelRequest(parts=[UserPromptPart(content="x" * 5000)]),
         ModelRequest(parts=[UserPromptPart(content="y" * 5000)]),
@@ -1006,9 +1041,7 @@ async def test_no_compaction_does_not_force_a_write(tmp_path):
     mgr = _manager(tmp_path)
     store = mgr.create("untouched")
     deps = _make_deps(tmp_path, mode=Mode.ask)
-    ctrl = SessionController(
-        store, mgr, deps, max_context_tokens=100_000, keep_last_messages=20
-    )
+    ctrl = SessionController(store, mgr, deps, max_context_tokens=100_000, keep_last_messages=20)
     ctrl.history = [ModelRequest(parts=[UserPromptPart(content="small")])]
     ctrl.persist()  # establish the on-disk baseline
     before = store.path.read_text()
@@ -1027,12 +1060,20 @@ def _bulky_tool_history(rounds: int = 8, payload: int = 6000) -> list:
     msgs = [ModelRequest(parts=[UserPromptPart(content="start")])]
     for i in range(rounds):
         msgs.append(ModelRequest(parts=[UserPromptPart(content=f"turn {i}")]))
-        msgs.append(ModelResponse(parts=[
-            ToolCallPart(tool_name="run_bash", args={"c": i}, tool_call_id=f"t{i}")
-        ]))
-        msgs.append(ModelRequest(parts=[
-            ToolReturnPart(tool_name="run_bash", content="X" * payload, tool_call_id=f"t{i}")
-        ]))
+        msgs.append(
+            ModelResponse(
+                parts=[ToolCallPart(tool_name="run_bash", args={"c": i}, tool_call_id=f"t{i}")]
+            )
+        )
+        msgs.append(
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name="run_bash", content="X" * payload, tool_call_id=f"t{i}"
+                    )
+                ]
+            )
+        )
     msgs.append(ModelRequest(parts=[UserPromptPart(content="latest")]))
     return msgs
 
@@ -1069,12 +1110,17 @@ async def test_stage1_masking_alone_skips_the_summarizer(tmp_path):
     # 8 x 6000-char returns ≈ 12k tokens; masking all but the 4 most recent
     # drops ≈ 6k, landing under the 8k threshold.
     ctrl = SessionController(
-        None, None, deps, max_context_tokens=8000, keep_last_messages=20,
-        summarizer=summarizer, mask_observations=True,
+        None,
+        None,
+        deps,
+        max_context_tokens=8000,
+        keep_last_messages=20,
+        summarizer=summarizer,
+        mask_observations=True,
     )
     ctrl.history = _bulky_tool_history()
     assert await ctrl.maybe_compact() is True
-    assert called == []                                    # stage 1 sufficed
+    assert called == []  # stage 1 sufficed
     assert estimate_tokens(ctrl.history) <= 8000
 
 
@@ -1082,28 +1128,36 @@ async def test_stage1_masking_alone_skips_the_summarizer(tmp_path):
 async def test_manual_bypasses_gate_and_resets_breaker(tmp_path):
     deps = _make_deps(tmp_path, mode=Mode.ask)
     ctrl = SessionController(
-        None, None, deps, max_context_tokens=10_000_000, keep_last_messages=1,
+        None,
+        None,
+        deps,
+        max_context_tokens=10_000_000,
+        keep_last_messages=1,
     )
     ctrl.history = _bulky_tool_history()
     ctrl.breaker.consecutive_rapid_refills = 99
-    assert await ctrl.maybe_compact(trigger="manual") is True   # under threshold, still compacts
-    assert ctrl.breaker.consecutive_rapid_refills == 0          # reset, then non-rapid note
+    assert await ctrl.maybe_compact(trigger="manual") is True  # under threshold, still compacts
+    assert ctrl.breaker.consecutive_rapid_refills == 0  # reset, then non-rapid note
 
 
 @pytest.mark.anyio
 async def test_open_breaker_skips_auto_but_not_manual(tmp_path):
     deps = _make_deps(tmp_path, mode=Mode.ask)
     ctrl = SessionController(
-        None, None, deps, max_context_tokens=10, keep_last_messages=1,
+        None,
+        None,
+        deps,
+        max_context_tokens=10,
+        keep_last_messages=1,
     )
     ctrl.history = _bulky_tool_history()
     notices: list[str] = []
     ctrl.on_notice = notices.append
     ctrl.breaker.consecutive_rapid_refills = ctrl.breaker.trip_after
     assert await ctrl.maybe_compact() is False
-    assert len(notices) == 1                               # notice shown once
+    assert len(notices) == 1  # notice shown once
     assert await ctrl.maybe_compact() is False
-    assert len(notices) == 1                               # ...and only once
+    assert len(notices) == 1  # ...and only once
     assert await ctrl.maybe_compact(trigger="manual") is True
 
 
@@ -1118,7 +1172,11 @@ def test_new_session_resets_breaker(tmp_path):
     store = mgr.create("Initial Session")
     deps = _make_deps(tmp_path, mode=Mode.ask)
     ctrl = SessionController(
-        store, mgr, deps, max_context_tokens=10, keep_last_messages=1,
+        store,
+        mgr,
+        deps,
+        max_context_tokens=10,
+        keep_last_messages=1,
     )
     # Set the breaker to an open state and mark the notice as shown
     ctrl.breaker.consecutive_rapid_refills = ctrl.breaker.trip_after
@@ -1139,7 +1197,11 @@ async def test_manual_block_verdict_aborts_with_notice(tmp_path):
     hooks = _FakeHooks(blocked=True, reason="snapshot first")
     deps = _make_deps(tmp_path, mode=Mode.ask, hooks=hooks)
     ctrl = SessionController(
-        None, None, deps, max_context_tokens=10, keep_last_messages=1,
+        None,
+        None,
+        deps,
+        max_context_tokens=10,
+        keep_last_messages=1,
     )
     ctrl.history = _bulky_tool_history()
     notices: list[str] = []
@@ -1155,10 +1217,14 @@ async def test_auto_ignores_block_verdict(tmp_path):
     hooks = _FakeHooks(blocked=True, reason="nope")
     deps = _make_deps(tmp_path, mode=Mode.ask, hooks=hooks)
     ctrl = SessionController(
-        None, None, deps, max_context_tokens=10, keep_last_messages=1,
+        None,
+        None,
+        deps,
+        max_context_tokens=10,
+        keep_last_messages=1,
     )
     ctrl.history = _bulky_tool_history()
-    assert await ctrl.maybe_compact() is True              # block logged, not honored
+    assert await ctrl.maybe_compact() is True  # block logged, not honored
 
 
 @pytest.mark.anyio
@@ -1175,7 +1241,7 @@ async def test_pipeline_order_and_post_compact_payload(tmp_path):
     pad = tmp_path / "pad"
     pad.mkdir()
     deps = _make_deps(tmp_path, mode=Mode.ask, hooks=hooks)
-    deps.get_scratchpad = lambda: pad   # if Deps is frozen, pass via _make_deps kwarg
+    deps.get_scratchpad = lambda: pad  # if Deps is frozen, pass via _make_deps kwarg
     # keep_last_messages=15 (not 1): large enough that the tail-cut boundary
     # falls inside the masked prefix, so a persisted pointer placeholder
     # survives into the retained tail alongside the synthetic summary — with
@@ -1183,8 +1249,13 @@ async def test_pipeline_order_and_post_compact_payload(tmp_path):
     # region (indices 1..24), leaving nothing for the pointer assertion below
     # to find even though masking/persisting still happened correctly.
     ctrl = SessionController(
-        None, None, deps, max_context_tokens=10, keep_last_messages=15,
-        summarizer=summarizer, mask_observations=True,
+        None,
+        None,
+        deps,
+        max_context_tokens=10,
+        keep_last_messages=15,
+        summarizer=summarizer,
+        mask_observations=True,
     )
     ctrl.history = _bulky_tool_history()
     assert await ctrl.maybe_compact() is True
@@ -1251,7 +1322,11 @@ async def test_update_model_rebuilds_summarizer_and_titler(tmp_path: Path):
 
     deps = _make_deps(tmp_path, mode=Mode.ask)
     ctrl = SessionController(
-        None, None, deps, 100_000, 20,
+        None,
+        None,
+        deps,
+        100_000,
+        20,
         summarizer=_stub_summarizer,
         titler=_stub_titler,
     )
@@ -1282,9 +1357,15 @@ def test_session_save_load_round_trips_image(tmp_path, monkeypatch):
     monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path / "imgs"))
     mgr = SessionManager(tmp_path / "ws", base_dir=tmp_path / "sessions")
     store = mgr.create("with-image")
-    history = [ModelRequest(parts=[UserPromptPart(
-        content=["see this", BinaryContent(data=b"\x89PNGz", media_type="image/png")]
-    )])]
+    history = [
+        ModelRequest(
+            parts=[
+                UserPromptPart(
+                    content=["see this", BinaryContent(data=b"\x89PNGz", media_type="image/png")]
+                )
+            ]
+        )
+    ]
     store.save(history, RunUsage())
     # session JSON must not carry the base64 payload inline
     assert "marim-image-cache://" in store.path.read_text()
@@ -1353,20 +1434,28 @@ def test_compact_threshold_reads_the_warm_cache(tmp_path):
 
 
 def test_session_store_round_trips_jobs_history(tmp_path):
-    store = SessionStore(path=tmp_path / "s.json", workspace_root=tmp_path,
-                         session_id="sid", name="s")
-    entry = {"id": "job-1", "kind": "agent", "label": "general: x",
-             "status": "done", "result_tail": "ok", "stream_id": "sg-1",
-             "finished_at": "2026-07-03T00:00:00+00:00"}
+    store = SessionStore(
+        path=tmp_path / "s.json", workspace_root=tmp_path, session_id="sid", name="s"
+    )
+    entry = {
+        "id": "job-1",
+        "kind": "agent",
+        "label": "general: x",
+        "status": "done",
+        "result_tail": "ok",
+        "stream_id": "sg-1",
+        "finished_at": "2026-07-03T00:00:00+00:00",
+    }
     store.save([], RunUsage(), jobs=[entry])
     *_, jobs = store.load()
     assert jobs == [entry]
 
 
 def test_session_store_without_jobs_key_loads_empty(tmp_path):
-    store = SessionStore(path=tmp_path / "s.json", workspace_root=tmp_path,
-                         session_id="sid", name="s")
-    store.save([], RunUsage())      # no jobs kwarg — old-style file
+    store = SessionStore(
+        path=tmp_path / "s.json", workspace_root=tmp_path, session_id="sid", name="s"
+    )
+    store.save([], RunUsage())  # no jobs kwarg — old-style file
     *_, jobs = store.load()
     assert jobs == []
 
@@ -1421,7 +1510,10 @@ def test_delete_removes_all_session_artifacts(tmp_path: Path, monkeypatch):
     assert not image_dir.exists()
     refs = subprocess.run(
         ["git", "for-each-ref", f"refs/marim/checkpoints/{sid}"],
-        cwd=workspace, capture_output=True, text=True, check=True,
+        cwd=workspace,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
     assert refs.strip() == "", "snapshot refs still pin the session's commits"
 
@@ -1443,29 +1535,30 @@ async def test_forced_compaction_falls_back_to_masking_single_huge_turn(tmp_path
 
     deps = _make_deps(tmp_path, mode=Mode.ask)
     ctrl = SessionController(
-        None, None, deps, max_context_tokens=100_000, keep_last_messages=20,
+        None,
+        None,
+        deps,
+        max_context_tokens=100_000,
+        keep_last_messages=20,
         mask_keep_recent=1,
     )
     ctrl.history = [
         ModelRequest(parts=[UserPromptPart(content="one giant turn")]),
-        ModelResponse(parts=[ToolCallPart(
-            tool_name="read_file", args={}, tool_call_id="t1")]),
-        ModelRequest(parts=[ToolReturnPart(
-            tool_name="read_file", content="A" * 100_000, tool_call_id="t1")]),
-        ModelResponse(parts=[ToolCallPart(
-            tool_name="read_file", args={}, tool_call_id="t2")]),
-        ModelRequest(parts=[ToolReturnPart(
-            tool_name="read_file", content="B" * 100_000, tool_call_id="t2")]),
+        ModelResponse(parts=[ToolCallPart(tool_name="read_file", args={}, tool_call_id="t1")]),
+        ModelRequest(
+            parts=[ToolReturnPart(tool_name="read_file", content="A" * 100_000, tool_call_id="t1")]
+        ),
+        ModelResponse(parts=[ToolCallPart(tool_name="read_file", args={}, tool_call_id="t2")]),
+        ModelRequest(
+            parts=[ToolReturnPart(tool_name="read_file", content="B" * 100_000, tool_call_id="t2")]
+        ),
         ModelResponse(parts=[TextPart(content="working")]),
     ]
 
     did = await ctrl.maybe_compact(force=True)
 
     assert did is True, "forced compaction had no lever for a single huge turn"
-    returns = [
-        p for m in ctrl.history for p in m.parts
-        if type(p).__name__ == "ToolReturnPart"
-    ]
+    returns = [p for m in ctrl.history for p in m.parts if type(p).__name__ == "ToolReturnPart"]
     assert returns[0].content == MASKED_OBSERVATION  # stale observation elided
     assert returns[-1].content != MASKED_OBSERVATION  # most recent kept intact
 
@@ -1539,9 +1632,7 @@ def test_reset_purges_subagent_image_and_scratchpad_sidecars(tmp_path, monkeypat
     stale cached images / scratchpad files linger under the still-live id."""
     monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path / "imgcache"))
     scratch_base = tmp_path / "scratch-base"
-    monkeypatch.setattr(
-        "marim_harness.workspace.scratchpad.scratchpad_base", lambda: scratch_base
-    )
+    monkeypatch.setattr("marim_harness.workspace.scratchpad.scratchpad_base", lambda: scratch_base)
     from marim_harness.session.transcripts import TranscriptStore
     from marim_harness.workspace.scratchpad import ensure_scratchpad
 
@@ -1553,7 +1644,9 @@ def test_reset_purges_subagent_image_and_scratchpad_sidecars(tmp_path, monkeypat
     ctrl = SessionController(store, mgr, deps, 100_000, 20)
 
     TranscriptStore(store.path, sid).write(
-        "call-1", _history(), cap=10_000,
+        "call-1",
+        _history(),
+        cap=10_000,
         meta={"stream_id": "call-1", "status": "running"},
     )
     subdir = mgr.dir / f"{sid}.subagents"
@@ -1565,7 +1658,7 @@ def test_reset_purges_subagent_image_and_scratchpad_sidecars(tmp_path, monkeypat
 
     ctrl.reset()
 
-    assert not subdir.exists()   # no phantom running-spawn card on resume
+    assert not subdir.exists()  # no phantom running-spawn card on resume
     assert not img.exists()
     assert not scratch.parent.exists()
 
@@ -1598,8 +1691,8 @@ async def test_restructuring_compaction_invalidates_before_persist(tmp_path):
 
     before = len(ctrl.history)
     assert await ctrl.maybe_compact() is True
-    assert len(ctrl.history) != before          # the history was restructured
-    assert order[0] == "invalidate"             # invalidate strictly precedes
+    assert len(ctrl.history) != before  # the history was restructured
+    assert order[0] == "invalidate"  # invalidate strictly precedes
     assert order.index("invalidate") < order.index("persist")
 
 
@@ -1615,31 +1708,35 @@ async def test_mask_only_compaction_does_not_invalidate(tmp_path):
     # entry gate trips, stage-1 masking gets under threshold, and stage-2
     # summarize (which WOULD restructure) is skipped.
     ctrl = SessionController(
-        store, mgr, deps, max_context_tokens=200, keep_last_messages=20,
-        mask_observations=True, mask_keep_recent=0, mask_min_chars=1,
+        store,
+        mgr,
+        deps,
+        max_context_tokens=200,
+        keep_last_messages=20,
+        mask_observations=True,
+        mask_keep_recent=0,
+        mask_min_chars=1,
     )
     ctrl.history = [
         ModelRequest(parts=[UserPromptPart(content="do a thing")]),
         ModelResponse(parts=[ToolCallPart(tool_name="read_file", args={}, tool_call_id="c1")]),
-        ModelRequest(parts=[ToolReturnPart(
-            tool_name="read_file", content="X" * 4000, tool_call_id="c1")]),
+        ModelRequest(
+            parts=[ToolReturnPart(tool_name="read_file", content="X" * 4000, tool_call_id="c1")]
+        ),
     ]
     fired: list[str] = []
     ctrl.on_history_restructured = lambda: fired.append("x")
     before = len(ctrl.history)
     assert await ctrl.maybe_compact() is True
     assert len(ctrl.history) == before  # masked in place, count unchanged
-    assert fired == []                  # so no checkpoint invalidation
+    assert fired == []  # so no checkpoint invalidation
 
 
 def _sessions_for_filter():
     return [
+        SessionInfo(id="a", name="Fix auth bug", updated="2026-07-01", message_count=1, tokens=0),
         SessionInfo(
-            id="a", name="Fix auth bug", updated="2026-07-01", message_count=1, tokens=0
-        ),
-        SessionInfo(
-            id="b", name="Refactor session store", updated="2026-07-02", message_count=1,
-            tokens=0
+            id="b", name="Refactor session store", updated="2026-07-02", message_count=1, tokens=0
         ),
         SessionInfo(
             id="c", name="20260703-120000", updated="2026-07-03", message_count=1, tokens=0

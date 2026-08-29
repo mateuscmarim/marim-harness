@@ -148,8 +148,19 @@ def test_new_is_its_own_command_not_a_clear_alias():
 
 
 def test_core_commands_present():
-    names = ("help", "clear", "sessions", "new", "switch", "name", "mode", "model",
-             "remember", "skill", "exit")
+    names = (
+        "help",
+        "clear",
+        "sessions",
+        "new",
+        "switch",
+        "name",
+        "mode",
+        "model",
+        "remember",
+        "skill",
+        "exit",
+    )
     for name in names:
         assert name in COMMANDS_BY_NAME
 
@@ -162,8 +173,10 @@ async def test_usage_command_reports_split_and_cost():
     app.harness = SimpleNamespace(
         session=SimpleNamespace(
             usage=RunUsage(
-                input_tokens=56000, output_tokens=2000,
-                cache_read_tokens=50000, cache_write_tokens=5000,
+                input_tokens=56000,
+                output_tokens=2000,
+                cache_read_tokens=50000,
+                cache_write_tokens=5000,
             ),
         ),
         model_id="claude-sonnet-4-6",
@@ -288,11 +301,7 @@ async def test_mcp_lists_server_status():
 @pytest.mark.anyio
 async def test_mcp_none_configured():
     app = _FakeApp()
-    app.harness = SimpleNamespace(
-        mcp=SimpleNamespace(
-            mcp_servers=[], mcp_status=McpStatus()
-        )
-    )
+    app.harness = SimpleNamespace(mcp=SimpleNamespace(mcp_servers=[], mcp_status=McpStatus()))
     await dispatch(app, "/mcp")
     assert "No MCP servers configured" in app.posted[0]
 
@@ -479,6 +488,7 @@ def test_worktree_registered():
 
 def test_worktree_non_git_dir_posts_error(tmp_path):
     import asyncio
+
     app = _FakeApp(workspace_root=tmp_path)
     asyncio.run(dispatch(app, "/worktree list"))
     assert any("Not a git repository" in m for m in app.posted)
@@ -496,6 +506,7 @@ def _git_repo(tmp_path):
 
 def test_worktree_create_posts_launch_hint(tmp_path):
     import asyncio
+
     repo = _git_repo(tmp_path)
     app = _FakeApp(workspace_root=repo)
     asyncio.run(dispatch(app, "/worktree create feat/x"))
@@ -506,6 +517,7 @@ def test_worktree_create_posts_launch_hint(tmp_path):
 
 def test_worktree_create_requires_branch(tmp_path):
     import asyncio
+
     repo = _git_repo(tmp_path)
     app = _FakeApp(workspace_root=repo)
     asyncio.run(dispatch(app, "/worktree create"))
@@ -514,6 +526,7 @@ def test_worktree_create_requires_branch(tmp_path):
 
 def test_worktree_list_shows_branches(tmp_path):
     import asyncio
+
     repo = _git_repo(tmp_path)
     app = _FakeApp(workspace_root=repo)
     asyncio.run(dispatch(app, "/worktree create feat/x"))

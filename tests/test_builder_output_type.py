@@ -10,9 +10,7 @@ class Report(BaseModel):
 
 
 def test_build_accepts_basemodel_schema(tmp_path):
-    h = (HarnessBuilder(workspace=tmp_path, model=TestModel())
-         .with_output_type(Report)
-         .build())
+    h = HarnessBuilder(workspace=tmp_path, model=TestModel()).with_output_type(Report).build()
     # Harness does not retain its config; the TurnController is where the
     # schema lands (Task 4 reads it).
     assert h.turn_controller._structured_type is Report
@@ -21,9 +19,7 @@ def test_build_accepts_basemodel_schema(tmp_path):
 
 def test_build_accepts_object_rooted_dict(tmp_path):
     schema = {"type": "object", "properties": {"a": {"type": "integer"}}}
-    h = (HarnessBuilder(workspace=tmp_path, model=TestModel())
-         .with_output_type(schema)
-         .build())
+    h = HarnessBuilder(workspace=tmp_path, model=TestModel()).with_output_type(schema).build()
     assert h.turn_controller._output_type_dict == schema
     # The dict was wrapped into pydantic-ai's StructuredDict type.
     assert h.turn_controller._structured_type is not None
@@ -32,9 +28,11 @@ def test_build_accepts_object_rooted_dict(tmp_path):
 
 def test_build_rejects_non_object_rooted_dict(tmp_path):
     with pytest.raises(BuilderError) as exc_info:
-        (HarnessBuilder(workspace=tmp_path, model=TestModel())
-         .with_output_type({"type": "array"})
-         .build())
+        (
+            HarnessBuilder(workspace=tmp_path, model=TestModel())
+            .with_output_type({"type": "array"})
+            .build()
+        )
     assert any("object-rooted" in p for p in exc_info.value.problems)
 
 
@@ -44,9 +42,7 @@ def test_build_rejects_malformed_json_schema(tmp_path):
     jsonschema error, after the token spend."""
     schema = {"type": "object", "properties": {"a": {"type": "intger"}}}
     with pytest.raises(BuilderError) as exc_info:
-        (HarnessBuilder(workspace=tmp_path, model=TestModel())
-         .with_output_type(schema)
-         .build())
+        (HarnessBuilder(workspace=tmp_path, model=TestModel()).with_output_type(schema).build())
     assert any("malformed JSON Schema" in p for p in exc_info.value.problems)
 
 
@@ -56,23 +52,17 @@ def test_build_rejects_recursive_ref_schema(tmp_path):
     pydantic_ai UserError out of build()."""
     schema = {
         "type": "object",
-        "$defs": {
-            "Node": {"type": "object", "properties": {"child": {"$ref": "#/$defs/Node"}}}
-        },
+        "$defs": {"Node": {"type": "object", "properties": {"child": {"$ref": "#/$defs/Node"}}}},
         "properties": {"root": {"$ref": "#/$defs/Node"}},
     }
     with pytest.raises(BuilderError) as exc_info:
-        (HarnessBuilder(workspace=tmp_path, model=TestModel())
-         .with_output_type(schema)
-         .build())
+        (HarnessBuilder(workspace=tmp_path, model=TestModel()).with_output_type(schema).build())
     assert any("with_output_type" in p and "recursive" in p for p in exc_info.value.problems)
 
 
 def test_build_rejects_other_types(tmp_path):
     with pytest.raises(BuilderError) as exc_info:
-        (HarnessBuilder(workspace=tmp_path, model=TestModel())
-         .with_output_type(int)
-         .build())
+        (HarnessBuilder(workspace=tmp_path, model=TestModel()).with_output_type(int).build())
     assert any("with_output_type" in p for p in exc_info.value.problems)
 
 

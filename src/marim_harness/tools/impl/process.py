@@ -40,7 +40,7 @@ def _read_ppid_map() -> dict[int, list[int]]:
                 close_paren = raw.rfind(")")
                 if close_paren < 0:
                     continue
-                fields = raw[close_paren + 2:].split()
+                fields = raw[close_paren + 2 :].split()
                 # Fields after the closing paren: state [0], ppid [1], pgrp [2], ...
                 ppid = int(fields[1])
                 pid = int(entry)

@@ -34,9 +34,7 @@ def scratchpad_base() -> Path:
     return Path(tempfile.gettempdir()) / f"marim-{uid}"
 
 
-def scratchpad_root(
-    workspace_root: Path, session_id: str, base: Path | None = None
-) -> Path:
+def scratchpad_root(workspace_root: Path, session_id: str, base: Path | None = None) -> Path:
     """The scratchpad dir for one session. Pure — no filesystem access.
 
     ``<base>/<workspace-slug>/<session-id>/scratchpad``. The workspace slug
@@ -102,9 +100,7 @@ def persist_elided(scratchpad: Path, content: str, hint: str) -> Path | None:
         # Derive next number from the maximum existing file number, not the
         # count, so file deletions don't cause reuse of lower numbers.
         nums = (
-            int(m.group(1))
-            for m in (re.match(r"(\d{3})-", p.name) for p in d.glob("*.txt"))
-            if m
+            int(m.group(1)) for m in (re.match(r"(\d{3})-", p.name) for p in d.glob("*.txt")) if m
         )
         n = max(nums, default=0) + 1
         path = d / f"{n:03d}-{slug[:40]}.txt"

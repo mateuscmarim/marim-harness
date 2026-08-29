@@ -331,7 +331,8 @@ def build_collaborators(
     to "no inherited level" for the embedding builder path.
     """
     mcp = McpManager(
-        cfg.mcp_servers or [], set(cfg.mcp_disabled or []),
+        cfg.mcp_servers or [],
+        set(cfg.mcp_disabled or []),
         trust_project=cfg.mcp_trust_project,
     )
     # Forge (Gitea/GitHub) tools: an explicit backend (embedders) attaches
@@ -388,8 +389,11 @@ def build_collaborators(
     )
     provider.register(agent)
     register_instructions(
-        agent, mcp, cfg.proactive_memory,
-        global_instructions=cfg.global_instructions, groups=cfg.groups,
+        agent,
+        mcp,
+        cfg.proactive_memory,
+        global_instructions=cfg.global_instructions,
+        groups=cfg.groups,
     )
     # Session-scoped LSP server pool, reachable by the navigation/diagnostics
     # tools through deps. Subagents share this deps object, so they get LSP too.
@@ -435,9 +439,13 @@ def build_collaborators(
             ),
         )
     session = SessionController(
-        cfg.store, cfg.manager, deps,
-        cfg.max_context_tokens, cfg.keep_last_messages,
-        cfg.summarizer, cfg.titler,
+        cfg.store,
+        cfg.manager,
+        deps,
+        cfg.max_context_tokens,
+        cfg.keep_last_messages,
+        cfg.summarizer,
+        cfg.titler,
         mask_observations=cfg.mask_observations,
         mask_keep_recent=cfg.mask_keep_recent,
         mask_min_chars=cfg.mask_min_chars,
@@ -454,7 +462,11 @@ def build_collaborators(
     # other tools reach shared state. The runner reads the current model via
     # the closure, so a runtime /model switch is tracked without rewiring.
     subagents = SubagentRunner(
-        provider, mcp, deps, hooks, session,
+        provider,
+        mcp,
+        deps,
+        hooks,
+        session,
         get_model=get_model,
         model_settings=_DEFAULT_MODEL_SETTINGS,
         retry=RetryPolicy(
@@ -484,7 +496,8 @@ def build_collaborators(
             # deferred closure keeps it typed; ``cfg.model_source`` alone
             # wouldn't narrow inside a lambda called later.
             (lambda mid, _src=cfg.model_source: _src.build(mid))
-            if cfg.model_source is not None else None
+            if cfg.model_source is not None
+            else None
         ),
     )
     # Live like get_session_id below: a session switch swaps session.store,
@@ -493,11 +506,13 @@ def build_collaborators(
     # transparently recreated.
     get_scratchpad = None
     if cfg.scratchpad_enabled:
+
         def _get_scratchpad() -> Path | None:
             sid = session.store.session_id if session.store is not None else None
             if sid is None:
                 return None
             return ensure_scratchpad(deps.workspace.root, sid)
+
         get_scratchpad = _get_scratchpad
     # The run_workflow tool's engine. Guarded build: disabled by config, or
     # pydantic-monty simply not installed (the [workflows] extra).
@@ -506,9 +521,7 @@ def build_collaborators(
     # source is composed (CLI path), None for explicit-model embedders
     # (HarnessBuilder) — where unknown capability sends images optimistically.
     supports_images = (
-        make_supports_images(cfg.model_source.list_models)
-        if cfg.model_source is not None
-        else None
+        make_supports_images(cfg.model_source.list_models) if cfg.model_source is not None else None
     )
     # One cohesive late binding for the collaborator cycle: TurnHooks and the
     # sub-agent runners hold this deps object, and tools reach them back
@@ -526,8 +539,13 @@ def build_collaborators(
         supports_images=supports_images,
     )
     return Collaborators(
-        agent=agent, mcp=mcp, lsp=lsp, session=session,
-        checkpoints=checkpoints, hooks=hooks, subagents=subagents,
+        agent=agent,
+        mcp=mcp,
+        lsp=lsp,
+        session=session,
+        checkpoints=checkpoints,
+        hooks=hooks,
+        subagents=subagents,
     )
 
 
@@ -535,8 +553,16 @@ class Harness:
     """Owns the Pydantic AI agent and drives one user turn to completion,
     resolving deferred tool approvals by the current mode."""
 
-    def __init__(self, model: Model, provider: ToolProvider, deps: Deps, instructions: str,
-                 *, config: HarnessConfig | None = None, **kwargs):
+    def __init__(
+        self,
+        model: Model,
+        provider: ToolProvider,
+        deps: Deps,
+        instructions: str,
+        *,
+        config: HarnessConfig | None = None,
+        **kwargs,
+    ):
         """Create a Harness.
 
         ``config`` bundles the optional knobs (session store, model identity,
@@ -579,7 +605,11 @@ class Harness:
         # Build the collaborator graph in one named, testable place. get_model
         # closes over self so a runtime /model switch (set_model) is tracked.
         collab = build_collaborators(
-            model, provider, deps, instructions, cfg,
+            model,
+            provider,
+            deps,
+            instructions,
+            cfg,
             get_model=lambda: self.current_model,
             get_thinking=lambda: self.thinking_level_id,
         )
@@ -858,9 +888,7 @@ class Harness:
         (breaking the prompt cache once — inherent to a client-side advisor)."""
         self.advisor_model_id = model_id
         if self.deps.services is not None:
-            self.deps.services.advise = (
-                self._advise_fn if model_id is not None else None
-            )
+            self.deps.services.advise = self._advise_fn if model_id is not None else None
         if persist:
             self.session.set_advisor(model_id if model_id is not None else ADVISOR_OFF)
 
@@ -1027,8 +1055,7 @@ class Harness:
         """Fire the SessionEnd hook on teardown. Observe-only."""
         await self.hooks.session_end(reason)
 
-    def steer(self, text: str,
-              attachments: list[tuple[bytes, str]] | None = None) -> None:
+    def steer(self, text: str, attachments: list[tuple[bytes, str]] | None = None) -> None:
         """Delegate to ``turn_controller.steer``."""
         self.turn_controller.steer(text, attachments)
 
@@ -1044,7 +1071,8 @@ class Harness:
         return self.turn_controller.take_buffered_steers()
 
     async def run_turn(
-        self, prompt: str,
+        self,
+        prompt: str,
         event_stream_handler: EventStreamHandler[Deps] | None = None,
         attachments: list[tuple[bytes, str]] | None = None,
     ) -> TurnOutcome:

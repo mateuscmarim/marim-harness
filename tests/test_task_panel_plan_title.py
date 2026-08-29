@@ -13,7 +13,7 @@ pytestmark = pytest.mark.anyio
 # Unlike a balanced [/], ``rich``/``textual`` escape() only escapes complete tags,
 # so this will still raise MarkupError if parsed as markup.
 # Plan titles must use literal Content, not markup, to safely handle such text.
-MARKUP_BOMB = "[/] and [edit(old_string=\"unterminated"
+MARKUP_BOMB = '[/] and [edit(old_string="unterminated'
 
 
 class _Harness(App):
@@ -71,8 +71,7 @@ async def test_plan_title_truncates_long_summary():
         # Use a summary longer than 48 chars (82 chars total).
         # When truncated to 47 + "…", the tail "exceeds" should not appear.
         long_summary = (
-            "This is a very long plan summary that definitely "
-            "exceeds forty-eight characters"
+            "This is a very long plan summary that definitely exceeds forty-eight characters"
         )
         panel.show_tasks([Task(text="do work")], plan_title=long_summary)
         await pilot.pause()

@@ -45,7 +45,13 @@ def test_short_error_first_line_truncated():
 def test_provider_specs_env_keys():
     specs = {s.name: s for s in PROVIDER_SPECS}
     assert [s.name for s in PROVIDER_SPECS] == [
-        "openrouter", "google", "zen", "zen-go", "local", "claude-cli"]
+        "openrouter",
+        "google",
+        "zen",
+        "zen-go",
+        "local",
+        "claude-cli",
+    ]
     assert specs["openrouter"].write_key == "OPENROUTER_API_KEY"
     assert specs["openrouter"].drop_keys == ("OPENROUTER_API_KEY",)
     # google always WRITES GOOGLE_API_KEY but reads/drops both env names.
@@ -113,9 +119,7 @@ class _PaneHost(App):
 
 
 @pytest.mark.anyio
-async def test_pane_mounts_all_cards_without_writing_env(
-    isolated_env, monkeypatch, tmp_path
-):
+async def test_pane_mounts_all_cards_without_writing_env(isolated_env, monkeypatch, tmp_path):
     """Mounting paints all six cards and must not write .env (mount-time
     widget events are gated, like the settings screen's _ready flag)."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
@@ -133,9 +137,7 @@ async def test_pane_mounts_all_cards_without_writing_env(
 
 
 @pytest.mark.anyio
-async def test_key_commit_saves_clears_and_repaints(
-    isolated_env, monkeypatch, tmp_path
-):
+async def test_key_commit_saves_clears_and_repaints(isolated_env, monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     app = _PaneHost()
@@ -183,23 +185,17 @@ async def test_google_configured_via_gemini_key_but_writes_google_key(
         # Configured state (and hint) come from the fallback env name...
         inp = pane.query_one("#prov-key-google", Input)
         assert inp.placeholder == "configured · …5678 — type to replace"
-        assert "configured" in str(
-            pane.query_one("#prov-status-google", Static).render()
-        )
+        assert "configured" in str(pane.query_one("#prov-status-google", Static).render())
         # ...but a save always writes GOOGLE_API_KEY.
         inp.value = "AIza-new-key-0000"
         pane._commit("prov-key-google")
         await pilot.pause()
     assert os.environ.get("GOOGLE_API_KEY") == "AIza-new-key-0000"
-    assert "GOOGLE_API_KEY=AIza-new-key-0000" in (
-        tmp_path / "marim" / ".env"
-    ).read_text()
+    assert "GOOGLE_API_KEY=AIza-new-key-0000" in (tmp_path / "marim" / ".env").read_text()
 
 
 @pytest.mark.anyio
-async def test_local_base_url_commit_marks_configured(
-    isolated_env, monkeypatch, tmp_path
-):
+async def test_local_base_url_commit_marks_configured(isolated_env, monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.delenv("MARIM_BASE_URL", raising=False)
     app = _PaneHost()
@@ -226,8 +222,13 @@ async def test_commit_refreshes_live_sources(isolated_env, monkeypatch, tmp_path
     from marim_harness.config.model import MultiModelSource
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    for k in ("OPENROUTER_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
-              "MARIM_BASE_URL", "MARIM_API_KEY"):
+    for k in (
+        "OPENROUTER_API_KEY",
+        "GOOGLE_API_KEY",
+        "GEMINI_API_KEY",
+        "MARIM_BASE_URL",
+        "MARIM_API_KEY",
+    ):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setattr(_m, "_claude_cli_available", lambda: False)
     monkeypatch.setenv("MARIM_PROVIDER", "openrouter")
@@ -251,9 +252,7 @@ async def test_claude_cli_card_reflects_detection(isolated_env, monkeypatch, tmp
     async with app.run_test(size=(120, 45)) as pilot:
         await pilot.pause()
         pane = app.query_one(ProvidersPane)
-        assert "detected on PATH" in str(
-            pane.query_one("#prov-status-claude-cli", Static).render()
-        )
+        assert "detected on PATH" in str(pane.query_one("#prov-status-claude-cli", Static).render())
         # Nothing stored -> no key field, no remove button.
         assert not pane.query("#prov-key-claude-cli")
         assert not pane.query("#prov-remove-claude-cli")
@@ -271,9 +270,7 @@ def _multi_with_fake_openrouter(monkeypatch, *, entries=None, error=None):
     monkeypatch.setenv("MARIM_PROVIDER", "openrouter")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-verify-1234")
     multi = MultiModelSource.from_env()
-    stub = AsyncMock(return_value=entries) if error is None else AsyncMock(
-        side_effect=error
-    )
+    stub = AsyncMock(return_value=entries) if error is None else AsyncMock(side_effect=error)
     monkeypatch.setattr(multi.sources["openrouter"], "list_models", stub)
     return multi
 
@@ -295,18 +292,14 @@ async def test_mount_verifies_configured_provider(isolated_env, monkeypatch, tmp
         await app.workers.wait_for_complete()
         await pilot.pause()
         badge = str(
-            app.query_one(ProvidersPane)
-            .query_one("#prov-status-openrouter", Static)
-            .render()
+            app.query_one(ProvidersPane).query_one("#prov-status-openrouter", Static).render()
         )
     assert "✓ connected · 2 models" in badge
     assert "default" in badge
 
 
 @pytest.mark.anyio
-async def test_failed_verification_shows_short_error(
-    isolated_env, monkeypatch, tmp_path
-):
+async def test_failed_verification_shows_short_error(isolated_env, monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     multi = _multi_with_fake_openrouter(monkeypatch, error=RuntimeError("401 bad key"))
     app = _PaneHost(model_source=multi)
@@ -315,17 +308,13 @@ async def test_failed_verification_shows_short_error(
         await app.workers.wait_for_complete()
         await pilot.pause()
         badge = str(
-            app.query_one(ProvidersPane)
-            .query_one("#prov-status-openrouter", Static)
-            .render()
+            app.query_one(ProvidersPane).query_one("#prov-status-openrouter", Static).render()
         )
     assert "✗ 401 bad key" in badge
 
 
 @pytest.mark.anyio
-async def test_verify_against_real_dead_server_shows_x_badge(
-    isolated_env, monkeypatch, tmp_path
-):
+async def test_verify_against_real_dead_server_shows_x_badge(isolated_env, monkeypatch, tmp_path):
     """No stubbed list_models here: a REAL ModelSource pointed at a dead local
     server (port 9 is "discard" — connection refused, instantly). This proves
     the production strict=True path — catalog.py's re-raise, ModelSource
@@ -352,19 +341,13 @@ async def test_verify_against_real_dead_server_shows_x_badge(
         await pilot.pause()
         await app.workers.wait_for_complete()
         await pilot.pause()
-        badge = str(
-            app.query_one(ProvidersPane)
-            .query_one("#prov-status-local", Static)
-            .render()
-        )
+        badge = str(app.query_one(ProvidersPane).query_one("#prov-status-local", Static).render())
     # The badge must lead with the ✗ verdict (mirrors _verify's f"✗ {...}").
     assert badge.lstrip().startswith("✗")
 
 
 @pytest.mark.anyio
-async def test_remove_button_hidden_until_configured(
-    isolated_env, monkeypatch, tmp_path
-):
+async def test_remove_button_hidden_until_configured(isolated_env, monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     app = _PaneHost()
@@ -402,24 +385,18 @@ async def test_remove_google_drops_both_env_names(isolated_env, monkeypatch, tmp
         assert "GOOGLE_API_KEY" not in env_text
         assert "GEMINI_API_KEY" not in env_text
         # Card flipped back to unconfigured.
-        assert "not configured" in str(
-            pane.query_one("#prov-status-google", Static).render()
-        )
+        assert "not configured" in str(pane.query_one("#prov-status-google", Static).render())
         assert pane.query_one("#prov-remove-google", Button).display is False
         assert pane.query_one("#prov-key-google", Input).placeholder == "not set"
         assert any("removed google" in s for s in app.statuses)
 
 
 @pytest.mark.anyio
-async def test_remove_local_drops_url_and_key_and_clears_input(
-    isolated_env, monkeypatch, tmp_path
-):
+async def test_remove_local_drops_url_and_key_and_clears_input(isolated_env, monkeypatch, tmp_path):
     from marim_harness.config import save_env_settings
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    save_env_settings(
-        {"MARIM_BASE_URL": "http://localhost:1234/v1", "MARIM_API_KEY": "local"}
-    )
+    save_env_settings({"MARIM_BASE_URL": "http://localhost:1234/v1", "MARIM_API_KEY": "local"})
     app = _PaneHost()
     async with app.run_test(size=(120, 45)) as pilot:
         await pilot.pause()
@@ -433,9 +410,7 @@ async def test_remove_local_drops_url_and_key_and_clears_input(
 
 
 @pytest.mark.anyio
-async def test_zen_key_commit_repaints_zen_go_sibling_card(
-    isolated_env, monkeypatch, tmp_path
-):
+async def test_zen_key_commit_repaints_zen_go_sibling_card(isolated_env, monkeypatch, tmp_path):
     """zen and zen-go share OPENCODE_API_KEY: saving the key via the zen card
     must also flip the zen-go card to 'configured' (and show its remove
     button) — not just repaint the card that was actually edited."""
@@ -445,9 +420,7 @@ async def test_zen_key_commit_repaints_zen_go_sibling_card(
     async with app.run_test(size=(120, 45)) as pilot:
         await pilot.pause()
         pane = app.query_one(ProvidersPane)
-        assert "not configured" in str(
-            pane.query_one("#prov-status-zen-go", Static).render()
-        )
+        assert "not configured" in str(pane.query_one("#prov-status-zen-go", Static).render())
         assert pane.query_one("#prov-remove-zen-go", Button).display is False
         inp = pane.query_one("#prov-key-zen", Input)
         inp.value = "zen-key-12345678"
@@ -455,12 +428,8 @@ async def test_zen_key_commit_repaints_zen_go_sibling_card(
         await pilot.pause()
         assert os.environ.get("OPENCODE_API_KEY") == "zen-key-12345678"
         # zen-go's card, though untouched directly, must now read configured.
-        assert "configured" in str(
-            pane.query_one("#prov-status-zen-go", Static).render()
-        )
-        assert "not configured" not in str(
-            pane.query_one("#prov-status-zen-go", Static).render()
-        )
+        assert "configured" in str(pane.query_one("#prov-status-zen-go", Static).render())
+        assert "not configured" not in str(pane.query_one("#prov-status-zen-go", Static).render())
         assert pane.query_one("#prov-remove-zen-go", Button).display is True
         assert pane.query_one("#prov-key-zen-go", Input).placeholder == (
             "configured · …5678 — type to replace"
@@ -541,9 +510,7 @@ async def test_default_radio_reflects_env(isolated_env, monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
-async def test_default_radio_persists_and_updates_badge(
-    isolated_env, monkeypatch, tmp_path
-):
+async def test_default_radio_persists_and_updates_badge(isolated_env, monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setenv("MARIM_PROVIDER", "openrouter")
     app = _PaneHost()
@@ -556,12 +523,8 @@ async def test_default_radio_persists_and_updates_badge(
         assert "MARIM_PROVIDER=local" in (tmp_path / "marim" / ".env").read_text()
         assert app.badges and app.badges[-1] == "local"
         # The '· default' marker moved between the cards.
-        assert "default" in str(
-            pane.query_one("#prov-status-local", Static).render()
-        )
-        assert "default" not in str(
-            pane.query_one("#prov-status-openrouter", Static).render()
-        )
+        assert "default" in str(pane.query_one("#prov-status-local", Static).render())
+        assert "default" not in str(pane.query_one("#prov-status-openrouter", Static).render())
 
 
 # -- follow-ups: verify-result cache, deferred verification, compact button --
@@ -576,9 +539,7 @@ async def test_verify_result_survives_repaint(isolated_env, monkeypatch, tmp_pat
     from marim_harness.workspace import ModelEntry
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    multi = _multi_with_fake_openrouter(
-        monkeypatch, entries=[ModelEntry(id="a/x", name="X")]
-    )
+    multi = _multi_with_fake_openrouter(monkeypatch, entries=[ModelEntry(id="a/x", name="X")])
     app = _PaneHost(model_source=multi)
     async with app.run_test(size=(120, 45)) as pilot:
         await pilot.pause()
@@ -598,9 +559,7 @@ async def test_remove_clears_cached_verify_result(isolated_env, monkeypatch, tmp
     from marim_harness.workspace import ModelEntry
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    multi = _multi_with_fake_openrouter(
-        monkeypatch, entries=[ModelEntry(id="a/x", name="X")]
-    )
+    multi = _multi_with_fake_openrouter(monkeypatch, entries=[ModelEntry(id="a/x", name="X")])
     app = _PaneHost(model_source=multi)
     async with app.run_test(size=(120, 45)) as pilot:
         await pilot.pause()
@@ -615,17 +574,13 @@ async def test_remove_clears_cached_verify_result(isolated_env, monkeypatch, tmp
 
 
 @pytest.mark.anyio
-async def test_verification_deferred_until_pane_shown(
-    isolated_env, monkeypatch, tmp_path
-):
+async def test_verification_deferred_until_pane_shown(isolated_env, monkeypatch, tmp_path):
     """A pane mounted hidden (the settings screen opens on Session) must not
     fetch any catalog; the first time it becomes visible, it verifies."""
     from marim_harness.workspace import ModelEntry
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    multi = _multi_with_fake_openrouter(
-        monkeypatch, entries=[ModelEntry(id="a/x", name="X")]
-    )
+    multi = _multi_with_fake_openrouter(monkeypatch, entries=[ModelEntry(id="a/x", name="X")])
     stub = multi.sources["openrouter"].list_models
 
     class _HiddenHost(_PaneHost):
@@ -711,9 +666,7 @@ async def test_remove_cancels_inflight_verify(isolated_env, monkeypatch, tmp_pat
 
 
 @pytest.mark.anyio
-async def test_repaint_during_reverify_keeps_verifying_badge(
-    isolated_env, monkeypatch, tmp_path
-):
+async def test_repaint_during_reverify_keeps_verifying_badge(isolated_env, monkeypatch, tmp_path):
     """A repaint while a re-verify is in flight must show 'verifying…', not
     resurrect the previous key's cached verdict as if it were current."""
     import asyncio
@@ -722,9 +675,7 @@ async def test_repaint_during_reverify_keeps_verifying_badge(
     from marim_harness.workspace import ModelEntry
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    multi = _multi_with_fake_openrouter(
-        monkeypatch, entries=[ModelEntry(id="a/x", name="X")]
-    )
+    multi = _multi_with_fake_openrouter(monkeypatch, entries=[ModelEntry(id="a/x", name="X")])
     app = _PaneHost(model_source=multi)
     async with app.run_test(size=(120, 45)) as pilot:
         await pilot.pause()
@@ -737,9 +688,7 @@ async def test_repaint_during_reverify_keeps_verifying_badge(
             await gate.wait()
             return []
 
-        monkeypatch.setattr(
-            multi.sources["openrouter"], "list_models", slow_list_models
-        )
+        monkeypatch.setattr(multi.sources["openrouter"], "list_models", slow_list_models)
         pane._start_verify("openrouter")  # what a re-save triggers
         await pilot.pause()
         pane._paint_card(_SPECS["openrouter"])  # e.g. the default radio moved

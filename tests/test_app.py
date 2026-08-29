@@ -5,7 +5,7 @@ import pytest
 from marim_harness.interfaces.tui.app import HarnessApp
 from marim_harness.interfaces.tui.widgets import NoticeMessage
 from marim_harness.runtime.permissions import Mode
-from tests.conftest import _make_deps
+from tests.conftest import _make_deps, _settle
 
 
 def _app(tmp_path: Path) -> HarnessApp:
@@ -15,9 +15,7 @@ def _app(tmp_path: Path) -> HarnessApp:
     from marim_harness.tools.provider import BuiltinToolProvider
 
     deps = _make_deps(tmp_path)
-    harness = Harness(
-        TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test"
-    )
+    harness = Harness(TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test")
     return HarnessApp(harness)
 
 
@@ -74,14 +72,24 @@ async def test_resumed_spawn_agent_renders_as_subagent_card(tmp_path: Path):
 
     app = _app(tmp_path)
     app.harness.session.history = [
-        ModelResponse(parts=[ToolCallPart(
-            tool_name="spawn_agent",
-            args={"type": "explore", "task": "review the core loop"},
-            tool_call_id="s1",
-        )]),
-        ModelRequest(parts=[ToolReturnPart(
-            tool_name="spawn_agent", content="REPORT-BODY", tool_call_id="s1",
-        )]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="spawn_agent",
+                    args={"type": "explore", "task": "review the core loop"},
+                    tool_call_id="s1",
+                )
+            ]
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="spawn_agent",
+                    content="REPORT-BODY",
+                    tool_call_id="s1",
+                )
+            ]
+        ),
     ]
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -106,12 +114,19 @@ async def test_resumed_spawn_card_label_prefers_description(tmp_path: Path):
 
     app = _app(tmp_path)
     app.harness.session.history = [
-        ModelResponse(parts=[ToolCallPart(
-            tool_name="spawn_agent",
-            args={"type": "explore", "task": "a long task body",
-                  "description": "review core loop"},
-            tool_call_id="s1",
-        )]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="spawn_agent",
+                    args={
+                        "type": "explore",
+                        "task": "a long task body",
+                        "description": "review core loop",
+                    },
+                    tool_call_id="s1",
+                )
+            ]
+        ),
     ]
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -137,7 +152,7 @@ async def test_status_bar_shows_token_split(tmp_path: Path):
         await pilot.pause()
         text = str(bar.render())
         assert "12↑" in text  # uncached input
-        assert "8↓" in text   # output
+        assert "8↓" in text  # output
 
 
 @pytest.mark.anyio
@@ -185,7 +200,7 @@ async def test_status_bar_includes_live_run_tokens_while_streaming(tmp_path: Pat
         await pilot.pause()
         text = str(app.query_one("#status-bar").render())
         assert "100↑" in text  # committed split
-        assert "+50" in text   # live in-flight delta
+        assert "+50" in text  # live in-flight delta
 
 
 @pytest.mark.anyio
@@ -332,7 +347,7 @@ async def test_flush_refreshes_status_while_busy(tmp_path: Path):
         await pilot.pause()
         text = str(app.query_one("#status-bar").render())
         assert "200↑" in text  # committed split
-        assert "+99" in text   # live in-flight delta picked up by the tick
+        assert "+99" in text  # live in-flight delta picked up by the tick
 
 
 @pytest.mark.anyio
@@ -364,6 +379,7 @@ async def test_flush_only_touches_buffered_messages(tmp_path: Path):
                 flushed.append(name)
                 widget._pending = False
                 return True
+
             return _flush
 
         clean.flush = _stub(clean, "clean")  # type: ignore[assignment]
@@ -538,8 +554,9 @@ async def test_replay_renders_compaction_summary_as_widget(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         app.harness.session.history = [
-            ModelRequest(parts=[UserPromptPart(
-                content=f"{SUMMARY_PREFIX}\n\nthe condensed story")]),
+            ModelRequest(
+                parts=[UserPromptPart(content=f"{SUMMARY_PREFIX}\n\nthe condensed story")]
+            ),
             ModelRequest(parts=[UserPromptPart(content="a normal question")]),
         ]
         await app.session.render_session("resume")
@@ -567,10 +584,12 @@ async def test_replay_caps_restored_thinking(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         app.harness.session.history = [
-            ModelResponse(parts=[
-                ThinkingPart(content=long_thought),
-                TextPart(content="the answer"),
-            ]),
+            ModelResponse(
+                parts=[
+                    ThinkingPart(content=long_thought),
+                    TextPart(content="the answer"),
+                ]
+            ),
         ]
         await app.session.render_session("resume")
         await pilot.pause()
@@ -594,8 +613,9 @@ async def test_live_compaction_mounts_summary_widget(tmp_path: Path):
     async with app.run_test() as pilot:
         app.harness.session.history = [
             ModelRequest(parts=[UserPromptPart(content="original task")]),
-            ModelRequest(parts=[UserPromptPart(
-                content=f"{SUMMARY_PREFIX}\n\nlive-made summary body")]),
+            ModelRequest(
+                parts=[UserPromptPart(content=f"{SUMMARY_PREFIX}\n\nlive-made summary body")]
+            ),
         ]
         app.session.on_compact(80, 22)
         await pilot.pause()
@@ -631,9 +651,7 @@ async def test_status_bar_shows_context_usage(tmp_path: Path):
         # drop it here to exercise the legacy fixed-budget fallback directly.
         app.harness.session.limits = None
         app.harness.session.max_context_tokens = 1000
-        app.harness.session.history = [
-            ModelRequest(parts=[UserPromptPart(content="x" * 2000)])
-        ]
+        app.harness.session.history = [ModelRequest(parts=[UserPromptPart(content="x" * 2000)])]
         app.status.refresh_status()
         await pilot.pause()
         assert "50%" in str(bar.render())
@@ -674,9 +692,7 @@ async def test_submitting_records_prompt_history(tmp_path: Path):
     from marim_harness.tools.provider import BuiltinToolProvider
 
     deps = _make_deps(tmp_path)
-    harness = Harness(
-        TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test"
-    )
+    harness = Harness(TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test")
     hist = PromptHistory()
     app = HarnessApp(harness, history=hist)
 
@@ -1127,10 +1143,12 @@ async def test_task_panel_hidden_until_tasks_then_live_updates(tmp_path: Path):
         assert panel.display is False  # nothing to show yet
 
         # The update_tasks tool path fires on_change -> the panel appears live.
-        app.harness.deps.tasks.replace([
-            {"text": "read the code", "status": "done"},
-            {"text": "write the test", "status": "in_progress"},
-        ])
+        app.harness.deps.tasks.replace(
+            [
+                {"text": "read the code", "status": "done"},
+                {"text": "write the test", "status": "in_progress"},
+            ]
+        )
         await pilot.pause()
         assert panel.display is True
         text = str(app.query_one("#task-body").render())
@@ -1190,9 +1208,7 @@ async def test_resumed_session_shows_banner(tmp_path: Path):
     async with app.run_test() as pilot:
         await pilot.pause()
         log = app.query_one("#log")
-        text = " ".join(
-            str(c.render()) for c in log.walk_children() if hasattr(c, "render")
-        )
+        text = " ".join(str(c.render()) for c in log.walk_children() if hasattr(c, "render"))
         assert "resumed" in text.lower()
 
 
@@ -1219,17 +1235,11 @@ async def test_resume_replays_history_into_log(tmp_path: Path):
         ModelResponse(
             parts=[
                 TextPart(content="Let me look."),
-                ToolCallPart(
-                    tool_name="read_file", args={"path": "app.py"}, tool_call_id="t1"
-                ),
+                ToolCallPart(tool_name="read_file", args={"path": "app.py"}, tool_call_id="t1"),
             ]
         ),
         ModelRequest(
-            parts=[
-                ToolReturnPart(
-                    tool_name="read_file", content="1\tprint(1)", tool_call_id="t1"
-                )
-            ]
+            parts=[ToolReturnPart(tool_name="read_file", content="1\tprint(1)", tool_call_id="t1")]
         ),
         ModelResponse(parts=[TextPart(content="It prints 1.")]),
     ]
@@ -1295,14 +1305,16 @@ async def test_gated_tool_renders_one_widget_not_two(tmp_path: Path):
     async def stream_fn(messages, info):
         state["n"] += 1
         if state["n"] == 1:
-            yield {0: DeltaToolCall(
-                name="bash", json_args='{"command": "echo hi"}', tool_call_id="b1")}
+            yield {
+                0: DeltaToolCall(name="bash", json_args='{"command": "echo hi"}', tool_call_id="b1")
+            }
         else:
             yield "done"
 
     deps = _make_deps(tmp_path)
-    harness = Harness(FunctionModel(stream_function=stream_fn),
-                      BuiltinToolProvider(), deps, instructions="test")
+    harness = Harness(
+        FunctionModel(stream_function=stream_fn), BuiltinToolProvider(), deps, instructions="test"
+    )
     app = HarnessApp(harness)
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -1412,6 +1424,7 @@ def _fake_jobs(job):
     class _Reg:
         def get(self, _id):
             return job
+
     return _Reg()
 
 
@@ -1461,8 +1474,9 @@ async def test_wait_for_job_row_names_the_subagent(tmp_path: Path):
 
     jid = reg.register("agent", "explore: review TUI subsystem", _work())  # running
 
-    call = FunctionToolCallEvent(part=ToolCallPart(
-        tool_name="wait_for_job", args={"id": jid}, tool_call_id="w1"))
+    call = FunctionToolCallEvent(
+        part=ToolCallPart(tool_name="wait_for_job", args={"id": jid}, tool_call_id="w1")
+    )
 
     async def gen():
         yield call
@@ -1472,7 +1486,7 @@ async def test_wait_for_job_row_names_the_subagent(tmp_path: Path):
         await app.stream.on_events(None, gen())
         await pilot.pause()
         widget = app.stream.tool_widgets.get("w1")
-        assert isinstance(widget, ToolCallWidget)        # a row, not a card
+        assert isinstance(widget, ToolCallWidget)  # a row, not a card
         assert not isinstance(widget, SubAgentWidget)
         # The row's preview names the sub-agent, not just the job id.
         assert "review TUI subsystem" in summarize("wait_for_job", widget.args).target
@@ -1510,10 +1524,12 @@ def test_deps_pending_only_while_a_prerequisite_runs():
 
     from marim_harness.interfaces.tui.stream_render import _deps_pending
 
-    jobs = SimpleNamespace(get=lambda jid: {
-        "job-1": SimpleNamespace(status="running"),
-        "job-2": SimpleNamespace(status="done"),
-    }.get(jid))
+    jobs = SimpleNamespace(
+        get=lambda jid: {
+            "job-1": SimpleNamespace(status="running"),
+            "job-2": SimpleNamespace(status="done"),
+        }.get(jid)
+    )
     assert _deps_pending(["job-1", "job-2"], jobs) is True
     assert _deps_pending(["job-2"], jobs) is False
     # A pruned/unknown id counts as settled — never blocks a card forever.
@@ -1579,12 +1595,18 @@ async def test_detached_card_stays_pending_then_fills_on_settle(tmp_path: Path):
 
     jid = reg.register("agent", "explore: map the core loop", _work())  # running
 
-    call = FunctionToolCallEvent(part=ToolCallPart(
-        tool_name="spawn_agent",
-        args={"type": "explore", "task": "map the core loop"},
-        tool_call_id="s1"))
-    result = FunctionToolResultEvent(part=ToolReturnPart(
-        tool_name="spawn_agent", content=_detach_handoff(jid), tool_call_id="s1"))
+    call = FunctionToolCallEvent(
+        part=ToolCallPart(
+            tool_name="spawn_agent",
+            args={"type": "explore", "task": "map the core loop"},
+            tool_call_id="s1",
+        )
+    )
+    result = FunctionToolResultEvent(
+        part=ToolReturnPart(
+            tool_name="spawn_agent", content=_detach_handoff(jid), tool_call_id="s1"
+        )
+    )
 
     async def gen():
         yield call
@@ -1596,10 +1618,10 @@ async def test_detached_card_stays_pending_then_fills_on_settle(tmp_path: Path):
         await pilot.pause()
         card = app.stream.tool_widgets.get("s1")
         assert isinstance(card, SubAgentWidget)
-        assert card.status == "pending"          # not finished on the handoff
+        assert card.status == "pending"  # not finished on the handoff
         assert card.report != _detach_handoff(jid)
 
-        gate.set()                               # let the job finish
+        gate.set()  # let the job finish
         for _ in range(400):
             if reg.get(jid).status != "running":
                 break
@@ -1636,11 +1658,16 @@ async def test_detached_card_fills_failed_when_job_fails(tmp_path: Path):
             break
         await asyncio.sleep(0)
 
-    call = FunctionToolCallEvent(part=ToolCallPart(
-        tool_name="spawn_agent", args={"type": "explore", "task": "x"},
-        tool_call_id="s1"))
-    result = FunctionToolResultEvent(part=ToolReturnPart(
-        tool_name="spawn_agent", content=_detach_handoff(jid), tool_call_id="s1"))
+    call = FunctionToolCallEvent(
+        part=ToolCallPart(
+            tool_name="spawn_agent", args={"type": "explore", "task": "x"}, tool_call_id="s1"
+        )
+    )
+    result = FunctionToolResultEvent(
+        part=ToolReturnPart(
+            tool_name="spawn_agent", content=_detach_handoff(jid), tool_call_id="s1"
+        )
+    )
 
     async def gen():
         yield call
@@ -1648,7 +1675,7 @@ async def test_detached_card_fills_failed_when_job_fails(tmp_path: Path):
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app.stream.on_events(None, gen())   # job already terminal → immediate fill
+        await app.stream.on_events(None, gen())  # job already terminal → immediate fill
         await pilot.pause()
         card = app.stream.tool_widgets.get("s1")
         assert isinstance(card, SubAgentWidget)
@@ -1682,13 +1709,20 @@ async def test_explicit_background_spawn_renders_card_and_fills(tmp_path: Path):
 
     jid = reg.register("agent", "explore: review TUI", _work())  # running
 
-    call = FunctionToolCallEvent(part=ToolCallPart(
-        tool_name="spawn_agent",
-        args={"type": "explore", "task": "review TUI", "background": True},
-        tool_call_id="s1"))
-    result = FunctionToolResultEvent(part=ToolReturnPart(
-        tool_name="spawn_agent",
-        content=f"Started {jid} (agent) — explore: review TUI", tool_call_id="s1"))
+    call = FunctionToolCallEvent(
+        part=ToolCallPart(
+            tool_name="spawn_agent",
+            args={"type": "explore", "task": "review TUI", "background": True},
+            tool_call_id="s1",
+        )
+    )
+    result = FunctionToolResultEvent(
+        part=ToolReturnPart(
+            tool_name="spawn_agent",
+            content=f"Started {jid} (agent) — explore: review TUI",
+            tool_call_id="s1",
+        )
+    )
 
     async def gen():
         yield call
@@ -1699,8 +1733,8 @@ async def test_explicit_background_spawn_renders_card_and_fills(tmp_path: Path):
         await app.stream.on_events(None, gen())
         await pilot.pause()
         card = app.stream.tool_widgets.get("s1")
-        assert isinstance(card, SubAgentWidget)   # a card, not a generic tool row
-        assert card.status == "pending"           # not a misleading ✓
+        assert isinstance(card, SubAgentWidget)  # a card, not a generic tool row
+        assert card.status == "pending"  # not a misleading ✓
         gate.set()
         for _ in range(400):
             if reg.get(jid).status != "running":
@@ -1880,9 +1914,7 @@ async def test_ask_user_is_not_folded_into_tool_group(tmp_path: Path):
     from marim_harness.interfaces.tui.widgets import ToolCallWidget, ToolGroupWidget
 
     def _call(name, args, cid):
-        return FunctionToolCallEvent(
-            part=ToolCallPart(tool_name=name, args=args, tool_call_id=cid)
-        )
+        return FunctionToolCallEvent(part=ToolCallPart(tool_name=name, args=args, tool_call_id=cid))
 
     def _ret(name, content, cid):
         return FunctionToolResultEvent(
@@ -1895,8 +1927,9 @@ async def test_ask_user_is_not_folded_into_tool_group(tmp_path: Path):
         yield _ret("read_file", "x", "r1")
         yield _call("read_file", {"path": "b.py"}, "r2")
         yield _ret("read_file", "y", "r2")
-        yield _call("ask_user", {"questions": [{"question": "Q?", "options": [
-            {"label": "A"}]}]}, "q1")
+        yield _call(
+            "ask_user", {"questions": [{"question": "Q?", "options": [{"label": "A"}]}]}, "q1"
+        )
         yield _ret("ask_user", "{}", "q1")
         yield _call("read_file", {"path": "c.py"}, "r3")
         yield _ret("read_file", "z", "r3")
@@ -1937,20 +1970,14 @@ async def test_resume_ask_user_not_folded_into_tool_group(tmp_path: Path):
         ModelRequest(parts=[UserPromptPart(content="do something")]),
         ModelResponse(
             parts=[
-                ToolCallPart(
-                    tool_name="read_file", args={"path": "a.py"}, tool_call_id="r1"
-                ),
-                ToolCallPart(
-                    tool_name="read_file", args={"path": "b.py"}, tool_call_id="r2"
-                ),
+                ToolCallPart(tool_name="read_file", args={"path": "a.py"}, tool_call_id="r1"),
+                ToolCallPart(tool_name="read_file", args={"path": "b.py"}, tool_call_id="r2"),
                 ToolCallPart(
                     tool_name="ask_user",
                     args={"questions": [{"question": "Proceed?", "options": [{"label": "Yes"}]}]},
                     tool_call_id="q1",
                 ),
-                ToolCallPart(
-                    tool_name="read_file", args={"path": "c.py"}, tool_call_id="r3"
-                ),
+                ToolCallPart(tool_name="read_file", args={"path": "c.py"}, tool_call_id="r3"),
             ]
         ),
         ModelRequest(
@@ -2149,8 +2176,10 @@ async def test_subagent_event_usage_populates_total_and_body_split(tmp_path: Pat
         assert isinstance(parent, SubAgentWidget)
 
         usage = RunUsage(
-            input_tokens=56000, output_tokens=2000,
-            cache_read_tokens=50000, cache_write_tokens=5000,
+            input_tokens=56000,
+            output_tokens=2000,
+            cache_read_tokens=50000,
+            cache_write_tokens=5000,
         )
         await app.stream.on_subagent_event(
             "s1",
@@ -2179,8 +2208,12 @@ def _app_with_manager(tmp_path: Path) -> HarnessApp:
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     store = manager.create("main")
     harness = Harness(
-        TestModel(call_tools=[]), BuiltinToolProvider(), deps,
-        instructions="test", store=store, manager=manager,
+        TestModel(call_tools=[]),
+        BuiltinToolProvider(),
+        deps,
+        instructions="test",
+        store=store,
+        manager=manager,
     )
     return HarnessApp(harness)
 
@@ -2258,8 +2291,13 @@ def _autoname_app(tmp_path: Path) -> HarnessApp:
     deps = _make_deps(tmp_path)
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     harness = Harness(
-        TestModel(call_tools=[]), BuiltinToolProvider(), deps,
-        instructions="test", store=manager.create(), manager=manager, titler=titler,
+        TestModel(call_tools=[]),
+        BuiltinToolProvider(),
+        deps,
+        instructions="test",
+        store=manager.create(),
+        manager=manager,
+        titler=titler,
     )
     return HarnessApp(harness)
 
@@ -2337,8 +2375,13 @@ def _switch_app(tmp_path: Path, source) -> HarnessApp:
     deps = _make_deps(tmp_path)
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     harness = Harness(
-        TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test",
-        store=manager.create(), manager=manager, model_source=source,
+        TestModel(call_tools=[]),
+        BuiltinToolProvider(),
+        deps,
+        instructions="test",
+        store=manager.create(),
+        manager=manager,
+        model_source=source,
         model_id="startup",
     )
     return HarnessApp(harness)
@@ -2425,9 +2468,7 @@ async def test_session_picker_switches_on_choice(tmp_path: Path):
     app.harness.new_session("beta")
     app.harness.session.persist()
 
-    target_id = next(
-        info.id for info in app.harness.session.sessions() if info.name == "alpha"
-    )
+    target_id = next(info.id for info in app.harness.session.sessions() if info.name == "alpha")
 
     def fake_push(screen, callback=None):
         # Mirrors Textual's own ResultCallback.__call__, which never invokes the
@@ -2469,9 +2510,7 @@ async def test_session_picker_delete_message_removes_session(tmp_path: Path):
     app = _app_with_manager(tmp_path)
     app.harness.new_session("doomed")
     app.harness.session.persist()
-    doomed_id = next(
-        info.id for info in app.harness.session.sessions() if info.name == "doomed"
-    )
+    doomed_id = next(info.id for info in app.harness.session.sessions() if info.name == "doomed")
     # Switch back to a non-doomed session so "doomed" isn't the active one.
     app.harness.new_session("keeper")
     app.harness.session.persist()
@@ -2897,6 +2936,7 @@ async def test_subagent_event_shows_current_tool(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
+
         # Mount a parent sub-agent widget via a spawn call.
         async def spawn():
             yield _spawn_call("s1", "look")
@@ -2906,9 +2946,7 @@ async def test_subagent_event_shows_current_tool(tmp_path: Path):
         # A nested tool call shows on the card's ↳ line as the current tool, humanized
         # with its arg preview, and bumps the tally.
         tool_call = FunctionToolCallEvent(
-            part=ToolCallPart(
-                tool_name="grep", args={"pattern": "needle"}, tool_call_id="t1"
-            )
+            part=ToolCallPart(tool_name="grep", args={"pattern": "needle"}, tool_call_id="t1")
         )
         await app.stream.on_subagent_event("s1", tool_call)
         await pilot.pause()
@@ -2935,9 +2973,7 @@ async def test_subagent_event_updates_token_usage(tmp_path: Path):
         await app.stream.on_events(None, spawn())
         await pilot.pause()
         tool_call = FunctionToolCallEvent(
-            part=ToolCallPart(
-                tool_name="grep", args={"pattern": "x"}, tool_call_id="t1"
-            )
+            part=ToolCallPart(tool_name="grep", args={"pattern": "x"}, tool_call_id="t1")
         )
         # The handler forwards the run's live usage; the widget tracks the total.
         await app.stream.on_subagent_event(
@@ -2973,9 +3009,7 @@ async def test_lone_nested_tool_call_is_not_wrapped_in_a_group(tmp_path: Path):
         await pilot.pause()
         await app.stream.on_subagent_event(
             "s1",
-            FunctionToolCallEvent(
-                part=ToolCallPart(tool_name="grep", args={}, tool_call_id="t1")
-            ),
+            FunctionToolCallEvent(part=ToolCallPart(tool_name="grep", args={}, tool_call_id="t1")),
         )
         await pilot.pause()
         parent = app.stream.tool_widgets["s1"]
@@ -3319,9 +3353,7 @@ async def test_tool_result_still_resolves_widget_inside_a_group(tmp_path: Path):
         yield _call("read_file", "c1")
         yield _call("read_file", "c2")
         yield FunctionToolResultEvent(
-            part=ToolReturnPart(
-                tool_name="read_file", content="file body", tool_call_id="c1"
-            )
+            part=ToolReturnPart(tool_name="read_file", content="file body", tool_call_id="c1")
         )
 
     app = _app(tmp_path)
@@ -3458,8 +3490,10 @@ async def test_tool_group_stays_open_when_non_bash_tool_fails(tmp_path: Path):
 
 def _done(value: str):
     """A coroutine that resolves immediately to ``value`` — a finished job body."""
+
     async def coro():
         return value
+
     return coro()
 
 
@@ -3539,7 +3573,7 @@ async def test_wake_does_not_fire_while_a_turn_is_running(tmp_path: Path):
 @pytest.mark.anyio
 async def test_user_turn_resets_auto_depth(tmp_path: Path):
     app = _app(tmp_path)
-    app.run_worker = lambda c, *a, **k: (c.close() if hasattr(c, "close") else None)  # type: ignore[method-assign]
+    app.run_worker = lambda c, *a, **k: c.close() if hasattr(c, "close") else None  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
         app.activity.wake.controller.record_auto_turn()
@@ -3590,11 +3624,36 @@ async def test_ask_user_escape_cancels_only_the_question(tmp_path: Path):
         # the escape landed on the panel rather than falling through to
         # cancel_turn.
         worker = app.run_worker(app._ask_user(qs))
-        await pilot.pause()
+        # Being in the DOM is not being ready for a key. AskUserPanel.on_mount
+        # spawns a worker, and _show_question awaits remove_children() *and*
+        # mount() before it ever calls focus() — so the panel is queryable
+        # several async hops before it can receive one. Pressing in that gap
+        # sends escape to the PromptInput, it falls through to the app's
+        # cancel_turn binding, and the question is never cancelled. Wait for
+        # focus to actually be inside the panel, not for the query to answer.
+        await _settle(
+            pilot,
+            lambda: (
+                app.focused is not None
+                and any(isinstance(w, AskUserPanel) for w in app.focused.ancestors_with_self)
+            ),
+            what="focus to move inside AskUserPanel",
+        )
         await pilot.press("escape")
-        await pilot.pause()
+        # WorkerState, not `result is None`: an unfinished worker also has a
+        # None result, so the old assertion passed vacuously in exactly the
+        # case it was meant to catch — the keypress being lost.
+        await _settle(
+            pilot,
+            lambda: worker.is_finished,
+            what="the _ask_user worker to finish after escape",
+        )
         assert worker.result is None
-        assert not app.query(AskUserPanel)
+        await _settle(
+            pilot,
+            lambda: not app.query(AskUserPanel),
+            what="the AskUserPanel to be removed",
+        )
         assert app.is_running
 
 
@@ -3713,7 +3772,8 @@ async def test_errored_turn_does_not_stamp_duration(tmp_path: Path):
 async def test_title_shows_idle_and_working_indicator(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
         type(_app(tmp_path).harness.session),
-        "session_name", property(lambda self: "my-session"),
+        "session_name",
+        property(lambda self: "my-session"),
     )
     app = _app(tmp_path)
     async with app.run_test() as pilot:
@@ -3731,7 +3791,8 @@ async def test_title_shows_idle_and_working_indicator(tmp_path: Path, monkeypatc
 async def test_unnamed_session_title_falls_back(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
         type(_app(tmp_path).harness.session),
-        "session_name", property(lambda self: None),
+        "session_name",
+        property(lambda self: None),
     )
     app = _app(tmp_path)
     async with app.run_test() as pilot:
@@ -3743,7 +3804,8 @@ async def test_unnamed_session_title_falls_back(tmp_path: Path, monkeypatch):
 async def test_session_name_in_title_not_status_bar(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
         type(_app(tmp_path).harness.session),
-        "session_name", property(lambda self: "secret-session"),
+        "session_name",
+        property(lambda self: "secret-session"),
     )
     app = _app(tmp_path)
     async with app.run_test() as pilot:
@@ -3763,7 +3825,8 @@ def test_osc_title_sequence_format():
 async def test_refresh_title_writes_osc_to_terminal(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
         type(_app(tmp_path).harness.session),
-        "session_name", property(lambda self: "my-session"),
+        "session_name",
+        property(lambda self: "my-session"),
     )
     app = _app(tmp_path)
     async with app.run_test() as pilot:
@@ -3812,7 +3875,8 @@ async def test_busy_title_uses_spinner_frame(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(
         type(_app(tmp_path).harness.session),
-        "session_name", property(lambda self: "my-session"),
+        "session_name",
+        property(lambda self: "my-session"),
     )
     app = _app(tmp_path)
     async with app.run_test() as pilot:
@@ -3830,7 +3894,8 @@ async def test_tick_spinner_advances_only_when_busy(tmp_path: Path, monkeypatch)
 
     monkeypatch.setattr(
         type(_app(tmp_path).harness.session),
-        "session_name", property(lambda self: "my-session"),
+        "session_name",
+        property(lambda self: "my-session"),
     )
     app = _app(tmp_path)
     async with app.run_test() as pilot:
@@ -3883,9 +3948,9 @@ async def test_rewind_command_truncates_and_rerenders(tmp_path: Path):
         await pilot.pause()
         # Seed two checkpoints by hand against the live manager.
         mgr = app.harness.checkpoints
-        mgr.snapshot("turn one")                       # index 0, history_len 0
+        mgr.snapshot("turn one")  # index 0, history_len 0
         app.harness.session.set_history(["u1", "a1"])
-        mgr.snapshot("turn two")                       # index 1, history_len 2
+        mgr.snapshot("turn two")  # index 1, history_len 2
         app.harness.session.set_history(["u1", "a1", "u2", "a2"])
 
         await app.rewind_to_checkpoint(0)
@@ -4118,11 +4183,16 @@ async def test_detached_card_fills_automatically_when_job_settles(tmp_path: Path
 
     jid = reg.register("agent", "explore: x", _work())
 
-    call = FunctionToolCallEvent(part=ToolCallPart(
-        tool_name="spawn_agent", args={"type": "explore", "task": "x"},
-        tool_call_id="s1"))
-    result = FunctionToolResultEvent(part=ToolReturnPart(
-        tool_name="spawn_agent", content=_detach_handoff(jid), tool_call_id="s1"))
+    call = FunctionToolCallEvent(
+        part=ToolCallPart(
+            tool_name="spawn_agent", args={"type": "explore", "task": "x"}, tool_call_id="s1"
+        )
+    )
+    result = FunctionToolResultEvent(
+        part=ToolReturnPart(
+            tool_name="spawn_agent", content=_detach_handoff(jid), tool_call_id="s1"
+        )
+    )
 
     async def gen():
         yield call
@@ -4135,7 +4205,7 @@ async def test_detached_card_fills_automatically_when_job_settles(tmp_path: Path
         card = app.stream.tool_widgets.get("s1")
         assert card.status == "pending"
 
-        gate.set()                          # job finishes → on_change → fill (no manual call)
+        gate.set()  # job finishes → on_change → fill (no manual call)
         for _ in range(400):
             if reg.get(jid).status != "running":
                 break
@@ -4191,9 +4261,7 @@ async def test_bang_submission_runs_command_not_a_turn(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app.on_prompt_input_submitted(
-            PromptInput.Submitted("!echo bang-marker")
-        )
+        await app.on_prompt_input_submitted(PromptInput.Submitted("!echo bang-marker"))
         await app.workers.wait_for_complete()
         await pilot.pause()
         pending = app.harness.turn_controller._pending_shell_results
@@ -4239,9 +4307,7 @@ async def test_bang_survives_a_turn_starting_mid_run(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app.on_prompt_input_submitted(
-            PromptInput.Submitted("!sleep 0.3 && echo survived")
-        )
+        await app.on_prompt_input_submitted(PromptInput.Submitted("!sleep 0.3 && echo survived"))
         await app.start_turn("hello")  # exclusive turn worker joins now
         await app.workers.wait_for_complete()
         await pilot.pause()
@@ -4308,9 +4374,7 @@ async def test_bang_sudo_prompts_for_password_and_cancel_skips_run(
             return None  # user cancelled
 
         app.push_screen_wait = fake_wait  # type: ignore[method-assign]
-        await app.on_prompt_input_submitted(
-            PromptInput.Submitted("!sudo whoami")
-        )
+        await app.on_prompt_input_submitted(PromptInput.Submitted("!sudo whoami"))
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert len(seen) == 1
@@ -4536,9 +4600,7 @@ async def test_slash_exit_warns_before_discarding_queued_messages(tmp_path: Path
         await dispatch(app, "/exit")
         await pilot.pause()
         assert app.is_running, "quit went through without confirmation"
-        assert any(
-            "will be discarded" in str(n.render()) for n in app.query(NoticeMessage)
-        )
+        assert any("will be discarded" in str(n.render()) for n in app.query(NoticeMessage))
 
         await dispatch(app, "/exit")
         await pilot.pause()

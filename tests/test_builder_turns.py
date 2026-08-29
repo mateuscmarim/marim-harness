@@ -41,13 +41,12 @@ async def test_custom_gated_tool_runs_in_auto_mode(tmp_path: Path):
         return f"deployed {target}"
 
     harness = (
-        HarnessBuilder(workspace=tmp_path,
-                        model=_scripted(("deploy", {"target": "prod"})))
+        HarnessBuilder(workspace=tmp_path, model=_scripted(("deploy", {"target": "prod"})))
         .with_tool(deploy, requires_approval=True)
         .build()
     )
     out = await harness.run_turn("deploy to prod")
-    assert calls == ["prod"]          # gated tool executed (auto mode approves)
+    assert calls == ["prod"]  # gated tool executed (auto mode approves)
     assert out.result == "all done"
 
 
@@ -68,7 +67,7 @@ async def test_in_memory_session_round_trips(tmp_path: Path):
     harness = HarnessBuilder(workspace=tmp_path, model=FunctionModel(echo)).build()
     first = await harness.run_turn("one")
     second = await harness.run_turn("two")
-    assert first.result != second.result   # second turn saw a longer history
+    assert first.result != second.result  # second turn saw a longer history
 
 
 async def test_with_capability_attaches_after_builtins(tmp_path: Path):
@@ -86,8 +85,7 @@ async def test_with_capability_attaches_after_builtins(tmp_path: Path):
         return messages
 
     harness = (
-        HarnessBuilder(workspace=tmp_path,
-                        model=_scripted(("list_dir", {"path": "."})))
+        HarnessBuilder(workspace=tmp_path, model=_scripted(("list_dir", {"path": "."})))
         .with_capability(ProcessHistory(observe))
         .build()
     )

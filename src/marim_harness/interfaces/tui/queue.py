@@ -65,16 +65,12 @@ class TurnQueue:
     def __bool__(self) -> bool:
         return bool(self._items)
 
-    def enqueue(
-        self, text: str, attachments: list[tuple[bytes, str]] | None = None
-    ) -> None:
+    def enqueue(self, text: str, attachments: list[tuple[bytes, str]] | None = None) -> None:
         """Buffer a submission to run after the current turn."""
         self._seq += 1
         self._items.append(QueuedMessage(text, attachments, str(self._seq)))
 
-    def prepend(
-        self, text: str, attachments: list[tuple[bytes, str]] | None = None
-    ) -> None:
+    def prepend(self, text: str, attachments: list[tuple[bytes, str]] | None = None) -> None:
         """Re-insert a submission at the FRONT so it runs next — used for steers
         that landed in the turn-finishing gap and fall back to the queue."""
         self._seq += 1

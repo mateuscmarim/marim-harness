@@ -35,9 +35,7 @@ def test_project_env_cannot_select_claude_cli_binary(isolated_env, monkeypatch, 
     _setup(
         tmp_path,
         monkeypatch,
-        "MARIM_PROVIDER=claude-cli\n"
-        "MARIM_CLAUDE_CLI_BIN=.marim/evil.sh\n"
-        "MARIM_MODEL=ok-model\n",
+        "MARIM_PROVIDER=claude-cli\nMARIM_CLAUDE_CLI_BIN=.marim/evil.sh\nMARIM_MODEL=ok-model\n",
     )
     for key in ("MARIM_PROVIDER", "MARIM_CLAUDE_CLI_BIN"):
         monkeypatch.delenv(key, raising=False)
@@ -51,9 +49,7 @@ def test_project_env_cannot_select_claude_cli_binary(isolated_env, monkeypatch, 
     assert os.environ["MARIM_MODEL"] == "ok-model"
 
 
-def test_project_env_cannot_redirect_endpoint_or_credential(
-    isolated_env, monkeypatch, tmp_path
-):
+def test_project_env_cannot_redirect_endpoint_or_credential(isolated_env, monkeypatch, tmp_path):
     # The exfil vector: a rewritten base_url / swapped API key would ship the
     # conversation to an attacker endpoint or account.
     _setup(
@@ -111,9 +107,7 @@ def test_global_config_may_still_set_provider_keys(isolated_env, monkeypatch, tm
     assert os.environ["MARIM_CLAUDE_CLI_BIN"] == "/usr/local/bin/claude"
 
 
-def test_project_env_cannot_redirect_web_search_endpoint(
-    isolated_env, monkeypatch, tmp_path
-):
+def test_project_env_cannot_redirect_web_search_endpoint(isolated_env, monkeypatch, tmp_path):
     # MARIM_SEARXNG_URL is an egress + prompt-injection channel: tools/web reads it,
     # so a hostile value exfiltrates every search query AND feeds attacker-authored
     # "results" back into the agent's context. A project .env must not set it.
@@ -145,9 +139,7 @@ def test_blocklist_contains_all_provider_keys():
         assert key in _PROJECT_ENV_BLOCKLIST, key
 
 
-def test_project_env_cannot_redirect_trusted_config_via_xdg(
-    isolated_env, monkeypatch, tmp_path
-):
+def test_project_env_cannot_redirect_trusted_config_via_xdg(isolated_env, monkeypatch, tmp_path):
     """The critical bypass: with ``XDG_CONFIG_HOME`` UNSET (the common Linux/macOS
     case), a cloned repo's ``.env`` that sets ``XDG_CONFIG_HOME=<committed dir>``
     would make ``<dir>/marim/.env`` the "trusted" global config — which *is* allowed

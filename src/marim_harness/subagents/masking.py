@@ -54,8 +54,7 @@ class ObservationMasker:
     :func:`marim_harness.compaction.mask_stale_observations`.
     """
 
-    def __init__(self, trigger_tokens: int, keep_recent: int = 4,
-                 min_chars: int = 200) -> None:
+    def __init__(self, trigger_tokens: int, keep_recent: int = 4, min_chars: int = 200) -> None:
         # The trigger arrives pre-derived (min(budget, 0.8 × window) — see
         # config/context_limits.py). No internal ratio on top: stacking one
         # would silently move masking to 0.6 of the window.
@@ -73,9 +72,7 @@ class ObservationMasker:
         view = self._apply(messages)
         if estimate_tokens(view) <= self._trigger_tokens:
             return view
-        view, masked = mask_stale_observations(
-            view, self._keep_recent, min_chars=self._min_chars
-        )
+        view, masked = mask_stale_observations(view, self._keep_recent, min_chars=self._min_chars)
         if masked:
             self._commit(view)
         return view
@@ -104,9 +101,7 @@ class ObservationMasker:
                     and part.content != MASKED_OBSERVATION
                     and not has_narrowed_content(part)
                 ):
-                    new_parts[pidx] = dataclasses.replace(
-                        part, content=MASKED_OBSERVATION
-                    )
+                    new_parts[pidx] = dataclasses.replace(part, content=MASKED_OBSERVATION)
                     changed = True
             if changed:
                 out[idx] = dataclasses.replace(message, parts=new_parts)
@@ -117,8 +112,5 @@ class ObservationMasker:
         exact same set."""
         for message in view:
             for part in getattr(message, "parts", []):
-                if (
-                    isinstance(part, ToolReturnPart)
-                    and part.content == MASKED_OBSERVATION
-                ):
+                if isinstance(part, ToolReturnPart) and part.content == MASKED_OBSERVATION:
                     self._masked_ids.add(part.tool_call_id)

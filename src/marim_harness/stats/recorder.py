@@ -1,4 +1,5 @@
 """Turn-usage recording into the stats ledger."""
+
 from __future__ import annotations
 
 import logging

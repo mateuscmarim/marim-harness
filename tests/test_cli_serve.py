@@ -104,7 +104,9 @@ def test_serve_startup_reports_the_workspaces_root_it_adopted(tmp_path, monkeypa
     root = tmp_path / "elsewhere"
     text = _run_serve(
         ["--workspaces-root", str(root), "--idle-ttl", "30"],
-        tmp_path, monkeypatch, out=io.StringIO(),
+        tmp_path,
+        monkeypatch,
+        out=io.StringIO(),
     )
     assert str(root) in text
     assert "idle ttl: 30s" in text

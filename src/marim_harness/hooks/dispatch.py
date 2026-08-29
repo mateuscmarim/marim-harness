@@ -70,9 +70,7 @@ class TurnHooks:
 
     async def subagent_start(self, subagent_type: str, task: str) -> None:
         """SubagentStart for a spawned sub-agent. Observe-only."""
-        await self._dispatch(
-            hook_events.SUBAGENT_START, subagent_type=subagent_type, task=task
-        )
+        await self._dispatch(hook_events.SUBAGENT_START, subagent_type=subagent_type, task=task)
 
     async def subagent_stop(self, subagent_type: str, task: str, result: str) -> None:
         """SubagentStop once a spawned sub-agent returns. Observe-only."""
@@ -83,8 +81,7 @@ class TurnHooks:
             result=result,
         )
 
-    async def notification(self, notification_type: str, title: str,
-                           message: str) -> None:
+    async def notification(self, notification_type: str, title: str, message: str) -> None:
         """Notification: the agent needs the user's attention (approval / a
         question). Observe-only."""
         await self._dispatch(
@@ -94,8 +91,9 @@ class TurnHooks:
             message=message,
         )
 
-    async def task_completed(self, task_subject: str, task_id=None,
-                             task_description: str = "") -> None:
+    async def task_completed(
+        self, task_subject: str, task_id=None, task_description: str = ""
+    ) -> None:
         """TaskCompleted: a checklist item transitioned to done. Observe-only."""
         await self._dispatch(
             hook_events.TASK_COMPLETED,
@@ -104,8 +102,7 @@ class TurnHooks:
             task_description=task_description,
         )
 
-    async def post_tool_use_failure(self, tool_name: str, tool_input: dict,
-                                    error: str) -> None:
+    async def post_tool_use_failure(self, tool_name: str, tool_input: dict, error: str) -> None:
         """PostToolUseFailure: a tool call errored or was retried. Observe-only."""
         await self._dispatch(
             hook_events.POST_TOOL_USE_FAILURE,
@@ -142,8 +139,7 @@ class TurnHooks:
             )
         elif isinstance(event, FunctionToolResultEvent):
             # Look up the stashed input by tool_call_id; fall back gracefully.
-            tool_input = ({} if call_inputs is None
-                          else call_inputs.get(event.tool_call_id, {}))
+            tool_input = {} if call_inputs is None else call_inputs.get(event.tool_call_id, {})
             part = event.part
             if isinstance(part, RetryPromptPart):
                 # A failed/retried call: fire PostToolUseFailure instead of
@@ -167,6 +163,7 @@ class TurnHooks:
                         tool_name=getattr(part, "tool_name", ""),
                         tool_input=tool_input,
                         tool_response=render_binary_safe(content)
-                        if has_binary_content(content) else str(content),
+                        if has_binary_content(content)
+                        else str(content),
                     ),
                 )

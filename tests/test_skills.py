@@ -110,7 +110,7 @@ def test_discover_skills_caches_until_skill_md_changes(isolated_home):
     # Unchanged tree -> cache hit returns the very same cached list object.
     assert discover_skills(ws) is first
     # A differently-spelled but equivalent path must hit the same cache entry.
-    assert discover_skills(ws / "." ) is first
+    assert discover_skills(ws / ".") is first
     # Adding a skill changes the signature and invalidates the cache.
     _make_skill(ws / ".marim" / "skills", "beta", description="Does beta.")
     second = discover_skills(ws)
@@ -187,7 +187,8 @@ def test_precedence_project_over_global(isolated_home, monkeypatch):
 def test_disable_model_invocation_parsed(isolated_home):
     ws = isolated_home / "ws"
     _make_skill(
-        ws / ".marim" / "skills", "deploy",
+        ws / ".marim" / "skills",
+        "deploy",
         extra_fm="disable-model-invocation: true\n",
     )
     skill = find_skill(ws, "deploy")
@@ -199,7 +200,9 @@ def test_skills_index_text_excludes_disabled(isolated_home):
     ws = isolated_home / "ws"
     _make_skill(ws / ".marim" / "skills", "auto-one", description="auto desc")
     _make_skill(
-        ws / ".marim" / "skills", "manual-one", description="manual desc",
+        ws / ".marim" / "skills",
+        "manual-one",
+        description="manual desc",
         extra_fm="disable-model-invocation: true\n",
     )
     text = skills_index_text(discover_skills(ws))
@@ -231,7 +234,8 @@ def test_read_skill_body_returns_full_file(isolated_home):
 def test_read_bundled_file(isolated_home):
     ws = isolated_home / "ws"
     _make_skill(
-        ws / ".marim" / "skills", "withref",
+        ws / ".marim" / "skills",
+        "withref",
         files={"references/REFERENCE.md": "deep detail here"},
     )
     skill = find_skill(ws, "withref")

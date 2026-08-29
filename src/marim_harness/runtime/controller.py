@@ -4,6 +4,7 @@ Extracted from Harness to isolate the most complex, highest-cyclomatic-load
 subsystem (approval rounds, overflow retry, resumable flush, one-shot
 consumables, steer buffering) from model/session/MCP lifecycle management.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -193,8 +194,7 @@ def _drop_nameless_tool_calls(history: list[ModelMessage]) -> list[ModelMessage]
             part
             for part in parts
             if not (
-                isinstance(part, (ToolCallPart, ToolReturnPart))
-                and part.tool_call_id in broken_ids
+                isinstance(part, (ToolCallPart, ToolReturnPart)) and part.tool_call_id in broken_ids
             )
         ]
         if not kept:
@@ -281,7 +281,7 @@ class _RunRetry(Enum):
     (a contention retry doesn't consume the compaction retry, and vice versa)."""
 
     CONTENTION = auto()  # pool contention: retry in place after a backoff
-    COMPACTED = auto()   # genuine overflow: history force-compacted; retry
+    COMPACTED = auto()  # genuine overflow: history force-compacted; retry
 
 
 class TurnController:
@@ -451,13 +451,15 @@ class TurnController:
         )
         resumable = list(self.session.history)
         retry_outcome = await self._run_with_approval(
-            corrective, deferred_results=None, toolsets=toolsets,
-            event_stream_handler=event_stream_handler, resumable=resumable,
+            corrective,
+            deferred_results=None,
+            toolsets=toolsets,
+            event_stream_handler=event_stream_handler,
+            resumable=resumable,
         )
         if retry_outcome.subtype != "success":
             return retry_outcome
-        errors = validate_dict_output(retry_outcome.structured_output,
-                                      self._output_type_dict)
+        errors = validate_dict_output(retry_outcome.structured_output, self._output_type_dict)
         if errors:
             return TurnOutcome(
                 subtype="error_max_structured_output_retries",
@@ -686,8 +688,7 @@ class TurnController:
             prompt = wrap_turn_context(injected, typed)
         return prompt
 
-    def steer(self, text: str,
-              attachments: list[tuple[bytes, str]] | None = None) -> None:
+    def steer(self, text: str, attachments: list[tuple[bytes, str]] | None = None) -> None:
         """Inject a user message into the running turn. Reaches the model at the
         next request boundary (pydantic-ai drains 'asap' content before it).
         Buffers if no run is live yet; the buffer flushes when a ctx is captured."""
@@ -896,9 +897,7 @@ class TurnController:
         # cancellation here propagates rather than being swallowed.
         try:
             await asyncio.wait_for(
-                asyncio.to_thread(
-                    dump_provider_error, self.deps.workspace.root, exc
-                ),
+                asyncio.to_thread(dump_provider_error, self.deps.workspace.root, exc),
                 timeout=0.25,
             )
         except Exception as dump_exc:
@@ -926,25 +925,22 @@ class TurnController:
         persisted during the round."""
         if self.deps.workspace.mode is Mode.ask and requests.approvals:
             names = ", ".join(
-                getattr(c, "tool_name", None) or "(unknown)"
-                for c in requests.approvals
+                getattr(c, "tool_name", None) or "(unknown)" for c in requests.approvals
             )
             # Belt-and-suspenders: the hook engine is already best-effort
             # (runner.dispatch never raises), but a payload-assembly bug or
             # a future non-observe-only hook must never abort the turn and
             # lose the model's in-flight work. Degrade to a logged warning.
             try:
-                await self.hooks.notification(
-                    "approval_needed", "Approval needed", names
-                )
+                await self.hooks.notification("approval_needed", "Approval needed", names)
             except Exception as exc:  # noqa: BLE001 — a notification must never crash a turn
-                logger.warning(
-                    "approval-needed notification hook failed: %s", exc, exc_info=True
-                )
+                logger.warning("approval-needed notification hook failed: %s", exc, exc_info=True)
         try:
             get_scratchpad = self.deps.services.get_scratchpad
             deferred_results = await resolve_approvals(
-                requests, self.deps.workspace.mode, self.deps.ui.request_approval,
+                requests,
+                self.deps.workspace.mode,
+                self.deps.ui.request_approval,
                 workspace_root=self.deps.workspace.root,
                 scratchpad=get_scratchpad() if get_scratchpad is not None else None,
             )
@@ -971,9 +967,7 @@ class TurnController:
             try:
                 await asyncio.to_thread(self.session.persist)
             except Exception as persist_exc:
-                logger.warning(
-                    "approval rollback persist failed: %s", persist_exc, exc_info=True
-                )
+                logger.warning("approval rollback persist failed: %s", persist_exc, exc_info=True)
             raise
         return deferred_results
 
@@ -994,12 +988,12 @@ class TurnController:
         # Headless settles the task before teardown via wait_autoname.
         self.session.schedule_autoname()
         if isinstance(output, str):
-            return TurnOutcome(subtype="success", result=output,
-                               structured_output=None, errors=None)
+            return TurnOutcome(
+                subtype="success", result=output, structured_output=None, errors=None
+            )
         # Structured-output terminal: the deferred arm never reaches here —
         # _run_with_approval intercepts DeferredToolRequests mid-loop.
-        return TurnOutcome(subtype="success", result=None,
-                           structured_output=output, errors=None)
+        return TurnOutcome(subtype="success", result=None, structured_output=output, errors=None)
 
     async def _run_with_approval(
         self,
@@ -1127,9 +1121,7 @@ class TurnController:
                 # too — that run's request is what finally answers these calls,
                 # so the history is dirty for its whole duration.
                 self.deps.approval_round_active = True
-                deferred_results = await self._resolve_approval_round(
-                    result.output, resumable
-                )
+                deferred_results = await self._resolve_approval_round(result.output, resumable)
                 user_prompt = None  # continuation is driven by deferred_results
                 continue
             # Offload the success-path write so a multi-MB serialize+fsync doesn't
@@ -1228,12 +1220,14 @@ class TurnController:
             # duration_seconds=0 on abort despite real wall-clock work. Idempotent:
             # ensure_segment_started no-ops once the clock is running.
             self.session.ensure_segment_started()
-            user_prompt: str | list[str | BinaryContent] | None = (
-                await self._assemble_prompt(prompt)
+            user_prompt: str | list[str | BinaryContent] | None = await self._assemble_prompt(
+                prompt
             )
             if attachments and user_prompt is not None:
-                user_prompt = [user_prompt, *(BinaryContent(data=d, media_type=m)
-                                              for d, m in attachments)]
+                user_prompt = [
+                    user_prompt,
+                    *(BinaryContent(data=d, media_type=m) for d, m in attachments),
+                ]
             # Tool-search policy: compose_turn_toolsets folds the LSP toolset
             # (when enabled) and the MCP/plugin surface under one deferral decision.
             # OTHER builtins (on the Agent) remain unaffected.
@@ -1254,8 +1248,11 @@ class TurnController:
             # per iteration (that poisoned the rollback baseline across rounds).
             resumable = list(self.session.history)
             outcome = await self._run_with_approval(
-                user_prompt, deferred_results=None, toolsets=toolsets,
-                event_stream_handler=event_stream_handler, resumable=resumable,
+                user_prompt,
+                deferred_results=None,
+                toolsets=toolsets,
+                event_stream_handler=event_stream_handler,
+                resumable=resumable,
             )
             return await self._correct_dict_output(outcome, toolsets, event_stream_handler)
         except BaseException:

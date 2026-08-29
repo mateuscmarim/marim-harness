@@ -10,8 +10,11 @@ from marim_harness.session.checkpoints import (
 
 def test_checkpoint_roundtrips_through_dict():
     cp = Checkpoint(
-        index=2, history_len=6, commit="abc123",
-        created="2026-06-23T00:00:00+00:00", prompt_preview="fix the bug",
+        index=2,
+        history_len=6,
+        commit="abc123",
+        created="2026-06-23T00:00:00+00:00",
+        prompt_preview="fix the bug",
     )
     assert Checkpoint.from_dict(cp.to_dict()) == cp
 
@@ -129,7 +132,7 @@ def test_indices_increase_across_snapshots(tmp_path: Path):
 def test_rewind_truncates_history_and_persists(tmp_path: Path):
     s = _session(tmp_path)
     mgr = CheckpointManager(s)
-    mgr.snapshot("turn-1")          # history_len 0 captured
+    mgr.snapshot("turn-1")  # history_len 0 captured
     s.set_history(["u1", "a1", "u2", "a2"])
     result = mgr.rewind(0)
     assert isinstance(result, RewindResult)
@@ -519,6 +522,7 @@ def test_rewind_unknown_index_raises(tmp_path: Path):
     s = _session(tmp_path)
     mgr = CheckpointManager(s)
     import pytest
+
     with pytest.raises(KeyError):
         mgr.rewind(99)
 
@@ -550,8 +554,8 @@ def test_clear_deletes_the_pre_restore_and_pre_undo_safety_refs(tmp_path: Path):
     mgr = CheckpointManager(s, snap)
     mgr.snapshot("t1")
     s.set_history(["u1", "a1"])
-    mgr.rewind(0)          # captures the _pre_restore safety snapshot
-    mgr.undo_rewind()      # captures the _pre_undo safety snapshot
+    mgr.rewind(0)  # captures the _pre_restore safety snapshot
+    mgr.undo_rewind()  # captures the _pre_undo safety snapshot
     snap.deleted.clear()
 
     mgr.clear()

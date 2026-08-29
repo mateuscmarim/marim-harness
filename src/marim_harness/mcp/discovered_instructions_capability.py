@@ -33,10 +33,7 @@ def _marker(server: str) -> str:
 
 def _envelope(server: str, text: str) -> str:
     # Labelled so the model reads it as server-authored guidance, not a user utterance.
-    return (
-        f'[MCP server "{server}" — usage guidance; follow it for that '
-        f"server's tools]\n{text}"
-    )
+    return f'[MCP server "{server}" — usage guidance; follow it for that server\'s tools]\n{text}'
 
 
 def _instruction_messages(server: str, text: str) -> list[ModelMessage]:

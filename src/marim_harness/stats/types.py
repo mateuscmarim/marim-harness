@@ -1,4 +1,5 @@
 """Types for the durable usage ledger and its pure stats queries."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

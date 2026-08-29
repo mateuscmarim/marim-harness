@@ -169,8 +169,9 @@ class WorkflowEngine:
         # DEFAULT_RUN_TIMEOUT_SECS. See _effective_timeout.
         self._timeout = timeout_secs
 
-    async def run(self, script: str, args: object, tool_call_id: str,
-                  timeout_secs: float | None = None) -> str:
+    async def run(
+        self, script: str, args: object, tool_call_id: str, timeout_secs: float | None = None
+    ) -> str:
         try:
             monty = Monty(script, inputs=["args"], script_name="workflow.py")
         except MontySyntaxError as exc:
@@ -187,8 +188,7 @@ class WorkflowEngine:
             # type_check can raise RuntimeError when its own infrastructure
             # fails. Validation is a cheap pre-flight, not the authority —
             # never let its breakage block a script the interpreter could run.
-            logger.warning("workflow script validation errored; skipping",
-                           exc_info=True)
+            logger.warning("workflow script validation errored; skipping", exc_info=True)
         # Announce the run only after a successful parse + validation: both
         # failures are returned above with no run to track, so no card is ever
         # claimed for them and _announce_done below fires exactly once per
@@ -236,8 +236,9 @@ class WorkflowEngine:
             raise
         if not done:
             await self._abort_and_drain(state, vm)
-            outcome = (f"Workflow timed out after {effective:.0f}s; "
-                       "in-flight sub-agents were cancelled.")
+            outcome = (
+                f"Workflow timed out after {effective:.0f}s; in-flight sub-agents were cancelled."
+            )
             self._announce_done(tool_call_id, outcome, failed=True)
             return outcome
         try:
@@ -271,11 +272,17 @@ class WorkflowEngine:
         # instead of killing the run.
         loop = asyncio.get_running_loop()
 
-        async def agent(task, *, type="general", model=None, schema=None,
-                        max_output_chars=None, isolation=None):
+        async def agent(
+            task, *, type="general", model=None, schema=None, max_output_chars=None, isolation=None
+        ):
             return await self._agent_call(
-                state, str(task), type=str(type), model=model, schema=schema,
-                max_output_chars=max_output_chars, isolation=isolation,
+                state,
+                str(task),
+                type=str(type),
+                model=model,
+                schema=schema,
+                max_output_chars=max_output_chars,
+                isolation=isolation,
             )
 
         def log(message):
@@ -283,8 +290,9 @@ class WorkflowEngine:
 
         return {"agent": agent, "log": log}
 
-    async def _agent_call(self, state: _RunState, task: str, *, type: str,
-                          model, schema, max_output_chars, isolation):
+    async def _agent_call(
+        self, state: _RunState, task: str, *, type: str, model, schema, max_output_chars, isolation
+    ):
         if schema is not None:
             check_valid_schema(schema)
         # Enforcement rides the spawn seam (runner-side structured output,
@@ -293,7 +301,13 @@ class WorkflowEngine:
         # native path the JSON round-trips trivially, on the fallback path it
         # does exactly the work it did when the engine owned the contract.
         report = await self._spawn_child(
-            state, type, task, max_output_chars, model, isolation, schema,
+            state,
+            type,
+            task,
+            max_output_chars,
+            model,
+            isolation,
+            schema,
         )
         if schema is None:
             return report
@@ -302,23 +316,33 @@ class WorkflowEngine:
             if err is None:
                 return data
             retry_task = (
-                task
-                + f"\n\nA previous attempt failed validation: {err}. "
-                  "Respond again with ONLY the corrected JSON."
+                task + f"\n\nA previous attempt failed validation: {err}. "
+                "Respond again with ONLY the corrected JSON."
             )
             report = await self._spawn_child(
-                state, type, retry_task, max_output_chars, model, isolation, schema,
+                state,
+                type,
+                retry_task,
+                max_output_chars,
+                model,
+                isolation,
+                schema,
             )
             data, err = validate_report(report, schema)
         if err is None:
             return data
-        raise WorkflowResultError(
-            f"agent() output failed schema validation after a retry: {err}"
-        )
+        raise WorkflowResultError(f"agent() output failed schema validation after a retry: {err}")
 
-    async def _spawn_child(self, state: _RunState, type: str, task: str,
-                           max_output_chars, model, isolation,
-                           output_schema: dict | None = None) -> str:
+    async def _spawn_child(
+        self,
+        state: _RunState,
+        type: str,
+        task: str,
+        max_output_chars,
+        model,
+        isolation,
+        output_schema: dict | None = None,
+    ) -> str:
         if state.abort.is_set():
             raise WorkflowCancelled("workflow aborted")
         state.seq += 1
@@ -334,10 +358,19 @@ class WorkflowEngine:
         # spawn past workflow abandonment.
         if state.abort.is_set():
             raise WorkflowCancelled("workflow aborted")
-        child = asyncio.ensure_future(self._spawn(
-            type, task, stream_id, None, max_output_chars, model, isolation,
-            self.deps.subagent_depth, output_schema=output_schema,
-        ))
+        child = asyncio.ensure_future(
+            self._spawn(
+                type,
+                task,
+                stream_id,
+                None,
+                max_output_chars,
+                model,
+                isolation,
+                self.deps.subagent_depth,
+                output_schema=output_schema,
+            )
+        )
         state.children.add(child)
         child.add_done_callback(state.children.discard)
         try:
@@ -404,8 +437,7 @@ class WorkflowEngine:
         await asyncio.wait({vm}, timeout=_DRAIN_SECS)
         if not vm.done():
             # Never cancel or await an abandoned VM (see module docstring).
-            logger.warning("workflow VM did not drain within %.1fs; abandoned",
-                           _DRAIN_SECS)
+            logger.warning("workflow VM did not drain within %.1fs; abandoned", _DRAIN_SECS)
 
     def _shape(self, value: object, tool_call_id: str, printed: str = "") -> str:
         name = tool_call_id or "workflow"

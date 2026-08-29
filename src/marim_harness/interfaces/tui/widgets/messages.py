@@ -49,7 +49,10 @@ class SummaryWidget(Collapsible):
         # A literal Content title bypasses Textual's markup parsing, matching the
         # other Collapsible titles in this module.
         super().__init__(
-            self._body, title=Content("≡ Conversation summary"), collapsed=True  # pyright: ignore[reportArgumentType]
+            self._body,
+            # Textual types `title` as str; a Content title is deliberate (see above).
+            title=Content("≡ Conversation summary"),  # pyright: ignore[reportArgumentType]
+            collapsed=True,
         )
 
 
@@ -336,12 +339,16 @@ class AssistantMessage(Markdown):
         flush, which bounds them itself), and for unmounted widgets."""
         if self._finalized:
             return
+        # An unmounted message is *deferred*, not finished: _on_text_start holds the
+        # mount back until the part has visible content (so a blank text part can't
+        # claim the slot above the thinking block that follows it). Such a message
+        # still gets finalize() from _finalize_stale_blocks when the next part
+        # starts — latching here would burn the one-shot and skip the real
+        # stream-end pass once it mounts and fills. Return without latching.
+        if not self.is_mounted:
+            return
         self._finalized = True
-        if (
-            not self.is_mounted
-            or self._rendered_len == 0
-            or len(self.text) <= self._MAX_RENDER
-        ):
+        if self._rendered_len == 0 or len(self.text) <= self._MAX_RENDER:
             return
         # Run the collapse off the sync stream-dispatch path: it must wait for the
         # in-flight append before re-rendering, which we can only do in a coroutine.

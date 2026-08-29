@@ -20,9 +20,7 @@ async def fetch_url(
     session scratchpad (or legacy offload directory) and you get a handle +
     preview back — read_file/grep that path to page through it — so it doesn't
     flood context."""
-    return await fetch.fetch_url(
-        url, prompt=prompt, offload_dir=offload_dir(ctx)
-    )
+    return await fetch.fetch_url(url, prompt=prompt, offload_dir=offload_dir(ctx))
 
 
 async def web_search(

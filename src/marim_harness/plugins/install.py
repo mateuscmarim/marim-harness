@@ -254,12 +254,14 @@ def _mutate(name: str, scope: str, workspace_root, fn) -> bool:
 def set_enabled(name: str, *, scope: str, workspace_root, enabled: bool) -> bool:
     def _apply(r):
         r.enabled = enabled
+
     return _mutate(name, scope, workspace_root, _apply)
 
 
 def set_trusted(name: str, *, scope: str, workspace_root, trusted: bool) -> bool:
     def _apply(r):
         r.trusted = trusted
+
     return _mutate(name, scope, workspace_root, _apply)
 
 
@@ -285,9 +287,7 @@ def remove_plugin(name: str, *, scope: str, workspace_root) -> bool:
     return True
 
 
-def executable_surface_fingerprint(
-    hooks: dict | None, mcp_servers: dict | None, lsp=None
-) -> str:
+def executable_surface_fingerprint(hooks: dict | None, mcp_servers: dict | None, lsp=None) -> str:
     """Canonical, stable fingerprint of a plugin's executable surface: its hook
     entries (commands, args, env, event wiring), MCP server specs (commands,
     args, env, urls), AND its ``lsp`` block (a declarative ``command``/``args``

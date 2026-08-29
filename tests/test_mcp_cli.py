@@ -77,30 +77,44 @@ def test_read_servers_with_source_project_wins(tmp_path, monkeypatch):
 
 def test_build_spec_stdio():
     spec = mcp_cmd._build_spec(
-        transport="stdio", rest=["node", "x.js", "--port"],
-        headers=[], envs=["A=1", "B=2"], trust=False,
+        transport="stdio",
+        rest=["node", "x.js", "--port"],
+        headers=[],
+        envs=["A=1", "B=2"],
+        trust=False,
     )
     assert spec == {"command": "node", "args": ["x.js", "--port"], "env": {"A": "1", "B": "2"}}
 
 
 def test_build_spec_stdio_minimal():
     spec = mcp_cmd._build_spec(
-        transport="stdio", rest=["mddocs-mcp"], headers=[], envs=[], trust=False,
+        transport="stdio",
+        rest=["mddocs-mcp"],
+        headers=[],
+        envs=[],
+        trust=False,
     )
     assert spec == {"command": "mddocs-mcp"}
 
 
 def test_build_spec_http_with_header_and_trust():
     spec = mcp_cmd._build_spec(
-        transport="http", rest=["https://x/mcp"],
-        headers=["Authorization: Bearer t"], envs=[], trust=True,
+        transport="http",
+        rest=["https://x/mcp"],
+        headers=["Authorization: Bearer t"],
+        envs=[],
+        trust=True,
     )
     assert spec == {"url": "https://x/mcp", "headers": {"Authorization": "Bearer t"}, "trust": True}
 
 
 def test_build_spec_sse_sets_type():
     spec = mcp_cmd._build_spec(
-        transport="sse", rest=["https://x/sse"], headers=[], envs=[], trust=False,
+        transport="sse",
+        rest=["https://x/sse"],
+        headers=[],
+        envs=[],
+        trust=False,
     )
     assert spec == {"url": "https://x/sse", "type": "sse"}
 
@@ -108,14 +122,22 @@ def test_build_spec_sse_sets_type():
 def test_build_spec_rejects_header_on_stdio():
     with pytest.raises(mcp_cmd.SpecError):
         mcp_cmd._build_spec(
-            transport="stdio", rest=["node"], headers=["A: b"], envs=[], trust=False,
+            transport="stdio",
+            rest=["node"],
+            headers=["A: b"],
+            envs=[],
+            trust=False,
         )
 
 
 def test_build_spec_rejects_env_on_http():
     with pytest.raises(mcp_cmd.SpecError):
         mcp_cmd._build_spec(
-            transport="http", rest=["https://x/mcp"], headers=[], envs=["A=1"], trust=False,
+            transport="http",
+            rest=["https://x/mcp"],
+            headers=[],
+            envs=["A=1"],
+            trust=False,
         )
 
 
@@ -127,7 +149,11 @@ def test_build_spec_rejects_empty_rest():
 def test_build_spec_rejects_extra_url_positionals():
     with pytest.raises(mcp_cmd.SpecError):
         mcp_cmd._build_spec(
-            transport="http", rest=["https://x/mcp", "junk"], headers=[], envs=[], trust=False,
+            transport="http",
+            rest=["https://x/mcp", "junk"],
+            headers=[],
+            envs=[],
+            trust=False,
         )
 
 
@@ -156,12 +182,22 @@ def test_main_add_stdio_writes_project_file(tmp_path, monkeypatch):
 def test_main_add_http_user_scope(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
     monkeypatch.chdir(tmp_path)
-    code, out, err = _run([
-        "add", "--transport", "http", "--scope", "user", "remote",
-        "https://x/mcp", "-H", "Authorization: Bearer t",
-    ])
+    code, out, err = _run(
+        [
+            "add",
+            "--transport",
+            "http",
+            "--scope",
+            "user",
+            "remote",
+            "https://x/mcp",
+            "-H",
+            "Authorization: Bearer t",
+        ]
+    )
     assert code == 0, err
     from marim_harness.mcp.config import global_mcp_config_path
+
     data = json.loads(global_mcp_config_path().read_text())["mcpServers"]
     assert data["remote"] == {"url": "https://x/mcp", "headers": {"Authorization": "Bearer t"}}
 

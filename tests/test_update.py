@@ -54,10 +54,10 @@ def test_check_latest_current():
 def test_check_latest_network_error():
     from marim_harness.interfaces.cli.update import _check_latest
 
-    with patch(
-        "httpx.get", side_effect=httpx.ConnectError("connection refused")
-    ), patch("marim_harness.interfaces.cli.update.version", return_value="0.3.0"), pytest.raises(
-        RuntimeError, match="Could not reach PyPI"
+    with (
+        patch("httpx.get", side_effect=httpx.ConnectError("connection refused")),
+        patch("marim_harness.interfaces.cli.update.version", return_value="0.3.0"),
+        pytest.raises(RuntimeError, match="Could not reach PyPI"),
     ):
         _check_latest()
 
@@ -67,10 +67,13 @@ def test_check_latest_not_installed():
 
     from marim_harness.interfaces.cli.update import _check_latest
 
-    with patch(
-        "marim_harness.interfaces.cli.update.version",
-        side_effect=PackageNotFoundError,
-    ), pytest.raises(PackageNotFoundError):
+    with (
+        patch(
+            "marim_harness.interfaces.cli.update.version",
+            side_effect=PackageNotFoundError,
+        ),
+        pytest.raises(PackageNotFoundError),
+    ):
         _check_latest()
 
 
@@ -121,12 +124,17 @@ def test_do_upgrade_uv_not_found():
 
     pip_result = type("Result", (), {"returncode": 0})()
     expected = [
-        "/usr/bin/python", "-m", "pip", "install",
-        "--upgrade", "marim-harness",
+        "/usr/bin/python",
+        "-m",
+        "pip",
+        "install",
+        "--upgrade",
+        "marim-harness",
     ]
-    with patch(
-        "subprocess.run", side_effect=[FileNotFoundError, pip_result]
-    ) as mock_run, patch.object(sys, "executable", "/usr/bin/python"):
+    with (
+        patch("subprocess.run", side_effect=[FileNotFoundError, pip_result]) as mock_run,
+        patch.object(sys, "executable", "/usr/bin/python"),
+    ):
         _do_upgrade()
         assert mock_run.call_count == 2
         assert mock_run.call_args_list[0][0][0][0] == "uv"
@@ -209,15 +217,16 @@ def test_main_upgrade_succeeds():
         latest="9.9.9",
         release_url="https://pypi.org/project/marim-harness/9.9.9/",
     )
-    with patch("marim_harness.interfaces.cli.update._check_latest", return_value=info), patch(
-        "marim_harness.interfaces.cli.update._do_upgrade", return_value=0
+    with (
+        patch("marim_harness.interfaces.cli.update._check_latest", return_value=info),
+        patch("marim_harness.interfaces.cli.update._do_upgrade", return_value=0),
     ):
-            out = StringIO()
-            err = StringIO()
-            result = main([], out=out, err=err)
-            output = out.getvalue()
-            assert result == 0
-            assert "Upgraded" in output
+        out = StringIO()
+        err = StringIO()
+        result = main([], out=out, err=err)
+        output = out.getvalue()
+        assert result == 0
+        assert "Upgraded" in output
 
 
 def test_main_upgrade_fails():
@@ -228,13 +237,14 @@ def test_main_upgrade_fails():
         latest="9.9.9",
         release_url="https://pypi.org/project/marim-harness/9.9.9/",
     )
-    with patch("marim_harness.interfaces.cli.update._check_latest", return_value=info), patch(
-        "marim_harness.interfaces.cli.update._do_upgrade", return_value=1
+    with (
+        patch("marim_harness.interfaces.cli.update._check_latest", return_value=info),
+        patch("marim_harness.interfaces.cli.update._do_upgrade", return_value=1),
     ):
-            out = StringIO()
-            err = StringIO()
-            result = main([], out=out, err=err)
-            assert result == 1
+        out = StringIO()
+        err = StringIO()
+        result = main([], out=out, err=err)
+        assert result == 1
 
 
 def test_main_upgrade_already_latest():
@@ -245,16 +255,17 @@ def test_main_upgrade_already_latest():
         latest="0.3.0",
         release_url="https://pypi.org/project/marim-harness/0.3.0/",
     )
-    with patch("marim_harness.interfaces.cli.update._check_latest", return_value=info), patch(
-        "marim_harness.interfaces.cli.update._do_upgrade"
-    ) as mock_upgrade:
-            out = StringIO()
-            err = StringIO()
-            result = main([], out=out, err=err)
-            output = out.getvalue()
-            assert result == 0
-            assert "already the latest" in output.lower()
-            mock_upgrade.assert_not_called()
+    with (
+        patch("marim_harness.interfaces.cli.update._check_latest", return_value=info),
+        patch("marim_harness.interfaces.cli.update._do_upgrade") as mock_upgrade,
+    ):
+        out = StringIO()
+        err = StringIO()
+        result = main([], out=out, err=err)
+        output = out.getvalue()
+        assert result == 0
+        assert "already the latest" in output.lower()
+        mock_upgrade.assert_not_called()
 
 
 def test_main_upgrade_not_installed():

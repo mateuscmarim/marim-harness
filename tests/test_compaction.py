@@ -103,16 +103,13 @@ def test_estimate_tokens_grows_with_content():
 def test_estimate_tokens_does_not_count_image_bytes_as_text():
     from pydantic_ai.messages import BinaryContent
 
-    big_image = BinaryContent(data=b"\x89PNG" + b"\x00" * 500_000,
-                              media_type="image/png")
+    big_image = BinaryContent(data=b"\x89PNG" + b"\x00" * 500_000, media_type="image/png")
     hist = [ModelRequest(parts=[UserPromptPart(content=["look at this", big_image])])]
     est = estimate_tokens(hist)
     # A ~500KB image must not be counted as ~500k text tokens; it contributes a
     # small flat nominal cost plus the accompanying text.
     assert est < 5000
-    assert est > estimate_tokens(
-        [ModelRequest(parts=[UserPromptPart(content="look at this")])]
-    )
+    assert est > estimate_tokens([ModelRequest(parts=[UserPromptPart(content="look at this")])])
 
 
 def test_no_compaction_under_threshold():
@@ -140,8 +137,8 @@ def test_compacts_when_over_threshold():
     "n_rounds, max_tokens, keep_last",
     [
         (3, 1_000_000, 20),  # under threshold -> no compaction
-        (1, 1, 20),          # too short to drop anything
-        (20, 1, 8),          # over threshold -> compacts
+        (1, 1, 20),  # too short to drop anything
+        (20, 1, 8),  # over threshold -> compacts
     ],
 )
 def test_will_compact_matches_compact_history_decision(n_rounds, max_tokens, keep_last):
@@ -158,14 +155,10 @@ def test_will_compact_gates_on_measured_tokens_like_maybe_compact():
     pre-compaction caller reaches the same verdict maybe_compact will: a history
     the char/4 estimate says fits but the provider reported as huge WILL compact,
     and will_compact must say so when handed the measurement."""
-    history = [
-        ModelRequest(parts=[UserPromptPart(content=f"{i}" * 400)]) for i in range(3)
-    ]
+    history = [ModelRequest(parts=[UserPromptPart(content=f"{i}" * 400)]) for i in range(3)]
     assert estimate_tokens(history) <= 1000
     assert will_compact(history, 1000, keep_last_messages=1) is False
-    assert (
-        will_compact(history, 1000, keep_last_messages=1, measured_tokens=5000) is True
-    )
+    assert will_compact(history, 1000, keep_last_messages=1, measured_tokens=5000) is True
 
 
 def test_measured_tokens_trigger_compaction_the_estimate_would_miss():
@@ -180,9 +173,7 @@ def test_measured_tokens_trigger_compaction_the_estimate_would_miss():
     assert _plan_tail_start(history, budget, keep_last_messages=4) is None
     # A real measured count above the budget -> compaction is planned.
     assert (
-        _plan_tail_start(
-            history, budget, keep_last_messages=4, measured_tokens=budget + 1
-        )
+        _plan_tail_start(history, budget, keep_last_messages=4, measured_tokens=budget + 1)
         is not None
     )
 
@@ -194,10 +185,7 @@ def test_measured_tokens_below_estimate_does_not_lower_the_gate():
 
     history = _history(20)
     # estimate is well over a tiny budget; a small measured count must not rescue it.
-    assert (
-        _plan_tail_start(history, 1, keep_last_messages=8, measured_tokens=0)
-        is not None
-    )
+    assert _plan_tail_start(history, 1, keep_last_messages=8, measured_tokens=0) is not None
 
 
 def test_head_is_preserved():
@@ -268,7 +256,9 @@ async def test_summarizer_receives_the_dropped_middle():
     history = _history(20)
     got: list = []
     result, did = await compact_history_with_summary(
-        history, max_tokens=1, summarizer=_summarizer("X", record=got),
+        history,
+        max_tokens=1,
+        summarizer=_summarizer("X", record=got),
         keep_last_messages=8,
     )
     assert did is True
@@ -312,9 +302,7 @@ async def test_no_summary_under_threshold():
         called.append(messages)
         return "x"
 
-    result, did = await compact_history_with_summary(
-        history, max_tokens=1_000_000, summarizer=rec
-    )
+    result, did = await compact_history_with_summary(history, max_tokens=1_000_000, summarizer=rec)
     assert did is False
     assert result is history
     assert called == []  # never paid for a summary we didn't need
@@ -344,9 +332,7 @@ async def test_make_summarizer_sends_framed_prompt_to_model():
         return ModelResponse(parts=[TextPart(content="ok")])
 
     summarize = make_summarizer(FunctionModel(fn))
-    out = await summarize(
-        [ModelRequest(parts=[UserPromptPart(content="explain this")])], None
-    )
+    out = await summarize([ModelRequest(parts=[UserPromptPart(content="explain this")])], None)
     assert out == "ok"
     assert "explain this" in seen["prompt"]  # the transcript reached the model
     assert "ummariz" in seen["prompt"]  # wrapped with the explicit framing
@@ -370,12 +356,7 @@ def test_mask_keeps_recent_returns_and_elides_older_bulky_ones():
     new_history, masked = mask_stale_observations(history, keep_recent=1)
 
     assert masked == 2  # t1 and t2 elided; t3 (most recent) kept
-    contents = [
-        p.content
-        for m in new_history
-        for p in m.parts
-        if isinstance(p, ToolReturnPart)
-    ]
+    contents = [p.content for m in new_history for p in m.parts if isinstance(p, ToolReturnPart)]
     assert contents[0] == MASKED_OBSERVATION
     assert contents[1] == MASKED_OBSERVATION
     assert contents[2].startswith("recent ")
@@ -431,9 +412,7 @@ def test_mask_persist_puts_path_in_placeholder():
 
 def test_mask_persist_failure_falls_back_to_plain_placeholder():
     history = [_tool_return(f"t{i}", "X" * 300) for i in range(3)]
-    masked, n = mask_stale_observations(
-        history, keep_recent=1, persist=lambda content, name: None
-    )
+    masked, n = mask_stale_observations(history, keep_recent=1, persist=lambda content, name: None)
     assert n == 2
     assert masked[0].parts[0].content == MASKED_OBSERVATION
 
@@ -444,9 +423,7 @@ def test_mask_persist_raising_falls_back_to_plain_placeholder():
     def persist_raises(content: str, tool_name: str) -> str:
         raise OSError("disk full")
 
-    masked, n = mask_stale_observations(
-        history, keep_recent=1, persist=persist_raises
-    )
+    masked, n = mask_stale_observations(history, keep_recent=1, persist=persist_raises)
     assert n == 2
     assert masked[0].parts[0].content == MASKED_OBSERVATION
 
@@ -540,9 +517,15 @@ def test_mask_value_error_from_render_also_falls_back():
     history = [
         ModelRequest(parts=[UserPromptPart(content="go")]),
         ModelRequest(parts=[real_part]),
-        ModelRequest(parts=[ToolReturnPart(
-            tool_name="read_file", content="Y" * 300, tool_call_id="v2",
-        )]),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="read_file",
+                    content="Y" * 300,
+                    tool_call_id="v2",
+                )
+            ]
+        ),
     ]
     masked, n = mask_stale_observations(history, keep_recent=1)
     assert n == 1
@@ -631,8 +614,8 @@ def test_revalidate_default_predicate_checks_the_filesystem(tmp_path):
 
 def test_breaker_trips_after_three_rapid_refills():
     b = CompactionBreaker()
-    b.note_compact()                    # first compaction: baseline, not rapid
-    for _ in range(3):                  # three refill-compactions within 3 turns each
+    b.note_compact()  # first compaction: baseline, not rapid
+    for _ in range(3):  # three refill-compactions within 3 turns each
         b.note_turn()
         b.note_compact()
     assert b.open
@@ -642,10 +625,10 @@ def test_breaker_slow_refill_resets_the_streak():
     b = CompactionBreaker()
     b.note_compact()
     b.note_turn()
-    b.note_compact()                   # rapid #1
+    b.note_compact()  # rapid #1
     b.note_turn()
-    b.note_compact()                   # rapid #2
-    for _ in range(4):                  # 4 turns > rapid_turns → streak broken
+    b.note_compact()  # rapid #2
+    for _ in range(4):  # 4 turns > rapid_turns → streak broken
         b.note_turn()
     b.note_compact()
     assert not b.open
@@ -708,9 +691,11 @@ async def test_compact_with_summary_threads_instructions_to_summarizer():
 
 def test_estimate_tokens_counts_scalar_image_tool_return_flat():
     img = BinaryContent(data=b"x" * 100_000, media_type="image/png")
-    msg = ModelRequest(parts=[
-        ToolReturnPart(tool_name="read_file", content=img, tool_call_id="t1"),
-    ])
+    msg = ModelRequest(
+        parts=[
+            ToolReturnPart(tool_name="read_file", content=img, tool_call_id="t1"),
+        ]
+    )
     tokens = estimate_tokens([msg])
     assert tokens < 100_000 // 4  # flat image cost, not the bytes-repr length
     assert tokens >= 1500
@@ -719,9 +704,11 @@ def test_estimate_tokens_counts_scalar_image_tool_return_flat():
 def test_mask_replaces_image_tool_return_regardless_of_min_chars():
     img = BinaryContent(data=b"\x89PNG" + b"p" * 10, media_type="image/png")
     history = [
-        ModelRequest(parts=[
-            ToolReturnPart(tool_name="read_file", content=img, tool_call_id="t1"),
-        ]),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(tool_name="read_file", content=img, tool_call_id="t1"),
+            ]
+        ),
         ModelRequest(parts=[UserPromptPart(content="next turn")]),
     ]
     masked, count = mask_stale_observations(history, keep_recent=0, min_chars=10_000)
@@ -731,9 +718,13 @@ def test_mask_replaces_image_tool_return_regardless_of_min_chars():
 
 def test_render_transcript_image_tool_return_is_placeholder():
     img = BinaryContent(data=b"\x89PNGbytes", media_type="image/png")
-    history = [ModelRequest(parts=[
-        ToolReturnPart(tool_name="read_file", content=img, tool_call_id="t1"),
-    ])]
+    history = [
+        ModelRequest(
+            parts=[
+                ToolReturnPart(tool_name="read_file", content=img, tool_call_id="t1"),
+            ]
+        )
+    ]
     out = render_transcript(history)
     # Unified with the shared binary-safe placeholder format (media type + KB),
     # the same one hooks/dispatch.py and stream_events.py now render.
@@ -746,9 +737,13 @@ def test_render_transcript_list_content_with_binary_is_placeholder():
     # blocks) must not fall through to _clip(str(list)), which would dump the
     # BinaryContent's repr (raw bytes) into the advisor-facing transcript.
     img = BinaryContent(data=b"\x89PNGbytes", media_type="image/png")
-    history = [ModelRequest(parts=[
-        ToolReturnPart(tool_name="mcp_tool", content=["caption", img], tool_call_id="t2"),
-    ])]
+    history = [
+        ModelRequest(
+            parts=[
+                ToolReturnPart(tool_name="mcp_tool", content=["caption", img], tool_call_id="t2"),
+            ]
+        )
+    ]
     out = render_transcript(history)
     assert "[image image/png, 1 KB]" in out
     assert "caption" in out
@@ -846,11 +841,7 @@ def test_mask_skips_typed_tool_return_subclasses():
     payload = {"discovered_tools": [{"name": "n" * 400, "description": "d" * 400}]}
     history = [
         ModelRequest(
-            parts=[
-                _NarrowedReturn(
-                    tool_name="search_tools", content=payload, tool_call_id="s1"
-                )
-            ]
+            parts=[_NarrowedReturn(tool_name="search_tools", content=payload, tool_call_id="s1")]
         )
     ]
     new_history, masked = mask_stale_observations(history, keep_recent=0, min_chars=10)
@@ -866,12 +857,8 @@ def test_mask_still_elides_plain_returns_alongside_typed_ones():
     history = [
         ModelRequest(
             parts=[
-                _NarrowedReturn(
-                    tool_name="search_tools", content=payload, tool_call_id="s1"
-                ),
-                ToolReturnPart(
-                    tool_name="read_file", content="y" * 400, tool_call_id="r1"
-                ),
+                _NarrowedReturn(tool_name="search_tools", content=payload, tool_call_id="s1"),
+                ToolReturnPart(tool_name="read_file", content="y" * 400, tool_call_id="r1"),
             ]
         )
     ]

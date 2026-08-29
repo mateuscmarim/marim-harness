@@ -60,6 +60,7 @@ def _prompt_capturing_model(sink: list) -> FunctionModel:
     latest UserPromptPart to isolate the current turn's new prompt.
     Supports both non-streamed and streamed requests (streaming is required when
     an event_stream_handler is set, e.g. when hooks are configured)."""
+
     def fn(messages, info):
         latest = _latest_user_prompt(messages)
         if latest is not None:
@@ -143,8 +144,9 @@ async def test_no_hooks_runs_turn_normally(tmp_path):
 def test_strip_turn_context_recovers_typed_text():
     from marim_harness.runtime.harness import strip_turn_context, wrap_turn_context
 
-    wrapped = wrap_turn_context("<agentmemory-context>stuff</agentmemory-context>",
-                                "implement a fetch tool")
+    wrapped = wrap_turn_context(
+        "<agentmemory-context>stuff</agentmemory-context>", "implement a fetch tool"
+    )
     assert strip_turn_context(wrapped) == "implement a fetch tool"
     # Multi-line typed text survives intact.
     wrapped2 = wrap_turn_context("ctx", "line one\n\nline two")
@@ -230,17 +232,20 @@ async def test_pre_and_post_tool_use_fire(tmp_path):
         encoding="utf-8",
     )
     cmd = _hook_script(
-        tmp_path, "tool.sh",
+        tmp_path,
+        "tool.sh",
         f"python3 {str(helper)}\n",
     )
-    runner = HookRunner({
-        hook_events.PRE_TOOL_USE: [
-            {"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}
-        ],
-        hook_events.POST_TOOL_USE: [
-            {"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}
-        ],
-    })
+    runner = HookRunner(
+        {
+            hook_events.PRE_TOOL_USE: [
+                {"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}
+            ],
+            hook_events.POST_TOOL_USE: [
+                {"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}
+            ],
+        }
+    )
     deps = _make_deps(tmp_path, hooks=runner)
     harness = _make_harness(_edit_then_done_model(), deps)
     await harness.run_turn("change foo to bar")
@@ -266,17 +271,20 @@ async def test_post_tool_use_includes_tool_input(tmp_path):
         encoding="utf-8",
     )
     cmd = _hook_script(
-        tmp_path, "toolinput.sh",
+        tmp_path,
+        "toolinput.sh",
         f"python3 {str(helper)}\n",
     )
-    runner = HookRunner({
-        hook_events.PRE_TOOL_USE: [
-            {"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}
-        ],
-        hook_events.POST_TOOL_USE: [
-            {"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}
-        ],
-    })
+    runner = HookRunner(
+        {
+            hook_events.PRE_TOOL_USE: [
+                {"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}
+            ],
+            hook_events.POST_TOOL_USE: [
+                {"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}
+            ],
+        }
+    )
     deps = _make_deps(tmp_path, hooks=runner)
     harness = _make_harness(_edit_then_done_model(), deps)
     await harness.run_turn("change foo to bar")
@@ -284,14 +292,13 @@ async def test_post_tool_use_includes_tool_input(tmp_path):
     # The log file must exist and contain at least one PostToolUse line.
     assert log.exists(), "No PostToolUse hook fired"
     import json as _json
+
     post_payloads = [_json.loads(line) for line in log.read_text().splitlines() if line.strip()]
     assert post_payloads, "No PostToolUse payloads logged"
 
     # Every PostToolUse payload must carry tool_input with the actual args.
     for payload in post_payloads:
-        assert "tool_input" in payload, (
-            f"PostToolUse payload missing tool_input: {payload}"
-        )
+        assert "tool_input" in payload, f"PostToolUse payload missing tool_input: {payload}"
     # Specifically: the edit_file call's args (path + edits) must be present.
     edit_payloads = [p for p in post_payloads if p.get("tool_name") == "edit_file"]
     assert edit_payloads, "No PostToolUse for edit_file found"
@@ -314,22 +321,24 @@ async def test_subagent_start_and_stop_fire(tmp_path):
         encoding="utf-8",
     )
     cmd = _hook_script(
-        tmp_path, "sub.sh",
+        tmp_path,
+        "sub.sh",
         f"python3 {str(helper)}\n",
     )
-    runner = HookRunner({
-        hook_events.SUBAGENT_START: [{"hooks": [{"type": "command", "command": cmd}]}],
-        hook_events.SUBAGENT_STOP: [{"hooks": [{"type": "command", "command": cmd}]}],
-    })
+    runner = HookRunner(
+        {
+            hook_events.SUBAGENT_START: [{"hooks": [{"type": "command", "command": cmd}]}],
+            hook_events.SUBAGENT_STOP: [{"hooks": [{"type": "command", "command": cmd}]}],
+        }
+    )
     deps = _make_deps(tmp_path, hooks=runner)
     # A streaming-capable model the sub-agent will run: just reply 'sub-done'.
     # Hooks make the sub-agent run stream (so its tool calls hit the engine), so
     # a non-streaming FunctionModel can't back it — same discipline as the main
     # agent's hooked turns (see test_stop_fires_at_turn_end).
     from pydantic_ai.models.test import TestModel
-    harness = _make_harness(
-        TestModel(call_tools=[], custom_output_text="sub-done"), deps
-    )
+
+    harness = _make_harness(TestModel(call_tools=[], custom_output_text="sub-done"), deps)
     out = await harness.subagents.run("helper", "do a thing", "stream-1")
     assert "sub-done" in out
     lines = log.read_text().splitlines()
@@ -341,10 +350,10 @@ async def test_subagent_start_and_stop_fire(tmp_path):
 async def test_stop_fires_at_turn_end(tmp_path):
     log = tmp_path / "stop.log"
     cmd = _hook_script(tmp_path, "stop.sh", f"cat >> {log}\n")
-    deps = Deps(workspace=WorkspaceConfig(root=tmp_path, mode=Mode.auto),
-                hooks=HookRunner(
-                    {hook_events.STOP: [{"hooks": [{"type": "command", "command": cmd}]}]}
-                ))
+    deps = Deps(
+        workspace=WorkspaceConfig(root=tmp_path, mode=Mode.auto),
+        hooks=HookRunner({hook_events.STOP: [{"hooks": [{"type": "command", "command": cmd}]}]}),
+    )
     # Use a streaming-capable model: hooks configure a hooked_handler that forces
     # streaming mode (same discipline as test_pre_and_post_tool_use_fire).
     sink: list = []
@@ -358,10 +367,12 @@ async def test_stop_fires_at_turn_end(tmp_path):
 async def test_session_end_fires(tmp_path):
     log = tmp_path / "end.log"
     cmd = _hook_script(tmp_path, "end.sh", f"cat >> {log}\n")
-    deps = Deps(workspace=WorkspaceConfig(root=tmp_path, mode=Mode.auto),
-                hooks=HookRunner(
-                    {hook_events.SESSION_END: [{"hooks": [{"type": "command", "command": cmd}]}]}
-                ))
+    deps = Deps(
+        workspace=WorkspaceConfig(root=tmp_path, mode=Mode.auto),
+        hooks=HookRunner(
+            {hook_events.SESSION_END: [{"hooks": [{"type": "command", "command": cmd}]}]}
+        ),
+    )
     harness = _make_harness(
         FunctionModel(lambda m, i: ModelResponse(parts=[TextPart(content="x")])), deps
     )
@@ -384,20 +395,22 @@ async def test_background_subagent_start_and_stop_fire(tmp_path):
         encoding="utf-8",
     )
     cmd = _hook_script(
-        tmp_path, "bgsub.sh",
+        tmp_path,
+        "bgsub.sh",
         f"python3 {str(helper)}\n",
     )
-    runner = HookRunner({
-        hook_events.SUBAGENT_START: [{"hooks": [{"type": "command", "command": cmd}]}],
-        hook_events.SUBAGENT_STOP: [{"hooks": [{"type": "command", "command": cmd}]}],
-    })
+    runner = HookRunner(
+        {
+            hook_events.SUBAGENT_START: [{"hooks": [{"type": "command", "command": cmd}]}],
+            hook_events.SUBAGENT_STOP: [{"hooks": [{"type": "command", "command": cmd}]}],
+        }
+    )
     deps = _make_deps(tmp_path, hooks=runner)
     # A streaming-capable model the sub-agent will run: just reply 'bg-done'.
     # (See the foreground test above — hooks force the sub-agent run to stream.)
     from pydantic_ai.models.test import TestModel
-    harness = _make_harness(
-        TestModel(call_tools=[], custom_output_text="bg-done"), deps
-    )
+
+    harness = _make_harness(TestModel(call_tools=[], custom_output_text="bg-done"), deps)
     out = await harness.subagents.run_background("helper", "do a thing")
     assert "bg-done" in out
     lines = log.read_text().splitlines()
@@ -485,8 +498,7 @@ async def test_auto_mode_does_not_fire_approval_notification(tmp_path):
     harness = _make_harness(_edit_then_done_model(), deps)
     await harness.session_start("startup")
     await harness.run_turn("edit it")
-    hits = [h for h in _read_hits(out)
-            if h.get("notification_type") == "approval_needed"]
+    hits = [h for h in _read_hits(out) if h.get("notification_type") == "approval_needed"]
     assert hits == []
 
 
@@ -496,10 +508,14 @@ async def test_tool_success_fires_post_tool_use_not_failure(tmp_path):
     cmd = _capture_script(tmp_path, "ok.sh", out)
     deps = Deps(
         workspace=WorkspaceConfig(root=tmp_path, mode=Mode.auto),
-        hooks=HookRunner({
-            hook_events.POST_TOOL_USE: [{"hooks": [{"type": "command", "command": cmd}]}],
-            hook_events.POST_TOOL_USE_FAILURE: [{"hooks": [{"type": "command", "command": cmd}]}],
-        }),
+        hooks=HookRunner(
+            {
+                hook_events.POST_TOOL_USE: [{"hooks": [{"type": "command", "command": cmd}]}],
+                hook_events.POST_TOOL_USE_FAILURE: [
+                    {"hooks": [{"type": "command", "command": cmd}]}
+                ],
+            }
+        ),
     )
     harness = _make_harness(_edit_then_done_model(), deps)
     await harness.session_start("startup")

@@ -42,10 +42,10 @@ def test_capture_does_not_touch_user_branch_or_index(tmp_path: Path):
     head_before = _git(repo, "rev-parse", "HEAD")
     (repo / "a.txt").write_text("changed\n")
     GitSnapshotter(repo).capture("refs/marim/checkpoints/s/0", "cp 0")
-    assert _git(repo, "rev-parse", "HEAD") == head_before          # HEAD unmoved
-    assert _git(repo, "status", "--porcelain")                     # change still unstaged/dirty
-    assert "changed" in (repo / "a.txt").read_text()               # working tree untouched
-    assert _git(repo, "diff", "--cached", "--name-only") == ""   # real index untouched
+    assert _git(repo, "rev-parse", "HEAD") == head_before  # HEAD unmoved
+    assert _git(repo, "status", "--porcelain")  # change still unstaged/dirty
+    assert "changed" in (repo / "a.txt").read_text()  # working tree untouched
+    assert _git(repo, "diff", "--cached", "--name-only") == ""  # real index untouched
 
 
 def test_capture_returns_none_outside_git(tmp_path: Path):
@@ -57,6 +57,7 @@ def test_capture_returns_none_outside_git(tmp_path: Path):
 def test_capture_rejects_ref_outside_marim_namespace(tmp_path: Path):
     repo = _init_repo(tmp_path)
     import pytest
+
     with pytest.raises(ValueError):
         GitSnapshotter(repo).capture("refs/heads/main", "cp")
 
@@ -117,8 +118,8 @@ def test_restore_does_not_touch_index_or_head(tmp_path: Path):
     (repo / "a.txt").write_text("changed\n")
     head_before = _git(repo, "rev-parse", "HEAD")
     snap.restore(commit)
-    assert _git(repo, "rev-parse", "HEAD") == head_before        # HEAD unmoved
-    assert _git(repo, "diff", "--cached", "--name-only") == ""    # real index untouched
+    assert _git(repo, "rev-parse", "HEAD") == head_before  # HEAD unmoved
+    assert _git(repo, "diff", "--cached", "--name-only") == ""  # real index untouched
 
 
 def test_delete_removes_ref(tmp_path: Path):
@@ -128,7 +129,9 @@ def test_delete_removes_ref(tmp_path: Path):
     snap.delete("refs/marim/checkpoints/s/0")
     result = subprocess.run(
         ["git", "rev-parse", "refs/marim/checkpoints/s/0"],
-        cwd=repo, capture_output=True, text=True,
+        cwd=repo,
+        capture_output=True,
+        text=True,
     )
     assert result.returncode != 0  # ref is gone
 
@@ -136,6 +139,7 @@ def test_delete_removes_ref(tmp_path: Path):
 def test_delete_rejects_ref_outside_marim_namespace(tmp_path: Path):
     repo = _init_repo(tmp_path)
     import pytest
+
     with pytest.raises(ValueError):
         GitSnapshotter(repo).delete("refs/heads/main")
 
@@ -171,9 +175,7 @@ def test_present_files_parses_newline_names_without_splitting(tmp_path: Path):
     assert "y.txt" not in present
 
 
-def test_restore_returns_false_when_a_stale_file_cannot_be_removed(
-    tmp_path: Path, monkeypatch
-):
+def test_restore_returns_false_when_a_stale_file_cannot_be_removed(tmp_path: Path, monkeypatch):
     """Regression: the delete loop suppressed OSError and still returned True, so a
     partial restore (a file that couldn't be removed) was reported as success. Now
     an unlink failure surfaces as restore()==False."""
@@ -212,7 +214,7 @@ def test_restore_succeeds_with_nested_worktree(tmp_path: Path):
     commit = snap.capture("refs/marim/checkpoints/s/0", "cp 0")
     assert commit
     (repo / "a.txt").write_text("MODIFIED\n")
-    assert snap.restore(commit) is True          # not False-forever
+    assert snap.restore(commit) is True  # not False-forever
     assert (repo / "a.txt").read_text() == "one\n"  # the file restore still worked
     assert (repo / ".worktrees" / "feat").is_dir()  # nested worktree untouched
 
@@ -240,8 +242,10 @@ def test_capture_works_without_git_identity(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
     monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(empty))
     for var in (
-        "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
-        "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+        "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL",
+        "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL",
     ):
         monkeypatch.delenv(var, raising=False)
     repo = tmp_path / "ws"
@@ -274,9 +278,9 @@ def test_restore_does_not_delete_a_file_ignored_at_capture(tmp_path: Path):
     (repo / "a.txt").write_text("MODIFIED\n")
 
     assert snap.restore(commit) is True
-    assert (repo / ".env").read_text() == "SECRET\n"       # NOT deleted
-    assert (repo / "a.txt").read_text() == "one\n"          # tracked file reverted
-    assert (repo / ".gitignore").read_text() == ".env\n"    # gitignore restored
+    assert (repo / ".env").read_text() == "SECRET\n"  # NOT deleted
+    assert (repo / "a.txt").read_text() == "one\n"  # tracked file reverted
+    assert (repo / ".gitignore").read_text() == ".env\n"  # gitignore restored
 
 
 def test_tracked_but_ignored_file_is_captured_and_survives_restore(tmp_path: Path):
