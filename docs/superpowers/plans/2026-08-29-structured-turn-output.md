@@ -6,7 +6,7 @@
 
 **Architecture:** The agent-level output union stays `[str, DeferredToolRequests]`; each structured turn passes `output_type=[SchemaType, DeferredToolRequests]` per run to `agent.run()` (verified against pydantic-ai ≥2.28: deferred approvals still fire and the continuation round returns the validated object). BaseModel schemas ride pydantic-ai's in-run validation; JSON-Schema dicts ride `StructuredDict` provider constraints plus post-turn jsonschema validation with one corrective turn.
 
-**Tech Stack:** Python ≥3.10, pydantic-ai-slim ≥2.28, pydantic v2, jsonschema (draft-07), pytest + anyio, TestModel/FunctionModel.
+**Tech Stack:** Python ≥3.10, pydantic-ai-slim ≥2.28, pydantic v2, jsonschema, pytest + anyio, TestModel/FunctionModel.
 
 **Spec:** `docs/superpowers/specs/2026-08-29-structured-turn-output-design.md`
 
@@ -163,7 +163,7 @@ git commit -m "feat(runtime): TurnOutcome terminal-turn payload"
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `marim_harness.runtime.structured.validate_dict_output(output: Any, schema: dict) -> list[str]` — empty list means valid; otherwise human-readable error strings (draft-07). Task 6 calls it after a dict-schema turn completes.
+- Produces: `marim_harness.runtime.structured.validate_dict_output(output: Any, schema: dict) -> list[str]` — empty list means valid; otherwise human-readable error strings. Validator class resolution follows `workflows/schema.py` (`jsonschema.validators.validator_for(schema)`, which honors a schema's own `$schema` and defaults to the latest draft). Task 6 calls it after a dict-schema turn completes.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -234,15 +234,16 @@ Create `src/marim_harness/runtime/structured.py`:
 ``StructuredDict`` attaches a JSON Schema for provider-side constrained
 generation but never validates the emitted object, so a dict-schema turn
 gets checked here after the run. Lives in core (not workflows/schema.py)
-because core must not import the extra-gated workflows package; the
-draft-07 semantics match the workflow validator.
+because core must not import the extra-gated workflows package; validator
+class resolution matches it — validator_for(schema), which honors the
+schema's own $schema and defaults to the latest draft.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from jsonschema import Draft7Validator
+from jsonschema.validators import validator_for
 
 
 def validate_dict_output(output: Any, schema: dict) -> list[str]:
@@ -253,7 +254,7 @@ def validate_dict_output(output: Any, schema: dict) -> list[str]:
     """
     if not isinstance(output, dict):
         return [f"structured output is not a JSON object: {type(output).__name__}"]
-    validator = Draft7Validator(schema)
+    validator = validator_for(schema)(schema)
     errors = sorted(validator.iter_errors(output), key=lambda e: list(e.path))
     return [
         f"{'/'.join(str(p) for p in e.path) or '<root>'}: {e.message}"

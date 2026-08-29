@@ -109,9 +109,11 @@ The dict tier needs jsonschema in core: promote `jsonschema>=4` from the
 `[workflows]` extra to `dependencies` in `pyproject.toml` (it is already a
 dev dependency). Dict validation lives in a new pure helper,
 `runtime/structured.py::validate_dict_output(output, schema) -> list[str]`
-(empty list = valid) — jsonschema draft-07, matching the workflow validator
-in `workflows/schema.py` but independent of it (the workflows package stays
-extra-gated; core must not import it).
+(empty list = valid) — validator class resolution matching the workflow
+validator in `workflows/schema.py` (`jsonschema.validators.validator_for`,
+which honors the schema's own `$schema` and defaults to the latest draft),
+but independent of it (the workflows package stays extra-gated; core must
+not import it).
 
 ## Section 4 — Error handling
 
