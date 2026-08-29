@@ -8,6 +8,25 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-29
+
+### Added
+
+- Structured output for embedder turns: `HarnessBuilder.with_output_type`
+  accepts a pydantic `BaseModel` subclass or an object-rooted JSON Schema
+  dict; turns validate against it (BaseModel: pydantic-ai in-run retries;
+  dict: post-turn validation with one corrective round) and report through
+  the new `TurnOutcome` subtypes, mirroring the Claude Agent SDK's
+  `ResultMessage`.
+
+### Changed (breaking)
+
+- `Harness.run_turn` now returns a `TurnOutcome` instead of `str` — the
+  final text moved to `outcome.result` (`outcome.structured_output` carries
+  validated data when `with_output_type` is set). Migration: replace
+  `out = await harness.run_turn(...)` with `out = (await
+  harness.run_turn(...)).result` where you used the text.
+
 ## [0.4.0] - 2026-08-12
 
 ### Added

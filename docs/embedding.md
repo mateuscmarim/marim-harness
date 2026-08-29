@@ -27,8 +27,8 @@ async def main() -> None:
         model="anthropic:claude-sonnet-4-6",   # any pydantic-ai model string
     ).build()
 
-    reply = await harness.run_turn("list the files in this directory")
-    print(reply)
+    outcome = await harness.run_turn("list the files in this directory")
+    print(outcome.result)
 
 
 asyncio.run(main())
@@ -90,6 +90,14 @@ persists per session and can be switched live with
 `harness.set_thinking_level(...)`; sub-agents inherit it unless their spec or
 the spawn call overrides it. Providers that don't support reasoning effort
 ignore the setting.
+
+### Structured output
+
+`with_output_type(schema)` (a pydantic `BaseModel` subclass or an
+object-rooted JSON Schema dict) makes `run_turn` return a `TurnOutcome`
+whose `structured_output` is the validated object — retry-until-valid,
+tools and approval unaffected mid-run. Every `run_turn` returns a
+`TurnOutcome`; plain harnesses get the text in `.result`.
 
 ## The SDK docs
 

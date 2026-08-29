@@ -100,6 +100,10 @@ Details per method:
   `Mode.plan`). `ask` needs an approval callback (`Harness.bind_ui`) to grant
   anything — without one it denies every gated call, so plain headless
   embedding wants `auto` or `plan`.
+- **`with_output_type(schema)`** — validate every turn's output against a
+  pydantic `BaseModel` subclass or an object-rooted JSON Schema dict; tools
+  and the approval loop are unaffected mid-turn. See
+  [Turns, "Structured output"](turns.md#structured-output).
 - **`with_hooks(runner)`** — attaches a `HookRunner` for lifecycle hooks. See
   [Integrations](integrations.md#lifecycle-hooks). Incompatible with
   `with_deps` (see below).

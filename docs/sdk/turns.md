@@ -3,13 +3,19 @@
 ## Running a turn
 
 ```python
-reply: str = await harness.run_turn("summarize the failing tests")
+outcome = await harness.run_turn("summarize the failing tests")
+print(outcome.result)
 ```
 
-`run_turn(prompt, event_stream_handler=None, attachments=None) -> str` runs
-the agent until it produces a final text answer, looping through any approval
-rounds, and returns that text. `attachments` is an optional list of
-`(bytes, media_type)` pairs (e.g. images) sent with the prompt.
+`run_turn(prompt, event_stream_handler=None, attachments=None) -> TurnOutcome`
+runs the agent until it produces a final answer, looping through any approval
+rounds, and returns a `TurnOutcome`. For a plain harness that's
+`outcome.result` (the text) with `outcome.structured_output` left `None`; a
+harness built with `with_output_type(...)` instead reports the validated
+object in `outcome.structured_output` — see
+["Structured output"](#structured-output) below. `attachments` is an
+optional list of `(bytes, media_type)` pairs (e.g. images) sent with the
+prompt.
 
 Turns are sequential per harness: one `run_turn` at a time. The session
 accumulates history across turns (see
@@ -111,6 +117,47 @@ agent run.
   `run_turn` returns whatever text the model settled on. Verify contracts
   yourself after the turn (the [tutorial](tutorial-daily-report.md) checks
   that the report file actually exists and exits non-zero when it doesn't).
+
+## Structured output
+
+`with_output_type` makes every turn end in validated structured data instead
+of free text — the schema is a property of the harness (Claude-Agent-SDK
+style), and tools plus the approval loop work exactly as before mid-turn:
+
+```python
+from pydantic import BaseModel
+from marim_harness import HarnessBuilder
+
+
+class Audit(BaseModel):
+    summary: str
+    files_changed: list[str]
+
+
+harness = (HarnessBuilder(workspace=Path("."), model="anthropic:claude-sonnet-4-6")
+           .with_output_type(Audit)          # or an object-rooted JSON Schema dict
+           .build())
+
+outcome = await harness.run_turn("audit the last commit")
+assert outcome.subtype == "success"
+audit: Audit = outcome.structured_output
+```
+
+`run_turn` always returns a `TurnOutcome` (even without a schema — then
+`structured_output` is `None` and `result` carries the text):
+
+| Field | Meaning |
+|---|---|
+| `subtype` | `"success"` · `"error_max_structured_output_retries"` · `"error_during_execution"` (reserved, not emitted) |
+| `result` | final assistant text; `None` when the run ended in pure structured output |
+| `structured_output` | the validated model instance (BaseModel schema) or dict (JSON Schema) |
+| `errors` | failure detail on error subtypes |
+
+Enforcement differs by schema kind: a `BaseModel` is validated by
+pydantic-ai inside the run (with retries); a JSON Schema dict constrains
+generation provider-side and is checked after the turn — one corrective
+round runs if it fails. Infra/provider errors still raise; only schema
+failures become error outcomes. JSON Schemas must be object-rooted.
 
 ## Resumability (persisted sessions)
 
