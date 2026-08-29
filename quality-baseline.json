@@ -1,8 +1,8 @@
 {
   "version": 2,
   "seeded_at": "2026-08-29",
-  "seeded_on": "CPython 3.12.3 \u2014 the interpreter the Gitea runner supplies for `uv sync --python 3.12`, and the one the gate job measured these numbers on. NOT a local run. See why_coverage_is_seeded_from_ci_2026_08_29.",
-  "why_pip_audit_findings_is_9_2026_08_29": "Nine advisories across five transitive deps at seeding: cryptography 49.0.0, requests 2.32.3, mcp 1.27.2, pyasn1 0.6.3, pydantic-settings 2.14.1. Severity-agnostic by design \u2014 OSV often reports none. Ratchets down as the lock is refreshed.",
+  "seeded_on": "CPython 3.12.3 — the interpreter the Gitea runner supplies for `uv sync --python 3.12`, and the one the gate job measured these numbers on. NOT a local run. See why_coverage_is_seeded_from_ci_2026_08_29.",
+  "why_pip_audit_findings_is_9_2026_08_29": "Nine advisories across five transitive deps at seeding: cryptography 49.0.0, requests 2.32.3, mcp 1.27.2, pyasn1 0.6.3, pydantic-settings 2.14.1. Severity-agnostic by design — OSV often reports none. Ratchets down as the lock is refreshed.",
   "why_secret_findings_is_0_2026_08_29": "A default-rules scan reports well over a thousand generic-api-key hits (1367 on 2026-08-29), every one a provider-key fixture stub re-counted across the commits that touched three files; the total climbs as history grows, so treat it as a dated reading rather than a constant. The four distinct stub values are allowlisted BY EXACT VALUE in .gitleaks.toml, not by path: a path allowlist makes gitleaks skip the file before scanning, which would hide a real key committed there. See the note in .gitleaks.toml for the measurement that settled it.",
   "policy": {
     "comment": "Higher-is-better metrics may not drop; lower-is-better may not rise; boolean_must_be_zero fails on any non-zero value regardless of baseline. Tolerance absorbs measurement noise, not regressions. See docs/quality-gate.md.",
@@ -25,7 +25,7 @@
   "packages": {
     "marim_harness": {
       "language": "python",
-      "why_no_mypy_errors_2026_08_29": "This repo type-checks with pyright, which ci.yml enforces at zero \u2014 stricter than any ratchet. The gate ships no pyright parser, and bolting mypy on purely to feed this row would mean a second type checker with its own config and a large starting error count. Revisit if a pyright parser lands upstream.",
+      "why_no_mypy_errors_2026_08_29": "This repo type-checks with pyright, which ci.yml enforces at zero — stricter than any ratchet. The gate ships no pyright parser, and bolting mypy on purely to feed this row would mean a second type checker with its own config and a large starting error count. Revisit if a pyright parser lands upstream.",
       "why_complexity_is_61_2026_08_29": "The gate force-selects C901 plus PLR0911/0912/0913/0915. ruff.toml only selects C901 (max-complexity 10), so the other three rules were never enforced here: 48 PLR0913 (too many arguments) and 13 PLR0911 (too many returns), all in src. 30 further findings in tests/ are excluded by non_ratcheted_dirs and stay visible in the artifact.",
       "metrics": {
         "coverage_lines_pct": 92.4,
@@ -42,6 +42,6 @@
     "pip_audit_findings": 9,
     "secret_findings": 0
   },
-  "why_coverage_is_seeded_from_ci_2026_08_29": "Coverage was first seeded from a laptop run (on 3.13, and wrongly recorded here as 3.12.13 \u2014 no runner has ever used that patch) at 92.51/87.24 and the gate's first real run measured 92.40/87.17, failing the lines row by 0.11. The difference is structural, not noise: Gitea's runner executes as root, and five tests skip on geteuid() == 0 because chmod cannot provoke a permission failure for root (two in test_history.py, three in test_memory.py). Their lines are therefore never covered in CI. The numbers here are the ones the gate job measures, because that job is what scores every future run \u2014 a baseline only a developer's machine can reach is a bar CI can never clear. Re-seed from a CI run, not locally. Deselecting those five tests locally reproduces 92.49/87.20, so they explain most but not all of the gap; the residual ~0.09 is some further container difference that was not chased, and the 0.1 tolerance absorbs it.",
+  "why_coverage_is_seeded_from_ci_2026_08_29": "Coverage was first seeded from a laptop run (on 3.13, and wrongly recorded here as 3.12.13 — no runner has ever used that patch) at 92.51/87.24 and the gate's first real run measured 92.40/87.17, failing the lines row by 0.11. The difference is structural, not noise: Gitea's runner executes as root, and five tests skip on geteuid() == 0 because chmod cannot provoke a permission failure for root (two in test_history.py, three in test_memory.py). Their lines are therefore never covered in CI. The numbers here are the ones the gate job measures, because that job is what scores every future run — a baseline only a developer's machine can reach is a bar CI can never clear. Re-seed from a CI run, not locally. Deselecting those five tests locally reproduces 92.49/87.20, so they explain most but not all of the gap; the residual ~0.09 is some further container difference that was not chased, and the 0.1 tolerance absorbs it.",
   "known_gap_root_runner_2026_08_29": "Because the runner is root, CI never exercises the permission-failure paths those five tests cover. They still run for any non-root developer and in any non-root CI. Closing this means running the job as a non-root user, which is a change to the runner setup rather than to the gate."
 }

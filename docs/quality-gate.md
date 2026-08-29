@@ -69,7 +69,7 @@ uvx pip-audit -f json -r /tmp/freeze.txt -o .quality/pip-audit.json || true
 gitleaks detect --config .gitleaks.toml --report-format=json \
   --report-path .quality/gitleaks.json --no-banner --redact
 
-uvx ratchet-gate@0.5.0 check          # exit 1 on any regression
+uvx ratchet-gate@0.5.1 check          # exit 1 on any regression
 ```
 
 `.quality/` is gitignored. A bare `check` scores against this checkout's own
@@ -155,6 +155,6 @@ and its own commit re-runs to a no-op. It runs under `always()` on purpose: if
 it inherited the gate's failure, one stuck red row would freeze promotion for
 every *other* metric, and the ratchet would quietly stop ratcheting.
 
-To adopt improvements by hand: `uvx ratchet-gate@0.5.0 promote --monotonic`.
+To adopt improvements by hand: `uvx ratchet-gate@0.5.1 promote --monotonic`.
 Never plain `promote` on a branch — without `--monotonic` it sets baseline =
 current for *every* metric, so seeding one new row rewrites all the others.

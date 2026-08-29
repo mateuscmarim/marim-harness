@@ -40,7 +40,7 @@ jobs:
       # One pin read by every step that scores or adopts a number. Split across
       # two versions, a later step could adopt a value the earlier one never
       # measured.
-      GATE: uvx ratchet-gate@0.5.0
+      GATE: uvx ratchet-gate@0.5.1
       # Pinned, and the same version the baseline was seeded with. gitleaks
       # changes its default ruleset between minors, so an unpinned scan can
       # discover new "findings" that are really a new rule — on a metric scored
@@ -378,7 +378,7 @@ jobs:
     permissions:
       contents: write
     env:
-      GATE: uvx ratchet-gate@0.5.0
+      GATE: uvx ratchet-gate@0.5.1
     steps:
       - uses: actions/checkout@v4
         with:
