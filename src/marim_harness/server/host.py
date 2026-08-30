@@ -27,6 +27,7 @@ from ..runtime.errors import format_provider_error
 from ..runtime.harness import Harness
 from ..runtime.wake import WakeController
 from ..runtime.wake_driver import WakeDriver
+from ..session.claim import SessionClaim
 from ..stream_events import event_to_dict
 from ..usage import usage_summary
 from .bus import EventBus
@@ -63,9 +64,21 @@ class SessionHost:
     """Must be constructed inside a running event loop (it starts its worker
     task immediately)."""
 
-    def __init__(self, harness: Harness, bus: EventBus, *, queue_limit: int = 8) -> None:
+    def __init__(
+        self,
+        harness: Harness,
+        bus: EventBus,
+        *,
+        queue_limit: int = 8,
+        claim: "SessionClaim | None" = None,
+    ) -> None:
         self.harness = harness
         self.bus = bus
+        # Ownership of the session file for this host's whole lifetime. Released
+        # in aclose(), which every teardown path funnels through — including idle
+        # eviction, where giving up ownership is correct: the harness is gone and
+        # the session is resumable from disk, so nobody owns it.
+        self._claim = claim
         self._queue: asyncio.Queue[tuple[str, str, list | None, str]] = asyncio.Queue(
             maxsize=queue_limit
         )
@@ -329,27 +342,42 @@ class SessionHost:
         """Interrupt anything running, then run the same guarded teardown the
         headless CLI does (autoname, final persist, session_end, aclose)."""
         self._closing = True
-        if self._turn_task is not None:
-            self._turn_task.cancel()
-        self._worker.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await self._worker
-        for label, step in (
-            ("wait_autoname", self.harness.session.wait_autoname),
-            ("finalize_active_time", self.harness.session.finalize_active_time),
-            ("persist", lambda: self.harness.session.persist(force=True)),
-        ):
-            try:
-                result = step()
-                if asyncio.iscoroutine(result):
-                    await result
-            except Exception as exc:  # noqa: BLE001 - teardown is best-effort
-                logger.warning("host teardown step %s failed: %s", label, exc, exc_info=True)
-        for label, coro_fn in (
-            ("session_end", lambda: self.harness.session_end("exit")),
-            ("aclose", self.harness.aclose),
-        ):
-            try:
-                await coro_fn()
-            except Exception as exc:  # noqa: BLE001 - teardown is best-effort
-                logger.warning("host teardown step %s failed: %s", label, exc, exc_info=True)
+        # The whole teardown runs inside try/finally so the release below is
+        # unconditional: `await self._worker` only suppresses CancelledError, and
+        # the worker's own finally block can raise. Without this, such an escape
+        # would leave the claim held by an fd nothing references — the host is
+        # already popped from the supervisor — and 409 the session for the
+        # daemon's whole life, with no host left to close and nothing to retry.
+        try:
+            if self._turn_task is not None:
+                self._turn_task.cancel()
+            self._worker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._worker
+            for label, step in (
+                ("wait_autoname", self.harness.session.wait_autoname),
+                ("finalize_active_time", self.harness.session.finalize_active_time),
+                ("persist", lambda: self.harness.session.persist(force=True)),
+            ):
+                try:
+                    result = step()
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception as exc:  # noqa: BLE001 - teardown is best-effort
+                    logger.warning("host teardown step %s failed: %s", label, exc, exc_info=True)
+            for label, coro_fn in (
+                ("session_end", lambda: self.harness.session_end("exit")),
+                ("aclose", self.harness.aclose),
+            ):
+                try:
+                    await coro_fn()
+                except Exception as exc:  # noqa: BLE001 - teardown is best-effort
+                    logger.warning("host teardown step %s failed: %s", label, exc, exc_info=True)
+        finally:
+            # Last, so ownership outlives every write above: the final persist
+            # must complete while we still hold the session. Nothing is
+            # swallowed here — an escaping exception still propagates, but only
+            # after the session is free again.
+            if self._claim is not None:
+                self._claim.release()
+                self._claim = None

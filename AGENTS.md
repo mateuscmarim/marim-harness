@@ -1,0 +1,241 @@
+# AGENTS.md
+
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
+
+## What this is
+
+`marim-harness` is a terminal coding agent built on [Pydantic AI](https://ai.pydantic.dev/)
+and [Textual](https://textual.textualize.io/). It reads/searches/edits files and runs
+commands in a workspace, with an interactive TUI and a headless one-shot mode. The
+console scripts are `marim` and `marim-harness` (both → `marim_harness.__main__:main`).
+
+## Commands
+
+```bash
+uv sync                          # install deps (creates .venv)
+uv run pytest                    # full test suite (parallel via xdist + coverage, per pyproject)
+uv run pytest tests/test_agent.py            # one file
+uv run pytest tests/test_agent.py::test_name # one test
+uv run pytest --no-cov tests/test_x.py       # skip coverage for a fast single run
+uv run pytest -n 0 ...                       # serial (for --pdb/-x or cross-test interactions)
+uv run ruff check src tests      # lint
+uv run ruff check --fix src tests
+uv run pyright                   # type-check (standard mode, src only)
+uv run marim serve --port 8642   # HTTP daemon (REST + WebSocket); needs the [serve] extra
+```
+
+CI (`.gitea/workflows/ci.yml`) runs ruff → pyright → pytest on Python 3.10, 3.12,
+and 3.14 (plus a `uv build` packaging check on the 3.12 leg). Match that order
+locally before claiming work is done. `requires-python` is `>=3.10`, so avoid
+3.11+ only syntax.
+
+Set `MARIM_DEBUG=1` for DEBUG logging. Provider config lives in env vars / `.env`
+(see `.env.example`): `MARIM_PROVIDER` (`openrouter`|`local`|`google`|`Codex-cli`|`zen`|`zen-go`), `MARIM_MODEL`,
+`OPENROUTER_API_KEY`, etc. Default provider is OpenRouter, default model
+`anthropic/Codex-sonnet-4-6`. `Codex-cli` delegates each turn to the `Codex` CLI on a
+Codex subscription — marim acts as a launcher (Codex runs its own tools/loop), so marim's
+own tools/approval/LSP/MCP do not apply in that provider. Codex's own Agent/Task
+sub-agents, however, are demuxed out of the stream (`subagents/cli_demux.py`) and
+rendered as first-class cards in the sub-agents screen, for both the main-loop
+provider and `backend: Codex-cli` spawns. Interrupted `Codex-cli` spawns
+resume via the CLI's own `--resume` (the session id is checkpointed in the
+spawn's sidecar meta).
+
+## Architecture
+
+The dependency flow is **`__main__` → `interfaces/cli/router` → `default_cmd` →
+`runtime/bootstrap.py`'s `build_harness` → `Harness`**. The two front-ends (TUI and
+headless) both go through `build_harness`, so they wire up models, sessions, MCP,
+hooks, and LSP identically — keep new wiring there, not duplicated per interface.
+
+The turn-execution engine lives in the **`runtime/`** package: `harness.py`
+(`Harness`, `build_collaborators`, `build_services`), `controller.py`
+(`TurnController`, the approval/persist loop), `context.py` (per-turn context
+helpers), `deps.py`, `permissions.py` (`Mode`), `errors.py`, `instructions.py`,
+`builder.py`, and `bootstrap.py`. Imports target submodules directly (`from
+.deps import Deps`); the package root deliberately re-exports nothing, keeping
+the deps/services cycle below from leaking through `__init__` at import time.
+
+`HarnessBuilder` (`builder.py`) is the embedding front door — explicit model,
+explicit tool/session/sub-agent composition, no `MARIM_*` env reads; see
+`docs/embedding.md`. `bootstrap.build_harness` is the CLI preset built on top
+of that same builder (env config, workspace scanning, TUI/headless wiring).
+New construction wiring (a tool group, a config knob) goes in the builder;
+env/discovery reading stays in bootstrap, so the two paths cannot drift.
+
+### The core turn loop (`runtime/harness.py`)
+
+`Harness` owns the Pydantic AI `Agent` and drives one user turn to completion.
+`Harness.run_turn` → `_run_with_approval` is the heart of the system. Key invariants
+encoded there (read the docstrings before touching):
+
+- **Approval rounds.** The agent's `output_type` is `[str, DeferredToolRequests]`.
+  Gated tools (`write_file`, `edit_file`, `bash`) defer; `_run_with_approval` loops,
+  resolving each deferred batch via `resolve_approvals` against the current `Mode`
+  (`auto`/`ask`/`plan`), then continues the run with the results.
+- **Resumability.** A persisted history must never end with a `ToolCallPart` lacking
+  its `ToolReturnPart` — every provider rejects that on the next request.
+  `_repair_unanswered_tool_calls` self-heals such histories; an aborted turn is
+  flushed via `_flush_resumable` (with a tight deadline so Ctrl-C stays snappy).
+  The dirty history held during an approval round is deliberately **not** persisted —
+  `resumable` is the rollback baseline and is refreshed only after a clean persist.
+- **Prompt assembly.** `_assemble_prompt` prepends per-turn context (task checklist,
+  finished-job digests, the prior turn's actionable error note, SessionStart /
+  UserPromptSubmit hook output) and wraps the injected prefix in a `<turn-context>`
+  envelope so a resumed session can recover just what the user typed
+  (`strip_turn_context`). The system prompt is kept stable to preserve prompt caching.
+- **Error notes.** `_actionable_error_note` surfaces only failures the *model* can act
+  on (4xx client errors, usage limits, malformed responses) and stays silent on infra
+  (429/5xx), cancels, and render bugs. Full provider payloads spill to
+  `.marim/last-provider-error.json`.
+
+### Construction & the deps/services cycle
+
+`build_collaborators` (in `runtime/harness.py`) builds the whole collaborator graph
+(agent, MCP, LSP, session, checkpoints, hooks, subagents) in dependency order. There
+is one unavoidable late binding: `Deps` and `HarnessServices` form a reference cycle — `TurnHooks` and the
+sub-agent runners hold `deps`, while tools reach back through `ctx.deps.services`.
+`build_services` performs that single binding. `HarnessConfig` bundles all optional
+knobs; `Harness.__init__` still accepts legacy `**kwargs` as a shorthand for
+building one (pass `config=` *or* kwargs, not both — mixing raises `TypeError`).
+
+`Deps` (`runtime/deps.py`) is the `RunContext` payload threaded through every tool. All
+UI-facing collaboration is **optional callbacks** that headless leaves as `None`
+(each reader guards with `is None`). The TUI wires them in one place via
+`Harness.bind_ui` — don't poke `harness.deps`/`harness.session` field-by-field from
+the interface layer.
+
+### Tools (`tools/`)
+
+Tool implementations are module-level functions in `tools/provider.py` so they can be
+registered two ways from one source of truth: onto the main agent (gated tools behind
+`requires_approval=True`) and onto sub-agents (registered *plain* — reach is decided
+up front by which names are granted, never by mid-run prompting). `spawn_agent`
+is granted to a sub-agent only when it could still nest within the depth ceiling
+(`depth + 1 < SUBAGENT_MAX_DEPTH`, default 3) — see `SubagentRunner.build`; at
+the leaf depth the tool is absent, so nesting is bounded, not forbidden. Nested
+spawns render in the sub-agents screen as an indented tree (a child card streams
+into its parent's transcript pane). Tool docstrings are the model-facing tool
+descriptions — they are part of the product; write them with that in mind.
+`names.py` is the leaf module holding tool-name sets (`GATED_TOOLS`, `LSP_TOOLS`, etc.)
+to avoid import cycles.
+
+### Supporting subsystems (one concern each)
+
+- `session/` — `SessionStore` (persists to `$XDG_DATA_HOME/marim-harness/sessions`),
+  `SessionManager`, `SessionController` (compaction/autoname), `CheckpointManager`
+  (rewind via `GitSnapshotter`, honoring `.gitignore`).
+- `mcp/` — Model Context Protocol server config + lifecycle; servers can be granted
+  selectively to sub-agents. Project-local `.marim/mcp.json` servers launch code on
+  connect, so they load only when the project is trusted (the same trust gate as
+  project hooks — a persistent per-project store plus the `MARIM_TRUST_PROJECT_HOOKS`
+  override, see `trust.py`/`docs/guides/trust.md`); global/plugin servers always load.
+- `lsp/` — multilspy-backed language servers, now assembled from **LSP providers**
+  (`provider.py`: `LspProvider` + `LspRegistry`) rather than a hard-coded set. Four
+  bundled language plugins (`lsp/bundled/{python,typescript,cpp,java}`) ship in-tree
+  and always load; third-party plugins add languages via an `lsp` manifest block
+  (declarative `command`/`args` only) under the same project trust gate as MCP.
+  `backend:`/named-`diagnostics:` keys are a bundled-only seam to in-tree tuned
+  code (`basedpyright.py`, ruff/pyright via `checks.py`). Declarative servers launch
+  through `GenericStdioServer` (`generic.py`). Two switches still gate the whole thing:
+  `lsp_enabled` (manager + diagnostics-on-edit) and `lsp_tools_enabled` (the six nav
+  tools). marim never downloads server binaries — it probes PATH and surfaces the
+  provider's install hint.
+- `forge/` — Gitea/GitHub integration via a `ForgeBackend` seam. `TeaBackend`
+  shells out to the `tea` CLI (`--output json`); five forge-agnostic tools
+  (`tools/forge_tools.py`) list/view PRs, check CI, and open/check out PRs, with
+  create/checkout gated for approval. Attached at build time only when
+  `MARIM_FORGE` is on (default) and a backend is available (`tea` on PATH + a
+  configured login). A `gh` backend is a future drop-in behind the same protocol.
+- `hooks/` — Codex-compatible lifecycle hook engine (session/prompt/tool/
+  compaction events). Observe-only except SessionStart/UserPromptSubmit (inject
+  context) and PreCompact (may block a *manual* /compact via exit 2 or
+  `{"decision":"block"}`; block verdicts on auto compaction are logged and
+  ignored). Project-local hooks run only when trusted (the persistent
+  per-project trust store, or the `MARIM_TRUST_PROJECT_HOOKS` override —
+  see `trust.py`/`docs/guides/trust.md`).
+- `plugins/` — bundles skills + sub-agents + hooks + MCP + `AGENTS.md`; hooks/MCP load
+  only for *trusted* plugins. Namespaced `plugin:item`. See `docs/plugins.md`.
+- `workspace/` — fs primitives, memory (`remember`/`recall`), skills, sub-agent specs,
+  git worktrees, snapshots, and the session scratchpad (a per-session /tmp dir for
+  intermediate files: advertised in the prompt, reachable by the file tools as an
+  extra guard root, auto-approved in ask mode, gated by `MARIM_SCRATCHPAD`). (The
+  root-level `compaction.py` builds the summarizer/titler aux agents and the
+  token-budget compaction helpers.)
+- `subagents/` — `runner.py` (`SubagentRunner`: spawn-lifecycle coordinator),
+  `run_driver.py` (model-loop retry/overflow/contention recovery),
+  `cli_spawn.py` (`Codex -p` execute/resume orchestration), `masking.py`
+  (per-spawn context masking of stale tool observations), and `cli_backend.py`
+  (the optional `Codex -p` CLI backend it delegates to). Re-exported as
+  `marim_harness.subagents.SubagentRunner`. Native spawns pick a model by **tier** (`cheap`/`med`/`high`, in `subagents/tiers.py`): resolved from the spawner's `tier=` override → the spec's `tier:` frontmatter → tool reach (read-only→cheap, mutating→high), mapped to `MARIM_SUBAGENT_TIER_*`; unset tiers inherit the main model and a `model=` slug stays a bounded escape hatch.
+- `workflows/` — dynamic workflows: the gated `run_workflow` tool executes a
+  model-authored Python script in a pydantic-monty sandbox (`engine.py`);
+  `agent()`/`log()` host functions delegate to `SubagentRunner.run` through
+  the `services.run_workflow` seam. Schema validation of agent() reports is
+  engine-level (`schema.py`, jsonschema). Never cancel the Monty VM task —
+  aborts flow through host functions (see engine.py's module docstring).
+  Optional extra `[workflows]`; `MARIM_WORKFLOWS` gates it.
+- `stats/` — dual-JSONL usage ledger collecting per-turn token counts and cost
+  deltas via `SessionController.add_usage`. Query via `load_overview()`/`load_models()`.
+  Scoped to sessions base; best-effort never fails a turn. Opt-out via `stats=False` or
+  `MARIM_STATS=0`. No backfill from old sessions; docs at `docs/sdk/sessions-and-state.md`.
+- `advisor.py` (root) — the advisor: an `advisor()` tool on the main agent
+  forwards the full transcript to a separately-configured model
+  (`MARIM_ADVISOR_MODEL`, any provider) and returns strategic guidance.
+  Live seam is `services.advise` (a pydantic-ai `prepare` hook omits the tool
+  when it's `None`, so `/advisor <model>`/`/advisor off` toggle without a
+  rebuild — at the cost of one prompt-cache break per toggle). Session
+  persistence mirrors `store.model` (`"off"` sentinel = explicitly disabled);
+  per-turn call cap `MARIM_ADVISOR_MAX_USES` rides on `Deps`. Main loop only
+  (sub-agents have tiering); the tool doesn't exist under the Codex-cli
+  main-loop provider (marim's tools don't apply there), but a Codex-cli
+  *advisor* model works via the `aux_model_for` clone.
+- `thinking.py` (root) — thinking level (reasoning effort): one ordered
+  vocabulary (`off/minimal/low/medium/high/xhigh`) and three pure helpers —
+  `parse_thinking_level` (env/CLI/`/think` coercion), `settings_for` (fold a
+  level into `ModelSettings.thinking`; `off`/unset OMITS the key, byte-identical
+  to pre-thinking behavior), and `resolve_thinking` (sub-agent precedence:
+  spawn override → spec `thinking:`/`effort:` → inherited session level). The
+  main loop applies it per turn in `TurnController._turn_model_settings`; the
+  level persists on `SessionStore.thinking` and lives on `Harness.thinking_level_id`
+  (read lazily by the controller closure and the sub-agent runner, so `/think`
+  switches without a rebuild). Seeded by `MARIM_THINKING` / `--think`; TUI
+  `/think` command + Settings row. Under the `Codex-cli` main provider it's a
+  documented no-op (marim's `ModelSettings` don't reach Codex). Detection
+  (`catalog.supports_thinking`) is best-effort UI annotation only — it never
+  blocks a level.
+- `interfaces/tui/` — Textual app, widgets, `styles.tcss`, streaming render;
+  `interactions/` — inline approval/ask-user/plan-card panels (mounted above the
+  status bar, not modals, so the transcript stays scrollable) sharing an
+  `InteractionPanel` base; `subagents/` — the sub-agents screen: master list,
+  full-bleed view, inline card, persistent transcript pane, pure stats.
+  `interfaces/cli/` — router + per-command modules (lazily imported so
+  `config`/`models` don't pay for `pydantic_ai`).
+
+## Conventions
+
+- Use `uv` for everything (`uv run …`, `uv sync`). Don't invoke `pip` or a bare
+  `python`/`pytest`.
+- Ruff line length is 100; lint set is `E,F,I,UP,B,SIM,C901` (import sorting
+  enforced; pyupgrade, bugbear, and flake8-simplify also on).
+- Cyclomatic complexity is capped at 10 (`C901`, mccabe). CI rejects any function
+  above it. When a function trips the ceiling, extract cohesive branch-clusters into
+  named helpers (or a small state value-object where locals mutate across the region)
+  — do not add a blanket `# noqa: C901`. Note: this bounds *branch count*, not length;
+  a long, straight-line, well-commented function is fine.
+- Keep pure decision/parse helpers (command policy, snapshot diffing, arg coercion,
+  path-guard resolution, and the extracted module-level helpers inside the effectful
+  modules) side-effect-free and unit-tested directly. The effectful I/O itself lives in
+  `tools/impl/` (`fs.py` writes, `shell.py` spawns, `fetch.py` opens sockets) — that is
+  the real I/O *core*, not a pure layer; it is exercised directly against a tmp
+  workspace. Above it, the tool layer (`fs_tools.py`, `edit_tools.py`, `net_tools.py`)
+  is thin `ctx.deps`-unwrapping wiring. Follow that three-way split when adding behavior.
+- The codebase favors long, explanatory comments on *why* a non-obvious invariant
+  holds (especially around resumability and the deps/services cycle). Preserve them
+  when editing nearby code.
+- Follow `coding-guidelines.md` for code design principles: control complexity,
+  prefer straight-line flow, model the domain when it pays off, encapsulate
+  collections with behavior, limit deep navigation, name for clarity, optimize for
+  cohesion, treat large state as a smell, and encapsulate behavior over data.
+  It's guidance, not dogma — break a rule when the tradeoff is clear and
+  document why.

@@ -368,3 +368,42 @@ async def test_job_settled_mid_turn_wakes_after_turn_ends(tmp_path):
     )
     await _wait_for(lambda: host.status == "idle", what="host idle")
     await host.aclose()
+
+
+async def test_aclose_releases_the_claim_even_when_teardown_raises(tmp_path):
+    """The release must be unconditional, not merely last. `await self._worker`
+    only suppresses CancelledError, and the worker's own finally block can
+    raise — if that escape skipped the release, the claim would be held by an fd
+    nothing references (the host is already popped from the supervisor) and the
+    session would 409 for the daemon's whole life."""
+    from marim_harness.session.claim import try_acquire
+
+    session_path = tmp_path / "sessions" / "s1.json"
+    session_path.parent.mkdir(parents=True)
+    claim = try_acquire(session_path, kind="daemon")
+    assert claim is not None
+
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    host = SessionHost(_make_harness(_text_only_model(), deps), EventBus(), claim=claim)
+
+    # Swap the real worker for one that explodes out of its own finally.
+    host._worker.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await host._worker
+
+    async def exploding_worker():
+        try:
+            await asyncio.sleep(3600)
+        finally:
+            raise RuntimeError("worker finally exploded")
+
+    host._worker = asyncio.create_task(exploding_worker())
+    await asyncio.sleep(0)  # let it reach the sleep
+
+    with pytest.raises(RuntimeError, match="worker finally exploded"):
+        await host.aclose()
+
+    # Propagated, but only after the session was freed.
+    freed = try_acquire(session_path, kind="tui")
+    assert freed is not None
+    freed.release()

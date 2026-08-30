@@ -21,6 +21,7 @@ from pathlib import Path
 
 from ..runtime.harness import Harness
 from ..runtime.permissions import Mode
+from ..session.claim import Holder, SessionClaim, read_holder, try_acquire
 from ..session.store import SessionManager
 from .bus import EventBus
 from .host import SessionHost
@@ -35,6 +36,18 @@ _EVICT_POLL_CEILING_SECONDS = 60.0
 
 class SessionBusy(Exception):
     """Raised by set_model when a live host has a turn running."""
+
+
+class SessionClaimed(Exception):
+    """Raised by host_for when another live process owns the session.
+
+    Not a transient condition to retry: the holder keeps the session until it
+    exits, so the caller's job is to report who has it, not to back off."""
+
+    def __init__(self, session_id: str, holder: "Holder | None") -> None:
+        super().__init__(session_id)
+        self.session_id = session_id
+        self.holder = holder
 
 
 def _persisted_mode(workspace: Path, session_id: str) -> Mode | None:
@@ -69,9 +82,11 @@ class SessionSupervisor:
         *,
         idle_ttl: float = 900.0,
         ring_size: int = 1000,
+        endpoint: str | None = None,
     ) -> None:
         self._factory = factory
         self.idle_ttl = idle_ttl
+        self.endpoint = endpoint
         self._ring_size = ring_size
         self._buses: dict[tuple[str, str], EventBus] = {}
         self._hosts: dict[tuple[str, str], SessionHost] = {}
@@ -147,10 +162,26 @@ class SessionSupervisor:
                 # created with e.g. mode=auto doesn't silently revert to the
                 # configured default after a restart.
                 mode = _persisted_mode(Path(record.path), session_id)
-            harness = await self._factory(Path(record.path), session_id, mode)
-            host = SessionHost(harness, self.bus_for(*key))
+            claim = self._claim_session(Path(record.path), session_id)
+            try:
+                harness = await self._factory(Path(record.path), session_id, mode)
+                host = SessionHost(harness, self.bus_for(*key), claim=claim)
+            except BaseException:
+                # Either the factory or SessionHost.__init__ failed, so nothing
+                # was registered: release rather than strand the session behind
+                # a claim no host will ever come to own.
+                claim.release()
+                raise
             self._hosts[key] = host
             return host
+
+    def _claim_session(self, workspace: Path, session_id: str) -> SessionClaim:
+        """Take ownership of the session, or raise SessionClaimed naming the holder."""
+        session_path = SessionManager(workspace).session_path(session_id)
+        claim = try_acquire(session_path, kind="daemon", endpoint=self.endpoint)
+        if claim is None:
+            raise SessionClaimed(session_id, read_holder(session_path))
+        return claim
 
     async def close_host(self, ws_id: str, session_id: str) -> bool:
         key = (ws_id, session_id)

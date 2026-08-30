@@ -1591,6 +1591,41 @@ def test_delete_removes_scratchpad_dir(tmp_path, monkeypatch):
     assert not scratch.parent.exists()
 
 
+def test_delete_removes_the_claim_sidecar(tmp_path):
+    """The ownership claim's <id>.json.claim would otherwise outlive the session
+    it names — a permanent orphan in the sessions dir."""
+    from marim_harness.session import SessionManager
+    from marim_harness.session.claim import claim_path, try_acquire
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    manager = SessionManager(ws, base_dir=tmp_path / "sessions")
+    store = manager.create()
+    claim = try_acquire(store.path, kind="tui")
+    assert claim is not None
+    assert claim_path(store.path).exists()
+
+    claim.release()
+    manager.delete(store.session_id)
+
+    assert not claim_path(store.path).exists()
+
+
+def test_delete_without_a_claim_sidecar_still_works(tmp_path):
+    from marim_harness.session import SessionManager
+    from marim_harness.session.claim import claim_path
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    manager = SessionManager(ws, base_dir=tmp_path / "sessions")
+    store = manager.create()
+    assert not claim_path(store.path).exists()
+
+    manager.delete(store.session_id)  # best-effort: a missing sidecar is fine
+
+    assert not store.path.exists()
+
+
 # ---------------------------------------------------------------------------
 # persist / reset / compaction data-integrity regressions
 # ---------------------------------------------------------------------------

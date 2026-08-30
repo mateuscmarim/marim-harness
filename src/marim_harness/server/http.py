@@ -44,7 +44,7 @@ from .schema import (
     TrustIn,
     WorkspaceIn,
 )
-from .supervisor import SessionBusy, SessionSupervisor
+from .supervisor import SessionBusy, SessionClaimed, SessionSupervisor
 from .workspaces import WorkspaceRegistry
 
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -474,7 +474,15 @@ async def post_message(request: Request) -> Response:
             attachments = [(base64.b64decode(a.data_b64), a.media_type) for a in body.attachments]
         except ValueError:
             return _error(400, "bad_request", "invalid base64 in attachment data_b64")
-    host = await _supervisor(request).host_for(record, session_id)
+    try:
+        host = await _supervisor(request).host_for(record, session_id)
+    except SessionClaimed as exc:
+        who = exc.holder.describe() if exc.holder is not None else "another process"
+        return _error(
+            409,
+            "claimed",
+            f"session is owned by {who}; close it there before driving it here",
+        )
     try:
         turn_id = host.submit(body.prompt, attachments)
     except TurnQueueFull:

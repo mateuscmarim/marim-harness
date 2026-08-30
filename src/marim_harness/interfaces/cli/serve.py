@@ -392,6 +392,7 @@ def main(argv: list[str], *, out=None, err=None) -> int:
         import uvicorn
 
         from ...server.http import create_app
+        from ...server.runtime import clear_runtime, format_base_url, write_runtime
         from ...server.supervisor import SessionSupervisor
         from ...server.workspaces import WorkspaceRegistry
     except ImportError:
@@ -406,11 +407,13 @@ def main(argv: list[str], *, out=None, err=None) -> int:
     token = load_or_create_token(state_dir)
     workspaces = args.workspaces_root or state_dir / "workspaces"
     registry = WorkspaceRegistry(state_dir / "workspaces.json", workspaces)
-    supervisor = SessionSupervisor(idle_ttl=args.idle_ttl)
+    supervisor = SessionSupervisor(
+        idle_ttl=args.idle_ttl, endpoint=format_base_url(args.host, args.port)
+    )
     app = create_app(registry=registry, supervisor=supervisor, token=token)
 
     startup = ServeStartup(
-        url=f"http://{args.host}:{args.port}",
+        url=format_base_url(args.host, args.port),
         token_path=state_dir / "token",
         workspaces=workspaces,
         idle_ttl=args.idle_ttl,
@@ -427,5 +430,11 @@ def main(argv: list[str], *, out=None, err=None) -> int:
     )
     if args.qr:
         _print_startup_qr(args, token=token, out=out, err=err)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    write_runtime(state_dir, host=args.host, port=args.port)
+    try:
+        uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    finally:
+        # Best-effort: a SIGKILL leaves the file behind, which is why readers
+        # treat it as a hint and let the connection attempt be authoritative.
+        clear_runtime(state_dir)
     return 0

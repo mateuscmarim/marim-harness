@@ -37,6 +37,12 @@ The state dir is `$XDG_DATA_HOME/marim-harness/server` (default
 workspace registry (`workspaces.json`), and by default the managed-workspaces
 root.
 
+While the daemon is running it also holds `runtime.json` —
+`{"host": ..., "port": ..., "pid": ..., "started": ...}` — written at startup
+and removed on clean exit, so a client on the same machine can find the daemon
+without being told the port. A killed daemon leaves the file behind, so treat
+it as a hint and let the connection attempt be the authoritative answer.
+
 The daemon binds loopback by default; to reach it remotely, front it with a
 reverse proxy or a tailnet.
 
@@ -161,8 +167,8 @@ This includes the WebSocket upgrade request. Failures:
 ```
 
 Codes used: `unauthorized` (401), `bad_request` (400), `not_found` (404),
-`busy` (409), `not_running` (409), `queue_full` (429), `host_closed` (404),
-`unreadable` (500), `trust_store_error` (500).
+`busy` (409), `claimed` (409), `not_running` (409), `queue_full` (429),
+`host_closed` (404), `unreadable` (500), `trust_store_error` (500).
 
 ## Endpoint summary
 
@@ -500,6 +506,14 @@ progress on the WebSocket stream. Errors:
 
 - `429 queue_full` — the per-session turn queue is at capacity.
 - `404 host_closed` — the host was torn down mid-submit; retry.
+- `409 claimed` — another live process (a local TUI or headless run) owns this
+  session. A claim is held for its holder's lifetime, so unlike `busy` this is
+  not transient and retrying will not clear it; the message names the holder.
+  Close the session there first.
+
+  Scope: ownership tracks the session a client process *launched* against.
+  Switching sessions inside a running TUI (`/resume`, `/new`) does not yet move
+  the claim with it — that lands in phase 4.
 
 ### POST /v1/workspaces/{ws}/sessions/{sid}/interrupt
 

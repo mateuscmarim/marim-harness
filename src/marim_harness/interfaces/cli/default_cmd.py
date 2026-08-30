@@ -7,10 +7,15 @@ import asyncio
 import importlib.util
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ...thinking import THINKING_LEVELS
 from ..history import PromptHistory, default_history_path
+
+if TYPE_CHECKING:
+    from ...session.claim import SessionClaim
 
 
 def _version() -> str:
@@ -101,6 +106,58 @@ def _tui_available() -> bool:
     return importlib.util.find_spec("textual") is not None
 
 
+def _acquire_session(harness, *, kind: str, err) -> "tuple[SessionClaim | None, bool]":
+    """Take ownership of this run's session, or explain who already has it.
+
+    Returns ``(claim, may_proceed)``. A ``None`` claim with ``may_proceed`` True
+    means there was nothing to claim: an anonymous session has no file on disk,
+    so no other process can be overwriting it.
+    """
+    from ...session.claim import read_holder, try_acquire
+
+    session = getattr(harness, "session", None)
+    if session is None:
+        return None, True
+    store = getattr(session, "store", None)
+    if store is None:
+        return None, True
+    claim = try_acquire(store.path, kind=kind)
+    if claim is not None:
+        return claim, True
+    holder = read_holder(store.path)
+    who = holder.describe() if holder is not None else "another process"
+    print(
+        f"session {store.session_id} is already open in {who}.\n"
+        "Close it there first, or start a new session (drop --resume).",
+        file=err,
+    )
+    return None, False
+
+
+def _run_claimed(harness, *, kind: str, err, run: Callable[[], int]) -> int:
+    """Claim `harness`'s session, run `run()` under the claim, and release it.
+
+    Returns 2 without calling `run` when the session is already owned
+    elsewhere; otherwise returns whatever `run()` returns. Shared by the
+    headless and TUI launch paths so the claim/release wiring lives once.
+    """
+    claim, may_proceed = _acquire_session(harness, kind=kind, err=err)
+    if not may_proceed:
+        return 2
+    try:
+        return run()
+    finally:
+        if claim is not None:
+            claim.release()
+
+
+def _launch_tui(harness) -> int:
+    from ..tui.app import HarnessApp
+
+    HarnessApp(harness, history=PromptHistory(default_history_path())).run()
+    return 0
+
+
 def _enter_worktree(workspace, branch, err):
     """Resolve `workspace` to a git worktree for `branch`. Returns the worktree
     path, or None after printing an error to `err`."""
@@ -160,7 +217,14 @@ def run_default(argv, *, stdin=None, out=None, err=None) -> int:
 
         mode = Mode(args.mode) if args.mode else Mode.auto
         harness = build_harness(workspace, mode=mode, resume=args.resume)
-        return asyncio.run(run_headless(harness, prompt, args.output_format, out=out, err=err))
+        return _run_claimed(
+            harness,
+            kind="headless",
+            err=err,
+            run=lambda: asyncio.run(
+                run_headless(harness, prompt, args.output_format, out=out, err=err)
+            ),
+        )
 
     if not _tui_available():
         print(
@@ -178,13 +242,10 @@ def run_default(argv, *, stdin=None, out=None, err=None) -> int:
 
     route_logging_to_file()
 
-    from ..tui.app import HarnessApp
-
     # An explicit --mode carries into the interactive session too (it used to
     # be silently ignored on a tty); without one, the session starts in the
     # configured default (MARIM_DEFAULT_MODE, default "ask"), resolved inside
     # build_harness.
     mode = Mode(args.mode) if args.mode else None
     harness = build_harness(workspace, mode=mode, resume=args.resume)
-    HarnessApp(harness, history=PromptHistory(default_history_path())).run()
-    return 0
+    return _run_claimed(harness, kind="tui", err=err, run=lambda: _launch_tui(harness))
