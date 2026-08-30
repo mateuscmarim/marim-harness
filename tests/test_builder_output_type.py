@@ -101,6 +101,45 @@ def test_build_without_output_type_leaves_none(tmp_path):
     assert h.turn_controller._output_type_dict is None
 
 
+def test_config_override_output_type_is_validated(tmp_path):
+    """build() merges _config_overrides over config_fields AFTER the checks
+    ran, so an overridden output_type used to bypass every guard (review
+    #3303). build() now folds the effective value into the validated field
+    up front — all three guards must fire through this door too."""
+    with pytest.raises(BuilderError) as exc_info:
+        (
+            HarnessBuilder(workspace=tmp_path, model=TestModel())
+            .with_config_overrides(output_type=int)
+            .build()
+        )
+    assert any("expected a pydantic BaseModel" in p for p in exc_info.value.problems)
+
+    with pytest.raises(BuilderError) as exc_info:
+        (
+            HarnessBuilder(workspace=tmp_path, model=TestModel())
+            .with_config_overrides(output_type={"type": "array"})
+            .build()
+        )
+    assert any("object-rooted" in p for p in exc_info.value.problems)
+
+    with pytest.raises(BuilderError) as exc_info:
+        (
+            HarnessBuilder(workspace=tmp_path, model=TestModel())
+            .with_tool(final_result)
+            .with_config_overrides(output_type=Report)
+            .build()
+        )
+    assert any("final_result" in p and "output tool" in p for p in exc_info.value.problems)
+
+    # A well-formed override still builds, and the override wins wholesale.
+    h = (
+        HarnessBuilder(workspace=tmp_path, model=TestModel())
+        .with_config_overrides(output_type=Report)
+        .build()
+    )
+    assert h.turn_controller._structured_type is Report
+
+
 def test_output_tool_name_constant_tracks_pydantic_ai():
     """The collision guard compares tool names to ``_OUTPUT_TOOL_NAME``, which
     mirrors pydantic-ai's PRIVATE ``DEFAULT_OUTPUT_TOOL_NAME`` (no public

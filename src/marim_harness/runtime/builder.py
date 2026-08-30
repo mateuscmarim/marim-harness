@@ -447,6 +447,17 @@ class HarnessBuilder:
 
         problems: list[str] = []
 
+        # ``with_config_overrides`` is a raw seam: the dict is merged over
+        # ``config_fields`` at the END of build(), after every check below has
+        # run. For ``output_type`` that meant a value never seen by
+        # ``_check_output_type`` (schema shape) or ``_check_custom_tools`` (the
+        # ``final_result`` collision guard) — both read ``self._output_type`` —
+        # handing back a harness whose every turn dies on the first request.
+        # Fold the effective value into the typed field up front so the checks
+        # validate exactly what build() will ship.
+        if "output_type" in self._config_overrides:
+            self._output_type = self._config_overrides["output_type"]
+
         model = self._resolve_model(problems)
 
         groups = ToolGroups(
